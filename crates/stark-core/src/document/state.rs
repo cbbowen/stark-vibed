@@ -103,14 +103,52 @@ impl DocState {
 
     /// Set the blend mode of a layer (no-op if absent).
     pub fn set_layer_blend(&self, id: LayerId, blend: BlendMode) -> Self {
-        match self.layer_index(id) {
-            Some(idx) => {
-                let layer = Layer {
-                    blend,
-                    ..self.layer_at(idx).clone()
-                };
-                self.with_layer_at(idx, layer)
+        self.map_layer(id, |l| Layer { blend, ..l })
+    }
+
+    /// Set a layer's opacity, clamped to [0, 1] (no-op if absent).
+    pub fn set_layer_opacity(&self, id: LayerId, opacity: f32) -> Self {
+        self.map_layer(id, |l| Layer {
+            opacity: opacity.clamp(0.0, 1.0),
+            ..l
+        })
+    }
+
+    /// Set a layer's visibility (no-op if absent).
+    pub fn set_layer_visible(&self, id: LayerId, visible: bool) -> Self {
+        self.map_layer(id, |l| Layer { visible, ..l })
+    }
+
+    /// Move layer `id` to sit immediately above `above`, or on top if `None`.
+    /// The layer keeps its tiles, so the painting moves with it.
+    pub fn move_layer(&self, id: LayerId, above: Option<LayerId>) -> Self {
+        let Some(moved) = self.layers.iter().find(|l| l.id == id).cloned() else {
+            return self.clone();
+        };
+        let remaining: Vec<Layer> = self.layers.iter().filter(|l| l.id != id).cloned().collect();
+        let at = match above {
+            Some(target) => remaining
+                .iter()
+                .position(|l| l.id == target)
+                .map_or(remaining.len(), |i| i + 1),
+            None => remaining.len(),
+        };
+        let mut layers = Vector::new();
+        for (i, l) in remaining.iter().enumerate() {
+            if i == at {
+                layers = layers.push_back(moved.clone());
             }
+            layers = layers.push_back(l.clone());
+        }
+        if at >= remaining.len() {
+            layers = layers.push_back(moved);
+        }
+        Self::from_layers(layers)
+    }
+
+    fn map_layer(&self, id: LayerId, f: impl FnOnce(Layer) -> Layer) -> Self {
+        match self.layer_index(id) {
+            Some(idx) => self.with_layer_at(idx, f(self.layer_at(idx).clone())),
             None => self.clone(),
         }
     }

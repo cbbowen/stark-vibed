@@ -18,11 +18,16 @@ pub enum BlendMode {
     Normal,
 }
 
-/// A single layer: a persistent (structurally-shared) map of tiles.
+/// A single layer: a persistent (structurally-shared) map of tiles plus its
+/// presentation properties.
 #[derive(Clone)]
 pub struct Layer {
     pub id: LayerId,
     pub blend: BlendMode,
+    /// Layer opacity in [0, 1].
+    pub opacity: f32,
+    /// Whether the layer contributes to the composite.
+    pub visible: bool,
     /// Only populated tiles exist — this sparsity is the infinite canvas.
     pub tiles: HashTrieMap<TileCoord, TileHandle>,
 }
@@ -32,6 +37,8 @@ impl Layer {
         Self {
             id,
             blend: BlendMode::Normal,
+            opacity: 1.0,
+            visible: true,
             tiles: HashTrieMap::new(),
         }
     }

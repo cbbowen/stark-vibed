@@ -19,6 +19,15 @@ use crate::Result;
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
 
+/// A layer's presentation properties, for the UI's layer panel (DESIGN.md §11).
+#[derive(Clone, Copy, Debug)]
+pub struct LayerInfo {
+    pub id: LayerId,
+    pub blend: crate::document::BlendMode,
+    pub opacity: f32,
+    pub visible: bool,
+}
+
 /// A cheap, UI-facing projection of engine state (DESIGN.md §7). Published to
 /// the frontend so it can render chrome reactively without touching pixels.
 #[derive(Clone, Debug)]
@@ -30,6 +39,9 @@ pub struct ObservableState {
     pub brush: BrushParams,
     pub view: ViewTransform,
     pub bounds: CanvasBounds,
+    pub active_layer: LayerId,
+    /// Layers bottom-to-top.
+    pub layers: Vec<LayerInfo>,
 }
 
 pub struct Engine {
@@ -119,14 +131,39 @@ impl Engine {
             InputCommand::Zoom { factor, .. } => {
                 self.session.view.zoom = (self.session.view.zoom * factor).max(1e-3);
             }
+            InputCommand::SetActiveLayer(id) => {
+                // Session state, like tool selection — never historized.
+                if self.document().layer_index(id).is_some() {
+                    self.session.active_layer = id;
+                }
+            }
             InputCommand::AddLayer { above } => {
                 let id = LayerId(self.next_layer);
                 self.next_layer += 1;
                 self.commit(ActionKind::AddLayer { id, above });
+                // A freshly added layer becomes the active painting target.
+                self.session.active_layer = id;
             }
-            InputCommand::RemoveLayer(id) => self.commit(ActionKind::RemoveLayer(id)),
+            InputCommand::RemoveLayer(id) => {
+                self.commit(ActionKind::RemoveLayer(id));
+                // Keep the active layer valid after removal.
+                if self.session.active_layer == id {
+                    if let Some(first) = self.document().layers.iter().next() {
+                        self.session.active_layer = first.id;
+                    }
+                }
+            }
             InputCommand::SetLayerBlend(id, blend) => {
                 self.commit(ActionKind::SetLayerBlend(id, blend))
+            }
+            InputCommand::SetLayerOpacity(id, opacity) => {
+                self.commit(ActionKind::SetLayerOpacity(id, opacity))
+            }
+            InputCommand::SetLayerVisible(id, visible) => {
+                self.commit(ActionKind::SetLayerVisible(id, visible))
+            }
+            InputCommand::MoveLayer { id, above } => {
+                self.commit(ActionKind::MoveLayer { id, above })
             }
         }
     }
@@ -136,12 +173,17 @@ impl Engine {
     pub fn render(&mut self, target: &wgpu::TextureView, background: wgpu::Color) {
         let doc = self.preview.as_ref().unwrap_or_else(|| self.timeline.current());
 
-        // Gather populated tiles bottom-to-top. True per-blend-mode compositing
-        // is step 4; for now layers stack with premultiplied "over".
-        let mut tiles: Vec<(crate::geom::TileCoord, TileHandle)> = Vec::new();
+        // Gather populated tiles bottom-to-top, skipping hidden layers and
+        // tagging each tile with its layer opacity. Normal-blend layers compose
+        // correctly under premultiplied "over"; richer blend modes (which need
+        // per-layer isolation) are a follow-up.
+        let mut tiles: Vec<(crate::geom::TileCoord, TileHandle, f32)> = Vec::new();
         for layer in doc.layers.iter() {
+            if !layer.visible || layer.opacity <= 0.0 {
+                continue;
+            }
             for (coord, handle) in layer.tiles.iter() {
-                tiles.push((*coord, handle.clone()));
+                tiles.push((*coord, handle.clone(), layer.opacity));
             }
         }
 
@@ -219,6 +261,17 @@ impl Engine {
 
     /// A snapshot of UI-facing state (DESIGN.md §7).
     pub fn observe(&self) -> ObservableState {
+        let doc = self.timeline.current();
+        let layers = doc
+            .layers
+            .iter()
+            .map(|l| LayerInfo {
+                id: l.id,
+                blend: l.blend,
+                opacity: l.opacity,
+                visible: l.visible,
+            })
+            .collect();
         ObservableState {
             can_undo: self.timeline.can_undo(),
             can_redo: self.timeline.can_redo(),
@@ -226,7 +279,9 @@ impl Engine {
             tool: self.session.tool,
             brush: self.session.brush,
             view: self.session.view,
-            bounds: self.timeline.current().bounds,
+            bounds: doc.bounds,
+            active_layer: self.session.active_layer,
+            layers,
         }
     }
 

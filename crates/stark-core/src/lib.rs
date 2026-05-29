@@ -17,7 +17,10 @@
 //! - [x] Step 5: save/load + timelapse — the [`io::DocumentFile`] action-log
 //!   format (postcard + deflate), [`Engine::save_bytes`]/[`Engine::load_bytes`]
 //!   with undo-after-load, and [`Engine::replay_timelapse`].
-//! - [ ] Step 6+: layers + Dioxus UI, then collaboration.
+//! - [x] Step 6a: layers — active-layer selection (session), per-layer
+//!   opacity/visibility/blend + reorder (historized actions), and opacity-aware
+//!   compositing. [`ObservableState`] exposes the layer stack.
+//! - [ ] Step 6b: Dioxus UI · 6c: LOD · Step 7: collaboration.
 
 pub mod color;
 pub mod command;
@@ -31,7 +34,7 @@ pub mod io;
 pub mod session;
 
 pub use command::{InputCommand, InputSample};
-pub use engine::{Engine, ObservableState};
+pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};
 pub use gpu::{

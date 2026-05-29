@@ -52,8 +52,14 @@ pub enum InputCommand {
     Pan { delta: Vec2 },
     Zoom { center: Vec2, factor: f32 },
 
+    // --- active layer selection (session state, never historized) ---
+    SetActiveLayer(LayerId),
+
     // --- document edits that ARE historized ---
     AddLayer { above: Option<LayerId> },
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
+    SetLayerOpacity(LayerId, f32),
+    SetLayerVisible(LayerId, bool),
+    MoveLayer { id: LayerId, above: Option<LayerId> },
 }

@@ -686,7 +686,17 @@ above; they layer on top of it.
    normal-from-height lighting — the "old masters" payoff.
 5. **Save/load + timelapse:** serialize the action log; load-then-undo; replay
    exporter.
-6. **Layers, LOD, and the Dioxus UI**, then iterate on pigment fidelity.
+6. **Layers, LOD, and the Dioxus UI** — three largely orthogonal efforts, split
+   into substeps:
+   - **6a. Layers:** active-layer selection (session state), per-layer opacity /
+     visibility / blend (document actions), and per-layer-aware compositing.
+     Fully headless-testable.
+   - **6b. Dioxus UI:** the `stark-ui` frontend — a wgpu canvas surface, DOM
+     chrome, pointer→`InputCommand`, and `ObservableState` on a signal (§11).
+     Verification shifts to manual/browser rather than golden tests.
+   - **6c. LOD:** mipmapped tiles for responsive zoomed-out panning. A pure
+     optimization; deferred until perf warrants it.
+   Then iterate on pigment fidelity.
 7. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
    testable headlessly by merging two engines' logs and asserting identical

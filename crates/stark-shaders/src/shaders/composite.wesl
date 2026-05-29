@@ -16,6 +16,7 @@ struct View {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) opacity: f32,
 }
 
 struct FsOut {
@@ -24,7 +25,11 @@ struct FsOut {
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32, @location(0) origin: vec2<f32>) -> VsOut {
+fn vs_main(
+    @builtin(vertex_index) vi: u32,
+    @location(0) origin: vec2<f32>,
+    @location(1) opacity: f32,
+) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let scale = view.st.xy;
     let translate = view.st.zw;
@@ -34,13 +39,16 @@ fn vs_main(@builtin(vertex_index) vi: u32, @location(0) origin: vec2<f32>) -> Vs
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.uv = corner;
+    out.opacity = opacity;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
+    // Scaling premultiplied color (and additive aux) by layer opacity yields a
+    // correct Normal-blend "layer at opacity% over below".
     var out: FsOut;
-    out.color = textureSample(tile_color, samp, in.uv);
-    out.aux = textureSample(tile_aux, samp, in.uv);
+    out.color = textureSample(tile_color, samp, in.uv) * in.opacity;
+    out.aux = textureSample(tile_aux, samp, in.uv) * in.opacity;
     return out;
 }

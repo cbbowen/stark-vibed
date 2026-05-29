@@ -26,11 +26,12 @@ struct ViewUniform {
     misc: [f32; 4], // tile_size, unused
 }
 
-/// Per-tile instance: canvas-space origin.
+/// Per-tile instance: canvas-space origin + the layer's opacity.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Instance {
     origin: [f32; 2],
+    opacity: f32,
 }
 
 /// Mirrors `Media` in `media.wesl` (48 bytes).
@@ -151,7 +152,7 @@ impl Compositor {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Instance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32],
                 }],
             },
             primitive: wgpu::PrimitiveState {
@@ -301,7 +302,7 @@ impl Compositor {
         target: &wgpu::TextureView,
         view: ViewTransform,
         background: wgpu::Color,
-        tiles: &[(TileCoord, TileHandle)],
+        tiles: &[(TileCoord, TileHandle, f32)],
     ) {
         let device = &self.ctx.device;
         if view.viewport != self.size {
@@ -352,8 +353,9 @@ impl Compositor {
         // Instances (tile origins).
         let instances: Vec<Instance> = tiles
             .iter()
-            .map(|(c, _)| Instance {
+            .map(|(c, _, opacity)| Instance {
                 origin: c.origin().to_array(),
+                opacity: *opacity,
             })
             .collect();
         if !instances.is_empty() {
@@ -368,7 +370,7 @@ impl Compositor {
 
         let tile_bgs: Vec<wgpu::BindGroup> = tiles
             .iter()
-            .map(|(_, t)| {
+            .map(|(_, t, _)| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark composite tile bg"),
                     layout: &self.tile_bgl,
@@ -493,7 +495,10 @@ fn clear_attachment(
 fn alloc_instances(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("stark composite instances"),
-        contents: bytemuck::cast_slice(&vec![Instance { origin: [0.0; 2] }; count.max(1)]),
+        contents: bytemuck::cast_slice(&vec![
+            Instance { origin: [0.0; 2], opacity: 1.0 };
+            count.max(1)
+        ]),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
     })
 }

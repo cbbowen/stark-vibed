@@ -90,6 +90,9 @@ pub enum ActionKind {
     AddLayer { id: LayerId, above: Option<LayerId> },
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
+    SetLayerOpacity(LayerId, f32),
+    SetLayerVisible(LayerId, bool),
+    MoveLayer { id: LayerId, above: Option<LayerId> },
     // `Undo(ActionId)` (undo-as-an-action) arrives with the replicated timeline
     // in step 7 (DESIGN.md §5.4, §12); single-user undo uses timeline navigation.
 }
@@ -131,6 +134,9 @@ impl history::Action for Action {
             ActionKind::AddLayer { id, above } => state.insert_layer(*id, *above),
             ActionKind::RemoveLayer(id) => state.remove_layer(*id),
             ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
+            ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
+            ActionKind::SetLayerVisible(id, visible) => state.set_layer_visible(*id, *visible),
+            ActionKind::MoveLayer { id, above } => state.move_layer(*id, *above),
         })
     }
 }
