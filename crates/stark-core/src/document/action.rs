@@ -1,0 +1,134 @@
+//! Actions: committed, deterministic, replayable document mutations (DESIGN.md §4).
+//!
+//! An [`Action`] is the unit the timeline stores/replays and (later) the unit
+//! serialized to disk. Every action carries a globally-unique [`ActionId`] so
+//! the same records work unchanged in a future replicated, multi-peer log
+//! (DESIGN.md §4, §12) — we pay that tiny cost from the first commit.
+
+use super::layer::{BlendMode, Layer, LayerId};
+use super::state::DocState;
+use crate::command::InputSample;
+use crate::gpu::stroke::StrokeRenderer;
+use crate::gpu::tile::TilePool;
+
+/// Identifies the author of an action: one local user, or a peer (DESIGN.md §4).
+/// Maps to an iroh `NodeId` when collaborating; a fixed value when solo.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ActorId(pub u64);
+
+/// Globally-unique action id; also the total order key `(lamport, actor)`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ActionId {
+    pub lamport: u64,
+    pub actor: ActorId,
+}
+
+/// The painting tool that produced a stroke. A single brush for now; tools
+/// become an open registry later (DESIGN.md §10).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Tool {
+    Brush,
+}
+
+/// Brush configuration. Color is linear RGBA for the MVP and becomes Oklab in
+/// step 4 (DESIGN.md §6.5).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BrushParams {
+    /// Straight (un-premultiplied) RGBA, components in [0, 1].
+    pub color: [f32; 4],
+    /// Stamp radius in canvas pixels at full pressure.
+    pub radius: f32,
+    /// Spacing between stamps as a fraction of `radius`.
+    pub spacing: f32,
+    /// Edge softness in [0, 1): 0 = very soft, ~1 = hard edge.
+    pub hardness: f32,
+    /// Per-stamp coverage in [0, 1].
+    pub flow: f32,
+}
+
+impl Default for BrushParams {
+    fn default() -> Self {
+        Self {
+            color: [0.0, 0.0, 0.0, 1.0],
+            radius: 16.0,
+            spacing: 0.25,
+            hardness: 0.5,
+            flow: 1.0,
+        }
+    }
+}
+
+/// A fully-recorded stroke: enough to replay it bit-for-bit (DESIGN.md §4).
+#[derive(Clone, Debug)]
+pub struct StrokeRecord {
+    pub layer: LayerId,
+    pub tool: Tool,
+    pub brush: BrushParams,
+    /// Resampled input path, full fidelity.
+    pub path: Vec<InputSample>,
+    /// Seed for any brush jitter, making replay reproducible. Unused by the MVP
+    /// brush but recorded so the format is stable.
+    pub seed: u64,
+}
+
+/// What an action does to the document.
+#[derive(Clone, Debug)]
+pub enum ActionKind {
+    CommitStroke(StrokeRecord),
+    AddLayer { id: LayerId, above: Option<LayerId> },
+    RemoveLayer(LayerId),
+    SetLayerBlend(LayerId, BlendMode),
+    // `Undo(ActionId)` (undo-as-an-action) arrives with the replicated timeline
+    // in step 7 (DESIGN.md §5.4, §12); single-user undo uses timeline navigation.
+}
+
+/// A committed document mutation with its identity.
+#[derive(Clone, Debug)]
+pub struct Action {
+    pub id: ActionId,
+    pub kind: ActionKind,
+}
+
+/// Side-channel passed to [`history::Action::apply`]: the GPU resources needed
+/// to render a stroke (DESIGN.md §5). It owns cheap `Arc`-backed clones, so it
+/// has no borrow lifetime — which is what lets it be the `Action::Context`.
+#[derive(Clone)]
+pub struct ApplyCtx {
+    pub pool: TilePool,
+    pub stroke: StrokeRenderer,
+}
+
+impl history::Action for Action {
+    type State = DocState;
+    type Context = ApplyCtx;
+    // GPU work reports failure via wgpu's device error callbacks, not return
+    // values, and tile allocation never fails — so applying an action is
+    // genuinely infallible here (DESIGN.md §5).
+    type Error = std::convert::Infallible;
+
+    fn apply(&self, state: DocState, ctx: &mut ApplyCtx) -> Result<DocState, Self::Error> {
+        Ok(match &self.kind {
+            ActionKind::CommitStroke(rec) => match state.layer_index(rec.layer) {
+                Some(idx) => {
+                    let layer = state.layer_at(idx);
+                    let tiles = ctx.stroke.render(&ctx.pool, &layer.tiles, rec);
+                    state.with_layer_at(idx, Layer { tiles, ..layer.clone() })
+                }
+                None => state,
+            },
+            ActionKind::AddLayer { id, above } => state.insert_layer(*id, *above),
+            ActionKind::RemoveLayer(id) => state.remove_layer(*id),
+            ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
+        })
+    }
+}
+
+/// Linear interpolation between two input samples (used during stamp placement).
+pub(crate) fn lerp_sample(a: &InputSample, b: &InputSample, t: f32) -> InputSample {
+    InputSample {
+        pos: a.pos.lerp(b.pos, t),
+        pressure: a.pressure + (b.pressure - a.pressure) * t,
+        tilt: a.tilt.lerp(b.tilt, t),
+        time: a.time + (b.time - a.time) * t as f64,
+    }
+}

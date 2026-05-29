@@ -9,3 +9,8 @@ use wesl::include_wesl;
 pub fn present() -> &'static str {
     include_wesl!("present")
 }
+
+/// WGSL source for the brush stamp rasterization pass (DESIGN.md §6.2).
+pub fn stamp() -> &'static str {
+    include_wesl!("stamp")
+}

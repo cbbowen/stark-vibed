@@ -9,5 +9,8 @@ fn main() {
     // The canvas → surface presentation shader (DESIGN.md §6.4).
     compiler.build_artifact(&"package::present".parse().unwrap(), "present");
 
+    // The brush stamp rasterization shader (DESIGN.md §6.2).
+    compiler.build_artifact(&"package::stamp".parse().unwrap(), "stamp");
+
     println!("cargo::rerun-if-changed=src/shaders");
 }

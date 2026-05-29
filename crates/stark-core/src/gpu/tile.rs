@@ -19,10 +19,12 @@ use crate::gpu::context::GpuContext;
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Usages every color tile needs: sampled when presenting, cleared/painted as a
-/// render target, and copyable for readback in tests (DESIGN.md §9).
+/// render target, copied from for copy-on-write stroke commits (DESIGN.md §5.2)
+/// and readback in tests (DESIGN.md §9), and copied to as a CoW destination.
 const COLOR_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::RENDER_ATTACHMENT)
-    .union(wgpu::TextureUsages::COPY_SRC);
+    .union(wgpu::TextureUsages::COPY_SRC)
+    .union(wgpu::TextureUsages::COPY_DST);
 
 /// One tile's GPU-resident channels.
 pub struct GpuTile {

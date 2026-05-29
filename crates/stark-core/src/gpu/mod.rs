@@ -3,8 +3,10 @@
 
 pub mod context;
 pub mod present;
+pub mod stroke;
 pub mod tile;
 
 pub use context::GpuContext;
 pub use present::Presenter;
+pub use stroke::StrokeRenderer;
 pub use tile::{TileHandle, TilePool, COLOR_FORMAT};

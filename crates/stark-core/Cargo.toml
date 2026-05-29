@@ -11,6 +11,7 @@ glam = { workspace = true }
 bytemuck = { workspace = true }
 rpds = { workspace = true }
 thiserror = { workspace = true }
+history = { workspace = true }
 stark-shaders = { workspace = true }
 
 [dev-dependencies]
