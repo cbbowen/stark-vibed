@@ -2,15 +2,13 @@
 //!
 //! The engine renders directly into the canvas's `wgpu::Surface` texture — no
 //! readback, no encode. A [`Renderer`] bundles the surface and the engine; the
-//! app stores it in a signal and calls [`Renderer::paint`] after each command.
+//! app stores it in a signal, calls [`Renderer::paint`] after each command, and
+//! [`Renderer::resize`] when the canvas (window) changes size.
 
 use stark_core::geom::Extent2;
 use stark_core::{Engine, GpuContext, InputCommand, ObservableState, ViewTransform};
 use wasm_bindgen::JsCast;
 
-/// Canvas size in physical pixels (also the engine viewport).
-pub const W: u32 = 900;
-pub const H: u32 = 600;
 /// Warm paper-white background, in linear RGB.
 pub const BG: wgpu::Color = wgpu::Color {
     r: 0.92,
@@ -22,7 +20,9 @@ pub const CANVAS_ID: &str = "stark-canvas";
 
 /// Owns the canvas surface and the painting engine.
 pub struct Renderer {
+    canvas: web_sys::HtmlCanvasElement,
     surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
     engine: Engine,
 }
 
@@ -37,6 +37,20 @@ impl Renderer {
 
     pub fn view(&self) -> ViewTransform {
         self.engine.view()
+    }
+
+    /// Match the surface + engine viewport to a new canvas size (CSS pixels).
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 || (width == self.config.width && height == self.config.height)
+        {
+            return;
+        }
+        self.canvas.set_width(width);
+        self.canvas.set_height(height);
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.engine.gpu().device, &self.config);
+        self.engine.resize(Extent2::new(width, height));
     }
 
     /// Render the current canvas straight into the surface texture and present.
@@ -67,18 +81,21 @@ pub fn canvas_element() -> web_sys::HtmlCanvasElement {
         .expect("element is a canvas")
 }
 
-/// Asynchronously create the WebGPU device, configure the surface, and build the
-/// engine (DESIGN.md §7: the frontend supplies GPU handles via `from_parts`).
+/// Asynchronously create the WebGPU device, configure the surface to the
+/// canvas's current size, and build the engine (DESIGN.md §7).
 pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
-    canvas.set_width(W);
-    canvas.set_height(H);
+    // Size the drawing buffer to the laid-out canvas (CSS pixels).
+    let width = (canvas.client_width().max(1)) as u32;
+    let height = (canvas.client_height().max(1)) as u32;
+    canvas.set_width(width);
+    canvas.set_height(height);
 
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::BROWSER_WEBGPU;
     let instance = wgpu::Instance::new(desc);
 
     let surface: wgpu::Surface<'static> = instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
         .expect("create canvas surface");
 
     let adapter = instance
@@ -112,21 +129,24 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
         .find(|f| !f.is_srgb())
         .unwrap_or(caps.formats[0]);
 
-    surface.configure(
-        &device,
-        &wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: W,
-            height: H,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        },
-    );
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width,
+        height,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: caps.alpha_modes[0],
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    };
+    surface.configure(&device, &config);
 
     let gpu = GpuContext::from_parts(instance, adapter, device, queue);
-    let engine = Engine::new(gpu, format, Extent2::new(W, H));
-    Renderer { surface, engine }
+    let engine = Engine::new(gpu, format, Extent2::new(width, height));
+    Renderer {
+        canvas,
+        surface,
+        config,
+        engine,
+    }
 }

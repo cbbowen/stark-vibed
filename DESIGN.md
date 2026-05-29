@@ -702,11 +702,9 @@ above; they layer on top of it.
      chrome, pointer→`InputCommand`, and `ObservableState` on a signal (§11).
      Verification shifts to manual/browser rather than golden tests.
    - **6c. Navigation:** pan (middle-drag) and cursor-anchored zoom (wheel) via
-     `ViewTransform::zoom_about` / `Pan`. Implemented before LOD, since
-     navigation is what motivates it.
-   - **6d. LOD:** mipmapped tiles for responsive zoomed-out panning. A pure
-     optimization, deferred until navigation proves it necessary — *not yet
-     warranted*.
+     `ViewTransform::zoom_about` / `Pan`. Navigation feels smooth at current
+     scales, so **LOD is descoped to a nice-to-have** (see below) rather than a
+     build step.
    Then iterate on pigment fidelity.
 7. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
@@ -718,3 +716,14 @@ which is exactly the leverage the frontend/backend split was meant to provide.
 Note that the `Timeline` trait (step 7) should be introduced as the seam *before*
 its second implementation exists — cheap now, expensive to retrofit — which is
 why §5 already routes the engine through it.
+
+### Nice-to-have (not scheduled)
+
+- **Tile LOD / mipmaps** — sample minified tiles when zoomed far out, for
+  responsiveness and to avoid aliasing on huge canvases. Pan/zoom feel smooth
+  without it at current scales, so it stays unscheduled until profiling on a
+  large document says otherwise.
+- **HiDPI** — the web canvas currently uses a 1× drawing buffer (CSS pixels);
+  multiply by `devicePixelRatio` for crisp rendering on retina displays.
+- **Pen pressure/tilt** — `onpointermove`'s `pressure()` into `InputSample`
+  (the brush already varies with it).

@@ -301,6 +301,12 @@ impl Engine {
         self.session.view
     }
 
+    /// Resize the viewport (e.g. when the window/canvas changes size). The
+    /// compositor's offscreen targets follow on the next render (DESIGN.md §6.4).
+    pub fn resize(&mut self, viewport: Extent2) {
+        self.session.view.viewport = viewport;
+    }
+
     /// Tune the media/lighting parameters of the painterly pass (DESIGN.md §6.3).
     pub fn set_media_params(&mut self, params: crate::gpu::MediaParams) {
         self.compositor.set_media(params);

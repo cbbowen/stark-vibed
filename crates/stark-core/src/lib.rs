@@ -24,8 +24,9 @@
 //!   engine via [`InputCommand`]/[`ObservableState`] and paints through a
 //!   **WebGPU surface** bound to the canvas (no readback). Backend runs in WASM.
 //! - [x] Step 6c: navigation — pan (middle-drag) and cursor-anchored zoom
-//!   (wheel) via [`ViewTransform::zoom_about`].
-//! - [ ] Step 6d: LOD (deferred, not yet needed) · Step 7: collaboration.
+//!   (wheel) via [`ViewTransform::zoom_about`]; window-fit canvas + resize.
+//!   (Tile LOD descoped to a future nice-to-have — DESIGN §13.)
+//! - [ ] Step 7: collaboration.
 
 pub mod color;
 pub mod command;
