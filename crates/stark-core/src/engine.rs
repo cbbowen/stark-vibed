@@ -20,7 +20,7 @@ use crate::Result;
 const ROOT_LAYER: LayerId = LayerId(0);
 
 /// A layer's presentation properties, for the UI's layer panel (DESIGN.md §11).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerInfo {
     pub id: LayerId,
     pub blend: crate::document::BlendMode,
@@ -293,6 +293,11 @@ impl Engine {
     /// The GPU context this engine renders with (for surface/readback setup).
     pub fn gpu(&self) -> &GpuContext {
         &self.gpu
+    }
+
+    /// The current pan/zoom view (for mapping pointer input to canvas space).
+    pub fn view(&self) -> ViewTransform {
+        self.session.view
     }
 
     /// Tune the media/lighting parameters of the painterly pass (DESIGN.md §6.3).

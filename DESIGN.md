@@ -581,20 +581,27 @@ scheme, or the command/action split.
 
 ## 11. Frontend (Dioxus)
 
-`stark-ui` renders DOM chrome (tool palette, brush sliders, layer panel, history
-scrubber) with Dioxus 0.7, while the painting surface is a dedicated
-`wgpu::Surface`-backed canvas the engine draws into:
+`stark-ui` is a Dioxus 0.7 **web** app: the backend runs in WASM and the painting
+surface is a dedicated `wgpu::Surface` bound to the page `<canvas>` via **WebGPU**,
+which the engine draws into directly. DOM chrome (color palette, brush size,
+undo/redo, layer panel) surrounds it.
 
-- UI components dispatch `InputCommand`s into the engine's channel; pointer
-  events on the canvas become `StartStroke`/`StrokeTo`/`EndStroke` with
-  pressure/tilt from the Pointer Events API.
-- Components subscribe to `ObservableState` (via a Dioxus signal wrapping the
-  `watch::Receiver`) so toggles like undo-availability stay reactive — no pixel
-  data crosses this boundary.
-- The render loop (rAF on web / redraw on desktop) acquires the surface frame
-  and calls `engine.render(frame_view, view_transform)`.
+- UI components dispatch `InputCommand`s; pointer events on the canvas become
+  `StartStroke`/`StrokeTo`/`EndStroke`, with element coordinates mapped to canvas
+  space via `ViewTransform::screen_to_canvas`.
+- Components render from `ObservableState` (held in a Dioxus signal) so toggles
+  like undo-availability stay reactive — **no pixel data crosses this boundary.**
+- The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each
+  command the engine renders **straight into the surface texture**
+  (`get_current_texture` → `engine.render(view)` → `present`) — no readback, no
+  encode. The frontend supplies the GPU handles via `GpuContext::from_parts`
+  (GOALS §Inputs); core needs no change to compile to wasm.
 
-Because the engine is frontend-agnostic, this layer stays thin and replaceable.
+Because the engine is frontend-agnostic, this layer stays thin. (An earlier
+interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame
+back to a PNG data URL — correct but laggy; the WebGPU surface replaced it,
+touching only `stark-ui`.) Run with `dx serve --web -p stark-ui` in a WebGPU
+browser. A native winit/desktop surface frontend could reuse the same engine.
 
 ## 12. Collaboration (peer-to-peer, future)
 

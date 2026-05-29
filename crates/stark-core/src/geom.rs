@@ -78,4 +78,40 @@ impl ViewTransform {
         let translate = -self.center * scale;
         (scale, translate)
     }
+
+    /// Inverse of the view: map a screen-pixel position (origin top-left) to a
+    /// canvas-space point. Used to turn pointer input into stroke samples.
+    pub fn screen_to_canvas(self, screen: Vec2) -> Vec2 {
+        let half = Vec2::new(self.viewport.width as f32, self.viewport.height as f32) * 0.5;
+        (screen - half) / self.zoom + self.center
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_center_maps_to_view_center() {
+        let view = ViewTransform {
+            center: Vec2::new(123.0, -45.0),
+            zoom: 2.0,
+            viewport: Extent2::new(800, 600),
+        };
+        let center_px = Vec2::new(400.0, 300.0);
+        let mapped = view.screen_to_canvas(center_px);
+        assert!((mapped - view.center).length() < 1e-3, "got {mapped:?}");
+    }
+
+    #[test]
+    fn zoom_scales_screen_to_canvas_distance() {
+        let view = ViewTransform {
+            center: Vec2::ZERO,
+            zoom: 2.0,
+            viewport: Extent2::new(800, 600),
+        };
+        // 100 screen px right of center is 50 canvas px at 2x zoom.
+        let p = view.screen_to_canvas(Vec2::new(500.0, 300.0));
+        assert!((p - Vec2::new(50.0, 0.0)).length() < 1e-3, "got {p:?}");
+    }
 }

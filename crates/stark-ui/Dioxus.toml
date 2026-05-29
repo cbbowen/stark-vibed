@@ -1,0 +1,8 @@
+[application]
+name = "stark"
+
+[web.app]
+title = "Stark"
+
+[web.watcher]
+reload_html = true

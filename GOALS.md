@@ -26,6 +26,8 @@ Frontend-agnostic asynchronous backend that accepts input commands and exposes t
 Uses golden image tests to verify all functionality works correctly and consistently. This is enabled by separating the backend from the frontend.
 
 #### Notable Dependencies
+Because the backend needs to be able to compile to WASM (in addition to native), all dependencies must be WASM-compatible.
+
 * `wgpu` (29.0)
 	* Source: https://crates.io/crates/wgpu
 	* Documentation: https://docs.rs/wgpu/29.0.3/wgpu/

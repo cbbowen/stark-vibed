@@ -20,7 +20,10 @@
 //! - [x] Step 6a: layers — active-layer selection (session), per-layer
 //!   opacity/visibility/blend + reorder (historized actions), and opacity-aware
 //!   compositing. [`ObservableState`] exposes the layer stack.
-//! - [ ] Step 6b: Dioxus UI · 6c: LOD · Step 7: collaboration.
+//! - [x] Step 6b: Dioxus UI — the `stark-ui` Dioxus **web** app drives the
+//!   engine via [`InputCommand`]/[`ObservableState`] and paints through a
+//!   **WebGPU surface** bound to the canvas (no readback). Backend runs in WASM.
+//! - [ ] Step 6c: LOD · Step 7: collaboration.
 
 pub mod color;
 pub mod command;
