@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:cbbowen.github.io)",
-      "WebFetch(domain:wesl-lang.dev)"
+      "WebFetch(domain:wesl-lang.dev)",
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo search *)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(cargo build *)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)"
     ]
   }
 }

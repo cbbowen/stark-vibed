@@ -1,0 +1,17 @@
+[package]
+name = "stark-core"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Frontend-agnostic GPU painting engine for Stark (DESIGN.md)."
+
+[dependencies]
+wgpu = { workspace = true }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+rpds = { workspace = true }
+thiserror = { workspace = true }
+stark-shaders = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }

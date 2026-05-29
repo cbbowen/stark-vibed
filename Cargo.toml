@@ -1,0 +1,31 @@
+# Stark workspace. See DESIGN.md for the architecture this layout implements.
+[workspace]
+resolver = "2"
+members = [
+    "crates/stark-core",
+    "crates/stark-shaders",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+# Single source of truth for shared dependency versions (GOALS §Notable Dependencies).
+[workspace.dependencies]
+wgpu = "29.0.3"
+glam = "0.33"
+bytemuck = { version = "1", features = ["derive"] }
+rpds = "1.2"
+thiserror = "2"
+pollster = "0.4"
+wesl = "0.4"
+
+# stark-shaders is consumed by stark-core.
+stark-shaders = { path = "crates/stark-shaders" }
+
+[profile.dev]
+# Shaders and GPU work are unbearably slow without optimized dependencies.
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
