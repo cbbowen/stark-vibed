@@ -13,6 +13,21 @@ pub enum EngineError {
 
     #[error("failed to request GPU adapter: {0}")]
     RequestAdapter(#[from] wgpu::RequestAdapterError),
+
+    #[error("serialization failed: {0}")]
+    Serialize(String),
+
+    #[error("deserialization failed: {0}")]
+    Deserialize(String),
+
+    #[error("not a Stark document (bad magic)")]
+    BadMagic,
+
+    #[error("unsupported document version {0}")]
+    UnsupportedVersion(u32),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Convenience alias used throughout the engine.

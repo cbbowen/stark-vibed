@@ -5,6 +5,8 @@
 //! the same records work unchanged in a future replicated, multi-peer log
 //! (DESIGN.md §4, §12) — we pay that tiny cost from the first commit.
 
+use serde::{Deserialize, Serialize};
+
 use super::layer::{BlendMode, Layer, LayerId};
 use super::state::DocState;
 use crate::command::InputSample;
@@ -13,11 +15,11 @@ use crate::gpu::tile::TilePool;
 
 /// Identifies the author of an action: one local user, or a peer (DESIGN.md §4).
 /// Maps to an iroh `NodeId` when collaborating; a fixed value when solo.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActorId(pub u64);
 
 /// Globally-unique action id; also the total order key `(lamport, actor)`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActionId {
     pub lamport: u64,
     pub actor: ActorId,
@@ -25,14 +27,14 @@ pub struct ActionId {
 
 /// The painting tool that produced a stroke. A single brush for now; tools
 /// become an open registry later (DESIGN.md §10).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tool {
     Brush,
 }
 
 /// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
 /// the Oklab working space at stamp time (DESIGN.md §6.5).
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushParams {
     /// Straight (un-premultiplied) sRGB RGBA, components in [0, 1].
     pub color: [f32; 4],
@@ -69,7 +71,7 @@ impl Default for BrushParams {
 }
 
 /// A fully-recorded stroke: enough to replay it bit-for-bit (DESIGN.md §4).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: Tool,
@@ -82,7 +84,7 @@ pub struct StrokeRecord {
 }
 
 /// What an action does to the document.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ActionKind {
     CommitStroke(StrokeRecord),
     AddLayer { id: LayerId, above: Option<LayerId> },
@@ -93,7 +95,7 @@ pub enum ActionKind {
 }
 
 /// A committed document mutation with its identity.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Action {
     pub id: ActionId,
     pub kind: ActionKind,

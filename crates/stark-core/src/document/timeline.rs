@@ -26,6 +26,10 @@ pub trait Timeline {
 
     fn can_undo(&self) -> bool;
     fn can_redo(&self) -> bool;
+
+    /// All committed actions, oldest to newest — the basis of the save format
+    /// (DESIGN.md §8).
+    fn clone_actions(&self) -> Vec<Action>;
 }
 
 /// Single-user timeline: a linear undo/redo stack over `history::History`.
@@ -43,8 +47,6 @@ impl LinearTimeline {
         }
     }
 
-    /// All committed actions, oldest to newest (the basis of the save format,
-    /// DESIGN.md §8).
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
         self.history.actions()
     }
@@ -87,5 +89,9 @@ impl Timeline for LinearTimeline {
 
     fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    fn clone_actions(&self) -> Vec<Action> {
+        self.actions().cloned().collect()
     }
 }

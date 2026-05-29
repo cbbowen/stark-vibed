@@ -13,6 +13,7 @@ use crate::document::{
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::{Compositor, GpuContext, StrokeRenderer, TileHandle, TilePool};
 use crate::image::RgbaImage;
+use crate::io::DocumentFile;
 use crate::Result;
 
 /// The starting layer present in every new document.
@@ -173,6 +174,49 @@ impl Engine {
         RgbaImage::new(size.width, size.height, pixels)
     }
 
+    /// Snapshot the document as a saveable [`DocumentFile`] (DESIGN.md §8).
+    pub fn document_file(&self) -> DocumentFile {
+        DocumentFile::new(self.timeline.clone_actions())
+    }
+
+    /// Serialize the document to the compact on-disk container (DESIGN.md §8).
+    pub fn save_bytes(&self) -> Result<Vec<u8>> {
+        self.document_file().to_bytes()
+    }
+
+    /// Replace the document by replaying a loaded file's action log. The full
+    /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
+    pub fn load_document(&mut self, file: &DocumentFile) {
+        self.reset_document();
+        for action in &file.actions {
+            self.replay_one(action.clone());
+        }
+        self.resync_counters(&file.actions);
+    }
+
+    /// Decode and load a container produced by [`Engine::save_bytes`].
+    pub fn load_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let file = DocumentFile::from_bytes(bytes)?;
+        self.load_document(&file);
+        Ok(())
+    }
+
+    /// Replay a document, invoking `on_frame` with the rendered image after each
+    /// action — a timelapse (DESIGN.md §8). Ends with the document fully loaded.
+    pub fn replay_timelapse(
+        &mut self,
+        file: &DocumentFile,
+        background: wgpu::Color,
+        mut on_frame: impl FnMut(RgbaImage),
+    ) {
+        self.reset_document();
+        for action in &file.actions {
+            self.replay_one(action.clone());
+            on_frame(self.render_to_image(background));
+        }
+        self.resync_counters(&file.actions);
+    }
+
     /// A snapshot of UI-facing state (DESIGN.md §7).
     pub fn observe(&self) -> ObservableState {
         ObservableState {
@@ -208,6 +252,37 @@ impl Engine {
         };
         let mut ctx = self.apply_ctx();
         self.timeline.push(action, &mut ctx);
+    }
+
+    /// Reset to an empty document (one root layer) before a load/replay.
+    fn reset_document(&mut self) {
+        self.timeline = Box::new(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
+        self.preview = None;
+        self.clock = 0;
+        self.next_layer = 1;
+        self.session.cancel_stroke();
+        self.session.active_layer = ROOT_LAYER;
+    }
+
+    /// Commit one already-built action onto the timeline (replays its GPU work).
+    fn replay_one(&mut self, action: Action) {
+        let mut ctx = self.apply_ctx();
+        self.timeline.push(action, &mut ctx);
+    }
+
+    /// After loading, advance the id counters past everything in the log so new
+    /// edits get fresh, monotonic ids.
+    fn resync_counters(&mut self, actions: &[Action]) {
+        let mut max_lamport = None;
+        let mut max_layer = 0u64;
+        for a in actions {
+            max_lamport = Some(max_lamport.map_or(a.id.lamport, |m: u64| m.max(a.id.lamport)));
+            if let ActionKind::AddLayer { id, .. } = &a.kind {
+                max_layer = max_layer.max(id.0);
+            }
+        }
+        self.clock = max_lamport.map_or(0, |m| m + 1);
+        self.next_layer = max_layer + 1;
     }
 
     fn next_action_id(&mut self) -> ActionId {

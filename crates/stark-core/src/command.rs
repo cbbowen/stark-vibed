@@ -6,11 +6,13 @@
 //! The `Session` (DESIGN.md §3) interprets commands and decides what, if
 //! anything, to commit.
 
+use serde::{Deserialize, Serialize};
+
 use crate::document::{BlendMode, BrushParams, LayerId, Tool};
 use crate::geom::Vec2;
 
 /// One pen/mouse sample in canvas space.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InputSample {
     pub pos: Vec2,
     pub pressure: f32,

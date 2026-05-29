@@ -14,7 +14,7 @@ rust-version = "1.85"
 # Single source of truth for shared dependency versions (GOALS §Notable Dependencies).
 [workspace.dependencies]
 wgpu = "29.0.3"
-glam = "0.33"
+glam = { version = "0.33", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
 rpds = "1.2"
 thiserror = "2"
@@ -22,6 +22,10 @@ pollster = "0.4"
 wesl = "0.4"
 history = { git = "https://github.com/cbbowen/history" }
 png = "0.18"
+serde = { version = "1", features = ["derive"] }
+# Compact binary action log (no field names) + pure-Rust deflate (wasm-friendly).
+postcard = { version = "1", features = ["alloc"] }
+flate2 = "1"
 
 # stark-shaders is consumed by stark-core.
 stark-shaders = { path = "crates/stark-shaders" }

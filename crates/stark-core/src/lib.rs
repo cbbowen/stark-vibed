@@ -14,7 +14,10 @@
 //!   carry color + `(height, wet)` aux, the brush deposits all channels with a
 //!   load reservoir, and a [`gpu::Compositor`] composites then lights the
 //!   impasto (normal-from-height + wet gloss) into display sRGB.
-//! - [ ] Step 5+: save/load + timelapse, layers + UI, collaboration.
+//! - [x] Step 5: save/load + timelapse — the [`io::DocumentFile`] action-log
+//!   format (postcard + deflate), [`Engine::save_bytes`]/[`Engine::load_bytes`]
+//!   with undo-after-load, and [`Engine::replay_timelapse`].
+//! - [ ] Step 6+: layers + Dioxus UI, then collaboration.
 
 pub mod color;
 pub mod command;
@@ -24,6 +27,7 @@ pub mod error;
 pub mod geom;
 pub mod gpu;
 pub mod image;
+pub mod io;
 pub mod session;
 
 pub use command::{InputCommand, InputSample};
@@ -35,3 +39,4 @@ pub use gpu::{
     COLOR_FORMAT,
 };
 pub use image::RgbaImage;
+pub use io::{BuildId, CanvasMeta, ColorSpace, DocumentFile};

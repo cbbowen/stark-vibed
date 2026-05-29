@@ -3,16 +3,17 @@
 //! step 4; for now layers stack with `Normal` over.
 
 use rpds::HashTrieMap;
+use serde::{Deserialize, Serialize};
 
 use crate::geom::TileCoord;
 use crate::gpu::tile::TileHandle;
 
 /// Stable identifier for a layer within a document.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LayerId(pub u64);
 
 /// How a layer combines with the layers below it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlendMode {
     Normal,
 }
