@@ -6,52 +6,60 @@
 //! handle to a tile drops, its textures return to the [`TilePool`] free list —
 //! so history retention drives GPU memory reclamation with no manual GC.
 //!
-//! Step 1 implements only the color channel; height/wet and the data-driven
-//! `ChannelSet` (DESIGN.md §6.1) are additive and slot in here later.
+//! Channels (DESIGN.md §6.1):
+//! - `color`: `Rgba16Float`, premultiplied **Oklab** (`L·c, a·c, b·c, c`).
+//! - `aux`: `Rg16Float`, `(height, wet)` — impasto thickness and wetness.
 
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::geom::TILE_SIZE;
 use crate::gpu::context::GpuContext;
 
-/// Texture format of the color channel. Linear (not sRGB) so blending is done
-/// in a linear/perceptual space; in step 4 this carries Oklab (DESIGN.md §6.5).
+/// Color channel format: linear/perceptual, holds premultiplied Oklab (§6.5).
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Auxiliary channel format: `R` = height (impasto), `G` = wetness.
+pub const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
-/// Usages every color tile needs: sampled when presenting, cleared/painted as a
-/// render target, copied from for copy-on-write stroke commits (DESIGN.md §5.2)
-/// and readback in tests (DESIGN.md §9), and copied to as a CoW destination.
-const COLOR_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::RENDER_ATTACHMENT)
     .union(wgpu::TextureUsages::COPY_SRC)
     .union(wgpu::TextureUsages::COPY_DST);
 
 /// One tile's GPU-resident channels.
 pub struct GpuTile {
-    /// Color channel; `Option` only so [`Drop`] can move it back to the pool.
+    // `Option` only so [`Drop`] can move the textures back to the pool.
     color: Option<wgpu::Texture>,
+    aux: Option<wgpu::Texture>,
     color_view: wgpu::TextureView,
-    /// Pool to recycle into; `Weak` so a dropped pool doesn't keep tiles alive.
+    aux_view: wgpu::TextureView,
     pool: Weak<Mutex<PoolInner>>,
 }
 
 impl GpuTile {
-    /// View of the color channel, for sampling or as a render attachment.
+    pub fn color(&self) -> &wgpu::Texture {
+        self.color.as_ref().expect("color present until drop")
+    }
+    pub fn aux(&self) -> &wgpu::Texture {
+        self.aux.as_ref().expect("aux present until drop")
+    }
     pub fn color_view(&self) -> &wgpu::TextureView {
         &self.color_view
     }
-
-    /// The color channel texture.
-    pub fn color(&self) -> &wgpu::Texture {
-        self.color.as_ref().expect("color present until drop")
+    pub fn aux_view(&self) -> &wgpu::TextureView {
+        &self.aux_view
     }
 }
 
 impl Drop for GpuTile {
     fn drop(&mut self) {
-        if let (Some(texture), Some(pool)) = (self.color.take(), self.pool.upgrade()) {
+        if let Some(pool) = self.pool.upgrade() {
             if let Ok(mut inner) = pool.lock() {
-                inner.free_color.push(texture);
+                if let Some(t) = self.color.take() {
+                    inner.free_color.push(t);
+                }
+                if let Some(t) = self.aux.take() {
+                    inner.free_aux.push(t);
+                }
             }
         }
     }
@@ -62,17 +70,23 @@ impl Drop for GpuTile {
 pub struct TileHandle(Arc<GpuTile>);
 
 impl TileHandle {
+    pub fn color(&self) -> &wgpu::Texture {
+        self.0.color()
+    }
+    pub fn aux(&self) -> &wgpu::Texture {
+        self.0.aux()
+    }
     pub fn color_view(&self) -> &wgpu::TextureView {
         self.0.color_view()
     }
-
-    pub fn color(&self) -> &wgpu::Texture {
-        self.0.color()
+    pub fn aux_view(&self) -> &wgpu::TextureView {
+        self.0.aux_view()
     }
 }
 
 struct PoolInner {
     free_color: Vec<wgpu::Texture>,
+    free_aux: Vec<wgpu::Texture>,
 }
 
 /// Recycling allocator for tile textures (DESIGN.md §6.1).
@@ -88,31 +102,34 @@ impl TilePool {
             ctx,
             inner: Arc::new(Mutex::new(PoolInner {
                 free_color: Vec::new(),
+                free_aux: Vec::new(),
             })),
         }
     }
 
-    /// Acquire a tile, reusing a recycled texture when available. The contents
-    /// are undefined until painted or cleared (see [`TilePool::acquire_filled`]).
+    /// Acquire a tile, reusing recycled textures when available. Contents are
+    /// undefined until painted or cleared.
     pub fn acquire(&self) -> TileHandle {
-        let color = self
-            .inner
-            .lock()
-            .expect("tile pool poisoned")
-            .free_color
-            .pop()
-            .unwrap_or_else(|| self.create_color_texture());
+        let (color, aux) = {
+            let mut inner = self.inner.lock().expect("tile pool poisoned");
+            (inner.free_color.pop(), inner.free_aux.pop())
+        };
+        let color = color.unwrap_or_else(|| self.create_texture(COLOR_FORMAT));
+        let aux = aux.unwrap_or_else(|| self.create_texture(AUX_FORMAT));
 
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let aux_view = aux.create_view(&wgpu::TextureViewDescriptor::default());
         TileHandle(Arc::new(GpuTile {
             color: Some(color),
+            aux: Some(aux),
             color_view,
+            aux_view,
             pool: Arc::downgrade(&self.inner),
         }))
     }
 
-    /// Acquire a tile cleared to a solid linear-RGBA color. Used by the step-1
-    /// skeleton to prove the present path (DESIGN.md §12 build order, step 1).
+    /// Acquire a tile with its color channel cleared to a solid color (used by
+    /// the low-level skeleton test, which does not touch the aux channel).
     pub fn acquire_filled(&self, color: wgpu::Color) -> TileHandle {
         let tile = self.acquire();
         let mut encoder = self
@@ -141,14 +158,14 @@ impl TilePool {
         tile
     }
 
-    /// Number of recycled textures currently available (for tests).
+    /// Number of recycled color textures available (for tests).
     pub fn free_count(&self) -> usize {
         self.inner.lock().expect("tile pool poisoned").free_color.len()
     }
 
-    fn create_color_texture(&self) -> wgpu::Texture {
+    fn create_texture(&self, format: wgpu::TextureFormat) -> wgpu::Texture {
         self.ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark tile color"),
+            label: Some("stark tile channel"),
             size: wgpu::Extent3d {
                 width: TILE_SIZE,
                 height: TILE_SIZE,
@@ -157,8 +174,8 @@ impl TilePool {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: COLOR_FORMAT,
-            usage: COLOR_USAGE,
+            format,
+            usage: CHANNEL_USAGE,
             view_formats: &[],
         })
     }

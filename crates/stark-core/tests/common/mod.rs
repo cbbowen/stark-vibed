@@ -33,9 +33,7 @@ pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
     BrushParams {
         color,
         radius,
-        spacing: 0.25,
-        hardness: 0.5,
-        flow: 1.0,
+        ..BrushParams::default()
     }
 }
 

@@ -14,3 +14,13 @@ pub fn present() -> &'static str {
 pub fn stamp() -> &'static str {
     include_wesl!("stamp")
 }
+
+/// WGSL source for the tile compositing pass (DESIGN.md §6.3, pass A).
+pub fn composite() -> &'static str {
+    include_wesl!("composite")
+}
+
+/// WGSL source for the media/lighting + present pass (DESIGN.md §6.3, pass B).
+pub fn media() -> &'static str {
+    include_wesl!("media")
+}

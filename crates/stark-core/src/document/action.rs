@@ -30,11 +30,11 @@ pub enum Tool {
     Brush,
 }
 
-/// Brush configuration. Color is linear RGBA for the MVP and becomes Oklab in
-/// step 4 (DESIGN.md §6.5).
+/// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
+/// the Oklab working space at stamp time (DESIGN.md §6.5).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BrushParams {
-    /// Straight (un-premultiplied) RGBA, components in [0, 1].
+    /// Straight (un-premultiplied) sRGB RGBA, components in [0, 1].
     pub color: [f32; 4],
     /// Stamp radius in canvas pixels at full pressure.
     pub radius: f32,
@@ -44,6 +44,13 @@ pub struct BrushParams {
     pub hardness: f32,
     /// Per-stamp coverage in [0, 1].
     pub flow: f32,
+    /// Impasto: paint thickness deposited per unit coverage (height channel).
+    pub height: f32,
+    /// Wetness deposited per unit coverage (wet channel) — drives gloss (§6.3).
+    pub wetness: f32,
+    /// Reservoir depletion per canvas pixel travelled: the stroke thins as paint
+    /// runs out (DESIGN.md §6.2). 0 = inexhaustible.
+    pub drain: f32,
 }
 
 impl Default for BrushParams {
@@ -54,6 +61,9 @@ impl Default for BrushParams {
             spacing: 0.25,
             hardness: 0.5,
             flow: 1.0,
+            height: 0.6,
+            wetness: 0.7,
+            drain: 0.0015,
         }
     }
 }

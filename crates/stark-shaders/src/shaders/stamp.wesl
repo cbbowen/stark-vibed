@@ -1,12 +1,11 @@
-// Brush stamp rasterization (DESIGN.md §6.2).
+// Brush stamp rasterization (DESIGN.md §6.2), multi-channel.
 //
-// Renders one instanced quad per brush stamp into a single tile's color
-// texture. Each stamp is a soft radial dab; stamps blend over one another with
-// premultiplied-alpha "over", so a dense run of stamps builds a continuous
-// stroke. Output is premultiplied (matches the tile color channel and the
-// present pass).
+// One instanced quad per brush stamp, writing two render targets of a tile:
+//   target 0: color  (Rgba16Float) — premultiplied Oklab, blended "over"
+//   target 1: aux    (Rg16Float)   — (height, wet), blended additively
 //
-// Color is linear RGBA for the MVP; it becomes Oklab in step 4 (DESIGN.md §6.5).
+// Stamps thus build a continuous stroke in color while piling up impasto height
+// and wetness. Color arrives already in Oklab from the CPU (DESIGN.md §6.5).
 
 struct TileXform {
     // params.xy = this tile's origin in canvas pixels.
@@ -18,44 +17,48 @@ struct TileXform {
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
-    @location(0) quad: vec2<f32>,   // local stamp coord in [-1, 1]
-    @location(1) color: vec4<f32>,  // straight (un-premultiplied) RGBA
-    @location(2) hf: vec2<f32>,     // hardness, flow
+    @location(0) quad: vec2<f32>,    // local stamp coord in [-1, 1]
+    @location(1) oklab: vec3<f32>,   // pigment color (Oklab)
+    @location(2) deposit: vec4<f32>, // hardness, flow_eff, height, wet
+}
+
+struct FsOut {
+    @location(0) color: vec4<f32>,
+    @location(1) aux: vec4<f32>,
 }
 
 @vertex
 fn vs_main(
     @builtin(vertex_index) vi: u32,
     @location(0) center: vec2<f32>,
-    @location(1) shape: vec4<f32>,  // radius, hardness, flow, (unused)
-    @location(2) color: vec4<f32>,
+    @location(1) shape: vec4<f32>,  // radius, hardness, flow_eff, height
+    @location(2) col: vec4<f32>,    // okL, oka, okb, wet
 ) -> VsOut {
-    // Triangle-strip quad corners: (-1,-1) (1,-1) (-1,1) (1,1).
     let corner = vec2<f32>(
         f32(vi & 1u) * 2.0 - 1.0,
         f32((vi >> 1u) & 1u) * 2.0 - 1.0,
     );
-    let radius = shape.x;
-    let canvas_pos = center + corner * radius;
-
+    let canvas_pos = center + corner * shape.x;
     let s = xf.params.z;
     let ndc = (canvas_pos - xf.params.xy) * vec2<f32>(s, -s) + vec2<f32>(-1.0, 1.0);
 
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.quad = corner;
-    out.color = color;
-    out.hf = shape.yz;
+    out.oklab = col.xyz;
+    out.deposit = vec4<f32>(shape.y, shape.z, shape.w, col.w);
     return out;
 }
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: VsOut) -> FsOut {
     let d = length(in.quad);
-    // Solid out to `hardness`, fading to zero at the stamp edge (d = 1).
-    let hardness = min(in.hf.x, 0.99);
-    let flow = in.hf.y;
-    let coverage = flow * (1.0 - smoothstep(hardness, 1.0, d)) * in.color.a;
-    // Premultiplied output.
-    return vec4<f32>(in.color.rgb * coverage, coverage);
+    let hardness = min(in.deposit.x, 0.99);
+    let flow = in.deposit.y;
+    let coverage = flow * (1.0 - smoothstep(hardness, 1.0, d));
+
+    var out: FsOut;
+    out.color = vec4<f32>(in.oklab * coverage, coverage);
+    out.aux = vec4<f32>(in.deposit.z * coverage, in.deposit.w * coverage, 0.0, 0.0);
+    return out;
 }

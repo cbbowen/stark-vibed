@@ -4,13 +4,18 @@
 //! [`StrokeRenderer::render`] takes a layer's current tile map and a recorded
 //! stroke, and returns a *new* tile map in which only the touched tiles are
 //! replaced by freshly painted tiles — every untouched tile is shared with the
-//! input. This is the same path used for live painting, history replay, and
-//! golden tests, so the three can never diverge (DESIGN.md §1).
+//! input. The same path serves live painting, history replay, and golden tests,
+//! so they can never diverge (DESIGN.md §1).
 //!
-//! The renderer holds only immutable GPU objects (pipeline, layouts, sampler)
-//! plus `Arc`-backed handles, so it is cheap to `Clone` — which lets it live
-//! inside the `Action::Context` (DESIGN.md §5). Per-stroke buffers are
-//! allocated transiently; commits are far rarer than frames.
+//! Each stamp writes all tile channels in a single multiple-render-target draw:
+//! premultiplied Oklab color (blended "over") and `(height, wet)` aux (blended
+//! additively). A CPU-side **load reservoir** depletes along the path so paint
+//! thins as it runs out. (True bidirectional canvas pickup — the brush lifting
+//! color it passes over — needs per-stamp canvas sampling and is a later
+//! refinement; DESIGN.md §6.2.)
+//!
+//! The renderer holds only immutable GPU objects plus `Arc`-backed handles, so
+//! it is cheap to `Clone` and can live inside the `Action::Context` (§5).
 
 use std::collections::BTreeSet;
 
@@ -18,11 +23,13 @@ use bytemuck::{Pod, Zeroable};
 use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
+use crate::color;
+use crate::command::InputSample;
 use crate::document::action::lerp_sample;
 use crate::document::StrokeRecord;
 use crate::geom::{TileCoord, Vec2, TILE_SIZE};
 use crate::gpu::context::GpuContext;
-use crate::gpu::tile::{TileHandle, TilePool};
+use crate::gpu::tile::{TileHandle, TilePool, AUX_FORMAT, COLOR_FORMAT};
 
 /// One brush dab placed along the stroke path.
 #[derive(Copy, Clone)]
@@ -31,16 +38,18 @@ struct Stamp {
     radius: f32,
     hardness: f32,
     flow: f32,
-    color: [f32; 4],
+    height: f32,
+    wet: f32,
+    oklab: [f32; 3],
 }
 
-/// Per-stamp instance data for the stamp shader (`stamp.wesl`).
+/// Per-stamp instance data for `stamp.wesl`.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct StampInstance {
     center: [f32; 2],
-    shape: [f32; 4], // radius, hardness, flow, unused
-    color: [f32; 4],
+    shape: [f32; 4], // radius, hardness, flow, height
+    color: [f32; 4], // okL, oka, okb, wet
 }
 
 /// Per-tile uniform for the stamp shader: tile origin + canvas→NDC scale.
@@ -86,6 +95,21 @@ impl StrokeRenderer {
             immediate_size: 0,
         });
 
+        // Premultiplied "over" for color; additive for the (height, wet) aux.
+        let over = wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
+        let add = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("stark stamp pipeline"),
             layout: Some(&layout),
@@ -109,12 +133,18 @@ impl StrokeRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: crate::gpu::tile::COLOR_FORMAT,
-                    // Premultiplied "over": stamps accumulate into the tile.
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        blend: Some(over),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: AUX_FORMAT,
+                        blend: Some(add),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
             }),
             multiview_mask: None,
             cache: None,
@@ -147,8 +177,8 @@ impl StrokeRenderer {
             .iter()
             .map(|s| StampInstance {
                 center: s.center.to_array(),
-                shape: [s.radius, s.hardness, s.flow, 0.0],
-                color: s.color,
+                shape: [s.radius, s.hardness, s.flow, s.height],
+                color: [s.oklab[0], s.oklab[1], s.oklab[2], s.wet],
             })
             .collect();
         let instance_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -166,21 +196,30 @@ impl StrokeRenderer {
             let dst = pool.acquire();
 
             // Copy-on-write: start from the existing tile if there is one,
-            // otherwise from transparent.
-            let load = match base.get(&coord) {
+            // otherwise from a cleared one. Both channels are handled.
+            let (color_load, aux_load) = match base.get(&coord) {
                 Some(src) => {
+                    let extent = wgpu::Extent3d {
+                        width: TILE_SIZE,
+                        height: TILE_SIZE,
+                        depth_or_array_layers: 1,
+                    };
                     encoder.copy_texture_to_texture(
                         src.color().as_image_copy(),
                         dst.color().as_image_copy(),
-                        wgpu::Extent3d {
-                            width: TILE_SIZE,
-                            height: TILE_SIZE,
-                            depth_or_array_layers: 1,
-                        },
+                        extent,
                     );
-                    wgpu::LoadOp::Load
+                    encoder.copy_texture_to_texture(
+                        src.aux().as_image_copy(),
+                        dst.aux().as_image_copy(),
+                        extent,
+                    );
+                    (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
                 }
-                None => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                None => (
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                ),
             };
 
             let origin = coord.origin();
@@ -204,15 +243,26 @@ impl StrokeRenderer {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark stamp pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: dst.color_view(),
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: dst.color_view(),
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: color_load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: dst.aux_view(),
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: aux_load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                    ],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -234,41 +284,48 @@ impl StrokeRenderer {
     }
 }
 
-/// Place stamps along the resampled path at even arc-length spacing (DESIGN.md §6.2).
+/// Place stamps along the resampled path at even arc-length spacing, depleting
+/// the load reservoir with distance travelled (DESIGN.md §6.2).
 fn generate_stamps(rec: &StrokeRecord) -> Vec<Stamp> {
     let b = &rec.brush;
+    let oklab = color::srgb_to_oklab(b.color);
+    let oklab = [oklab[0], oklab[1], oklab[2]];
     let spacing = (b.radius * b.spacing).max(0.5);
+
     let mut out = Vec::new();
     let Some(first) = rec.path.first() else {
         return out;
     };
 
-    let mut push = |sample: &crate::command::InputSample| {
-        out.push(Stamp {
-            center: sample.pos,
-            radius: (b.radius * sample.pressure).max(0.5),
+    let make = |s: &InputSample, dist: f32| -> Stamp {
+        let load = (1.0 - b.drain * dist).max(0.0);
+        Stamp {
+            center: s.pos,
+            radius: (b.radius * s.pressure).max(0.5),
             hardness: b.hardness,
-            flow: b.flow,
-            color: b.color,
-        });
+            flow: b.flow * load,
+            height: b.height * load,
+            wet: b.wetness * load,
+            oklab,
+        }
     };
 
-    push(first);
-    let mut carry = 0.0f32; // distance already covered toward the next stamp
+    out.push(make(first, 0.0));
+    let mut seg_start = 0.0f32; // arc length at the start of the current segment
+    let mut next_at = spacing; // arc length of the next stamp
     for w in rec.path.windows(2) {
         let (a, c) = (&w[0], &w[1]);
-        let seg = c.pos - a.pos;
-        let len = seg.length();
+        let len = (c.pos - a.pos).length();
         if len < 1e-4 {
             continue;
         }
-        let mut dist = spacing - carry;
-        while dist <= len {
-            let sample = lerp_sample(a, c, dist / len);
-            push(&sample);
-            dist += spacing;
+        let seg_end = seg_start + len;
+        while next_at <= seg_end {
+            let t = (next_at - seg_start) / len;
+            out.push(make(&lerp_sample(a, c, t), next_at));
+            next_at += spacing;
         }
-        carry = len - (dist - spacing);
+        seg_start = seg_end;
     }
     out
 }

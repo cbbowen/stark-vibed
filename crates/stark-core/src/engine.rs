@@ -11,7 +11,7 @@ use crate::document::{
     LayerId, LinearTimeline, StrokeRecord, Timeline, Tool,
 };
 use crate::geom::{Extent2, ViewTransform};
-use crate::gpu::{GpuContext, Presenter, StrokeRenderer, TileHandle, TilePool};
+use crate::gpu::{Compositor, GpuContext, StrokeRenderer, TileHandle, TilePool};
 use crate::image::RgbaImage;
 use crate::Result;
 
@@ -36,7 +36,7 @@ pub struct Engine {
     target_format: wgpu::TextureFormat,
     pool: TilePool,
     stroke: StrokeRenderer,
-    presenter: Presenter,
+    compositor: Compositor,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
     /// Live preview of the in-flight stroke, composited in place of the
@@ -53,7 +53,7 @@ impl Engine {
     pub fn new(gpu: GpuContext, target_format: wgpu::TextureFormat, viewport: Extent2) -> Self {
         let pool = TilePool::new(gpu.clone());
         let stroke = StrokeRenderer::new(&gpu);
-        let presenter = Presenter::new(&gpu, target_format);
+        let compositor = Compositor::new(&gpu, target_format, viewport);
 
         let initial = DocState::with_layer(ROOT_LAYER);
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(initial));
@@ -64,7 +64,7 @@ impl Engine {
             target_format,
             pool,
             stroke,
-            presenter,
+            compositor,
             timeline,
             session,
             preview: None,
@@ -145,7 +145,7 @@ impl Engine {
         }
 
         let view = self.session.view;
-        self.presenter.render(target, view, background, &tiles);
+        self.compositor.render(target, view, background, &tiles);
     }
 
     /// Render the current canvas to a CPU-side image at the viewport size
@@ -194,6 +194,11 @@ impl Engine {
     /// The GPU context this engine renders with (for surface/readback setup).
     pub fn gpu(&self) -> &GpuContext {
         &self.gpu
+    }
+
+    /// Tune the media/lighting parameters of the painterly pass (DESIGN.md §6.3).
+    pub fn set_media_params(&mut self, params: crate::gpu::MediaParams) {
+        self.compositor.set_media(params);
     }
 
     fn commit(&mut self, kind: ActionKind) {

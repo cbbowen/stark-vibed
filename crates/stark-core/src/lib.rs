@@ -10,8 +10,13 @@
 //! - [x] Step 3: history + golden harness — [`Engine::render_to_image`] for
 //!   readback/export, golden-image tests, and determinism / undo-redo /
 //!   replay-equivalence tests guarding the action-log invariant.
-//! - [ ] Step 4+: multi-channel media, save/load, layers + UI, collaboration.
+//! - [x] Step 4: multi-channel + media pass — Oklab color ([`color`]), tiles
+//!   carry color + `(height, wet)` aux, the brush deposits all channels with a
+//!   load reservoir, and a [`gpu::Compositor`] composites then lights the
+//!   impasto (normal-from-height + wet gloss) into display sRGB.
+//! - [ ] Step 5+: save/load + timelapse, layers + UI, collaboration.
 
+pub mod color;
 pub mod command;
 pub mod document;
 pub mod engine;
@@ -25,5 +30,8 @@ pub use command::{InputCommand, InputSample};
 pub use engine::{Engine, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};
-pub use gpu::{GpuContext, Presenter, StrokeRenderer, TileHandle, TilePool, COLOR_FORMAT};
+pub use gpu::{
+    Compositor, GpuContext, MediaParams, Presenter, StrokeRenderer, TileHandle, TilePool,
+    COLOR_FORMAT,
+};
 pub use image::RgbaImage;

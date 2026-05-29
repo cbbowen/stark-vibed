@@ -12,5 +12,9 @@ fn main() {
     // The brush stamp rasterization shader (DESIGN.md §6.2).
     compiler.build_artifact(&"package::stamp".parse().unwrap(), "stamp");
 
+    // Compositing (pass A) and media/lighting (pass B) shaders (DESIGN.md §6.3).
+    compiler.build_artifact(&"package::composite".parse().unwrap(), "composite");
+    compiler.build_artifact(&"package::media".parse().unwrap(), "media");
+
     println!("cargo::rerun-if-changed=src/shaders");
 }
