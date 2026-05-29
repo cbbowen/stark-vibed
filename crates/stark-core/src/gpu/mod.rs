@@ -3,6 +3,7 @@
 
 pub mod context;
 pub mod present;
+pub mod readback;
 pub mod stroke;
 pub mod tile;
 

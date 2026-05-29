@@ -21,6 +21,7 @@ thiserror = "2"
 pollster = "0.4"
 wesl = "0.4"
 history = { git = "https://github.com/cbbowen/history" }
+png = "0.18"
 
 # stark-shaders is consumed by stark-core.
 stark-shaders = { path = "crates/stark-shaders" }

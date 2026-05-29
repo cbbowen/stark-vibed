@@ -12,6 +12,7 @@ use crate::document::{
 };
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::{GpuContext, Presenter, StrokeRenderer, TileHandle, TilePool};
+use crate::image::RgbaImage;
 use crate::Result;
 
 /// The starting layer present in every new document.
@@ -32,6 +33,7 @@ pub struct ObservableState {
 
 pub struct Engine {
     gpu: GpuContext,
+    target_format: wgpu::TextureFormat,
     pool: TilePool,
     stroke: StrokeRenderer,
     presenter: Presenter,
@@ -59,6 +61,7 @@ impl Engine {
 
         Self {
             gpu,
+            target_format,
             pool,
             stroke,
             presenter,
@@ -143,6 +146,31 @@ impl Engine {
 
         let view = self.session.view;
         self.presenter.render(target, view, background, &tiles);
+    }
+
+    /// Render the current canvas to a CPU-side image at the viewport size
+    /// (DESIGN.md §9). The backbone of golden tests and export. The target uses
+    /// the engine's configured format, so it matches on-screen rendering.
+    pub fn render_to_image(&mut self, background: wgpu::Color) -> RgbaImage {
+        let size = self.session.view.viewport;
+        let target = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("stark export target"),
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.target_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        self.render(&view, background);
+        let pixels = crate::gpu::readback::read_rgba8(&self.gpu, &target, size);
+        RgbaImage::new(size.width, size.height, pixels)
     }
 
     /// A snapshot of UI-facing state (DESIGN.md §7).
