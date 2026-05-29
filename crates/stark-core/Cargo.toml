@@ -15,8 +15,9 @@ history = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 flate2 = { workspace = true }
+png = { workspace = true }
+blake3 = { workspace = true }
 stark-shaders = { workspace = true }
 
 [dev-dependencies]
 pollster = { workspace = true }
-png = { workspace = true }

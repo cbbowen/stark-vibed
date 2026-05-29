@@ -5,10 +5,11 @@
 //! actor loop and reactive `ObservableState` channel (DESIGN.md §7) wrap this
 //! same core in a later step.
 
+use crate::assets::{AssetId, AssetStore};
 use crate::command::InputCommand;
 use crate::document::{
-    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, CanvasBounds, DocState, Layer,
-    LayerId, LinearTimeline, StrokeRecord, Timeline, Tool,
+    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
+    DocState, Layer, LayerId, LinearTimeline, StrokeRecord, Timeline, Tool,
 };
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::{Compositor, GpuContext, StrokeRenderer, TileHandle, TilePool};
@@ -49,6 +50,7 @@ pub struct Engine {
     target_format: wgpu::TextureFormat,
     pool: TilePool,
     stroke: StrokeRenderer,
+    assets: AssetStore,
     compositor: Compositor,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
@@ -66,6 +68,7 @@ impl Engine {
     pub fn new(gpu: GpuContext, target_format: wgpu::TextureFormat, viewport: Extent2) -> Self {
         let pool = TilePool::new(gpu.clone());
         let stroke = StrokeRenderer::new(&gpu);
+        let assets = AssetStore::new(gpu.clone());
         let compositor = Compositor::new(&gpu, target_format, viewport);
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -77,6 +80,7 @@ impl Engine {
             target_format,
             pool,
             stroke,
+            assets,
             compositor,
             timeline,
             session,
@@ -217,9 +221,27 @@ impl Engine {
         RgbaImage::new(size.width, size.height, pixels)
     }
 
-    /// Snapshot the document as a saveable [`DocumentFile`] (DESIGN.md §8).
+    /// Snapshot the document as a saveable [`DocumentFile`] (DESIGN.md §8),
+    /// bundling the brush-shape assets that strokes actually reference (§6.6).
     pub fn document_file(&self) -> DocumentFile {
-        DocumentFile::new(self.timeline.clone_actions())
+        let actions = self.timeline.clone_actions();
+        let mut referenced = std::collections::HashSet::new();
+        for action in &actions {
+            if let ActionKind::CommitStroke(rec) = &action.kind {
+                if let BrushShape::Stamp(id) = rec.brush.shape {
+                    referenced.insert(id);
+                }
+            }
+        }
+        let assets = self
+            .assets
+            .all_bytes()
+            .into_iter()
+            .filter(|(id, _)| referenced.contains(id))
+            .collect();
+        let mut file = DocumentFile::new(actions);
+        file.assets = assets;
+        file
     }
 
     /// Serialize the document to the compact on-disk container (DESIGN.md §8).
@@ -231,6 +253,12 @@ impl Engine {
     /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
     pub fn load_document(&mut self, file: &DocumentFile) {
         self.reset_document();
+        // Brush assets must be available before replaying strokes that use them.
+        for (_, bytes) in &file.assets {
+            if let Err(e) = self.assets.insert_bytes(bytes) {
+                eprintln!("skipping unreadable brush asset: {e}");
+            }
+        }
         for action in &file.actions {
             self.replay_one(action.clone());
         }
@@ -253,6 +281,9 @@ impl Engine {
         mut on_frame: impl FnMut(RgbaImage),
     ) {
         self.reset_document();
+        for (_, bytes) in &file.assets {
+            let _ = self.assets.insert_bytes(bytes);
+        }
         for action in &file.actions {
             self.replay_one(action.clone());
             on_frame(self.render_to_image(background));
@@ -312,6 +343,12 @@ impl Engine {
         self.compositor.set_media(params);
     }
 
+    /// Import a brush-shape image (PNG bytes), returning its content id for use
+    /// in `BrushParams::shape = BrushShape::Stamp(id)` (DESIGN.md §6.6).
+    pub fn import_brush(&self, png_bytes: &[u8]) -> Result<AssetId> {
+        self.assets.import(png_bytes)
+    }
+
     fn commit(&mut self, kind: ActionKind) {
         let action = Action {
             id: self.next_action_id(),
@@ -365,6 +402,7 @@ impl Engine {
         ApplyCtx {
             pool: self.pool.clone(),
             stroke: self.stroke.clone(),
+            assets: self.assets.clone(),
         }
     }
 
@@ -387,7 +425,7 @@ impl Engine {
             return base.clone();
         };
         let layer = base.layer_at(idx).clone();
-        let tiles = self.stroke.render(&self.pool, &layer.tiles, rec);
+        let tiles = self.stroke.render(&self.pool, &self.assets, &layer.tiles, rec);
         base.with_layer_at(idx, Layer { tiles, ..layer })
     }
 }

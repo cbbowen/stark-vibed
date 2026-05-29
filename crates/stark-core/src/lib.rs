@@ -26,8 +26,13 @@
 //! - [x] Step 6c: navigation — pan (middle-drag) and cursor-anchored zoom
 //!   (wheel) via [`ViewTransform::zoom_about`]; window-fit canvas + resize.
 //!   (Tile LOD descoped to a future nice-to-have — DESIGN §13.)
-//! - [ ] Step 7: collaboration.
+//! - [x] Step 7: brush shapes & assets — content-addressed [`assets::AssetStore`]
+//!   coverage masks, [`document::BrushShape`] (`Round`/`Stamp`), path-following
+//!   rotated stamps, [`Engine::import_brush`], and referenced assets bundled
+//!   into the save file as compact grayscale PNGs (DESIGN §6.6, §8).
+//! - [ ] Step 8: brush file upload (arbitrary images) · Step 9: collaboration.
 
+pub mod assets;
 pub mod color;
 pub mod command;
 pub mod document;
@@ -39,6 +44,7 @@ pub mod image;
 pub mod io;
 pub mod session;
 
+pub use assets::{AssetId, AssetStore};
 pub use command::{InputCommand, InputSample};
 pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};

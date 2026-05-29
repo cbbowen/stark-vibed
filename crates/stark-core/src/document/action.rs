@@ -32,6 +32,15 @@ pub enum Tool {
     Brush,
 }
 
+/// The brush tip shape (DESIGN.md §6.6).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum BrushShape {
+    /// Procedural soft disc; `hardness` controls the falloff.
+    Round,
+    /// A sampled coverage mask, referenced by content id (an imported image).
+    Stamp(crate::assets::AssetId),
+}
+
 /// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
 /// the Oklab working space at stamp time (DESIGN.md §6.5).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -53,6 +62,12 @@ pub struct BrushParams {
     /// Reservoir depletion per canvas pixel travelled: the stroke thins as paint
     /// runs out (DESIGN.md §6.2). 0 = inexhaustible.
     pub drain: f32,
+    /// Brush tip shape (DESIGN.md §6.6).
+    pub shape: BrushShape,
+    /// Rotate each stamp to the stroke tangent (organic, directional strokes).
+    pub follow_path: bool,
+    /// Random per-stamp rotation in radians (seeded; 0 = none).
+    pub angle_jitter: f32,
 }
 
 impl Default for BrushParams {
@@ -66,6 +81,9 @@ impl Default for BrushParams {
             height: 0.6,
             wetness: 0.7,
             drain: 0.0015,
+            shape: BrushShape::Round,
+            follow_path: true,
+            angle_jitter: 0.0,
         }
     }
 }
@@ -111,6 +129,7 @@ pub struct Action {
 pub struct ApplyCtx {
     pub pool: TilePool,
     pub stroke: StrokeRenderer,
+    pub assets: crate::assets::AssetStore,
 }
 
 impl history::Action for Action {
@@ -126,7 +145,7 @@ impl history::Action for Action {
             ActionKind::CommitStroke(rec) => match state.layer_index(rec.layer) {
                 Some(idx) => {
                     let layer = state.layer_at(idx);
-                    let tiles = ctx.stroke.render(&ctx.pool, &layer.tiles, rec);
+                    let tiles = ctx.stroke.render(&ctx.pool, &ctx.assets, &layer.tiles, rec);
                     state.with_layer_at(idx, Layer { tiles, ..layer.clone() })
                 }
                 None => state,

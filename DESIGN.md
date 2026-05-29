@@ -60,6 +60,7 @@ stark/
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
 │   │   │   │   └── layer.rs
 │   │   │   ├── color.rs         # Oklab working space, conversions, mixing
+│   │   │   ├── assets.rs        # content-addressed brush/image asset store (§6.6)
 │   │   │   ├── gpu/
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── context.rs   # device/queue wrapper, capabilities
@@ -197,7 +198,7 @@ pub enum ActionKind {
 pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: ToolId,
-    pub brush: BrushParams,       // brush color is Oklab (§6.5)
+    pub brush: BrushParams,       // color in Oklab (§6.5); shape by AssetId (§6.6)
     pub path: Vec<InputSample>,   // resampled, full fidelity
     pub seed: u64,                // makes any brush jitter reproducible
 }
@@ -390,7 +391,8 @@ state machine that carries *loaded paint* so wet-on-wet mixing feels physical:
 
 ```
 for each stamp s spaced by (brush.spacing × f(pressure)) along path:
-    footprint = brush.shape scaled by pressure/tilt at s
+    footprint = brush.shape (a coverage mask, §6.6) scaled by pressure/tilt,
+                rotated to the path tangent + seeded angle jitter at s
     1. PICKUP:  read canvas color/wet under footprint → blend into brush
                 reservoir in Oklab, weighted by canvas wetness (bidirectional)
     2. DEPOSIT: write reservoir color (Oklab lerp), add height (impasto),
@@ -468,6 +470,59 @@ Oklab ──→ display (sRGB/Rec.2020) (only in Presenter's final blit)
   future wide-gamut or spectral pipeline is a new variant, not a rewrite; the
   display transform is chosen from the surface format at present time.
 
+### 6.6 Brush shapes & the asset store
+
+The default brush is a procedural soft disc, but natural media needs *organic*
+tips — worn bristles, chalk, a palette-knife edge. A brush shape is just a
+**coverage mask**: a grayscale image where white = full deposit and black = none
+(e.g. `resources/shapes/WornBristles.png`). The mask drives coverage and, scaled,
+the height channel too — so a worn-bristle tip lays down *broken* impasto rather
+than a uniform slab.
+
+**Brush shapes are content-addressed assets.** An imported image is identified by
+the hash of its bytes; `BrushParams` references that id, never the pixels:
+
+```rust
+pub struct AssetId([u8; 32]);   // BLAKE3 of the canonical image bytes
+
+pub enum BrushShape {
+    Round,            // procedural soft disc; `hardness` applies
+    Stamp(AssetId),   // sampled coverage mask from an imported image
+}
+// BrushParams gains:  shape: BrushShape, follow_path: bool, angle_jitter: f32
+```
+
+`follow_path`/`angle_jitter` rotate each stamp to the stroke tangent (with
+seeded jitter), which is what makes a bristle brush read as a real stroke rather
+than a rubber stamp. Content-addressing is the load-bearing choice, and it keeps
+every existing invariant intact:
+
+- **The action log stays tiny.** `StrokeRecord` carries a 32-byte `AssetId`, not
+  a 100 KB image; a thousand strokes with one brush reference one blob.
+- **Determinism & dedup for free.** Same bytes → same id → same texture, so
+  replay, golden tests, and peers resolve identically. And unlike shader drift
+  across builds (§8), the brush image is *data the file owns* — shape-driven
+  pixels are reproducible across builds, not just within one.
+- **Collaboration fits the iroh model.** Content-addressed blobs are exactly
+  what iroh blobs sync (§12.4): a peer seeing a stroke that references an unknown
+  `AssetId` fetches that blob by hash before rendering it.
+
+**Asset store (`assets.rs` + GPU).** An `AssetStore` maps `AssetId →` a GPU
+coverage texture (single-channel `R8`, mip-mapped for clean minification when a
+stamp is smaller than the source). On import the image is decoded, normalized to
+coverage (alpha if present, else luminance), hashed, uploaded, and cached
+(`Engine::import_brush(bytes) -> AssetId`). The store is **document-adjacent
+resources**, not the action log: populated on import and on load, bundled into
+the save file (§8). Selecting a brush is session state, like color (`SetBrush`),
+not a historized edit.
+
+**Stamp rendering.** `stamp.wesl` gains a per-instance rotation (cos/sin) and
+samples the bound mask at the footprint's uv: `coverage = mask · flow`, with the
+mask also modulating height. `Round` is realized as a built-in generated mask
+under a reserved id, so the shader always samples a texture — one code path.
+Determinism holds throughout: fixed sampler, seeded jitter, content-addressed
+mask.
+
 ## 7. The engine actor (async backend)
 
 The engine is an actor owning all mutable state, fed by a command channel —
@@ -515,9 +570,14 @@ pub struct DocumentFile {
     pub app_build: BuildId,        // shaders/algorithm version for fidelity notes
     pub canvas: CanvasMeta,        // tile size, channel set, color_space=Oklab
     pub actions: Vec<Action>,      // the full, replayable log (each id-tagged)
-    pub checkpoints: Vec<Checkpoint>, // OPTIONAL cached rasters (see below)
+    pub assets: Vec<(AssetId, Bytes)>, // content-addressed brush images (§6.6)
+    pub checkpoints: Vec<Checkpoint>,  // OPTIONAL cached rasters (see below)
 }
 ```
+
+`assets` bundles every brush image any stroke references (by hash), so the file
+stays self-contained and replayable; loading populates the asset store before
+replay. Shapes are deduplicated and far smaller than the painted pixels.
 
 Because every `Action` already carries its `ActionId` (actor + lamport), a saved
 file is also a valid collaboration log: opening it, painting, and later sharing
@@ -566,6 +626,7 @@ assert_golden!("oil_blend_01", png, tolerance);
 | Want to add… | Touch only… |
 |---|---|
 | A new tool / brush behavior | `ToolId` + a `Brush` impl in `gpu/stroke.rs`; serialized in `BrushParams` |
+| Image/organic brush shapes | content-addressed `AssetId` in `BrushShape`; `AssetStore` mask textures; stamp shader samples + rotates (§6.6) |
 | A new channel (e.g. normal, granulation) | `ChannelSet` descriptor + tile alloc + shader usage; `DocState` unchanged |
 | A new document edit | new `ActionKind` variant + its `apply` arm + serde (auto) |
 | A new blend mode | `BlendMode` enum + compositor shader branch |
@@ -667,6 +728,9 @@ Core stays **network-agnostic**; `stark-net` adapts iroh to the `Timeline`:
 - **Join / catch-up:** a joining peer pulls the action log (and optionally a
   checkpoint blob to skip cold replay) via **iroh blobs / docs**, then subscribes
   to gossip for the live tail. The save format (§8) *is* this payload.
+- **Assets:** brush-shape images are content-addressed blobs (§6.6); a stroke
+  referencing an unknown `AssetId` fetches that blob by hash before rendering —
+  exactly what iroh blobs are for. The action gossip stays tiny (ids only).
 - **Presence (cursors, selections, names):** ephemeral, broadcast over gossip but
   **never historized** — it's session state, the same category as pan/zoom (§3).
   Other users' live, in-progress strokes render onto preview tiles exactly like
@@ -706,7 +770,15 @@ above; they layer on top of it.
      scales, so **LOD is descoped to a nice-to-have** (see below) rather than a
      build step.
    Then iterate on pigment fidelity.
-7. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
+7. **Brush shapes & assets (§6.6):** content-addressed `AssetStore`, image
+   coverage masks normalized to `R8`, stamps rotated to the path tangent,
+   `Engine::import_brush`. Bundle referenced assets in the save file. Golden test
+   painting with `resources/shapes/WornBristles.png`.
+8. **Brush file upload:** a `<input type="file">` in the brush panel that reads
+   image bytes and calls `Engine::import_brush`, so users can bring arbitrary
+   brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
+   from step 7 already accept arbitrary bytes.
+9. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
    testable headlessly by merging two engines' logs and asserting identical
    golden output (convergence as a test).

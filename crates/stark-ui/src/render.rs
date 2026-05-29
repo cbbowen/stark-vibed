@@ -39,6 +39,11 @@ impl Renderer {
         self.engine.view()
     }
 
+    /// Import a brush-shape image, returning its content id (DESIGN.md §6.6).
+    pub fn import_brush(&self, png_bytes: &[u8]) -> stark_core::Result<stark_core::AssetId> {
+        self.engine.import_brush(png_bytes)
+    }
+
     /// Match the surface + engine viewport to a new canvas size (CSS pixels).
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 || (width == self.config.width && height == self.config.height)

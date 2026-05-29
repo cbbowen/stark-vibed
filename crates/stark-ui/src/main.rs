@@ -14,9 +14,12 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use render::{Renderer, CANVAS_ID};
-use stark_core::document::{BrushParams, Tool};
+use stark_core::document::{BrushParams, BrushShape, Tool};
 use stark_core::geom::Vec2;
-use stark_core::{InputCommand, InputSample, LayerInfo, ObservableState};
+use stark_core::{AssetId, InputCommand, InputSample, LayerInfo, ObservableState};
+
+/// Built-in brush shape, embedded so it's always available (DESIGN.md §6.6).
+const BRISTLES_PNG: &[u8] = include_bytes!("../../../resources/shapes/WornBristles.png");
 
 /// Saturation/value picker square size, in pixels.
 const SV_W: f32 = 256.0;
@@ -199,15 +202,35 @@ fn pick_sv(
 #[component]
 fn BrushPanel() -> Element {
     let state = use_context::<AppState>();
+    // Imported once, then cached for the session.
+    let bristle_id = use_signal(|| None::<AssetId>);
     let brush = state
         .obs
         .read()
         .as_ref()
         .map(|o| o.brush)
         .unwrap_or_default();
+    let is_round = matches!(brush.shape, BrushShape::Round);
+
+    let chip = |active: bool| -> String {
+        let bg = if active { "#3a6ea5" } else { "#33333a" };
+        format!("flex:1; padding:5px 0; border:none; border-radius:5px; color:#eee; cursor:pointer; background:{bg};")
+    };
 
     rsx! {
         Panel { title: "Brush",
+            div { style: "display:flex; gap:6px; margin-bottom:10px;",
+                button {
+                    style: "{chip(is_round)}",
+                    onclick: move |_| set_shape(state, BrushShape::Round, 0.25),
+                    "Round"
+                }
+                button {
+                    style: "{chip(!is_round)}",
+                    onclick: move |_| set_bristles(state, bristle_id),
+                    "Bristles"
+                }
+            }
             Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
                 oninput: move |v| update_brush(state, move |b| b.radius = v) }
             Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
@@ -216,6 +239,33 @@ fn BrushPanel() -> Element {
                 oninput: move |v| update_brush(state, move |b| b.flow = v) }
         }
     }
+}
+
+/// Switch to a shape, also setting a sensible default spacing for it.
+fn set_shape(state: AppState, shape: BrushShape, spacing: f32) {
+    update_brush(state, move |b| {
+        b.shape = shape;
+        b.spacing = spacing;
+    });
+}
+
+/// Select the bristle brush, importing it on first use.
+fn set_bristles(mut state: AppState, mut bristle_id: Signal<Option<AssetId>>) {
+    let id = match bristle_id() {
+        Some(id) => id,
+        None => {
+            let mut guard = state.renderer.write();
+            let Some(r) = guard.as_mut() else { return };
+            match r.import_brush(BRISTLES_PNG) {
+                Ok(id) => {
+                    bristle_id.set(Some(id));
+                    id
+                }
+                Err(_) => return,
+            }
+        }
+    };
+    set_shape(state, BrushShape::Stamp(id), 0.08);
 }
 
 #[component]

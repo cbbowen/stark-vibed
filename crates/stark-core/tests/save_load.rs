@@ -7,8 +7,12 @@
 mod common;
 
 use common::*;
+use stark_core::command::{InputCommand as Cmd, InputSample};
+use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, InputCommand};
+
+const BRISTLES: &[u8] = include_bytes!("../../../resources/shapes/WornBristles.png");
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
@@ -83,6 +87,41 @@ fn timelapse_yields_one_frame_per_action() {
     assert!(
         images_match(frames.last().unwrap(), &final_image, 0),
         "last timelapse frame must equal the fully-replayed image"
+    );
+}
+
+#[test]
+fn brush_assets_survive_save_load() {
+    let Some(mut original) = engine_or_skip() else {
+        return;
+    };
+    // Paint with an image brush shape (the asset lives only in this engine).
+    let id = original.import_brush(BRISTLES).expect("import");
+    let mut brush = brush(RED, 60.0);
+    brush.shape = BrushShape::Stamp(id);
+    brush.spacing = 0.08;
+    original.process(Cmd::SetBrush(brush));
+    original.process(Cmd::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
+    });
+    original.process(Cmd::StrokeTo {
+        sample: InputSample::at(Vec2::new(70.0, 0.0)),
+    });
+    original.process(Cmd::EndStroke);
+    let before = original.render_to_image(BG);
+
+    let bytes = original.save_bytes().expect("serialize");
+
+    // A fresh engine that never imported the brush must still reproduce it,
+    // because the asset is bundled in the file.
+    let mut loaded = engine_or_skip().expect("adapter");
+    loaded.load_bytes(&bytes).expect("load");
+    let after = loaded.render_to_image(BG);
+
+    assert!(
+        images_match(&before, &after, 0),
+        "image-brush stroke must round-trip through save/load via bundled assets"
     );
 }
 

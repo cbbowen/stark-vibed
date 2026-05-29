@@ -26,6 +26,9 @@ pub enum EngineError {
     #[error("unsupported document version {0}")]
     UnsupportedVersion(u32),
 
+    #[error("asset decode failed: {0}")]
+    Asset(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

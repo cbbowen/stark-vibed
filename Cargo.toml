@@ -30,6 +30,7 @@ pollster = "0.4"
 wesl = "0.4"
 history = { git = "https://github.com/cbbowen/history" }
 png = "0.18"
+blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 # Compact binary action log (no field names) + pure-Rust deflate (wasm-friendly).
 postcard = { version = "1", features = ["alloc"] }

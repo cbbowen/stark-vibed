@@ -21,6 +21,7 @@ use std::io::{Read, Write};
 use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
 use serde::{Deserialize, Serialize};
 
+use crate::assets::AssetId;
 use crate::document::Action;
 use crate::error::{EngineError, Result};
 use crate::geom::TILE_SIZE;
@@ -76,6 +77,10 @@ pub struct DocumentFile {
     pub app_build: BuildId,
     pub canvas: CanvasMeta,
     pub actions: Vec<Action>,
+    /// Brush-shape images any stroke references, content-addressed and stored as
+    /// compact grayscale PNGs (DESIGN.md §6.6, §8). Bundled so the file is
+    /// self-contained and replayable.
+    pub assets: Vec<(AssetId, Vec<u8>)>,
 }
 
 impl DocumentFile {
@@ -84,6 +89,7 @@ impl DocumentFile {
             app_build: BuildId::default(),
             canvas: CanvasMeta::default(),
             actions,
+            assets: Vec::new(),
         }
     }
 

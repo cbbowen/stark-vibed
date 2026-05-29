@@ -4,10 +4,15 @@
 mod common;
 
 use common::*;
+use stark_core::command::{InputCommand, InputSample};
+use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+
+/// The example brush shape, embedded so the test is self-contained.
+const BRISTLES: &[u8] = include_bytes!("../../../resources/shapes/WornBristles.png");
 
 #[test]
 fn golden_single_stroke() {
@@ -47,4 +52,31 @@ fn golden_two_strokes_cross() {
     );
     let img = engine.render_to_image(BG);
     assert_golden("two_strokes_cross", &img, 6);
+}
+
+#[test]
+fn golden_bristle_stroke() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let id = engine.import_brush(BRISTLES).expect("import brush shape");
+
+    let mut brush = brush(RED, 70.0);
+    brush.shape = BrushShape::Stamp(id);
+    brush.spacing = 0.06; // dense so the bristle texture reads as a continuous stroke
+    brush.drain = 0.0;
+    engine.process(InputCommand::SetBrush(brush));
+
+    // A horizontal stroke; the worn-bristle mask should break up its coverage.
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-90.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(90.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(BG);
+    assert_golden("bristle_stroke", &img, 6);
 }
