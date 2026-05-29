@@ -701,8 +701,12 @@ above; they layer on top of it.
    - **6b. Dioxus UI:** the `stark-ui` frontend — a wgpu canvas surface, DOM
      chrome, pointer→`InputCommand`, and `ObservableState` on a signal (§11).
      Verification shifts to manual/browser rather than golden tests.
-   - **6c. LOD:** mipmapped tiles for responsive zoomed-out panning. A pure
-     optimization; deferred until perf warrants it.
+   - **6c. Navigation:** pan (middle-drag) and cursor-anchored zoom (wheel) via
+     `ViewTransform::zoom_about` / `Pan`. Implemented before LOD, since
+     navigation is what motivates it.
+   - **6d. LOD:** mipmapped tiles for responsive zoomed-out panning. A pure
+     optimization, deferred until navigation proves it necessary — *not yet
+     warranted*.
    Then iterate on pigment fidelity.
 7. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —

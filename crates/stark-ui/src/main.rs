@@ -10,6 +10,7 @@
 
 mod render;
 
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use render::{Renderer, CANVAS_ID, H, W};
@@ -111,11 +112,15 @@ fn Toolbar() -> Element {
 #[component]
 fn CanvasView() -> Element {
     let state = use_context::<AppState>();
+    // Left-button stroke in progress.
     let mut drawing = use_signal(|| false);
+    // Middle-button pan: last cursor position while dragging.
+    let mut pan_from = use_signal(|| None::<(f64, f64)>);
 
     rsx! {
         div {
-            style: "flex:1; display:flex; align-items:center; justify-content:center; background:#0e0e10; overflow:auto;",
+            // `overflow:hidden` so wheel events never scroll the page.
+            style: "flex:1; display:flex; align-items:center; justify-content:center; background:#0e0e10; overflow:hidden;",
             canvas {
                 id: "{CANVAS_ID}",
                 width: "{W}",
@@ -123,26 +128,61 @@ fn CanvasView() -> Element {
                 style: "background:#fff; box-shadow:0 2px 16px #000; cursor:crosshair; touch-action:none;",
                 onmousedown: move |e| {
                     let (x, y) = elem_xy(&e);
-                    dispatch(state, InputCommand::StartStroke { tool: Tool::Brush, sample: sample(state, x, y) });
-                    drawing.set(true);
-                },
-                onmousemove: move |e| {
-                    if drawing() {
-                        let (x, y) = elem_xy(&e);
-                        dispatch(state, InputCommand::StrokeTo { sample: sample(state, x, y) });
+                    match e.trigger_button() {
+                        Some(MouseButton::Primary) => {
+                            dispatch(state, InputCommand::StartStroke { tool: Tool::Brush, sample: sample(state, x, y) });
+                            drawing.set(true);
+                        }
+                        Some(MouseButton::Auxiliary) => {
+                            // Suppress the browser's middle-click autoscroll.
+                            e.prevent_default();
+                            pan_from.set(Some((x, y)));
+                        }
+                        _ => {}
                     }
                 },
-                onmouseup: move |_| if drawing() {
-                    dispatch(state, InputCommand::EndStroke);
-                    drawing.set(false);
+                onmousemove: move |e| {
+                    let (x, y) = elem_xy(&e);
+                    if drawing() {
+                        dispatch(state, InputCommand::StrokeTo { sample: sample(state, x, y) });
+                    } else if let Some((lx, ly)) = pan_from() {
+                        dispatch(state, InputCommand::Pan {
+                            delta: Vec2::new((x - lx) as f32, (y - ly) as f32),
+                        });
+                        pan_from.set(Some((x, y)));
+                    }
                 },
-                onmouseleave: move |_| if drawing() {
-                    dispatch(state, InputCommand::EndStroke);
-                    drawing.set(false);
+                onmouseup: move |_| end_interaction(state, &mut drawing, &mut pan_from),
+                onmouseleave: move |_| end_interaction(state, &mut drawing, &mut pan_from),
+                onwheel: move |e| {
+                    e.prevent_default();
+                    let dy = e.delta().strip_units().y;
+                    if dy != 0.0 {
+                        // Fixed step per notch; sign chooses in/out. Anchor at cursor.
+                        let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
+                        let c = e.element_coordinates();
+                        dispatch(state, InputCommand::Zoom {
+                            anchor: Vec2::new(c.x as f32, c.y as f32),
+                            factor,
+                        });
+                    }
                 },
             }
         }
     }
+}
+
+/// End any in-progress stroke or pan (on mouse up / leaving the canvas).
+fn end_interaction(
+    state: AppState,
+    drawing: &mut Signal<bool>,
+    pan_from: &mut Signal<Option<(f64, f64)>>,
+) {
+    if drawing() {
+        dispatch(state, InputCommand::EndStroke);
+        drawing.set(false);
+    }
+    pan_from.set(None);
 }
 
 #[component]

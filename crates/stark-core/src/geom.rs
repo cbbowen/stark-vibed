@@ -85,6 +85,18 @@ impl ViewTransform {
         let half = Vec2::new(self.viewport.width as f32, self.viewport.height as f32) * 0.5;
         (screen - half) / self.zoom + self.center
     }
+
+    /// Scale the zoom by `factor` while keeping the canvas point under `anchor`
+    /// (a screen-pixel position) pinned in place — cursor-anchored zoom.
+    pub fn zoom_about(&mut self, anchor: Vec2, factor: f32) {
+        let before = self.screen_to_canvas(anchor);
+        self.zoom = (self.zoom * factor).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
+        let after = self.screen_to_canvas(anchor);
+        self.center += before - after;
+    }
+
+    const MIN_ZOOM: f32 = 0.05;
+    const MAX_ZOOM: f32 = 64.0;
 }
 
 #[cfg(test)]
@@ -113,5 +125,23 @@ mod tests {
         // 100 screen px right of center is 50 canvas px at 2x zoom.
         let p = view.screen_to_canvas(Vec2::new(500.0, 300.0));
         assert!((p - Vec2::new(50.0, 0.0)).length() < 1e-3, "got {p:?}");
+    }
+
+    #[test]
+    fn zoom_about_keeps_cursor_point_fixed() {
+        let mut view = ViewTransform {
+            center: Vec2::new(10.0, 20.0),
+            zoom: 1.0,
+            viewport: Extent2::new(800, 600),
+        };
+        let anchor = Vec2::new(620.0, 130.0); // arbitrary off-center cursor
+        let canvas_under = view.screen_to_canvas(anchor);
+        view.zoom_about(anchor, 2.5);
+        let after = view.screen_to_canvas(anchor);
+        assert!(
+            (after - canvas_under).length() < 1e-3,
+            "anchor drifted: {canvas_under:?} -> {after:?}"
+        );
+        assert!((view.zoom - 2.5).abs() < 1e-4);
     }
 }

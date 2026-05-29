@@ -49,8 +49,11 @@ pub enum InputCommand {
     // --- session / view (never historized) ---
     SetTool(Tool),
     SetBrush(BrushParams),
+    /// Pan the view by a screen-pixel drag delta.
     Pan { delta: Vec2 },
-    Zoom { center: Vec2, factor: f32 },
+    /// Zoom by `factor`, keeping the canvas point under `anchor` (a screen-pixel
+    /// position, e.g. the cursor) fixed on screen.
+    Zoom { anchor: Vec2, factor: f32 },
 
     // --- active layer selection (session state, never historized) ---
     SetActiveLayer(LayerId),

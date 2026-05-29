@@ -125,11 +125,12 @@ impl Engine {
                 self.refresh_preview();
             }
             InputCommand::Pan { delta } => {
-                // Drag the canvas under a fixed viewport.
+                // Grab-and-drag: content follows the cursor, so the view center
+                // moves opposite by the drag delta (converted to canvas units).
                 self.session.view.center -= delta / self.session.view.zoom;
             }
-            InputCommand::Zoom { factor, .. } => {
-                self.session.view.zoom = (self.session.view.zoom * factor).max(1e-3);
+            InputCommand::Zoom { anchor, factor } => {
+                self.session.view.zoom_about(anchor, factor);
             }
             InputCommand::SetActiveLayer(id) => {
                 // Session state, like tool selection — never historized.
