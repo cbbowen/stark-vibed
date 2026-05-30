@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::geom::TILE_SIZE;
+use crate::geom::TILE_TEX;
 use crate::gpu::context::GpuContext;
 
 const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
@@ -170,9 +170,10 @@ impl TilePool {
     fn create_texture(&self, format: wgpu::TextureFormat) -> wgpu::Texture {
         self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("stark tile channel"),
+            // Interior + apron on every side (DESIGN.md §6.4).
             size: wgpu::Extent3d {
-                width: TILE_SIZE,
-                height: TILE_SIZE,
+                width: TILE_TEX,
+                height: TILE_TEX,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,

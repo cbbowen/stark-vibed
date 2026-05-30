@@ -9,7 +9,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::geom::{TileCoord, ViewTransform, TILE_SIZE};
+use crate::geom::{TileCoord, ViewTransform, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE};
 use crate::gpu::context::GpuContext;
 use crate::gpu::tile::TileHandle;
 
@@ -189,7 +189,7 @@ impl Presenter {
             0,
             bytemuck::bytes_of(&ViewUniform {
                 st: [scale.x, scale.y, translate.x, translate.y],
-                misc: [TILE_SIZE as f32, 0.0, 0.0, 0.0],
+                misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
             }),
         );
 

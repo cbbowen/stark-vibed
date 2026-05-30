@@ -25,7 +25,7 @@ use crate::assets::{build_prefix_tau, AssetStore};
 use crate::colorspace::ColorSpace;
 use crate::command::InputSample;
 use crate::document::{BrushShape, StrokeRecord};
-use crate::geom::{TileCoord, Vec2, TILE_SIZE};
+use crate::geom::{TileCoord, Vec2, TILE_APRON, TILE_SIZE, TILE_TEX};
 use crate::gpu::context::GpuContext;
 use crate::gpu::tile::{TileHandle, TilePool};
 
@@ -59,11 +59,14 @@ struct SegmentInstance {
     aux: [f32; 2],    // height, wet
 }
 
-/// Per-tile uniform: tile origin + canvas→NDC scale.
+/// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
+/// scale. The texture origin is the interior origin minus the apron, so the
+/// stroke rasterizes into the apron too (keeping it consistent with the
+/// neighbor's interior — see [`crate::geom::TILE_APRON`]).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct TileXform {
-    params: [f32; 4], // origin.x, origin.y, 2/TILE_SIZE, unused
+    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, unused
 }
 
 #[derive(Clone)]
@@ -236,8 +239,8 @@ impl StrokeRenderer {
             let (color_load, aux_load) = match base.get(&coord) {
                 Some(src) => {
                     let extent = wgpu::Extent3d {
-                        width: TILE_SIZE,
-                        height: TILE_SIZE,
+                        width: TILE_TEX,
+                        height: TILE_TEX,
                         depth_or_array_layers: 1,
                     };
                     encoder.copy_texture_to_texture(
@@ -258,9 +261,12 @@ impl StrokeRenderer {
                 ),
             };
 
+            // Texture top-left = interior origin shifted out by the apron, so the
+            // full TILE_TEX target (interior + apron) maps to NDC [-1, 1].
+            let apron = TILE_APRON as f32;
             let origin = coord.origin();
             let xform = TileXform {
-                params: [origin.x, origin.y, 2.0 / TILE_SIZE as f32, 0.0],
+                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, 0.0],
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark sweep xform"),
@@ -401,13 +407,16 @@ fn generate_segments(rec: &StrokeRecord, channels: [f32; 4]) -> Vec<Segment> {
     segs
 }
 
-/// Tiles overlapped by any segment's swept capsule (segment ± radius).
+/// Tiles whose *texture* (interior + apron) any segment's swept capsule overlaps.
+/// The apron is included in `reach` so a stroke landing within a tile's interior
+/// but inside a neighbor's apron band re-renders that neighbor too, keeping the
+/// shared apron/interior overlap bit-identical (DESIGN.md §6.4).
 fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
     let tile = TILE_SIZE as f32;
     let mut coords = BTreeSet::new();
     for s in segments {
         let end = s.start + s.dir * s.length;
-        let reach = Vec2::splat(s.radius);
+        let reach = Vec2::splat(s.radius + TILE_APRON as f32);
         let lo = s.start.min(end) - reach;
         let hi = s.start.max(end) + reach;
         let (x0, x1) = ((lo.x / tile).floor() as i32, (hi.x / tile).floor() as i32);

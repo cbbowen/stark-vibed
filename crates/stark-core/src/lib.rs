@@ -37,6 +37,10 @@
 //!   is one quad whose coverage is the brush swept along it via a precomputed
 //!   prefix-τ texture (`τ=−ln(1−α)`); over-blend sums depth exactly. Removes the
 //!   discrete-dab artifact with hard tips.
+//! - [x] Step 8c: tile aprons (DESIGN §6.4) — tiles carry a `TILE_APRON` halo
+//!   (`TILE_TEX` textures) rendered, not copied, so the compositor's bilinear
+//!   filter reads across tile boundaries instead of clamping. Kills the lighting
+//!   seams the media pass amplified under zoom/sub-pixel pan (`tests/seam.rs`).
 //! - [~] Step 9: pluggable color spaces (DESIGN §6.7) — [`colorspace::ColorSpace`]
 //!   trait + [`colorspace::OkLabColorSpace`] (current pipeline migrated, no
 //!   behavior change). `PigmentColorSpace` (Kubelka–Munk) still to come.

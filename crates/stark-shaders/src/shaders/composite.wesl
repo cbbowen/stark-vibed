@@ -5,7 +5,11 @@
 
 struct View {
     st: vec4<f32>,   // scale.xy, translate.xy  (canvas px -> NDC)
-    misc: vec4<f32>, // tile_size, (unused)
+    // misc.x = tile_size (interior, canvas px). The tile texture carries an apron
+    // around the interior, so we sample only the interior sub-rect and let the
+    // bilinear filter reach into the apron at the edges (kills tile seams):
+    //   uv = corner * misc.y + misc.z,  misc.y = TILE_SIZE/TILE_TEX, misc.z = APRON/TILE_TEX.
+    misc: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> view: View;
@@ -38,7 +42,7 @@ fn vs_main(
 
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
-    out.uv = corner;
+    out.uv = corner * view.misc.y + view.misc.z; // interior sub-rect of the apron'd texture
     out.opacity = opacity;
     return out;
 }

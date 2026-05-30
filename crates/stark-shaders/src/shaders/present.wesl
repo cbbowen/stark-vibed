@@ -9,7 +9,10 @@ struct View {
     // Packed into vec4s for an unambiguous 32-byte std140 layout that matches
     // the Rust ViewUniform exactly. ndc = canvas_pos * scale + translate.
     st: vec4<f32>,   // scale.xy, translate.xy
-    misc: vec4<f32>, // tile_size, (unused)
+    // misc.x = tile_size (interior). Tiles carry an apron, so sample the interior
+    // sub-rect: uv = corner * misc.y + misc.z (misc.y = TILE_SIZE/TILE_TEX,
+    // misc.z = APRON/TILE_TEX); bilinear then reaches into the apron at edges.
+    misc: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> view: View;
@@ -35,7 +38,7 @@ fn vs_main(
 
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
-    out.uv = corner;
+    out.uv = corner * view.misc.y + view.misc.z; // interior sub-rect of the apron'd texture
     return out;
 }
 

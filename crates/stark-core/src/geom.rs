@@ -7,8 +7,31 @@
 
 pub use glam::Vec2;
 
-/// Edge length of a square tile, in canvas pixels (DESIGN.md §6.1).
+/// Edge length of a square tile's *interior*, in canvas pixels (DESIGN.md §6.1).
+/// This is the addressing stride: tile `(i, j)` owns canvas
+/// `[i*TILE_SIZE, (i+1)*TILE_SIZE)` — aprons (below) overlap neighbors and are
+/// not owned.
 pub const TILE_SIZE: u32 = 256;
+
+/// Apron (halo) width in pixels carried around each tile's interior, replicated
+/// from the neighboring canvas content (DESIGN.md §6.4). The compositor samples a
+/// tile's interior with bilinear filtering; without an apron the filter clamps at
+/// the tile edge instead of reaching into the neighbor, leaving a visible seam at
+/// every boundary under sub-pixel pan or non-1:1 zoom (the seam is then amplified
+/// by the media pass's height→normal gradient). One pixel is all bilinear needs;
+/// widen this if a future media effect needs more neighbor context.
+pub const TILE_APRON: u32 = 1;
+
+/// Physical edge length of a tile's channel textures: interior plus an apron on
+/// every side. Tiles are stored at this size; only the interior is presented.
+pub const TILE_TEX: u32 = TILE_SIZE + 2 * TILE_APRON;
+
+/// Maps a tile's interior quad corner (`∈ [0, 1]`) to a UV coordinate in the
+/// apron'd texture: `uv = corner * INTERIOR_UV_SCALE + INTERIOR_UV_BIAS`. The
+/// compositor and presenter sample only the interior sub-rect; bilinear taps at
+/// the interior edge then fall into the apron (neighbor content), not a clamp.
+pub const INTERIOR_UV_SCALE: f32 = TILE_SIZE as f32 / TILE_TEX as f32;
+pub const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
 
 /// Integer address of a tile on the infinite canvas.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

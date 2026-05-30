@@ -10,7 +10,8 @@
 // optical depth exactly, so the stroke reconstructs the continuous path integral.
 
 struct TileXform {
-    // params.xy = tile origin (canvas px); params.z = 2 / TILE_SIZE; params.w unused.
+    // params.xy = tile *texture* top-left in canvas px (interior origin − apron);
+    // params.z = 2 / TILE_TEX so the full interior+apron target maps to NDC; w unused.
     params: vec4<f32>,
 }
 

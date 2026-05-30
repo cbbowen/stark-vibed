@@ -494,6 +494,43 @@ optimization; v1 may sample full-res) so panning a huge canvas stays responsive.
 The frontend owns the `wgpu::Surface`, acquires the frame texture, calls
 `render`, and presents.
 
+**Tile aprons (seamless boundaries).** Tiles are *separate* GPU textures, so the
+compositor samples each one independently. The moment sampling isn't pixel-exact
+— any sub-pixel pan or non-1:1 zoom — a bilinear tap at a tile's edge clamps to
+that tile's own edge texel instead of reaching into the neighbor, because the
+neighbor lives in a different texture. That leaves a discontinuity at every tile
+boundary, which the media pass (§6.3) then *amplifies*, since the surface normal
+is the gradient of the height field and a step in height becomes a bright ridge.
+
+The fix is an **apron**: each tile texture is `TILE_TEX = TILE_SIZE + 2·TILE_APRON`
+px square, carrying an `TILE_APRON`-wide halo of the neighboring canvas content
+around its interior. Bilinear taps at the interior edge then fall into the apron
+(real neighbor data), not a clamp. Mechanics (`geom.rs`, `gpu/stroke.rs`,
+`composite.wesl`/`present.wesl`):
+
+- **The apron is rendered, not copied.** The stamp pass maps the *whole*
+  `TILE_TEX` target to NDC (texture origin = interior origin − apron) and a tile
+  is selected for (re)drawing whenever a stroke touches its apron-extended bounds
+  (`affected_tiles` inflates by `radius + TILE_APRON`). Because stamping at a
+  canvas position is a deterministic function of that position, a tile's apron is
+  *bit-identical* to the neighbor's interior over their overlap — no copy pass,
+  no sync bookkeeping, and it composes correctly through CoW history.
+- **Only the interior is presented.** The compositor/present quads still cover
+  exactly the interior (tiles tile the plane with no overlap); they sample the
+  interior sub-rect via `uv = corner·(TILE_SIZE/TILE_TEX) + APRON/TILE_TEX`, with
+  the filter free to read into the apron at the edges.
+- **Configurable width.** `TILE_APRON` (1 px — all bilinear needs) is a single
+  constant; widen it if a future media effect needs more neighbor context. Cost
+  is tiny: at 256² interior, a 1-px apron is ~1.6% more texels.
+
+Alternatives considered and rejected: *composite-then-scale* (composite at 1:1
+into one contiguous target, then scale) makes zooming far out balloon that
+buffer with the visible tile count; a *padded tile atlas* centralizes the same
+idea but is heavier machinery than this problem warrants. The translation
+invariance the apron restores is locked by a regression test (`tests/seam.rs`):
+a stroke across the 4-tile corner must render identically to the same stroke
+shifted half a tile into one tile's interior.
+
 ### 6.5 Color management (Oklab)
 
 Color flows through exactly three representations, and conversions live in one
