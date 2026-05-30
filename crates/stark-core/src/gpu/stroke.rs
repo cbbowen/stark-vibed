@@ -1,34 +1,35 @@
 //! The brush engine: stamp-based stroke rasterization with copy-on-write tiles
-//! (DESIGN.md §6.2, §5.2, §6.6).
+//! (DESIGN.md §6.2, §5.2, §6.6, §6.7).
 //!
 //! [`StrokeRenderer::render`] takes a layer's current tile map and a recorded
 //! stroke, and returns a *new* tile map in which only the touched tiles are
-//! replaced by freshly painted tiles — every untouched tile is shared with the
-//! input. The same path serves live painting, history replay, and golden tests.
+//! replaced. The same path serves live painting, history replay, and golden
+//! tests.
 //!
-//! Each stamp writes all tile channels in one multiple-render-target draw:
-//! premultiplied Oklab color (blended "over") and `(height, wet)` aux (additive).
-//! The tip is either a procedural soft disc (`BrushShape::Round`) or a sampled
-//! coverage mask from an imported image (`BrushShape::Stamp`, §6.6), and rotates
-//! to the stroke tangent (with seeded jitter) for organic, directional strokes.
+//! The renderer is parameterized by a [`ColorSpace`]: the color/aux texture
+//! formats, the deposit blends, the brush color → channel mapping, and the stamp
+//! shader all come from it. Each stamp writes two render targets in one draw
+//! (color channels + `aux`), is rotated to the stroke tangent, and uses either a
+//! procedural disc or a sampled coverage mask (§6.6).
 //!
-//! The renderer holds only immutable GPU objects plus `Arc`-backed handles, so
-//! it is cheap to `Clone` and can live inside the `Action::Context` (§5).
+//! It holds only immutable GPU objects plus `Arc`-backed handles, so it is cheap
+//! to `Clone` and can live inside the `Action::Context` (§5).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
 use crate::assets::AssetStore;
-use crate::color;
+use crate::colorspace::ColorSpace;
 use crate::command::InputSample;
 use crate::document::action::lerp_sample;
 use crate::document::{BrushParams, BrushShape, StrokeRecord};
 use crate::geom::{TileCoord, Vec2, TILE_SIZE};
 use crate::gpu::context::GpuContext;
-use crate::gpu::tile::{TileHandle, TilePool, AUX_FORMAT, COLOR_FORMAT};
+use crate::gpu::tile::{TileHandle, TilePool};
 
 /// One brush dab placed along the stroke path.
 #[derive(Copy, Clone)]
@@ -39,18 +40,20 @@ struct Stamp {
     flow: f32,
     height: f32,
     wet: f32,
-    oklab: [f32; 3],
+    /// Color-space channels (e.g. Oklab `L,a,b,_`, or four pigments).
+    ch: [f32; 4],
     /// Orientation as (cos θ, sin θ).
     rot: [f32; 2],
 }
 
-/// Per-stamp instance data for `stamp.wesl`.
+/// Per-stamp instance data for the stamp shader (color-space-agnostic layout).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct StampInstance {
     center: [f32; 2],
-    shape: [f32; 4], // radius, hardness, flow, height
-    color: [f32; 4], // okL, oka, okb, wet
+    shape: [f32; 4], // radius, hardness, flow, unused
+    ch: [f32; 4],    // color-space channels
+    aux: [f32; 2],   // height, wet
     rot: [f32; 2],   // cos, sin
 }
 
@@ -64,6 +67,7 @@ struct TileXform {
 #[derive(Clone)]
 pub struct StrokeRenderer {
     ctx: GpuContext,
+    color_space: Arc<dyn ColorSpace>,
     pipeline: wgpu::RenderPipeline,
     uniform_bgl: wgpu::BindGroupLayout,
     mask_bgl: wgpu::BindGroupLayout,
@@ -73,12 +77,12 @@ pub struct StrokeRenderer {
 }
 
 impl StrokeRenderer {
-    pub fn new(ctx: &GpuContext) -> Self {
+    pub fn new(ctx: &GpuContext, color_space: Arc<dyn ColorSpace>) -> Self {
         let device = &ctx.device;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark stamp"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::stamp().into()),
+            source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
         });
 
         let uniform_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -123,12 +127,6 @@ impl StrokeRenderer {
             immediate_size: 0,
         });
 
-        let over = wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
-        let add = wgpu::BlendState {
-            color: additive(),
-            alpha: additive(),
-        };
-
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("stark stamp pipeline"),
             layout: Some(&layout),
@@ -139,7 +137,9 @@ impl StrokeRenderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<StampInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x4, 3 => Float32x2],
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x2, 1 => Float32x4, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2
+                    ],
                 }],
             },
             primitive: wgpu::PrimitiveState {
@@ -154,13 +154,13 @@ impl StrokeRenderer {
                 compilation_options: Default::default(),
                 targets: &[
                     Some(wgpu::ColorTargetState {
-                        format: COLOR_FORMAT,
-                        blend: Some(over),
+                        format: color_space.color_format(),
+                        blend: Some(color_space.color_blend()),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
                     Some(wgpu::ColorTargetState {
-                        format: AUX_FORMAT,
-                        blend: Some(add),
+                        format: color_space.aux_format(),
+                        blend: Some(color_space.aux_blend()),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
                 ],
@@ -178,7 +178,6 @@ impl StrokeRenderer {
             ..Default::default()
         });
 
-        // 1×1 white texture, bound for the procedural Round path (unused there).
         let dummy = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("stark dummy mask"),
             size: wgpu::Extent3d {
@@ -211,6 +210,7 @@ impl StrokeRenderer {
 
         Self {
             ctx: ctx.clone(),
+            color_space,
             pipeline,
             uniform_bgl,
             mask_bgl,
@@ -227,7 +227,9 @@ impl StrokeRenderer {
         base: &HashTrieMap<TileCoord, TileHandle>,
         rec: &StrokeRecord,
     ) -> HashTrieMap<TileCoord, TileHandle> {
-        let stamps = generate_stamps(rec);
+        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
+        let channels = self.color_space.rgb_to_channels(rgb);
+        let stamps = generate_stamps(rec, channels);
         if stamps.is_empty() {
             return base.clone();
         }
@@ -235,8 +237,6 @@ impl StrokeRenderer {
         let coords = affected_tiles(&stamps);
         let device = &self.ctx.device;
 
-        // Resolve the brush mask. Round (or a missing asset) uses the dummy
-        // texture with procedural mode; an image stamp samples its mask.
         let (mask_view, mode) = match rec.brush.shape {
             BrushShape::Round => (self.dummy_mask.clone(), 0.0_f32),
             BrushShape::Stamp(id) => match assets.mask_view(id) {
@@ -263,8 +263,9 @@ impl StrokeRenderer {
             .iter()
             .map(|s| StampInstance {
                 center: s.center.to_array(),
-                shape: [s.radius, s.hardness, s.flow, s.height],
-                color: [s.oklab[0], s.oklab[1], s.oklab[2], s.wet],
+                shape: [s.radius, s.hardness, s.flow, 0.0],
+                ch: s.ch,
+                aux: [s.height, s.wet],
                 rot: s.rot,
             })
             .collect();
@@ -370,10 +371,8 @@ impl StrokeRenderer {
 
 /// Place stamps along the resampled path at even arc-length spacing, depleting
 /// the load reservoir with distance and orienting each stamp (DESIGN.md §6.2).
-fn generate_stamps(rec: &StrokeRecord) -> Vec<Stamp> {
+fn generate_stamps(rec: &StrokeRecord, channels: [f32; 4]) -> Vec<Stamp> {
     let b = &rec.brush;
-    let oklab = color::srgb_to_oklab(b.color);
-    let oklab = [oklab[0], oklab[1], oklab[2]];
     let spacing = (b.radius * b.spacing).max(0.5);
 
     let mut out = Vec::new();
@@ -390,10 +389,9 @@ fn generate_stamps(rec: &StrokeRecord) -> Vec<Stamp> {
         }
     };
 
-    // First stamp oriented by the first segment's direction (if any).
     let first_dir = rec.path.get(1).map_or(Vec2::ZERO, |s| dir_of(first.pos, s.pos));
     let mut idx = 0u32;
-    out.push(make_stamp(rec.seed, b, oklab, first, 0.0, first_dir, idx));
+    out.push(make_stamp(rec.seed, b, channels, first, 0.0, first_dir, idx));
     idx += 1;
 
     let mut seg_start = 0.0f32;
@@ -408,7 +406,7 @@ fn generate_stamps(rec: &StrokeRecord) -> Vec<Stamp> {
         let seg_end = seg_start + len;
         while next_at <= seg_end {
             let t = (next_at - seg_start) / len;
-            out.push(make_stamp(rec.seed, b, oklab, &lerp_sample(a, c, t), next_at, dir, idx));
+            out.push(make_stamp(rec.seed, b, channels, &lerp_sample(a, c, t), next_at, dir, idx));
             idx += 1;
             next_at += spacing;
         }
@@ -420,7 +418,7 @@ fn generate_stamps(rec: &StrokeRecord) -> Vec<Stamp> {
 fn make_stamp(
     seed: u64,
     b: &BrushParams,
-    oklab: [f32; 3],
+    channels: [f32; 4],
     s: &InputSample,
     dist: f32,
     dir: Vec2,
@@ -437,10 +435,11 @@ fn make_stamp(
         center: s.pos,
         radius: (b.radius * s.pressure).max(0.5),
         hardness: b.hardness,
-        flow: b.flow * load,
+        // Fold brush opacity (color alpha) into per-stamp coverage.
+        flow: b.flow * load * b.color[3],
         height: b.height * load,
         wet: b.wetness * load,
-        oklab,
+        ch: channels,
         rot: [angle.cos(), angle.sin()],
     }
 }
@@ -472,12 +471,4 @@ fn affected_tiles(stamps: &[Stamp]) -> BTreeSet<TileCoord> {
         }
     }
     coords
-}
-
-fn additive() -> wgpu::BlendComponent {
-    wgpu::BlendComponent {
-        src_factor: wgpu::BlendFactor::One,
-        dst_factor: wgpu::BlendFactor::One,
-        operation: wgpu::BlendOperation::Add,
-    }
 }

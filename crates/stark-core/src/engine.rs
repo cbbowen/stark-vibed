@@ -5,7 +5,10 @@
 //! actor loop and reactive `ObservableState` channel (DESIGN.md §7) wrap this
 //! same core in a later step.
 
+use std::sync::Arc;
+
 use crate::assets::{AssetId, AssetStore};
+use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::InputCommand;
 use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
@@ -48,6 +51,7 @@ pub struct ObservableState {
 pub struct Engine {
     gpu: GpuContext,
     target_format: wgpu::TextureFormat,
+    color_space: Arc<dyn ColorSpace>,
     pool: TilePool,
     stroke: StrokeRenderer,
     assets: AssetStore,
@@ -66,10 +70,16 @@ impl Engine {
     /// Build an engine that presents to `target_format` (a surface format, or a
     /// test target). Takes wgpu handles per GOALS §Inputs.
     pub fn new(gpu: GpuContext, target_format: wgpu::TextureFormat, viewport: Extent2) -> Self {
-        let pool = TilePool::new(gpu.clone());
-        let stroke = StrokeRenderer::new(&gpu);
+        // Default to Oklab; a future API can pick the color space (§6.7).
+        let color_space = ColorSpaceId::Oklab.make();
+        let pool = TilePool::new(
+            gpu.clone(),
+            color_space.color_format(),
+            color_space.aux_format(),
+        );
+        let stroke = StrokeRenderer::new(&gpu, color_space.clone());
         let assets = AssetStore::new(gpu.clone());
-        let compositor = Compositor::new(&gpu, target_format, viewport);
+        let compositor = Compositor::new(&gpu, target_format, viewport, color_space.as_ref());
 
         let initial = DocState::with_layer(ROOT_LAYER);
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(initial));
@@ -78,6 +88,7 @@ impl Engine {
         Self {
             gpu,
             target_format,
+            color_space,
             pool,
             stroke,
             assets,
@@ -240,6 +251,7 @@ impl Engine {
             .filter(|(id, _)| referenced.contains(id))
             .collect();
         let mut file = DocumentFile::new(actions);
+        file.canvas.color_space = self.color_space.id();
         file.assets = assets;
         file
     }

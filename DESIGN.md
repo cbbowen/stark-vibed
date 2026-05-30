@@ -523,6 +523,66 @@ under a reserved id, so the shader always samples a texture — one code path.
 Determinism holds throughout: fixed sampler, seeded jitter, content-addressed
 mask.
 
+### 6.7 Pluggable color spaces (Oklab & pigment / Kubelka–Munk)
+
+The tile channels are **color-space-agnostic**: tools deposit values and only
+assume they *blend linearly*, never what color they represent. The meaning —
+and the translation to screen — lives behind a trait:
+
+```rust
+pub trait ColorSpace {
+    fn id(&self) -> ColorSpaceId;            // serialized in CanvasMeta (§8)
+
+    // Tile layout: each space picks its channel textures and how dabs combine.
+    fn color_format(&self) -> wgpu::TextureFormat;
+    fn aux_format(&self) -> wgpu::TextureFormat;
+    fn color_blend(&self) -> wgpu::BlendState;
+    fn aux_blend(&self) -> wgpu::BlendState;
+
+    // Picker / export: straight display RGB ↔ the space's channels.
+    fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4];
+    fn channels_to_rgb(&self, ch: [f32; 4]) -> [f32; 3];
+
+    // GPU: how a dab writes its channels, and how channels become display color.
+    fn stamp_shader(&self) -> &'static str;  // MRT deposit (§6.2)
+    fn media_shader(&self) -> &'static str;  // media/lighting + present (§6.3)
+}
+```
+
+A document has one color space (`CanvasMeta.color_space`), so the tile format,
+blend state, and shaders are fixed per document and chosen at engine
+construction. The compositing pass A (sample tile → offscreen) is generic; only
+the **stamp** and **media** shaders, the formats, and the blends are
+space-specific. The CPU `color.rs` Oklab helpers become `OkLabColorSpace`.
+
+**`OkLabColorSpace`** — the current pipeline, unchanged: `color = Rgba16Float`
+holding premultiplied `(L, a, b, coverage)`, `aux = Rg16Float (height, wet)`,
+premultiplied-"over" color blend (coverage *is* the blend alpha), additive aux.
+
+**`PigmentColorSpace`** — the experimental one. The four color channels are
+**pigment concentrations** — Phthalo Blue, Quinacridone Magenta, Hansa Yellow,
+Titanium White — and the media shader is **Kubelka–Munk** over those pigments
+(per-pigment absorption `K` and scattering `S`; `K_mix/S_mix` are
+concentration-weighted; reflectance `R = 1 + K/S − √((K/S)² + 2K/S)`). Because
+all four channels are pigments, there's no room for coverage in `color.a`, so:
+
+- **Deposition is additive** (`color` and `aux` blend `One,One`): strokes
+  *accumulate* pigment, and **Titanium White's high scattering provides the
+  hiding power** — opacity is physical, not alpha-over. This is the natural
+  pigment model, and it sidesteps the WebGPU constraint that fixed-function
+  "over" needs coverage co-located in `color.a`.
+- **Coverage/alpha moves to `aux`** for this space (`aux = Rgba16Float`:
+  height, wet, coverage, spare). The media pass composites the K–M result over
+  the background by accumulated coverage.
+
+`rgb_to_channels` for pigment is an approximate inverse — a **non-negative
+least-squares fit** of the four pigments' RGB appearances to the picked color,
+so the familiar RGB picker keeps working unchanged. This is acknowledged
+experimental territory; the trait is what keeps it isolated from the rest of the
+engine. A more medium-honest **direct pigment-amount picker** (four concentration
+sliders) is recorded as a potential next step — see §13 *Nice-to-have* — but the
+least-squares fit is what ships first.
+
 ## 7. The engine actor (async backend)
 
 The engine is an actor owning all mutable state, fed by a command channel —
@@ -774,11 +834,16 @@ above; they layer on top of it.
    coverage masks normalized to `R8`, stamps rotated to the path tangent,
    `Engine::import_brush`. Bundle referenced assets in the save file. Golden test
    painting with `resources/shapes/WornBristles.png`.
-8. **Brush file upload:** a `<input type="file">` in the brush panel that reads
+8. **Pluggable color spaces (§6.7):** introduce `trait ColorSpace`, migrate the
+   current pipeline to `OkLabColorSpace` (behavior-preserving refactor — goldens
+   stay green), then add `PigmentColorSpace` with the Kubelka–Munk media shader
+   over four pigments and additive deposition. Per-space channel set, blend, and
+   shaders; `CanvasMeta.color_space` selects it. Golden tests per space.
+9. **Brush file upload:** a `<input type="file">` in the brush panel that reads
    image bytes and calls `Engine::import_brush`, so users can bring arbitrary
    brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
    from step 7 already accept arbitrary bytes.
-9. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
+10. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
    testable headlessly by merging two engines' logs and asserting identical
    golden output (convergence as a test).

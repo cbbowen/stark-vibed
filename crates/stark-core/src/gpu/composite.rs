@@ -14,9 +14,10 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::colorspace::ColorSpace;
 use crate::geom::{Extent2, TileCoord, ViewTransform, TILE_SIZE};
 use crate::gpu::context::GpuContext;
-use crate::gpu::tile::{TileHandle, AUX_FORMAT, COLOR_FORMAT};
+use crate::gpu::tile::TileHandle;
 
 /// Mirrors `View` in `composite.wesl` (32 bytes).
 #[repr(C)]
@@ -85,6 +86,10 @@ pub struct Compositor {
     media_bgl: wgpu::BindGroupLayout,
     media: MediaParams,
 
+    // Offscreen channel formats (from the color space), for resize.
+    color_format: wgpu::TextureFormat,
+    aux_format: wgpu::TextureFormat,
+
     // Viewport-sized offscreen targets (recreated on resize).
     size: Extent2,
     comp_color_view: wgpu::TextureView,
@@ -93,10 +98,17 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub fn new(ctx: &GpuContext, target_format: wgpu::TextureFormat, size: Extent2) -> Self {
+    pub fn new(
+        ctx: &GpuContext,
+        target_format: wgpu::TextureFormat,
+        size: Extent2,
+        color_space: &dyn ColorSpace,
+    ) -> Self {
         let device = &ctx.device;
+        let color_format = color_space.color_format();
+        let aux_format = color_space.aux_format();
 
-        // ---- Pass A: composite ----
+        // ---- Pass A: composite (generic passthrough; blends from color space) ----
         let comp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark composite"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::composite().into()),
@@ -138,10 +150,6 @@ impl Compositor {
             immediate_size: 0,
         });
 
-        let add = wgpu::BlendState {
-            color: additive(),
-            alpha: additive(),
-        };
         let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("stark composite pipeline"),
             layout: Some(&comp_layout),
@@ -167,13 +175,13 @@ impl Compositor {
                 compilation_options: Default::default(),
                 targets: &[
                     Some(wgpu::ColorTargetState {
-                        format: COLOR_FORMAT,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        format: color_format,
+                        blend: Some(color_space.color_blend()),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
                     Some(wgpu::ColorTargetState {
-                        format: AUX_FORMAT,
-                        blend: Some(add),
+                        format: aux_format,
+                        blend: Some(color_space.aux_blend()),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
                 ],
@@ -212,7 +220,7 @@ impl Compositor {
         // ---- Pass B: media ----
         let media_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark media"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::media().into()),
+            source: wgpu::ShaderSource::Wgsl(color_space.media_shader().into()),
         });
         let media_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark media bgl"),
@@ -270,7 +278,7 @@ impl Compositor {
 
         let instances = alloc_instances(device, 1);
         let (comp_color_view, comp_aux_view, media_bg) =
-            make_offscreen(device, size, &media_bgl, &media_buf);
+            make_offscreen(device, size, color_format, aux_format, &media_bgl, &media_buf);
 
         Self {
             ctx: ctx.clone(),
@@ -284,6 +292,8 @@ impl Compositor {
             media_buf,
             media_bgl,
             media: MediaParams::default(),
+            color_format,
+            aux_format,
             size,
             comp_color_view,
             comp_aux_view,
@@ -307,7 +317,14 @@ impl Compositor {
         let device = &self.ctx.device;
         if view.viewport != self.size {
             self.size = view.viewport;
-            let (c, a, bg) = make_offscreen(device, self.size, &self.media_bgl, &self.media_buf);
+            let (c, a, bg) = make_offscreen(
+                device,
+                self.size,
+                self.color_format,
+                self.aux_format,
+                &self.media_bgl,
+                &self.media_buf,
+            );
             self.comp_color_view = c;
             self.comp_aux_view = a;
             self.media_bg = bg;
@@ -469,14 +486,6 @@ fn load_tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn additive() -> wgpu::BlendComponent {
-    wgpu::BlendComponent {
-        src_factor: wgpu::BlendFactor::One,
-        dst_factor: wgpu::BlendFactor::One,
-        operation: wgpu::BlendOperation::Add,
-    }
-}
-
 fn clear_attachment(
     view: &wgpu::TextureView,
     color: wgpu::Color,
@@ -504,9 +513,12 @@ fn alloc_instances(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
 }
 
 /// (Re)create the offscreen composite targets and the media bind group.
+#[allow(clippy::too_many_arguments)]
 fn make_offscreen(
     device: &wgpu::Device,
     size: Extent2,
+    color_format: wgpu::TextureFormat,
+    aux_format: wgpu::TextureFormat,
     media_bgl: &wgpu::BindGroupLayout,
     media_buf: &wgpu::Buffer,
 ) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
@@ -530,8 +542,8 @@ fn make_offscreen(
             })
             .create_view(&wgpu::TextureViewDescriptor::default())
     };
-    let comp_color_view = make(COLOR_FORMAT, "stark comp color");
-    let comp_aux_view = make(AUX_FORMAT, "stark comp aux");
+    let comp_color_view = make(color_format, "stark comp color");
+    let comp_aux_view = make(aux_format, "stark comp aux");
 
     let media_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("stark media bg"),

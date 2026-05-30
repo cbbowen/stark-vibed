@@ -22,6 +22,7 @@ use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::AssetId;
+use crate::colorspace::ColorSpaceId;
 use crate::document::Action;
 use crate::error::{EngineError, Result};
 use crate::geom::TILE_SIZE;
@@ -47,24 +48,18 @@ impl Default for BuildId {
     }
 }
 
-/// The working color space of the document's color channel.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ColorSpace {
-    Oklab,
-}
-
 /// Canvas-wide metadata needed to reproduce the document (DESIGN.md §8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanvasMeta {
     pub tile_size: u32,
-    pub color_space: ColorSpace,
+    pub color_space: ColorSpaceId,
 }
 
 impl Default for CanvasMeta {
     fn default() -> Self {
         Self {
             tile_size: TILE_SIZE,
-            color_space: ColorSpace::Oklab,
+            color_space: ColorSpaceId::Oklab,
         }
     }
 }

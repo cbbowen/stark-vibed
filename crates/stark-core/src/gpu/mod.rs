@@ -12,4 +12,4 @@ pub use composite::{Compositor, MediaParams};
 pub use context::GpuContext;
 pub use present::Presenter;
 pub use stroke::StrokeRenderer;
-pub use tile::{TileHandle, TilePool, AUX_FORMAT, COLOR_FORMAT};
+pub use tile::{TileHandle, TilePool};

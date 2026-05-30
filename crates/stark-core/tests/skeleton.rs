@@ -25,7 +25,11 @@ fn context_or_skip() -> Option<GpuContext> {
 #[test]
 fn pool_recycles_dropped_tiles() {
     let Some(ctx) = context_or_skip() else { return };
-    let pool = TilePool::new(ctx);
+    let pool = TilePool::new(
+        ctx,
+        wgpu::TextureFormat::Rgba16Float,
+        wgpu::TextureFormat::Rg16Float,
+    );
 
     assert_eq!(pool.free_count(), 0, "fresh pool has no recycled tiles");
 
@@ -46,7 +50,11 @@ fn pool_recycles_dropped_tiles() {
 #[test]
 fn presents_tiles_under_view_transform() {
     let Some(ctx) = context_or_skip() else { return };
-    let pool = TilePool::new(ctx.clone());
+    let pool = TilePool::new(
+        ctx.clone(),
+        wgpu::TextureFormat::Rgba16Float,
+        wgpu::TextureFormat::Rg16Float,
+    );
 
     // 512x512 target. With zoom 1 and center (256,256), canvas (0,0) maps to the
     // top-left screen pixel, so tile (0,0) occupies the top-left 256x256 quadrant

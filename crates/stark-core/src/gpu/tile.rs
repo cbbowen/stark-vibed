@@ -15,11 +15,6 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::geom::TILE_SIZE;
 use crate::gpu::context::GpuContext;
 
-/// Color channel format: linear/perceptual, holds premultiplied Oklab (§6.5).
-pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// Auxiliary channel format: `R` = height (impasto), `G` = wetness.
-pub const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
-
 const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::RENDER_ATTACHMENT)
     .union(wgpu::TextureUsages::COPY_SRC)
@@ -93,13 +88,22 @@ struct PoolInner {
 #[derive(Clone)]
 pub struct TilePool {
     ctx: GpuContext,
+    /// Channel texture formats, chosen by the document's color space (§6.7).
+    color_format: wgpu::TextureFormat,
+    aux_format: wgpu::TextureFormat,
     inner: Arc<Mutex<PoolInner>>,
 }
 
 impl TilePool {
-    pub fn new(ctx: GpuContext) -> Self {
+    pub fn new(
+        ctx: GpuContext,
+        color_format: wgpu::TextureFormat,
+        aux_format: wgpu::TextureFormat,
+    ) -> Self {
         Self {
             ctx,
+            color_format,
+            aux_format,
             inner: Arc::new(Mutex::new(PoolInner {
                 free_color: Vec::new(),
                 free_aux: Vec::new(),
@@ -114,8 +118,8 @@ impl TilePool {
             let mut inner = self.inner.lock().expect("tile pool poisoned");
             (inner.free_color.pop(), inner.free_aux.pop())
         };
-        let color = color.unwrap_or_else(|| self.create_texture(COLOR_FORMAT));
-        let aux = aux.unwrap_or_else(|| self.create_texture(AUX_FORMAT));
+        let color = color.unwrap_or_else(|| self.create_texture(self.color_format));
+        let aux = aux.unwrap_or_else(|| self.create_texture(self.aux_format));
 
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
         let aux_view = aux.create_view(&wgpu::TextureViewDescriptor::default());
