@@ -7,16 +7,18 @@
 //!
 //! Run with `dx serve --web -p stark-ui` in a WebGPU-capable browser.
 
+mod components;
 mod render;
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
+use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, CANVAS_ID};
 use stark_core::document::{BrushParams, BrushShape, Tool};
 use stark_core::geom::Vec2;
-use stark_core::{AssetId, InputCommand, InputSample, LayerInfo, ObservableState};
+use stark_core::{AssetId, ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState};
 
 /// Built-in brush shape, embedded so it's always available (DESIGN.md §6.6).
 const BRISTLES_PNG: &[u8] = include_bytes!("../../../resources/shapes/WornBristles.png");
@@ -24,6 +26,12 @@ const BRISTLES_PNG: &[u8] = include_bytes!("../../../resources/shapes/WornBristl
 /// Saturation/value picker square size, in pixels.
 const SV_W: f32 = 256.0;
 const SV_H: f32 = 150.0;
+
+/// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
+/// every component class referenced below. Linked once by [`app`] so the rsx!
+/// blocks carry class names, not inline styles. Custom properties are global, so
+/// the css_module menubar styles pick up `--panel-shadow` / `--panel-noise` too.
+static STARK_CSS: Asset = asset!("/assets/stark.css");
 
 fn main() {
     #[cfg(target_arch = "wasm32")]
@@ -59,17 +67,21 @@ fn app() -> Element {
     });
 
     rsx! {
+        document::Stylesheet { href: STARK_CSS }
+
         div {
-            style: "position:absolute; inset:0; margin:0; overflow:hidden; outline:none; font-family:system-ui,sans-serif; background:#d8d8da;",
+            class: "app-root",
             tabindex: "0",
             autofocus: true,
             onkeydown: move |e| handle_keys(state, &e),
 
             Canvas {}
 
+            // Left command rail: rarely-used document commands, tucked away.
+            CommandRail {}
+
             // Floating tool panels, stacked top-right.
-            div {
-                style: "position:absolute; top:14px; right:14px; display:flex; flex-direction:column; gap:14px; width:280px;",
+            div { class: "panel-stack",
                 ColorPanel {}
                 BrushPanel {}
                 LayerPanel {}
@@ -91,7 +103,7 @@ fn Canvas() -> Element {
     rsx! {
         canvas {
             id: "{CANVAS_ID}",
-            style: "position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; background:#fff;",
+            class: "paint-canvas",
             onresize: move |e| {
                 if let Ok(size) = e.get_content_box_size() {
                     resize(state, size.width as u32, size.height as u32);
@@ -151,19 +163,17 @@ fn ColorPanel() -> Element {
     rsx! {
         Panel { title: "Color",
             div {
-                style: "position:relative; width:{SV_W}px; height:{SV_H}px; border-radius:6px; cursor:crosshair;
-                        background: linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl({hue} 100% 50%));",
+                class: "sv-square",
+                // Dynamic: the value/saturation field tinted by the current hue.
+                style: "background: linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl({hue} 100% 50%));",
                 onmousedown: move |e| { picking.set(true); pick_sv(state, hue, sat, val, &e); },
                 onmousemove: move |e| { if picking() { pick_sv(state, hue, sat, val, &e); } },
                 onmouseup: move |_| picking.set(false),
                 onmouseleave: move |_| picking.set(false),
-                div {
-                    style: "position:absolute; left:{marker_x}px; top:{marker_y}px; width:12px; height:12px; margin:-6px 0 0 -6px;
-                            border:2px solid #fff; border-radius:50%; box-shadow:0 0 0 1px #0008; pointer-events:none;",
-                }
+                div { class: "sv-marker", style: "left:{marker_x}px; top:{marker_y}px;" }
             }
             input {
-                style: "width:100%; margin-top:10px;",
+                class: "color-hue",
                 r#type: "range", min: "0", max: "360", value: "{hue()}",
                 oninput: move |e| {
                     let mut hue = hue;
@@ -212,21 +222,18 @@ fn BrushPanel() -> Element {
         .unwrap_or_default();
     let is_round = matches!(brush.shape, BrushShape::Round);
 
-    let chip = |active: bool| -> String {
-        let bg = if active { "#3a6ea5" } else { "#33333a" };
-        format!("flex:1; padding:5px 0; border:none; border-radius:5px; color:#eee; cursor:pointer; background:{bg};")
-    };
+    let chip = |active: bool| if active { "chip active" } else { "chip" };
 
     rsx! {
         Panel { title: "Brush",
-            div { style: "display:flex; gap:6px; margin-bottom:10px;",
+            div { class: "brush-shapes",
                 button {
-                    style: "{chip(is_round)}",
+                    class: chip(is_round),
                     onclick: move |_| set_shape(state, BrushShape::Round, 0.25),
                     "Round"
                 }
                 button {
-                    style: "{chip(!is_round)}",
+                    class: chip(!is_round),
                     onclick: move |_| set_bristles(state, bristle_id),
                     "Bristles"
                 }
@@ -280,9 +287,9 @@ fn LayerPanel() -> Element {
 
     rsx! {
         Panel { title: "Layers",
-            div { style: "display:flex; justify-content:flex-end; margin-bottom:6px;",
+            div { class: "layer-header",
                 button {
-                    style: "background:#3a3a42; color:#eee; border:none; border-radius:4px; padding:2px 10px; cursor:pointer;",
+                    class: "layer-add",
                     onclick: move |_| dispatch(state, InputCommand::AddLayer { above: None }),
                     "+ Add"
                 }
@@ -303,25 +310,25 @@ fn LayerRow(info: LayerInfo) -> Element {
         .as_ref()
         .map(|o| o.active_layer == info.id)
         .unwrap_or(false);
-    let bg = if active { "#2f6f4f" } else { "#33333a" };
+    let row_class = if active { "layer-row active" } else { "layer-row" };
 
     rsx! {
         div {
-            style: "margin:6px 0; padding:6px; border-radius:6px; background:{bg};",
-            div { style: "display:flex; gap:6px; align-items:center;",
+            class: row_class,
+            div { class: "row",
                 input {
                     r#type: "checkbox",
                     checked: info.visible,
                     onchange: move |_| dispatch(state, InputCommand::SetLayerVisible(info.id, !info.visible)),
                 }
                 button {
-                    style: "flex:1; text-align:left; background:none; border:none; color:#eee; cursor:pointer;",
+                    class: "layer-name",
                     onclick: move |_| dispatch(state, InputCommand::SetActiveLayer(info.id)),
                     "Layer {info.id.0}"
                 }
             }
             input {
-                style: "width:100%;",
+                class: "slider",
                 r#type: "range", min: "0", max: "100",
                 value: "{(info.opacity * 100.0) as i32}",
                 oninput: move |e| {
@@ -343,13 +350,113 @@ fn HistoryControls() -> Element {
         .as_ref()
         .map(|o| (o.can_undo, o.can_redo))
         .unwrap_or((false, false));
-    let btn = "background:rgba(28,28,32,0.9); color:#e8e8ea; border:none; border-radius:8px; padding:8px 12px; cursor:pointer; box-shadow:0 4px 16px #0006;";
 
     rsx! {
-        div { style: "position:absolute; left:14px; bottom:14px; display:flex; gap:8px;",
-            button { style: "{btn}", disabled: !can_undo, onclick: move |_| dispatch(state, InputCommand::Undo), "⟲ Undo" }
-            button { style: "{btn}", disabled: !can_redo, onclick: move |_| dispatch(state, InputCommand::Redo), "Redo ⟳" }
+        div { class: "history-controls",
+            button { class: "chrome-button", disabled: !can_undo, onclick: move |_| dispatch(state, InputCommand::Undo), "⟲ Undo" }
+            button { class: "chrome-button", disabled: !can_redo, onclick: move |_| dispatch(state, InputCommand::Redo), "Redo ⟳" }
         }
+    }
+}
+
+/// A vertical menu rail on the far left for uncommon, document-level commands
+/// (DESIGN.md §11). Built on the vendored `menubar` component; the dropdown flies
+/// out to the right. Currently just "New document…", which opens a settings modal.
+#[component]
+fn CommandRail() -> Element {
+    let mut show_new_doc = use_signal(|| false);
+
+    rsx! {
+        div { class: "command-rail",
+            Menubar {
+                MenubarMenu { index: 0usize,
+                    // ☰ — the catch-all menu for infrequent commands.
+                    MenubarTrigger { "\u{2630}" }
+                    MenubarContent {
+                        MenubarItem {
+                            index: 0usize,
+                            value: "new-document".to_string(),
+                            on_select: move |_| show_new_doc.set(true),
+                            "New document…"
+                        }
+                    }
+                }
+            }
+        }
+        if show_new_doc() {
+            NewDocumentModal { on_close: move |_| show_new_doc.set(false) }
+        }
+    }
+}
+
+/// Modal for starting a fresh document. Today it carries the color-space choice
+/// (DESIGN.md §6.7); it's a dialog so more document settings can join it later.
+#[component]
+fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
+    let state = use_context::<AppState>();
+    let current = state
+        .renderer
+        .read()
+        .as_ref()
+        .map(|r| r.color_space())
+        .unwrap_or(ColorSpaceId::Oklab);
+    let choice = use_signal(|| current);
+
+    // One selectable color-space card; `selected` toggles the highlight.
+    let card = |id: ColorSpaceId, title: &str, desc: &str| {
+        let class = if choice() == id { "space-card selected" } else { "space-card" };
+        rsx! {
+            div {
+                class,
+                onclick: move |_| { let mut choice = choice; choice.set(id); },
+                div { class: "space-card-title", "{title}" }
+                div { class: "space-card-desc", "{desc}" }
+            }
+        }
+    };
+
+    rsx! {
+        // Dimmed backdrop; click outside the dialog to dismiss.
+        div {
+            class: "modal-backdrop",
+            onclick: move |_| on_close.call(()),
+            div {
+                class: "modal-dialog",
+                onclick: move |e| e.stop_propagation(),
+
+                div { class: "modal-title", "New Document" }
+                div { class: "modal-subtitle", "Starting a new document replaces the current canvas." }
+
+                div { class: "modal-section-label", "COLOR SPACE" }
+                {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
+                {card(ColorSpaceId::Pigment, "Pigment", "Physically-based paint mixing (Kubelka\u{2013}Munk over 4 pigments): blue + yellow makes green, white hides. For natural media.")}
+
+                div { class: "modal-actions",
+                    button {
+                        class: "btn btn-secondary",
+                        onclick: move |_| on_close.call(()),
+                        "Cancel"
+                    }
+                    button {
+                        class: "btn btn-primary",
+                        onclick: move |_| { new_document(state, choice()); on_close.call(()); },
+                        "Create"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Replace the document with a fresh one in `id`'s color space, then repaint.
+fn new_document(state: AppState, id: ColorSpaceId) {
+    let mut renderer = state.renderer;
+    let mut obs = state.obs;
+    let mut guard = renderer.write();
+    if let Some(r) = guard.as_mut() {
+        r.set_color_space(id);
+        r.paint();
+        obs.set(Some(r.observe()));
     }
 }
 
@@ -358,10 +465,8 @@ fn HistoryControls() -> Element {
 #[component]
 fn Panel(title: String, children: Element) -> Element {
     rsx! {
-        div {
-            style: "background:rgba(26,26,30,0.90); color:#e8e8ea; border-radius:12px; padding:12px 14px;
-                    box-shadow:0 8px 28px #0007; backdrop-filter:blur(8px);",
-            div { style: "font-weight:600; font-size:13px; letter-spacing:0.02em; margin-bottom:10px; opacity:0.85;", "{title}" }
+        div { class: "panel",
+            div { class: "panel-title", "{title}" }
             {children}
         }
     }
@@ -370,10 +475,10 @@ fn Panel(title: String, children: Element) -> Element {
 #[component]
 fn Slider(label: String, min: f32, max: f32, value: f32, oninput: EventHandler<f32>) -> Element {
     rsx! {
-        div { style: "margin-bottom:8px;",
-            div { style: "font-size:12px; opacity:0.7; margin-bottom:2px;", "{label}" }
+        div { class: "slider-row",
+            div { class: "slider-label", "{label}" }
             input {
-                style: "width:100%;",
+                class: "slider",
                 r#type: "range", min: "{min}", max: "{max}", step: "any", value: "{value}",
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }

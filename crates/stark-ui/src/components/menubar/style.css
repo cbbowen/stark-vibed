@@ -1,0 +1,132 @@
+/* Stark customization of the dioxus-primitives menubar (vendored via
+   `dx components add menubar`). Reoriented from a horizontal File/Edit bar into
+   a vertical left-side command rail, restyled to match Stark's dark translucent
+   floating panels. Self-contained: no dependency on dx-components-theme.css. */
+
+.dx-menubar {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  gap: 6px;
+  padding: 6px;
+  border: none;
+  border-radius: 12px;
+  background: var(--panel-noise), rgba(26, 26, 30, 0.9);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+}
+
+.dx-menubar-menu {
+  position: relative;
+}
+
+/* Square icon button sitting in the rail. */
+.dx-menubar-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: #e8e8ea;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 100ms ease-out;
+}
+
+.dx-menubar-menu[data-state="open"] .dx-menubar-trigger {
+  background: #3a6ea5;
+  color: #fff;
+}
+
+.dx-menubar-trigger[data-disabled="true"] {
+  color: #6a6a72;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.dx-menubar-trigger:hover:not([data-disabled="true"]),
+.dx-menubar-trigger:focus-visible {
+  background: #ffffff14;
+  outline: none;
+}
+
+/* Dropdown flies out to the right of the rail (rather than below). */
+.dx-menubar-content {
+  position: absolute;
+  z-index: 1000;
+  top: 0;
+  left: 100%;
+  min-width: 210px;
+  padding: 6px;
+  margin-left: 10px;
+  border-radius: 10px;
+  background: var(--panel-noise), rgba(32, 32, 38, 0.97);
+  box-shadow: var(--panel-shadow), inset 0 0 0 1px #ffffff14;
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: left top;
+  will-change: transform, opacity;
+}
+
+.dx-menubar-content[data-state="closed"] {
+  animation: dx-menubar-content-animate-out 120ms ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes dx-menubar-content-animate-out {
+  0% {
+    opacity: 1;
+    transform: scale(1) translateX(0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(0.96) translateX(-4px);
+  }
+}
+
+.dx-menubar-content[data-state="open"] {
+  animation: dx-menubar-content-animate-in 120ms ease-out forwards;
+  pointer-events: auto;
+}
+
+@keyframes dx-menubar-content-animate-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.96) translateX(-4px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1) translateX(0);
+  }
+}
+
+.dx-menubar-item {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: #e8e8ea;
+  cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.dx-menubar-item[data-disabled="true"] {
+  color: #6a6a72;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.dx-menubar-item:hover:not([data-disabled="true"]),
+.dx-menubar-item:focus-visible {
+  background: #3a6ea5;
+  color: #fff;
+  outline: none;
+}

@@ -6,7 +6,7 @@
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
 use stark_core::geom::Extent2;
-use stark_core::{Engine, GpuContext, InputCommand, ObservableState, ViewTransform};
+use stark_core::{ColorSpaceId, Engine, GpuContext, InputCommand, ObservableState, ViewTransform};
 use wasm_bindgen::JsCast;
 
 /// Warm paper-white background, in linear RGB.
@@ -37,6 +37,17 @@ impl Renderer {
 
     pub fn view(&self) -> ViewTransform {
         self.engine.view()
+    }
+
+    /// The document's current color space (DESIGN.md §6.7).
+    pub fn color_space(&self) -> ColorSpaceId {
+        self.engine.color_space()
+    }
+
+    /// Start a fresh document in `id`'s color space. Clears the canvas, since the
+    /// channel layouts differ between spaces (DESIGN.md §6.7).
+    pub fn set_color_space(&mut self, id: ColorSpaceId) {
+        self.engine.set_color_space(id);
     }
 
     /// Import a brush-shape image, returning its content id (DESIGN.md §6.6).
@@ -74,6 +85,27 @@ impl Renderer {
     }
 }
 
+/// The canvas element's laid-out size in CSS pixels (≥1). Measures the element
+/// itself — no full-window assumption — so an embedded/sub-window canvas works.
+fn canvas_size(canvas: &web_sys::HtmlCanvasElement) -> (u32, u32) {
+    (
+        canvas.client_width().max(1) as u32,
+        canvas.client_height().max(1) as u32,
+    )
+}
+
+/// Await one animation frame, so a layout pass (and any just-applied stylesheet)
+/// is reflected before we measure the canvas.
+async fn next_frame() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        web_sys::window()
+            .expect("window")
+            .request_animation_frame(&resolve)
+            .expect("request_animation_frame");
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 /// Look up the canvas element the app rendered into the DOM.
 pub fn canvas_element() -> web_sys::HtmlCanvasElement {
     web_sys::window()
@@ -89,12 +121,6 @@ pub fn canvas_element() -> web_sys::HtmlCanvasElement {
 /// Asynchronously create the WebGPU device, configure the surface to the
 /// canvas's current size, and build the engine (DESIGN.md §7).
 pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
-    // Size the drawing buffer to the laid-out canvas (CSS pixels).
-    let width = (canvas.client_width().max(1)) as u32;
-    let height = (canvas.client_height().max(1)) as u32;
-    canvas.set_width(width);
-    canvas.set_height(height);
-
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::BROWSER_WEBGPU;
     let instance = wgpu::Instance::new(desc);
@@ -123,6 +149,18 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
         })
         .await
         .expect("request device");
+
+    // Size the drawing buffer to the canvas's laid-out size (CSS pixels). We
+    // measure the *element*, not the window, so an embedded/sub-window canvas
+    // works too. Crucially we do it here — after the async device setup and a
+    // layout frame — so the stylesheet (linked via `document::Stylesheet`) has
+    // applied: measuring up front would read the unstyled 300×150 intrinsic size,
+    // and Dioxus `onresize` only delivers *later* resizes, so it wouldn't correct
+    // the seed. Subsequent resizes are handled by `onresize`.
+    next_frame().await;
+    let (width, height) = canvas_size(&canvas);
+    canvas.set_width(width);
+    canvas.set_height(height);
 
     // Pick a non-sRGB format: the media pass already encodes display sRGB, so an
     // sRGB surface would double-encode (DESIGN.md §6.5).
