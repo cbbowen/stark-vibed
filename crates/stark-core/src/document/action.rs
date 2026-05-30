@@ -160,12 +160,3 @@ impl history::Action for Action {
     }
 }
 
-/// Linear interpolation between two input samples (used during stamp placement).
-pub(crate) fn lerp_sample(a: &InputSample, b: &InputSample, t: f32) -> InputSample {
-    InputSample {
-        pos: a.pos.lerp(b.pos, t),
-        pressure: a.pressure + (b.pressure - a.pressure) * t,
-        tilt: a.tilt.lerp(b.tilt, t),
-        time: a.time + (b.time - a.time) * t as f64,
-    }
-}

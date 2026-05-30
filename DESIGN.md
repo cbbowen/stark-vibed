@@ -428,6 +428,31 @@ update), so the preview at release equals the committed stroke — preserving th
 live == committed invariant (§1.3). Fitting and Catmull–Rom evaluation are fixed
 float math, so determinism (and golden/replay/save-load equivalence) holds.
 
+**Continuous stamping (swept segments).** Discrete dabs are still visible with
+hard tips. The fix: stamp each short *segment* of the flattened curve as one
+quad whose coverage is the brush **swept** along it — the path integral of the
+footprint, instead of point samples. The enabling identity: alpha-"over" is
+multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1−α)`.
+So:
+
+- Precompute, per brush, the **prefix integral of `τ` along the travel axis**
+  (the tangent the brush is rotated to). A length-`d` segment's swept depth at a
+  point is then `prefix(u) − prefix(u−d)` for that row — an O(1) lookup.
+- A segment quad outputs `α_seg = 1 − exp(−flow · sweptDepth)`. Because the
+  existing premultiplied-"over" blend across overlapping segment quads combines
+  as `1 − ∏(1−α) = 1 − exp(−Σ τ)`, it sums the depths **exactly** — no
+  double-counting at joints, no scratch buffer, no second pass. The whole
+  stroke's coverage is the continuous path integral `1 − exp(−τ_total)`.
+
+This removes intra-stroke banding while keeping the single-pass over-blend
+architecture (so it composes with both the Oklab and pigment stamp shaders,
+§6.7). Segments need only be short enough that the line + constant-radius
+approximation holds, so the sweep uses *fewer* primitives than the dab model.
+Caveats: per-stamp angle jitter no longer applies (the brush follows the tangent
+continuously); the round tip's prefix depends on `hardness`, so it is generated
+per stroke (image brushes precompute theirs at import, §6.6); a click is a
+degenerate segment given a minimal length.
+
 **Live vs. replay unification:** live painting renders the in-flight (fitted)
 stroke onto CoW preview tiles; commit/replay render the same `StrokeRecord`
 through the same path → same stamps, same pixels.

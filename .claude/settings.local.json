@@ -12,7 +12,11 @@
       "Bash(cargo clippy *)",
       "Bash(cargo fetch *)",
       "Read(//c/Users/chris/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/**)",
-      "Bash(dx build *)"
+      "Bash(dx build *)",
+      "Bash(rm -f crates/stark-core/tests/golden/*.png; cargo test -p stark-core --test golden 2>&1 | tail -8)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\chris\\Desktop\\Ideas\\stark-vibed\\crates\\stark-core\\tests\\golden"
     ]
   }
 }

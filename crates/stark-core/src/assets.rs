@@ -80,7 +80,8 @@ impl AssetStore {
                 Some(b) => b,
                 None => encode_coverage_png(w, h, &coverage)?,
             };
-            let (texture, view) = self.upload_r8(w, h, &coverage);
+            let cov: Vec<f32> = coverage.iter().map(|&b| b as f32 / 255.0).collect();
+            let (texture, view) = build_prefix_tau(&self.ctx, w, h, &cov);
             slot.insert(Mask {
                 bytes,
                 view,
@@ -90,8 +91,9 @@ impl AssetStore {
         Ok(id)
     }
 
-    /// A clonable view of the mask for `id`, if loaded.
-    pub fn mask_view(&self, id: AssetId) -> Option<wgpu::TextureView> {
+    /// A clonable view of the brush's prefix-τ texture for `id`, if loaded
+    /// (the running integral of `−ln(1−coverage)` along the travel axis, §6.2).
+    pub fn prefix_view(&self, id: AssetId) -> Option<wgpu::TextureView> {
         self.inner
             .lock()
             .expect("asset store poisoned")
@@ -111,38 +113,65 @@ impl AssetStore {
             .collect()
     }
 
-    fn upload_r8(&self, width: u32, height: u32, data: &[u8]) -> (wgpu::Texture, wgpu::TextureView) {
-        let texture = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark brush mask"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.ctx.queue.write_texture(
-            texture.as_image_copy(),
-            data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
+}
+
+/// Build a brush's **prefix-τ** texture (DESIGN.md §6.2): per row, the running
+/// integral of optical depth `κ = −ln(1−coverage)` along the travel axis (x),
+/// normalized to brush-local units (x spans `[-1, 1]`, width 2). Stored as
+/// `R32Float` and sampled (via `textureLoad` + manual bilinear) by the sweep
+/// shader: a segment's swept depth at a point is `prefix(u) − prefix(u−d)`.
+///
+/// Shared by [`AssetStore`] (image brushes, at import) and the stroke renderer
+/// (the round tip, regenerated per `hardness`). `coverage` is `width × height`
+/// row-major in `[0, 1]`.
+pub fn build_prefix_tau(
+    ctx: &GpuContext,
+    width: u32,
+    height: u32,
+    coverage: &[f32],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let w = width as usize;
+    let dx = 2.0 / width as f32; // brush-local width of one column
+    let mut prefix = vec![0.0f32; coverage.len()];
+    for y in 0..height as usize {
+        let mut acc = 0.0f32;
+        for x in 0..w {
+            let m = coverage[y * w + x].clamp(0.0, 0.999);
+            acc += -(1.0 - m).ln() * dx;
+            prefix[y * w + x] = acc;
+        }
     }
+
+    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("stark brush prefix-tau"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    ctx.queue.write_texture(
+        texture.as_image_copy(),
+        bytemuck::cast_slice(&prefix),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 /// Content id of a coverage mask: the hash of its dimensions + pixels. Derived
