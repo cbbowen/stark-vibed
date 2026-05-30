@@ -30,10 +30,14 @@
 //!   coverage masks, [`document::BrushShape`] (`Round`/`Stamp`), path-following
 //!   rotated stamps, [`Engine::import_brush`], and referenced assets bundled
 //!   into the save file as compact grayscale PNGs (DESIGN §6.6, §8).
-//! - [~] Step 8: pluggable color spaces (DESIGN §6.7) — [`colorspace::ColorSpace`]
+//! - [x] Step 8: cubic stroke interpolation (DESIGN §6.2) — [`path`] fits raw
+//!   samples to spline control points (RDP) and flattens a centripetal
+//!   Catmull–Rom curve for stamping. Kills stair-stepping, smooths stamping,
+//!   shrinks the log.
+//! - [~] Step 9: pluggable color spaces (DESIGN §6.7) — [`colorspace::ColorSpace`]
 //!   trait + [`colorspace::OkLabColorSpace`] (current pipeline migrated, no
 //!   behavior change). `PigmentColorSpace` (Kubelka–Munk) still to come.
-//! - [ ] Step 9: brush file upload · Step 10: collaboration.
+//! - [ ] Step 10: brush file upload · Step 11: collaboration.
 
 pub mod assets;
 pub mod color;
@@ -46,6 +50,7 @@ pub mod geom;
 pub mod gpu;
 pub mod image;
 pub mod io;
+pub mod path;
 pub mod session;
 
 pub use assets::{AssetId, AssetStore};

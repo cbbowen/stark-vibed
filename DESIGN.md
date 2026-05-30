@@ -69,6 +69,7 @@ stark/
 │   │   │   │   ├── composite.rs # layer compositing + media lighting
 │   │   │   │   └── present.rs   # canvas → surface (Oklab→display) + pan/zoom
 │   │   │   ├── geom.rs          # tile coords, view transform, AABB
+│   │   │   ├── path.rs          # stroke fitting (RDP) + Catmull–Rom flatten (§6.2)
 │   │   │   └── io.rs            # save/load of the action log
 │   │   └── tests/
 │   │       └── golden/         # scripted command sequences + reference PNGs
@@ -199,7 +200,7 @@ pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: ToolId,
     pub brush: BrushParams,       // color in Oklab (§6.5); shape by AssetId (§6.6)
-    pub path: Vec<InputSample>,   // resampled, full fidelity
+    pub path: Vec<InputSample>,   // cubic-spline control points, fitted (§6.2)
     pub seed: u64,                // makes any brush jitter reproducible
 }
 ```
@@ -406,11 +407,30 @@ reservoir state lives in a small uniform/storage buffer updated per stamp.
 Determinism — identical output for live paint, replay, and tests — is guaranteed
 because the only randomness is the explicit `seed`.
 
-**Live vs. replay unification:** `StrokeRenderer` exposes `begin(rec) →
-extend(new_samples) → finish()`. Live painting calls `extend` as `StrokeTo`
-arrives, stamping only the newly added path segment onto CoW preview tiles.
-Replay calls `begin` + one `extend` with the whole path + `finish`. Same code,
-same stamps, same pixels.
+**Path representation & cubic interpolation.** A `StrokeRecord`'s `path` is not
+the raw pointer samples but a compact set of **control points** fitted from them
+(Ramer–Douglas–Peucker simplification at commit, in `path.rs`). Rendering
+expands those through a **centripetal Catmull–Rom spline** into a fine polyline,
+then walks it at even arc length (above). This one change solves three problems:
+
+- **No stair-step aliasing** — jittery pixel-stepped input (a diagonal drawn as
+  1-px right / 1-px up steps) collapses to a smooth curve instead of axis-aligned
+  segments.
+- **Continuous-looking stamping** — stamps ride a smooth path with smooth
+  tangents, so even hard-edged tips read as one stroke rather than a row of
+  discrete dabs (an approximation of a path integral over the stroke).
+- **Smaller files** — a handful of control points replace hundreds of raw
+  samples in the action log (§8).
+
+The per-stamp GPU instance is **unchanged**; only stroke→stamp generation
+differs. Live preview fits incrementally (re-fitting the in-flight samples each
+update), so the preview at release equals the committed stroke — preserving the
+live == committed invariant (§1.3). Fitting and Catmull–Rom evaluation are fixed
+float math, so determinism (and golden/replay/save-load equivalence) holds.
+
+**Live vs. replay unification:** live painting renders the in-flight (fitted)
+stroke onto CoW preview tiles; commit/replay render the same `StrokeRecord`
+through the same path → same stamps, same pixels.
 
 ### 6.3 Compositing & the "old masters" look
 
@@ -834,16 +854,21 @@ above; they layer on top of it.
    coverage masks normalized to `R8`, stamps rotated to the path tangent,
    `Engine::import_brush`. Bundle referenced assets in the save file. Golden test
    painting with `resources/shapes/WornBristles.png`.
-8. **Pluggable color spaces (§6.7):** introduce `trait ColorSpace`, migrate the
+8. **Cubic stroke interpolation (§6.2):** make `StrokeRecord.path` fitted control
+   points (RDP at commit, in `path.rs`); stamp generation walks a centripetal
+   Catmull–Rom spline. Kills diagonal stair-stepping, makes stamping read
+   continuous, and shrinks the action log. Per-stamp GPU interface unchanged;
+   preview fits incrementally to stay == committed. Re-bless goldens.
+9. **Pluggable color spaces (§6.7):** introduce `trait ColorSpace`, migrate the
    current pipeline to `OkLabColorSpace` (behavior-preserving refactor — goldens
    stay green), then add `PigmentColorSpace` with the Kubelka–Munk media shader
    over four pigments and additive deposition. Per-space channel set, blend, and
    shaders; `CanvasMeta.color_space` selects it. Golden tests per space.
-9. **Brush file upload:** a `<input type="file">` in the brush panel that reads
+10. **Brush file upload:** a `<input type="file">` in the brush panel that reads
    image bytes and calls `Engine::import_brush`, so users can bring arbitrary
    brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
    from step 7 already accept arbitrary bytes.
-10. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
+11. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
    testable headlessly by merging two engines' logs and asserting identical
    golden output (convergence as a test).

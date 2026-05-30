@@ -375,8 +375,12 @@ fn generate_stamps(rec: &StrokeRecord, channels: [f32; 4]) -> Vec<Stamp> {
     let b = &rec.brush;
     let spacing = (b.radius * b.spacing).max(0.5);
 
+    // Expand the fitted control points into a smooth fine polyline (§6.2), then
+    // stamp along it. Smooth path + smooth tangents = no stair-step, continuous.
+    let pts = crate::path::flatten(&rec.path, crate::path::FLATTEN_STEP);
+
     let mut out = Vec::new();
-    let Some(first) = rec.path.first() else {
+    let Some(first) = pts.first() else {
         return out;
     };
 
@@ -389,14 +393,14 @@ fn generate_stamps(rec: &StrokeRecord, channels: [f32; 4]) -> Vec<Stamp> {
         }
     };
 
-    let first_dir = rec.path.get(1).map_or(Vec2::ZERO, |s| dir_of(first.pos, s.pos));
+    let first_dir = pts.get(1).map_or(Vec2::ZERO, |s| dir_of(first.pos, s.pos));
     let mut idx = 0u32;
     out.push(make_stamp(rec.seed, b, channels, first, 0.0, first_dir, idx));
     idx += 1;
 
     let mut seg_start = 0.0f32;
     let mut next_at = spacing;
-    for w in rec.path.windows(2) {
+    for w in pts.windows(2) {
         let (a, c) = (&w[0], &w[1]);
         let len = (c.pos - a.pos).length();
         if len < 1e-4 {

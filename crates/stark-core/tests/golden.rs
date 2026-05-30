@@ -55,6 +55,29 @@ fn golden_two_strokes_cross() {
 }
 
 #[test]
+fn golden_curved_stroke() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A coarse zigzag of control points; cubic interpolation should render a
+    // smooth curve through them rather than sharp polyline corners.
+    paint(
+        &mut engine,
+        RED,
+        18.0,
+        &[
+            Vec2::new(-90.0, 40.0),
+            Vec2::new(-45.0, -50.0),
+            Vec2::new(0.0, 40.0),
+            Vec2::new(45.0, -50.0),
+            Vec2::new(90.0, 40.0),
+        ],
+    );
+    let img = engine.render_to_image(BG);
+    assert_golden("curved_stroke", &img, 6);
+}
+
+#[test]
 fn golden_bristle_stroke() {
     let Some(mut engine) = engine_or_skip() else {
         return;
