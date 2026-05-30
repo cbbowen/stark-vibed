@@ -10,9 +10,9 @@ pub fn present() -> &'static str {
     include_wesl!("present")
 }
 
-/// WGSL source for the brush stamp rasterization pass (DESIGN.md §6.2).
-pub fn stamp() -> &'static str {
-    include_wesl!("stamp")
+/// WGSL stamp pass for the Oklab color space (DESIGN.md §6.2).
+pub fn stamp_oklab() -> &'static str {
+    include_wesl!("stamp_oklab")
 }
 
 /// WGSL source for the tile compositing pass (DESIGN.md §6.3, pass A).
@@ -20,7 +20,17 @@ pub fn composite() -> &'static str {
     include_wesl!("composite")
 }
 
-/// WGSL source for the media/lighting + present pass (DESIGN.md §6.3, pass B).
-pub fn media() -> &'static str {
-    include_wesl!("media")
+/// WGSL media/lighting pass for the Oklab color space (DESIGN.md §6.3, pass B).
+pub fn media_oklab() -> &'static str {
+    include_wesl!("media_oklab")
+}
+
+/// WGSL stamp pass for the pigment color space (additive deposit) — DESIGN §6.7.
+pub fn stamp_pigment() -> &'static str {
+    include_wesl!("stamp_pigment")
+}
+
+/// WGSL media pass for the pigment color space (Kubelka–Munk) — DESIGN §6.7.
+pub fn media_pigment() -> &'static str {
+    include_wesl!("media_pigment")
 }

@@ -41,15 +41,18 @@
 //!   (`TILE_TEX` textures) rendered, not copied, so the compositor's bilinear
 //!   filter reads across tile boundaries instead of clamping. Kills the lighting
 //!   seams the media pass amplified under zoom/sub-pixel pan (`tests/seam.rs`).
-//! - [~] Step 9: pluggable color spaces (DESIGN §6.7) — [`colorspace::ColorSpace`]
-//!   trait + [`colorspace::OkLabColorSpace`] (current pipeline migrated, no
-//!   behavior change). `PigmentColorSpace` (Kubelka–Munk) still to come.
+//! - [x] Step 9: pluggable color spaces (DESIGN §6.7) — [`colorspace::ColorSpace`]
+//!   trait, [`colorspace::OkLabColorSpace`] (migrated, no behavior change), and
+//!   [`colorspace::PigmentColorSpace`]: four-pigment Kubelka–Munk ([`pigment`])
+//!   with additive deposition + NNLS RGB→pigment picker. Engine selects via
+//!   [`Engine::new_with_color_space`]/[`Engine::set_color_space`]. (UI toggle TBD.)
 //! - [ ] Step 10: brush file upload · Step 11: collaboration.
 
 pub mod assets;
 pub mod color;
 pub mod colorspace;
 pub mod command;
+pub mod pigment;
 pub mod document;
 pub mod engine;
 pub mod error;

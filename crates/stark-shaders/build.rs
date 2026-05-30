@@ -10,11 +10,15 @@ fn main() {
     compiler.build_artifact(&"package::present".parse().unwrap(), "present");
 
     // The brush stamp rasterization shader (DESIGN.md §6.2).
-    compiler.build_artifact(&"package::stamp".parse().unwrap(), "stamp");
+    compiler.build_artifact(&"package::stamp_oklab".parse().unwrap(), "stamp_oklab");
 
     // Compositing (pass A) and media/lighting (pass B) shaders (DESIGN.md §6.3).
     compiler.build_artifact(&"package::composite".parse().unwrap(), "composite");
-    compiler.build_artifact(&"package::media".parse().unwrap(), "media");
+    compiler.build_artifact(&"package::media_oklab".parse().unwrap(), "media_oklab");
+
+    // Pigment color space: additive stamp + Kubelka–Munk media (DESIGN.md §6.7).
+    compiler.build_artifact(&"package::stamp_pigment".parse().unwrap(), "stamp_pigment");
+    compiler.build_artifact(&"package::media_pigment".parse().unwrap(), "media_pigment");
 
     println!("cargo::rerun-if-changed=src/shaders");
 }

@@ -1,29 +1,22 @@
-// Swept-segment brush rasterization for the Oklab color space (DESIGN.md §6.2).
-//
-// One instanced quad per stroke segment. The quad covers the segment's swept
-// footprint; the fragment computes the brush *swept along the segment* as a
-// difference of the precomputed prefix-τ texture, converts optical depth to
-// coverage (α = 1 − exp(−flow·depth)), and writes:
-//   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b) + coverage in a
-//   target 1: aux   (Rg16Float)   — (height, wet) scaled by coverage
-// Overlapping segment quads composite with premultiplied "over", which sums
-// optical depth exactly, so the stroke reconstructs the continuous path integral.
+// Shared swept-segment scaffolding for the stamp pass (DESIGN.md §6.2), imported
+// by the per-color-space stamp shaders. Everything here is color-space-agnostic:
+// the tile transform + prefix-τ bindings, the oriented-quad vertex, and the
+// swept optical-depth lookup. Each variant differs only in how the fragment
+// turns that depth into channel deposits (see stamp.wesl / stamp_pigment.wesl).
 
 struct TileXform {
-    // params.xy = tile *texture* top-left in canvas px (interior origin − apron);
-    // params.z = 2 / TILE_TEX so the full interior+apron target maps to NDC; w unused.
+    // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
+    // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); w unused.
     params: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
-// Prefix-τ: per row, the running integral of κ=−ln(1−coverage) along the brush's
-// travel axis, in brush-local units (x ∈ [-1,1]). Sampled via textureLoad.
 @group(1) @binding(0) var prefix_tex: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) local: vec2<f32>, // brush-local (x in radius units from start, y in [-1,1])
-    @location(1) ch: vec3<f32>,    // pigment color (Oklab L,a,b)
+    @location(1) ch: vec4<f32>,    // color-space channels (Oklab uses xyz; pigment all 4)
     @location(2) misc: vec4<f32>,  // length/radius, flow, height, wet
 }
 
@@ -32,19 +25,20 @@ struct FsOut {
     @location(1) aux: vec4<f32>,
 }
 
-@vertex
-fn vs_main(
-    @builtin(vertex_index) vi: u32,
-    @location(0) start: vec2<f32>,
-    @location(1) dir: vec2<f32>,    // unit tangent
-    @location(2) geom: vec4<f32>,   // radius, length, flow, unused
-    @location(3) ch: vec4<f32>,     // color channels (Oklab in xyz)
-    @location(4) aux: vec2<f32>,    // height, wet
+// Build the oriented quad for one swept segment. The quad spans brush-local
+// x ∈ [-1, lr+1], y ∈ [-1, 1] (a radius of margin each side) and is placed onto
+// the canvas along the segment's tangent, mapped into the tile's apron'd target.
+fn sweep_vertex(
+    vi: u32,
+    start: vec2<f32>,
+    dir: vec2<f32>,   // unit tangent
+    geom: vec4<f32>,  // radius, length, flow, unused
+    ch: vec4<f32>,    // color-space channels
+    aux: vec2<f32>,   // height, wet
 ) -> VsOut {
     let radius = geom.x;
     let lr = geom.y / radius; // segment length in radius units
 
-    // Quad spans local x ∈ [-1, lr+1], y ∈ [-1, 1] (a radius of margin each side).
     let cx = select(-1.0, lr + 1.0, (vi & 1u) != 0u);
     let cy = select(-1.0, 1.0, (vi >> 1u) != 0u);
 
@@ -56,19 +50,18 @@ fn vs_main(
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.local = vec2<f32>(cx, cy);
-    out.ch = ch.xyz;
+    out.ch = ch;
     out.misc = vec4<f32>(lr, geom.z, aux.x, aux.y);
     return out;
 }
 
-// Bilinear lookup of the prefix-τ at brush-local (xl, yl), xl,yl ∈ [-1,1].
-// Below the brush (xl ≤ -1) the running integral is 0; past it, it clamps to the
-// row total (the last column), which is what an "over" beyond the tip should be.
+// Bilinear lookup of the prefix-τ (fp32) at brush-local (xl, yl) ∈ [-1,1]: 0
+// before the leading edge, clamp-to-row-total past the trailing edge.
 //
 // Why this is hand-rolled instead of a ClampToEdge sampler with linear filtering:
 //   1. Format. prefix_tex is R32Float (we need fp32 because each fragment takes
-//      the *difference* of two prefix sums — see fs_main — which is sensitive to
-//      catastrophic cancellation, and a row's total κ can be large for opaque
+//      the *difference* of two prefix sums — see swept_depth — which is sensitive
+//      to catastrophic cancellation, and a row's total κ can be large for opaque
 //      brushes). Hardware linear filtering of a 32-bit-float texture requires the
 //      FLOAT32_FILTERABLE feature, which is optional on WebGPU (our primary
 //      target) and not enabled by this device. A filterable 16-bit format would
@@ -81,8 +74,6 @@ fn vs_main(
 //   3. Precision. Fixed-function bilinear uses reduced-precision fractional
 //      weights on many GPUs; the fp32 `mix` below keeps full precision for the
 //      cancellation-sensitive difference.
-// The fetch cost (8 textureLoads/fragment) is negligible: these textures are tiny
-// and cache-hot, and stamping is bound by blend/fill-rate, not these lookups.
 fn prefix_at(xl: f32, yl: f32) -> f32 {
     if xl <= -1.0 {
         return 0.0;
@@ -105,19 +96,11 @@ fn prefix_at(xl: f32, yl: f32) -> f32 {
     return mix(mix(p00, p10, fx), mix(p01, p11, fx), fy);
 }
 
-@fragment
-fn fs_main(in: VsOut) -> FsOut {
-    let px = in.local.x;
-    let py = in.local.y;
-    let lr = in.misc.x;
-    let flow = in.misc.y;
-
-    // Swept optical depth over the segment, then over → coverage.
-    let depth = prefix_at(px, py) - prefix_at(px - lr, py);
-    let coverage = 1.0 - exp(-flow * max(depth, 0.0));
-
-    var out: FsOut;
-    out.color = vec4<f32>(in.ch * coverage, coverage);
-    out.aux = vec4<f32>(in.misc.z * coverage, in.misc.w * coverage, 0.0, 0.0);
-    return out;
+// Swept geometric optical depth over the fragment's segment: the brush footprint
+// integrated as it travels, as a difference of prefix sums. Sums exactly across a
+// stroke's overlapping segment quads (under "over" for τ, or additively for
+// amounts), reconstructing the continuous path integral.
+fn swept_depth(in: VsOut) -> f32 {
+    let depth = prefix_at(in.local.x, in.local.y) - prefix_at(in.local.x - in.misc.x, in.local.y);
+    return max(depth, 0.0);
 }

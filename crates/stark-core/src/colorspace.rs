@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::color;
+use crate::{color, pigment};
 
 /// Identifies a color space; serialized in the save format (`CanvasMeta`, §8).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,8 +25,7 @@ impl ColorSpaceId {
     pub fn make(self) -> Arc<dyn ColorSpace> {
         match self {
             ColorSpaceId::Oklab => Arc::new(OkLabColorSpace),
-            // Pigment lands in the next step (DESIGN.md §6.7); fall back for now.
-            ColorSpaceId::Pigment => Arc::new(OkLabColorSpace),
+            ColorSpaceId::Pigment => Arc::new(PigmentColorSpace),
         }
     }
 }
@@ -112,9 +111,50 @@ impl ColorSpace for OkLabColorSpace {
     }
 
     fn stamp_shader(&self) -> &'static str {
-        stark_shaders::stamp()
+        stark_shaders::stamp_oklab()
     }
     fn media_shader(&self) -> &'static str {
-        stark_shaders::media()
+        stark_shaders::media_oklab()
+    }
+}
+
+/// Experimental pigment space (DESIGN.md §6.7): the four color channels are
+/// accumulated optical *amounts* of four pigments, deposited **additively**, and
+/// the media pass renders them through **Kubelka–Munk** (Titanium White's
+/// scattering provides the hiding power). Coverage is intrinsic to finite-depth
+/// K–M, so `aux` keeps the same `(height, wet)` layout as Oklab.
+pub struct PigmentColorSpace;
+
+impl ColorSpace for PigmentColorSpace {
+    fn id(&self) -> ColorSpaceId {
+        ColorSpaceId::Pigment
+    }
+
+    fn color_format(&self) -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Rgba16Float
+    }
+    fn aux_format(&self) -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Rg16Float
+    }
+    fn color_blend(&self) -> wgpu::BlendState {
+        additive()
+    }
+    fn aux_blend(&self) -> wgpu::BlendState {
+        additive()
+    }
+
+    fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4] {
+        pigment::srgb_to_pigments(rgb)
+    }
+
+    fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3] {
+        pigment::pigments_to_srgb(channels)
+    }
+
+    fn stamp_shader(&self) -> &'static str {
+        stark_shaders::stamp_pigment()
+    }
+    fn media_shader(&self) -> &'static str {
+        stark_shaders::media_pigment()
     }
 }

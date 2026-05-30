@@ -4,6 +4,7 @@
 mod common;
 
 use common::*;
+use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
 use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
@@ -52,6 +53,25 @@ fn golden_two_strokes_cross() {
     );
     let img = engine.render_to_image(BG);
     assert_golden("two_strokes_cross", &img, 6);
+}
+
+#[test]
+fn golden_pigment_kubelka_munk() {
+    let Some(mut engine) = engine_or_skip_with(ColorSpaceId::Pigment) else {
+        return;
+    };
+    // Phthalo blue and Hansa yellow crossing → subtractive green at the overlap;
+    // a Titanium White bar over the lower half shows physical hiding/tinting.
+    let blue = [0.10, 0.30, 0.80, 1.0];
+    let yellow = [0.92, 0.82, 0.10, 1.0];
+    let white = [0.96, 0.96, 0.96, 1.0];
+
+    paint(&mut engine, blue, 34.0, &[Vec2::new(-90.0, -70.0), Vec2::new(90.0, 70.0)]);
+    paint(&mut engine, yellow, 34.0, &[Vec2::new(-90.0, 70.0), Vec2::new(90.0, -70.0)]);
+    paint(&mut engine, white, 30.0, &[Vec2::new(-100.0, 55.0), Vec2::new(100.0, 55.0)]);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("pigment_kubelka_munk", &img, 6);
 }
 
 #[test]

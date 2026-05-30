@@ -7,20 +7,34 @@ use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
+use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
 use stark_core::document::{BrushParams, Tool};
-use stark_core::engine::headless_engine;
+use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::{Engine, RgbaImage};
 
 pub const SIZE: Extent2 = Extent2 { width: 256, height: 256 };
 pub const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const BG: wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+/// A warm paper substrate, for color spaces that composite over a light ground.
+pub const PAPER: wgpu::Color = wgpu::Color { r: 0.92, g: 0.90, b: 0.85, a: 1.0 };
 
 /// Build a headless engine, or `None` if this machine has no usable adapter
 /// (the test should then skip rather than fail).
 pub fn engine_or_skip() -> Option<Engine> {
     match pollster::block_on(headless_engine(TARGET, SIZE)) {
+        Ok(e) => Some(e),
+        Err(e) => {
+            eprintln!("skipping GPU test: {e}");
+            None
+        }
+    }
+}
+
+/// A headless engine in a chosen color space (DESIGN.md §6.7).
+pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
+    match pollster::block_on(headless_engine_with(TARGET, SIZE, id)) {
         Ok(e) => Some(e),
         Err(e) => {
             eprintln!("skipping GPU test: {e}");

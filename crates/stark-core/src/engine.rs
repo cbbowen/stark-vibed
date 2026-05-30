@@ -68,18 +68,22 @@ pub struct Engine {
 
 impl Engine {
     /// Build an engine that presents to `target_format` (a surface format, or a
-    /// test target). Takes wgpu handles per GOALS §Inputs.
+    /// test target), in the default Oklab color space. Takes wgpu handles per
+    /// GOALS §Inputs.
     pub fn new(gpu: GpuContext, target_format: wgpu::TextureFormat, viewport: Extent2) -> Self {
-        // Default to Oklab; a future API can pick the color space (§6.7).
-        let color_space = ColorSpaceId::Oklab.make();
-        let pool = TilePool::new(
-            gpu.clone(),
-            color_space.color_format(),
-            color_space.aux_format(),
-        );
-        let stroke = StrokeRenderer::new(&gpu, color_space.clone());
+        Self::new_with_color_space(gpu, target_format, viewport, ColorSpaceId::Oklab)
+    }
+
+    /// Build an engine in a chosen color space (DESIGN.md §6.7).
+    pub fn new_with_color_space(
+        gpu: GpuContext,
+        target_format: wgpu::TextureFormat,
+        viewport: Extent2,
+        color_space: ColorSpaceId,
+    ) -> Self {
+        let color_space = color_space.make();
+        let (pool, stroke, compositor) = build_gpu(&gpu, target_format, viewport, &color_space);
         let assets = AssetStore::new(gpu.clone());
-        let compositor = Compositor::new(&gpu, target_format, viewport, color_space.as_ref());
 
         let initial = DocState::with_layer(ROOT_LAYER);
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(initial));
@@ -265,6 +269,10 @@ impl Engine {
     /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
     pub fn load_document(&mut self, file: &DocumentFile) {
         self.reset_document();
+        // Match the document's color space before replaying (DESIGN.md §6.7).
+        if file.canvas.color_space != self.color_space.id() {
+            self.rebuild_gpu_for(file.canvas.color_space);
+        }
         // Brush assets must be available before replaying strokes that use them.
         for (_, bytes) in &file.assets {
             if let Err(e) = self.assets.insert_bytes(bytes) {
@@ -370,6 +378,31 @@ impl Engine {
         self.timeline.push(action, &mut ctx);
     }
 
+    /// The document's color space id (DESIGN.md §6.7).
+    pub fn color_space(&self) -> ColorSpaceId {
+        self.color_space.id()
+    }
+
+    /// Switch color space, clearing the canvas (channel layouts differ, so
+    /// existing tiles can't be reinterpreted). For a fresh document or a UI
+    /// toggle (DESIGN.md §6.7).
+    pub fn set_color_space(&mut self, id: ColorSpaceId) {
+        self.reset_document();
+        self.rebuild_gpu_for(id);
+    }
+
+    /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
+    /// document is already empty (no tiles of the old format are referenced).
+    fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
+        let cs = id.make();
+        let (pool, stroke, compositor) =
+            build_gpu(&self.gpu, self.target_format, self.session.view.viewport, &cs);
+        self.color_space = cs;
+        self.pool = pool;
+        self.stroke = stroke;
+        self.compositor = compositor;
+    }
+
     /// Reset to an empty document (one root layer) before a load/replay.
     fn reset_document(&mut self) {
         self.timeline = Box::new(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
@@ -442,11 +475,33 @@ impl Engine {
     }
 }
 
+/// Build the GPU subsystems whose layout/shaders depend on the color space.
+fn build_gpu(
+    gpu: &GpuContext,
+    target_format: wgpu::TextureFormat,
+    viewport: Extent2,
+    cs: &Arc<dyn ColorSpace>,
+) -> (TilePool, StrokeRenderer, Compositor) {
+    let pool = TilePool::new(gpu.clone(), cs.color_format(), cs.aux_format());
+    let stroke = StrokeRenderer::new(gpu, cs.clone());
+    let compositor = Compositor::new(gpu, target_format, viewport, cs.as_ref());
+    (pool, stroke, compositor)
+}
+
 /// Convenience for tests/tools: build an engine on a headless device.
 pub async fn headless_engine(
     target_format: wgpu::TextureFormat,
     viewport: Extent2,
 ) -> Result<Engine> {
+    headless_engine_with(target_format, viewport, ColorSpaceId::Oklab).await
+}
+
+/// Headless engine in a chosen color space (DESIGN.md §6.7).
+pub async fn headless_engine_with(
+    target_format: wgpu::TextureFormat,
+    viewport: Extent2,
+    color_space: ColorSpaceId,
+) -> Result<Engine> {
     let gpu = GpuContext::headless().await?;
-    Ok(Engine::new(gpu, target_format, viewport))
+    Ok(Engine::new_with_color_space(gpu, target_format, viewport, color_space))
 }
