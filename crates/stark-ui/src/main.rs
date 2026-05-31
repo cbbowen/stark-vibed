@@ -21,7 +21,7 @@ use stark_core::geom::Vec2;
 use stark_core::{AssetId, ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState};
 
 /// Built-in brush shape, embedded so it's always available (DESIGN.md §6.6).
-const BRISTLES_PNG: &[u8] = include_bytes!("../../../resources/shapes/WornBristles.png");
+const BRISTLES_PNG: &[u8] = include_bytes!("../../../resources/shape/WornBristles.png");
 
 /// Saturation/value picker square size, in pixels.
 const SV_W: f32 = 256.0;

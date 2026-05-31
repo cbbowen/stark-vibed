@@ -651,7 +651,7 @@ Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
 The default brush is a procedural soft disc, but natural media needs *organic*
 tips — worn bristles, chalk, a palette-knife edge. A brush shape is just a
 **coverage mask**: a grayscale image where white = full deposit and black = none
-(e.g. `resources/shapes/WornBristles.png`). The mask drives coverage and, scaled,
+(e.g. `resources/shape/WornBristles.png`). The mask drives coverage and, scaled,
 the height channel too — so a worn-bristle tip lays down *broken* impasto rather
 than a uniform slab.
 
@@ -1016,7 +1016,7 @@ above; they layer on top of it.
 7. **Brush shapes & assets (§6.6):** content-addressed `AssetStore`, image
    coverage masks normalized to `R8`, stamps rotated to the path tangent,
    `Engine::import_brush`. Bundle referenced assets in the save file. Golden test
-   painting with `resources/shapes/WornBristles.png`.
+   painting with `resources/shape/WornBristles.png`.
 8. **Cubic stroke interpolation (§6.2):** make `StrokeRecord.path` fitted control
    points (RDP at commit, in `path.rs`); stamp generation walks a centripetal
    Catmull–Rom spline. Kills diagonal stair-stepping, makes stamping read

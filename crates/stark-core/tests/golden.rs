@@ -13,7 +13,7 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 /// The example brush shape, embedded so the test is self-contained.
-const BRISTLES: &[u8] = include_bytes!("../../../resources/shapes/WornBristles.png");
+const BRISTLES: &[u8] = include_bytes!("../../../resources/shape/WornBristles.png");
 
 #[test]
 fn golden_single_stroke() {
