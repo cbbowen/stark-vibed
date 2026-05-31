@@ -46,7 +46,12 @@
 //!   [`colorspace::PigmentColorSpace`]: four-pigment Kubelka–Munk ([`pigment`])
 //!   with additive deposition + NNLS RGB→pigment picker. Engine selects via
 //!   [`Engine::new_with_color_space`]/[`Engine::set_color_space`]. (UI toggle TBD.)
-//! - [ ] Step 10: brush file upload · Step 11: collaboration.
+//! - [x] Step 10: wet mixing & brush dynamics (DESIGN §6.2) — [`document::BrushDynamics`]
+//!   (`Dry` default / `Mixer`). A `Mixer` brush smears paint already on the canvas:
+//!   a GPU compute pass composites the base under the stroke, runs a serial
+//!   reservoir scan, and patches per-segment color — no CPU readback, so it works
+//!   on WebGPU. Dry strokes are unchanged. UI exposes a Dry/Mixer toggle + sliders.
+//! - [ ] Step 11: brush file upload · Step 12: collaboration.
 
 pub mod assets;
 pub mod color;

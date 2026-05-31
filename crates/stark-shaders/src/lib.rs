@@ -34,3 +34,8 @@ pub fn stamp_pigment() -> &'static str {
 pub fn media_pigment() -> &'static str {
     include_wesl!("media_pigment")
 }
+
+/// WGSL compute pass for wet-mixing pickup (the reservoir scan) — DESIGN §6.2.
+pub fn mixer() -> &'static str {
+    include_wesl!("mixer")
+}

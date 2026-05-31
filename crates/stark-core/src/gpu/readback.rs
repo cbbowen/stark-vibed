@@ -3,10 +3,15 @@
 use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
 
-/// Read an 8-bit, 4-channel (e.g. `Rgba8Unorm`) texture back to tightly-packed
-/// RGBA bytes. Blocks until the copy completes.
-pub fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
-    let unpadded = size.width * 4;
+/// Read any texture back to tightly-packed bytes (row padding removed), blocking
+/// until the copy completes. `bytes_per_texel` must match the texture format.
+fn read_texture_bytes(
+    ctx: &GpuContext,
+    texture: &wgpu::Texture,
+    size: Extent2,
+    bytes_per_texel: u32,
+) -> Vec<u8> {
+    let unpadded = size.width * bytes_per_texel;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded = unpadded.div_ceil(align) * align;
 
@@ -55,4 +60,10 @@ pub fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> V
     drop(data);
     buffer.unmap();
     out
+}
+
+/// Read an 8-bit, 4-channel (e.g. `Rgba8Unorm`) texture back to tightly-packed
+/// RGBA bytes. Blocks until the copy completes.
+pub fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
+    read_texture_bytes(ctx, texture, size, 4)
 }

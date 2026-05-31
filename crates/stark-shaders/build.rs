@@ -20,5 +20,8 @@ fn main() {
     compiler.build_artifact(&"package::stamp_pigment".parse().unwrap(), "stamp_pigment");
     compiler.build_artifact(&"package::media_pigment".parse().unwrap(), "media_pigment");
 
+    // Wet-mixing reservoir scan (compute), color-space-agnostic (DESIGN.md §6.2).
+    compiler.build_artifact(&"package::mixer".parse().unwrap(), "mixer");
+
     println!("cargo::rerun-if-changed=src/shaders");
 }

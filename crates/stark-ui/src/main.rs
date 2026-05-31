@@ -16,7 +16,7 @@ use dioxus::prelude::*;
 
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, CANVAS_ID};
-use stark_core::document::{BrushParams, BrushShape, Tool};
+use stark_core::document::{BrushDynamics, BrushParams, BrushShape, MixerParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{AssetId, ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState};
 
@@ -221,6 +221,13 @@ fn BrushPanel() -> Element {
         .map(|o| o.brush)
         .unwrap_or_default();
     let is_round = matches!(brush.shape, BrushShape::Round);
+    // Current wet-mixing params (or the defaults to show when switching on).
+    let mixer = match brush.dynamics {
+        BrushDynamics::Mixer(mp) => Some(mp),
+        BrushDynamics::Dry => None,
+    };
+    let is_mixer = mixer.is_some();
+    let mp = mixer.unwrap_or_default();
 
     let chip = |active: bool| if active { "chip active" } else { "chip" };
 
@@ -238,12 +245,33 @@ fn BrushPanel() -> Element {
                     "Bristles"
                 }
             }
+            // Brush dynamics: dry paint vs. a mixer that smears wet canvas paint.
+            div { class: "brush-shapes",
+                button {
+                    class: chip(!is_mixer),
+                    onclick: move |_| set_dynamics(state, BrushDynamics::Dry),
+                    "Dry"
+                }
+                button {
+                    class: chip(is_mixer),
+                    onclick: move |_| set_dynamics(state, BrushDynamics::Mixer(MixerParams::default())),
+                    "Mixer"
+                }
+            }
             Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
                 oninput: move |v| update_brush(state, move |b| b.radius = v) }
             Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
                 oninput: move |v| update_brush(state, move |b| b.color[3] = v) }
             Slider { label: "Rate", min: 0.05, max: 1.0, value: brush.flow,
                 oninput: move |v| update_brush(state, move |b| b.flow = v) }
+            // Mixer-only controls: how much canvas paint is lifted, and how fast
+            // the stroke pulls back toward its own color (DESIGN.md §6.2).
+            if is_mixer {
+                Slider { label: "Pickup", min: 0.0, max: 1.0, value: mp.pickup,
+                    oninput: move |v| set_mixer(state, move |m| m.pickup = v) }
+                Slider { label: "Mix", min: 0.0, max: 1.0, value: mp.color_inject,
+                    oninput: move |v| set_mixer(state, move |m| m.color_inject = v) }
+            }
         }
     }
 }
@@ -253,6 +281,20 @@ fn set_shape(state: AppState, shape: BrushShape, spacing: f32) {
     update_brush(state, move |b| {
         b.shape = shape;
         b.spacing = spacing;
+    });
+}
+
+/// Set the brush's canvas-pickup behavior (DESIGN.md §6.2).
+fn set_dynamics(state: AppState, dynamics: BrushDynamics) {
+    update_brush(state, move |b| b.dynamics = dynamics);
+}
+
+/// Edit the mixer reservoir params in place (no-op if the brush isn't a Mixer).
+fn set_mixer(state: AppState, f: impl FnOnce(&mut MixerParams)) {
+    update_brush(state, move |b| {
+        if let BrushDynamics::Mixer(mp) = &mut b.dynamics {
+            f(mp);
+        }
     });
 }
 

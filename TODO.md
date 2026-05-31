@@ -1,4 +1,4 @@
-* Shape image.
+* Remove `Presenter` now that it's only used in the skeleton test?
 * Stroke smoothing/interpolation.
 * Canvas texture image.
 * Seams between tiles.

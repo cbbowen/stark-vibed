@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushShape, Tool};
+use stark_core::document::{BrushDynamics, BrushShape, MixerParams, Tool};
 use stark_core::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -122,4 +122,36 @@ fn golden_bristle_stroke() {
 
     let img = engine.render_to_image(BG);
     assert_golden("bristle_stroke", &img, 6);
+}
+
+#[test]
+fn golden_smear_mixer() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // A committed green bar, then a red Mixer stroke dragged left→right across it:
+    // the brush should pick up green where it crosses and carry a fading green
+    // tint past the bar (DESIGN.md §6.2). A Dry red stroke would just lay flat red.
+    paint(
+        &mut engine,
+        GREEN,
+        38.0,
+        &[Vec2::new(0.0, -90.0), Vec2::new(0.0, 90.0)],
+    );
+
+    let mut brush = brush(RED, 16.0);
+    brush.dynamics = BrushDynamics::Mixer(MixerParams::default());
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-110.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(110.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(BG);
+    assert_golden("smear_mixer", &img, 6);
 }

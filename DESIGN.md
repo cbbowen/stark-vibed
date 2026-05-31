@@ -387,25 +387,14 @@ allocation churn; `acquire()` returns a cleared tile, `Drop` of the last
 
 ### 6.2 The brush engine — natural media
 
-Stroke rasterization is **stamp-based along a resampled path**, with a brush
-state machine that carries *loaded paint* so wet-on-wet mixing feels physical:
-
-```
-for each stamp s spaced by (brush.spacing × f(pressure)) along path:
-    footprint = brush.shape (a coverage mask, §6.6) scaled by pressure/tilt,
-                rotated to the path tangent + seeded angle jitter at s
-    1. PICKUP:  read canvas color/wet under footprint → blend into brush
-                reservoir in Oklab, weighted by canvas wetness (bidirectional)
-    2. DEPOSIT: write reservoir color (Oklab lerp), add height (impasto),
-                add wetness — all modulated by pressure & remaining paint
-    seed-driven jitter (scatter, rotation, grain) uses StrokeRecord.seed
-```
-
-This is sequential along the path (each stamp depends on the canvas the previous
-stamp left), but each stamp's footprint is small and fully GPU-parallel. The
-reservoir state lives in a small uniform/storage buffer updated per stamp.
-Determinism — identical output for live paint, replay, and tests — is guaranteed
-because the only randomness is the explicit `seed`.
+Stroke rasterization is **swept-segment along a fitted path** (detailed under
+*Path representation* and *Continuous stamping* below): pointer samples are fitted
+to control points, expanded to a smooth polyline, and each short segment is swept
+as a single quad. Layered on top is a pluggable **brush-dynamics** model that can
+carry *loaded paint* and smear what is already on the canvas, so wet-on-wet mixing
+feels physical (see *Wet mixing & brush dynamics* below). Everything is
+deterministic — the only randomness is the explicit `seed` — so live paint,
+replay, and golden tests agree.
 
 **Path representation & cubic interpolation.** A `StrokeRecord`'s `path` is not
 the raw pointer samples but a compact set of **control points** fitted from them
@@ -456,6 +445,110 @@ degenerate segment given a minimal length.
 **Live vs. replay unification:** live painting renders the in-flight (fitted)
 stroke onto CoW preview tiles; commit/replay render the same `StrokeRecord`
 through the same path → same stamps, same pixels.
+
+**Wet mixing & brush dynamics.** To smear paint already on the canvas — the core
+of a natural-media feel — the brush picks up wet pigment under it, carries it, and
+lays down an evolving mix downstream. This is **sequential and order-dependent**
+(what's under the brush includes what it deposited a moment ago), which is exactly
+what the swept-segment model is *not*. The reconciliation rests on two facts:
+
+1. `SegmentInstance` already carries **per-segment** `ch[4]` (color) and `aux[2]`
+   (height, wet). So smearing is just *"compute a different color per segment"* —
+   the sweep shader and the parallel render path are **untouched**.
+2. The sequential part collapses to a tiny **1-D reservoir recurrence** over the
+   flattened path (a few floats of state, run once per stroke):
+
+   ```
+   reservoir = { ch: [f32;4], load: f32 }            // ch = the color space's
+                                                      //   channels (Oklab L,a,b
+                                                      //   or pigment loads §6.7);
+                                                      //   extensible: + wet, height
+   for each step i at footprint p_i along the path:
+       (c, a, w) = sample base canvas under p_i       // active layer, in ch space
+       PICKUP : lift = pickup · w · a                 // only wet, present paint lifts
+                ch   = mass_weighted_mix(ch, load, c, lift)
+                load = min(capacity, load + lift)
+       DEPOSIT: segment.ch  = ch                      // → fed to the sweep
+                segment.cov = flow · f(pressure) · g(load)
+                load -= deposited                      // refills toward brush color
+                                                       //   for a mixer; pure smudge
+                                                       //   injects none
+   ```
+
+   Mixing happens in the color space's channels, so it composes with both spaces:
+   Oklab gives a perceptually-uniform blend, and pigment channels mix as physical
+   concentrations (the same additive logic the K–M deposit already uses, §6.7).
+
+*Pluggable axis.* Brush dynamics are a serde **enum** on `BrushParams` (it lives
+in the action log, so not a trait object):
+
+```rust
+enum BrushDynamics {
+    Dry,             // one-way `drain` load — the DEFAULT, so existing strokes,
+                     //   goldens, and saved files are unchanged
+    Mixer(MixerParams),
+    // reserved, designed-for but not built:
+    // Bleed(BleedParams),   // Mixer + short-range wet diffusion at edges
+    // Fluid(FluidParams),   // Eulerian advect+inject micro-sim per stroke
+}
+```
+
+The renderer dispatches on it; the enum is the seam where higher-fidelity tiers
+plug in. Pure smudge vs. mixer is a parameter (own-color injection), not a code
+path.
+
+*Determinism via per-stroke canvas read.* PICKUP samples **`base`** — the
+pre-stroke committed canvas that `Action::apply`/`render` already hold. Two
+properties fall out of reading `base` (not the evolving canvas):
+
+- **Self-pickup is implicit** — paint the stroke just laid is still in the
+  reservoir, so the carry needs no extra read.
+- **Compact, replay-deterministic log** — only path + brush params are stored;
+  per-segment colors are *recomputed* at apply time from the replayed `base` (same
+  machine → identical). They are **never** baked into the log.
+
+The accepted approximation: a stroke crossing its **own earlier** trail won't
+smear it (`base` doesn't contain it). That boundary is where the future
+persistent-wet-field / advection tiers take over.
+
+*Implementation — fully on the GPU, no readback.* A CPU read of `base` is
+impossible on the web: WebGPU cannot block for a buffer map (`getMappedRange`
+panics), and a synchronous readback on the interactive path is off the table. So
+pickup runs entirely on the GPU, chained into the stroke's command encoder before
+the deposit (`gpu/stroke.rs::encode_mixer`):
+1. **Region composite** — re-composite the active layer's `base` tiles that
+   overlap the stroke's bbox into one 1:1 `color`+`aux` region texture (the
+   `composite` shader with a region transform). One bindable "canvas under the
+   stroke"; bounded by `MAX_REGION_DIM` (oversized strokes skip pickup).
+2. **Reservoir scan** — a single-workgroup serial compute pass (`mixer.wesl`)
+   walks the segments in order, samples the region (`textureLoad`, nearest),
+   decodes per color space, runs the recurrence, and writes each segment's color
+   into the instance buffer (`STORAGE | VERTEX`), patching the `ch` vertex
+   attribute in place — so the sweep shaders are untouched.
+3. **Deposit** — the existing swept render reads the patched colors.
+
+`SegmentInstance` is padded to 64 B so the same buffer is a valid `std430`
+`array<Instance>` for the compute pass. The native golden exercises this exact
+path, so it validates the GPU pipeline without a browser.
+
+*Compositing note.* Varying per-segment color is safe for the sweep: alpha still
+sums exactly (`1 − ∏(1−α)`), and color in the heavy overlap between consecutive
+segments becomes a coverage-weighted blend biased toward the most-recent (topmost)
+segment — the correct direction for a forward smear. A golden (smear color X over
+a committed patch of Y → trail transitions Y→X) guards this.
+
+*Paint never dries.* Wetness persists, so the whole canvas stays workable like a
+continuous oil session; a drying model (time/age decay or an explicit dry action)
+is a future option, not built.
+
+*Known limitation — non-conservative lift (copy-smear).* v1 pickup is
+**non-destructive**: it copies canvas color into the reservoir but does **not**
+remove paint from the source, so the source never lightens and total pigment is
+not conserved (a long smear can "duplicate" color rather than drag a finite amount
+of it). True mass-conserving lift requires the stroke to also *reduce* `base`
+coverage where it lifts — i.e. write the source tiles — which the single-pass
+additive/over deposit cannot express. Deferred; acceptable because copy-smear
+reads as smearing in the overwhelming majority of cases.
 
 ### 6.3 Compositing & the "old masters" look
 
@@ -895,8 +988,9 @@ above; they layer on top of it.
    CoW.
 3. **History + golden harness:** headless context, readback, first golden tests
    incl. undo/redo and replay-equivalence.
-4. **Multi-channel + media pass:** add height/wet, pickup/deposit reservoir,
-   normal-from-height lighting — the "old masters" payoff.
+4. **Multi-channel + media pass:** add height/wet channels, the one-way load
+   (`drain`) reservoir, and normal-from-height lighting — the "old masters"
+   payoff. (Bidirectional canvas pickup is its own step, 10.)
 5. **Save/load + timelapse:** serialize the action log; load-then-undo; replay
    exporter.
 6. **Layers, LOD, and the Dioxus UI** — three largely orthogonal efforts, split
@@ -926,11 +1020,20 @@ above; they layer on top of it.
    stay green), then add `PigmentColorSpace` with the Kubelka–Munk media shader
    over four pigments and additive deposition. Per-space channel set, blend, and
    shaders; `CanvasMeta.color_space` selects it. Golden tests per space.
-10. **Brush file upload:** a `<input type="file">` in the brush panel that reads
+10. **Wet mixing & brush dynamics (§6.2):** the `BrushDynamics` serde enum
+   (default `Dry`, then `Mixer`) on `BrushParams`; a per-stroke **reservoir
+   recurrence** that reads the pre-stroke `base` canvas and emits **per-segment
+   color** (the swept renderer is unchanged). Runs **entirely on the GPU** (region
+   composite + serial compute scan, no readback — WebGPU can't block for one).
+   Golden: smear a brush over a committed patch and
+   verify the trail transitions. Leaves the enum + canvas-probe seams for the
+   future `Bleed` (edge diffusion) and `Fluid` (advection) tiers. Copy-smear only —
+   non-conservative lift is a documented deferral.
+11. **Brush file upload:** a `<input type="file">` in the brush panel that reads
    image bytes and calls `Engine::import_brush`, so users can bring arbitrary
    brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
    from step 7 already accept arbitrary bytes.
-11. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
+12. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
    testable headlessly by merging two engines' logs and asserting identical
    golden output (convergence as a test).

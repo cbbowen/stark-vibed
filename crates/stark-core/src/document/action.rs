@@ -41,6 +41,41 @@ pub enum BrushShape {
     Stamp(crate::assets::AssetId),
 }
 
+/// How a brush interacts with paint already on the canvas (DESIGN.md §6.2,
+/// "Wet mixing & brush dynamics"). This is the pluggable fidelity axis: `Dry` is
+/// the one-way model; `Mixer` smears existing wet paint; future `Bleed`/`Fluid`
+/// tiers slot in here.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub enum BrushDynamics {
+    /// No canvas pickup — paint flows one way and thins via `drain`. The default,
+    /// so existing strokes, goldens, and saved files are unchanged.
+    #[default]
+    Dry,
+    /// Mixer/smudge: lift wet paint under the brush into a reservoir and carry it,
+    /// so the stroke smears what is already on the canvas (DESIGN.md §6.2).
+    Mixer(MixerParams),
+}
+
+/// Parameters of the [`BrushDynamics::Mixer`] reservoir (DESIGN.md §6.2).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MixerParams {
+    /// Fraction of the wet canvas paint pulled into the reservoir per unit step
+    /// (scaled by canvas wetness and how much paint is present). 0 = no pickup.
+    pub pickup: f32,
+    /// How much of the brush's own color is injected as it deposits: 0 = pure
+    /// smudge (only carries picked-up paint), 1 = always lays its own color.
+    pub color_inject: f32,
+}
+
+impl Default for MixerParams {
+    fn default() -> Self {
+        Self {
+            pickup: 0.5,
+            color_inject: 0.1,
+        }
+    }
+}
+
 /// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
 /// the Oklab working space at stamp time (DESIGN.md §6.5).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,6 +103,10 @@ pub struct BrushParams {
     pub follow_path: bool,
     /// Random per-stamp rotation in radians (seeded; 0 = none).
     pub angle_jitter: f32,
+    /// Canvas-pickup behavior (DESIGN.md §6.2). `#[serde(default)]` so documents
+    /// saved before this field load as `Dry`.
+    #[serde(default)]
+    pub dynamics: BrushDynamics,
 }
 
 impl Default for BrushParams {
@@ -84,6 +123,7 @@ impl Default for BrushParams {
             shape: BrushShape::Round,
             follow_path: true,
             angle_jitter: 0.0,
+            dynamics: BrushDynamics::Dry,
         }
     }
 }
