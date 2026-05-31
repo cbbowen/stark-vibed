@@ -132,36 +132,6 @@ impl TilePool {
         }))
     }
 
-    /// Acquire a tile with its color channel cleared to a solid color (used by
-    /// the low-level skeleton test, which does not touch the aux channel).
-    pub fn acquire_filled(&self, color: wgpu::Color) -> TileHandle {
-        let tile = self.acquire();
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("stark fill tile"),
-            });
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark fill tile pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: tile.color_view(),
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(color),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        self.ctx.queue.submit([encoder.finish()]);
-        tile
-    }
-
     /// Number of recycled color textures available (for tests).
     pub fn free_count(&self) -> usize {
         self.inner.lock().expect("tile pool poisoned").free_color.len()

@@ -1,8 +1,8 @@
 //! Stark engine core — the frontend-agnostic GPU painting backend (DESIGN.md).
 //!
 //! Build progress (DESIGN.md §13 build order):
-//! - [x] Step 1: GPU + tiles skeleton — [`GpuContext`], [`TilePool`],
-//!   [`Presenter`] rendering tiles under a [`ViewTransform`].
+//! - [x] Step 1: GPU + tiles skeleton — [`GpuContext`] and the recycling
+//!   [`TilePool`], the foundation everything else renders on.
 //! - [x] Step 2: stroke MVP — the command/action split ([`InputCommand`] vs
 //!   [`document::Action`]), color stamping with copy-on-write tiles, and the
 //!   `history`-backed [`document::LinearTimeline`] driving undo/redo via
@@ -74,8 +74,6 @@ pub use command::{InputCommand, InputSample};
 pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};
-pub use gpu::{
-    Compositor, GpuContext, MediaParams, Presenter, StrokeRenderer, TileHandle, TilePool,
-};
+pub use gpu::{Compositor, GpuContext, MediaParams, StrokeRenderer, TileHandle, TilePool};
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};

@@ -66,8 +66,8 @@ stark/
 │   │   │   │   ├── context.rs   # device/queue wrapper, capabilities
 │   │   │   │   ├── tile.rs      # TilePool, CoW tile handles, channel set
 │   │   │   │   ├── stroke.rs    # the brush engine / stroke rasterizer
-│   │   │   │   ├── composite.rs # layer compositing + media lighting
-│   │   │   │   └── present.rs   # canvas → surface (Oklab→display) + pan/zoom
+│   │   │   │   ├── composite.rs # layer compositing + media lighting → display
+│   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
 │   │   │   ├── geom.rs          # tile coords, view transform, AABB
 │   │   │   ├── path.rs          # stroke fitting (RDP) + Catmull–Rom flatten (§6.2)
 │   │   │   └── io.rs            # save/load of the action log
@@ -113,7 +113,7 @@ the reverse.
 │    stroke buffer │     ┌─────────▼───────────────────────────────┐
 └──────────────────┘     │ GPU subsystem                           │
                          │  TilePool · StrokeRenderer · Compositor │
-                         │  Presenter · ShaderModules (WESL)       │
+                         │  ShaderModules (WESL)                   │
                          └─────────────────────────────────────────┘
 ```
 
@@ -579,13 +579,14 @@ pub struct ViewTransform {  // session-owned; pan/zoom never historized
 }
 ```
 
-`Presenter` walks the tiles intersecting the view AABB and blits the composited
-result into `target` under the transform, converting **Oklab → the surface's
-display space** (e.g. sRGB) in this final pass — the only place gamma-encoded
-color exists. For zoomed-out views it samples tile **mip/LOD** levels (a future
-optimization; v1 may sample full-res) so panning a huge canvas stays responsive.
-The frontend owns the `wgpu::Surface`, acquires the frame texture, calls
-`render`, and presents.
+The `Compositor` (§6.3) walks the tiles intersecting the view AABB, composites
+them into a viewport-sized offscreen under the transform, and the media pass blits
+the result into `target` — converting **the working channels → the surface's
+display space** (e.g. sRGB) in that final pass, the only place gamma-encoded color
+exists. (An earlier standalone `Presenter` did a plain color blit; it was retired
+once the compositor/media pipeline subsumed it.) For zoomed-out views, tile
+**mip/LOD** sampling is a future optimization (v1 samples full-res). The frontend
+owns the `wgpu::Surface`, acquires the frame texture, calls `render`, and presents.
 
 **Tile aprons (seamless boundaries).** Tiles are *separate* GPU textures, so the
 compositor samples each one independently. The moment sampling isn't pixel-exact
@@ -599,7 +600,7 @@ The fix is an **apron**: each tile texture is `TILE_TEX = TILE_SIZE + 2·TILE_AP
 px square, carrying an `TILE_APRON`-wide halo of the neighboring canvas content
 around its interior. Bilinear taps at the interior edge then fall into the apron
 (real neighbor data), not a clamp. Mechanics (`geom.rs`, `gpu/stroke.rs`,
-`composite.wesl`/`present.wesl`):
+`composite.wesl`):
 
 - **The apron is rendered, not copied.** The stamp pass maps the *whole*
   `TILE_TEX` target to NDC (texture origin = interior origin − apron) and a tile
@@ -632,7 +633,7 @@ module (`color.rs`, with matching WESL helpers):
 ```
 input (sRGB picker / image) ──→ Oklab  (on ingest: BrushParams, imported tiles)
         Oklab  ←──────────────── all storage, mixing, compositing, history
-Oklab ──→ display (sRGB/Rec.2020) (only in Presenter's final blit)
+Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
 ```
 
 - **Why Oklab end-to-end:** pigment mixing, gradient interpolation, and wet
@@ -780,7 +781,6 @@ pub struct Engine {
     pool: TilePool,
     stroke: StrokeRenderer,
     compositor: Compositor,
-    presenter: Presenter,
     observable: watch::Sender<ObservableState>,  // reactive snapshot for UI
 }
 
@@ -986,9 +986,10 @@ above; they layer on top of it.
 
 ## 13. Suggested build order
 
-1. **GPU + tiles skeleton:** `GpuContext`, `TilePool`, one solid-color tile
-   rendered through `Presenter` with `ViewTransform`. Proves infinite-canvas
-   pan/zoom and the surface contract.
+1. **GPU + tiles skeleton:** `GpuContext`, the recycling `TilePool`, and a tile
+   blitted to a target under a `ViewTransform`. Proves infinite-canvas pan/zoom
+   and the surface contract. (The original standalone `Presenter` was later
+   retired once the compositor/media pass subsumed plain blitting.)
 2. **Stroke MVP:** color-only stamping along a path; `Session` in-flight stroke;
    `CommitStroke` action; wire `History`. Proves the command/action split and
    CoW.

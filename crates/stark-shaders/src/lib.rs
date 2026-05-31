@@ -5,11 +5,6 @@
 
 use wesl::include_wesl;
 
-/// WGSL source for the canvas → surface presentation pass (DESIGN.md §6.4).
-pub fn present() -> &'static str {
-    include_wesl!("present")
-}
-
 /// WGSL stamp pass for the Oklab color space (DESIGN.md §6.2).
 pub fn stamp_oklab() -> &'static str {
     include_wesl!("stamp_oklab")

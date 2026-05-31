@@ -1,15 +1,13 @@
-//! GPU subsystem: device context, the recycling tile pool, and presentation
-//! (DESIGN.md §6, §7). Stroke rendering and compositing land in later steps.
+//! GPU subsystem: device context, the recycling tile pool, stroke rasterization,
+//! and compositing/media (DESIGN.md §6, §7).
 
 pub mod composite;
 pub mod context;
-pub mod present;
 pub mod readback;
 pub mod stroke;
 pub mod tile;
 
 pub use composite::{Compositor, MediaParams};
 pub use context::GpuContext;
-pub use present::Presenter;
 pub use stroke::StrokeRenderer;
 pub use tile::{TileHandle, TilePool};

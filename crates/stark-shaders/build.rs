@@ -17,9 +17,6 @@ fn main() {
 
     let compiler = wesl::Wesl::new("src/shaders");
 
-    // The canvas → surface presentation shader (DESIGN.md §6.4).
-    compiler.build_artifact(&"package::present".parse().unwrap(), "present");
-
     // The brush stamp rasterization shader (DESIGN.md §6.2).
     compiler.build_artifact(&"package::stamp_oklab".parse().unwrap(), "stamp_oklab");
 
