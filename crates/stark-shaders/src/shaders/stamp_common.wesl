@@ -2,7 +2,8 @@
 // by the per-color-space stamp shaders. Everything here is color-space-agnostic:
 // the tile transform + prefix-τ bindings, the oriented-quad vertex, and the
 // swept optical-depth lookup. Each variant differs only in how the fragment
-// turns that depth into channel deposits (see stamp.wesl / stamp_pigment.wesl).
+// turns that depth into channel deposits (see stamp_oklab.wesl; the Mixbox space
+// reuses it, since its deposit is the same premultiplied-"over").
 
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
@@ -16,7 +17,7 @@ struct TileXform {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) local: vec2<f32>, // brush-local (x in radius units from start, y in [-1,1])
-    @location(1) ch: vec4<f32>,    // color-space channels (Oklab uses xyz; pigment all 4)
+    @location(1) ch: vec4<f32>,    // color-space channels (xyz; Oklab L,a,b / Mixbox c0,c1,c2)
     @location(2) misc: vec4<f32>,  // length/radius, flow, height, wet
 }
 

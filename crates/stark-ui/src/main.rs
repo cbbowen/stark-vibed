@@ -471,7 +471,7 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 
                 div { class: "modal-section-label", "COLOR SPACE" }
                 {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
-                {card(ColorSpaceId::Pigment, "Pigment", "Physically-based paint mixing (Kubelka\u{2013}Munk over 4 pigments): blue + yellow makes green, white hides. For natural media.")}
+                {card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media.")}
 
                 div { class: "modal-actions",
                     button {

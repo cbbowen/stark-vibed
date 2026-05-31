@@ -7,14 +7,13 @@
 // CPU entirely — WebGPU cannot block for a buffer map, so a CPU readback is
 // impossible (it panics in getMappedRange).
 //
-// `decode` mirrors `ColorSpace::decode_canvas` in colorspace.rs; the reservoir
-// math mirrors `Reservoir::step` in gpu/stroke.rs. Keep all three in sync.
+// The reservoir math mirrors `Reservoir`/`encode_mixer` in gpu/stroke.rs.
 
 struct Params {
     brush_ch: vec4<f32>,    // the brush's own color channels
     origin_dims: vec4<f32>, // region origin.xy (canvas px), region dims.xy (px)
     knobs: vec4<f32>,       // pickup, color_inject, flatten_step, reservoir_capacity
-    counts: vec4<u32>,      // segment_count, color_space (0=oklab, 1=pigment), _, _
+    counts: vec4<u32>,      // segment_count, _, _, _
 }
 
 // Must match `SegmentInstance` (gpu/stroke.rs): std430 layout, 64 bytes.
@@ -37,32 +36,20 @@ struct Decoded {
     amount: f32,    // paint present, in [0, 1]
 }
 
-// Inverse of the deposit's accumulation (mirrors ColorSpace::decode_canvas).
-fn decode(stored: vec4<f32>, space: u32) -> Decoded {
-    var out: Decoded;
-    if space == 1u {
-        // Pigment: additively accumulated amounts → normalized mixture + K–M-style
-        // coverage 1 − exp(−Σ).
-        let sum = stored.x + stored.y + stored.z + stored.w;
-        if sum <= 1e-4 {
-            return Decoded(vec4<f32>(0.0), 0.0);
-        }
-        return Decoded(stored / sum, 1.0 - exp(-sum));
-    }
-    // Oklab: premultiplied (L·c, a·c, b·c, c) → un-premultiply.
+// Un-premultiply a stored color texel into (per-unit channels, coverage). Every
+// color space stores premultiplied channels with coverage in alpha (Oklab L,a,b;
+// Mixbox pigment concentrations c0,c1,c2), so one decode serves all.
+fn decode(stored: vec4<f32>) -> Decoded {
     let c = stored.w;
     if c <= 1e-4 {
         return Decoded(vec4<f32>(0.0), 0.0);
     }
-    out.ch = vec4<f32>(stored.xyz / c, 0.0);
-    out.amount = min(c, 1.0);
-    return out;
+    return Decoded(vec4<f32>(stored.xyz / c, 0.0), min(c, 1.0));
 }
 
 @compute @workgroup_size(1)
 fn main() {
     let count = params.counts.x;
-    let space = params.counts.y;
     let origin = params.origin_dims.xy;
     let dims = vec2<i32>(i32(params.origin_dims.z), i32(params.origin_dims.w));
     let pickup = params.knobs.x;
@@ -81,7 +68,7 @@ fn main() {
         // Sample the base region at the segment start (nearest texel). The region
         // is 1:1 with canvas over [origin, origin+dims], so texel = pos − origin.
         let texel = clamp(vec2<i32>(floor(pos - origin)), vec2<i32>(0), dims - vec2<i32>(1));
-        let dec = decode(textureLoad(region_color, texel, 0), space);
+        let dec = decode(textureLoad(region_color, texel, 0));
         let wet = textureLoad(region_aux, texel, 0).y;
 
         // PICKUP: mass-weighted blend toward the canvas (convex combination).

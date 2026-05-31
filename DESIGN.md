@@ -434,7 +434,7 @@ So:
   stroke's coverage is the continuous path integral `1 − exp(−τ_total)`.
 
 This removes intra-stroke banding while keeping the single-pass over-blend
-architecture (so it composes with both the Oklab and pigment stamp shaders,
+architecture (both color spaces share one premultiplied-"over" stamp shader,
 §6.7). Segments need only be short enough that the line + constant-radius
 approximation holds, so the sweep uses *fewer* primitives than the dab model.
 Caveats: per-stamp angle jitter no longer applies (the brush follows the tangent
@@ -476,8 +476,8 @@ what the swept-segment model is *not*. The reconciliation rests on two facts:
    ```
 
    Mixing happens in the color space's channels, so it composes with both spaces:
-   Oklab gives a perceptually-uniform blend, and pigment channels mix as physical
-   concentrations (the same additive logic the K–M deposit already uses, §6.7).
+   Oklab gives a perceptually-uniform blend, and Mixbox channels are pigment
+   latent concentrations whose linear mix *is* Mixbox pigment mixing (§6.7).
 
 *Pluggable axis.* Brush dynamics are a serde **enum** on `BrushParams` (it lives
 in the action log, so not a trait object):
@@ -698,7 +698,7 @@ under a reserved id, so the shader always samples a texture — one code path.
 Determinism holds throughout: fixed sampler, seeded jitter, content-addressed
 mask.
 
-### 6.7 Pluggable color spaces (Oklab & pigment / Kubelka–Munk)
+### 6.7 Pluggable color spaces (Oklab & Mixbox pigment mixing)
 
 The tile channels are **color-space-agnostic**: tools deposit values and only
 assume they *blend linearly*, never what color they represent. The meaning —
@@ -734,29 +734,35 @@ space-specific. The CPU `color.rs` Oklab helpers become `OkLabColorSpace`.
 holding premultiplied `(L, a, b, coverage)`, `aux = Rg16Float (height, wet)`,
 premultiplied-"over" color blend (coverage *is* the blend alpha), additive aux.
 
-**`PigmentColorSpace`** — the experimental one. The four color channels are
-**pigment concentrations** — Phthalo Blue, Quinacridone Magenta, Hansa Yellow,
-Titanium White — and the media shader is **Kubelka–Munk** over those pigments
-(per-pigment absorption `K` and scattering `S`; `K_mix/S_mix` are
-concentration-weighted; reflectance `R = 1 + K/S − √((K/S)² + 2K/S)`). Because
-all four channels are pigments, there's no room for coverage in `color.a`, so:
+**`MixboxColorSpace`** — the experimental one: realistic pigment mixing via
+**Mixbox** (Secret Weapons), where blue + yellow makes green like real paint
+rather than the muddy gray of an RGB blend. Mixbox represents a color as a
+*latent* of pigment concentrations `c0..c3` plus a small residual, and mixes by
+**linear interpolation in latent space**, then maps latent → RGB through a trained
+polynomial. The decisive fit with our architecture: *latents blend linearly*, so
+the ordinary premultiplied-"over" deposit **already performs Mixbox mixing** — no
+programmable blend, no extra pass. Concretely the tile layout is **identical to
+Oklab**: `color = Rgba16Float` holding premultiplied `(c0, c1, c2, coverage)`,
+`aux = Rg16Float (height, wet)`, over-blend color + additive aux. The stamp shader
+is reused verbatim; only the **media shader differs** — it un-premultiplies the
+concentrations and evaluates Mixbox's polynomial (`c3 = 1 − (c0+c1+c2)` derived)
+to a base color before the shared impasto lighting.
 
-- **Deposition is additive** (`color` and `aux` blend `One,One`): strokes
-  *accumulate* pigment, and **Titanium White's high scattering provides the
-  hiding power** — opacity is physical, not alpha-over. This is the natural
-  pigment model, and it sidesteps the WebGPU constraint that fixed-function
-  "over" needs coverage co-located in `color.a`.
-- **Coverage/alpha moves to `aux`** for this space (`aux = Rgba16Float`:
-  height, wet, coverage, spare). The media pass composites the K–M result over
-  the background by accumulated coverage.
+We **drop Mixbox's latent residual**: a tile has room for three concentrations
+plus coverage, and the residual would need a fourth over-blended channel (a third
+tile texture). Dropping it keeps zero architecture change and full *mixing*
+fidelity; the only cost is slightly approximate reproduction of very saturated
+colors (the residual ≈ 0 for in-gamut colors). Recovering it is a future
+third-texture option.
 
-`rgb_to_channels` for pigment is an approximate inverse — a **non-negative
-least-squares fit** of the four pigments' RGB appearances to the picked color,
-so the familiar RGB picker keeps working unchanged. This is acknowledged
-experimental territory; the trait is what keeps it isolated from the rest of the
-engine. A more medium-honest **direct pigment-amount picker** (four concentration
-sliders) is recorded as a potential next step — see §13 *Nice-to-have* — but the
-least-squares fit is what ships first.
+Mixbox is **vendored as a git submodule** (`vendor/mixbox`, Mixbox 2.0 ©2022
+Secret Weapons, **CC BY-NC 4.0** — non-commercial; commercial use needs a license
+from `mixbox@scrtwpns.com`). CPU `rgb_to_channels`/`channels_to_rgb` call the
+vendored `mixbox` crate (`no_std` + `libm`, so it builds for wasm and embeds its
+own LUT). The GPU polynomial in `media_mixbox.wesl` is **generated at build time**
+from the vendored GLSL (`stark-shaders/build.rs` transpiles `mixbox_eval_polynomial`
+into a WESL module), so the trained coefficients stay sourced from the licensed
+submodule rather than copied into this repo.
 
 ## 7. The engine actor (async backend)
 
@@ -1005,7 +1011,7 @@ above; they layer on top of it.
      `ViewTransform::zoom_about` / `Pan`. Navigation feels smooth at current
      scales, so **LOD is descoped to a nice-to-have** (see below) rather than a
      build step.
-   Then iterate on pigment fidelity.
+   Then iterate on color-space fidelity.
 7. **Brush shapes & assets (§6.6):** content-addressed `AssetStore`, image
    coverage masks normalized to `R8`, stamps rotated to the path tangent,
    `Engine::import_brush`. Bundle referenced assets in the save file. Golden test
@@ -1017,9 +1023,10 @@ above; they layer on top of it.
    preview fits incrementally to stay == committed. Re-bless goldens.
 9. **Pluggable color spaces (§6.7):** introduce `trait ColorSpace`, migrate the
    current pipeline to `OkLabColorSpace` (behavior-preserving refactor — goldens
-   stay green), then add `PigmentColorSpace` with the Kubelka–Munk media shader
-   over four pigments and additive deposition. Per-space channel set, blend, and
-   shaders; `CanvasMeta.color_space` selects it. Golden tests per space.
+   stay green), then add `MixboxColorSpace` — realistic pigment mixing via the
+   vendored Mixbox (latent mixes linearly, so the over-blend deposit *is* the mix;
+   the media pass evaluates Mixbox's polynomial, generated from the licensed
+   submodule at build time). `CanvasMeta.color_space` selects it; golden per space.
 10. **Wet mixing & brush dynamics (§6.2):** the `BrushDynamics` serde enum
    (default `Dry`, then `Mixer`) on `BrushParams`; a per-stroke **reservoir
    recurrence** that reads the pre-stroke `base` canvas and emits **per-segment

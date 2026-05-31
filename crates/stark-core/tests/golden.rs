@@ -56,12 +56,12 @@ fn golden_two_strokes_cross() {
 }
 
 #[test]
-fn golden_pigment_kubelka_munk() {
-    let Some(mut engine) = engine_or_skip_with(ColorSpaceId::Pigment) else {
+fn golden_mixbox_mix() {
+    let Some(mut engine) = engine_or_skip_with(ColorSpaceId::Mixbox) else {
         return;
     };
-    // Phthalo blue and Hansa yellow crossing → subtractive green at the overlap;
-    // a Titanium White bar over the lower half shows physical hiding/tinting.
+    // Blue and yellow crossing → Mixbox mixes them to green at the overlap (where
+    // an RGB blend would give a muddy gray); a white bar over the lower half tints.
     let blue = [0.10, 0.30, 0.80, 1.0];
     let yellow = [0.92, 0.82, 0.10, 1.0];
     let white = [0.96, 0.96, 0.96, 1.0];
@@ -71,7 +71,7 @@ fn golden_pigment_kubelka_munk() {
     paint(&mut engine, white, 30.0, &[Vec2::new(-100.0, 55.0), Vec2::new(100.0, 55.0)]);
 
     let img = engine.render_to_image(PAPER);
-    assert_golden("pigment_kubelka_munk", &img, 6);
+    assert_golden("mixbox_mix", &img, 6);
 }
 
 #[test]

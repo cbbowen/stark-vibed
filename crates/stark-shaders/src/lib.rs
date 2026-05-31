@@ -25,14 +25,9 @@ pub fn media_oklab() -> &'static str {
     include_wesl!("media_oklab")
 }
 
-/// WGSL stamp pass for the pigment color space (additive deposit) — DESIGN §6.7.
-pub fn stamp_pigment() -> &'static str {
-    include_wesl!("stamp_pigment")
-}
-
-/// WGSL media pass for the pigment color space (Kubelka–Munk) — DESIGN §6.7.
-pub fn media_pigment() -> &'static str {
-    include_wesl!("media_pigment")
+/// WGSL media pass for the Mixbox color space (pigment polynomial) — DESIGN §6.7.
+pub fn media_mixbox() -> &'static str {
+    include_wesl!("media_mixbox")
 }
 
 /// WGSL compute pass for wet-mixing pickup (the reservoir scan) — DESIGN §6.2.

@@ -11,13 +11,13 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{color, pigment};
+use crate::color;
 
 /// Identifies a color space; serialized in the save format (`CanvasMeta`, §8).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColorSpaceId {
     Oklab,
-    Pigment,
+    Mixbox,
 }
 
 impl ColorSpaceId {
@@ -25,7 +25,7 @@ impl ColorSpaceId {
     pub fn make(self) -> Arc<dyn ColorSpace> {
         match self {
             ColorSpaceId::Oklab => Arc::new(OkLabColorSpace),
-            ColorSpaceId::Pigment => Arc::new(PigmentColorSpace),
+            ColorSpaceId::Mixbox => Arc::new(MixboxColorSpace),
         }
     }
 }
@@ -118,16 +118,20 @@ impl ColorSpace for OkLabColorSpace {
     }
 }
 
-/// Experimental pigment space (DESIGN.md §6.7): the four color channels are
-/// accumulated optical *amounts* of four pigments, deposited **additively**, and
-/// the media pass renders them through **Kubelka–Munk** (Titanium White's
-/// scattering provides the hiding power). Coverage is intrinsic to finite-depth
-/// K–M, so `aux` keeps the same `(height, wet)` layout as Oklab.
-pub struct PigmentColorSpace;
+/// Experimental **Mixbox** pigment-mixing space (DESIGN.md §6.7). Colors are
+/// stored as Mixbox latent pigment *concentrations* `(c0, c1, c2)` — the fourth,
+/// `c3 = 1 − (c0+c1+c2)`, is derived, and the latent residual is dropped so the
+/// three concentrations fit alongside coverage. Because the latent mixes linearly,
+/// the ordinary premultiplied-"over" deposit *is* Mixbox mixing (blue over yellow
+/// → green), so the layout, blends, and stamp shader are identical to Oklab; only
+/// the media pass differs (it evaluates Mixbox's pigment polynomial).
+///
+/// Conversions use the vendored `mixbox` crate (CC BY-NC 4.0; `vendor/mixbox`).
+pub struct MixboxColorSpace;
 
-impl ColorSpace for PigmentColorSpace {
+impl ColorSpace for MixboxColorSpace {
     fn id(&self) -> ColorSpaceId {
-        ColorSpaceId::Pigment
+        ColorSpaceId::Mixbox
     }
 
     fn color_format(&self) -> wgpu::TextureFormat {
@@ -137,24 +141,30 @@ impl ColorSpace for PigmentColorSpace {
         wgpu::TextureFormat::Rg16Float
     }
     fn color_blend(&self) -> wgpu::BlendState {
-        additive()
+        over()
     }
     fn aux_blend(&self) -> wgpu::BlendState {
         additive()
     }
 
     fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4] {
-        pigment::srgb_to_pigments(rgb)
+        // Mixbox latent = [c0, c1, c2, c3, residual…]; keep the concentrations.
+        let z = mixbox::float_rgb_to_latent(&rgb);
+        [z[0], z[1], z[2], 0.0]
     }
 
     fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3] {
-        pigment::pigments_to_srgb(channels)
+        // Rebuild a residual-free latent and evaluate the pigment polynomial.
+        let (c0, c1, c2) = (channels[0], channels[1], channels[2]);
+        let latent = [c0, c1, c2, 1.0 - (c0 + c1 + c2), 0.0, 0.0, 0.0];
+        mixbox::latent_to_float_rgb(&latent)
     }
 
     fn stamp_shader(&self) -> &'static str {
-        stark_shaders::stamp_pigment()
+        // Deposit is premultiplied-over of the channels — identical to Oklab.
+        stark_shaders::stamp_oklab()
     }
     fn media_shader(&self) -> &'static str {
-        stark_shaders::media_pigment()
+        stark_shaders::media_mixbox()
     }
 }

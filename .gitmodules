@@ -1,0 +1,3 @@
+[submodule "vendor/mixbox"]
+	path = vendor/mixbox
+	url = https://github.com/scrtwpns/mixbox.git

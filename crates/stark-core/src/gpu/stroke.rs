@@ -22,7 +22,7 @@ use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
 use crate::assets::{build_prefix_tau, AssetStore};
-use crate::colorspace::{ColorSpace, ColorSpaceId};
+use crate::colorspace::ColorSpace;
 use crate::command::InputSample;
 use crate::document::{BrushDynamics, BrushShape, MixerParams, StrokeRecord};
 use crate::geom::{
@@ -561,10 +561,6 @@ impl StrokeRenderer {
         }
 
         // ---- Pass B: the serial reservoir scan, patching per-segment `ch`.
-        let space = match self.color_space.id() {
-            ColorSpaceId::Oklab => 0u32,
-            ColorSpaceId::Pigment => 1u32,
-        };
         let uni = MixerUniform {
             brush_ch: channels,
             origin_dims: [origin.x, origin.y, w as f32, h as f32],
@@ -574,7 +570,7 @@ impl StrokeRenderer {
                 crate::path::FLATTEN_STEP,
                 RESERVOIR_CAPACITY,
             ],
-            counts: [segments.len() as u32, space, 0, 0],
+            counts: [segments.len() as u32, 0, 0, 0],
         };
         let uni_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark mixer params"),

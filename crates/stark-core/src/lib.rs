@@ -43,9 +43,10 @@
 //!   seams the media pass amplified under zoom/sub-pixel pan (`tests/seam.rs`).
 //! - [x] Step 9: pluggable color spaces (DESIGN §6.7) — [`colorspace::ColorSpace`]
 //!   trait, [`colorspace::OkLabColorSpace`] (migrated, no behavior change), and
-//!   [`colorspace::PigmentColorSpace`]: four-pigment Kubelka–Munk ([`pigment`])
-//!   with additive deposition + NNLS RGB→pigment picker. Engine selects via
-//!   [`Engine::new_with_color_space`]/[`Engine::set_color_space`]. (UI toggle TBD.)
+//!   [`colorspace::MixboxColorSpace`]: realistic pigment mixing via Mixbox (the
+//!   latent mixes linearly, so the premultiplied-"over" deposit *is* the mix; the
+//!   media pass evaluates Mixbox's polynomial). Engine selects via
+//!   [`Engine::new_with_color_space`]/[`Engine::set_color_space`].
 //! - [x] Step 10: wet mixing & brush dynamics (DESIGN §6.2) — [`document::BrushDynamics`]
 //!   (`Dry` default / `Mixer`). A `Mixer` brush smears paint already on the canvas:
 //!   a GPU compute pass composites the base under the stroke, runs a serial
@@ -57,7 +58,6 @@ pub mod assets;
 pub mod color;
 pub mod colorspace;
 pub mod command;
-pub mod pigment;
 pub mod document;
 pub mod engine;
 pub mod error;
