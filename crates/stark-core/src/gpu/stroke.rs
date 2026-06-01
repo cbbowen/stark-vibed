@@ -28,6 +28,7 @@ use crate::document::{BrushDynamics, BrushShape, MixerParams, StrokeRecord};
 use crate::geom::{
     TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
 };
+use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::context::GpuContext;
 use crate::gpu::tile::{TileHandle, TilePool};
 
@@ -81,6 +82,7 @@ struct SegmentInstance {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct TileXform {
     params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, unused
+    surf: [f32; 4],   // inv surface-tile (canvas px → bump uv), tooth, _, _
 }
 
 /// Mirrors `View` in `composite.wesl`: canvas→region NDC + tile/apron uv mapping.
@@ -119,6 +121,8 @@ pub struct StrokeRenderer {
     prefix_bgl: wgpu::BindGroupLayout,
     /// Cached round-tip prefix-τ, keyed by `hardness.to_bits()`.
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
+    /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for tooth.
+    surface_bg: wgpu::BindGroup,
 
     // Wet-mixing pickup (Mixer dynamics): composite the base into a region, then a
     // serial compute scan patches per-segment color — all on the GPU, no readback
@@ -132,7 +136,7 @@ pub struct StrokeRenderer {
 }
 
 impl StrokeRenderer {
-    pub fn new(ctx: &GpuContext, color_space: Arc<dyn ColorSpace>) -> Self {
+    pub fn new(ctx: &GpuContext, color_space: Arc<dyn ColorSpace>, surface: Surface) -> Self {
         let device = &ctx.device;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -170,9 +174,46 @@ impl StrokeRenderer {
             }],
         });
 
+        // Group 2: the canvas surface (bump + sampler) for deposition tooth.
+        let surface_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark sweep surface bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let surface_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark sweep surface bg"),
+            layout: &surface_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&surface.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&surface.sampler),
+                },
+            ],
+        });
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stark sweep layout"),
-            bind_group_layouts: &[Some(&uniform_bgl), Some(&prefix_bgl)],
+            bind_group_layouts: &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&surface_bgl)],
             immediate_size: 0,
         });
 
@@ -236,6 +277,7 @@ impl StrokeRenderer {
             uniform_bgl,
             prefix_bgl,
             round_prefix: Arc::new(Mutex::new(None)),
+            surface_bg,
             composite_pipeline,
             composite_sampler,
             composite_view_bgl,
@@ -345,6 +387,7 @@ impl StrokeRenderer {
             let origin = coord.origin();
             let xform = TileXform {
                 params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, 0.0],
+                surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark sweep xform"),
@@ -391,6 +434,7 @@ impl StrokeRenderer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
+                pass.set_bind_group(2, &self.surface_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
                 pass.draw(0..4, 0..instances.len() as u32);
             }

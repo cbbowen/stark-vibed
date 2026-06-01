@@ -26,6 +26,7 @@ use crate::colorspace::ColorSpaceId;
 use crate::document::Action;
 use crate::error::{EngineError, Result};
 use crate::geom::TILE_SIZE;
+use crate::gpu::SurfaceId;
 
 /// Container magic; identifies a Stark document.
 const MAGIC: &[u8; 8] = b"STARKDOC";
@@ -53,6 +54,11 @@ impl Default for BuildId {
 pub struct CanvasMeta {
     pub tile_size: u32,
     pub color_space: ColorSpaceId,
+    /// The physical surface the document is painted on (affects deposition, so it
+    /// must be recorded for deterministic replay). `#[serde(default)]` → `Flat`
+    /// for documents saved before surfaces existed.
+    #[serde(default)]
+    pub surface: SurfaceId,
 }
 
 impl Default for CanvasMeta {
@@ -60,6 +66,7 @@ impl Default for CanvasMeta {
         Self {
             tile_size: TILE_SIZE,
             color_space: ColorSpaceId::Oklab,
+            surface: SurfaceId::Flat,
         }
     }
 }

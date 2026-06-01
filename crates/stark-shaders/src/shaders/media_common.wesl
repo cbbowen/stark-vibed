@@ -11,11 +11,15 @@ struct Media {
     light: vec4<f32>,  // light dir xyz (normalized in shader), height_strength
     bg: vec4<f32>,     // background (substrate) linear-RGB
     shade: vec4<f32>,  // ambient, diffuse_k, spec_strength, shininess
+    surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
+    surf_b: vec4<f32>, // surface_strength, _, _, _
 }
 
 @group(0) @binding(0) var<uniform> m: Media;
 @group(0) @binding(1) var comp_color: texture_2d<f32>;
 @group(0) @binding(2) var comp_aux: texture_2d<f32>;
+@group(0) @binding(3) var surface: texture_2d<f32>; // tileable canvas bump (height)
+@group(0) @binding(4) var surface_samp: sampler;
 
 // Fullscreen triangle clip position from a vertex index.
 fn fullscreen_clip(vi: u32) -> vec4<f32> {
@@ -23,9 +27,16 @@ fn fullscreen_clip(vi: u32) -> vec4<f32> {
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
+// Total relief height at screen pixel `p`: the painted impasto (`comp_aux.x`)
+// plus the canvas surface bump sampled in canvas space (so the weave is fixed to
+// the canvas and shows even where there is no paint).
 fn height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
     let c = clamp(p, vec2<i32>(0), dim - vec2<i32>(1));
-    return textureLoad(comp_aux, c, 0).x;
+    let impasto = textureLoad(comp_aux, c, 0).x;
+
+    let canvas = m.surf_a.xy + vec2<f32>(p) * m.surf_a.z; // surf_a.z = canvas px / screen px
+    let hs = textureSampleLevel(surface, surface_samp, canvas * m.surf_a.w, 0.0).r - 0.5;
+    return impasto + m.surf_b.x * hs; // surf_b.x = surface_strength
 }
 
 // Surface normal from the screen-space height gradient (impasto relief).
@@ -52,6 +63,12 @@ fn finish(base: vec3<f32>, coverage: f32, wet: f32, p: vec2<i32>, dim: vec2<i32>
 
     let shade = m.shade.x + m.shade.y * diffuse;
     let lit = base * shade + vec3<f32>(spec);
-    let out_lin = mix(m.bg.rgb, lit, coverage);
+    // The bare substrate catches the same relief lighting, so the canvas weave is
+    // visible where paint is thin or absent. Normalize by the shading a *flat*
+    // surface would give, so a flat surface leaves the background unchanged and
+    // only relief (weave) modulates it — keeping the flat default orthogonal.
+    let shade_flat = m.shade.x + m.shade.y * max(normalize(m.light.xyz).z, 0.0);
+    let bg_lit = m.bg.rgb * (shade / max(shade_flat, 1e-4));
+    let out_lin = mix(bg_lit, lit, coverage);
     return vec4<f32>(linear_to_srgb(out_lin), 1.0);
 }

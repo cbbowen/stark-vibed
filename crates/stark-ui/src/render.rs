@@ -6,7 +6,9 @@
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
 use stark_core::geom::Extent2;
-use stark_core::{ColorSpaceId, Engine, GpuContext, InputCommand, ObservableState, ViewTransform};
+use stark_core::{
+    ColorSpaceId, Engine, GpuContext, InputCommand, ObservableState, SurfaceId, ViewTransform,
+};
 use wasm_bindgen::JsCast;
 
 /// Warm paper-white background, in linear RGB.
@@ -50,6 +52,16 @@ impl Renderer {
         self.engine.set_color_space(id);
     }
 
+    /// The document's current canvas surface (DESIGN.md §6.4).
+    pub fn surface(&self) -> SurfaceId {
+        self.engine.surface()
+    }
+
+    /// Switch the canvas surface (resets the document — it affects deposition).
+    pub fn set_surface(&mut self, id: SurfaceId) {
+        self.engine.set_surface(id);
+    }
+
     /// Import a brush-shape image, returning its content id (DESIGN.md §6.6).
     pub fn import_brush(&self, png_bytes: &[u8]) -> stark_core::Result<stark_core::AssetId> {
         self.engine.import_brush(png_bytes)
@@ -65,13 +77,14 @@ impl Renderer {
         self.canvas.set_height(height);
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(&self.engine.gpu().device, &self.config);
+        self.surface
+            .configure(&self.engine.gpu().device, &self.config);
         self.engine.resize(Extent2::new(width, height));
     }
 
     /// Render the current canvas straight into the surface texture and present.
     pub fn paint(&mut self) {
-        use wgpu::CurrentSurfaceTexture::{Success, Suboptimal};
+        use wgpu::CurrentSurfaceTexture::{Suboptimal, Success};
         let frame = match self.surface.get_current_texture() {
             Success(frame) | Suboptimal(frame) => frame,
             // Timeout/Outdated/Lost/etc.: skip; the next command repaints.
@@ -142,7 +155,8 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("stark web device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: wgpu::Limits::default()
+                .or_better_values_from(&GpuContext::minimum_required_limits()),
             experimental_features: wgpu::ExperimentalFeatures::default(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,

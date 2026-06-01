@@ -18,7 +18,9 @@ use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, Men
 use render::{Renderer, CANVAS_ID};
 use stark_core::document::{BrushDynamics, BrushParams, BrushShape, MixerParams, Tool};
 use stark_core::geom::Vec2;
-use stark_core::{AssetId, ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState};
+use stark_core::{
+    AssetId, ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState, SurfaceId,
+};
 
 /// Built-in brush shape, embedded so it's always available (DESIGN.md §6.6).
 const BRISTLES_PNG: &[u8] = include_bytes!("../../../resources/shape/WornBristles.png");
@@ -264,6 +266,9 @@ fn BrushPanel() -> Element {
                 oninput: move |v| update_brush(state, move |b| b.color[3] = v) }
             Slider { label: "Rate", min: 0.05, max: 1.0, value: brush.flow,
                 oninput: move |v| update_brush(state, move |b| b.flow = v) }
+            // Canvas tooth: how strongly the surface weave gates deposition (§6.4).
+            Slider { label: "Tooth", min: 0.0, max: 1.0, value: brush.tooth,
+                oninput: move |v| update_brush(state, move |b| b.tooth = v) }
             // Mixer-only controls: how much canvas paint is lifted, and how fast
             // the stroke pulls back toward its own color (DESIGN.md §6.2).
             if is_mixer {
@@ -444,6 +449,14 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
         .unwrap_or(ColorSpaceId::Oklab);
     let choice = use_signal(|| current);
 
+    let current_surface = state
+        .renderer
+        .read()
+        .as_ref()
+        .map(|r| r.surface())
+        .unwrap_or_default();
+    let surf_choice = use_signal(|| current_surface);
+
     // One selectable color-space card; `selected` toggles the highlight.
     let card = |id: ColorSpaceId, title: &str, desc: &str| {
         let class = if choice() == id { "space-card selected" } else { "space-card" };
@@ -451,6 +464,19 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
             div {
                 class,
                 onclick: move |_| { let mut choice = choice; choice.set(id); },
+                div { class: "space-card-title", "{title}" }
+                div { class: "space-card-desc", "{desc}" }
+            }
+        }
+    };
+
+    // Same card, for the canvas surface choice.
+    let scard = |id: SurfaceId, title: &str, desc: &str| {
+        let class = if surf_choice() == id { "space-card selected" } else { "space-card" };
+        rsx! {
+            div {
+                class,
+                onclick: move |_| { let mut c = surf_choice; c.set(id); },
                 div { class: "space-card-title", "{title}" }
                 div { class: "space-card-desc", "{desc}" }
             }
@@ -473,6 +499,10 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                 {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
                 {card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media.")}
 
+                div { class: "modal-section-label", "SURFACE" }
+                {scard(SurfaceId::Flat, "Smooth", "A perfectly smooth surface — paint lies flat, no canvas texture.")}
+                {scard(SurfaceId::Canvas, "Canvas", "Linen weave: dry strokes catch on the tooth and the weave catches the light.")}
+
                 div { class: "modal-actions",
                     button {
                         class: "btn btn-secondary",
@@ -481,7 +511,7 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                     }
                     button {
                         class: "btn btn-primary",
-                        onclick: move |_| { new_document(state, choice()); on_close.call(()); },
+                        onclick: move |_| { new_document(state, choice(), surf_choice()); on_close.call(()); },
                         "Create"
                     }
                 }
@@ -490,13 +520,15 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
     }
 }
 
-/// Replace the document with a fresh one in `id`'s color space, then repaint.
-fn new_document(state: AppState, id: ColorSpaceId) {
+/// Replace the document with a fresh one in the chosen color space and surface,
+/// then repaint.
+fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
     let mut guard = renderer.write();
     if let Some(r) = guard.as_mut() {
-        r.set_color_space(id);
+        r.set_color_space(color);
+        r.set_surface(surface);
         r.paint();
         obs.set(Some(r.observe()));
     }

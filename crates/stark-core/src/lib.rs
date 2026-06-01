@@ -52,6 +52,10 @@
 //!   a GPU compute pass composites the base under the stroke, runs a serial
 //!   reservoir scan, and patches per-segment color — no CPU readback, so it works
 //!   on WebGPU. Dry strokes are unchanged. UI exposes a Dry/Mixer toggle + sliders.
+//! - [x] Surface bump maps (DESIGN §6.4) — a tileable canvas height map
+//!   ([`gpu::Surface`], [`gpu::SurfaceId`]) drives deposition **tooth**
+//!   (`BrushParams::tooth`, historized) and media **relief** (`MediaParams::surface_strength`).
+//!   `Flat` (default) is a no-op; `Canvas` is the built-in linen. Saved in `CanvasMeta`.
 //! - [ ] Step 11: brush file upload · Step 12: collaboration.
 
 pub mod assets;
@@ -74,6 +78,6 @@ pub use command::{InputCommand, InputSample};
 pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};
-pub use gpu::{Compositor, GpuContext, MediaParams, StrokeRenderer, TileHandle, TilePool};
+pub use gpu::{Compositor, GpuContext, MediaParams, StrokeRenderer, SurfaceId, TileHandle, TilePool};
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};

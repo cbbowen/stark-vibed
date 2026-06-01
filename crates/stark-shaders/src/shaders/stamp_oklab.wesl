@@ -7,7 +7,7 @@
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b) + coverage in a
 //   target 1: aux   (Rg16Float)   — (height, wet)·coverage
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth};
 
 @vertex
 fn vs_main(
@@ -24,7 +24,8 @@ fn vs_main(
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
     let flow = in.misc.y;
-    let coverage = 1.0 - exp(-flow * swept_depth(in));
+    let base = 1.0 - exp(-flow * swept_depth(in));
+    let coverage = surface_tooth(base, in.clip.xy);
 
     var out: FsOut;
     out.color = vec4<f32>(in.ch.xyz * coverage, coverage);

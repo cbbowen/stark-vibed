@@ -19,6 +19,7 @@ use crate::geom::{
     Extent2, TileCoord, ViewTransform, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE,
 };
 use crate::gpu::context::GpuContext;
+use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::tile::TileHandle;
 
 /// Mirrors `View` in `composite.wesl` (32 bytes).
@@ -37,13 +38,16 @@ struct Instance {
     opacity: f32,
 }
 
-/// Mirrors `Media` in `media.wesl` (48 bytes).
+/// Mirrors `Media` in `media_common.wesl` (80 bytes).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MediaUniform {
     light: [f32; 4], // dir.xyz, height_strength
     bg: [f32; 4],    // background linear RGB, unused
     shade: [f32; 4], // ambient, diffuse_k, spec_strength, shininess
+    // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
+    surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
+    surf_b: [f32; 4], // surface_strength, _, _, _
 }
 
 /// Lighting parameters for the media pass (DESIGN.md §6.3). A single place to
@@ -56,6 +60,9 @@ pub struct MediaParams {
     pub diffuse: f32,
     pub specular: f32,
     pub shininess: f32,
+    /// How strongly the canvas surface relief shows in the lighting (its weave
+    /// catches light across the whole viewport). A view setting, not historized.
+    pub surface_strength: f32,
 }
 
 impl Default for MediaParams {
@@ -67,6 +74,7 @@ impl Default for MediaParams {
             diffuse: 0.55,
             specular: 0.2,
             shininess: 32.0,
+            surface_strength: 0.6,
         }
     }
 }
@@ -92,6 +100,9 @@ pub struct Compositor {
     color_format: wgpu::TextureFormat,
     aux_format: wgpu::TextureFormat,
 
+    // The canvas surface (bump) sampled by the media pass for relief.
+    surface: Surface,
+
     // Viewport-sized offscreen targets (recreated on resize).
     size: Extent2,
     comp_color_view: wgpu::TextureView,
@@ -105,6 +116,7 @@ impl Compositor {
         target_format: wgpu::TextureFormat,
         size: Extent2,
         color_space: &dyn ColorSpace,
+        surface: Surface,
     ) -> Self {
         let device = &ctx.device;
         let color_format = color_space.color_format();
@@ -237,8 +249,15 @@ impl Compositor {
                     },
                     count: None,
                 },
-                load_tex_entry(1),
-                load_tex_entry(2),
+                load_tex_entry(1), // comp_color (textureLoad)
+                load_tex_entry(2), // comp_aux   (textureLoad)
+                tex_entry(3),      // surface bump (filtered)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let media_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -279,8 +298,9 @@ impl Compositor {
         });
 
         let instances = alloc_instances(device, 1);
-        let (comp_color_view, comp_aux_view, media_bg) =
-            make_offscreen(device, size, color_format, aux_format, &media_bgl, &media_buf);
+        let (comp_color_view, comp_aux_view, media_bg) = make_offscreen(
+            device, size, color_format, aux_format, &media_bgl, &media_buf, &surface,
+        );
 
         Self {
             ctx: ctx.clone(),
@@ -296,6 +316,7 @@ impl Compositor {
             media: MediaParams::default(),
             color_format,
             aux_format,
+            surface,
             size,
             comp_color_view,
             comp_aux_view,
@@ -326,6 +347,7 @@ impl Compositor {
                 self.aux_format,
                 &self.media_bgl,
                 &self.media_buf,
+                &self.surface,
             );
             self.comp_color_view = c;
             self.comp_aux_view = a;
@@ -342,6 +364,13 @@ impl Compositor {
                 misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
             }),
         );
+
+        // Screen→canvas mapping for sampling the surface bump in canvas space, so
+        // the weave stays attached to the canvas as it pans/zooms (DESIGN.md §6.4).
+        let inv_zoom = 1.0 / view.zoom;
+        let canvas_origin = view.center
+            - crate::geom::Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
+                * (0.5 * inv_zoom);
 
         // Media uniform.
         self.ctx.queue.write_buffer(
@@ -366,6 +395,13 @@ impl Compositor {
                     self.media.specular,
                     self.media.shininess,
                 ],
+                surf_a: [
+                    canvas_origin.x,
+                    canvas_origin.y,
+                    inv_zoom,
+                    1.0 / SURFACE_TILE_PX,
+                ],
+                surf_b: [self.media.surface_strength, 0.0, 0.0, 0.0],
             }),
         );
 
@@ -523,6 +559,7 @@ fn make_offscreen(
     aux_format: wgpu::TextureFormat,
     media_bgl: &wgpu::BindGroupLayout,
     media_buf: &wgpu::Buffer,
+    surface: &Surface,
 ) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
     let extent = wgpu::Extent3d {
         width: size.width.max(1),
@@ -562,6 +599,14 @@ fn make_offscreen(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::TextureView(&comp_aux_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&surface.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(&surface.sampler),
             },
         ],
     });

@@ -8,6 +8,7 @@ use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
 use stark_core::document::{BrushDynamics, BrushShape, MixerParams, Tool};
 use stark_core::geom::Vec2;
+use stark_core::SurfaceId;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
@@ -154,4 +155,30 @@ fn golden_smear_mixer() {
 
     let img = engine.render_to_image(BG);
     assert_golden("smear_mixer", &img, 6);
+}
+
+#[test]
+fn golden_canvas_surface() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // Paint on the linen canvas surface (DESIGN.md §6.4): a light, partial-coverage
+    // stroke catches on the weave's peaks (dry-brush tooth), while the bare paper
+    // shows the woven relief under raking light. The other goldens stay on the flat
+    // default so they test orthogonally.
+    engine.set_surface(SurfaceId::Canvas);
+    let mut brush = brush(RED, 60.0);
+    brush.flow = 0.22; // light, so the tooth reads
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-95.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(95.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("canvas_surface", &img, 6);
 }

@@ -107,6 +107,13 @@ pub struct BrushParams {
     /// saved before this field load as `Dry`.
     #[serde(default)]
     pub dynamics: BrushDynamics,
+    /// Canvas **tooth** in [0, 1]: how strongly the surface bump (DESIGN.md §6.4)
+    /// gates deposition — dry/light strokes catch on the weave's peaks and skip
+    /// its valleys, fading as coverage builds. Historized (it changes stored
+    /// pixels) so replay stays deterministic; `#[serde(default)]` (0 = no tooth)
+    /// preserves the look of documents saved before it existed.
+    #[serde(default)]
+    pub tooth: f32,
 }
 
 impl Default for BrushParams {
@@ -124,6 +131,7 @@ impl Default for BrushParams {
             follow_path: true,
             angle_jitter: 0.0,
             dynamics: BrushDynamics::Dry,
+            tooth: 0.5,
         }
     }
 }

@@ -625,6 +625,33 @@ invariance the apron restores is locked by a regression test (`tests/seam.rs`):
 a stroke across the 4-tile corner must render identically to the same stroke
 shifted half a tile into one tile's interior.
 
+**The canvas surface (tooth & relief).** Paint sits on a physical surface — a
+tileable height/bump map (`gpu/surface.rs`), an `R8Unorm` texture sampled in
+*canvas* space (so the weave is fixed to the canvas and pans/zooms with it),
+shared by the stamp and media passes. It drives two effects:
+
+- **Deposition tooth (stamp pass).** The deposited coverage is gated by the
+  surface height at each fragment's canvas position: `cov ·= 1 − tooth·(1−h)·(1−cov)`.
+  Light/dry strokes catch on the weave's peaks and skip its valleys; the effect
+  fades as coverage builds (valleys fill). `tooth` is a **`BrushParams` field** —
+  it changes *stored* pixels, so it's historized for deterministic replay.
+- **Surface relief (media pass).** The relief feeds the normal everywhere
+  (`height_at` = impasto + `surface_strength·(h−½)`), so the weave catches light
+  across the whole viewport — including the bare substrate, whose shading is
+  *normalized* so a flat surface leaves it unchanged. `surface_strength` is a
+  view setting (`MediaParams`), like the lighting — it doesn't touch stored pixels.
+
+The surface is a **document property** (`SurfaceId { Flat, Canvas }` in
+`CanvasMeta`, default `Flat`), because deposition depends on it: replay must
+reproduce it. `Flat` is a 1×1 *full-height* texel — `h=1` makes tooth a no-op and
+a constant height has zero gradient (no relief), so the flat default is *exactly*
+equivalent to having no surface. That orthogonality is deliberate: most goldens
+use `Flat` to test other features in isolation, and a dedicated golden
+(`canvas_surface`) exercises the linen weave. The set is open for future
+custom/uploaded surfaces. (The built-in linen is downsampled by an integer factor
+to fit the 2048 texture limit, which preserves tileability; one bump tile spans
+`SURFACE_TILE_PX` canvas px.)
+
 ### 6.5 Color management (Oklab)
 
 Color flows through exactly three representations, and conversions live in one

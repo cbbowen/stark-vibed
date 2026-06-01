@@ -9,10 +9,17 @@ struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
     // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); w unused.
     params: vec4<f32>,
+    // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth; zw unused.
+    surf: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
 @group(1) @binding(0) var prefix_tex: texture_2d<f32>;
+// The canvas surface (tileable bump/height), sampled in canvas space so the
+// weave gates deposition consistently regardless of which tile a fragment lands
+// in (DESIGN.md §6.4).
+@group(2) @binding(0) var surface_tex: texture_2d<f32>;
+@group(2) @binding(1) var surface_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -104,4 +111,19 @@ fn prefix_at(xl: f32, yl: f32) -> f32 {
 fn swept_depth(in: VsOut) -> f32 {
     let depth = prefix_at(in.local.x, in.local.y) - prefix_at(in.local.x - in.misc.x, in.local.y);
     return max(depth, 0.0);
+}
+
+// Gate `coverage` by the canvas tooth at the fragment's canvas position (DESIGN.md
+// §6.4): paint adheres to the weave's peaks and skips its valleys when light, and
+// the effect fades as coverage builds (valleys fill). `frag_xy` is the fragment's
+// framebuffer pixel; the tile texture is 1:1 with canvas, so canvas = tex_origin +
+// frag_xy.
+fn surface_tooth(coverage: f32, frag_xy: vec2<f32>) -> f32 {
+    let tooth = xf.surf.y;
+    if tooth <= 0.0 {
+        return coverage;
+    }
+    let canvas = xf.params.xy + frag_xy;
+    let hs = textureSampleLevel(surface_tex, surface_samp, canvas * xf.surf.x, 0.0).r;
+    return coverage * (1.0 - tooth * (1.0 - hs) * (1.0 - coverage));
 }

@@ -15,7 +15,7 @@ use crate::document::{
     DocState, Layer, LayerId, LinearTimeline, StrokeRecord, Timeline, Tool,
 };
 use crate::geom::{Extent2, ViewTransform};
-use crate::gpu::{Compositor, GpuContext, StrokeRenderer, TileHandle, TilePool};
+use crate::gpu::{Compositor, GpuContext, StrokeRenderer, Surface, SurfaceId, TileHandle, TilePool};
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
 use crate::Result;
@@ -56,6 +56,11 @@ pub struct Engine {
     stroke: StrokeRenderer,
     assets: AssetStore,
     compositor: Compositor,
+    /// The physical canvas surface (tooth + relief). Color-space-independent, so
+    /// it survives color-space rebuilds (DESIGN.md §6.4).
+    surface: Surface,
+    /// Which surface is loaded — a document property, saved in `CanvasMeta`.
+    surface_id: SurfaceId,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
     /// Live preview of the in-flight stroke, composited in place of the
@@ -82,7 +87,10 @@ impl Engine {
         color_space: ColorSpaceId,
     ) -> Self {
         let color_space = color_space.make();
-        let (pool, stroke, compositor) = build_gpu(&gpu, target_format, viewport, &color_space);
+        let surface_id = SurfaceId::default();
+        let surface = Surface::for_id(&gpu, surface_id);
+        let (pool, stroke, compositor) =
+            build_gpu(&gpu, target_format, viewport, &color_space, &surface);
         let assets = AssetStore::new(gpu.clone());
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -97,6 +105,8 @@ impl Engine {
             stroke,
             assets,
             compositor,
+            surface,
+            surface_id,
             timeline,
             session,
             preview: None,
@@ -256,6 +266,7 @@ impl Engine {
             .collect();
         let mut file = DocumentFile::new(actions);
         file.canvas.color_space = self.color_space.id();
+        file.canvas.surface = self.surface_id;
         file.assets = assets;
         file
     }
@@ -269,6 +280,13 @@ impl Engine {
     /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
     pub fn load_document(&mut self, file: &DocumentFile) {
         self.reset_document();
+        // Match the document's surface before replaying — it affects deposition
+        // (DESIGN.md §6.4). Update the id first; the rebuild below picks it up.
+        if file.canvas.surface != self.surface_id {
+            self.surface_id = file.canvas.surface;
+            self.surface = Surface::for_id(&self.gpu, self.surface_id);
+            self.rebuild_gpu_for(self.color_space.id());
+        }
         // Match the document's color space before replaying (DESIGN.md §6.7).
         if file.canvas.color_space != self.color_space.id() {
             self.rebuild_gpu_for(file.canvas.color_space);
@@ -391,12 +409,35 @@ impl Engine {
         self.rebuild_gpu_for(id);
     }
 
+    /// The document's current surface (DESIGN.md §6.4).
+    pub fn surface(&self) -> SurfaceId {
+        self.surface_id
+    }
+
+    /// Switch the canvas surface. Because the surface affects deposition, a
+    /// document uses one surface throughout, so this resets the document (like a
+    /// color-space switch) — the New Document flow is where it's chosen.
+    pub fn set_surface(&mut self, id: SurfaceId) {
+        if id == self.surface_id {
+            return;
+        }
+        self.reset_document();
+        self.surface_id = id;
+        self.surface = Surface::for_id(&self.gpu, id);
+        self.rebuild_gpu_for(self.color_space.id());
+    }
+
     /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
     /// document is already empty (no tiles of the old format are referenced).
     fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
         let cs = id.make();
-        let (pool, stroke, compositor) =
-            build_gpu(&self.gpu, self.target_format, self.session.view.viewport, &cs);
+        let (pool, stroke, compositor) = build_gpu(
+            &self.gpu,
+            self.target_format,
+            self.session.view.viewport,
+            &cs,
+            &self.surface,
+        );
         self.color_space = cs;
         self.pool = pool;
         self.stroke = stroke;
@@ -481,10 +522,11 @@ fn build_gpu(
     target_format: wgpu::TextureFormat,
     viewport: Extent2,
     cs: &Arc<dyn ColorSpace>,
+    surface: &Surface,
 ) -> (TilePool, StrokeRenderer, Compositor) {
     let pool = TilePool::new(gpu.clone(), cs.color_format(), cs.aux_format());
-    let stroke = StrokeRenderer::new(gpu, cs.clone());
-    let compositor = Compositor::new(gpu, target_format, viewport, cs.as_ref());
+    let stroke = StrokeRenderer::new(gpu, cs.clone(), surface.clone());
+    let compositor = Compositor::new(gpu, target_format, viewport, cs.as_ref(), surface.clone());
     (pool, stroke, compositor)
 }
 
