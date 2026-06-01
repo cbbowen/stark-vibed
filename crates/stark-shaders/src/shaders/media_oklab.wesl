@@ -4,7 +4,7 @@
 // lighting/composite tail (`media_common.wesl`).
 
 import package::color::{oklab_to_linear_srgb};
-import package::media_common::{comp_color, comp_aux, fullscreen_clip, finish};
+import package::media_common::{comp_color, comp_aux, fullscreen_clip, background_color, paint_opacity_at, finish};
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -16,11 +16,12 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(frag.xy));
     let dim = vec2<i32>(textureDimensions(comp_aux));
 
-    let color = textureLoad(comp_color, p, 0);
-    let coverage = color.a;
-    let wet = textureLoad(comp_aux, p, 0).y;
+    let o = paint_opacity_at(p, dim);
+    let paint_color = textureLoad(comp_color, p, 0) * o;
+    let wet = textureLoad(comp_aux, p, 0).y * o;
+    let color = background_color() * (1 - paint_color.a) + paint_color;
 
     // Un-premultiply Oklab, then convert to linear sRGB for lighting.
-    let base = oklab_to_linear_srgb(color.rgb / max(coverage, 1e-4));
-    return finish(base, coverage, wet, p, dim);
+    let base = oklab_to_linear_srgb(color.rgb / max(color.a, 1e-4));
+    return finish(base, wet, p, dim);
 }

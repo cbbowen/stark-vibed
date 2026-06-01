@@ -15,7 +15,11 @@
       "Bash(dx build *)",
       "Bash(rm -f crates/stark-core/tests/golden/*.png; cargo test -p stark-core --test golden 2>&1 | tail -8)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(git submodule *)"
+      "Bash(git submodule *)",
+      "Bash(git --no-pager diff --stat)",
+      "Bash(git --no-pager diff crates/stark-core/src/gpu/surface.rs)",
+      "Bash(git --no-pager log --oneline -8)",
+      "Bash(git --no-pager grep -n \"tooth\" -- crates/stark-core/src crates/stark-ui/src crates/stark-core/tests)"
     ],
     "additionalDirectories": [
       "c:\\Users\\chris\\Desktop\\Ideas\\stark-vibed\\crates\\stark-core\\tests\\golden"

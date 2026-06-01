@@ -98,7 +98,7 @@ impl ColorSpace for OkLabColorSpace {
             color::srgb_to_linear(rgb[2]),
         ];
         let lab = color::linear_srgb_to_oklab(lin);
-        [lab[0], lab[1], lab[2], 0.0]
+        [lab[0], lab[1], lab[2], 1.0]
     }
 
     fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3] {
@@ -150,7 +150,7 @@ impl ColorSpace for MixboxColorSpace {
     fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4] {
         // Mixbox latent = [c0, c1, c2, c3, residual…]; keep the concentrations.
         let z = mixbox::float_rgb_to_latent(&rgb);
-        [z[0], z[1], z[2], 0.0]
+        [z[0], z[1], z[2], 1.0]
     }
 
     fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3] {

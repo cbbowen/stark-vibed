@@ -42,10 +42,11 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// A perfectly smooth surface: a 1×1 full-height texel. Tooth reads `h = 1`
-    /// (no-op) and the constant height has zero gradient (no relief).
+    /// A perfectly smooth surface: a 1×1 *zero-height* texel. Paint always stands
+    /// above it (so it shows everywhere) and the constant height has zero gradient
+    /// (no relief) — exactly equivalent to having no surface (DESIGN.md §6.4).
     pub fn flat(ctx: &GpuContext) -> Self {
-        Self::from_height(ctx, &[255u8], 1, 1)
+        Self::from_height(ctx, &[0u8], 1, 1)
     }
 
     /// Decode a grayscale PNG height map into an `R8Unorm` tileable texture.

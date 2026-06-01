@@ -25,7 +25,8 @@ fn vs_main(
 fn fs_main(in: VsOut) -> FsOut {
     let flow = in.misc.y;
     let base = 1.0 - exp(-flow * swept_depth(in));
-    let coverage = surface_tooth(base, in.clip.xy);
+    let height = in.misc.z;
+    let coverage = surface_tooth(height, base, in.clip.xy);
 
     var out: FsOut;
     out.color = vec4<f32>(in.ch.xyz * coverage, coverage);

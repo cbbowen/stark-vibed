@@ -224,8 +224,10 @@ impl Engine {
             }
         }
 
+        let bg_channels = self.color_space.rgb_to_channels([background.r as f32, background.g as f32, background.b as f32]);
+
         let view = self.session.view;
-        self.compositor.render(target, view, background, &tiles);
+        self.compositor.render(target, view, bg_channels, &tiles);
     }
 
     /// Render the current canvas to a CPU-side image at the viewport size

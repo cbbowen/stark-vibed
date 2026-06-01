@@ -31,7 +31,7 @@ fn golden_single_stroke() {
             Vec2::new(30.0, 0.0),
         ],
     );
-    let img = engine.render_to_image(BG);
+    let img = engine.render_to_image(PAPER);
     assert_golden("single_stroke", &img, 6);
 }
 
@@ -52,7 +52,7 @@ fn golden_two_strokes_cross() {
         24.0,
         &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)],
     );
-    let img = engine.render_to_image(BG);
+    let img = engine.render_to_image(PAPER);
     assert_golden("two_strokes_cross", &img, 6);
 }
 
@@ -94,7 +94,7 @@ fn golden_curved_stroke() {
             Vec2::new(90.0, 40.0),
         ],
     );
-    let img = engine.render_to_image(BG);
+    let img = engine.render_to_image(PAPER);
     assert_golden("curved_stroke", &img, 6);
 }
 
@@ -121,7 +121,7 @@ fn golden_bristle_stroke() {
     });
     engine.process(InputCommand::EndStroke);
 
-    let img = engine.render_to_image(BG);
+    let img = engine.render_to_image(PAPER);
     assert_golden("bristle_stroke", &img, 6);
 }
 
@@ -153,7 +153,7 @@ fn golden_smear_mixer() {
     });
     engine.process(InputCommand::EndStroke);
 
-    let img = engine.render_to_image(BG);
+    let img = engine.render_to_image(PAPER);
     assert_golden("smear_mixer", &img, 6);
 }
 

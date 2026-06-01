@@ -43,7 +43,7 @@ struct Instance {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MediaUniform {
     light: [f32; 4], // dir.xyz, height_strength
-    bg: [f32; 4],    // background linear RGB, unused
+    bg: [f32; 4],    // background (substrate) in latent channels (xyz), unused w
     shade: [f32; 4], // ambient, diffuse_k, spec_strength, shininess
     // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
     surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
@@ -334,7 +334,7 @@ impl Compositor {
         &mut self,
         target: &wgpu::TextureView,
         view: ViewTransform,
-        background: wgpu::Color,
+        bg_channels: [f32; 4],
         tiles: &[(TileCoord, TileHandle, f32)],
     ) {
         let device = &self.ctx.device;
@@ -383,12 +383,7 @@ impl Compositor {
                     self.media.light_dir[2],
                     self.media.height_strength,
                 ],
-                bg: [
-                    background.r as f32,
-                    background.g as f32,
-                    background.b as f32,
-                    0.0,
-                ],
+                bg: bg_channels,
                 shade: [
                     self.media.ambient,
                     self.media.diffuse,

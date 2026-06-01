@@ -118,12 +118,14 @@ fn swept_depth(in: VsOut) -> f32 {
 // the effect fades as coverage builds (valleys fill). `frag_xy` is the fragment's
 // framebuffer pixel; the tile texture is 1:1 with canvas, so canvas = tex_origin +
 // frag_xy.
-fn surface_tooth(coverage: f32, frag_xy: vec2<f32>) -> f32 {
-    let tooth = xf.surf.y;
-    if tooth <= 0.0 {
-        return coverage;
-    }
-    let canvas = xf.params.xy + frag_xy;
-    let hs = textureSampleLevel(surface_tex, surface_samp, canvas * xf.surf.x, 0.0).r;
-    return coverage * (1.0 - tooth * (1.0 - hs) * (1.0 - coverage));
+fn surface_tooth(height: f32, coverage: f32, frag_xy: vec2<f32>) -> f32 {
+    // TODO: Find a more natural and physically-accurate way to implement this.
+    return coverage;
+    // let tooth = xf.surf.y;
+    // if tooth <= 0.0 {
+    //     return coverage;
+    // }
+    // let canvas = xf.params.xy + frag_xy;
+    // let hs = textureSampleLevel(surface_tex, surface_samp, canvas * xf.surf.x, 0.0).r;
+    // return coverage * (1.0 - tooth * (1.0 - hs) * (1.0 - coverage));
 }

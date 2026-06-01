@@ -16,3 +16,6 @@ Thumbs.db
 
 # Generated from the vendored Mixbox GLSL by stark-shaders/build.rs
 /crates/stark-shaders/src/shaders/mixbox_poly.wesl
+
+# Golden mismatches.
+*.actual.png

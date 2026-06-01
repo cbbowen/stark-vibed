@@ -10,7 +10,7 @@ stark-core = { path = "../stark-core" }
 dioxus = { version = "0.7.9", features = ["web", "asset"] }
 wgpu = { workspace = true }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
-tracing = { workspace = true }
+tracing = { workspace = true, features = ["max_level_debug"] }
 
 # Web platform glue (the crate targets wasm32 via `dx serve --platform web`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
