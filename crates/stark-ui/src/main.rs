@@ -19,11 +19,13 @@ use render::{Renderer, CANVAS_ID};
 use stark_core::document::{BrushDynamics, BrushParams, BrushShape, MixerParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{
-    AssetId, ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState, SurfaceId,
+    ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState, SurfaceId,
 };
 
-/// Built-in brush shape, embedded so it's always available (DESIGN.md §6.6).
-const BRISTLES_PNG: &[u8] = include_bytes!("../../../resources/shape/WornBristles.png");
+/// Built-in assets, bundled as static files and **fetched at runtime** so they
+/// stay out of the wasm binary (DESIGN.md §6.6). The engine is handed the bytes.
+const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
+const SURFACE_LINEN: Asset = asset!("/assets/surface/Linen.png");
 
 /// Saturation/value picker square size, in pixels.
 const SV_W: f32 = 256.0;
@@ -37,7 +39,11 @@ static STARK_CSS: Asset = asset!("/assets/stark.css");
 
 fn main() {
     #[cfg(target_arch = "wasm32")]
-    console_error_panic_hook::set_once();
+    {
+        console_error_panic_hook::set_once();
+        // Route `tracing` events (engine + UI) to the browser console.
+        tracing_wasm::set_as_global_default();
+    }
     dioxus::launch(app);
 }
 
@@ -62,6 +68,11 @@ fn app() -> Element {
         let mut obs = obs;
         spawn(async move {
             let mut r = render::init(render::canvas_element()).await;
+            // Fetch the built-in brush at runtime (kept out of the wasm binary)
+            // and import it once, so the Bristles chip is ready (DESIGN.md §6.6).
+            if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(BRISTLE_BRUSH).await {
+                r.load_bristle(&bytes);
+            }
             r.paint();
             obs.set(Some(r.observe()));
             renderer.set(Some(r));
@@ -214,8 +225,6 @@ fn pick_sv(
 #[component]
 fn BrushPanel() -> Element {
     let state = use_context::<AppState>();
-    // Imported once, then cached for the session.
-    let bristle_id = use_signal(|| None::<AssetId>);
     let brush = state
         .obs
         .read()
@@ -243,7 +252,7 @@ fn BrushPanel() -> Element {
                 }
                 button {
                     class: chip(!is_round),
-                    onclick: move |_| set_bristles(state, bristle_id),
+                    onclick: move |_| set_bristles(state),
                     "Bristles"
                 }
             }
@@ -303,22 +312,11 @@ fn set_mixer(state: AppState, f: impl FnOnce(&mut MixerParams)) {
     });
 }
 
-/// Select the bristle brush, importing it on first use.
-fn set_bristles(mut state: AppState, mut bristle_id: Signal<Option<AssetId>>) {
-    let id = match bristle_id() {
-        Some(id) => id,
-        None => {
-            let mut guard = state.renderer.write();
-            let Some(r) = guard.as_mut() else { return };
-            match r.import_brush(BRISTLES_PNG) {
-                Ok(id) => {
-                    bristle_id.set(Some(id));
-                    id
-                }
-                Err(_) => return,
-            }
-        }
-    };
+/// Select the built-in bristle brush. It's fetched + imported once at startup
+/// (DESIGN.md §6.6), so this is a no-op until those bytes have loaded.
+fn set_bristles(state: AppState) {
+    let id = state.renderer.read().as_ref().and_then(|r| r.bristle());
+    let Some(id) = id else { return };
     set_shape(state, BrushShape::Stamp(id), 0.08);
 }
 
@@ -501,7 +499,7 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 
                 div { class: "modal-section-label", "SURFACE" }
                 {scard(SurfaceId::Flat, "Smooth", "A perfectly smooth surface — paint lies flat, no canvas texture.")}
-                {scard(SurfaceId::Canvas, "Canvas", "Linen weave: dry strokes catch on the tooth and the weave catches the light.")}
+                {scard(SurfaceId::Linen, "Canvas", "Linen weave: dry strokes catch on the tooth and the weave catches the light.")}
 
                 div { class: "modal-actions",
                     button {
@@ -511,7 +509,7 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                     }
                     button {
                         class: "btn btn-primary",
-                        onclick: move |_| { new_document(state, choice(), surf_choice()); on_close.call(()); },
+                        onclick: move |_| new_document(state, choice(), surf_choice(), on_close),
                         "Create"
                     }
                 }
@@ -521,17 +519,51 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 }
 
 /// Replace the document with a fresh one in the chosen color space and surface,
-/// then repaint.
-fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId) {
+/// then repaint. Image-backed surfaces are fetched on first use (the large bump
+/// maps stay out of the wasm binary — DESIGN.md §6.6), so this runs async.
+///
+/// It owns closing the modal (`on_close`), calling it only once the work is done.
+/// Crucial: `spawn` ties the task to the *calling component's* scope, so if the
+/// modal closed synchronously first, unmounting it would cancel this task mid-
+/// fetch (silently — the symptom: the surface never applies). Keeping the modal
+/// mounted until completion keeps the task alive.
+fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId, on_close: EventHandler<()>) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
-    let mut guard = renderer.write();
-    if let Some(r) = guard.as_mut() {
-        r.set_color_space(color);
-        r.set_surface(surface);
-        r.paint();
-        obs.set(Some(r.observe()));
-    }
+    spawn(async move {
+        // Fetch + register the surface bytes the first time it's chosen. Flat is
+        // procedural; the only image surface today is Linen.
+        let needs_bytes = surface != SurfaceId::Flat
+            && renderer
+                .read()
+                .as_ref()
+                .is_some_and(|r| !r.surface_loaded(surface));
+        if needs_bytes {
+            tracing::info!(?surface, url = %SURFACE_LINEN, "fetching surface asset");
+            match dioxus::asset_resolver::read_asset_bytes(SURFACE_LINEN).await {
+                Ok(bytes) => {
+                    tracing::info!(?surface, bytes = bytes.len(), "surface fetched; registering");
+                    if let Some(r) = renderer.write().as_mut() {
+                        r.register_surface(surface, bytes);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("surface fetch failed: {e}");
+                    on_close.call(());
+                    return;
+                }
+            }
+        }
+
+        if let Some(r) = renderer.write().as_mut() {
+            r.set_color_space(color);
+            r.set_surface(surface);
+            r.paint();
+            obs.set(Some(r.observe()));
+        }
+        tracing::info!(?color, ?surface, "new document ready");
+        on_close.call(());
+    });
 }
 
 // --- reusable chrome ---

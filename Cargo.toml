@@ -35,6 +35,9 @@ serde = { version = "1", features = ["derive"] }
 # Compact binary action log (no field names) + pure-Rust deflate (wasm-friendly).
 postcard = { version = "1", features = ["alloc"] }
 flate2 = "1"
+# Structured logging/diagnostics; the frontend installs a console subscriber
+# (tracing-wasm) so engine + UI traces show up in the browser devtools.
+tracing = "0.1"
 
 # stark-shaders is consumed by stark-core.
 stark-shaders = { path = "crates/stark-shaders" }

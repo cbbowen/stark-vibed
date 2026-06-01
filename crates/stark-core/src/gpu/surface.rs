@@ -16,13 +16,14 @@ use crate::gpu::context::{GpuContext, MAX_TEXTURE_DIM_2D};
 /// and shading passes must use the same value for the texture to line up.
 pub const SURFACE_TILE_PX: f32 = 1024.0;
 
-/// The built-in tileable linen weave, embedded so the engine always has it.
-const CANVAS_PNG: &[u8] = include_bytes!("../../../../resources/surface/Canvas.png");
-
 /// Which physical surface a document is painted on. Saved in `CanvasMeta` (§8)
 /// because the surface affects *deposition* (tooth), so replay needs it to be
 /// reproducible. The set is open — future custom/uploaded surfaces slot in here.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// Non-`Flat` surfaces need image bytes, which the *frontend* fetches at runtime
+/// and registers with the engine ([`crate::Engine::register_surface`]) — the
+/// engine embeds nothing (DESIGN.md §6.4, §Inputs).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum SurfaceId {
     /// Perfectly smooth: full height everywhere, so tooth is a no-op and the
     /// constant height has zero gradient (no relief). Paint behaves exactly as if
@@ -30,7 +31,7 @@ pub enum SurfaceId {
     #[default]
     Flat,
     /// The built-in tileable linen canvas weave.
-    Canvas,
+    Linen,
 }
 
 /// A canvas surface: a single-channel height texture plus a tiling sampler.
@@ -41,14 +42,6 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// Build the surface for a [`SurfaceId`].
-    pub fn for_id(ctx: &GpuContext, id: SurfaceId) -> Self {
-        match id {
-            SurfaceId::Flat => Self::flat(ctx),
-            SurfaceId::Canvas => Self::load(ctx, CANVAS_PNG),
-        }
-    }
-
     /// A perfectly smooth surface: a 1×1 full-height texel. Tooth reads `h = 1`
     /// (no-op) and the constant height has zero gradient (no relief).
     pub fn flat(ctx: &GpuContext) -> Self {

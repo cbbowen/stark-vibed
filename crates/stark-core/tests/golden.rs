@@ -14,7 +14,7 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 /// The example brush shape, embedded so the test is self-contained.
-const BRISTLES: &[u8] = include_bytes!("../../../resources/shape/WornBristles.png");
+const BRISTLES: &[u8] = include_bytes!("../../stark-ui/assets/shape/WornBristles.png");
 
 #[test]
 fn golden_single_stroke() {
@@ -165,8 +165,15 @@ fn golden_canvas_surface() {
     // Paint on the linen canvas surface (DESIGN.md §6.4): a light, partial-coverage
     // stroke catches on the weave's peaks (dry-brush tooth), while the bare paper
     // shows the woven relief under raking light. The other goldens stay on the flat
-    // default so they test orthogonally.
-    engine.set_surface(SurfaceId::Canvas);
+    // default so they test orthogonally. The surface bytes are read from disk and
+    // registered (the engine embeds none — the frontend provides them at runtime).
+    let linen_png = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../stark-ui/assets/surface/Linen.png"
+    ))
+    .expect("read surface PNG");
+    engine.register_surface(SurfaceId::Linen, linen_png);
+    engine.set_surface(SurfaceId::Linen);
     let mut brush = brush(RED, 60.0);
     brush.flow = 0.22; // light, so the tooth reads
     engine.process(InputCommand::SetBrush(brush));
@@ -180,5 +187,5 @@ fn golden_canvas_surface() {
     engine.process(InputCommand::EndStroke);
 
     let img = engine.render_to_image(PAPER);
-    assert_golden("canvas_surface", &img, 6);
+    assert_golden("linen_surface", &img, 6);
 }

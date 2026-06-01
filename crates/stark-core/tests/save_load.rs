@@ -12,7 +12,7 @@ use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, InputCommand};
 
-const BRISTLES: &[u8] = include_bytes!("../../../resources/shape/WornBristles.png");
+const BRISTLES: &[u8] = include_bytes!("../../stark-ui/assets/shape/WornBristles.png");
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];

@@ -17,6 +17,7 @@ postcard = { workspace = true }
 flate2 = { workspace = true }
 png = { workspace = true }
 blake3 = { workspace = true }
+tracing = { workspace = true }
 stark-shaders = { workspace = true }
 # Vendored as a git submodule (CC BY-NC 4.0); see vendor/mixbox/LICENSE. Pure
 # no_std + libm, so it builds for wasm. Backs the Mixbox color space (§6.7).

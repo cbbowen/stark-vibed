@@ -26,6 +26,8 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     engine: Engine,
+    /// The built-in bristle brush, imported once its bytes are fetched (§6.6).
+    bristle: Option<stark_core::AssetId>,
 }
 
 impl Renderer {
@@ -62,9 +64,27 @@ impl Renderer {
         self.engine.set_surface(id);
     }
 
-    /// Import a brush-shape image, returning its content id (DESIGN.md §6.6).
-    pub fn import_brush(&self, png_bytes: &[u8]) -> stark_core::Result<stark_core::AssetId> {
-        self.engine.import_brush(png_bytes)
+    /// Whether a surface's bytes are loaded (Flat always is).
+    pub fn surface_loaded(&self, id: SurfaceId) -> bool {
+        self.engine.surface_loaded(id)
+    }
+
+    /// Register frontend-fetched image bytes for a surface (DESIGN.md §6.4).
+    pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
+        self.engine.register_surface(id, png_bytes);
+    }
+
+    /// The built-in bristle brush's asset id, once its bytes have been imported.
+    pub fn bristle(&self) -> Option<stark_core::AssetId> {
+        self.bristle
+    }
+
+    /// Import the built-in bristle brush from fetched bytes, caching its id.
+    pub fn load_bristle(&mut self, png_bytes: &[u8]) {
+        match self.engine.import_brush(png_bytes) {
+            Ok(id) => self.bristle = Some(id),
+            Err(e) => tracing::warn!("bristle import failed: {e}"),
+        }
     }
 
     /// Match the surface + engine viewport to a new canvas size (CSS pixels).
@@ -205,5 +225,6 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
         surface,
         config,
         engine,
+        bristle: None,
     }
 }

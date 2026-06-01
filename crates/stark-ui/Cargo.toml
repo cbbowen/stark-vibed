@@ -7,14 +7,22 @@ description = "Dioxus web frontend for Stark (DESIGN.md §11): WASM backend + We
 
 [dependencies]
 stark-core = { path = "../stark-core" }
-dioxus = { version = "0.7.9", features = ["web"] }
+dioxus = { version = "0.7.9", features = ["web", "asset"] }
 wgpu = { workspace = true }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
+tracing = { workspace = true }
 
 # Web platform glue (the crate targets wasm32 via `dx serve --platform web`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+] }
 console_error_panic_hook = "0.1"
+# Routes `tracing` events to the browser console (set as the global subscriber).
+tracing-wasm = "0.2"

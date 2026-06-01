@@ -3539,6 +3539,7 @@ dependencies = [
  "serde",
  "stark-shaders",
  "thiserror 2.0.18",
+ "tracing",
  "wgpu",
 ]
 
@@ -3558,6 +3559,8 @@ dependencies = [
  "dioxus-primitives",
  "js-sys",
  "stark-core",
+ "tracing",
+ "tracing-wasm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

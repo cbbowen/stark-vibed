@@ -641,16 +641,18 @@ shared by the stamp and media passes. It drives two effects:
   *normalized* so a flat surface leaves it unchanged. `surface_strength` is a
   view setting (`MediaParams`), like the lighting — it doesn't touch stored pixels.
 
-The surface is a **document property** (`SurfaceId { Flat, Canvas }` in
+The surface is a **document property** (`SurfaceId { Flat, Linen }` in
 `CanvasMeta`, default `Flat`), because deposition depends on it: replay must
 reproduce it. `Flat` is a 1×1 *full-height* texel — `h=1` makes tooth a no-op and
 a constant height has zero gradient (no relief), so the flat default is *exactly*
 equivalent to having no surface. That orthogonality is deliberate: most goldens
 use `Flat` to test other features in isolation, and a dedicated golden
-(`canvas_surface`) exercises the linen weave. The set is open for future
-custom/uploaded surfaces. (The built-in linen is downsampled by an integer factor
-to fit the 2048 texture limit, which preserves tileability; one bump tile spans
-`SURFACE_TILE_PX` canvas px.)
+(`linen_surface`) exercises the weave. The set is open for future
+custom/uploaded surfaces. The engine **embeds no image bytes**: image-backed
+surfaces are fetched at runtime and handed to the engine via `register_surface`
+(§6.6), which builds the texture (downsampling by an integer factor to fit the
+2048 limit, preserving tileability); one bump tile spans `SURFACE_TILE_PX` canvas
+px. `Flat` needs no bytes, and a surface with unregistered bytes falls back to it.
 
 ### 6.5 Color management (Oklab)
 
@@ -678,7 +680,7 @@ Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
 The default brush is a procedural soft disc, but natural media needs *organic*
 tips — worn bristles, chalk, a palette-knife edge. A brush shape is just a
 **coverage mask**: a grayscale image where white = full deposit and black = none
-(e.g. `resources/shape/WornBristles.png`). The mask drives coverage and, scaled,
+(e.g. `crates/stark-ui/assets/shape/WornBristles.png`). The mask drives coverage and, scaled,
 the height channel too — so a worn-bristle tip lays down *broken* impasto rather
 than a uniform slab.
 
@@ -725,6 +727,18 @@ mask also modulating height. `Round` is realized as a built-in generated mask
 under a reserved id, so the shader always samples a texture — one code path.
 Determinism holds throughout: fixed sampler, seeded jitter, content-addressed
 mask.
+
+**Assets are fetched at runtime, never embedded.** The engine is *given* image
+bytes (GOALS §Inputs); it embeds none. Built-in assets (brush shapes, surface
+bump maps) live as static files under `stark-ui/assets/` and are bundled by
+`asset!` with cache-busting URLs; the frontend fetches them on demand with
+`dioxus::asset_resolver::read_asset_bytes` (HTTP on web, filesystem on native)
+and hands the bytes to the engine (`import_brush`, `register_surface`). The
+built-in bristle brush is fetched once at startup; the large surface maps are
+fetched lazily, only when a surface is selected. This keeps multi-megabyte assets
+out of the wasm binary — shrinking it and cutting bundle time — and is the path
+that scales as the built-in brush/surface libraries grow. (Headless tests, having
+no frontend, read the same files from disk and register them directly.)
 
 ### 6.7 Pluggable color spaces (Oklab & Mixbox pigment mixing)
 
@@ -1043,7 +1057,7 @@ above; they layer on top of it.
 7. **Brush shapes & assets (§6.6):** content-addressed `AssetStore`, image
    coverage masks normalized to `R8`, stamps rotated to the path tangent,
    `Engine::import_brush`. Bundle referenced assets in the save file. Golden test
-   painting with `resources/shape/WornBristles.png`.
+   painting with `crates/stark-ui/assets/shape/WornBristles.png`.
 8. **Cubic stroke interpolation (§6.2):** make `StrokeRecord.path` fitted control
    points (RDP at commit, in `path.rs`); stamp generation walks a centripetal
    Catmull–Rom spline. Kills diagonal stair-stepping, makes stamping read

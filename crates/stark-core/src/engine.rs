@@ -61,6 +61,10 @@ pub struct Engine {
     surface: Surface,
     /// Which surface is loaded — a document property, saved in `CanvasMeta`.
     surface_id: SurfaceId,
+    /// Frontend-provided image bytes for non-`Flat` surfaces, keyed by id. The
+    /// engine embeds none; the frontend fetches and registers them at runtime
+    /// (DESIGN.md §6.4). Missing bytes fall back to `Flat`.
+    surface_assets: std::collections::HashMap<SurfaceId, Vec<u8>>,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
     /// Live preview of the in-flight stroke, composited in place of the
@@ -87,8 +91,10 @@ impl Engine {
         color_space: ColorSpaceId,
     ) -> Self {
         let color_space = color_space.make();
+        // Fresh documents start on the procedural flat surface; image-backed
+        // surfaces are registered later by the frontend (DESIGN.md §6.4).
         let surface_id = SurfaceId::default();
-        let surface = Surface::for_id(&gpu, surface_id);
+        let surface = Surface::flat(&gpu);
         let (pool, stroke, compositor) =
             build_gpu(&gpu, target_format, viewport, &color_space, &surface);
         let assets = AssetStore::new(gpu.clone());
@@ -107,6 +113,7 @@ impl Engine {
             compositor,
             surface,
             surface_id,
+            surface_assets: std::collections::HashMap::new(),
             timeline,
             session,
             preview: None,
@@ -284,7 +291,7 @@ impl Engine {
         // (DESIGN.md §6.4). Update the id first; the rebuild below picks it up.
         if file.canvas.surface != self.surface_id {
             self.surface_id = file.canvas.surface;
-            self.surface = Surface::for_id(&self.gpu, self.surface_id);
+            self.surface = build_surface(&self.gpu, self.surface_id, &self.surface_assets);
             self.rebuild_gpu_for(self.color_space.id());
         }
         // Match the document's color space before replaying (DESIGN.md §6.7).
@@ -414,16 +421,33 @@ impl Engine {
         self.surface_id
     }
 
+    /// Whether `id` is ready to use — `Flat` always is; an image-backed surface
+    /// is ready once its bytes have been [`register_surface`](Self::register_surface)ed.
+    pub fn surface_loaded(&self, id: SurfaceId) -> bool {
+        id == SurfaceId::Flat || self.surface_assets.contains_key(&id)
+    }
+
+    /// Provide (frontend-fetched) image bytes for a surface. If it's the one in
+    /// use, the surface is rebuilt so the bytes take effect immediately.
+    pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
+        self.surface_assets.insert(id, png_bytes);
+        if id == self.surface_id {
+            self.surface = build_surface(&self.gpu, id, &self.surface_assets);
+            self.rebuild_gpu_for(self.color_space.id());
+        }
+    }
+
     /// Switch the canvas surface. Because the surface affects deposition, a
     /// document uses one surface throughout, so this resets the document (like a
-    /// color-space switch) — the New Document flow is where it's chosen.
+    /// color-space switch) — the New Document flow is where it's chosen. Image
+    /// surfaces fall back to `Flat` until their bytes are registered.
     pub fn set_surface(&mut self, id: SurfaceId) {
         if id == self.surface_id {
             return;
         }
         self.reset_document();
         self.surface_id = id;
-        self.surface = Surface::for_id(&self.gpu, id);
+        self.surface = build_surface(&self.gpu, id, &self.surface_assets);
         self.rebuild_gpu_for(self.color_space.id());
     }
 
@@ -517,6 +541,25 @@ impl Engine {
 }
 
 /// Build the GPU subsystems whose layout/shaders depend on the color space.
+/// Build the surface texture for `id` from the registry: `Flat` is procedural;
+/// image surfaces use their registered bytes, falling back to `Flat` if absent.
+fn build_surface(
+    gpu: &GpuContext,
+    id: SurfaceId,
+    assets: &std::collections::HashMap<SurfaceId, Vec<u8>>,
+) -> Surface {
+    match id {
+        SurfaceId::Flat => Surface::flat(gpu),
+        other => match assets.get(&other) {
+            Some(bytes) => Surface::load(gpu, bytes),
+            None => {
+                tracing::warn!("surface {other:?} has no registered bytes; using flat");
+                Surface::flat(gpu)
+            }
+        },
+    }
+}
+
 fn build_gpu(
     gpu: &GpuContext,
     target_format: wgpu::TextureFormat,

@@ -55,7 +55,9 @@
 //! - [x] Surface bump maps (DESIGN §6.4) — a tileable canvas height map
 //!   ([`gpu::Surface`], [`gpu::SurfaceId`]) drives deposition **tooth**
 //!   (`BrushParams::tooth`, historized) and media **relief** (`MediaParams::surface_strength`).
-//!   `Flat` (default) is a no-op; `Canvas` is the built-in linen. Saved in `CanvasMeta`.
+//!   `Flat` (default) is a no-op; `Linen` is the built-in weave. Saved in `CanvasMeta`.
+//!   The engine embeds no image bytes — the frontend fetches them at runtime and
+//!   provides them via [`Engine::register_surface`] (DESIGN §6.6).
 //! - [ ] Step 11: brush file upload · Step 12: collaboration.
 
 pub mod assets;
