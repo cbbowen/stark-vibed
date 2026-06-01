@@ -49,9 +49,11 @@
 //!   [`Engine::new_with_color_space`]/[`Engine::set_color_space`].
 //! - [x] Step 10: wet mixing & brush dynamics (DESIGN §6.2) — [`document::BrushDynamics`]
 //!   (`Dry` default / `Mixer`). A `Mixer` brush smears paint already on the canvas:
-//!   a GPU compute pass composites the base under the stroke, runs a serial
-//!   reservoir scan, and patches per-segment color — no CPU readback, so it works
-//!   on WebGPU. Dry strokes are unchanged. UI exposes a Dry/Mixer toggle + sliders.
+//!   a GPU compute pass composites the base under the stroke and runs a serial
+//!   reservoir scan — one per lateral band across the tip — that writes a
+//!   per-segment × per-band reservoir texture the deposit samples, so each side of
+//!   the brush carries the color it rolled over. No CPU readback, so it works on
+//!   WebGPU. Dry strokes are unchanged. UI exposes a Dry/Mixer toggle + sliders.
 //! - [x] Surface bump maps (DESIGN §6.4) — a tileable canvas height map
 //!   ([`gpu::Surface`], [`gpu::SurfaceId`]) drives deposition **tooth**
 //!   (`BrushParams::tooth`, historized) and media **relief** (`MediaParams::surface_strength`).

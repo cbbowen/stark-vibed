@@ -452,11 +452,14 @@ lays down an evolving mix downstream. This is **sequential and order-dependent**
 (what's under the brush includes what it deposited a moment ago), which is exactly
 what the swept-segment model is *not*. The reconciliation rests on two facts:
 
-1. `SegmentInstance` already carries **per-segment** `ch[4]` (color) and `aux[2]`
-   (height, wet). So smearing is just *"compute a different color per segment"* —
-   the sweep shader and the parallel render path are **untouched**.
+1. The deposit's color comes from a small **reservoir texture** the sweep shader
+   samples — one **column per segment** × one **row per lateral band** across the
+   tip. So smearing is just *"fill that texture"*; the sweep shader and the parallel
+   render path are **untouched**, and linear filtering blends both the bands and
+   adjacent segments for free, so the shader needn't know how many bands there are.
 2. The sequential part collapses to a tiny **1-D reservoir recurrence** over the
-   flattened path (a few floats of state, run once per stroke):
+   flattened path (a few floats of state, run once per stroke — and once per
+   lateral band):
 
    ```
    reservoir = { ch: [f32;4], load: f32 }            // ch = the color space's
@@ -468,8 +471,8 @@ what the swept-segment model is *not*. The reconciliation rests on two facts:
        PICKUP : lift = pickup · w · a                 // only wet, present paint lifts
                 ch   = mass_weighted_mix(ch, load, c, lift)
                 load = min(capacity, load + lift)
-       DEPOSIT: segment.ch  = ch                      // → fed to the sweep
-                segment.cov = flow · f(pressure) · g(load)
+       DEPOSIT: reservoir[i] = ch                     // → texel, sampled by sweep
+                segment.cov   = flow · f(pressure) · g(load)
                 load -= deposited                      // refills toward brush color
                                                        //   for a mixer; pure smudge
                                                        //   injects none
@@ -478,6 +481,18 @@ what the swept-segment model is *not*. The reconciliation rests on two facts:
    Mixing happens in the color space's channels, so it composes with both spaces:
    Oklab gives a perceptually-uniform blend, and Mixbox channels are pigment
    latent concentrations whose linear mix *is* Mixbox pigment mixing (§6.7).
+
+*Lateral bands — one color isn't enough.* A single reservoir gives the whole tip
+one color at each point along the stroke, so it can't express that the brush's
+*left* edge rolled through a different color than its *right*. The fix is cheap and
+parallel: run **one reservoir per lateral band** across the width (`BANDS`, e.g. 3
+— left/center/right), each sampling the canvas at its own offset `(2j+1)/BANDS − 1`
+(in radius units) along the path normal. The bands are independent, so the compute
+pass is `@workgroup_size(BANDS)` — one invocation per band, no synchronization —
+and each writes its row of the reservoir texture. The deposit maps brush-local
+`y ∈ [-1,1]` onto the texture's rows, so each part of the tip lays the color it
+rolled over, fading smoothly across the width. Band count is purely the texture's
+height; nothing else in the deposit changes when it varies.
 
 *Pluggable axis.* Brush dynamics are a serde **enum** on `BrushParams` (it lives
 in the action log, so not a trait object):
@@ -520,16 +535,25 @@ the deposit (`gpu/stroke.rs::encode_mixer`):
    overlap the stroke's bbox into one 1:1 `color`+`aux` region texture (the
    `composite` shader with a region transform). One bindable "canvas under the
    stroke"; bounded by `MAX_REGION_DIM` (oversized strokes skip pickup).
-2. **Reservoir scan** — a single-workgroup serial compute pass (`mixer.wesl`)
-   walks the segments in order, samples the region (`textureLoad`, nearest),
-   decodes per color space, runs the recurrence, and writes each segment's color
-   into the instance buffer (`STORAGE | VERTEX`), patching the `ch` vertex
-   attribute in place — so the sweep shaders are untouched.
-3. **Deposit** — the existing swept render reads the patched colors.
+2. **Reservoir scan** — a single-workgroup compute pass (`mixer.wesl`), one
+   invocation per lateral band, walks the segments in order, samples the region
+   (`textureLoad`, nearest) at the band's offset, decodes per color space, runs the
+   recurrence, and writes texel `(segment, band)` of the reservoir texture
+   (`rgba16float`, `STORAGE | TEXTURE_BINDING`). It reads the instance buffer
+   (`STORAGE | VERTEX`) but no longer writes it.
+3. **Deposit** — the existing swept render samples the reservoir texture with a
+   linear/clamp sampler. The lateral axis maps from brush-local `y`; the column
+   sweeps from the segment's own column to the next as the fragment travels its
+   length (`u = u_base + (travel/length)/segment_count`), so color is continuous
+   across segment boundaries — column `i` is the reservoir at both the end of
+   segment `i−1` and the start of segment `i`, so the seam matches exactly.
 
-`SegmentInstance` is padded to 64 B so the same buffer is a valid `std430`
-`array<Instance>` for the compute pass. The native golden exercises this exact
-path, so it validates the GPU pipeline without a browser.
+A non-mixer brush gets a 1×1 reservoir cleared to its own color (a render-pass
+clear, so the driver does the f16 encode — no CPU half-float path), keeping the
+deposit shader uniform. `SegmentInstance` is padded to 48 B so the same buffer is a
+valid `std430` `array<Instance>` for the compute pass. The native goldens exercise
+this exact path (`smear_mixer` for the carry, `lateral_pickup` for the bands), so
+it validates the GPU pipeline without a browser.
 
 *Compositing note.* Varying per-segment color is safe for the sweep: alpha still
 sums exactly (`1 − ∏(1−α)`), and color in the heavy overlap between consecutive

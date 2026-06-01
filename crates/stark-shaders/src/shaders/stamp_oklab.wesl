@@ -7,7 +7,7 @@
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b) + coverage in a
 //   target 1: aux   (Rg16Float)   — (height, wet)·coverage
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color};
 
 @vertex
 fn vs_main(
@@ -15,10 +15,9 @@ fn vs_main(
     @location(0) start: vec2<f32>,
     @location(1) dir: vec2<f32>,
     @location(2) geom: vec4<f32>,
-    @location(3) ch: vec4<f32>,
-    @location(4) aux: vec2<f32>,
+    @location(3) aux: vec2<f32>,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, ch, aux);
+    return sweep_vertex(vi, start, dir, geom, aux);
 }
 
 @fragment
@@ -28,8 +27,11 @@ fn fs_main(in: VsOut) -> FsOut {
     let height = in.misc.z;
     let coverage = surface_tooth(height, base, in.clip.xy);
 
+    // Each part of the tip lays the color its lateral band picked up (DESIGN §6.2).
+    let ch = reservoir_color(in.u, in.local, in.misc.x);
+
     var out: FsOut;
-    out.color = vec4<f32>(in.ch.xyz * coverage, coverage);
+    out.color = vec4<f32>(ch.xyz * coverage, coverage);
     out.aux = vec4<f32>(in.misc.z * coverage, in.misc.w * coverage, 0.0, 0.0);
     return out;
 }

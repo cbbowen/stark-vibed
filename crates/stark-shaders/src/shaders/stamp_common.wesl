@@ -20,12 +20,20 @@ struct TileXform {
 // in (DESIGN.md §6.4).
 @group(2) @binding(0) var surface_tex: texture_2d<f32>;
 @group(2) @binding(1) var surface_samp: sampler;
+// The stroke's color reservoir: one column per swept segment (the brush color as
+// it evolves along the stroke) × one row per lateral band across the tip, so each
+// part of the brush carries the color it picked up (DESIGN.md §6.2). For a dry
+// brush it is a 1×1 texel of the brush color. Linear filtering interpolates both
+// axes for free — across the tip (bands) and along the stroke (segments) — so this
+// shader is agnostic to the band count; the mixer compute pass populates it.
+@group(3) @binding(0) var reservoir: texture_2d<f32>;
+@group(3) @binding(1) var reservoir_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) local: vec2<f32>, // brush-local (x in radius units from start, y in [-1,1])
-    @location(1) ch: vec4<f32>,    // color-space channels (xyz; Oklab L,a,b / Mixbox c0,c1,c2)
-    @location(2) misc: vec4<f32>,  // length/radius, flow, height, wet
+    @location(1) misc: vec4<f32>,  // length/radius, flow, height, wet
+    @location(2) u: f32,           // this segment's reservoir column (per-instance)
 }
 
 struct FsOut {
@@ -40,8 +48,7 @@ fn sweep_vertex(
     vi: u32,
     start: vec2<f32>,
     dir: vec2<f32>,   // unit tangent
-    geom: vec4<f32>,  // radius, length, flow, unused
-    ch: vec4<f32>,    // color-space channels
+    geom: vec4<f32>,  // radius, length, flow, reservoir column (u)
     aux: vec2<f32>,   // height, wet
 ) -> VsOut {
     let radius = geom.x;
@@ -58,9 +65,24 @@ fn sweep_vertex(
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.local = vec2<f32>(cx, cy);
-    out.ch = ch;
     out.misc = vec4<f32>(lr, geom.z, aux.x, aux.y);
+    out.u = geom.w;
     return out;
+}
+
+// The deposited channels for a fragment at brush-local `local` (x = travel in
+// radius units from the segment start, y across the tip ∈ [-1,1]) on a segment
+// `lr` radii long, whose reservoir column center is `u_base`. We interpolate along
+// the stroke as well as across the tip: as the fragment travels from the segment's
+// start to its end, `u` sweeps from this segment's column to the next one
+// (`xf.params.w` = 1 / segment-count), so the color is continuous across segment
+// boundaries (column i is the reservoir at both the end of segment i−1 and the
+// start of segment i). Linear filtering does the band (y) and segment (u) blends;
+// a dry brush's 1×1 reservoir collapses to the brush color.
+fn reservoir_color(u_base: f32, local: vec2<f32>, lr: f32) -> vec4<f32> {
+    let f = clamp(local.x / lr, 0.0, 1.0);
+    let u = u_base + f * xf.params.w;
+    return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(u, local.y * 0.5 + 0.5), 0.0);
 }
 
 // Bilinear lookup of the prefix-τ (fp32) at brush-local (xl, yl) ∈ [-1,1]: 0

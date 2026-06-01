@@ -42,6 +42,13 @@ const ROUND_RES: u32 = 256;
 /// in `mixer.wesl`).
 const RESERVOIR_CAPACITY: f32 = 1.0;
 
+/// Lateral reservoir bands across the brush tip: each picks up canvas color at its
+/// own offset, so one side of the brush can carry a different color than the other
+/// (DESIGN.md §6.2). This is the *height* of the reservoir texture; the mixer's
+/// `BANDS` constant must match. The stamp shader samples the texture and is
+/// otherwise agnostic to this count.
+const LATERAL_BANDS: u32 = 16;
+
 /// Largest base-region edge (canvas px) composited for wet-mixing pickup. Strokes
 /// whose bounding box exceeds this skip pickup for that stroke — rare, and it
 /// bounds the transient GPU memory of the region texture (DESIGN.md §6.2).
@@ -57,21 +64,19 @@ struct Segment {
     flow: f32,
     height: f32,
     wet: f32,
-    ch: [f32; 4],
 }
 
-/// Per-segment instance data for the sweep shader. Padded to 64 bytes so the
-/// same buffer is a valid `std430 array<Instance>` for the wet-mixing compute
-/// pass (which patches `ch` in place — see `mixer.wesl`).
+/// Per-segment instance data for the sweep shader. Padded to 48 bytes so the same
+/// buffer is a valid `std430 array<Instance>` for the wet-mixing compute pass,
+/// which reads it to drive the reservoir scan (see `mixer.wesl`).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct SegmentInstance {
     start: [f32; 2],
     dir: [f32; 2],    // unit tangent
-    geom: [f32; 4],   // radius, length, flow, unused
-    ch: [f32; 4],     // color-space channels
+    geom: [f32; 4],   // radius, length, flow, reservoir column u ∈ [0,1]
     aux: [f32; 2],    // height, wet
-    _pad: [f32; 2],   // → 64 B, vec4 std430 alignment
+    _pad: [f32; 2],   // → 48 B, vec4 std430 alignment
 }
 
 /// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
@@ -81,7 +86,7 @@ struct SegmentInstance {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct TileXform {
-    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, unused
+    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, 1/segment_count
     surf: [f32; 4],   // inv surface-tile (canvas px → bump uv), tooth, _, _
 }
 
@@ -123,10 +128,16 @@ pub struct StrokeRenderer {
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
     /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for tooth.
     surface_bg: wgpu::BindGroup,
+    /// Color reservoir (group 3 of the sweep pipeline): the per-segment × per-band
+    /// color the deposit samples. `reservoir_sampler` is linear+clamp so it blends
+    /// bands (and segments) for free.
+    reservoir_bgl: wgpu::BindGroupLayout,
+    reservoir_sampler: wgpu::Sampler,
 
     // Wet-mixing pickup (Mixer dynamics): composite the base into a region, then a
-    // serial compute scan patches per-segment color — all on the GPU, no readback
-    // (DESIGN.md §6.2). Built once; cheap to clone (wgpu handles are Arc-backed).
+    // serial compute scan writes the per-segment × per-band reservoir texture — all
+    // on the GPU, no readback (DESIGN.md §6.2). Built once; cheap to clone (wgpu
+    // handles are Arc-backed).
     composite_pipeline: wgpu::RenderPipeline,
     composite_sampler: wgpu::Sampler,
     composite_view_bgl: wgpu::BindGroupLayout,
@@ -211,9 +222,46 @@ impl StrokeRenderer {
             ],
         });
 
+        // Group 3: the stroke's color reservoir (per-segment × per-band) + a
+        // linear/clamp sampler, so the deposit blends bands and segments for free.
+        let reservoir_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark sweep reservoir bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let reservoir_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("stark sweep reservoir sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stark sweep layout"),
-            bind_group_layouts: &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&surface_bgl)],
+            bind_group_layouts: &[
+                Some(&uniform_bgl),
+                Some(&prefix_bgl),
+                Some(&surface_bgl),
+                Some(&reservoir_bgl),
+            ],
             immediate_size: 0,
         });
 
@@ -228,7 +276,7 @@ impl StrokeRenderer {
                     array_stride: std::mem::size_of::<SegmentInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2
                     ],
                 }],
             },
@@ -278,6 +326,8 @@ impl StrokeRenderer {
             prefix_bgl,
             round_prefix: Arc::new(Mutex::new(None)),
             surface_bg,
+            reservoir_bgl,
+            reservoir_sampler,
             composite_pipeline,
             composite_sampler,
             composite_view_bgl,
@@ -297,7 +347,7 @@ impl StrokeRenderer {
     ) -> HashTrieMap<TileCoord, TileHandle> {
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
-        let segments = generate_segments(rec, channels);
+        let segments = generate_segments(rec);
         if segments.is_empty() {
             return base.clone();
         }
@@ -321,19 +371,23 @@ impl StrokeRenderer {
             }],
         });
 
+        // Each segment maps to one reservoir column at texel center u=(i+0.5)/count;
+        // the deposit samples that column for its color (see mixer.wesl).
+        let count = segments.len();
+        let inv_count = 1.0 / count as f32;
         let instances: Vec<SegmentInstance> = segments
             .iter()
-            .map(|s| SegmentInstance {
+            .enumerate()
+            .map(|(i, s)| SegmentInstance {
                 start: s.start.to_array(),
                 dir: s.dir.to_array(),
-                geom: [s.radius, s.length, s.flow, 0.0],
-                ch: s.ch,
+                geom: [s.radius, s.length, s.flow, (i as f32 + 0.5) * inv_count],
                 aux: [s.height, s.wet],
                 _pad: [0.0; 2],
             })
             .collect();
-        // The mixer compute pass patches `ch` in place, so the buffer is also a
-        // storage target — not just vertex data.
+        // The mixer compute pass reads this buffer to drive its reservoir scan, so
+        // it is a storage source as well as vertex data.
         let instance_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark sweep instances"),
             contents: bytemuck::cast_slice(&instances),
@@ -345,12 +399,51 @@ impl StrokeRenderer {
             label: Some("stark stroke commit"),
         });
 
-        // Wet mixing (DESIGN.md §6.2): composite the base under the stroke, then a
-        // serial compute scan rewrites each segment's `ch` to the smeared color.
-        // Encoded before the deposit so the patched colors are what gets stamped.
-        if let BrushDynamics::Mixer(mp) = rec.brush.dynamics {
-            self.encode_mixer(&mut encoder, base, &coords, &segments, &instance_buf, channels, mp);
-        }
+        // Build the stroke's color reservoir, which the deposit samples for each
+        // fragment's color (group 3). A Mixer brush (DESIGN.md §6.2) composites the
+        // base under the stroke and runs a serial compute scan that fills a
+        // per-segment × per-band texture with smeared color; every other brush gets
+        // a 1×1 texel of its own color (so the deposit shader is uniform). Encoded
+        // before the deposit so the colors are ready when stamped.
+        let mixer = match rec.brush.dynamics {
+            BrushDynamics::Mixer(mp) => stroke_bbox(&segments).map(|bbox| (mp, bbox)),
+            _ => None,
+        };
+        let reservoir_view = if let Some((mp, bbox)) = mixer {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("stark mixer reservoir"),
+                size: wgpu::Extent3d {
+                    width: count as u32,
+                    height: LATERAL_BANDS,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.encode_mixer(&mut encoder, base, &coords, &segments, &instance_buf, &view, bbox, channels, mp);
+            view
+        } else {
+            self.flat_reservoir(&mut encoder, channels)
+        };
+        let reservoir_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark sweep reservoir bg"),
+            layout: &self.reservoir_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&reservoir_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.reservoir_sampler),
+                },
+            ],
+        });
 
         let mut new_map = base.clone();
         for coord in coords {
@@ -386,7 +479,7 @@ impl StrokeRenderer {
             let apron = TILE_APRON as f32;
             let origin = coord.origin();
             let xform = TileXform {
-                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, 0.0],
+                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, inv_count],
                 surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -435,6 +528,7 @@ impl StrokeRenderer {
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &self.surface_bg, &[]);
+                pass.set_bind_group(3, &reservoir_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
                 pass.draw(0..4, 0..instances.len() as u32);
             }
@@ -462,11 +556,54 @@ impl StrokeRenderer {
         view
     }
 
+    /// A 1×1 reservoir holding the brush's own color, for brushes without pickup.
+    /// Cleared (not CPU-uploaded) so the driver does the f16 encode; the deposit
+    /// then samples one uniform color across the whole tip.
+    fn flat_reservoir(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        channels: [f32; 4],
+    ) -> wgpu::TextureView {
+        let tex = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("stark flat reservoir"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark flat reservoir clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: channels[0] as f64,
+                        g: channels[1] as f64,
+                        b: channels[2] as f64,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        view
+    }
+
     /// Wet-mixing pickup (DESIGN.md §6.2), fully on the GPU. Pass A composites the
-    /// base under the stroke into a 1:1 region; Pass B is a single serial compute
-    /// scan that lifts wet paint into a reservoir and patches each segment's `ch`
-    /// in `instance_buf`. No CPU readback — works on WebGPU. No-op if the stroke's
-    /// bbox exceeds [`MAX_REGION_DIM`].
+    /// base under the stroke into a 1:1 region; Pass B is a serial compute scan
+    /// (one invocation per lateral band) that lifts wet paint into per-band
+    /// reservoirs and writes the `reservoir` texture (segment × band). No CPU
+    /// readback — works on WebGPU. `bbox` is the stroke's region (origin, w, h).
     #[allow(clippy::too_many_arguments)]
     fn encode_mixer(
         &self,
@@ -475,12 +612,12 @@ impl StrokeRenderer {
         coords: &BTreeSet<TileCoord>,
         segments: &[Segment],
         instance_buf: &wgpu::Buffer,
+        reservoir: &wgpu::TextureView,
+        bbox: (Vec2, u32, u32),
         channels: [f32; 4],
         mp: MixerParams,
     ) {
-        let Some((origin, w, h)) = stroke_bbox(segments) else {
-            return; // empty or too large — skip pickup for this stroke
-        };
+        let (origin, w, h) = bbox;
         let device = &self.ctx.device;
 
         // Region targets: the base canvas under the stroke, 1:1 with canvas px.
@@ -604,7 +741,7 @@ impl StrokeRenderer {
             }
         }
 
-        // ---- Pass B: the serial reservoir scan, patching per-segment `ch`.
+        // ---- Pass B: the serial reservoir scan, writing the reservoir texture.
         let uni = MixerUniform {
             brush_ch: channels,
             origin_dims: [origin.x, origin.y, w as f32, h as f32],
@@ -640,6 +777,10 @@ impl StrokeRenderer {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: instance_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(reservoir),
                 },
             ],
         });
@@ -677,10 +818,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 
 /// Build swept segments from the fitted control points (DESIGN.md §6.2): flatten
 /// the spline, then make each polyline edge a segment. The one-way load reservoir
-/// (`drain`) depletes with arc distance; radius follows pressure. Every segment
-/// gets the brush's own `channels`; a [`BrushDynamics::Mixer`] brush overwrites
-/// these per-segment on the GPU afterwards (`StrokeRenderer::encode_mixer`).
-fn generate_segments(rec: &StrokeRecord, channels: [f32; 4]) -> Vec<Segment> {
+/// (`drain`) depletes with arc distance; radius follows pressure. The deposited
+/// color comes from the reservoir texture (the brush's own color, or per-segment ×
+/// per-band pickup for a [`BrushDynamics::Mixer`] brush — see `encode_mixer`).
+fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
     let b = &rec.brush;
     let pts = crate::path::flatten(&rec.path, crate::path::FLATTEN_STEP);
     let mut segs = Vec::new();
@@ -698,7 +839,6 @@ fn generate_segments(rec: &StrokeRecord, channels: [f32; 4]) -> Vec<Segment> {
             flow: b.flow * b.color[3] * load * SWEEP_FLOW_SCALE,
             height: b.height * load,
             wet: b.wetness * load,
-            ch: channels,
         }
     };
 
@@ -905,9 +1045,21 @@ fn build_mixer_pipeline(
                 binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    // Read-only now: the scan drives off the instances but writes
+                    // its output to the reservoir texture (binding 4).
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    view_dimension: wgpu::TextureViewDimension::D2,
                 },
                 count: None,
             },

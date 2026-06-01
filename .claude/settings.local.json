@@ -19,7 +19,8 @@
       "Bash(git --no-pager diff --stat)",
       "Bash(git --no-pager diff crates/stark-core/src/gpu/surface.rs)",
       "Bash(git --no-pager log --oneline -8)",
-      "Bash(git --no-pager grep -n \"tooth\" -- crates/stark-core/src crates/stark-ui/src crates/stark-core/tests)"
+      "Bash(git --no-pager grep -n \"tooth\" -- crates/stark-core/src crates/stark-ui/src crates/stark-core/tests)",
+      "Bash(cargo check *)"
     ],
     "additionalDirectories": [
       "c:\\Users\\chris\\Desktop\\Ideas\\stark-vibed\\crates\\stark-core\\tests\\golden"

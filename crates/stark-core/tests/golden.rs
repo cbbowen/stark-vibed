@@ -158,6 +158,44 @@ fn golden_smear_mixer() {
 }
 
 #[test]
+fn golden_lateral_pickup() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // Lateral reservoir bands (DESIGN.md §6.2): a thin horizontal green bar that
+    // sits entirely *inside* the upper lateral band of where a wide, hard-edged red
+    // Mixer stroke will travel. The brush's upper edge rolls along the green the
+    // whole way (picking it up and carrying it) while its center/lower edge never
+    // touch it. Because the hard red stroke fully buries the green bar, any green in
+    // the result is paint the *upper band* picked up and re-deposited — a single
+    // reservoir (one color across the whole tip) could not produce it. The boundary
+    // runs *along* the stroke, unlike `smear_mixer` (which crosses it).
+    paint(
+        &mut engine,
+        GREEN,
+        9.0,
+        &[Vec2::new(-110.0, 17.0), Vec2::new(110.0, 17.0)],
+    );
+
+    let mut brush = brush(RED, 30.0);
+    brush.hardness = 0.9; // near-solid, so it opaquely covers the green bar
+    brush.dynamics = BrushDynamics::Mixer(MixerParams::default());
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-110.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(110.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("lateral_pickup", &img, 6);
+}
+
+#[test]
 fn golden_canvas_surface() {
     let Some(mut engine) = engine_or_skip() else {
         return;
