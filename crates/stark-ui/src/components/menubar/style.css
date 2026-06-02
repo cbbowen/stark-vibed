@@ -11,7 +11,7 @@
   padding: 6px;
   border: none;
   border-radius: 12px;
-  background: var(--panel-noise), rgba(26, 26, 30, 0.9);
+  background: var(--panel-background);
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
 }
@@ -65,7 +65,7 @@
   padding: 6px;
   margin-left: 10px;
   border-radius: 10px;
-  background: var(--panel-noise), rgba(32, 32, 38, 0.97);
+  background: var(--panel-background);
   box-shadow: var(--panel-shadow), inset 0 0 0 1px #ffffff14;
   backdrop-filter: blur(8px);
   opacity: 0;
@@ -109,7 +109,10 @@
 }
 
 .dx-menubar-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
   padding: 8px 12px;
   border-radius: 6px;
   color: #e8e8ea;

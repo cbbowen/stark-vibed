@@ -34,7 +34,7 @@ const SV_H: f32 = 150.0;
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
 /// blocks carry class names, not inline styles. Custom properties are global, so
-/// the css_module menubar styles pick up `--panel-shadow` / `--panel-noise` too.
+/// the css_module menubar styles pick up `--panel-shadow` / `--panel-background` too.
 static STARK_CSS: Asset = asset!("/assets/stark.css");
 
 fn main() {
@@ -99,9 +99,6 @@ fn app() -> Element {
                 BrushPanel {}
                 LayerPanel {}
             }
-
-            // Minimal, unobtrusive history controls (keyboard: Ctrl+Z / Ctrl+Shift+Z).
-            HistoryControls {}
         }
     }
 }
@@ -386,30 +383,20 @@ fn LayerRow(info: LayerInfo) -> Element {
     }
 }
 
+/// A vertical menu rail on the far left for uncommon or keyboard-driven commands
+/// (DESIGN.md §11). Built on the vendored `menubar` component; the dropdown flies
+/// out to the right. Undo/Redo live here purely to advertise their Ctrl+Z / Ctrl+Y
+/// shortcuts (the everyday way to invoke them); "New document…" opens a modal.
 #[component]
-fn HistoryControls() -> Element {
+fn CommandRail() -> Element {
     let state = use_context::<AppState>();
+    let mut show_new_doc = use_signal(|| false);
     let (can_undo, can_redo) = state
         .obs
         .read()
         .as_ref()
         .map(|o| (o.can_undo, o.can_redo))
         .unwrap_or((false, false));
-
-    rsx! {
-        div { class: "history-controls",
-            button { class: "chrome-button", disabled: !can_undo, onclick: move |_| dispatch(state, InputCommand::Undo), "⟲ Undo" }
-            button { class: "chrome-button", disabled: !can_redo, onclick: move |_| dispatch(state, InputCommand::Redo), "Redo ⟳" }
-        }
-    }
-}
-
-/// A vertical menu rail on the far left for uncommon, document-level commands
-/// (DESIGN.md §11). Built on the vendored `menubar` component; the dropdown flies
-/// out to the right. Currently just "New document…", which opens a settings modal.
-#[component]
-fn CommandRail() -> Element {
-    let mut show_new_doc = use_signal(|| false);
 
     rsx! {
         div { class: "command-rail",
@@ -419,10 +406,26 @@ fn CommandRail() -> Element {
                     MenubarTrigger { "\u{2630}" }
                     MenubarContent {
                         MenubarItem {
-                            index: 0usize,
+                            index: 2usize,
                             value: "new-document".to_string(),
                             on_select: move |_| show_new_doc.set(true),
-                            "New document…"
+                            span { "New document…" }
+                        }
+                        MenubarItem {
+                            index: 0usize,
+                            value: "undo".to_string(),
+                            disabled: !can_undo,
+                            on_select: move |_| dispatch(state, InputCommand::Undo),
+                            span { "Undo" }
+                            span { class: "menu-shortcut", "Ctrl+Z" }
+                        }
+                        MenubarItem {
+                            index: 1usize,
+                            value: "redo".to_string(),
+                            disabled: !can_redo,
+                            on_select: move |_| dispatch(state, InputCommand::Redo),
+                            span { "Redo" }
+                            span { class: "menu-shortcut", "Ctrl+Y" }
                         }
                     }
                 }

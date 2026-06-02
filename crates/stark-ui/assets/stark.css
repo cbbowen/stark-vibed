@@ -10,7 +10,7 @@
    up too. Tweak both here. --- */
 :root {
   --panel-shadow: 0px 0px 8px 0px black;
-  --panel-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
+  --panel-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E"), rgba(21, 20, 19, 0.9);
 }
 
 /* --- app shell --- */
@@ -47,7 +47,7 @@
 
 /* --- floating panel surface --- */
 .panel {
-  background: var(--panel-noise), rgba(26, 26, 30, 0.9);
+  background: var(--panel-background);
   color: #e8e8ea;
   border-radius: 12px;
   padding: 12px 14px;
@@ -167,31 +167,19 @@
   cursor: pointer;
 }
 
-/* --- history controls --- */
-.history-controls {
-  position: absolute;
-  left: 14px;
-  bottom: 14px;
-  display: flex;
-  gap: 8px;
-}
-
-.chrome-button {
-  background: var(--panel-noise), rgba(28, 28, 32, 0.9);
-  color: #e8e8ea;
-  border: none;
-  border-radius: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  box-shadow: var(--panel-shadow);
-}
-
 /* --- command rail --- */
 .command-rail {
   position: absolute;
   left: 14px;
   top: 14px;
   z-index: 20;
+}
+
+/* Keyboard-shortcut hint trailing a menu item label. Translucent white stays
+   legible on both the panel background and the blue hover/focus highlight. */
+.menu-shortcut {
+  color: #ffffff8c;
+  font-size: 12px;
 }
 
 /* --- new-document modal --- */
@@ -209,7 +197,7 @@
 .modal-dialog {
   width: 360px;
   max-width: calc(100vw - 28px);
-  background: var(--panel-noise), rgba(26, 26, 30, 0.97);
+  background: var(--panel-background);
   color: #e8e8ea;
   border-radius: 14px;
   padding: 20px;
