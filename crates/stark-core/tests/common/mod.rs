@@ -24,7 +24,7 @@ pub const PAPER: wgpu::Color = wgpu::Color { r: 0.92, g: 0.90, b: 0.85, a: 1.0 }
 /// (the test should then skip rather than fail).
 pub fn engine_or_skip() -> Option<Engine> {
     match pollster::block_on(headless_engine(TARGET, SIZE)) {
-        Ok(e) => Some(e),
+        Ok(e) => Some(with_studio_env(e)),
         Err(e) => {
             eprintln!("skipping GPU test: {e}");
             None
@@ -35,12 +35,26 @@ pub fn engine_or_skip() -> Option<Engine> {
 /// A headless engine in a chosen color space (DESIGN.md §6.7).
 pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
     match pollster::block_on(headless_engine_with(TARGET, SIZE, id)) {
-        Ok(e) => Some(e),
+        Ok(e) => Some(with_studio_env(e)),
         Err(e) => {
             eprintln!("skipping GPU test: {e}");
             None
         }
     }
+}
+
+/// Light the test engine with the real studio HDR (the frontend's default), so
+/// goldens exercise the same image-based lighting the app uses rather than the
+/// procedural fallback (DESIGN.md §6.3).
+fn with_studio_env(mut engine: Engine) -> Engine {
+    let hdr = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../stark-ui/assets/environment/ferndale_studio_11_1k.hdr"
+    ))
+    .expect("read studio HDR");
+    engine.register_environment(stark_core::EnvironmentId::Ferndale, hdr);
+    engine.set_environment(stark_core::EnvironmentId::Ferndale);
+    engine
 }
 
 pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {

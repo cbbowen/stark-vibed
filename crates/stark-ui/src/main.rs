@@ -19,13 +19,15 @@ use render::{Renderer, CANVAS_ID};
 use stark_core::document::{BrushDynamics, BrushParams, BrushShape, MixerParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{
-    ColorSpaceId, InputCommand, InputSample, LayerInfo, ObservableState, SurfaceId,
+    ColorSpaceId, EnvironmentId, InputCommand, InputSample, LayerInfo, MediaParams,
+    ObservableState, SurfaceId,
 };
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (DESIGN.md §6.6). The engine is handed the bytes.
 const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
 const SURFACE_LINEN: Asset = asset!("/assets/surface/Linen.png");
+const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 
 /// Saturation/value picker square size, in pixels.
 const SV_W: f32 = 256.0;
@@ -73,6 +75,12 @@ fn app() -> Element {
             if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(BRISTLE_BRUSH).await {
                 r.load_bristle(&bytes);
             }
+            // Fetch the studio HDR and light the canvas with it (DESIGN.md §6.3);
+            // until then the procedural studio environment is used.
+            if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(ENV_FERNDALE).await {
+                r.register_environment(EnvironmentId::Ferndale, bytes);
+                r.set_environment(EnvironmentId::Ferndale);
+            }
             r.paint();
             obs.set(Some(r.observe()));
             renderer.set(Some(r));
@@ -97,6 +105,7 @@ fn app() -> Element {
             div { class: "panel-stack",
                 ColorPanel {}
                 BrushPanel {}
+                LightingPanel {}
                 LayerPanel {}
             }
         }
@@ -380,6 +389,43 @@ fn LayerRow(info: LayerInfo) -> Element {
                 },
             }
         }
+    }
+}
+
+/// Lighting controls for the image-based-lighting media pass (DESIGN.md §6.3).
+/// The canvas is lit by the studio HDR environment; these tune how it reads.
+#[component]
+fn LightingPanel() -> Element {
+    let state = use_context::<AppState>();
+    // Seeded from the engine defaults; this panel owns the live values (lighting is
+    // a view setting, not part of the observable document state).
+    let media = use_signal(MediaParams::default);
+    let p = media();
+
+    rsx! {
+        Panel { title: "Lighting",
+            Slider { label: "Exposure", min: 0.1, max: 2.0, value: p.exposure,
+                oninput: move |v| update_media(state, media, move |m| m.exposure = v) }
+            Slider { label: "Relief", min: 0.0, max: 0.6, value: p.height_strength,
+                oninput: move |v| update_media(state, media, move |m| m.height_strength = v) }
+            Slider { label: "Weave", min: 0.0, max: 1.5, value: p.surface_strength,
+                oninput: move |v| update_media(state, media, move |m| m.surface_strength = v) }
+            Slider { label: "Wet gloss", min: 0.0, max: 0.35, value: p.specular,
+                oninput: move |v| update_media(state, media, move |m| m.specular = v) }
+        }
+    }
+}
+
+/// Mutate the lighting params in place, push them to the engine, and repaint.
+fn update_media(state: AppState, mut media: Signal<MediaParams>, f: impl FnOnce(&mut MediaParams)) {
+    let mut p = media();
+    f(&mut p);
+    media.set(p);
+    let mut renderer = state.renderer;
+    let mut guard = renderer.write();
+    if let Some(r) = guard.as_mut() {
+        r.set_media_params(p);
+        r.paint();
     }
 }
 

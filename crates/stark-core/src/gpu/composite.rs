@@ -19,6 +19,7 @@ use crate::geom::{
     Extent2, TileCoord, ViewTransform, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE,
 };
 use crate::gpu::context::GpuContext;
+use crate::gpu::environment::Environment;
 use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::tile::TileHandle;
 
@@ -42,38 +43,38 @@ struct Instance {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MediaUniform {
-    light: [f32; 4], // dir.xyz, height_strength
+    light: [f32; 4], // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: [f32; 4],    // background (substrate) in latent channels (xyz), unused w
-    shade: [f32; 4], // ambient, diffuse_k, spec_strength, shininess
+    shade: [f32; 4], // exposure, diffuse_lod, wet_gloss, max_lod
     // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
     surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: [f32; 4], // surface_strength, _, _, _
 }
 
-/// Lighting parameters for the media pass (DESIGN.md §6.3). A single place to
-/// tune the painterly look.
+/// Lighting parameters for the media pass (DESIGN.md §6.3). The painting is lit by
+/// image-based lighting from an [`Environment`]; this is a single place to tune the
+/// look. A view setting — never historized (it changes how the canvas looks, not
+/// its pixels).
 #[derive(Copy, Clone, Debug)]
 pub struct MediaParams {
-    pub light_dir: [f32; 3],
+    /// Relief slope: how strongly the height field tilts normals (impasto/weave).
     pub height_strength: f32,
-    pub ambient: f32,
-    pub diffuse: f32,
+    /// Overall exposure applied to the lit result before the sRGB encode.
+    pub exposure: f32,
+    /// Wet glossiness in [0,1]: how smooth (low-roughness) fully-wet paint becomes,
+    /// driving the Cook–Torrance specular. 0 = stays matte even when wet; 1 = near
+    /// mirror-smooth. Dry paint and bare canvas are always rough → matte.
     pub specular: f32,
-    pub shininess: f32,
-    /// How strongly the canvas surface relief shows in the lighting (its weave
-    /// catches light across the whole viewport). A view setting, not historized.
+    /// How strongly the canvas surface relief shows (its weave amplitude).
     pub surface_strength: f32,
 }
 
 impl Default for MediaParams {
     fn default() -> Self {
         Self {
-            light_dir: [-0.5, -0.6, 0.85],
-            height_strength: 0.4,
-            ambient: 0.55,
-            diffuse: 0.55,
-            specular: 0.2,
-            shininess: 32.0,
+            height_strength: 0.15,
+            exposure: 0.8,
+            specular: 0.20,
             surface_strength: 0.6,
         }
     }
@@ -102,6 +103,8 @@ pub struct Compositor {
 
     // The canvas surface (bump) sampled by the media pass for relief.
     surface: Surface,
+    // The HDR lighting environment sampled by the media pass (DESIGN.md §6.3).
+    environment: Environment,
 
     // Viewport-sized offscreen targets (recreated on resize).
     size: Extent2,
@@ -117,6 +120,7 @@ impl Compositor {
         size: Extent2,
         color_space: &dyn ColorSpace,
         surface: Surface,
+        environment: Environment,
     ) -> Self {
         let device = &ctx.device;
         let color_format = color_space.color_format();
@@ -258,6 +262,13 @@ impl Compositor {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                tex_entry(5), // environment (filtered, mipped)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let media_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -299,7 +310,7 @@ impl Compositor {
 
         let instances = alloc_instances(device, 1);
         let (comp_color_view, comp_aux_view, media_bg) = make_offscreen(
-            device, size, color_format, aux_format, &media_bgl, &media_buf, &surface,
+            device, size, color_format, aux_format, &media_bgl, &media_buf, &surface, &environment,
         );
 
         Self {
@@ -317,6 +328,7 @@ impl Compositor {
             color_format,
             aux_format,
             surface,
+            environment,
             size,
             comp_color_view,
             comp_aux_view,
@@ -324,9 +336,33 @@ impl Compositor {
         }
     }
 
+    /// The current media/lighting parameters (DESIGN.md §6.3).
+    pub fn media(&self) -> MediaParams {
+        self.media
+    }
+
     /// Adjust the media/lighting parameters (DESIGN.md §6.3).
     pub fn set_media(&mut self, media: MediaParams) {
         self.media = media;
+    }
+
+    /// Swap the HDR lighting environment, rebuilding the media bind group so the
+    /// next render samples it (DESIGN.md §6.3).
+    pub fn set_environment(&mut self, environment: Environment) {
+        self.environment = environment;
+        let (c, a, bg) = make_offscreen(
+            &self.ctx.device,
+            self.size,
+            self.color_format,
+            self.aux_format,
+            &self.media_bgl,
+            &self.media_buf,
+            &self.surface,
+            &self.environment,
+        );
+        self.comp_color_view = c;
+        self.comp_aux_view = a;
+        self.media_bg = bg;
     }
 
     /// Composite `tiles` and render the lit result into `target` under `view`.
@@ -348,6 +384,7 @@ impl Compositor {
                 &self.media_bgl,
                 &self.media_buf,
                 &self.surface,
+                &self.environment,
             );
             self.comp_color_view = c;
             self.comp_aux_view = a;
@@ -372,24 +409,23 @@ impl Compositor {
             - crate::geom::Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
                 * (0.5 * inv_zoom);
 
+        // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance.
+        // The Cook–Torrance specular picks its own mip from roughness, spanning the
+        // whole chain (roughness 0 → mip 0 sharp; roughness 1 → `max_lod` blurred).
+        let diffuse_lod = (self.environment.mip_count as f32 - 3.0).max(0.0);
+        let max_lod = (self.environment.mip_count as f32 - 1.0).max(0.0);
+        // Normalize by the environment's mean luminance so exposure means the same
+        // thing for any environment (a flat surface reads ~its albedo).
+        let exposure = self.media.exposure / self.environment.mean_luminance;
+
         // Media uniform.
         self.ctx.queue.write_buffer(
             &self.media_buf,
             0,
             bytemuck::bytes_of(&MediaUniform {
-                light: [
-                    self.media.light_dir[0],
-                    self.media.light_dir[1],
-                    self.media.light_dir[2],
-                    self.media.height_strength,
-                ],
+                light: [0.0, 0.0, 0.0, self.media.height_strength],
                 bg: bg_channels,
-                shade: [
-                    self.media.ambient,
-                    self.media.diffuse,
-                    self.media.specular,
-                    self.media.shininess,
-                ],
+                shade: [exposure, diffuse_lod, self.media.specular, max_lod],
                 surf_a: [
                     canvas_origin.x,
                     canvas_origin.y,
@@ -555,6 +591,7 @@ fn make_offscreen(
     media_bgl: &wgpu::BindGroupLayout,
     media_buf: &wgpu::Buffer,
     surface: &Surface,
+    environment: &Environment,
 ) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
     let extent = wgpu::Extent3d {
         width: size.width.max(1),
@@ -602,6 +639,14 @@ fn make_offscreen(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::Sampler(&surface.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&environment.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::Sampler(&environment.sampler),
             },
         ],
     });

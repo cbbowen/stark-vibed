@@ -25,12 +25,13 @@ fn paint_stroke(engine: &mut Engine) {
 }
 
 // Lit paint is never a pure primary, so assert channel *dominance* rather than
-// near-saturation (the media pass legitimately shades and desaturates color).
+// near-saturation (the image-based-lighting media pass legitimately shades and
+// desaturates color — a warm studio tint and gloss sheen lift the other channels).
 fn is_red(c: [u8; 4]) -> bool {
-    c[0] > 150 && c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
+    c[0] as i32 > c[1] as i32 + 20 && c[0] as i32 > c[2] as i32 + 20
 }
 fn is_blue(c: [u8; 4]) -> bool {
-    c[2] > 150 && c[2] as i32 > c[0] as i32 + 60 && c[2] as i32 > c[1] as i32 + 60
+    c[2] as i32 > c[0] as i32 + 20 && c[2] as i32 > c[1] as i32 + 20
 }
 fn center(img: &stark_core::RgbaImage) -> [u8; 4] {
     img.pixel(img.width / 2, img.height / 2)

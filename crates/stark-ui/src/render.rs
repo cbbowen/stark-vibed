@@ -7,7 +7,8 @@
 
 use stark_core::geom::Extent2;
 use stark_core::{
-    ColorSpaceId, Engine, GpuContext, InputCommand, ObservableState, SurfaceId, ViewTransform,
+    ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, MediaParams, ObservableState,
+    SurfaceId, ViewTransform,
 };
 use wasm_bindgen::JsCast;
 
@@ -72,6 +73,26 @@ impl Renderer {
     /// Register frontend-fetched image bytes for a surface (DESIGN.md §6.4).
     pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
         self.engine.register_surface(id, png_bytes);
+    }
+
+    /// The current lighting environment (DESIGN.md §6.3).
+    pub fn environment(&self) -> EnvironmentId {
+        self.engine.environment()
+    }
+
+    /// Register frontend-fetched HDR bytes for a lighting environment (§6.3).
+    pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
+        self.engine.register_environment(id, hdr_bytes);
+    }
+
+    /// Switch the lighting environment (a view setting — never resets the canvas).
+    pub fn set_environment(&mut self, id: EnvironmentId) {
+        self.engine.set_environment(id);
+    }
+
+    /// Tune the media/lighting parameters (exposure, gloss, relief — §6.3).
+    pub fn set_media_params(&mut self, params: MediaParams) {
+        self.engine.set_media_params(params);
     }
 
     /// The built-in bristle brush's asset id, once its bytes have been imported.

@@ -15,7 +15,10 @@ use crate::document::{
     DocState, Layer, LayerId, LinearTimeline, StrokeRecord, Timeline, Tool,
 };
 use crate::geom::{Extent2, ViewTransform};
-use crate::gpu::{Compositor, GpuContext, StrokeRenderer, Surface, SurfaceId, TileHandle, TilePool};
+use crate::gpu::{
+    Compositor, Environment, EnvironmentId, GpuContext, StrokeRenderer, Surface, SurfaceId,
+    TileHandle, TilePool,
+};
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
 use crate::Result;
@@ -65,6 +68,14 @@ pub struct Engine {
     /// engine embeds none; the frontend fetches and registers them at runtime
     /// (DESIGN.md §6.4). Missing bytes fall back to `Flat`.
     surface_assets: std::collections::HashMap<SurfaceId, Vec<u8>>,
+    /// The HDR lighting environment (image-based lighting). A *view* setting — not
+    /// historized, color-space-independent — so it survives rebuilds and switching
+    /// it never touches the document (DESIGN.md §6.3).
+    environment: Environment,
+    environment_id: EnvironmentId,
+    /// Frontend-provided HDR bytes for non-procedural environments, keyed by id
+    /// (the engine embeds none; the frontend fetches them at runtime).
+    environment_assets: std::collections::HashMap<EnvironmentId, Vec<u8>>,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
     /// Live preview of the in-flight stroke, composited in place of the
@@ -95,8 +106,12 @@ impl Engine {
         // surfaces are registered later by the frontend (DESIGN.md §6.4).
         let surface_id = SurfaceId::default();
         let surface = Surface::flat(&gpu);
+        // Lighting starts on the procedural studio environment; image HDRs are
+        // registered later by the frontend (DESIGN.md §6.3).
+        let environment_id = EnvironmentId::default();
+        let environment = Environment::studio(&gpu);
         let (pool, stroke, compositor) =
-            build_gpu(&gpu, target_format, viewport, &color_space, &surface);
+            build_gpu(&gpu, target_format, viewport, &color_space, &surface, &environment);
         let assets = AssetStore::new(gpu.clone());
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -114,6 +129,9 @@ impl Engine {
             surface,
             surface_id,
             surface_assets: std::collections::HashMap::new(),
+            environment,
+            environment_id,
+            environment_assets: std::collections::HashMap::new(),
             timeline,
             session,
             preview: None,
@@ -385,6 +403,11 @@ impl Engine {
         self.session.view.viewport = viewport;
     }
 
+    /// The current media/lighting parameters (DESIGN.md §6.3).
+    pub fn media_params(&self) -> crate::gpu::MediaParams {
+        self.compositor.media()
+    }
+
     /// Tune the media/lighting parameters of the painterly pass (DESIGN.md §6.3).
     pub fn set_media_params(&mut self, params: crate::gpu::MediaParams) {
         self.compositor.set_media(params);
@@ -453,6 +476,39 @@ impl Engine {
         self.rebuild_gpu_for(self.color_space.id());
     }
 
+    /// The current lighting environment (DESIGN.md §6.3).
+    pub fn environment(&self) -> EnvironmentId {
+        self.environment_id
+    }
+
+    /// Whether `id` is ready — `Studio` always is; an HDR environment is ready once
+    /// its bytes have been [`register_environment`](Self::register_environment)ed.
+    pub fn environment_loaded(&self, id: EnvironmentId) -> bool {
+        id == EnvironmentId::Studio || self.environment_assets.contains_key(&id)
+    }
+
+    /// Provide (frontend-fetched) HDR bytes for an environment. If it's the one in
+    /// use, it's rebuilt so the bytes take effect immediately.
+    pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
+        self.environment_assets.insert(id, hdr_bytes);
+        if id == self.environment_id {
+            self.environment = build_environment(&self.gpu, id, &self.environment_assets);
+            self.compositor.set_environment(self.environment.clone());
+        }
+    }
+
+    /// Switch the lighting environment. A view setting, so this never touches the
+    /// document — it just re-lights the canvas on the next render. Image
+    /// environments fall back to the procedural studio until their bytes arrive.
+    pub fn set_environment(&mut self, id: EnvironmentId) {
+        if id == self.environment_id {
+            return;
+        }
+        self.environment_id = id;
+        self.environment = build_environment(&self.gpu, id, &self.environment_assets);
+        self.compositor.set_environment(self.environment.clone());
+    }
+
     /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
     /// document is already empty (no tiles of the old format are referenced).
     fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
@@ -463,6 +519,7 @@ impl Engine {
             self.session.view.viewport,
             &cs,
             &self.surface,
+            &self.environment,
         );
         self.color_space = cs;
         self.pool = pool;
@@ -568,11 +625,38 @@ fn build_gpu(
     viewport: Extent2,
     cs: &Arc<dyn ColorSpace>,
     surface: &Surface,
+    environment: &Environment,
 ) -> (TilePool, StrokeRenderer, Compositor) {
     let pool = TilePool::new(gpu.clone(), cs.color_format(), cs.aux_format());
     let stroke = StrokeRenderer::new(gpu, cs.clone(), surface.clone());
-    let compositor = Compositor::new(gpu, target_format, viewport, cs.as_ref(), surface.clone());
+    let compositor = Compositor::new(
+        gpu,
+        target_format,
+        viewport,
+        cs.as_ref(),
+        surface.clone(),
+        environment.clone(),
+    );
     (pool, stroke, compositor)
+}
+
+/// Build the environment for `id`: `Studio` is procedural; image environments use
+/// their registered HDR bytes, falling back to the procedural studio if absent.
+fn build_environment(
+    gpu: &GpuContext,
+    id: EnvironmentId,
+    assets: &std::collections::HashMap<EnvironmentId, Vec<u8>>,
+) -> Environment {
+    match id {
+        EnvironmentId::Studio => Environment::studio(gpu),
+        other => match assets.get(&other) {
+            Some(bytes) => Environment::load(gpu, bytes),
+            None => {
+                tracing::warn!("environment {other:?} has no registered bytes; using studio");
+                Environment::studio(gpu)
+            }
+        },
+    }
 }
 
 /// Convenience for tests/tools: build an engine on a headless device.

@@ -82,6 +82,9 @@ pub use command::{InputCommand, InputSample};
 pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};
-pub use gpu::{Compositor, GpuContext, MediaParams, StrokeRenderer, SurfaceId, TileHandle, TilePool};
+pub use gpu::{
+    Compositor, EnvironmentId, GpuContext, MediaParams, StrokeRenderer, SurfaceId, TileHandle,
+    TilePool,
+};
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};
