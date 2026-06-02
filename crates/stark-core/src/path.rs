@@ -74,16 +74,31 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 }
 
 /// Expand control points through a centripetal Catmull–Rom spline into a fine
-/// polyline, subdividing each segment to roughly `step` canvas pixels. Position
-/// is interpolated cubically; pressure/tilt/time linearly.
+/// polyline whose points are spaced ~`step` canvas pixels apart **by arc length**
+/// (not by the curve parameter), so the stamp generator and the wet-mixing
+/// reservoir are parameterized by distance travelled (DESIGN.md §6.2). Position is
+/// interpolated cubically; pressure/tilt/time linearly. Endpoints are preserved.
 pub fn flatten(knots: &[InputSample], step: f32) -> Vec<InputSample> {
     match knots.len() {
         0 => return Vec::new(),
         1 => return vec![knots[0]],
         _ => {}
     }
+    let step = step.max(0.5);
+    // Sample the spline densely in its own (centripetal) parameter — fine enough
+    // (¼ `step`) that the piecewise-linear result closely tracks the true curve, so
+    // the arc-length pass below measures real distance — then resample by distance.
+    let dense = dense_spline(knots, step * 0.25);
+    resample_by_arc_length(&dense, step)
+}
+
+/// Densely subdivide each control span in the centripetal curve parameter (a
+/// chord-proportional point count), giving a polyline that closely tracks the
+/// curve. The spacing is *not* uniform in distance — [`resample_by_arc_length`]
+/// fixes that.
+fn dense_spline(knots: &[InputSample], step: f32) -> Vec<InputSample> {
     let n = knots.len();
-    let mut out = Vec::with_capacity(n * 4);
+    let mut out = Vec::with_capacity(n * 8);
     out.push(knots[0]);
     for i in 0..n - 1 {
         let p1 = knots[i];
@@ -92,7 +107,7 @@ pub fn flatten(knots: &[InputSample], step: f32) -> Vec<InputSample> {
         let p3 = if i + 2 < n { knots[i + 2] } else { knots[n - 1] };
 
         let chord = (p2.pos - p1.pos).length();
-        let steps = ((chord / step.max(0.5)).ceil() as usize).clamp(1, 64);
+        let steps = ((chord / step).ceil() as usize).clamp(1, 512);
         for s in 1..=steps {
             let u = s as f32 / steps as f32;
             out.push(InputSample {
@@ -104,6 +119,48 @@ pub fn flatten(knots: &[InputSample], step: f32) -> Vec<InputSample> {
         }
     }
     out
+}
+
+/// Walk a fine polyline and emit a sample every `step` of arc length (both
+/// endpoints included), linearly interpolating attributes between dense points.
+/// The result is evenly spaced by distance regardless of the curve's local speed;
+/// the final span is whatever remainder is left (≤ `step`).
+fn resample_by_arc_length(dense: &[InputSample], step: f32) -> Vec<InputSample> {
+    let mut out = vec![dense[0]];
+    if dense.len() < 2 {
+        return out;
+    }
+    let mut acc = 0.0f32; // arc length accumulated since the last emitted sample
+    let mut prev = dense[0];
+    for &cur in &dense[1..] {
+        let seg = (cur.pos - prev.pos).length();
+        if seg >= 1e-9 {
+            let mut t = 0.0f32; // distance consumed within [prev, cur]
+            while acc + (seg - t) >= step {
+                t += step - acc;
+                out.push(lerp_sample(prev, cur, (t / seg).clamp(0.0, 1.0)));
+                acc = 0.0;
+            }
+            acc += seg - t;
+        }
+        prev = cur;
+    }
+    // Finish exactly on the stroke's end (unless we just emitted it).
+    let last = *dense.last().unwrap();
+    if (out.last().unwrap().pos - last.pos).length_squared() > 1e-6 {
+        out.push(last);
+    }
+    out
+}
+
+/// Linear blend of two samples (position, pressure, tilt, time) at `f ∈ [0,1]`.
+fn lerp_sample(a: InputSample, b: InputSample, f: f32) -> InputSample {
+    InputSample {
+        pos: a.pos.lerp(b.pos, f),
+        pressure: a.pressure + (b.pressure - a.pressure) * f,
+        tilt: a.tilt.lerp(b.tilt, f),
+        time: a.time + (b.time - a.time) * f as f64,
+    }
 }
 
 /// Centripetal Catmull–Rom (Barry–Goldman form) evaluated at `u ∈ [0, 1]` along
@@ -179,13 +236,45 @@ mod tests {
 
     #[test]
     fn flatten_passes_through_control_points() {
-        // Catmull–Rom interpolates its control points.
+        // Catmull–Rom interpolates its control points. Arc-length resampling won't
+        // land a sample exactly on the apex, but the polyline still passes within a
+        // step of it.
         let knots = [
             sample(0.0, 0.0),
             sample(10.0, 10.0),
             sample(20.0, 0.0),
         ];
         let dense = flatten(&knots, FLATTEN_STEP);
-        assert!(dense.iter().any(|s| (s.pos - Vec2::new(10.0, 10.0)).length() < 1e-2));
+        let nearest = dense
+            .iter()
+            .map(|s| (s.pos - Vec2::new(10.0, 10.0)).length())
+            .fold(f32::INFINITY, f32::min);
+        assert!(nearest < FLATTEN_STEP, "nearest sample to apex was {nearest}px");
+    }
+
+    #[test]
+    fn flatten_spaces_samples_by_arc_length() {
+        // A curved stroke: consecutive output points are ~`step` apart by distance
+        // (the prep for distance-parameterized strokes, DESIGN.md §6.2).
+        let knots = [
+            sample(0.0, 0.0),
+            sample(20.0, 30.0),
+            sample(60.0, 30.0),
+            sample(90.0, 0.0),
+        ];
+        let dense = flatten(&knots, FLATTEN_STEP);
+        // Every interior gap is close to FLATTEN_STEP (the last may be a shorter
+        // remainder, so it is excluded from the upper-bound check).
+        for w in dense.windows(2) {
+            let d = (w[1].pos - w[0].pos).length();
+            assert!(d > 0.0, "no duplicate points");
+        }
+        let gaps: Vec<f32> = dense.windows(2).map(|w| (w[1].pos - w[0].pos).length()).collect();
+        for &d in &gaps[..gaps.len() - 1] {
+            assert!(
+                (d - FLATTEN_STEP).abs() < 0.25 * FLATTEN_STEP,
+                "interior gap {d}px should be ~{FLATTEN_STEP}px",
+            );
+        }
     }
 }
