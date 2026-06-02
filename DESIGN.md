@@ -397,14 +397,17 @@ deterministic — the only randomness is the explicit `seed` — so live paint,
 replay, and golden tests agree.
 
 **Path representation & cubic interpolation.** A `StrokeRecord`'s `path` is not
-the raw pointer samples but a compact set of **control points** fitted from them
-(Ramer–Douglas–Peucker simplification at commit, in `path.rs`). Rendering
+the raw pointer samples but a compact set of **control points** fitted from them:
+the raw samples are first **low-pass smoothed** (a distance-windowed average,
+`path::smooth`) to shed pointer/pixel-quantization jitter, then reduced by
+**Ramer–Douglas–Peucker simplification** (at commit, in `path.rs`). Rendering
 expands those through a **centripetal Catmull–Rom spline** into a fine polyline,
-then walks it at even arc length (above). This one change solves three problems:
+then walks it at even arc length (above). This solves several problems:
 
-- **No stair-step aliasing** — jittery pixel-stepped input (a diagonal drawn as
-  1-px right / 1-px up steps) collapses to a smooth curve instead of axis-aligned
-  segments.
+- **No stair-step aliasing** — jittery pixel-stepped input (a slow diagonal drawn
+  as right/up steps snapped to the device grid) is smoothed and collapses to a
+  clean curve instead of axis-aligned segments. RDP alone handles ~1px steps; the
+  smoothing pass also clears the coarser (≥1.4px) staircases that survive it.
 - **Continuous-looking stamping** — stamps ride a smooth path with smooth
   tangents, so even hard-edged tips read as one stroke rather than a row of
   discrete dabs (an approximation of a path integral over the stroke).

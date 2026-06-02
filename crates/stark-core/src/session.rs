@@ -85,9 +85,13 @@ impl StrokeBuilder {
             layer: self.layer,
             tool: self.tool,
             brush: self.brush,
-            // Fit the raw samples to compact spline control points (DESIGN.md
-            // §6.2). Done for both preview and commit, so live == committed.
-            path: crate::path::simplify(&self.path, crate::path::SIMPLIFY_TOLERANCE),
+            // Smooth out pointer/pixel-quantization jitter, then fit to compact
+            // spline control points (DESIGN.md §6.2). Done for both preview and
+            // commit, so live == committed.
+            path: crate::path::simplify(
+                &crate::path::smooth(&self.path, crate::path::SMOOTH_RADIUS),
+                crate::path::SIMPLIFY_TOLERANCE,
+            ),
             seed: self.seed,
         }
     }

@@ -1,11 +1,12 @@
 //! Stroke path fitting and interpolation (DESIGN.md §6.2).
 //!
-//! A stroke is captured as raw pointer samples, then stored as a compact set of
-//! **control points** via Ramer–Douglas–Peucker simplification ([`simplify`]).
-//! At render time those control points are expanded through a **centripetal
-//! Catmull–Rom spline** into a fine polyline ([`flatten`]), which the stamp
-//! generator walks at even arc length. This removes stair-step aliasing, makes
-//! discrete stamps read as a continuous stroke, and shrinks the save file.
+//! A stroke is captured as raw pointer samples, then **smoothed** ([`smooth`]) to
+//! shed pointer/pixel-quantization jitter and stored as a compact set of **control
+//! points** via Ramer–Douglas–Peucker simplification ([`simplify`]). At render time
+//! those control points are expanded through a **centripetal Catmull–Rom spline**
+//! into a fine polyline ([`flatten`]), which the stamp generator walks at even arc
+//! length. This removes stair-step aliasing, makes discrete stamps read as a
+//! continuous stroke, and shrinks the save file.
 //!
 //! All math here is deterministic, preserving golden / replay / save-load
 //! equivalence.
@@ -18,8 +19,67 @@ use crate::geom::Vec2;
 /// larger than a pixel — imperceptible smoothing at normal brush sizes.
 pub const SIMPLIFY_TOLERANCE: f32 = 1.0;
 
+/// Default smoothing radius in canvas pixels (see [`smooth`]). A drawn-slowly
+/// diagonal arrives snapped to the device-pixel grid as a right/up staircase whose
+/// ~1–2px corners survive RDP; averaging over a few pixels of path pulls them back
+/// onto the line. Larger = smoother but rounds intentional detail more.
+pub const SMOOTH_RADIUS: f32 = 4.0;
+
 /// Default Catmull–Rom flattening step in canvas pixels.
 pub const FLATTEN_STEP: f32 = 2.0;
+
+/// Low-pass the raw pointer samples to remove pixel-quantization staircasing (a
+/// slowly-drawn diagonal arrives as right/up steps snapped to the device grid).
+/// Each interior sample becomes a triangular-weighted average of its neighbours
+/// within `radius` canvas px of **arc length** — distance-based, so it smooths the
+/// same amount regardless of how densely the pointer sampled. The first and last
+/// samples are kept exactly, so the stroke still starts and ends where the pointer
+/// did. Position and pressure are smoothed; tilt/time are taken from the sample.
+pub fn smooth(samples: &[InputSample], radius: f32) -> Vec<InputSample> {
+    let n = samples.len();
+    if n <= 2 || radius <= 0.0 {
+        return samples.to_vec();
+    }
+    // Cumulative arc length, so the window is in distance rather than sample count.
+    let mut arc = vec![0.0f32; n];
+    for i in 1..n {
+        arc[i] = arc[i - 1] + (samples[i].pos - samples[i - 1].pos).length();
+    }
+
+    let mut out = Vec::with_capacity(n);
+    out.push(samples[0]);
+    for i in 1..n - 1 {
+        let mut wsum = 0.0f32;
+        let mut pos = Vec2::ZERO;
+        let mut pressure = 0.0f32;
+        // Walk outward from i in both directions until past the radius (arc is
+        // monotonic, so we can stop early).
+        let mut j = i as isize;
+        while j >= 0 && arc[i] - arc[j as usize] < radius {
+            let w = 1.0 - (arc[i] - arc[j as usize]) / radius;
+            wsum += w;
+            pos += samples[j as usize].pos * w;
+            pressure += samples[j as usize].pressure * w;
+            j -= 1;
+        }
+        let mut k = i + 1;
+        while k < n && arc[k] - arc[i] < radius {
+            let w = 1.0 - (arc[k] - arc[i]) / radius;
+            wsum += w;
+            pos += samples[k].pos * w;
+            pressure += samples[k].pressure * w;
+            k += 1;
+        }
+        out.push(InputSample {
+            pos: pos * (1.0 / wsum),
+            pressure: pressure / wsum,
+            tilt: samples[i].tilt,
+            time: samples[i].time,
+        });
+    }
+    out.push(samples[n - 1]);
+    out
+}
 
 /// Simplify raw samples to control points via Ramer–Douglas–Peucker, keeping the
 /// endpoints. Each kept control point is an original sample (so it retains that
@@ -208,6 +268,29 @@ mod tests {
         // Endpoints preserved.
         assert_eq!(simplified.first().unwrap().pos, stair.first().unwrap().pos);
         assert_eq!(simplified.last().unwrap().pos, stair.last().unwrap().pos);
+    }
+
+    #[test]
+    fn smooth_flattens_coarse_staircase() {
+        // A 2-px right / 2-px up staircase, e.g. a slow diagonal snapped to a 2px
+        // device grid. Each corner sits ~1.4px off the diagonal — above the RDP
+        // tolerance — so simplify *alone* keeps the whole zigzag.
+        let mut stair = vec![sample(0.0, 0.0)];
+        for i in 0..12 {
+            let b = (i * 2) as f32;
+            stair.push(sample(b + 2.0, b)); // 2px right
+            stair.push(sample(b + 2.0, b + 2.0)); // 2px up
+        }
+        let raw = simplify(&stair, SIMPLIFY_TOLERANCE);
+        assert!(raw.len() > 6, "RDP alone keeps the staircase: {} pts", raw.len());
+
+        // Smoothing first pulls the corners back onto the diagonal, so the fit
+        // collapses to a near-straight line.
+        let fitted = simplify(&smooth(&stair, SMOOTH_RADIUS), SIMPLIFY_TOLERANCE);
+        assert!(fitted.len() <= 4, "smoothed staircase should collapse: {} pts", fitted.len());
+        // Endpoints are still exactly where the pointer pressed and released.
+        assert_eq!(fitted.first().unwrap().pos, stair.first().unwrap().pos);
+        assert_eq!(fitted.last().unwrap().pos, stair.last().unwrap().pos);
     }
 
     #[test]
