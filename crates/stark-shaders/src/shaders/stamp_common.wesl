@@ -7,7 +7,8 @@
 
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
-    // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); w unused.
+    // params.z = 2 / TILE_TEX (full interior+apron maps to NDC);
+    // params.w = 1 / stroke arc length (canvas px → normalized longitudinal pos).
     params: vec4<f32>,
     // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth; zw unused.
     surf: vec4<f32>,
@@ -33,7 +34,10 @@ struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) local: vec2<f32>, // brush-local (x in radius units from start, y in [-1,1])
     @location(1) misc: vec4<f32>,  // length/radius, flow, height, wet
-    @location(2) u: f32,           // this segment's reservoir column (per-instance)
+    // Reservoir longitudinal mapping into the padded texture: u.x = this segment's
+    // start column-center; u.y = radius · (u per px travelled), so local.x (radii
+    // travelled) advances u to the fragment's true arc-length position.
+    @location(2) u: vec2<f32>,
 }
 
 struct FsOut {
@@ -66,23 +70,24 @@ fn sweep_vertex(
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.local = vec2<f32>(cx, cy);
     out.misc = vec4<f32>(lr, geom.z, aux.x, aux.y);
-    out.u = geom.w;
+    // u.x = segment-start arc length (normalized, texel-centered); u.y converts
+    // brush-local x (radii) into normalized longitudinal travel (radius / length).
+    out.u = vec2<f32>(geom.w, radius * xf.params.w);
     return out;
 }
 
 // The deposited channels for a fragment at brush-local `local` (x = travel in
-// radius units from the segment start, y across the tip ∈ [-1,1]) on a segment
-// `lr` radii long, whose reservoir column center is `u_base`. We interpolate along
-// the stroke as well as across the tip: as the fragment travels from the segment's
-// start to its end, `u` sweeps from this segment's column to the next one
-// (`xf.params.w` = 1 / segment-count), so the color is continuous across segment
-// boundaries (column i is the reservoir at both the end of segment i−1 and the
-// start of segment i). Linear filtering does the band (y) and segment (u) blends;
-// a dry brush's 1×1 reservoir collapses to the brush color.
-fn reservoir_color(u_base: f32, local: vec2<f32>, lr: f32) -> vec4<f32> {
-    let f = clamp(local.x / lr, 0.0, 1.0);
-    let u = u_base + f * xf.params.w;
-    return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(u, local.y * 0.5 + 0.5), 0.0);
+// radius units from the segment start, y across the tip ∈ [-1,1]). The reservoir
+// is parameterized by *distance along the stroke*: `u.x + local.x·u.y` is the
+// fragment's true position, so the color flows continuously across segments and
+// overlapping segment quads resolve to the same spot (no per-segment clamp). The
+// reservoir's walk is extended half a brush past each end (the mixer keeps picking
+// up canvas there), so the round caps continue it smoothly and the sampler's edge
+// clamp only ever hits the outermost pad column. Linear filtering does the band (y)
+// blend; a dry brush's 1×1 reservoir collapses to the brush color.
+fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
+    let along = u.x + local.x * u.y;
+    return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
 }
 
 // Bilinear lookup of the prefix-τ (fp32) at brush-local (xl, yl) ∈ [-1,1]: 0

@@ -64,6 +64,9 @@ struct Segment {
     flow: f32,
     height: f32,
     wet: f32,
+    /// Longitudinal offset: arc length from the stroke start to this segment's
+    /// start. Parameterizes the reservoir by distance (DESIGN.md §6.2).
+    dist: f32,
 }
 
 /// Per-segment instance data for the sweep shader. Padded to 48 bytes so the same
@@ -86,7 +89,7 @@ struct SegmentInstance {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct TileXform {
-    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, 1/segment_count
+    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, reservoir u per px travelled
     surf: [f32; 4],   // inv surface-tile (canvas px → bump uv), tooth, _, _
 }
 
@@ -114,7 +117,7 @@ struct MixerUniform {
     brush_ch: [f32; 4],
     origin_dims: [f32; 4], // region origin.xy (canvas px), dims.xy (px)
     knobs: [f32; 4],       // pickup, color_inject, flatten_step, capacity
-    counts: [u32; 4],      // segment_count, color_space, _, _
+    counts: [u32; 4],      // segment_count, lead-in columns, reservoir width, _
 }
 
 #[derive(Clone)]
@@ -371,17 +374,32 @@ impl StrokeRenderer {
             }],
         });
 
-        // Each segment maps to one reservoir column at texel center u=(i+0.5)/count;
-        // the deposit samples that column for its color (see mixer.wesl).
+        // The reservoir is parameterized by distance, not segment index: the columns
+        // run along the stroke's arc length, one per segment (≈ `step` px apart) plus
+        // a half-brush of *lead-in* and *lead-out* padding so the round end caps —
+        // which the sweep extends a radius beyond each endpoint — are covered by the
+        // mixer's walk extended into those pads, rather than clamping to a flat slab.
+        // `geom.w` is a segment start's column-center texel-u in that padded texture;
+        // the deposit advances it by the fragment's own travel to the true arc
+        // position (`local.x·radius·u_per_px`, see mixer.wesl).
         let count = segments.len();
-        let inv_count = 1.0 / count as f32;
+        let total = segments.iter().map(|s| s.length).sum::<f32>().max(1e-3);
+        let step = total / count as f32; // ≈ FLATTEN_STEP, the column spacing
+        let lead = (segments.first().unwrap().radius / step).ceil() as u32;
+        let tail = (segments.last().unwrap().radius / step).ceil() as u32;
+        let width = lead + count as u32 + tail;
+        let u_per_px = 1.0 / (step * width as f32); // normalized-u per px travelled
         let instances: Vec<SegmentInstance> = segments
             .iter()
-            .enumerate()
-            .map(|(i, s)| SegmentInstance {
+            .map(|s| SegmentInstance {
                 start: s.start.to_array(),
                 dir: s.dir.to_array(),
-                geom: [s.radius, s.length, s.flow, (i as f32 + 0.5) * inv_count],
+                geom: [
+                    s.radius,
+                    s.length,
+                    s.flow,
+                    (lead as f32 + 0.5 + s.dist / step) / width as f32,
+                ],
                 aux: [s.height, s.wet],
                 _pad: [0.0; 2],
             })
@@ -413,7 +431,7 @@ impl StrokeRenderer {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("stark mixer reservoir"),
                 size: wgpu::Extent3d {
-                    width: count as u32,
+                    width,
                     height: LATERAL_BANDS,
                     depth_or_array_layers: 1,
                 },
@@ -425,7 +443,10 @@ impl StrokeRenderer {
                 view_formats: &[],
             });
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.encode_mixer(&mut encoder, base, &coords, &segments, &instance_buf, &view, bbox, channels, mp);
+            self.encode_mixer(
+                &mut encoder, base, &coords, &segments, &instance_buf, &view, bbox, (lead, width),
+                channels, mp,
+            );
             view
         } else {
             self.flat_reservoir(&mut encoder, channels)
@@ -479,7 +500,7 @@ impl StrokeRenderer {
             let apron = TILE_APRON as f32;
             let origin = coord.origin();
             let xform = TileXform {
-                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, inv_count],
+                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, u_per_px],
                 surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -602,8 +623,10 @@ impl StrokeRenderer {
     /// Wet-mixing pickup (DESIGN.md §6.2), fully on the GPU. Pass A composites the
     /// base under the stroke into a 1:1 region; Pass B is a serial compute scan
     /// (one invocation per lateral band) that lifts wet paint into per-band
-    /// reservoirs and writes the `reservoir` texture (segment × band). No CPU
-    /// readback — works on WebGPU. `bbox` is the stroke's region (origin, w, h).
+    /// reservoirs and writes the `reservoir` texture (column × band). No CPU
+    /// readback — works on WebGPU. `bbox` is the stroke's region (origin, w, h);
+    /// `pad` is `(lead, width)`: the lead-in column count and total texture width
+    /// (lead-in + one per segment + lead-out, see `render`).
     #[allow(clippy::too_many_arguments)]
     fn encode_mixer(
         &self,
@@ -614,10 +637,12 @@ impl StrokeRenderer {
         instance_buf: &wgpu::Buffer,
         reservoir: &wgpu::TextureView,
         bbox: (Vec2, u32, u32),
+        pad: (u32, u32),
         channels: [f32; 4],
         mp: MixerParams,
     ) {
         let (origin, w, h) = bbox;
+        let (lead, width) = pad;
         let device = &self.ctx.device;
 
         // Region targets: the base canvas under the stroke, 1:1 with canvas px.
@@ -751,7 +776,7 @@ impl StrokeRenderer {
                 crate::path::FLATTEN_STEP,
                 RESERVOIR_CAPACITY,
             ],
-            counts: [segments.len() as u32, 0, 0, 0],
+            counts: [segments.len() as u32, lead, width, 0],
         };
         let uni_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark mixer params"),
@@ -839,6 +864,7 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
             flow: b.flow * b.color[3] * load * SWEEP_FLOW_SCALE,
             height: b.height * load,
             wet: b.wetness * load,
+            dist,
         }
     };
 

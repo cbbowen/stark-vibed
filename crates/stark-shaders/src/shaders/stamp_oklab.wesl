@@ -28,7 +28,7 @@ fn fs_main(in: VsOut) -> FsOut {
     let coverage = surface_tooth(height, base, in.clip.xy);
 
     // Each part of the tip lays the color its lateral band picked up (DESIGN §6.2).
-    let ch = reservoir_color(in.u, in.local, in.misc.x);
+    let ch = reservoir_color(in.u, in.local);
 
     var out: FsOut;
     out.color = vec4<f32>(ch.xyz * coverage, coverage);

@@ -14,7 +14,7 @@ struct Params {
     brush_ch: vec4<f32>,    // the brush's own color channels
     origin_dims: vec4<f32>, // region origin.xy (canvas px), region dims.xy (px)
     knobs: vec4<f32>,       // pickup, color_inject, flatten_step, reservoir_capacity
-    counts: vec4<u32>,      // segment_count, _, _, _
+    counts: vec4<u32>,      // segment_count, lead-in columns, reservoir width, _
 }
 
 // Must match `SegmentInstance` (gpu/stroke.rs): std430 layout, 48 bytes. Read-only
@@ -58,55 +58,92 @@ fn decode(stored: vec4<f32>) -> Decoded {
     return Decoded(vec4<f32>(stored.xyz / c, 0.0), min(c, 1.0));
 }
 
+// Reservoir state carried along the walk.
+struct Res {
+    ch: vec4<f32>,
+    load: f32,
+}
+
+// One step of the reservoir recurrence: lift wet paint from the canvas at `sample`
+// (region px) into the reservoir, then refill toward the brush color. `steps` is
+// the arc length covered, in flatten steps. Reads the knobs/region/brush globals.
+fn pickup(prev: Res, sample: vec2<f32>, steps: f32) -> Res {
+    let origin = params.origin_dims.xy;
+    let dims = vec2<i32>(i32(params.origin_dims.z), i32(params.origin_dims.w));
+    let texel = clamp(vec2<i32>(floor(sample - origin)), vec2<i32>(0), dims - vec2<i32>(1));
+    let dec = decode(textureLoad(region_color, texel, 0));
+    let wet = textureLoad(region_aux, texel, 0).y;
+
+    // PICKUP: mass-weighted blend toward the canvas (convex combination).
+    let lift = clamp(params.knobs.x * wet * dec.amount * steps, 0.0, 1.0);
+    let total = prev.load + lift;
+    var ch = prev.ch;
+    if total > 1e-4 {
+        ch = (prev.ch * prev.load + dec.ch * lift) / total;
+    }
+    let load = min(total, params.knobs.w); // knobs.w = reservoir capacity
+
+    // Refill toward the brush's own color (0 = pure smudge that only carries).
+    let inj = clamp(params.knobs.y * steps, 0.0, 1.0);
+    ch = ch * (1.0 - inj) + params.brush_ch * inj;
+    return Res(ch, load);
+}
+
 // One serial reservoir per lateral band, run in parallel: invocation `j` walks the
-// whole stroke maintaining band j's reservoir, sampling the canvas at band j's
-// lateral offset from the path and writing reservoir texel (segment i, band j).
-// The bands are independent (distinct reservoirs, distinct output texels), so they
-// need no synchronization.
+// whole stroke maintaining band j's reservoir and writing reservoir texel (column,
+// band j). The walk is extended a half-brush *before* the first segment and *after*
+// the last (the `lead`/lead-out pad columns), continuing to pick up canvas along the
+// path tangent there — so the brush's round end caps blend smoothly into the stroke
+// (they share the same continuous reservoir) instead of clamping to a flat slab of
+// the edge segment's color. The bands are independent (distinct reservoirs, distinct
+// output texels), so they need no synchronization.
 @compute @workgroup_size(BANDS)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let j = lid.x;
     let count = params.counts.x;
-    let origin = params.origin_dims.xy;
-    let dims = vec2<i32>(i32(params.origin_dims.z), i32(params.origin_dims.w));
-    let pickup = params.knobs.x;
-    let inject_rate = params.knobs.y;
+    let lead = params.counts.y;
+    let width = params.counts.z;
     let flatten_step = params.knobs.z;
-    let capacity = params.knobs.w;
 
     // Band j's lateral position across the tip, in radius units ∈ [-1, 1].
     let lateral = (2.0 * f32(j) + 1.0) / f32(BANDS) - 1.0;
 
-    var ch = params.brush_ch; // reservoir starts dipped in the brush color
-    var load = 1.0;
+    var res = Res(params.brush_ch, 1.0); // starts dipped in the brush color
 
+    // Lead-in: extrapolate behind the first segment along its tangent, picking up
+    // canvas there, so the start cap is part of the same continuous walk.
+    let s0 = instances[0].start;
+    let d0 = instances[0].dir;
+    let r0 = instances[0].geom.x;
+    let perp0 = vec2<f32>(-d0.y, d0.x);
+    for (var k = 0u; k < lead; k = k + 1u) {
+        let back = f32(lead - k) * flatten_step; // distance behind the start
+        let sample = s0 - d0 * back + perp0 * (lateral * r0);
+        res = pickup(res, sample, 1.0);
+        textureStore(reservoir, vec2<i32>(i32(k), i32(j)), vec4<f32>(res.ch.xyz, 1.0));
+    }
+
+    // The stroke proper, one column per segment.
     for (var i = 0u; i < count; i = i + 1u) {
         let pos = instances[i].start;
         let dir = instances[i].dir;
         let radius = instances[i].geom.x;
-        let len = instances[i].geom.y;
-        let steps = len / flatten_step;
-
-        // Sample the base region at this band's lateral offset from the path. The
-        // region is 1:1 with canvas over [origin, origin+dims].
         let perp = vec2<f32>(-dir.y, dir.x);
-        let sample = pos + perp * (lateral * radius);
-        let texel = clamp(vec2<i32>(floor(sample - origin)), vec2<i32>(0), dims - vec2<i32>(1));
-        let dec = decode(textureLoad(region_color, texel, 0));
-        let wet = textureLoad(region_aux, texel, 0).y;
+        let steps = instances[i].geom.y / flatten_step;
+        res = pickup(res, pos + perp * (lateral * radius), steps);
+        textureStore(reservoir, vec2<i32>(i32(lead + i), i32(j)), vec4<f32>(res.ch.xyz, 1.0));
+    }
 
-        // PICKUP: mass-weighted blend toward the canvas (convex combination).
-        let lift = clamp(pickup * wet * dec.amount * steps, 0.0, 1.0);
-        let total = load + lift;
-        if total > 1e-4 {
-            ch = (ch * load + dec.ch * lift) / total;
-        }
-        load = min(total, capacity);
-
-        // Refill toward the brush's own color (0 = pure smudge that only carries).
-        let inj = clamp(inject_rate * steps, 0.0, 1.0);
-        ch = ch * (1.0 - inj) + params.brush_ch * inj;
-
-        textureStore(reservoir, vec2<i32>(i32(i), i32(j)), vec4<f32>(ch.xyz, 1.0));
+    // Lead-out: extrapolate ahead of the last segment along its tangent.
+    let li = count - 1u;
+    let dl = instances[li].dir;
+    let rl = instances[li].geom.x;
+    let perpl = vec2<f32>(-dl.y, dl.x);
+    let endp = instances[li].start + dl * instances[li].geom.y; // last segment's end
+    for (var k = lead + count; k < width; k = k + 1u) {
+        let fwd = f32(k - (lead + count) + 1u) * flatten_step; // distance past the end
+        let sample = endp + dl * fwd + perpl * (lateral * rl);
+        res = pickup(res, sample, 1.0);
+        textureStore(reservoir, vec2<i32>(i32(k), i32(j)), vec4<f32>(res.ch.xyz, 1.0));
     }
 }

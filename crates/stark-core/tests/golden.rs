@@ -158,6 +158,38 @@ fn golden_smear_mixer() {
 }
 
 #[test]
+fn golden_smear_mixer_cap() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // A committed green bar, then a red Mixer stroke dragged left→right across it:
+    // the brush should pick up green where it crosses and carry a fading green
+    // tint past the bar (DESIGN.md §6.2). A Dry red stroke would just lay flat red.
+    paint(
+        &mut engine,
+        GREEN,
+        50.0,
+        &[Vec2::new(-90.0, -90.0), Vec2::new(-90.0, 90.0)],
+    );
+
+    let mut brush = brush(RED, 25.0);
+    brush.dynamics = BrushDynamics::Mixer(MixerParams::default());
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-90.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(90.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("smear_mixer_cap", &img, 6);
+}
+
+#[test]
 fn golden_lateral_pickup() {
     let Some(mut engine) = engine_or_skip() else {
         return;

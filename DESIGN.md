@@ -453,10 +453,12 @@ lays down an evolving mix downstream. This is **sequential and order-dependent**
 what the swept-segment model is *not*. The reconciliation rests on two facts:
 
 1. The deposit's color comes from a small **reservoir texture** the sweep shader
-   samples — one **column per segment** × one **row per lateral band** across the
-   tip. So smearing is just *"fill that texture"*; the sweep shader and the parallel
-   render path are **untouched**, and linear filtering blends both the bands and
-   adjacent segments for free, so the shader needn't know how many bands there are.
+   samples — columns along the stroke's **arc length** × one **row per lateral
+   band** across the tip. So smearing is just *"fill that texture"*; the sweep
+   shader and the parallel render path are **untouched**, and linear filtering
+   blends both the bands and adjacent positions for free, so the shader needn't
+   know how many bands there are. (The path is flattened at uniform arc length —
+   above — so one column per segment *is* a uniform distance axis.)
 2. The sequential part collapses to a tiny **1-D reservoir recurrence** over the
    flattened path (a few floats of state, run once per stroke — and once per
    lateral band):
@@ -538,15 +540,24 @@ the deposit (`gpu/stroke.rs::encode_mixer`):
 2. **Reservoir scan** — a single-workgroup compute pass (`mixer.wesl`), one
    invocation per lateral band, walks the segments in order, samples the region
    (`textureLoad`, nearest) at the band's offset, decodes per color space, runs the
-   recurrence, and writes texel `(segment, band)` of the reservoir texture
+   recurrence, and writes texel `(column, band)` of the reservoir texture
    (`rgba16float`, `STORAGE | TEXTURE_BINDING`). It reads the instance buffer
-   (`STORAGE | VERTEX`) but no longer writes it.
+   (`STORAGE | VERTEX`) but no longer writes it. The walk is **extended by half a
+   brush** (one radius — the sweep's cap reach) at each end: it keeps picking up
+   canvas along the path tangent for a *lead-in* block before the first segment and
+   a *lead-out* block after the last, so the round end caps are part of the same
+   continuous reservoir (below) — a stroke begun inside wet paint tints its start
+   cap, and it blends smoothly into the body rather than meeting a flat slab.
 3. **Deposit** — the existing swept render samples the reservoir texture with a
-   linear/clamp sampler. The lateral axis maps from brush-local `y`; the column
-   sweeps from the segment's own column to the next as the fragment travels its
-   length (`u = u_base + (travel/length)/segment_count`), so color is continuous
-   across segment boundaries — column `i` is the reservoir at both the end of
-   segment `i−1` and the start of segment `i`, so the seam matches exactly.
+   linear/clamp sampler. The lateral axis maps from brush-local `y`; the
+   longitudinal axis is the fragment's **arc-length position along the stroke**,
+   mapped into the padded column range (`u = u_start + local.x·radius·u_per_px`,
+   column-centered). Because that is a single global distance coordinate, the color
+   flows continuously across segment boundaries *and* the overlapping quads of
+   adjacent segments resolve to the same position — no per-segment clamp. The caps
+   fall inside the lead-in/lead-out pads (the extended walk), so they continue the
+   reservoir smoothly off both ends; the sampler's edge clamp only ever hits the
+   outermost pad column.
 
 A non-mixer brush gets a 1×1 reservoir cleared to its own color (a render-pass
 clear, so the driver does the f16 encode — no CPU half-float path), keeping the
