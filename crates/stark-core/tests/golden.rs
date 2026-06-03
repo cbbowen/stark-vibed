@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushShape, MixerParams, Tool};
+use stark_core::document::{BrushDynamics, BrushShape, KnifeParams, MixerParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
 
@@ -155,6 +155,39 @@ fn golden_smear_mixer() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("smear_mixer", &img, 6);
+}
+
+#[test]
+fn golden_knife_scrape() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // A committed solid red field, then a clean palette-knife scrape dragged
+    // *across* it: the knife subtractively removes paint along its path (the
+    // mutable-medium write-back, DESIGN.md §6.2), thinning the red toward the bare
+    // paper where it passes — something the additive deposit fundamentally cannot do.
+    paint(
+        &mut engine,
+        RED,
+        60.0,
+        &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
+    );
+
+    let mut knife = brush(RED, 22.0);
+    knife.dynamics = BrushDynamics::Knife(KnifeParams::default()); // bite 0.8, no load
+    engine.process(InputCommand::SetBrush(knife));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(0.0, -80.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 80.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("knife_scrape", &img, 6);
 }
 
 #[test]

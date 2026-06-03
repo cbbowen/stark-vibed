@@ -54,6 +54,10 @@ pub enum BrushDynamics {
     /// Mixer/smudge: lift wet paint under the brush into a reservoir and carry it,
     /// so the stroke smears what is already on the canvas (DESIGN.md §6.2).
     Mixer(MixerParams),
+    /// Palette knife: subtractively *scrape* paint off the canvas (and optionally
+    /// lay a thin film of its own color), via the mutable-medium write-back path
+    /// (DESIGN.md §6.2).
+    Knife(KnifeParams),
 }
 
 /// Parameters of the [`BrushDynamics::Mixer`] reservoir (DESIGN.md §6.2).
@@ -72,6 +76,26 @@ impl Default for MixerParams {
         Self {
             pickup: 0.5,
             color_inject: 0.1,
+        }
+    }
+}
+
+/// Parameters of the [`BrushDynamics::Knife`] subtractive scrape (DESIGN.md §6.2).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KnifeParams {
+    /// How much paint the knife removes per unit coverage, in [0, 1]: 0 = no
+    /// removal, 1 = scrape fully clean where it bears down hardest.
+    pub bite: f32,
+    /// How much of the knife's own color it lays as it scrapes, in [0, 1]: 0 = a
+    /// clean scrape that only removes, 1 = lays a full film of its loaded color.
+    pub load: f32,
+}
+
+impl Default for KnifeParams {
+    fn default() -> Self {
+        Self {
+            bite: 0.8,
+            load: 0.0,
         }
     }
 }

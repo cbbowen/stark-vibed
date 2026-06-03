@@ -506,9 +506,10 @@ in the action log, so not a trait object):
 enum BrushDynamics {
     Dry,             // one-way `drain` load — the DEFAULT, so existing strokes,
                      //   goldens, and saved files are unchanged
-    Mixer(MixerParams),
+    Mixer(MixerParams),   // additive copy-smear pickup (above)
+    Knife(KnifeParams),   // subtractive: scrape/redistribute paint (mutable medium)
+    Wet(WetParams),       // wet-on-wet diffusion (mutable medium)
     // reserved, designed-for but not built:
-    // Bleed(BleedParams),   // Mixer + short-range wet diffusion at edges
     // Fluid(FluidParams),   // Eulerian advect+inject micro-sim per stroke
 }
 ```
@@ -576,17 +577,71 @@ segment — the correct direction for a forward smear. A golden (smear color X o
 a committed patch of Y → trail transitions Y→X) guards this.
 
 *Paint never dries.* Wetness persists, so the whole canvas stays workable like a
-continuous oil session; a drying model (time/age decay or an explicit dry action)
-is a future option, not built.
+continuous oil session. This is a deliberate choice, not a missing feature: rather
+than model drying, we lean on *digital* — to glaze over "dry" paint (old-master
+layering), the user adds a **new document layer**, which composites over the work
+as if it were dry. So there is no time/age decay and no dry action.
 
-*Known limitation — non-conservative lift (copy-smear).* v1 pickup is
+*Known limitation — non-conservative lift (copy-smear).* The Mixer pickup is
 **non-destructive**: it copies canvas color into the reservoir but does **not**
 remove paint from the source, so the source never lightens and total pigment is
 not conserved (a long smear can "duplicate" color rather than drag a finite amount
 of it). True mass-conserving lift requires the stroke to also *reduce* `base`
-coverage where it lifts — i.e. write the source tiles — which the single-pass
-additive/over deposit cannot express. Deferred; acceptable because copy-smear
-reads as smearing in the overwhelming majority of cases.
+coverage where it lifts — i.e. *write* the source, which the additive/over deposit
+cannot express. This is exactly what the **mutable-medium** path below adds; the
+Mixer can adopt it to become conservative.
+
+**Mutable medium — subtractive & wet diffusion.** The deposit above is
+*additive/over*: a stroke can only **add** premultiplied color and accumulate
+`(height, wet)`. Three natural-media goals need the stroke to **read *and rewrite*
+the canvas** — palette-knife **scraping** (Bob Ross mountains: remove/redistribute
+existing paint, revealing the canvas tooth), **wet-on-wet** alla prima (neighbouring
+wet paint diffuses at boundaries), and conservative smearing. The model:
+
+- **Single-buffer, always wet.** One paint layer per document layer — `color`
+  (premult latent + coverage) and `aux` (`height`, `wet`) as today; no separate
+  dry layer and no drying. `height` is the conserved "amount of paint" the knife
+  moves; `wet` weights diffusion (and still drives gloss). Leaning on *digital*:
+  **old-master glazing is just a new document layer** — a fresh layer composited
+  over the work *is* "dry paint underneath", so luminous glazing falls out of the
+  existing layer stack with no drying model.
+- **Write-back pipeline.** A *medium* brush replaces the additive deposit with a
+  read-modify-write, per affected tile, all on the GPU (no readback):
+  1. **Footprint → scratch.** Rasterize the stroke's swept footprint (the existing
+     stamp pass) into a *cleared* scratch tile — coverage, loaded color, height —
+     the pure tool contact, not blended over anything.
+  2. **Combine.** A fullscreen pass over a fresh CoW tile samples the **base** tile
+     and the **scratch** and writes `new = f(base, scratch)` to the `color`+`aux`
+     MRT. (A render pass, not compute: `aux` is `Rg16Float`, which isn't a
+     storage-texture format.) `f` is the brush physics — `over` reproduces the
+     additive deposit exactly (the Phase-0 equivalence check); knife subtracts;
+     wet diffuses.
+  3. **Write-back = CoW.** The new tile replaces the base in the persistent map;
+     untouched tiles stay shared, exactly as the additive path already does.
+- **Apron stays correct for free.** Because the footprint and the combine are
+  deterministic functions of *canvas position*, a tile's apron is rewritten
+  identically to the neighbour's interior over their overlap — the same property
+  that lets the additive deposit render aprons without a copy (§6.4). The seam
+  regression test extends to the medium path.
+- **Subtractive knife (`BrushDynamics::Knife`).** The combine *reduces* `height`,
+  `coverage`, `wet` along the path by a pressure-scaled bite; lifted paint loads
+  onto the per-segment × lateral-band **reservoir** (shared with the Mixer, now
+  source-reducing → conservative), is dragged downstream, and piles at the lateral
+  edges as ridges. The dormant surface **tooth** gates the scrape so paint clears
+  the weave's peaks and stays in its valleys — scraping reveals canvas texture. A
+  loaded knife also lays a thin film of its own colour (load white → snowy ridge).
+- **Wet-on-wet diffusion (`BrushDynamics::Wet`).** Since paint is always wet, this
+  is a few `wet`-weighted, colour-conserving diffusion iterations over the stroke
+  region (needs neighbour reads, so this tier composites the affected tiles into a
+  region and ping-pongs, then writes back — the Mixer's region machinery
+  generalized). Softens boundaries into alla-prima blends; an optional historized
+  **`Settle`** action runs more iterations on demand ("let the colours marry").
+
+*Determinism* is unchanged: every medium stroke is a pure function of `base` +
+the `StrokeRecord` (fixed iteration counts), so replay and `preview == committed`
+hold exactly as for the additive deposit. *Perf:* `Dry` keeps the fast direct
+additive path; only medium brushes pay the read-modify-write, bounded by the
+affected-tile set (and `MAX_REGION_DIM` for the diffusion tier).
 
 ### 6.3 Compositing & the "old masters" look
 
@@ -1124,6 +1179,14 @@ above; they layer on top of it.
    no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
    testable headlessly by merging two engines' logs and asserting identical
    golden output (convergence as a test).
+13. **Mutable medium — subtractive & wet diffusion (§6.2):** the read-modify-write
+   *write-back* path (footprint→scratch → combine → CoW tile), validated by a
+   medium-`Dry` equivalence test (Phase 0); then `BrushDynamics::Knife` —
+   subtractive palette-knife scraping with conservative reservoir carry, edge
+   ridges, and tooth-revealed canvas (Phase 1); then `BrushDynamics::Wet` —
+   region-based wet-on-wet diffusion + an optional `Settle` action (Phase 2).
+   Single-buffer, always-wet; glazing is left to document layers. Extend the seam
+   test to the write-back path; golden per phase.
 
 Each step is independently testable through `stark-core` before any UI exists,
 which is exactly the leverage the frontend/backend split was meant to provide.

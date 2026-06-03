@@ -147,6 +147,19 @@ pub struct StrokeRenderer {
     composite_tile_bgl: wgpu::BindGroupLayout,
     mixer_pipeline: wgpu::ComputePipeline,
     mixer_bgl: wgpu::BindGroupLayout,
+
+    // Mutable-medium write-back (subtractive/wet brushes, DESIGN.md §6.2): a
+    // fullscreen combine pass reads the base tile + the stroke's footprint scratch
+    // and writes `new = f(base, scratch)` into a fresh CoW tile's color+aux MRT.
+    medium_pipeline: wgpu::RenderPipeline,
+    medium_bgl: wgpu::BindGroupLayout,
+}
+
+/// Combine mode + params for the mutable-medium pass (`medium.wesl` `Params`).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct MediumUniform {
+    mode: [f32; 4], // mode (0=over, 1=knife), bite, load, _
 }
 
 impl StrokeRenderer {
@@ -320,6 +333,7 @@ impl StrokeRenderer {
             ..Default::default()
         });
         let (mixer_pipeline, mixer_bgl) = build_mixer_pipeline(device);
+        let (medium_pipeline, medium_bgl) = build_medium_pipeline(device, color_space.as_ref());
 
         Self {
             ctx: ctx.clone(),
@@ -337,6 +351,8 @@ impl StrokeRenderer {
             composite_tile_bgl,
             mixer_pipeline,
             mixer_bgl,
+            medium_pipeline,
+            medium_bgl,
         }
     }
 
@@ -466,37 +482,61 @@ impl StrokeRenderer {
             ],
         });
 
+        // Mutable-medium write-back (DESIGN.md §6.2): a Knife brush scrapes via a
+        // footprint *scratch* + combine pass instead of the additive deposit. The
+        // medium params are constant per stroke; `empty` stands in as `base` where
+        // the stroke touches bare canvas.
+        let knife = match rec.brush.dynamics {
+            BrushDynamics::Knife(kp) => Some(kp),
+            _ => None,
+        };
+        let medium_buf = knife.map(|kp| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark medium params"),
+                contents: bytemuck::bytes_of(&MediumUniform {
+                    mode: [1.0, kp.bite, kp.load, 0.0], // mode 1 = knife
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
+        // A tile to stand in as `base` where the stroke touches bare canvas. Acquired
+        // tiles are undefined, so clear it (the combine reads it as zero = no paint).
+        let empty = if knife.is_some() {
+            let t = pool.acquire();
+            let clear = wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            };
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark medium empty clear"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: t.color_view(),
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: clear,
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: t.aux_view(),
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: clear,
+                    }),
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            Some(t)
+        } else {
+            None
+        };
+
         let mut new_map = base.clone();
         for coord in coords {
-            let dst = pool.acquire();
-
-            let (color_load, aux_load) = match base.get(&coord) {
-                Some(src) => {
-                    let extent = wgpu::Extent3d {
-                        width: TILE_TEX,
-                        height: TILE_TEX,
-                        depth_or_array_layers: 1,
-                    };
-                    encoder.copy_texture_to_texture(
-                        src.color().as_image_copy(),
-                        dst.color().as_image_copy(),
-                        extent,
-                    );
-                    encoder.copy_texture_to_texture(
-                        src.aux().as_image_copy(),
-                        dst.aux().as_image_copy(),
-                        extent,
-                    );
-                    (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-                }
-                None => (
-                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                ),
-            };
-
-            // Texture top-left = interior origin shifted out by the apron, so the
-            // full TILE_TEX target (interior + apron) maps to NDC [-1, 1].
+            // Per-tile sweep transform: texture top-left = interior origin shifted
+            // out by the apron, so the full TILE_TEX target maps to NDC [-1, 1].
             let apron = TILE_APRON as f32;
             let origin = coord.origin();
             let xform = TileXform {
@@ -517,27 +557,27 @@ impl StrokeRenderer {
                 }],
             });
 
-            {
+            // The swept footprint pass: draws the brush's coverage/color/aux. Used
+            // directly over `base` for additive brushes, or into a cleared scratch
+            // for the medium (knife) path.
+            let sweep = |encoder: &mut wgpu::CommandEncoder,
+                         tile: &TileHandle,
+                         color_load: wgpu::LoadOp<wgpu::Color>,
+                         aux_load: wgpu::LoadOp<wgpu::Color>| {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
                     color_attachments: &[
                         Some(wgpu::RenderPassColorAttachment {
-                            view: dst.color_view(),
+                            view: tile.color_view(),
                             resolve_target: None,
                             depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: color_load,
-                                store: wgpu::StoreOp::Store,
-                            },
+                            ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
                         }),
                         Some(wgpu::RenderPassColorAttachment {
-                            view: dst.aux_view(),
+                            view: tile.aux_view(),
                             resolve_target: None,
                             depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: aux_load,
-                                store: wgpu::StoreOp::Store,
-                            },
+                            ops: wgpu::Operations { load: aux_load, store: wgpu::StoreOp::Store },
                         }),
                     ],
                     depth_stencil_attachment: None,
@@ -552,9 +592,80 @@ impl StrokeRenderer {
                 pass.set_bind_group(3, &reservoir_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
                 pass.draw(0..4, 0..instances.len() as u32);
-            }
+            };
 
-            new_map = new_map.insert(coord, dst);
+            if let Some(medium_buf) = &medium_buf {
+                // Footprint → cleared scratch, then combine(base, scratch) → dst.
+                let scratch = pool.acquire();
+                let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+                sweep(&mut encoder, &scratch, clear, clear);
+
+                let dst = pool.acquire();
+                let base_tile = base.get(&coord).unwrap_or_else(|| empty.as_ref().unwrap());
+                let medium_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark medium bg"),
+                    layout: &self.medium_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: medium_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(base_tile.color_view()) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(base_tile.aux_view()) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(scratch.color_view()) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(scratch.aux_view()) },
+                    ],
+                });
+                {
+                    let clear = wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    };
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("stark medium combine"),
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: dst.color_view(),
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: clear,
+                            }),
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: dst.aux_view(),
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: clear,
+                            }),
+                        ],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_pipeline(&self.medium_pipeline);
+                    pass.set_bind_group(0, &medium_bg, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                new_map = new_map.insert(coord, dst);
+            } else {
+                // Additive deposit: copy base → dst (or clear), sweep over it.
+                let dst = pool.acquire();
+                let (color_load, aux_load) = match base.get(&coord) {
+                    Some(src) => {
+                        let extent = wgpu::Extent3d {
+                            width: TILE_TEX,
+                            height: TILE_TEX,
+                            depth_or_array_layers: 1,
+                        };
+                        encoder.copy_texture_to_texture(src.color().as_image_copy(), dst.color().as_image_copy(), extent);
+                        encoder.copy_texture_to_texture(src.aux().as_image_copy(), dst.aux().as_image_copy(), extent);
+                        (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+                    }
+                    None => (
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    ),
+                };
+                sweep(&mut encoder, &dst, color_load, aux_load);
+                new_map = new_map.insert(coord, dst);
+            }
         }
 
         self.ctx.queue.submit([encoder.finish()]);
@@ -1102,6 +1213,87 @@ fn build_mixer_pipeline(
         module: &shader,
         entry_point: Some("main"),
         compilation_options: Default::default(),
+        cache: None,
+    });
+    (pipeline, bgl)
+}
+
+/// Build the mutable-medium combine pipeline (`medium` shader) — DESIGN §6.2. A
+/// fullscreen pass with a `Params` uniform + four sampled tiles (base/scratch
+/// color/aux), writing the color+aux MRT of a fresh tile.
+fn build_medium_pipeline(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("stark medium"),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::medium().into()),
+    });
+    let load_tex = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            // Sampled via textureLoad only (1:1 with the destination).
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark medium bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            load_tex(1), // base color
+            load_tex(2), // base aux
+            load_tex(3), // scratch color
+            load_tex(4), // scratch aux
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("stark medium layout"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("stark medium pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: color_space.color_format(),
+                    blend: None, // the shader does the combine; write straight through
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: color_space.aux_format(),
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        multiview_mask: None,
         cache: None,
     });
     (pipeline, bgl)

@@ -29,3 +29,8 @@ pub fn media_mixbox() -> &'static str {
 pub fn mixer() -> &'static str {
     include_wesl!("mixer")
 }
+
+/// WGSL combine pass for the mutable-medium write-back (subtractive/wet) — §6.2.
+pub fn medium() -> &'static str {
+    include_wesl!("medium")
+}

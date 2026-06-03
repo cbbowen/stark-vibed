@@ -16,7 +16,7 @@ use dioxus::prelude::*;
 
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, CANVAS_ID};
-use stark_core::document::{BrushDynamics, BrushParams, BrushShape, MixerParams, Tool};
+use stark_core::document::{BrushDynamics, BrushParams, BrushShape, KnifeParams, MixerParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{
     ColorSpaceId, EnvironmentId, InputCommand, InputSample, LayerInfo, MediaParams,
@@ -238,13 +238,20 @@ fn BrushPanel() -> Element {
         .map(|o| o.brush)
         .unwrap_or_default();
     let is_round = matches!(brush.shape, BrushShape::Round);
-    // Current wet-mixing params (or the defaults to show when switching on).
+    // Current dynamics params (or the defaults to show when switching on).
     let mixer = match brush.dynamics {
         BrushDynamics::Mixer(mp) => Some(mp),
-        BrushDynamics::Dry => None,
+        _ => None,
+    };
+    let knife = match brush.dynamics {
+        BrushDynamics::Knife(kp) => Some(kp),
+        _ => None,
     };
     let is_mixer = mixer.is_some();
+    let is_knife = knife.is_some();
+    let is_dry = !is_mixer && !is_knife;
     let mp = mixer.unwrap_or_default();
+    let kp = knife.unwrap_or_default();
 
     let chip = |active: bool| if active { "chip active" } else { "chip" };
 
@@ -262,10 +269,11 @@ fn BrushPanel() -> Element {
                     "Bristles"
                 }
             }
-            // Brush dynamics: dry paint vs. a mixer that smears wet canvas paint.
+            // Brush dynamics: dry paint, a mixer that smears wet canvas paint, or a
+            // palette knife that scrapes paint off (DESIGN.md §6.2).
             div { class: "brush-shapes",
                 button {
-                    class: chip(!is_mixer),
+                    class: chip(is_dry),
                     onclick: move |_| set_dynamics(state, BrushDynamics::Dry),
                     "Dry"
                 }
@@ -273,6 +281,11 @@ fn BrushPanel() -> Element {
                     class: chip(is_mixer),
                     onclick: move |_| set_dynamics(state, BrushDynamics::Mixer(MixerParams::default())),
                     "Mixer"
+                }
+                button {
+                    class: chip(is_knife),
+                    onclick: move |_| set_dynamics(state, BrushDynamics::Knife(KnifeParams::default())),
+                    "Knife"
                 }
             }
             Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
@@ -291,6 +304,14 @@ fn BrushPanel() -> Element {
                     oninput: move |v| set_mixer(state, move |m| m.pickup = v) }
                 Slider { label: "Mix", min: 0.0, max: 1.0, value: mp.color_inject,
                     oninput: move |v| set_mixer(state, move |m| m.color_inject = v) }
+            }
+            // Knife-only controls: how hard it scrapes, and how much of its own
+            // color it lays as it goes (DESIGN.md §6.2).
+            if is_knife {
+                Slider { label: "Bite", min: 0.0, max: 1.0, value: kp.bite,
+                    oninput: move |v| set_knife(state, move |k| k.bite = v) }
+                Slider { label: "Load", min: 0.0, max: 1.0, value: kp.load,
+                    oninput: move |v| set_knife(state, move |k| k.load = v) }
             }
         }
     }
@@ -314,6 +335,15 @@ fn set_mixer(state: AppState, f: impl FnOnce(&mut MixerParams)) {
     update_brush(state, move |b| {
         if let BrushDynamics::Mixer(mp) = &mut b.dynamics {
             f(mp);
+        }
+    });
+}
+
+/// Edit the palette-knife params in place (no-op if the brush isn't a Knife).
+fn set_knife(state: AppState, f: impl FnOnce(&mut KnifeParams)) {
+    update_brush(state, move |b| {
+        if let BrushDynamics::Knife(kp) = &mut b.dynamics {
+            f(kp);
         }
     });
 }
