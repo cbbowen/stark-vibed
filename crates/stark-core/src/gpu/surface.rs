@@ -39,6 +39,10 @@ pub enum SurfaceId {
 pub struct Surface {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
+    /// 1.0 if this is a real (image) surface with weave to interact with, 0.0 for
+    /// the procedural `Flat`. Lets effects keyed on surface relief (e.g. the knife's
+    /// tooth-gated scrape, §6.2) be a no-op on `Flat`, whose height is a constant 0.
+    pub relief: f32,
 }
 
 impl Surface {
@@ -46,7 +50,10 @@ impl Surface {
     /// above it (so it shows everywhere) and the constant height has zero gradient
     /// (no relief) — exactly equivalent to having no surface (DESIGN.md §6.4).
     pub fn flat(ctx: &GpuContext) -> Self {
-        Self::from_height(ctx, &[0u8], 1, 1)
+        Self {
+            relief: 0.0,
+            ..Self::from_height(ctx, &[0u8], 1, 1)
+        }
     }
 
     /// Decode a grayscale PNG height map into an `R8Unorm` tileable texture.
@@ -117,7 +124,7 @@ impl Surface {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Self { view, sampler }
+        Self { view, sampler, relief: 1.0 }
     }
 }
 

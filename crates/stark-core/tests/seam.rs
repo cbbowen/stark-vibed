@@ -18,7 +18,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::Tool;
+use stark_core::document::{BrushDynamics, KnifeParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{MediaParams, RgbaImage};
 
@@ -72,6 +72,63 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     engine.render_to_image(BG)
 }
 
+/// Like `render_shifted`, but the height-bearing stroke is a **medium** (knife)
+/// write-back rather than the additive deposit: lay a wide red field through the
+/// corner, then scrape a knife along it with carry + ridge on. This exercises the
+/// read-modify-write combine path (footprint→scratch→combine→CoW), whose apron
+/// must stay bit-identical to the neighbor's interior just like the deposit's
+/// (DESIGN.md §6.2/§6.4) — the ridge term is deliberately a function of the local
+/// coverage only (no neighbor reads) so it can't introduce a boundary discontinuity.
+fn render_shifted_knife(shift: Vec2) -> RgbaImage {
+    let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
+    engine.set_media_params(MediaParams {
+        height_strength: 2.5,
+        specular: 0.3,
+        surface_strength: 0.0,
+        ..MediaParams::default()
+    });
+
+    // A wide base field along the diagonal, fully containing the knife's path.
+    let mut field = brush(RED, 60.0);
+    field.tooth = 0.0;
+    engine.process(InputCommand::SetBrush(field));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(shift + Vec2::new(60.0, 60.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    // The knife scrape under test, through the same 4-tile corner.
+    let mut knife = brush(RED, 28.0);
+    knife.tooth = 0.0;
+    knife.dynamics = BrushDynamics::Knife(KnifeParams {
+        bite: 0.5,
+        load: 0.0,
+        carry: 0.5,
+        ridge: 1.0,
+    });
+    engine.process(InputCommand::SetBrush(knife));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
+    engine.process(InputCommand::Pan { delta: -shift });
+    engine.process(InputCommand::Zoom {
+        anchor: center_px,
+        factor: 2.0,
+    });
+    engine.render_to_image(BG)
+}
+
 #[test]
 fn apron_makes_tiles_seamless_under_zoom() {
     if engine_or_skip().is_none() {
@@ -93,6 +150,28 @@ fn apron_makes_tiles_seamless_under_zoom() {
         worst <= 25 && frac < 0.07,
         "tile seam: corner vs interior render differ by up to {worst} levels \
          on {:.2}% of pixels — the apron is not covering tile boundaries",
+        frac * 100.0
+    );
+}
+
+#[test]
+fn apron_makes_medium_writeback_seamless_under_zoom() {
+    if engine_or_skip().is_none() {
+        return; // no usable GPU adapter
+    }
+
+    // Same invariant as above, but for the knife's read-modify-write path: a scrape
+    // straddling the 4-tile corner must render identically to the same scrape shifted
+    // into one tile's interior. A broken apron in the combine pass (or a ridge that
+    // sampled neighbors) would seam along every tile boundary.
+    let corner = render_shifted_knife(Vec2::ZERO);
+    let interior = render_shifted_knife(Vec2::new(128.0, 128.0));
+
+    let (frac, worst) = diff_fraction(&corner, &interior);
+    assert!(
+        worst <= 25 && frac < 0.07,
+        "medium write-back seam: corner vs interior differ by up to {worst} levels \
+         on {:.2}% of pixels — the combine pass is not covering tile boundaries",
         frac * 100.0
     );
 }

@@ -1,5 +1,5 @@
 //! Step-3 golden-image tests (DESIGN.md §9). Render known scripts and compare
-//! against committed reference PNGs. Regenerate with `STARK_BLESS=1`.
+//! against committed reference PNGs. Regenerate by deleting the existing golden image.
 
 mod common;
 
@@ -188,6 +188,128 @@ fn golden_knife_scrape() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("knife_scrape", &img, 6);
+}
+
+#[test]
+fn golden_knife_tooth() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // The knife's tooth interaction on the linen weave (DESIGN.md §6.2, Phase 1):
+    // a solid red field, then a high-tooth knife scraped across it. Unlike the
+    // clean scrape on flat (`knife_scrape`, uniform thinning), the tooth gate
+    // clears paint off the weave's peaks but leaves it in the valleys, so the
+    // scraped band reads the linen texture — the weave is *revealed* by scraping.
+    let linen_png = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../stark-ui/assets/surface/Linen.png"
+    ))
+    .expect("read surface PNG");
+    engine.register_surface(SurfaceId::Linen, linen_png);
+    engine.set_surface(SurfaceId::Linen);
+
+    paint(
+        &mut engine,
+        RED,
+        60.0,
+        &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
+    );
+
+    let mut knife = brush(RED, 26.0);
+    knife.tooth = 1.0; // full tooth: the gate bites only the weave's peaks
+    knife.dynamics = BrushDynamics::Knife(KnifeParams::default());
+    engine.process(InputCommand::SetBrush(knife));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(0.0, -80.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 80.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("knife_tooth", &img, 6);
+}
+
+#[test]
+fn golden_knife_carry() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // Conservative reservoir carry (DESIGN.md §6.2, Phase 1): a green vertical bar
+    // on the left, then a knife with `carry` dragged left→right across it onto a long
+    // bare runway. The knife scrapes green off the bar (lightening the source) into
+    // its reservoir and re-lays it downstream, so green is *dragged* across the bare
+    // paper to the right and fades out as the load depletes — paint a clean scrape
+    // (`golden_knife_scrape`) would simply have destroyed.
+    paint(
+        &mut engine,
+        GREEN,
+        30.0,
+        &[Vec2::new(0.0, -80.0), Vec2::new(0.0, 80.0)],
+    );
+
+    let mut knife = brush(RED, 40.0);
+    knife.dynamics = BrushDynamics::Knife(KnifeParams {
+        bite: 0.8,
+        load: 0.0,
+        carry: 0.9,
+        ridge: 0.0,
+    });
+    engine.process(InputCommand::SetBrush(knife));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-90.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(90.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("knife_carry", &img, 6);
+}
+
+#[test]
+fn golden_knife_ridge() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // Lateral pile-up (DESIGN.md §6.2, Phase 1): a solid red field, then a knife
+    // with high `ridge` scraped down through it. Paint shoved aside heaps into the
+    // footprint's edge band, raising lips along both sides of the scraped channel —
+    // height-only relief, so it reads as raking-light highlight/shadow ridges in the
+    // impasto media pass (a clean scrape, `golden_knife_scrape`, leaves flat paint).
+    paint(
+        &mut engine,
+        RED,
+        70.0,
+        &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
+    );
+
+    let mut knife = brush(RED, 30.0);
+    knife.dynamics = BrushDynamics::Knife(KnifeParams {
+        bite: 0.15, // gentle scrape: keep the colour ~uniform so the lip reads as relief
+        load: 0.0,
+        carry: 0.0,
+        ridge: 1.0,
+    });
+    engine.process(InputCommand::SetBrush(knife));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(0.0, -80.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 80.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("knife_ridge", &img, 6);
 }
 
 #[test]

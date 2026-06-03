@@ -89,6 +89,21 @@ pub struct KnifeParams {
     /// How much of the knife's own color it lays as it scrapes, in [0, 1]: 0 = a
     /// clean scrape that only removes, 1 = lays a full film of its loaded color.
     pub load: f32,
+    /// How strongly the knife **drags** scraped paint downstream, in [0, 1]: 0 = a
+    /// clean scrape (removed paint vanishes), 1 = the scraped paint accumulates in
+    /// the knife and is re-laid along the path, fading out as the load depletes
+    /// (DESIGN.md §6.2, conservative reservoir carry). The source is still
+    /// lightened by `bite`, so high `bite` + lower `carry` lifts paint; equal
+    /// values smear it forward. `#[serde(default)]` so pre-carry files load.
+    #[serde(default)]
+    pub carry: f32,
+    /// How strongly displaced paint **piles into ridges** at the edges of the
+    /// knife's path, in [0, 1]: 0 = no ridge, 1 = a pronounced raised lip
+    /// (DESIGN.md §6.2, lateral pile-up). The ridge rises in the footprint's soft
+    /// transition band — where paint is being pushed aside — so it only forms over
+    /// existing paint and catches raking light as impasto relief. `#[serde(default)]`.
+    #[serde(default)]
+    pub ridge: f32,
 }
 
 impl Default for KnifeParams {
@@ -96,6 +111,8 @@ impl Default for KnifeParams {
         Self {
             bite: 0.8,
             load: 0.0,
+            carry: 0.0,
+            ridge: 0.0,
         }
     }
 }

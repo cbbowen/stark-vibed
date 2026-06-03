@@ -305,13 +305,17 @@ fn BrushPanel() -> Element {
                 Slider { label: "Mix", min: 0.0, max: 1.0, value: mp.color_inject,
                     oninput: move |v| set_mixer(state, move |m| m.color_inject = v) }
             }
-            // Knife-only controls: how hard it scrapes, and how much of its own
-            // color it lays as it goes (DESIGN.md §6.2).
+            // Knife-only controls: how hard it scrapes, how much of its own color it
+            // lays, and how strongly it drags scraped paint downstream (DESIGN.md §6.2).
             if is_knife {
                 Slider { label: "Bite", min: 0.0, max: 1.0, value: kp.bite,
                     oninput: move |v| set_knife(state, move |k| k.bite = v) }
                 Slider { label: "Load", min: 0.0, max: 1.0, value: kp.load,
                     oninput: move |v| set_knife(state, move |k| k.load = v) }
+                Slider { label: "Carry", min: 0.0, max: 1.0, value: kp.carry,
+                    oninput: move |v| set_knife(state, move |k| k.carry = v) }
+                Slider { label: "Ridge", min: 0.0, max: 1.0, value: kp.ridge,
+                    oninput: move |v| set_knife(state, move |k| k.ridge = v) }
             }
         }
     }

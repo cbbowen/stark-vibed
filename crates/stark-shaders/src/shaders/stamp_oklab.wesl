@@ -7,7 +7,7 @@
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b) + coverage in a
 //   target 1: aux   (Rg16Float)   — (height, wet)·coverage
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, is_carry};
 
 @vertex
 fn vs_main(
@@ -30,8 +30,14 @@ fn fs_main(in: VsOut) -> FsOut {
     // Each part of the tip lays the color its lateral band picked up (DESIGN §6.2).
     let ch = reservoir_color(in.u, in.local);
 
+    // Colour alpha carries the deposit's *amount*: for every additive brush the
+    // reservoir alpha is 1, so this is the usual `(ch·coverage, coverage)`. For the
+    // carry knife the reservoir holds premultiplied film `(ch·film, film)`, so this
+    // becomes `(ch·film·coverage, film·coverage)` — a premult-consistent film — and
+    // the aux instead carries the contact coverage the combine scrapes with.
     var out: FsOut;
-    out.color = vec4<f32>(ch.xyz * coverage, coverage);
-    out.aux = vec4<f32>(in.misc.z * coverage, in.misc.w * coverage, 0.0, 0.0);
+    out.color = vec4<f32>(ch.xyz * coverage, ch.a * coverage);
+    let amount = select(in.misc.z, 1.0, is_carry()); // carry: contact coverage; else height
+    out.aux = vec4<f32>(amount * coverage, in.misc.w * coverage, 0.0, 0.0);
     return out;
 }

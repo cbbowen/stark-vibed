@@ -13,13 +13,15 @@
 struct Params {
     brush_ch: vec4<f32>,    // the brush's own color channels
     origin_dims: vec4<f32>, // region origin.xy (canvas px), region dims.xy (px)
-    knobs: vec4<f32>,       // pickup, color_inject, flatten_step, reservoir_capacity
-    counts: vec4<u32>,      // segment_count, lead-in columns, reservoir width, _
+    // Mixer mode: pickup, color_inject, flatten_step, reservoir_capacity.
+    // Knife mode:  bite,   carry,        flatten_step, reservoir_capacity.
+    knobs: vec4<f32>,
+    counts: vec4<u32>,      // segment_count, lead-in columns, reservoir width, mode (0=mixer, 1=knife)
 }
 
-// Must match `SegmentInstance` (gpu/stroke.rs): std430 layout, 48 bytes. Read-only
-// here — the per-segment colors now go to the reservoir texture, not back into the
-// instances.
+// Must match `SegmentInstance` (gpu/stroke.rs): std430 layout, 48 bytes. Read-only:
+// both modes write only the reservoir texture (the knife stores its per-band film
+// amount in the reservoir alpha, so nothing goes back into the instances).
 struct Instance {
     start: vec2<f32>,
     dir: vec2<f32>,
@@ -27,6 +29,14 @@ struct Instance {
     aux: vec2<f32>,   // height, wet
     pad: vec2<f32>,
 }
+
+const MODE_KNIFE: u32 = 1u;
+
+// Knife carry: fraction of the reservoir load re-laid as film per flatten-step.
+// Past the scraped paint the knife picks up nothing, so the load — and thus the
+// deposited film — decays as `(1 - DEPOSIT_RATE)^steps`, fading the dragged paint
+// out over a tail of roughly `radius / DEPOSIT_RATE` flatten-steps (DESIGN.md §6.2).
+const DEPOSIT_RATE: f32 = 0.12;
 
 // Lateral reservoir bands across the brush width, so each part of the tip carries
 // the color it rolled over instead of one color for the whole brush (DESIGN.md
@@ -89,6 +99,50 @@ fn pickup(prev: Res, sample: vec2<f32>, steps: f32) -> Res {
     return Res(ch, load);
 }
 
+// One step of the *knife* carry recurrence: scrape paint off the canvas at
+// `sample` into the reservoir (mass-weighted, `bite`-driven), with no brush-color
+// refill — the knife only ever holds what it lifted. Depletion (re-laying the film)
+// is handled by the caller so it can record the deposited amount (DESIGN.md §6.2).
+fn pickup_knife(prev: Res, sample: vec2<f32>, steps: f32) -> Res {
+    let origin = params.origin_dims.xy;
+    let dims = vec2<i32>(i32(params.origin_dims.z), i32(params.origin_dims.w));
+    let texel = clamp(vec2<i32>(floor(sample - origin)), vec2<i32>(0), dims - vec2<i32>(1));
+    let dec = decode(textureLoad(region_color, texel, 0));
+
+    // Always-wet medium: the scrape lifts in proportion to bite × paint present.
+    let lift = clamp(params.knobs.x * dec.amount * steps, 0.0, 1.0);
+    let total = prev.load + lift;
+    var ch = prev.ch;
+    if total > 1e-4 {
+        ch = (prev.ch * prev.load + dec.ch * lift) / total;
+    }
+    return Res(ch, min(total, params.knobs.w)); // knobs.w = capacity
+}
+
+// Film amount re-laid this step: a fixed fraction of the current load per arc step.
+fn deposit_amt(load: f32, steps: f32) -> f32 {
+    return clamp(DEPOSIT_RATE * steps, 0.0, 1.0) * load;
+}
+
+// What to write into a reservoir texel after one step, by mode.
+struct Stored {
+    texel: vec4<f32>, // mixer: (carried color, 1); knife: premult film (ch·film, film)
+    load: f32,        // the (possibly depleted) reservoir load to carry forward
+}
+
+// Mixer: the texel is just the carried color (alpha unused by the deposit). Knife:
+// re-lay a `DEPOSIT_RATE`-fraction of the load, scaled by `carry`, as the film — and
+// store it **premultiplied** so empty bands (load 0 → film 0 → texel 0) deposit
+// nothing and linear filtering between a loaded and an empty column stays a dimmer
+// version of the same colour rather than fading through black.
+fn stored(res: Res, steps: f32, is_knife: bool) -> Stored {
+    if !is_knife {
+        return Stored(vec4<f32>(res.ch.xyz, 1.0), res.load);
+    }
+    let film = deposit_amt(res.load, steps) * params.knobs.y; // knobs.y = carry
+    return Stored(vec4<f32>(res.ch.xyz * film, film), res.load - deposit_amt(res.load, steps));
+}
+
 // One serial reservoir per lateral band, run in parallel: invocation `j` walks the
 // whole stroke maintaining band j's reservoir and writing reservoir texel (column,
 // band j). The walk is extended a half-brush *before* the first segment and *after*
@@ -104,11 +158,17 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let lead = params.counts.y;
     let width = params.counts.z;
     let flatten_step = params.knobs.z;
+    let is_knife = params.counts.w == MODE_KNIFE;
 
     // Band j's lateral position across the tip, in radius units ∈ [-1, 1].
     let lateral = (2.0 * f32(j) + 1.0) / f32(BANDS) - 1.0;
 
-    var res = Res(params.brush_ch, 1.0); // starts dipped in the brush color
+    // The mixer starts dipped in the brush color; the knife starts empty (it holds
+    // only paint it scrapes off the canvas).
+    var res = Res(params.brush_ch, 1.0);
+    if is_knife {
+        res = Res(vec4<f32>(0.0), 0.0);
+    }
 
     // Lead-in: extrapolate behind the first segment along its tangent, picking up
     // canvas there, so the start cap is part of the same continuous walk.
@@ -119,8 +179,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     for (var k = 0u; k < lead; k = k + 1u) {
         let back = f32(lead - k) * flatten_step; // distance behind the start
         let sample = s0 - d0 * back + perp0 * (lateral * r0);
-        res = pickup(res, sample, 1.0);
-        textureStore(reservoir, vec2<i32>(i32(k), i32(j)), vec4<f32>(res.ch.xyz, 1.0));
+        if is_knife { res = pickup_knife(res, sample, 1.0); } else { res = pickup(res, sample, 1.0); }
+        let st = stored(res, 1.0, is_knife);
+        res.load = st.load;
+        textureStore(reservoir, vec2<i32>(i32(k), i32(j)), st.texel);
     }
 
     // The stroke proper, one column per segment.
@@ -130,8 +192,11 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         let radius = instances[i].geom.x;
         let perp = vec2<f32>(-dir.y, dir.x);
         let steps = instances[i].geom.y / flatten_step;
-        res = pickup(res, pos + perp * (lateral * radius), steps);
-        textureStore(reservoir, vec2<i32>(i32(lead + i), i32(j)), vec4<f32>(res.ch.xyz, 1.0));
+        let sample = pos + perp * (lateral * radius);
+        if is_knife { res = pickup_knife(res, sample, steps); } else { res = pickup(res, sample, steps); }
+        let st = stored(res, steps, is_knife);
+        res.load = st.load;
+        textureStore(reservoir, vec2<i32>(i32(lead + i), i32(j)), st.texel);
     }
 
     // Lead-out: extrapolate ahead of the last segment along its tangent.
@@ -143,7 +208,9 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     for (var k = lead + count; k < width; k = k + 1u) {
         let fwd = f32(k - (lead + count) + 1u) * flatten_step; // distance past the end
         let sample = endp + dl * fwd + perpl * (lateral * rl);
-        res = pickup(res, sample, 1.0);
-        textureStore(reservoir, vec2<i32>(i32(k), i32(j)), vec4<f32>(res.ch.xyz, 1.0));
+        if is_knife { res = pickup_knife(res, sample, 1.0); } else { res = pickup(res, sample, 1.0); }
+        let st = stored(res, 1.0, is_knife);
+        res.load = st.load;
+        textureStore(reservoir, vec2<i32>(i32(k), i32(j)), st.texel);
     }
 }

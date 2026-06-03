@@ -10,7 +10,8 @@ struct TileXform {
     // params.z = 2 / TILE_TEX (full interior+apron maps to NDC);
     // params.w = 1 / stroke arc length (canvas px → normalized longitudinal pos).
     params: vec4<f32>,
-    // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth; zw unused.
+    // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth;
+    // surf.z = knife-carry flag (see `film_height`); surf.w unused.
     surf: vec4<f32>,
 }
 
@@ -88,6 +89,15 @@ fn sweep_vertex(
 fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
     let along = u.x + local.x * u.y;
     return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
+}
+
+// Whether this is the carry knife's scratch pass (`surf.z` set). When it is, the
+// reservoir holds *premultiplied film* (`ch·amount`, `amount`), so the deposit puts
+// the film amount in the colour's alpha (over-blended, premult-consistent across
+// overlapping segments — no dark desync) and the brush's *contact coverage* in the
+// aux instead, which the combine reads for the scrape (DESIGN.md §6.2).
+fn is_carry() -> bool {
+    return xf.surf.z > 0.5;
 }
 
 // Bilinear lookup of the prefix-τ (fp32) at brush-local (xl, yl) ∈ [-1,1]: 0

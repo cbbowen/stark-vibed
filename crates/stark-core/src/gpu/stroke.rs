@@ -24,7 +24,7 @@ use wgpu::util::DeviceExt;
 use crate::assets::{build_prefix_tau, AssetStore};
 use crate::colorspace::ColorSpace;
 use crate::command::InputSample;
-use crate::document::{BrushDynamics, BrushShape, MixerParams, StrokeRecord};
+use crate::document::{BrushDynamics, BrushShape, StrokeRecord};
 use crate::geom::{
     TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
 };
@@ -116,8 +116,9 @@ struct TileInstance {
 struct MixerUniform {
     brush_ch: [f32; 4],
     origin_dims: [f32; 4], // region origin.xy (canvas px), dims.xy (px)
-    knobs: [f32; 4],       // pickup, color_inject, flatten_step, capacity
-    counts: [u32; 4],      // segment_count, lead-in columns, reservoir width, _
+    // Mixer: pickup, color_inject, flatten_step, capacity. Knife: bite, carry, …
+    knobs: [f32; 4],
+    counts: [u32; 4], // segment_count, lead-in columns, reservoir width, mode (0=mixer, 1=knife)
 }
 
 #[derive(Clone)]
@@ -131,6 +132,9 @@ pub struct StrokeRenderer {
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
     /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for tooth.
     surface_bg: wgpu::BindGroup,
+    /// The surface itself, also bound to the medium pass for the knife's tooth-gated
+    /// scrape (its `relief` makes the gate a no-op on `Flat`).
+    surface: Surface,
     /// Color reservoir (group 3 of the sweep pipeline): the per-segment × per-band
     /// color the deposit samples. `reservoir_sampler` is linear+clamp so it blends
     /// bands (and segments) for free.
@@ -159,7 +163,9 @@ pub struct StrokeRenderer {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MediumUniform {
-    mode: [f32; 4], // mode (0=over, 1=knife), bite, load, _
+    mode: [f32; 4],  // mode (0=over, 1=knife), bite, load, tooth·relief
+    surf: [f32; 4],  // tile_tex_origin.x, .y, inv_surface_tile, carry flag
+    extra: [f32; 4], // ridge strength, _, _, _
 }
 
 impl StrokeRenderer {
@@ -343,6 +349,7 @@ impl StrokeRenderer {
             prefix_bgl,
             round_prefix: Arc::new(Mutex::new(None)),
             surface_bg,
+            surface,
             reservoir_bgl,
             reservoir_sampler,
             composite_pipeline,
@@ -439,33 +446,50 @@ impl StrokeRenderer {
         // per-segment × per-band texture with smeared color; every other brush gets
         // a 1×1 texel of its own color (so the deposit shader is uniform). Encoded
         // before the deposit so the colors are ready when stamped.
-        let mixer = match rec.brush.dynamics {
-            BrushDynamics::Mixer(mp) => stroke_bbox(&segments).map(|bbox| (mp, bbox)),
+        // A reservoir scan smears color along the stroke for two brushes: the Mixer
+        // (lifts wet canvas color) and the carry Knife (drags the paint it scrapes
+        // off, mixer.wesl mode 1). Both reuse the same region-composite + serial-scan
+        // machinery; the knife scan also writes each segment's re-laid film amount
+        // back into the instance buffer's `aux.x` (DESIGN.md §6.2).
+        let scan = match rec.brush.dynamics {
+            BrushDynamics::Mixer(mp) => Some((
+                [mp.pickup, mp.color_inject, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY],
+                0u32,
+            )),
+            BrushDynamics::Knife(kp) if kp.carry > 0.0 => Some((
+                [kp.bite, kp.carry, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY],
+                1u32,
+            )),
             _ => None,
         };
-        let reservoir_view = if let Some((mp, bbox)) = mixer {
-            let tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("stark mixer reservoir"),
-                size: wgpu::Extent3d {
-                    width,
-                    height: LATERAL_BANDS,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.encode_mixer(
-                &mut encoder, base, &coords, &segments, &instance_buf, &view, bbox, (lead, width),
-                channels, mp,
-            );
-            view
-        } else {
-            self.flat_reservoir(&mut encoder, channels)
+        // The knife re-lays carried paint only when its scan actually ran; a stroke
+        // too large for the region composite skips it and degrades to a plain knife.
+        let mut knife_carry = false;
+        let reservoir_view = match scan.zip(stroke_bbox(&segments)) {
+            Some(((knobs, mode), bbox)) => {
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("stark reservoir"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height: LATERAL_BANDS,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                self.encode_mixer(
+                    &mut encoder, base, &coords, &segments, &instance_buf, &view, bbox,
+                    (lead, width), channels, knobs, mode,
+                );
+                knife_carry = mode == 1;
+                view
+            }
+            None => self.flat_reservoir(&mut encoder, channels),
         };
         let reservoir_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep reservoir bg"),
@@ -490,15 +514,9 @@ impl StrokeRenderer {
             BrushDynamics::Knife(kp) => Some(kp),
             _ => None,
         };
-        let medium_buf = knife.map(|kp| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("stark medium params"),
-                contents: bytemuck::bytes_of(&MediumUniform {
-                    mode: [1.0, kp.bite, kp.load, 0.0], // mode 1 = knife
-                }),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-        });
+        // The knife's tooth gate reveals the weave only on a real surface (`relief`
+        // 1); it's a no-op on Flat (relief 0, whose height is a constant 0).
+        let tooth = rec.brush.tooth * self.surface.relief;
         // A tile to stand in as `base` where the stroke touches bare canvas. Acquired
         // tiles are undefined, so clear it (the combine reads it as zero = no paint).
         let empty = if knife.is_some() {
@@ -541,7 +559,14 @@ impl StrokeRenderer {
             let origin = coord.origin();
             let xform = TileXform {
                 params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, u_per_px],
-                surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
+                // surf.z flags the carry knife so the sweep takes the deposit amount
+                // from the reservoir alpha (per-band film) rather than instance height.
+                surf: [
+                    1.0 / SURFACE_TILE_PX,
+                    rec.brush.tooth,
+                    if knife_carry { 1.0 } else { 0.0 },
+                    0.0,
+                ],
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark sweep xform"),
@@ -594,11 +619,27 @@ impl StrokeRenderer {
                 pass.draw(0..4, 0..instances.len() as u32);
             };
 
-            if let Some(medium_buf) = &medium_buf {
+            if let Some(kp) = knife {
                 // Footprint → cleared scratch, then combine(base, scratch) → dst.
                 let scratch = pool.acquire();
                 let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
                 sweep(&mut encoder, &scratch, clear, clear);
+
+                let medium_uni = MediumUniform {
+                    mode: [1.0, kp.bite, kp.load, tooth], // mode 1 = knife
+                    surf: [
+                        origin.x - apron,
+                        origin.y - apron,
+                        1.0 / SURFACE_TILE_PX,
+                        if knife_carry { 1.0 } else { 0.0 },
+                    ],
+                    extra: [kp.ridge, 0.0, 0.0, 0.0],
+                };
+                let medium_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("stark medium params"),
+                    contents: bytemuck::bytes_of(&medium_uni),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
 
                 let dst = pool.acquire();
                 let base_tile = base.get(&coord).unwrap_or_else(|| empty.as_ref().unwrap());
@@ -611,6 +652,8 @@ impl StrokeRenderer {
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(base_tile.aux_view()) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(scratch.color_view()) },
                         wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(scratch.aux_view()) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.surface.view) },
+                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.surface.sampler) },
                     ],
                 });
                 {
@@ -750,7 +793,8 @@ impl StrokeRenderer {
         bbox: (Vec2, u32, u32),
         pad: (u32, u32),
         channels: [f32; 4],
-        mp: MixerParams,
+        knobs: [f32; 4],
+        mode: u32,
     ) {
         let (origin, w, h) = bbox;
         let (lead, width) = pad;
@@ -881,13 +925,8 @@ impl StrokeRenderer {
         let uni = MixerUniform {
             brush_ch: channels,
             origin_dims: [origin.x, origin.y, w as f32, h as f32],
-            knobs: [
-                mp.pickup,
-                mp.color_inject,
-                crate::path::FLATTEN_STEP,
-                RESERVOIR_CAPACITY,
-            ],
-            counts: [segments.len() as u32, lead, width, 0],
+            knobs,
+            counts: [segments.len() as u32, lead, width, mode],
         };
         let uni_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark mixer params"),
@@ -1182,8 +1221,9 @@ fn build_mixer_pipeline(
                 binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    // Read-only now: the scan drives off the instances but writes
-                    // its output to the reservoir texture (binding 4).
+                    // Read-only: both modes drive off the instances and write only the
+                    // reservoir texture (binding 4); the knife's per-band film amount
+                    // rides the reservoir alpha.
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
@@ -1257,6 +1297,23 @@ fn build_medium_pipeline(
             load_tex(2), // base aux
             load_tex(3), // scratch color
             load_tex(4), // scratch aux
+            // Canvas surface (filterable + sampler) for the knife's tooth gate.
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
