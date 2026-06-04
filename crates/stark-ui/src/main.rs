@@ -10,13 +10,16 @@
 mod components;
 mod render;
 
+use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, CANVAS_ID};
-use stark_core::document::{BrushDynamics, BrushParams, BrushShape, KnifeParams, MixerParams, Tool};
+use stark_core::document::{
+    BrushDynamics, BrushParams, BrushShape, KnifeParams, MixerParams, Tool, WetParams,
+};
 use stark_core::geom::Vec2;
 use stark_core::{
     ColorSpaceId, EnvironmentId, InputCommand, InputSample, LayerInfo, MediaParams,
@@ -57,12 +60,15 @@ struct AppState {
     renderer: Signal<Option<Renderer>>,
     /// UI-facing engine projection, refreshed after each command.
     obs: Signal<Option<ObservableState>>,
+    /// Whether the user is holding space.
+    space_down: Signal<bool>,
 }
 
 fn app() -> Element {
     let renderer = use_signal(|| None::<Renderer>);
     let obs = use_signal(|| None::<ObservableState>);
-    let state = AppState { renderer, obs };
+    let space_down = use_signal(|| false);
+    let state = AppState { renderer, obs, space_down };
     use_context_provider(|| state);
 
     use_hook(|| {
@@ -94,7 +100,8 @@ fn app() -> Element {
             class: "app-root",
             tabindex: "0",
             autofocus: true,
-            onkeydown: move |e| handle_keys(state, &e),
+            onkeydown: move |e| handle_keydown(state, &e),
+            onkeyup: move |e| handle_keyup(state, &e),
 
             Canvas {}
 
@@ -117,7 +124,8 @@ fn app() -> Element {
 fn Canvas() -> Element {
     let state = use_context::<AppState>();
     let mut drawing = use_signal(|| false);
-    let mut pan_from = use_signal(|| None::<(f64, f64)>);
+    let mut panning = use_signal(|| false);
+    let mut last_position = use_signal(|| None::<Vec2>);
 
     rsx! {
         canvas {
@@ -128,31 +136,36 @@ fn Canvas() -> Element {
                     resize(state, size.width as u32, size.height as u32);
                 }
             },
-            onmousedown: move |e| {
-                let (x, y) = elem_xy(&e);
+            onpointerdown: move |e| {
                 match e.trigger_button() {
                     Some(MouseButton::Primary) => {
-                        dispatch(state, InputCommand::StartStroke { tool: Tool::Brush, sample: sample(state, x, y) });
-                        drawing.set(true);
+                        if (state.space_down)() {
+                            panning.set(true);
+                        } else {
+                            dispatch(state, InputCommand::StartStroke { tool: Tool::Brush, sample: sample(state, &e) });
+                            drawing.set(true);
+                        }
                     }
                     Some(MouseButton::Auxiliary) => {
                         e.prevent_default(); // suppress middle-click autoscroll
-                        pan_from.set(Some((x, y)));
+                        panning.set(true);
                     }
                     _ => {}
                 }
             },
-            onmousemove: move |e| {
-                let (x, y) = elem_xy(&e);
+            onpointermove: move |e| {
                 if drawing() {
-                    dispatch(state, InputCommand::StrokeTo { sample: sample(state, x, y) });
-                } else if let Some((lx, ly)) = pan_from() {
-                    dispatch(state, InputCommand::Pan { delta: Vec2::new((x - lx) as f32, (y - ly) as f32) });
-                    pan_from.set(Some((x, y)));
+                    dispatch(state, InputCommand::StrokeTo { sample: sample(state, &e) });
+                } else if panning() && let Some(l) = last_position() {
+                    dispatch(state, InputCommand::Pan { delta: elem_xy(&e) - l });
                 }
+                last_position.set(Some(elem_xy(&e)));
             },
-            onmouseup: move |_| end_interaction(state, &mut drawing, &mut pan_from),
-            onmouseleave: move |_| end_interaction(state, &mut drawing, &mut pan_from),
+            onpointerup: move |_| end_interaction(state, &mut drawing, &mut panning),
+            onpointerleave: move |_| {
+                end_interaction(state, &mut drawing, &mut panning);
+                last_position.set(None);
+            },
             onwheel: move |e| {
                 e.prevent_default();
                 let dy = e.delta().strip_units().y;
@@ -185,10 +198,10 @@ fn ColorPanel() -> Element {
                 class: "sv-square",
                 // Dynamic: the value/saturation field tinted by the current hue.
                 style: "background: linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl({hue} 100% 50%));",
-                onmousedown: move |e| { picking.set(true); pick_sv(state, hue, sat, val, &e); },
-                onmousemove: move |e| { if picking() { pick_sv(state, hue, sat, val, &e); } },
-                onmouseup: move |_| picking.set(false),
-                onmouseleave: move |_| picking.set(false),
+                onpointerdown: move |e| { picking.set(true); pick_sv(state, hue, sat, val, &e); },
+                onpointermove: move |e| { if picking() { pick_sv(state, hue, sat, val, &e); } },
+                onpointerup: move |_| picking.set(false),
+                onpointerleave: move |_| picking.set(false),
                 div { class: "sv-marker", style: "left:{marker_x}px; top:{marker_y}px;" }
             }
             input {
@@ -220,7 +233,7 @@ fn pick_sv(
     hue: Signal<f32>,
     mut sat: Signal<f32>,
     mut val: Signal<f32>,
-    e: &Event<MouseData>,
+    e: &Event<PointerData>,
 ) {
     let c = e.element_coordinates();
     sat.set((c.x as f32 / SV_W).clamp(0.0, 1.0));
@@ -247,11 +260,17 @@ fn BrushPanel() -> Element {
         BrushDynamics::Knife(kp) => Some(kp),
         _ => None,
     };
+    let wet = match brush.dynamics {
+        BrushDynamics::Wet(wp) => Some(wp),
+        _ => None,
+    };
     let is_mixer = mixer.is_some();
     let is_knife = knife.is_some();
-    let is_dry = !is_mixer && !is_knife;
+    let is_wet = wet.is_some();
+    let is_dry = !is_mixer && !is_knife && !is_wet;
     let mp = mixer.unwrap_or_default();
     let kp = knife.unwrap_or_default();
+    let wp = wet.unwrap_or_default();
 
     let chip = |active: bool| if active { "chip active" } else { "chip" };
 
@@ -287,6 +306,11 @@ fn BrushPanel() -> Element {
                     onclick: move |_| set_dynamics(state, BrushDynamics::Knife(KnifeParams::default())),
                     "Knife"
                 }
+                button {
+                    class: chip(is_wet),
+                    onclick: move |_| set_dynamics(state, BrushDynamics::Wet(WetParams::default())),
+                    "Wet"
+                }
             }
             Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
                 oninput: move |v| update_brush(state, move |b| b.radius = v) }
@@ -316,6 +340,11 @@ fn BrushPanel() -> Element {
                     oninput: move |v| set_knife(state, move |k| k.carry = v) }
                 Slider { label: "Ridge", min: 0.0, max: 1.0, value: kp.ridge,
                     oninput: move |v| set_knife(state, move |k| k.ridge = v) }
+            }
+            // Wet-only control: how strongly the wet paint bleeds and levels (§6.2).
+            if is_wet {
+                Slider { label: "Bleed", min: 0.0, max: 1.0, value: wp.strength,
+                    oninput: move |v| set_wet(state, move |w| w.strength = v) }
             }
         }
     }
@@ -348,6 +377,15 @@ fn set_knife(state: AppState, f: impl FnOnce(&mut KnifeParams)) {
     update_brush(state, move |b| {
         if let BrushDynamics::Knife(kp) = &mut b.dynamics {
             f(kp);
+        }
+    });
+}
+
+/// Edit the wet-diffusion params in place (no-op if the brush isn't Wet).
+fn set_wet(state: AppState, f: impl FnOnce(&mut WetParams)) {
+    update_brush(state, move |b| {
+        if let BrushDynamics::Wet(wp) = &mut b.dynamics {
+            f(wp);
         }
     });
 }
@@ -713,7 +751,15 @@ fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
     }
 }
 
-fn handle_keys(state: AppState, e: &Event<KeyboardData>) {
+fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
+    match e.key() {
+        Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
+            state.space_down.set(true);
+            e.prevent_default();
+        }
+        _ => {}
+    }
+
     let m = e.modifiers();
     if !(m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)) {
         return;
@@ -726,40 +772,55 @@ fn handle_keys(state: AppState, e: &Event<KeyboardData>) {
                 InputCommand::Undo
             };
             dispatch(state, cmd);
+            e.prevent_default();
         }
         Key::Character(c) if c.eq_ignore_ascii_case("y") => dispatch(state, InputCommand::Redo),
         _ => {}
     }
 }
 
+fn handle_keyup(mut state: AppState, e: &Event<KeyboardData>) {
+    match e.key() {
+        Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
+            state.space_down.set(false);
+            e.prevent_default();
+        }
+        _ => {}
+    }
+}
+
 /// Pointer position within an element, in CSS pixels.
-fn elem_xy(e: &Event<MouseData>) -> (f64, f64) {
-    let c = e.element_coordinates();
-    (c.x, c.y)
+fn elem_xy(e: &Event<PointerData>) -> Vec2 {
+    let ElementPoint { x, y, .. } = e.element_coordinates();
+    Vec2::new(x as f32, y as f32)
 }
 
 /// Map an element-relative pointer position to a canvas-space input sample.
-fn sample(state: AppState, x: f64, y: f64) -> InputSample {
+fn sample(state: AppState, e: &Event<PointerData>) -> InputSample {
     let view = state
         .renderer
         .read()
         .as_ref()
         .map(|r| r.view())
         .expect("renderer ready during input");
-    InputSample::at(view.screen_to_canvas(Vec2::new(x as f32, y as f32)))
+    InputSample {
+        pos: view.screen_to_canvas(elem_xy(&e)),
+        pressure: e.pressure(),
+        ..Default::default()
+    }
 }
 
 /// End any in-progress stroke or pan.
 fn end_interaction(
     state: AppState,
     drawing: &mut Signal<bool>,
-    pan_from: &mut Signal<Option<(f64, f64)>>,
+    panning: &mut Signal<bool>,
 ) {
     if drawing() {
         dispatch(state, InputCommand::EndStroke);
         drawing.set(false);
     }
-    pan_from.set(None);
+    panning.set(false);
 }
 
 /// HSV (h in degrees, s/v in [0,1]) → straight sRGB RGB in [0,1].

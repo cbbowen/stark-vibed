@@ -54,6 +54,10 @@ const LATERAL_BANDS: u32 = 16;
 /// bounds the transient GPU memory of the region texture (DESIGN.md §6.2).
 const MAX_REGION_DIM: u32 = 2048;
 
+/// Fixed wet-on-wet diffusion iterations per stroke (DESIGN.md §6.2). Constant so
+/// replay is deterministic; `WetParams::strength` scales the per-iteration rate.
+const WET_ITERS: u32 = 12;
+
 /// One swept segment of the stroke.
 #[derive(Copy, Clone)]
 struct Segment {
@@ -160,6 +164,11 @@ pub struct StrokeRenderer {
     // CoW tile's color+aux MRT. Normal mode = premultiplied-over + additive thickness.
     integrate_pipeline: wgpu::RenderPipeline,
     integrate_bgl: wgpu::BindGroupLayout,
+
+    // Wet-on-wet diffusion (Wet dynamics, DESIGN.md §6.2): a ping-pong fullscreen pass
+    // over a composited stroke region, sampled 1:1; built once.
+    diffuse_pipeline: wgpu::RenderPipeline,
+    diffuse_bgl: wgpu::BindGroupLayout,
 }
 
 /// Mode + params for the integrate pass (`integrate.wesl` `Params`).
@@ -168,6 +177,13 @@ pub struct StrokeRenderer {
 struct IntegrateUniform {
     mode: [f32; 4], // mode.x (0=Normal, 1=Knife), bite, load, tooth·relief
     surf: [f32; 4], // tile_tex_origin.x, .y, inv_surface_tile, ridge (knife tooth gate)
+}
+
+/// Params for the wet-on-wet diffusion pass (`diffuse.wesl` `Params`).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct DiffuseUniform {
+    knobs: [f32; 4], // strength, _, _, _
 }
 
 impl StrokeRenderer {
@@ -342,6 +358,7 @@ impl StrokeRenderer {
         });
         let (mixer_pipeline, mixer_bgl) = build_mixer_pipeline(device);
         let (integrate_pipeline, integrate_bgl) = build_integrate_pipeline(device, color_space.as_ref());
+        let (diffuse_pipeline, diffuse_bgl) = build_diffuse_pipeline(device, color_space.as_ref());
 
         Self {
             ctx: ctx.clone(),
@@ -362,6 +379,8 @@ impl StrokeRenderer {
             mixer_bgl,
             integrate_pipeline,
             integrate_bgl,
+            diffuse_pipeline,
+            diffuse_bgl,
         }
     }
 
@@ -429,12 +448,20 @@ impl StrokeRenderer {
             })
             .collect();
         // The mixer compute pass reads this buffer to drive its reservoir scan, so
-        // it is a storage source as well as vertex data.
-        let instance_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // it is a storage source as well as vertex data. Written via `write_buffer`
+        // (not `create_buffer_init`, which maps-at-creation): a long stroke makes this
+        // buffer large, and Chrome/Dawn caps map-at-creation buffers well below the
+        // normal `maxBufferSize`, so a long stroke would panic in `createBuffer`.
+        let instance_bytes = bytemuck::cast_slice(&instances);
+        let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark sweep instances"),
-            contents: bytemuck::cast_slice(&instances),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            size: instance_bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+        self.ctx.queue.write_buffer(&instance_buf, 0, instance_bytes);
 
         let coords = affected_tiles(&segments);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -543,8 +570,17 @@ impl StrokeRenderer {
         };
         let ridge = knife.map_or(0.0, |kp| kp.ridge);
 
+        // Wet brush: after the Normal deposit, diffuse the stroke region (DESIGN.md
+        // §6.2). Collect this stroke's scratch footprints so the diffusion localizes
+        // to where the brush bore down.
+        let wet = match rec.brush.dynamics {
+            BrushDynamics::Wet(wp) => Some(wp),
+            _ => None,
+        };
+        let mut wet_scratch: Vec<(TileCoord, TileHandle)> = Vec::new();
+
         let mut new_map = base.clone();
-        for coord in coords {
+        for coord in &coords {
             // Per-tile sweep transform: texture top-left = interior origin shifted
             // out by the apron, so the full TILE_TEX target maps to NDC [-1, 1].
             let apron = TILE_APRON as f32;
@@ -615,7 +651,7 @@ impl StrokeRenderer {
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let dst = pool.acquire();
-            let base_tile = base.get(&coord).unwrap_or(&empty);
+            let base_tile = base.get(coord).unwrap_or(&empty);
             let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark integrate bg"),
                 layout: &self.integrate_bgl,
@@ -649,11 +685,278 @@ impl StrokeRenderer {
                 pass.set_bind_group(0, &integrate_bg, &[]);
                 pass.draw(0..3, 0..1);
             }
-            new_map = new_map.insert(coord, dst);
+            if wet.is_some() {
+                wet_scratch.push((*coord, scratch.clone()));
+            }
+            new_map = new_map.insert(*coord, dst);
+        }
+
+        // Wet-on-wet: diffuse the freshly-deposited region (DESIGN.md §6.2).
+        if let Some(wp) = wet {
+            self.encode_wet(&mut encoder, pool, &mut new_map, &coords, &wet_scratch, wp.strength);
         }
 
         self.ctx.queue.submit([encoder.finish()]);
         new_map
+    }
+
+    /// Composite the given tiles' channels into a fresh 1:1 region (color, aux),
+    /// reusing the region pipeline. `tiles` = (canvas origin, color view, aux view);
+    /// `origin`/`w`/`h` define the region rect in canvas px. The region textures also
+    /// carry `COPY_SRC` so they can be sliced back into tiles.
+    fn composite_region(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        tiles: &[(Vec2, wgpu::TextureView, wgpu::TextureView)],
+        origin: Vec2,
+        w: u32,
+        h: u32,
+    ) -> (wgpu::Texture, wgpu::Texture) {
+        let device = &self.ctx.device;
+        let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC;
+        let make = |format, label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let color_tex = make(self.color_space.color_format(), "stark region color");
+        let aux_tex = make(self.color_space.aux_format(), "stark region aux");
+        let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let aux_view = aux_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
+        let view = ViewUniform {
+            st: [sx, sy, -origin.x * sx - 1.0, -origin.y * sy + 1.0],
+            misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
+        };
+        let view_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("stark region view"),
+            contents: bytemuck::bytes_of(&view),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark region view bg"),
+            layout: &self.composite_view_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: view_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
+            ],
+        });
+        let mut inst: Vec<TileInstance> = Vec::new();
+        let mut bgs: Vec<wgpu::BindGroup> = Vec::new();
+        for (o, cv, av) in tiles {
+            inst.push(TileInstance { origin: o.to_array(), opacity: 1.0 });
+            bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark region tile bg"),
+                layout: &self.composite_tile_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(cv) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(av) },
+                ],
+            }));
+        }
+        let inst_buf = (!inst.is_empty()).then(|| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark region instances"),
+                contents: bytemuck::cast_slice(&inst),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
+        {
+            let clear = wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark region composite"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment { view: &color_view, resolve_target: None, depth_slice: None, ops: clear }),
+                    Some(wgpu::RenderPassColorAttachment { view: &aux_view, resolve_target: None, depth_slice: None, ops: clear }),
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if let Some(ib) = &inst_buf {
+                pass.set_pipeline(&self.composite_pipeline);
+                pass.set_bind_group(0, &view_bg, &[]);
+                pass.set_vertex_buffer(0, ib.slice(..));
+                for (i, bg) in bgs.iter().enumerate() {
+                    let idx = i as u32;
+                    pass.set_bind_group(1, bg, &[]);
+                    pass.draw(0..4, idx..idx + 1);
+                }
+            }
+        }
+        (color_tex, aux_tex)
+    }
+
+    /// Wet-on-wet diffusion over the stroke's region (DESIGN.md §6.2): composite the
+    /// freshly-deposited tiles + the stroke footprint into a region, ping-pong a fixed
+    /// number of wet-weighted diffusion iterations, then slice the region back into
+    /// fresh CoW tiles. A pure function of the deposited tiles, so replay-deterministic.
+    fn encode_wet(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pool: &TilePool,
+        map: &mut HashTrieMap<TileCoord, TileHandle>,
+        coords: &BTreeSet<TileCoord>,
+        scratch: &[(TileCoord, TileHandle)],
+        strength: f32,
+    ) {
+        let apron = TILE_APRON as f32;
+        // The region must include a one-tile **halo** around the affected tiles, not
+        // just the affected tiles themselves: when we slice the diffused region back
+        // into a tile we overwrite its whole `TILE_TEX` block — *including its apron* —
+        // so the apron toward an unwritten neighbour must read that neighbour's real
+        // interior from the region (otherwise it lands on empty region → a seam, very
+        // visible in the relief normals). Diffusion is identity in the halo (the
+        // footprint, hence the rate, is 0 there), so halo tiles' content is unchanged
+        // and the written tiles' aprons match. We composite the halo but write back
+        // only the affected tiles.
+        let mut halo: BTreeSet<TileCoord> = BTreeSet::new();
+        for c in coords {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    halo.insert(TileCoord::new(c.x + dx, c.y + dy));
+                }
+            }
+        }
+        // Tile-aligned region spanning every halo tile's TILE_TEX block.
+        let mut lo = Vec2::splat(f32::INFINITY);
+        let mut hi = Vec2::splat(f32::NEG_INFINITY);
+        for c in &halo {
+            lo = lo.min(c.origin());
+            hi = hi.max(c.origin());
+        }
+        if !lo.x.is_finite() {
+            return;
+        }
+        let region_origin = lo - Vec2::splat(apron);
+        let w = (hi.x - lo.x) as u32 + TILE_TEX;
+        let h = (hi.y - lo.y) as u32 + TILE_TEX;
+        if w > MAX_REGION_DIM || h > MAX_REGION_DIM {
+            return; // too large — leave the plain Normal deposit (already in `map`)
+        }
+        let device = &self.ctx.device;
+
+        // Region A = freshly-deposited canvas (affected tiles + halo neighbours);
+        // rate = the stroke's footprint opacity (affected tiles only → 0 in the halo).
+        let post: Vec<_> = halo
+            .iter()
+            .filter_map(|c| map.get(c).map(|t| (c.origin(), t.color_view().clone(), t.aux_view().clone())))
+            .collect();
+        let (a_color, a_aux) = self.composite_region(encoder, &post, region_origin, w, h);
+        let foot: Vec<_> = scratch
+            .iter()
+            .map(|(c, t)| (c.origin(), t.color_view().clone(), t.aux_view().clone()))
+            .collect();
+        let (rate_color, _rate_aux) = self.composite_region(encoder, &foot, region_origin, w, h);
+        let rate_view = rate_color.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Region B (ping-pong target).
+        let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC;
+        let make = |format, label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let b_color = make(self.color_space.color_format(), "stark region color b");
+        let b_aux = make(self.color_space.aux_format(), "stark region aux b");
+
+        let uni_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("stark diffuse params"),
+            contents: bytemuck::bytes_of(&DiffuseUniform { knobs: [strength, 0.0, 0.0, 0.0] }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let av_c = a_color.create_view(&wgpu::TextureViewDescriptor::default());
+        let av_a = a_aux.create_view(&wgpu::TextureViewDescriptor::default());
+        let bv_c = b_color.create_view(&wgpu::TextureViewDescriptor::default());
+        let bv_a = b_aux.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Ping-pong. `WET_ITERS` is even, so the result lands back in region A.
+        for i in 0..WET_ITERS {
+            let (src_c, src_a, dst_c, dst_a) = if i % 2 == 0 {
+                (&av_c, &av_a, &bv_c, &bv_a)
+            } else {
+                (&bv_c, &bv_a, &av_c, &av_a)
+            };
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark diffuse bg"),
+                layout: &self.diffuse_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uni_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src_c) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(src_a) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&rate_view) },
+                ],
+            });
+            let store = wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark diffuse"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment { view: dst_c, resolve_target: None, depth_slice: None, ops: store }),
+                    Some(wgpu::RenderPassColorAttachment { view: dst_a, resolve_target: None, depth_slice: None, ops: store }),
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.diffuse_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        // Slice the diffused region (back in A) into fresh CoW tiles. A tile's block
+        // starts at (origin − lo) in the region; copying the full TILE_TEX block gives
+        // each tile an apron equal to the neighbour's interior (same region pixels) →
+        // seamless (§6.4).
+        let block = wgpu::Extent3d { width: TILE_TEX, height: TILE_TEX, depth_or_array_layers: 1 };
+        for c in coords {
+            let dst = pool.acquire();
+            let src_origin = wgpu::Origin3d {
+                x: (c.origin().x - lo.x) as u32,
+                y: (c.origin().y - lo.y) as u32,
+                z: 0,
+            };
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo { texture: &a_color, mip_level: 0, origin: src_origin, aspect: wgpu::TextureAspect::All },
+                dst.color().as_image_copy(),
+                block,
+            );
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo { texture: &a_aux, mip_level: 0, origin: src_origin, aspect: wgpu::TextureAspect::All },
+                dst.aux().as_image_copy(),
+                block,
+            );
+            *map = map.insert(*c, dst);
+        }
     }
 
     /// The round tip's prefix-τ texture for a given `hardness`, cached so live
@@ -661,10 +964,10 @@ impl StrokeRenderer {
     fn round_prefix(&self, hardness: f32) -> wgpu::TextureView {
         let key = hardness.to_bits();
         let mut cache = self.round_prefix.lock().expect("round prefix poisoned");
-        if let Some((k, view)) = cache.as_ref() {
-            if *k == key {
-                return view.clone();
-            }
+        if let Some((k, view)) = cache.as_ref()
+            && *k == key
+        {
+            return view.clone();
         }
         let coverage = round_coverage(hardness, ROUND_RES);
         let (_tex, view) = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, &coverage);
@@ -1285,6 +1588,85 @@ fn build_integrate_pipeline(
                 Some(wgpu::ColorTargetState {
                     format: color_space.color_format(),
                     blend: None, // the shader does the combine; write straight through
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: color_space.aux_format(),
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, bgl)
+}
+
+/// Build the wet-on-wet diffusion pipeline (`diffuse` shader) — DESIGN §6.2. A
+/// fullscreen pass with a `Params` uniform + three sampled region textures (src
+/// color/aux + footprint rate), writing the color+aux MRT of the ping-pong target.
+fn build_diffuse_pipeline(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("stark diffuse"),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::diffuse().into()),
+    });
+    let load_tex = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark diffuse bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            load_tex(1), // src color
+            load_tex(2), // src aux
+            load_tex(3), // footprint rate
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("stark diffuse layout"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("stark diffuse pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: color_space.color_format(),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {

@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushShape, KnifeParams, MixerParams, Tool};
+use stark_core::document::{BrushDynamics, BrushShape, KnifeParams, MixerParams, Tool, WetParams};
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
 
@@ -175,7 +175,14 @@ fn golden_knife_scrape() {
     );
 
     let mut knife = brush(RED, 22.0);
-    knife.dynamics = BrushDynamics::Knife(KnifeParams::default()); // bite 0.8, no load
+    // Explicit (not `::default()`) so this "clean scrape" golden is stable regardless
+    // of the default knife's feel: hard bite, no film, no carry, no ridge.
+    knife.dynamics = BrushDynamics::Knife(KnifeParams {
+        bite: 0.8,
+        load: 0.0,
+        carry: 0.0,
+        ridge: 0.0,
+    });
     engine.process(InputCommand::SetBrush(knife));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -218,7 +225,13 @@ fn golden_knife_tooth() {
 
     let mut knife = brush(RED, 26.0);
     knife.tooth = 1.0; // full tooth: the gate bites only the weave's peaks
-    knife.dynamics = BrushDynamics::Knife(KnifeParams::default());
+    // Explicit params so the tooth-reveal golden is stable against the default knife.
+    knife.dynamics = BrushDynamics::Knife(KnifeParams {
+        bite: 0.8,
+        load: 0.0,
+        carry: 0.0,
+        ridge: 0.0,
+    });
     engine.process(InputCommand::SetBrush(knife));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -310,6 +323,41 @@ fn golden_knife_ridge() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("knife_ridge", &img, 6);
+}
+
+#[test]
+fn golden_wet_blend() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // Wet-on-wet diffusion (DESIGN.md §6.2, Phase 2): a committed solid red field,
+    // then a Wet blue stroke dragged across it. The wet paint bleeds and levels into
+    // the wet red around it, so the blue↔red boundary softens into a purple halo —
+    // where a Dry blue stroke would leave a hard edge. Verifies the region-composite
+    // → ping-pong diffusion → write-back path.
+    paint(
+        &mut engine,
+        RED,
+        70.0,
+        &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
+    );
+
+    let blue = [0.10, 0.20, 0.85, 1.0];
+    let mut wet = brush(blue, 26.0);
+    wet.dynamics = BrushDynamics::Wet(WetParams { strength: 0.9 });
+    engine.process(InputCommand::SetBrush(wet));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(0.0, -80.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 80.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("wet_blend", &img, 6);
 }
 
 #[test]

@@ -33,6 +33,9 @@ fn main() {
     // Stroke integrate pass: merge a stroke's scratch slab into the layer (§6.2/§6.1).
     compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
 
+    // Wet-on-wet diffusion pass (ping-pong over a stroke region) — DESIGN §6.2.
+    compiler.build_artifact(&"package::diffuse".parse().unwrap(), "diffuse");
+
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
 }

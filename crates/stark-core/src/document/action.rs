@@ -58,6 +58,25 @@ pub enum BrushDynamics {
     /// lay a thin film of its own color), via the mutable-medium write-back path
     /// (DESIGN.md §6.2).
     Knife(KnifeParams),
+    /// Wet-on-wet: lay wet paint and let it bleed and level into the wet paint
+    /// around it — a few wet-weighted diffusion iterations over the stroke region
+    /// soften boundaries into alla-prima blends (DESIGN.md §6.2).
+    Wet(WetParams),
+}
+
+/// Parameters of the [`BrushDynamics::Wet`] diffusion (DESIGN.md §6.2).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WetParams {
+    /// How strongly the wet paint bleeds and levels per stroke, in [0, 1]: 0 = no
+    /// diffusion (a plain wet deposit), 1 = maximum bleed. Scales the per-iteration
+    /// diffusion rate; the iteration count is fixed (for deterministic replay).
+    pub strength: f32,
+}
+
+impl Default for WetParams {
+    fn default() -> Self {
+        Self { strength: 0.5 }
+    }
 }
 
 /// Parameters of the [`BrushDynamics::Mixer`] reservoir (DESIGN.md §6.2).
@@ -109,10 +128,10 @@ pub struct KnifeParams {
 impl Default for KnifeParams {
     fn default() -> Self {
         Self {
-            bite: 0.8,
+            bite: 0.5,
             load: 0.0,
             carry: 0.0,
-            ridge: 0.0,
+            ridge: 0.5,
         }
     }
 }

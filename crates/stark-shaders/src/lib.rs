@@ -35,3 +35,8 @@ pub fn mixer() -> &'static str {
 pub fn integrate() -> &'static str {
     include_wesl!("integrate")
 }
+
+/// WGSL wet-on-wet diffusion pass (ping-pong over a stroke region) — DESIGN §6.2.
+pub fn diffuse() -> &'static str {
+    include_wesl!("diffuse")
+}

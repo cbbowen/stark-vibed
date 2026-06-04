@@ -49,14 +49,14 @@ impl GpuTile {
 
 impl Drop for GpuTile {
     fn drop(&mut self) {
-        if let Some(pool) = self.pool.upgrade() {
-            if let Ok(mut inner) = pool.lock() {
-                if let Some(t) = self.color.take() {
-                    inner.free_color.push(t);
-                }
-                if let Some(t) = self.aux.take() {
-                    inner.free_aux.push(t);
-                }
+        if let Some(pool) = self.pool.upgrade()
+            && let Ok(mut inner) = pool.lock()
+        {
+            if let Some(t) = self.color.take() {
+                inner.free_color.push(t);
+            }
+            if let Some(t) = self.aux.take() {
+                inner.free_aux.push(t);
             }
         }
     }

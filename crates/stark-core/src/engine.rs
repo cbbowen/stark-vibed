@@ -202,10 +202,10 @@ impl Engine {
             InputCommand::RemoveLayer(id) => {
                 self.commit(ActionKind::RemoveLayer(id));
                 // Keep the active layer valid after removal.
-                if self.session.active_layer == id {
-                    if let Some(first) = self.document().layers.iter().next() {
-                        self.session.active_layer = first.id;
-                    }
+                if self.session.active_layer == id
+                    && let Some(first) = self.document().layers.iter().next()
+                {
+                    self.session.active_layer = first.id;
                 }
             }
             InputCommand::SetLayerBlend(id, blend) => {
@@ -279,10 +279,10 @@ impl Engine {
         let actions = self.timeline.clone_actions();
         let mut referenced = std::collections::HashSet::new();
         for action in &actions {
-            if let ActionKind::CommitStroke(rec) = &action.kind {
-                if let BrushShape::Stamp(id) = rec.brush.shape {
-                    referenced.insert(id);
-                }
+            if let ActionKind::CommitStroke(rec) = &action.kind
+                && let BrushShape::Stamp(id) = rec.brush.shape
+            {
+                referenced.insert(id);
             }
         }
         let assets = self

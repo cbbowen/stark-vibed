@@ -26,6 +26,15 @@ impl InputSample {
     pub fn at(pos: Vec2) -> Self {
         Self {
             pos,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for InputSample {
+    fn default() -> Self {
+        Self {
+            pos: Vec2::ZERO,
             pressure: 1.0,
             tilt: Vec2::ZERO,
             time: 0.0,
