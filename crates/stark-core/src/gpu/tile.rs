@@ -6,9 +6,11 @@
 //! handle to a tile drops, its textures return to the [`TilePool`] free list —
 //! so history retention drives GPU memory reclamation with no manual GC.
 //!
-//! Channels (DESIGN.md §6.1):
-//! - `color`: `Rgba16Float`, premultiplied **Oklab** (`L·c, a·c, b·c, c`).
-//! - `aux`: `Rg16Float`, `(height, wet)` — impasto thickness and wetness.
+//! Channels (DESIGN.md §6.1, normalized representation):
+//! - `color`: `Rgba16Float`, latent colour premultiplied by **opacity**
+//!   (`L·op, a·op, b·op, op`) — opacity, *not* coverage.
+//! - `aux`: `Rg16Float`, `(thickness, wet)` — impasto thickness and wetness. The
+//!   media pass combines opacity × thickness into the visible alpha.
 
 use std::sync::{Arc, Mutex, Weak};
 

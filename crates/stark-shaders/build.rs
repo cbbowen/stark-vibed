@@ -30,8 +30,8 @@ fn main() {
     // Wet-mixing reservoir scan (compute), color-space-agnostic (DESIGN.md §6.2).
     compiler.build_artifact(&"package::mixer".parse().unwrap(), "mixer");
 
-    // Mutable-medium combine pass for subtractive/wet brushes (DESIGN.md §6.2).
-    compiler.build_artifact(&"package::medium".parse().unwrap(), "medium");
+    // Stroke integrate pass: merge a stroke's scratch slab into the layer (§6.2/§6.1).
+    compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
 
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");

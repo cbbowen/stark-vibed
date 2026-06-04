@@ -26,8 +26,7 @@ struct Instance {
     start: vec2<f32>,
     dir: vec2<f32>,
     geom: vec4<f32>,  // radius, length, flow, reservoir column (u; unused here)
-    aux: vec2<f32>,   // height, wet
-    pad: vec2<f32>,
+    aux: vec4<f32>,   // height, wet, opacity, _ (unused here)
 }
 
 const MODE_KNIFE: u32 = 1u;

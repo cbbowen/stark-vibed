@@ -64,6 +64,10 @@ struct Segment {
     flow: f32,
     height: f32,
     wet: f32,
+    /// Paint opacity laid by this segment (the brush's opacity × remaining load).
+    /// Drives the color/opacity channel; thickness (`height`) is independent now
+    /// (DESIGN.md §6.1, normalized representation).
+    opacity: f32,
     /// Longitudinal offset: arc length from the stroke start to this segment's
     /// start. Parameterizes the reservoir by distance (DESIGN.md §6.2).
     dist: f32,
@@ -76,10 +80,9 @@ struct Segment {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct SegmentInstance {
     start: [f32; 2],
-    dir: [f32; 2],    // unit tangent
-    geom: [f32; 4],   // radius, length, flow, reservoir column u ∈ [0,1]
-    aux: [f32; 2],    // height, wet
-    _pad: [f32; 2],   // → 48 B, vec4 std430 alignment
+    dir: [f32; 2],   // unit tangent
+    geom: [f32; 4],  // radius, length, flow, reservoir column u ∈ [0,1]
+    aux: [f32; 4],   // height (thickness rate), wet, opacity, _ (→ 48 B std430)
 }
 
 /// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
@@ -132,8 +135,8 @@ pub struct StrokeRenderer {
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
     /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for tooth.
     surface_bg: wgpu::BindGroup,
-    /// The surface itself, also bound to the medium pass for the knife's tooth-gated
-    /// scrape (its `relief` makes the gate a no-op on `Flat`).
+    /// The surface itself, also bound to the integrate pass for the knife's
+    /// tooth-gated scrape (its `relief` makes the gate a no-op on `Flat`).
     surface: Surface,
     /// Color reservoir (group 3 of the sweep pipeline): the per-segment × per-band
     /// color the deposit samples. `reservoir_sampler` is linear+clamp so it blends
@@ -152,20 +155,19 @@ pub struct StrokeRenderer {
     mixer_pipeline: wgpu::ComputePipeline,
     mixer_bgl: wgpu::BindGroupLayout,
 
-    // Mutable-medium write-back (subtractive/wet brushes, DESIGN.md §6.2): a
-    // fullscreen combine pass reads the base tile + the stroke's footprint scratch
-    // and writes `new = f(base, scratch)` into a fresh CoW tile's color+aux MRT.
-    medium_pipeline: wgpu::RenderPipeline,
-    medium_bgl: wgpu::BindGroupLayout,
+    // Stroke integrate (DESIGN.md §6.2/§6.1): a fullscreen pass reads the base tile +
+    // the stroke's footprint scratch and writes `new = f(base, scratch)` into a fresh
+    // CoW tile's color+aux MRT. Normal mode = premultiplied-over + additive thickness.
+    integrate_pipeline: wgpu::RenderPipeline,
+    integrate_bgl: wgpu::BindGroupLayout,
 }
 
-/// Combine mode + params for the mutable-medium pass (`medium.wesl` `Params`).
+/// Mode + params for the integrate pass (`integrate.wesl` `Params`).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct MediumUniform {
-    mode: [f32; 4],  // mode (0=over, 1=knife), bite, load, tooth·relief
-    surf: [f32; 4],  // tile_tex_origin.x, .y, inv_surface_tile, carry flag
-    extra: [f32; 4], // ridge strength, _, _, _
+struct IntegrateUniform {
+    mode: [f32; 4], // mode.x (0=Normal, 1=Knife), bite, load, tooth·relief
+    surf: [f32; 4], // tile_tex_origin.x, .y, inv_surface_tile, ridge (knife tooth gate)
 }
 
 impl StrokeRenderer {
@@ -298,7 +300,7 @@ impl StrokeRenderer {
                     array_stride: std::mem::size_of::<SegmentInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4
                     ],
                 }],
             },
@@ -339,7 +341,7 @@ impl StrokeRenderer {
             ..Default::default()
         });
         let (mixer_pipeline, mixer_bgl) = build_mixer_pipeline(device);
-        let (medium_pipeline, medium_bgl) = build_medium_pipeline(device, color_space.as_ref());
+        let (integrate_pipeline, integrate_bgl) = build_integrate_pipeline(device, color_space.as_ref());
 
         Self {
             ctx: ctx.clone(),
@@ -358,8 +360,8 @@ impl StrokeRenderer {
             composite_tile_bgl,
             mixer_pipeline,
             mixer_bgl,
-            medium_pipeline,
-            medium_bgl,
+            integrate_pipeline,
+            integrate_bgl,
         }
     }
 
@@ -423,8 +425,7 @@ impl StrokeRenderer {
                     s.flow,
                     (lead as f32 + 0.5 + s.dist / step) / width as f32,
                 ],
-                aux: [s.height, s.wet],
-                _pad: [0.0; 2],
+                aux: [s.height, s.wet, s.opacity, 0.0],
             })
             .collect();
         // The mixer compute pass reads this buffer to drive its reservoir scan, so
@@ -440,17 +441,11 @@ impl StrokeRenderer {
             label: Some("stark stroke commit"),
         });
 
-        // Build the stroke's color reservoir, which the deposit samples for each
-        // fragment's color (group 3). A Mixer brush (DESIGN.md §6.2) composites the
-        // base under the stroke and runs a serial compute scan that fills a
-        // per-segment × per-band texture with smeared color; every other brush gets
-        // a 1×1 texel of its own color (so the deposit shader is uniform). Encoded
-        // before the deposit so the colors are ready when stamped.
         // A reservoir scan smears color along the stroke for two brushes: the Mixer
-        // (lifts wet canvas color) and the carry Knife (drags the paint it scrapes
-        // off, mixer.wesl mode 1). Both reuse the same region-composite + serial-scan
-        // machinery; the knife scan also writes each segment's re-laid film amount
-        // back into the instance buffer's `aux.x` (DESIGN.md §6.2).
+        // (lifts wet canvas color) and the carry Knife (drags the paint it scrapes off,
+        // mixer.wesl mode 1, storing premultiplied dragged paint per band). Both reuse
+        // the same region-composite + serial-scan machinery. Every other brush gets a
+        // 1×1 texel of its own color, so the deposit shader stays uniform.
         let scan = match rec.brush.dynamics {
             BrushDynamics::Mixer(mp) => Some((
                 [mp.pickup, mp.color_inject, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY],
@@ -462,8 +457,8 @@ impl StrokeRenderer {
             )),
             _ => None,
         };
-        // The knife re-lays carried paint only when its scan actually ran; a stroke
-        // too large for the region composite skips it and degrades to a plain knife.
+        // The knife re-lays dragged paint only when its scan actually ran; an oversized
+        // stroke skips the region composite and degrades to a plain knife.
         let mut knife_carry = false;
         let reservoir_view = match scan.zip(stroke_bbox(&segments)) {
             Some(((knobs, mode), bbox)) => {
@@ -506,50 +501,47 @@ impl StrokeRenderer {
             ],
         });
 
-        // Mutable-medium write-back (DESIGN.md §6.2): a Knife brush scrapes via a
-        // footprint *scratch* + combine pass instead of the additive deposit. The
-        // medium params are constant per stroke; `empty` stands in as `base` where
-        // the stroke touches bare canvas.
-        let knife = match rec.brush.dynamics {
-            BrushDynamics::Knife(kp) => Some(kp),
-            _ => None,
-        };
-        // The knife's tooth gate reveals the weave only on a real surface (`relief`
-        // 1); it's a no-op on Flat (relief 0, whose height is a constant 0).
-        let tooth = rec.brush.tooth * self.surface.relief;
-        // A tile to stand in as `base` where the stroke touches bare canvas. Acquired
-        // tiles are undefined, so clear it (the combine reads it as zero = no paint).
-        let empty = if knife.is_some() {
-            let t = pool.acquire();
+        // Every brush rasterizes its footprint into a *cleared scratch* tile, then the
+        // integrate pass merges it over the base into a fresh CoW tile (DESIGN.md
+        // §6.2/§6.1). `empty` (cleared) stands in as the base wherever the stroke
+        // touches bare canvas — acquired tiles are undefined, so clear it once here.
+        let empty = pool.acquire();
+        {
             let clear = wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                 store: wgpu::StoreOp::Store,
             };
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark medium empty clear"),
+                label: Some("stark integrate empty clear"),
                 color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: t.color_view(),
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: clear,
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: t.aux_view(),
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: clear,
-                    }),
+                    Some(wgpu::RenderPassColorAttachment { view: empty.color_view(), resolve_target: None, depth_slice: None, ops: clear }),
+                    Some(wgpu::RenderPassColorAttachment { view: empty.aux_view(), resolve_target: None, depth_slice: None, ops: clear }),
                 ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            Some(t)
-        } else {
-            None
+        }
+
+        // Integrate mode: Normal for every brush except the Knife, which scrapes +
+        // films + ridges. The scrape is tooth-gated by the canvas surface (`relief`
+        // makes it a no-op on Flat). Carry lays the dragged paint fully (`load` = 1),
+        // since the dragged amount already rides the scratch's opacity.
+        let knife = match rec.brush.dynamics {
+            BrushDynamics::Knife(kp) => Some(kp),
+            _ => None,
         };
+        let integrate_mode = match knife {
+            Some(kp) => [
+                1.0,
+                kp.bite,
+                if knife_carry { 1.0 } else { kp.load },
+                rec.brush.tooth * self.surface.relief,
+            ],
+            None => [0.0; 4],
+        };
+        let ridge = knife.map_or(0.0, |kp| kp.ridge);
 
         let mut new_map = base.clone();
         for coord in coords {
@@ -559,8 +551,8 @@ impl StrokeRenderer {
             let origin = coord.origin();
             let xform = TileXform {
                 params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, u_per_px],
-                // surf.z flags the carry knife so the sweep takes the deposit amount
-                // from the reservoir alpha (per-band film) rather than instance height.
+                // surf.z flags the carry knife so the deposit takes its opacity from
+                // the reservoir's dragged amount rather than the brush opacity.
                 surf: [
                     1.0 / SURFACE_TILE_PX,
                     rec.brush.tooth,
@@ -582,28 +574,20 @@ impl StrokeRenderer {
                 }],
             });
 
-            // The swept footprint pass: draws the brush's coverage/color/aux. Used
-            // directly over `base` for additive brushes, or into a cleared scratch
-            // for the medium (knife) path.
-            let sweep = |encoder: &mut wgpu::CommandEncoder,
-                         tile: &TileHandle,
-                         color_load: wgpu::LoadOp<wgpu::Color>,
-                         aux_load: wgpu::LoadOp<wgpu::Color>| {
+            // Footprint → cleared scratch tile: within-stroke accumulation (the color
+            // target over-blends opacity-premultiplied colour, the aux accumulates
+            // thickness/wet additively).
+            let scratch = pool.acquire();
+            {
+                let clear = wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
                     color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: tile.color_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
-                        }),
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: tile.aux_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations { load: aux_load, store: wgpu::StoreOp::Store },
-                        }),
+                        Some(wgpu::RenderPassColorAttachment { view: scratch.color_view(), resolve_target: None, depth_slice: None, ops: clear }),
+                        Some(wgpu::RenderPassColorAttachment { view: scratch.aux_view(), resolve_target: None, depth_slice: None, ops: clear }),
                     ],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -617,98 +601,55 @@ impl StrokeRenderer {
                 pass.set_bind_group(3, &reservoir_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
                 pass.draw(0..4, 0..instances.len() as u32);
-            };
-
-            if let Some(kp) = knife {
-                // Footprint → cleared scratch, then combine(base, scratch) → dst.
-                let scratch = pool.acquire();
-                let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
-                sweep(&mut encoder, &scratch, clear, clear);
-
-                let medium_uni = MediumUniform {
-                    mode: [1.0, kp.bite, kp.load, tooth], // mode 1 = knife
-                    surf: [
-                        origin.x - apron,
-                        origin.y - apron,
-                        1.0 / SURFACE_TILE_PX,
-                        if knife_carry { 1.0 } else { 0.0 },
-                    ],
-                    extra: [kp.ridge, 0.0, 0.0, 0.0],
-                };
-                let medium_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("stark medium params"),
-                    contents: bytemuck::bytes_of(&medium_uni),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-
-                let dst = pool.acquire();
-                let base_tile = base.get(&coord).unwrap_or_else(|| empty.as_ref().unwrap());
-                let medium_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark medium bg"),
-                    layout: &self.medium_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: medium_buf.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(base_tile.color_view()) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(base_tile.aux_view()) },
-                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(scratch.color_view()) },
-                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(scratch.aux_view()) },
-                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.surface.view) },
-                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.surface.sampler) },
-                    ],
-                });
-                {
-                    let clear = wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    };
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("stark medium combine"),
-                        color_attachments: &[
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: dst.color_view(),
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: clear,
-                            }),
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: dst.aux_view(),
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: clear,
-                            }),
-                        ],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    pass.set_pipeline(&self.medium_pipeline);
-                    pass.set_bind_group(0, &medium_bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }
-                new_map = new_map.insert(coord, dst);
-            } else {
-                // Additive deposit: copy base → dst (or clear), sweep over it.
-                let dst = pool.acquire();
-                let (color_load, aux_load) = match base.get(&coord) {
-                    Some(src) => {
-                        let extent = wgpu::Extent3d {
-                            width: TILE_TEX,
-                            height: TILE_TEX,
-                            depth_or_array_layers: 1,
-                        };
-                        encoder.copy_texture_to_texture(src.color().as_image_copy(), dst.color().as_image_copy(), extent);
-                        encoder.copy_texture_to_texture(src.aux().as_image_copy(), dst.aux().as_image_copy(), extent);
-                        (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
-                    }
-                    None => (
-                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    ),
-                };
-                sweep(&mut encoder, &dst, color_load, aux_load);
-                new_map = new_map.insert(coord, dst);
             }
+
+            // Integrate the scratch slab over the base into a fresh CoW tile. The
+            // params carry this tile's origin so the knife's tooth gate samples the
+            // canvas surface in canvas space.
+            let integrate_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark integrate params"),
+                contents: bytemuck::bytes_of(&IntegrateUniform {
+                    mode: integrate_mode,
+                    surf: [origin.x - apron, origin.y - apron, 1.0 / SURFACE_TILE_PX, ridge],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let dst = pool.acquire();
+            let base_tile = base.get(&coord).unwrap_or(&empty);
+            let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark integrate bg"),
+                layout: &self.integrate_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: integrate_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(base_tile.color_view()) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(base_tile.aux_view()) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(scratch.color_view()) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(scratch.aux_view()) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.surface.view) },
+                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.surface.sampler) },
+                ],
+            });
+            {
+                let clear = wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("stark integrate"),
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment { view: dst.color_view(), resolve_target: None, depth_slice: None, ops: clear }),
+                        Some(wgpu::RenderPassColorAttachment { view: dst.aux_view(), resolve_target: None, depth_slice: None, ops: clear }),
+                    ],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.integrate_pipeline);
+                pass.set_bind_group(0, &integrate_bg, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            new_map = new_map.insert(coord, dst);
         }
 
         self.ctx.queue.submit([encoder.finish()]);
@@ -1011,9 +952,12 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
             dir,
             radius: (b.radius * sample.pressure).max(0.5),
             length: len,
-            flow: b.flow * b.color[3] * load * SWEEP_FLOW_SCALE,
+            // `flow` now drives only the footprint build-up; the brush's opacity
+            // (color[3]) rides the separate opacity channel (DESIGN.md §6.1).
+            flow: b.flow * load * SWEEP_FLOW_SCALE,
             height: b.height * load,
             wet: b.wetness * load,
+            opacity: b.color[3] * load,
             dist,
         }
     };
@@ -1258,16 +1202,16 @@ fn build_mixer_pipeline(
     (pipeline, bgl)
 }
 
-/// Build the mutable-medium combine pipeline (`medium` shader) — DESIGN §6.2. A
+/// Build the stroke integrate pipeline (`integrate` shader) — DESIGN §6.2/§6.1. A
 /// fullscreen pass with a `Params` uniform + four sampled tiles (base/scratch
 /// color/aux), writing the color+aux MRT of a fresh tile.
-fn build_medium_pipeline(
+fn build_integrate_pipeline(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark medium"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::medium().into()),
+        label: Some("stark integrate"),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate().into()),
     });
     let load_tex = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -1281,7 +1225,7 @@ fn build_medium_pipeline(
         count: None,
     };
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark medium bgl"),
+        label: Some("stark integrate bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -1317,12 +1261,12 @@ fn build_medium_pipeline(
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("stark medium layout"),
+        label: Some("stark integrate layout"),
         bind_group_layouts: &[Some(&bgl)],
         immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("stark medium pipeline"),
+        label: Some("stark integrate pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,

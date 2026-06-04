@@ -11,7 +11,7 @@ struct TileXform {
     // params.w = 1 / stroke arc length (canvas px → normalized longitudinal pos).
     params: vec4<f32>,
     // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth;
-    // surf.z = knife-carry flag (see `film_height`); surf.w unused.
+    // surf.z = carry-knife flag (see `is_carry`); surf.w unused.
     surf: vec4<f32>,
 }
 
@@ -34,11 +34,12 @@ struct TileXform {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) local: vec2<f32>, // brush-local (x in radius units from start, y in [-1,1])
-    @location(1) misc: vec4<f32>,  // length/radius, flow, height, wet
+    @location(1) misc: vec4<f32>,  // length/radius, flow, height(thickness rate), wet
     // Reservoir longitudinal mapping into the padded texture: u.x = this segment's
     // start column-center; u.y = radius · (u per px travelled), so local.x (radii
     // travelled) advances u to the fragment's true arc-length position.
     @location(2) u: vec2<f32>,
+    @location(3) op: f32, // brush opacity at this segment (drives the opacity channel)
 }
 
 struct FsOut {
@@ -54,7 +55,7 @@ fn sweep_vertex(
     start: vec2<f32>,
     dir: vec2<f32>,   // unit tangent
     geom: vec4<f32>,  // radius, length, flow, reservoir column (u)
-    aux: vec2<f32>,   // height, wet
+    aux: vec4<f32>,   // height(thickness rate), wet, opacity, _
 ) -> VsOut {
     let radius = geom.x;
     let lr = geom.y / radius; // segment length in radius units
@@ -74,6 +75,7 @@ fn sweep_vertex(
     // u.x = segment-start arc length (normalized, texel-centered); u.y converts
     // brush-local x (radii) into normalized longitudinal travel (radius / length).
     out.u = vec2<f32>(geom.w, radius * xf.params.w);
+    out.op = aux.z;
     return out;
 }
 
@@ -91,11 +93,10 @@ fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
 }
 
-// Whether this is the carry knife's scratch pass (`surf.z` set). When it is, the
-// reservoir holds *premultiplied film* (`ch·amount`, `amount`), so the deposit puts
-// the film amount in the colour's alpha (over-blended, premult-consistent across
-// overlapping segments — no dark desync) and the brush's *contact coverage* in the
-// aux instead, which the combine reads for the scrape (DESIGN.md §6.2).
+// Whether this is the carry knife's scratch pass (`surf.z` set). The carry scan
+// stores *premultiplied* dragged paint `(C·amount, amount)` in the reservoir, so the
+// deposit takes its opacity from that amount (which fades as the knife runs out)
+// instead of the brush's own opacity (DESIGN.md §6.2).
 fn is_carry() -> bool {
     return xf.surf.z > 0.5;
 }

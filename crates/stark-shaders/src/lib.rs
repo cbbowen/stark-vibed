@@ -30,7 +30,8 @@ pub fn mixer() -> &'static str {
     include_wesl!("mixer")
 }
 
-/// WGSL combine pass for the mutable-medium write-back (subtractive/wet) — §6.2.
-pub fn medium() -> &'static str {
-    include_wesl!("medium")
+/// WGSL stroke integrate pass: merge a stroke's scratch slab into the layer over
+/// the base (Normal; knife/blend modes slot in) — DESIGN §6.2/§6.1.
+pub fn integrate() -> &'static str {
+    include_wesl!("integrate")
 }

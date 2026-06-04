@@ -28,8 +28,11 @@ struct Media {
 
 const PI: f32 = 3.14159265359;
 
-// Hardness of the paint's emergence above the surface.
-const PAINT_OPACITY: f32 = -10.0;
+// Opacity build-up rate (DESIGN.md §6.1, normalized representation). A paint texel
+// stores a per-unit *opacity* (color.a) and a *thickness* (aux.x); its visible alpha
+// is the translucent-slab law `1 − exp(−OPACITY_K · opacity · thickness)`. Calibrated
+// so a normal opaque stroke reads solid.
+const OPACITY_K: f32 = 1.0;
 
 // Fullscreen triangle clip position from a vertex index.
 fn fullscreen_clip(vi: u32) -> vec4<f32> {
@@ -45,45 +48,28 @@ fn surface_at(p: vec2<i32>) -> f32 {
     return m.surf_b.x * hs; // surf_b.x = surface_strength
 }
 
-fn paint_height_to_opacity(h: f32) -> f32 {
-    return 1.0 - exp(PAINT_OPACITY * h);
-}
-
-fn opacity_to_paint_height(o: f32) -> f32 {
-    if 1.0 - o <= exp(PAINT_OPACITY) + 1e-3 {
-        return 1.0;
-    }
-    return clamp(log(1.0 - o) / PAINT_OPACITY, 0.0, 1.0);
-}
-
-// Accumulated paint level (absolute height the paint has built up to, DESIGN §6.4).
-fn paint_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
+fn paint_height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
     let c = clamp(p, vec2<i32>(0), dim - vec2<i32>(1));
-    // The paint's coverage (premultiplied alpha) at `p` — how much paint, vs. bare
-    // canvas, is actually present (not its thickness).
-    let paint_height = textureLoad(comp_aux, c, 0).x;
-    return paint_height;
-    // let coverage = textureLoad(comp_color, c, 0).w;
-    // return paint_height * opacity_to_paint_height(coverage);
+    return textureLoad(comp_aux, c, 0).x;
 }
 
-// The visible top surface used for relief normals: the canvas surface, raised
-// toward the paint's level *only by how visible the paint is* (its coverage × the
-// thickness opacity = the alpha that actually shows). Without this gate, the
-// brush's soft coverage tail — where the colour is essentially background — would
-// still emboss the bare canvas around the stroke (a ghost ridge, DESIGN §6.4).
+// The paint's visible alpha at `p`: its per-unit opacity (color.a) combined with its
+// thickness (aux.x) as a translucent slab. 0 on bare canvas, → 1 for thick opaque
+// paint. This is the single source of "how much paint shows", replacing the old
+// coverage × thickness-opacity double-gate (DESIGN.md §6.1).
+fn paint_vis_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
+    let c = clamp(p, vec2<i32>(0), dim - vec2<i32>(1));
+    let op = textureLoad(comp_color, c, 0).a;
+    // Paint thickness is paint height - surface height.
+    let t = max(textureLoad(comp_aux, c, 0).x - surface_at(p), 0);
+    return 1.0 - exp(-OPACITY_K * op * t);
+}
+
+// The relief height for impasto normals: the canvas surface plus the paint's
+// thickness, gated by how visible the paint is so a near-transparent tail doesn't
+// emboss a ghost ridge around the stroke (DESIGN.md §6.4).
 fn height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
-    return max(surface_at(p), paint_at(p, dim));
-}
-
-// The thickness of the paint.
-fn thickness_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
-    return max(paint_at(p, dim) - surface_at(p), 0);
-}
-
-// Determines the opacity of the paint at a given location based on its thickness there.
-fn paint_opacity_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
-    return paint_height_to_opacity(thickness_at(p, dim));
+    return max(surface_at(p), paint_height_at(p, dim));
 }
 
 fn background_color() -> vec4<f32> {
