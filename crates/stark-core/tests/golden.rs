@@ -6,7 +6,9 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushShape, KnifeParams, MixerParams, Tool, WetParams};
+use stark_core::document::{
+    BrushDynamics, BrushShape, FluidParams, KnifeParams, MixerParams, Tool, WetParams,
+};
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
 
@@ -358,6 +360,46 @@ fn golden_wet_blend() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("wet_blend", &img, 6);
+}
+
+#[test]
+fn golden_fluid_drag() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // Fluid advection (DESIGN.md §6.2): a red field with a horizontal green bar, then
+    // a Fluid stroke dragged *vertically* through it. The velocity injected along the
+    // stroke advects the wet paint downward, pulling the green into a vertical streak
+    // along the stroke path — directional drag that neither Dry nor Wet (isotropic
+    // bleed) would produce.
+    paint(
+        &mut engine,
+        RED,
+        90.0,
+        &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        14.0,
+        &[Vec2::new(-95.0, -30.0), Vec2::new(95.0, -30.0)],
+    );
+
+    let mut fluid = brush(RED, 24.0);
+    fluid.dynamics = BrushDynamics::Fluid(FluidParams { strength: 0.9 });
+    engine.process(InputCommand::SetBrush(fluid));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(0.0, -60.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 70.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("fluid_drag", &img, 6);
 }
 
 #[test]

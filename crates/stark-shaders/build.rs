@@ -36,6 +36,10 @@ fn main() {
     // Wet-on-wet diffusion pass (ping-pong over a stroke region) — DESIGN §6.2.
     compiler.build_artifact(&"package::diffuse".parse().unwrap(), "diffuse");
 
+    // Fluid advect+inject micro-sim passes (over a stroke region) — DESIGN §6.2.
+    compiler.build_artifact(&"package::fluid_inject".parse().unwrap(), "fluid_inject");
+    compiler.build_artifact(&"package::fluid_advect".parse().unwrap(), "fluid_advect");
+
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
 }

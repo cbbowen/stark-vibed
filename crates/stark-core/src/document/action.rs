@@ -62,6 +62,25 @@ pub enum BrushDynamics {
     /// around it — a few wet-weighted diffusion iterations over the stroke region
     /// soften boundaries into alla-prima blends (DESIGN.md §6.2).
     Wet(WetParams),
+    /// Fluid: inject a velocity field along the stroke's motion and **advect** the
+    /// wet paint along it, dragging/raking it in the stroke direction — a per-stroke
+    /// Eulerian advect+inject micro-sim (DESIGN.md §6.2).
+    Fluid(FluidParams),
+}
+
+/// Parameters of the [`BrushDynamics::Fluid`] advection (DESIGN.md §6.2).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FluidParams {
+    /// How strongly the brush drags wet paint along its motion, in [0, 1]: 0 = no
+    /// flow (a plain deposit), 1 = maximum drag. Scales the injected velocity; the
+    /// iteration count and per-step distance are fixed (for deterministic replay).
+    pub strength: f32,
+}
+
+impl Default for FluidParams {
+    fn default() -> Self {
+        Self { strength: 0.5 }
+    }
 }
 
 /// Parameters of the [`BrushDynamics::Wet`] diffusion (DESIGN.md §6.2).

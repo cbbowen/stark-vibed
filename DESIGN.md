@@ -509,8 +509,7 @@ enum BrushDynamics {
     Mixer(MixerParams),   // additive copy-smear pickup (above)
     Knife(KnifeParams),   // subtractive: scrape/redistribute paint (mutable medium)
     Wet(WetParams),       // wet-on-wet diffusion (mutable medium)
-    // reserved, designed-for but not built:
-    // Fluid(FluidParams),   // Eulerian advect+inject micro-sim per stroke
+    Fluid(FluidParams),   // advect+inject micro-sim: drag wet paint along the stroke
 }
 ```
 

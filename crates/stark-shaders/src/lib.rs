@@ -40,3 +40,13 @@ pub fn integrate() -> &'static str {
 pub fn diffuse() -> &'static str {
     include_wesl!("diffuse")
 }
+
+/// WGSL fluid velocity-injection pass (segments → velocity region) — DESIGN §6.2.
+pub fn fluid_inject() -> &'static str {
+    include_wesl!("fluid_inject")
+}
+
+/// WGSL fluid semi-Lagrangian advection pass (over a stroke region) — DESIGN §6.2.
+pub fn fluid_advect() -> &'static str {
+    include_wesl!("fluid_advect")
+}
