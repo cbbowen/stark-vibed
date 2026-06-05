@@ -6,9 +6,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{
-    BrushDynamics, BrushShape, FluidParams, KnifeParams, MixerParams, Tool, WetParams,
-};
+use stark_core::document::{BrushDynamics, BrushShape, KnifeParams, MixerParams, Tool, WetParams};
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
 
@@ -347,7 +345,7 @@ fn golden_wet_blend() {
 
     let blue = [0.10, 0.20, 0.85, 1.0];
     let mut wet = brush(blue, 26.0);
-    wet.dynamics = BrushDynamics::Wet(WetParams { strength: 0.9 });
+    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.9, drag: 0.0 });
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -363,16 +361,16 @@ fn golden_wet_blend() {
 }
 
 #[test]
-fn golden_fluid_drag() {
+fn golden_wet_drag() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
 
-    // Fluid advection (DESIGN.md §6.2): a red field with a horizontal green bar, then
-    // a Fluid stroke dragged *vertically* through it. The velocity injected along the
-    // stroke advects the wet paint downward, pulling the green into a vertical streak
-    // along the stroke path — directional drag that neither Dry nor Wet (isotropic
-    // bleed) would produce.
+    // The Wet brush's *drag* axis (advection, DESIGN.md §6.2): a red field with a
+    // horizontal green bar, then a Wet stroke (drag only, no bleed) dragged *vertically*
+    // through it. The velocity injected along the stroke advects the wet paint downward,
+    // pulling the green into a vertical streak along the stroke path — directional drag
+    // that neither Dry nor pure-bleed Wet (isotropic) would produce.
     paint(
         &mut engine,
         RED,
@@ -386,9 +384,9 @@ fn golden_fluid_drag() {
         &[Vec2::new(-95.0, -30.0), Vec2::new(95.0, -30.0)],
     );
 
-    let mut fluid = brush(RED, 24.0);
-    fluid.dynamics = BrushDynamics::Fluid(FluidParams { strength: 0.9 });
-    engine.process(InputCommand::SetBrush(fluid));
+    let mut wet = brush(RED, 24.0);
+    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.0, drag: 0.9 });
+    engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(0.0, -60.0)),
@@ -399,7 +397,46 @@ fn golden_fluid_drag() {
     engine.process(InputCommand::EndStroke);
 
     let img = engine.render_to_image(PAPER);
-    assert_golden("fluid_drag", &img, 6);
+    assert_golden("wet_drag", &img, 6);
+}
+
+#[test]
+fn golden_wet_flow() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // The unified Wet brush running *both* axes at once: a red field with a horizontal
+    // green bar, then a Wet stroke with bleed AND drag dragged vertically through it.
+    // The green is both pulled downward (drag) and softened/bled into the red (bleed) —
+    // a single brush doing alla-prima diffusion and fluid raking simultaneously.
+    paint(
+        &mut engine,
+        RED,
+        90.0,
+        &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        14.0,
+        &[Vec2::new(-95.0, -30.0), Vec2::new(95.0, -30.0)],
+    );
+
+    let mut wet = brush(RED, 24.0);
+    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.8, drag: 0.8 });
+    engine.process(InputCommand::SetBrush(wet));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(0.0, -60.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 70.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("wet_flow", &img, 6);
 }
 
 #[test]

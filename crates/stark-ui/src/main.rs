@@ -18,7 +18,7 @@ use dioxus::prelude::*;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, CANVAS_ID};
 use stark_core::document::{
-    BrushDynamics, BrushParams, BrushShape, FluidParams, KnifeParams, MixerParams, Tool, WetParams,
+    BrushDynamics, BrushParams, BrushShape, KnifeParams, MixerParams, Tool, WetParams,
 };
 use stark_core::geom::Vec2;
 use stark_core::{
@@ -264,19 +264,13 @@ fn BrushPanel() -> Element {
         BrushDynamics::Wet(wp) => Some(wp),
         _ => None,
     };
-    let fluid = match brush.dynamics {
-        BrushDynamics::Fluid(fp) => Some(fp),
-        _ => None,
-    };
     let is_mixer = mixer.is_some();
     let is_knife = knife.is_some();
     let is_wet = wet.is_some();
-    let is_fluid = fluid.is_some();
-    let is_dry = !is_mixer && !is_knife && !is_wet && !is_fluid;
+    let is_dry = !is_mixer && !is_knife && !is_wet;
     let mp = mixer.unwrap_or_default();
     let kp = knife.unwrap_or_default();
     let wp = wet.unwrap_or_default();
-    let fp = fluid.unwrap_or_default();
 
     let chip = |active: bool| if active { "chip active" } else { "chip" };
 
@@ -317,11 +311,6 @@ fn BrushPanel() -> Element {
                     onclick: move |_| set_dynamics(state, BrushDynamics::Wet(WetParams::default())),
                     "Wet"
                 }
-                button {
-                    class: chip(is_fluid),
-                    onclick: move |_| set_dynamics(state, BrushDynamics::Fluid(FluidParams::default())),
-                    "Fluid"
-                }
             }
             Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
                 oninput: move |v| update_brush(state, move |b| b.radius = v) }
@@ -352,16 +341,13 @@ fn BrushPanel() -> Element {
                 Slider { label: "Ridge", min: 0.0, max: 1.0, value: kp.ridge,
                     oninput: move |v| set_knife(state, move |k| k.ridge = v) }
             }
-            // Wet-only control: how strongly the wet paint bleeds and levels (§6.2).
+            // Wet-only controls: how strongly the wet paint bleeds (diffuses) and how
+            // strongly the brush drags it along the stroke (DESIGN.md §6.2).
             if is_wet {
-                Slider { label: "Bleed", min: 0.0, max: 1.0, value: wp.strength,
-                    oninput: move |v| set_wet(state, move |w| w.strength = v) }
-            }
-            // Fluid-only control: how strongly the brush drags wet paint along its
-            // motion (§6.2).
-            if is_fluid {
-                Slider { label: "Drag", min: 0.0, max: 1.0, value: fp.strength,
-                    oninput: move |v| set_fluid(state, move |f| f.strength = v) }
+                Slider { label: "Bleed", min: 0.0, max: 1.0, value: wp.bleed,
+                    oninput: move |v| set_wet(state, move |w| w.bleed = v) }
+                Slider { label: "Drag", min: 0.0, max: 1.0, value: wp.drag,
+                    oninput: move |v| set_wet(state, move |w| w.drag = v) }
             }
         }
     }
@@ -403,15 +389,6 @@ fn set_wet(state: AppState, f: impl FnOnce(&mut WetParams)) {
     update_brush(state, move |b| {
         if let BrushDynamics::Wet(wp) = &mut b.dynamics {
             f(wp);
-        }
-    });
-}
-
-/// Edit the fluid-advection params in place (no-op if the brush isn't Fluid).
-fn set_fluid(state: AppState, f: impl FnOnce(&mut FluidParams)) {
-    update_brush(state, move |b| {
-        if let BrushDynamics::Fluid(fp) = &mut b.dynamics {
-            f(fp);
         }
     });
 }

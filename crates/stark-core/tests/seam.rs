@@ -18,7 +18,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, FluidParams, KnifeParams, Tool, WetParams};
+use stark_core::document::{BrushDynamics, KnifeParams, Tool, WetParams};
 use stark_core::geom::Vec2;
 use stark_core::{MediaParams, RgbaImage};
 
@@ -161,60 +161,11 @@ fn render_shifted_wet(shift: Vec2) -> RgbaImage {
     // corner by more than radius+apron so it does NOT touch the other three tiles).
     // The visible corner is therefore an affected/unaffected tile boundary cutting
     // through painted canvas — exactly where a missing-halo apron seams the relief.
+    // Both axes on, so the test covers the advect + diffuse write-back together.
     let mut wet = brush(RED, 24.0);
     wet.tooth = 0.0;
-    wet.dynamics = BrushDynamics::Wet(WetParams { strength: 0.9 });
+    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.9, drag: 0.9 });
     engine.process(InputCommand::SetBrush(wet));
-    engine.process(InputCommand::StartStroke {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(40.0, 40.0)),
-    });
-    engine.process(InputCommand::StrokeTo {
-        sample: InputSample::at(shift + Vec2::new(85.0, 85.0)),
-    });
-    engine.process(InputCommand::EndStroke);
-
-    let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
-    engine.process(InputCommand::Pan { delta: -shift });
-    engine.process(InputCommand::Zoom {
-        anchor: center_px,
-        factor: 2.0,
-    });
-    engine.render_to_image(BG)
-}
-
-/// Like `render_shifted_wet`, but the stroke is a **fluid** brush: its post-deposit
-/// advection runs over the same haloed region and is sliced back into tiles, so it
-/// must stay seam-free for the same reason (rewritten tiles' aprons read real
-/// neighbour interiors from the haloed region; velocity is 0 in the halo → advection
-/// is identity there).
-fn render_shifted_fluid(shift: Vec2) -> RgbaImage {
-    let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
-    engine.set_media_params(MediaParams {
-        height_strength: 2.5,
-        specular: 0.3,
-        surface_strength: 0.0,
-        ..MediaParams::default()
-    });
-
-    let mut field = brush(RED, 90.0);
-    field.tooth = 0.0;
-    engine.process(InputCommand::SetBrush(field));
-    engine.process(InputCommand::StartStroke {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(-150.0, 0.0)),
-    });
-    engine.process(InputCommand::StrokeTo {
-        sample: InputSample::at(shift + Vec2::new(150.0, 0.0)),
-    });
-    engine.process(InputCommand::EndStroke);
-
-    // Fluid stroke confined to the corner's +,+ tile (offset > radius+apron from the
-    // corner), so the visible corner is an affected/unaffected tile boundary.
-    let mut fluid = brush(RED, 24.0);
-    fluid.tooth = 0.0;
-    fluid.dynamics = BrushDynamics::Fluid(FluidParams { strength: 0.9 });
-    engine.process(InputCommand::SetBrush(fluid));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(40.0, 40.0)),
@@ -302,21 +253,3 @@ fn apron_makes_wet_diffusion_seamless_under_zoom() {
     );
 }
 
-#[test]
-fn apron_makes_fluid_advection_seamless_under_zoom() {
-    if engine_or_skip().is_none() {
-        return; // no usable GPU adapter
-    }
-
-    // The fluid brush's region-advection write-back must be seam-free, same as wet.
-    let corner = render_shifted_fluid(Vec2::ZERO);
-    let interior = render_shifted_fluid(Vec2::new(128.0, 128.0));
-
-    let (frac, worst) = diff_fraction(&corner, &interior);
-    assert!(
-        worst <= 25 && frac < 0.07,
-        "fluid advection seam: corner vs interior differ by up to {worst} levels \
-         on {:.2}% of pixels — the region write-back is not covering tile boundaries",
-        frac * 100.0
-    );
-}

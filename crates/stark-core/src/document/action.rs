@@ -58,43 +58,31 @@ pub enum BrushDynamics {
     /// lay a thin film of its own color), via the mutable-medium write-back path
     /// (DESIGN.md §6.2).
     Knife(KnifeParams),
-    /// Wet-on-wet: lay wet paint and let it bleed and level into the wet paint
-    /// around it — a few wet-weighted diffusion iterations over the stroke region
-    /// soften boundaries into alla-prima blends (DESIGN.md §6.2).
+    /// Wet paint that simultaneously **bleeds** (isotropic wet-on-wet diffusion) and
+    /// **drags** (advection along the stroke's motion) — both run each iteration over
+    /// the stroke region, independently configurable (DESIGN.md §6.2).
     Wet(WetParams),
-    /// Fluid: inject a velocity field along the stroke's motion and **advect** the
-    /// wet paint along it, dragging/raking it in the stroke direction — a per-stroke
-    /// Eulerian advect+inject micro-sim (DESIGN.md §6.2).
-    Fluid(FluidParams),
 }
 
-/// Parameters of the [`BrushDynamics::Fluid`] advection (DESIGN.md §6.2).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FluidParams {
-    /// How strongly the brush drags wet paint along its motion, in [0, 1]: 0 = no
-    /// flow (a plain deposit), 1 = maximum drag. Scales the injected velocity; the
-    /// iteration count and per-step distance are fixed (for deterministic replay).
-    pub strength: f32,
-}
-
-impl Default for FluidParams {
-    fn default() -> Self {
-        Self { strength: 0.5 }
-    }
-}
-
-/// Parameters of the [`BrushDynamics::Wet`] diffusion (DESIGN.md §6.2).
+/// Parameters of the [`BrushDynamics::Wet`] flow (DESIGN.md §6.2): wet paint that
+/// simultaneously bleeds and drags. Both are independent; 0 disables that behaviour
+/// (`bleed`-only = alla-prima diffusion, `drag`-only = a fluid rake). The iteration
+/// count and per-step distances are fixed (for deterministic replay).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WetParams {
-    /// How strongly the wet paint bleeds and levels per stroke, in [0, 1]: 0 = no
-    /// diffusion (a plain wet deposit), 1 = maximum bleed. Scales the per-iteration
-    /// diffusion rate; the iteration count is fixed (for deterministic replay).
-    pub strength: f32,
+    /// How strongly the wet paint bleeds and levels, in [0, 1]: 0 = none, 1 = maximum
+    /// bleed. Scales the per-iteration diffusion rate.
+    pub bleed: f32,
+    /// How strongly the brush drags wet paint along its motion, in [0, 1]: 0 = none,
+    /// 1 = maximum drag. Scales the injected velocity. `#[serde(default)]` so the
+    /// pre-unification `Wet` strokes load (drag 0 = pure bleed).
+    #[serde(default)]
+    pub drag: f32,
 }
 
 impl Default for WetParams {
     fn default() -> Self {
-        Self { strength: 0.5 }
+        Self { bleed: 0.5, drag: 0.1 }
     }
 }
 
