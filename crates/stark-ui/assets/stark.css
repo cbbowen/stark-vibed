@@ -85,16 +85,23 @@
   width: 100%;
 }
 
-/* --- color panel --- */
-.sv-square {
-  position: relative;
-  width: 256px; /* mirrors SV_W in main.rs */
-  height: 150px; /* mirrors SV_H in main.rs */
-  border-radius: 6px;
-  cursor: crosshair;
+/* --- color panel (Oklab: a/b field + L slider) --- */
+.color-pick {
+  display: flex;
+  gap: 10px;
 }
 
-.sv-marker {
+.ab-field {
+  position: relative;
+  width: 220px; /* mirrors FIELD_PX in main.rs */
+  height: 220px;
+  border-radius: 6px;
+  cursor: crosshair;
+  background-size: 100% 100%; /* the small BMP plane scales up smoothly */
+  touch-action: none;
+}
+
+.ab-marker {
   position: absolute;
   width: 12px;
   height: 12px;
@@ -105,9 +112,23 @@
   pointer-events: none;
 }
 
-.color-hue {
-  width: 100%;
-  margin-top: 10px;
+.l-slider {
+  position: relative;
+  width: 22px;
+  height: 220px; /* mirrors L_H in main.rs */
+  border-radius: 6px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.l-marker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin-top: -2px;
+  border-top: 2px solid #fff;
+  box-shadow: 0 0 0 1px #0008;
+  pointer-events: none;
 }
 
 /* --- brush panel --- */

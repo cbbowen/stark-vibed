@@ -20,6 +20,7 @@ use render::{Renderer, CANVAS_ID};
 use stark_core::document::{
     BrushDynamics, BrushParams, BrushShape, DryParams, Tool, WetParams,
 };
+use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 use stark_core::geom::Vec2;
 use stark_core::{
     ColorSpaceId, EnvironmentId, InputCommand, InputSample, LayerInfo, MediaParams,
@@ -32,9 +33,17 @@ const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
 const SURFACE_LINEN: Asset = asset!("/assets/surface/Linen.png");
 const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 
-/// Saturation/value picker square size, in pixels.
-const SV_W: f32 = 256.0;
-const SV_H: f32 = 150.0;
+/// Oklab a/b picker field, on screen (px) — a square `a`×`b` plane at the current `L`.
+const FIELD_PX: f32 = 220.0;
+/// Oklab `L` slider height, on screen (px).
+const L_H: f32 = 220.0;
+/// Half-extent of the `a`/`b` axes shown in the field. Symmetric, so it covers most of
+/// the sRGB gamut (blue reaches b ≈ −0.31); out-of-gamut corners clamp.
+const AB: f32 = 0.32;
+/// Rendered resolution of the a/b field BMP (CSS scales it to `FIELD_PX`, smoothly —
+/// the plane is low-frequency, and a small BMP keeps the data URL cheap to regenerate
+/// while dragging `L`). `N·3` is a multiple of 4, so BMP rows need no padding.
+const FIELD_N: usize = 96;
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -182,63 +191,143 @@ fn Canvas() -> Element {
 #[component]
 fn ColorPanel() -> Element {
     let state = use_context::<AppState>();
-    // Signals are `Copy`, so they can be handed to several event closures and to
-    // the free helpers below.
-    let hue = use_signal(|| 8.0_f32);
-    let sat = use_signal(|| 0.8_f32);
-    let val = use_signal(|| 0.6_f32);
-    let mut picking = use_signal(|| false);
+    // Oklab picker: a vertical `L` slider + a 2D `a`/`b` field. Signals are `Copy`, so
+    // they can be handed to several event closures and the free helpers below. Seed
+    // from the brush's current colour (peek → no re-render on every paint).
+    let init = state
+        .obs
+        .peek()
+        .as_ref()
+        .map(|o| o.brush.color)
+        .unwrap_or([0.85, 0.15, 0.1, 1.0]);
+    let lab = srgb_to_oklab(init);
+    let l = use_signal(|| lab[0]);
+    let a = use_signal(|| lab[1]);
+    let b = use_signal(|| lab[2]);
+    let mut picking_ab = use_signal(|| false);
+    let mut picking_l = use_signal(|| false);
 
-    let marker_x = sat() * SV_W;
-    let marker_y = (1.0 - val()) * SV_H;
+    // The a/b field is the colour plane at the current `L`; it only depends on `L`, so
+    // memoize it (no rebuild while dragging in the field, which moves only `a`/`b`).
+    let field = use_memo(move || ab_field_data_url(l()));
+
+    let ax = (a() / AB * 0.5 + 0.5) * FIELD_PX; // a: −AB→left, +AB→right
+    let by = (0.5 - b() / AB * 0.5) * FIELD_PX; // b: +AB→top (warm), −AB→bottom (cool)
+    let ly = (1.0 - l()) * L_H; // L: 1→top, 0→bottom
+    // Exact 1-D oklab gradient for the L track at the current chroma (CSS interpolates
+    // in oklab when asked, so the ramp is perceptually even).
+    let l_grad =
+        format!("linear-gradient(in oklab to top, oklab(0 {a:.4} {b:.4}), oklab(1 {a:.4} {b:.4}))", a = a(), b = b());
 
     rsx! {
         Panel { title: "Color",
-            div {
-                class: "sv-square",
-                // Dynamic: the value/saturation field tinted by the current hue.
-                style: "background: linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl({hue} 100% 50%));",
-                onpointerdown: move |e| { picking.set(true); pick_sv(state, hue, sat, val, &e); },
-                onpointermove: move |e| { if picking() { pick_sv(state, hue, sat, val, &e); } },
-                onpointerup: move |_| picking.set(false),
-                onpointerleave: move |_| picking.set(false),
-                div { class: "sv-marker", style: "left:{marker_x}px; top:{marker_y}px;" }
-            }
-            input {
-                class: "color-hue",
-                r#type: "range", min: "0", max: "360", value: "{hue()}",
-                oninput: move |e| {
-                    let mut hue = hue;
-                    if let Ok(h) = e.value().parse::<f32>() {
-                        hue.set(h);
-                        apply_color(state, hue, sat, val);
-                    }
-                },
+            div { class: "color-pick",
+                div {
+                    class: "ab-field",
+                    style: "background-image: {field()};",
+                    onpointerdown: move |e| { picking_ab.set(true); pick_ab(state, a, b, l, &e); },
+                    onpointermove: move |e| { if picking_ab() { pick_ab(state, a, b, l, &e); } },
+                    onpointerup: move |_| picking_ab.set(false),
+                    onpointerleave: move |_| picking_ab.set(false),
+                    div { class: "ab-marker", style: "left:{ax}px; top:{by}px;" }
+                }
+                div {
+                    class: "l-slider",
+                    style: "background: {l_grad};",
+                    onpointerdown: move |e| { picking_l.set(true); pick_l(state, l, a, b, &e); },
+                    onpointermove: move |e| { if picking_l() { pick_l(state, l, a, b, &e); } },
+                    onpointerup: move |_| picking_l.set(false),
+                    onpointerleave: move |_| picking_l.set(false),
+                    div { class: "l-marker", style: "top:{ly}px;" }
+                }
             }
         }
     }
 }
 
-/// Push the current (h, s, v) into the brush color, preserving its alpha.
-fn apply_color(state: AppState, hue: Signal<f32>, sat: Signal<f32>, val: Signal<f32>) {
-    update_brush(state, move |b| {
-        let [r, g, b_] = hsv_to_srgb(hue(), sat(), val());
-        b.color = [r, g, b_, b.color[3]];
+/// Push the current Oklab `(L, a, b)` into the brush colour, preserving its alpha.
+/// Out-of-gamut points clamp to sRGB.
+fn apply_color(state: AppState, l: Signal<f32>, a: Signal<f32>, b: Signal<f32>) {
+    update_brush(state, move |br| {
+        let rgba = oklab_to_srgb([l(), a(), b(), br.color[3]]);
+        br.color = [
+            rgba[0].clamp(0.0, 1.0),
+            rgba[1].clamp(0.0, 1.0),
+            rgba[2].clamp(0.0, 1.0),
+            br.color[3],
+        ];
     });
 }
 
-/// Set saturation/value from a pointer position over the S/V square, then apply.
-fn pick_sv(
-    state: AppState,
-    hue: Signal<f32>,
-    mut sat: Signal<f32>,
-    mut val: Signal<f32>,
-    e: &Event<PointerData>,
-) {
+/// Set `a`/`b` from a pointer position over the field (warm/+b at top), then apply.
+fn pick_ab(state: AppState, mut a: Signal<f32>, mut b: Signal<f32>, l: Signal<f32>, e: &Event<PointerData>) {
     let c = e.element_coordinates();
-    sat.set((c.x as f32 / SV_W).clamp(0.0, 1.0));
-    val.set((1.0 - c.y as f32 / SV_H).clamp(0.0, 1.0));
-    apply_color(state, hue, sat, val);
+    a.set(((c.x as f32 / FIELD_PX) * 2.0 - 1.0).clamp(-1.0, 1.0) * AB);
+    b.set((1.0 - (c.y as f32 / FIELD_PX) * 2.0).clamp(-1.0, 1.0) * AB);
+    apply_color(state, l, a, b);
+}
+
+/// Set `L` from a pointer position over the vertical slider (top = light), then apply.
+fn pick_l(state: AppState, mut l: Signal<f32>, a: Signal<f32>, b: Signal<f32>, e: &Event<PointerData>) {
+    let c = e.element_coordinates();
+    l.set((1.0 - c.y as f32 / L_H).clamp(0.0, 1.0));
+    apply_color(state, l, a, b);
+}
+
+/// Render the Oklab `a`/`b` colour plane at lightness `l` as a small 24-bit BMP
+/// `data:` URL (CSS scales it up). `a` runs left→right (−AB→+AB), `b` runs top→bottom
+/// (+AB→−AB), so warm colours sit at the top and cool at the bottom. Out-of-gamut
+/// colours clamp to sRGB. Cheap enough to recompute whenever `L` changes.
+fn ab_field_data_url(l: f32) -> String {
+    let n = FIELD_N;
+    let pixels = n * n * 3;
+    let mut bmp = Vec::with_capacity(54 + pixels);
+    // BITMAPFILEHEADER (14) + BITMAPINFOHEADER (40).
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&((54 + pixels) as u32).to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    bmp.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
+    bmp.extend_from_slice(&40u32.to_le_bytes()); // info header size
+    bmp.extend_from_slice(&(n as i32).to_le_bytes()); // width
+    bmp.extend_from_slice(&(n as i32).to_le_bytes()); // height (+ → bottom-up)
+    bmp.extend_from_slice(&1u16.to_le_bytes()); // planes
+    bmp.extend_from_slice(&24u16.to_le_bytes()); // bpp
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    bmp.extend_from_slice(&(pixels as u32).to_le_bytes());
+    bmp.extend_from_slice(&2835i32.to_le_bytes()); // 72 dpi
+    bmp.extend_from_slice(&2835i32.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // colours used
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // important
+    let last = (n - 1) as f32;
+    for row in 0..n {
+        let y = n - 1 - row; // BMP rows are bottom-up; `y` is from the top
+        let bb = AB * (1.0 - 2.0 * y as f32 / last); // top → +AB (warm)
+        for x in 0..n {
+            let aa = AB * (2.0 * x as f32 / last - 1.0); // left → −AB
+            let rgb = oklab_to_srgb([l, aa, bb, 1.0]);
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            bmp.push(q(rgb[2])); // B
+            bmp.push(q(rgb[1])); // G
+            bmp.push(q(rgb[0])); // R
+        }
+    }
+    format!("url(data:image/bmp;base64,{})", base64(&bmp))
+}
+
+/// Standard base64 (with padding) — small, so a data URL stays dependency-free.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
 }
 
 #[component]
@@ -793,19 +882,3 @@ fn end_interaction(
     panning.set(false);
 }
 
-/// HSV (h in degrees, s/v in [0,1]) → straight sRGB RGB in [0,1].
-fn hsv_to_srgb(h: f32, s: f32, v: f32) -> [f32; 3] {
-    let c = v * s;
-    let h6 = (h / 60.0).rem_euclid(6.0);
-    let x = c * (1.0 - (h6 % 2.0 - 1.0).abs());
-    let (r, g, b) = match h6 as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = v - c;
-    [r + m, g + m, b + m]
-}
