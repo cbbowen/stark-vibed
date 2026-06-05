@@ -30,7 +30,7 @@ use crate::geom::{
 };
 use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::context::GpuContext;
-use crate::gpu::tile::{TileHandle, TilePool};
+use crate::gpu::tile::{TileHandle, TilePool, SCRATCH_AUX_FORMAT};
 
 /// Global tuning so a default brush (`flow = 1`) reads as a solid stroke;
 /// `flow` is an optical-depth-per-length rate (DESIGN.md §6.2).
@@ -295,26 +295,30 @@ impl StrokeRenderer {
         });
 
         // Group 3: the stroke's color reservoir (per-segment × per-band) + a
-        // linear/clamp sampler, so the deposit blends bands and segments for free.
+        // linear/clamp sampler, so the deposit blends bands and segments for free, plus a
+        // companion height reservoir (a smear's carried paint-height rate; a dummy for
+        // plain brushes, which lay the brush's own height).
+        let res_tex = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let reservoir_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark sweep reservoir bgl"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
+                res_tex(0),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                res_tex(2),
             ],
         });
         let reservoir_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -368,8 +372,11 @@ impl StrokeRenderer {
                         blend: Some(color_space.color_blend()),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
+                    // The stamp renders into a *scratch* tile, whose aux is the wide
+                    // SCRATCH_AUX_FORMAT (thickness, wet, smear-lifted height) — not the
+                    // compact persistent aux. Additive blend across overlapping segments.
                     Some(wgpu::ColorTargetState {
-                        format: color_space.aux_format(),
+                        format: SCRATCH_AUX_FORMAT,
                         blend: Some(color_space.aux_blend()),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
@@ -523,29 +530,37 @@ impl StrokeRenderer {
         // The smear runs only when its scan actually ran; an oversized stroke skips the
         // region composite and degrades to a plain (scrape/paint) deposit.
         let mut smearing = false;
-        let reservoir_view = match scan.zip(stroke_bbox(&segments)) {
+        let reservoir_tex = |label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height: LATERAL_BANDS,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+        // The colour reservoir and the companion height reservoir (the smear-lifted
+        // height; zero for a non-smear brush, whose own height is laid from the per-
+        // segment attribute). Both are always bound, so the deposit reads them uniformly.
+        let (reservoir_view, aux_view) = match scan.zip(stroke_bbox(&segments)) {
             Some((knobs, bbox)) => {
-                let tex = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("stark reservoir"),
-                    size: wgpu::Extent3d {
-                        width,
-                        height: LATERAL_BANDS,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                let color = reservoir_tex("stark reservoir");
+                let aux = reservoir_tex("stark aux reservoir");
+                let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+                let aux_view = aux.create_view(&wgpu::TextureViewDescriptor::default());
                 self.encode_mixer(
-                    &mut encoder, base, &coords, &segments, &instance_buf, &view, bbox,
-                    (lead, width), channels, knobs,
+                    &mut encoder, base, &coords, &segments, &instance_buf, &color_view,
+                    &aux_view, bbox, (lead, width), channels, knobs,
                 );
                 smearing = true;
-                view
+                (color_view, aux_view)
             }
             None => self.flat_reservoir(&mut encoder, channels),
         };
@@ -560,6 +575,10 @@ impl StrokeRenderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.reservoir_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&aux_view),
                 },
             ],
         });
@@ -592,6 +611,11 @@ impl StrokeRenderer {
         // surface (`relief` makes it a no-op on Flat). When smearing, the film fraction
         // is forced to 1 — the carried amount already rides the scratch's opacity;
         // otherwise `add` is the own-paint film fraction (`remove`=`add`=0 → plain paint).
+        //
+        // `mode.y` is `remove` alone (the destructive scrape). The *smear's* scrape is no
+        // longer folded in here: the integrate now removes exactly the smear-lifted height
+        // the deposit re-laid (`scratch.aux.z`), conserving paint as it drags — see
+        // integrate.wesl.
         let integrate_mode = match dry {
             Some(mp) => [
                 1.0,
@@ -602,6 +626,9 @@ impl StrokeRenderer {
             None => [0.0; 4],
         };
         let ridge = dry.map_or(0.0, |mp| mp.ridge);
+        // How much of the brush's own height the deposit lays (the `add` axis). The stamp
+        // adds it as `add·height_rate`; non-Dry brushes (Wet) lay their full height.
+        let add_frac = dry.map_or(1.0, |mp| mp.add);
 
         // Wet brush: after the Normal deposit, diffuse the stroke region (DESIGN.md
         // §6.2). Collect this stroke's scratch footprints so the diffusion localizes
@@ -620,9 +647,10 @@ impl StrokeRenderer {
             let origin = coord.origin();
             let xform = TileXform {
                 params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, u_per_px],
-                // The deposit reads its opacity from the reservoir alpha uniformly (the
-                // smear's per-band load, or 1 for the flat reservoir), so no mode flag.
-                surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
+                // surf.z = the `add` fraction: the deposit lays `add·height_rate` of the
+                // brush's own height plus the reservoir's smear-lifted height (one
+                // continuous sum, no branch). Opacity always comes from the reservoir alpha.
+                surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, add_frac, 0.0],
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark sweep xform"),
@@ -640,8 +668,8 @@ impl StrokeRenderer {
 
             // Footprint → cleared scratch tile: within-stroke accumulation (the color
             // target over-blends opacity-premultiplied colour, the aux accumulates
-            // thickness/wet additively).
-            let scratch = pool.acquire();
+            // thickness/wet/smear-lifted additively). The scratch aux is the wide format.
+            let scratch = pool.acquire_scratch();
             {
                 let clear = wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -1115,47 +1143,65 @@ impl StrokeRenderer {
         view
     }
 
-    /// A 1×1 reservoir holding the brush's own color, for brushes without pickup.
-    /// Cleared (not CPU-uploaded) so the driver does the f16 encode; the deposit
-    /// then samples one uniform color across the whole tip.
+    /// A 1×1 reservoir holding the brush's own color (alpha 1 = full footprint contact),
+    /// plus a 1×1 height reservoir cleared to 0 (no smear pickup), for brushes without a
+    /// scan. Cleared (not CPU-uploaded) so the driver does the f16 encode; the deposit
+    /// samples one uniform color across the whole tip and adds zero lifted height.
     fn flat_reservoir(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         channels: [f32; 4],
-    ) -> wgpu::TextureView {
-        let tex = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark flat reservoir"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    ) -> (wgpu::TextureView, wgpu::TextureView) {
+        let make = |label| {
+            self.ctx
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let color = make("stark flat reservoir");
+        let aux = make("stark flat aux reservoir");
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark flat reservoir clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: channels[0] as f64,
-                        g: channels[1] as f64,
-                        b: channels[2] as f64,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: channels[0] as f64,
+                            g: channels[1] as f64,
+                            b: channels[2] as f64,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &aux,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        view
+        (color, aux)
     }
 
     /// Wet-mixing pickup (DESIGN.md §6.2), fully on the GPU. Pass A composites the
@@ -1174,6 +1220,7 @@ impl StrokeRenderer {
         segments: &[Segment],
         instance_buf: &wgpu::Buffer,
         reservoir: &wgpu::TextureView,
+        aux_reservoir: &wgpu::TextureView,
         bbox: (Vec2, u32, u32),
         pad: (u32, u32),
         channels: [f32; 4],
@@ -1339,6 +1386,10 @@ impl StrokeRenderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(reservoir),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(aux_reservoir),
                 },
             ],
         });
@@ -1650,6 +1701,17 @@ fn build_mixer_pipeline(
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            // The companion height reservoir (carried paint-height rate along the stroke).
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::WriteOnly,

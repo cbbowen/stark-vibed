@@ -107,6 +107,26 @@ pub fn diff_fraction(a: &RgbaImage, b: &RgbaImage) -> (f64, u8) {
     (bad as f64 / total, worst)
 }
 
+/// Fraction of pixels whose maximum per-channel difference *exceeds* `tol`. Unlike the
+/// per-pixel worst, this distinguishes a contiguous seam (a band of many significantly-
+/// different pixels) from a handful of isolated precision specks.
+pub fn frac_exceeding(a: &RgbaImage, b: &RgbaImage, tol: u8) -> f64 {
+    assert_eq!((a.width, a.height), (b.width, b.height), "image size mismatch");
+    let mut bad = 0u64;
+    for (pa, pb) in a.pixels.chunks_exact(4).zip(b.pixels.chunks_exact(4)) {
+        let d = pa
+            .iter()
+            .zip(pb)
+            .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        if d > tol as u32 {
+            bad += 1;
+        }
+    }
+    bad as f64 / (a.width * a.height) as f64
+}
+
 /// True if `a` and `b` match within `tol` per channel for every pixel.
 pub fn images_match(a: &RgbaImage, b: &RgbaImage, tol: u8) -> bool {
     let (_, worst) = diff_fraction(a, b);

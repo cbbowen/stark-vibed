@@ -11,7 +11,7 @@ struct TileXform {
     // params.w = 1 / stroke arc length (canvas px → normalized longitudinal pos).
     params: vec4<f32>,
     // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth;
-    // surf.z/surf.w unused.
+    // surf.z = add fraction (how much of the brush's own height to lay); surf.w unused.
     surf: vec4<f32>,
 }
 
@@ -30,6 +30,10 @@ struct TileXform {
 // shader is agnostic to the band count; the mixer compute pass populates it.
 @group(3) @binding(0) var reservoir: texture_2d<f32>;
 @group(3) @binding(1) var reservoir_samp: sampler;
+// Companion reservoir carrying *only* the smear-lifted canvas height as a per-stamp rate
+// (zero where nothing was lifted). The brush's own height is laid separately from the
+// per-segment attribute, so the deposit is one continuous sum (DESIGN §6.1/§6.2).
+@group(3) @binding(2) var aux_reservoir: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -93,6 +97,18 @@ fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
 }
 
+// The smear-lifted height *rate* at the same reservoir position (already divided by the
+// segment-overlap count, so the additive deposit reconstructs the lifted height).
+fn reservoir_aux(u: vec2<f32>, local: vec2<f32>) -> f32 {
+    let along = u.x + local.x * u.y;
+    return textureSampleLevel(aux_reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0).x;
+}
+
+// How much of the brush's own height the deposit lays (the `add` axis), in [0, 1].
+fn add_frac() -> f32 {
+    return xf.surf.z;
+}
+
 // Bilinear lookup of the prefix-τ (fp32) at brush-local (xl, yl) ∈ [-1,1]: 0
 // before the leading edge, clamp-to-row-total past the trailing edge.
 //
@@ -151,11 +167,4 @@ fn swept_depth(in: VsOut) -> f32 {
 fn surface_tooth(height: f32, coverage: f32, frag_xy: vec2<f32>) -> f32 {
     // TODO: Find a more natural and physically-accurate way to implement this.
     return coverage;
-    // let tooth = xf.surf.y;
-    // if tooth <= 0.0 {
-    //     return coverage;
-    // }
-    // let canvas = xf.params.xy + frag_xy;
-    // let hs = textureSampleLevel(surface_tex, surface_samp, canvas * xf.surf.x, 0.0).r;
-    // return coverage * (1.0 - tooth * (1.0 - hs) * (1.0 - coverage));
 }

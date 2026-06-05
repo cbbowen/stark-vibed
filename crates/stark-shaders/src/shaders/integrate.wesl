@@ -62,26 +62,35 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // consistent: scaling the opacity-premultiplied color *and* the thickness by
         // `(1−factor)` lightens the paint with no dark fringe.
         let remove = p.mode.y;
-        let load = p.mode.z;   // film fraction (Rust forces 1 when smearing — the
-                               // dragged amount already rides the scratch opacity)
+        let load = p.mode.z;   // colour/wet film fraction = the `add` axis (Rust forces 1
+                               // when smearing — the carried paint rides the scratch).
+                               // Thickness is NOT re-filmed by it: the stamp already
+                               // applied `add` to the brush's own height, and the smear's
+                               // lifted height is carried in full.
         let tooth = p.mode.w;  // tooth·relief (0 on Flat → gate is a no-op)
         let canvas = p.surf.xy + frag.xy;
         let hs = textureSampleLevel(surface, surface_samp, canvas * p.surf.z, 0.0).r;
         let gate = 1.0 - tooth * (1.0 - hs);
-        // The scratch opacity is the brush's contact (and, when smearing, the carried
-        // amount it lays — they coincide, which is fine: a smear that has run out of
-        // carried paint is also barely bearing down).
-        let contact = s_c.a;
-        let factor = clamp(remove * contact * gate, 0.0, 1.0);
+        let contact = s_c.a; // scratch opacity = the brush's contact, for the `remove` scrape
+        // Two scrapes, both scaling colour + thickness by `(1−factor)` (premult-consistent,
+        // no dark fringe): `remove` destroys paint (contact·gate-scaled), and the **smear**
+        // removes *exactly the height it re-lays here* — `s_a.z` is the smear-lifted
+        // thickness the deposit laid (carried from behind), so taking that same fraction of
+        // the base **moves** paint instead of duplicating it (conservative: over a uniform
+        // field the scrape cancels the re-lay → no change; at edges it drags).
+        let smear_move = s_a.z / max(base_a.x, 1e-4);
+        let factor = clamp(remove * contact * gate + smear_move, 0.0, 1.0);
 
         let scraped_c = base_c * (1.0 - factor);
         let scraped_a = base_a * (1.0 - factor);
 
-        // Film: lay a `load` fraction of the footprint (own colour, or the dragged
-        // paint the carry scan put in the scratch) over the scraped base.
+        // Film the scratch over the scraped base. Colour (and its premult opacity) and
+        // wet take the `load` (= add) fraction; thickness is laid in full — the stamp
+        // already gated the brush's own height by `add`, and the smear's lifted height is
+        // carried whole, so re-filming it would apply `add` twice.
         let film = s_c * load;
         out.color = film + scraped_c * (1.0 - film.a);
-        out.aux = scraped_a + s_a * load;
+        out.aux = vec4<f32>(scraped_a.x + s_a.x, scraped_a.y + s_a.y * load, 0.0, 0.0);
 
         // Lateral pile-up: paint shoved aside heaps into the footprint's transition
         // band — `4·contact·(1−contact)` peaks at the soft edge, zero at the covered

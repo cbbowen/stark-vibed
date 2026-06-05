@@ -360,6 +360,37 @@ fn golden_smudge_paint() {
 }
 
 #[test]
+fn empty_smear_adds_no_height() {
+    // Regression (DESIGN §6.1/§6.2): a pure smear (smear>0, add=0, remove=0) over BARE
+    // canvas must deposit nothing — there is no paint on the tool, so no colour *and no
+    // height*. The earlier bug laid the brush's height ungated by the reservoir presence,
+    // raising relief out of nothing. Now height rides the reservoir (zero when empty), so
+    // the smeared-empty canvas must render bit-close to the untouched paper.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let blank = engine.render_to_image(PAPER);
+
+    let mut brush = brush(RED, 24.0);
+    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 1.0, remove: 0.0, add: 0.0, ridge: 0.0 });
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-100.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(100.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let after = engine.render_to_image(PAPER);
+    assert!(
+        images_match(&blank, &after, 2),
+        "a pure smear over empty canvas must add no paint/height"
+    );
+}
+
+#[test]
 fn golden_wet_blend() {
     let Some(mut engine) = engine_or_skip() else {
         return;

@@ -24,7 +24,7 @@ struct Instance {
     start: vec2<f32>,
     dir: vec2<f32>,
     geom: vec4<f32>,  // radius, length, flow, reservoir column (u; unused here)
-    aux: vec4<f32>,   // height, wet, opacity, _ (unused here)
+    aux: vec4<f32>,   // height, wet, opacity, _ (the deposit lays the brush's own height)
 }
 
 // Per-flatten-step decay of the carried "presence" (load) when pickup/inject stop, so
@@ -45,24 +45,15 @@ const BANDS: u32 = 16u;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
 @group(0) @binding(3) var<storage, read> instances: array<Instance>;
 @group(0) @binding(4) var reservoir: texture_storage_2d<rgba16float, write>;
+// Companion reservoir carrying the paint *height* (amount) the tool holds — stored as a
+// per-stamp deposit *rate* so the additive deposit reconstructs it without magnifying it
+// by the segment overlap (DESIGN §6.1/§6.2).
+@group(0) @binding(5) var aux_reservoir: texture_storage_2d<rgba16float, write>;
 
-struct Decoded {
-    ch: vec4<f32>,  // per-unit pickup channels
-    amount: f32,    // paint present, in [0, 1]
-}
-
-// Un-premultiply a stored color texel into (per-unit channels, coverage). Every
-// color space stores premultiplied channels with coverage in alpha (Oklab L,a,b;
-// Mixbox pigment concentrations c0,c1,c2), so one decode serves all.
-fn decode(stored: vec4<f32>) -> Decoded {
-    let c = stored.w;
-    if c <= 1e-4 {
-        return Decoded(vec4<f32>(0.0), 0.0);
-    }
-    return Decoded(vec4<f32>(stored.xyz / c, 0.0), min(c, 1.0));
-}
-
-// Reservoir state carried along the walk: a carried colour and a "presence" load.
+// Reservoir state carried along the walk: the carried paint and a "presence" load.
+// `ch.xyz` is the per-unit colour channels (Oklab L,a,b or Mixbox c0,c1,c2); `ch.w` is
+// the smear-lifted canvas *height* as a deposit rate (the brush's own height is laid
+// separately) — both ride the same mass-weighted recurrence.
 struct Res {
     ch: vec4<f32>,
     load: f32,
@@ -74,19 +65,34 @@ struct Res {
 // brush's own colour), and the carried colour is the mass-weighted blend. Over solid
 // wet paint the load saturates → a full-strength smear; on bare canvas it decays →
 // the smear fades out. Reads the knobs/region/brush globals.
-fn step(prev: Res, sample: vec2<f32>, steps: f32) -> Res {
+fn step(prev: Res, sample: vec2<f32>, steps: f32, hnorm: f32) -> Res {
     let origin = params.origin_dims.xy;
     let dims = vec2<i32>(i32(params.origin_dims.z), i32(params.origin_dims.w));
     let texel = clamp(vec2<i32>(floor(sample - origin)), vec2<i32>(0), dims - vec2<i32>(1));
-    let dec = decode(textureLoad(region_color, texel, 0));
+    let col = textureLoad(region_color, texel, 0); // premult colour, opacity in .w
+    let amount = min(col.w, 1.0);                    // canvas opacity-presence
+    let canvas_h = textureLoad(region_aux, texel, 0).x; // canvas paint height (absolute)
 
-    let lift = clamp(params.knobs.x * dec.amount * steps, 0.0, 1.0); // smear pickup mass
-    let gain = clamp(params.knobs.y * steps, 0.0, 1.0);              // add (own paint) mass
+    // Picked-up canvas paint: colour as per-unit channels (.xyz, un-premult by presence)
+    // and the lifted **height** (.w). The reservoir carries *only* the smear-lifted canvas
+    // height — the brush's own height is laid separately at deposit time from the per-
+    // segment attribute (it's already a per-stamp rate), so it isn't folded in here. The
+    // lifted height is stored as a deposit rate (× `hnorm`) so the additive stamp puts
+    // back the absolute lifted amount, not magnified by the segment overlap. Height is
+    // independent of opacity, so it is NOT divided by presence.
+    var in_ch = vec4<f32>(0.0);
+    if amount > 1e-4 {
+        in_ch = vec4<f32>(col.xyz / amount, canvas_h * hnorm);
+    }
+    let br_ch = vec4<f32>(params.brush_ch.xyz, 0.0); // brush's own colour; no height here
+
+    let lift = clamp(params.knobs.x * amount * steps, 0.0, 1.0); // smear pickup mass
+    let gain = clamp(params.knobs.y * steps, 0.0, 1.0);          // add (own paint) mass
     let decayed = prev.load * pow(DECAY, steps);
     var load = decayed + lift + gain;
     var ch = prev.ch;
     if load > 1e-4 {
-        ch = (prev.ch * decayed + dec.ch * lift + params.brush_ch * gain) / load;
+        ch = (prev.ch * decayed + in_ch * lift + br_ch * gain) / load;
     }
     load = min(load, params.knobs.w); // knobs.w = reservoir capacity
     return Res(ch, load);
@@ -104,7 +110,13 @@ fn step(prev: Res, sample: vec2<f32>, steps: f32) -> Res {
 // (load 0) deposit nothing, and linear filtering between a loaded and an empty column
 // stays a dimmer version of the same colour rather than fading through black.
 fn store_res(res: Res, col: u32, band: u32) {
-    textureStore(reservoir, vec2<i32>(i32(col), i32(band)), vec4<f32>(res.ch.xyz * res.load, res.load));
+    let p = vec2<i32>(i32(col), i32(band));
+    textureStore(reservoir, p, vec4<f32>(res.ch.xyz * res.load, res.load));
+    // The smear-lifted height the deposit lays, premultiplied by presence so it fades to
+    // zero as the tool empties. `ch.w` already carries the `hnorm` deposit-rate factor, so
+    // the additive stamp reconstructs the absolute lifted height — not magnified by the
+    // segment overlap, zero on an empty tool.
+    textureStore(aux_reservoir, p, vec4<f32>(res.ch.w * res.load, 0.0, 0.0, 0.0));
 }
 
 @compute @workgroup_size(BANDS)
@@ -126,9 +138,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let d0 = instances[0].dir;
     let r0 = instances[0].geom.x;
     let perp0 = vec2<f32>(-d0.y, d0.x);
+    let hn0 = flatten_step / (2.0 * r0); // 1 / (sample count) at the start
     for (var k = 0u; k < lead; k = k + 1u) {
         let back = f32(lead - k) * flatten_step; // distance behind the start
-        res = step(res, s0 - d0 * back + perp0 * (lateral * r0), 1.0);
+        res = step(res, s0 - d0 * back + perp0 * (lateral * r0), 1.0, hn0);
         store_res(res, k, j);
     }
 
@@ -139,7 +152,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         let radius = instances[i].geom.x;
         let perp = vec2<f32>(-dir.y, dir.x);
         let steps = instances[i].geom.y / flatten_step;
-        res = step(res, pos + perp * (lateral * radius), steps);
+        res = step(res, pos + perp * (lateral * radius), steps, flatten_step / (2.0 * radius));
         store_res(res, lead + i, j);
     }
 
@@ -149,9 +162,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let rl = instances[li].geom.x;
     let perpl = vec2<f32>(-dl.y, dl.x);
     let endp = instances[li].start + dl * instances[li].geom.y; // last segment's end
+    let hnl = flatten_step / (2.0 * rl); // 1 / (sample count) at the end
     for (var k = lead + count; k < width; k = k + 1u) {
         let fwd = f32(k - (lead + count) + 1u) * flatten_step; // distance past the end
-        res = step(res, endp + dl * fwd + perpl * (lateral * rl), 1.0);
+        res = step(res, endp + dl * fwd + perpl * (lateral * rl), 1.0, hnl);
         store_res(res, k, j);
     }
 }

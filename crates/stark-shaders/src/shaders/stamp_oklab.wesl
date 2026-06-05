@@ -11,7 +11,7 @@
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
 //   target 1: aux   (Rg16Float)   — (thickness, wet·op)
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, reservoir_aux, add_frac};
 
 @vertex
 fn vs_main(
@@ -37,10 +37,20 @@ fn fs_main(in: VsOut) -> FsOut {
     // with the smear automatically fading as its load runs out.
     let ch = reservoir_color(in.u, in.local);
     let op = in.op * scov;
-    let thick = in.misc.z * scov; // thickness laid here (height rate · √cov)
+    // Thickness laid here is one continuous sum (no branch): the brush's own height rate
+    // (`in.misc.z`, gated by the `add` axis) plus the smear-lifted canvas height the
+    // reservoir carries (a rate already normalized by the segment overlap, zero where
+    // nothing was lifted). Both ride `√cov`, so the footprint coverage applies once.
+    // Height is independent of opacity (DESIGN §6.1).
+    let lifted = reservoir_aux(in.u, in.local); // smear-lifted height rate (canvas paint)
+    let thick = (add_frac() * in.misc.z + lifted) * scov;
 
     var out: FsOut;
     out.color = vec4<f32>(ch.xyz * op, ch.a * op);
-    out.aux = vec4<f32>(thick, in.misc.w * out.color.a, 0.0, 0.0); // additive thickness, wet·op
+    // aux = (thickness, wet·op, **smear-lifted thickness alone**, _). The wide scratch aux
+    // carries the lifted part separately so the integrate can scrape exactly what the smear
+    // re-lays — moving paint, not duplicating it (DESIGN §6.2). Persistent tiles keep only
+    // (thickness, wet); the integrate writes that compact form out.
+    out.aux = vec4<f32>(thick, in.misc.w * out.color.a, lifted * scov, 0.0);
     return out;
 }
