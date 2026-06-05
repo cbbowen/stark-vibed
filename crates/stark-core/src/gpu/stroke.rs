@@ -62,6 +62,12 @@ const MAX_REGION_DIM: u32 = 2048;
 const FLOW_ITERS: u32 = 12;
 const FLOW_DRAG_PX: f32 = 2.5;
 
+/// Standard deviation (canvas px) of the Wet brush's separable-Gaussian **bleed** at
+/// full `WetParams::bleed`. The bleed runs in 2 passes (vs the old explicit diffusion's
+/// many) and reaches ~`3·MAX_SIGMA` px — kept in sync with `MAX_RADIUS` in `blur.wesl`,
+/// and well under the region's one-tile halo so the bleed reads only composited data.
+const MAX_SIGMA: f32 = 14.0;
+
 /// One swept segment of the stroke.
 #[derive(Copy, Clone)]
 struct Segment {
@@ -169,10 +175,10 @@ pub struct StrokeRenderer {
     integrate_pipeline: wgpu::RenderPipeline,
     integrate_bgl: wgpu::BindGroupLayout,
 
-    // Wet-on-wet diffusion (Wet dynamics, DESIGN.md §6.2): a ping-pong fullscreen pass
-    // over a composited stroke region, sampled 1:1; built once.
-    diffuse_pipeline: wgpu::RenderPipeline,
-    diffuse_bgl: wgpu::BindGroupLayout,
+    // Wet bleed (Wet dynamics, DESIGN.md §6.2): a separable Gaussian blur (two
+    // fullscreen passes) over a composited stroke region; built once.
+    blur_pipeline: wgpu::RenderPipeline,
+    blur_bgl: wgpu::BindGroupLayout,
 
     // Fluid advect+inject micro-sim (Fluid dynamics, DESIGN.md §6.2): a velocity
     // injection pass (segments → velocity region) + a semi-Lagrangian advection pass
@@ -191,11 +197,11 @@ struct IntegrateUniform {
     surf: [f32; 4], // tile_tex_origin.x, .y, inv_surface_tile, ridge (knife tooth gate)
 }
 
-/// Params for the wet-on-wet diffusion pass (`diffuse.wesl` `Params`).
+/// Params for the separable Gaussian bleed pass (`blur.wesl` `Params`).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct DiffuseUniform {
-    knobs: [f32; 4], // strength, _, _, _
+struct BlurUniform {
+    knobs: [f32; 4], // dir.x, dir.y, sigma, combine
 }
 
 /// Mirrors `View` in `fluid_inject.wesl`: canvas→region NDC + velocity magnitude.
@@ -385,7 +391,7 @@ impl StrokeRenderer {
         });
         let (mixer_pipeline, mixer_bgl) = build_mixer_pipeline(device);
         let (integrate_pipeline, integrate_bgl) = build_integrate_pipeline(device, color_space.as_ref());
-        let (diffuse_pipeline, diffuse_bgl) = build_diffuse_pipeline(device, color_space.as_ref());
+        let (blur_pipeline, blur_bgl) = build_blur_pipeline(device, color_space.as_ref());
         let (fluid_inject_pipeline, fluid_inject_bgl) =
             build_fluid_inject_pipeline(device, color_space.as_ref());
         let (fluid_advect_pipeline, fluid_advect_bgl) =
@@ -410,8 +416,8 @@ impl StrokeRenderer {
             mixer_bgl,
             integrate_pipeline,
             integrate_bgl,
-            diffuse_pipeline,
-            diffuse_bgl,
+            blur_pipeline,
+            blur_bgl,
             fluid_inject_pipeline,
             fluid_inject_bgl,
             fluid_advect_pipeline,
@@ -842,13 +848,12 @@ impl StrokeRenderer {
     }
 
     /// Wet flow over the stroke's region (DESIGN.md §6.2): composite the freshly-
-    /// deposited tiles (+ a halo) into a region, then run `FLOW_ITERS` iterations that
-    /// each **advect** the paint along an injected velocity field (`drag`) and
-    /// **diffuse** it toward its neighbours (`bleed`), and slice the region back into
-    /// fresh CoW tiles. Each pass is identity when its param is 0, so `drag`-only is a
-    /// fluid rake, `bleed`-only is alla-prima diffusion, and both run together. Pure
-    /// function of the deposited tiles + path → replay-deterministic; velocity is
-    /// transient (never written to tiles). Reuses `fluid_advect` + `diffuse` unchanged.
+    /// deposited tiles (+ a halo) into a region, **drag** the paint along an injected
+    /// velocity field (semi-Lagrangian advection, `drag`) and **bleed** it with a
+    /// separable Gaussian (`bleed`), then slice the region back into fresh CoW tiles.
+    /// Either effect is skipped when its param is 0. Both are localized to the stroke
+    /// footprint (identity in the halo) → seam-free. Pure function of the deposited
+    /// tiles + path → replay-deterministic; velocity is transient (never stored).
     #[allow(clippy::too_many_arguments)]
     fn encode_flow(
         &self,
@@ -866,76 +871,15 @@ impl StrokeRenderer {
             return; // nothing to flow — the plain deposit stands
         }
         // Haloed region so rewritten tiles' aprons read real neighbour interiors →
-        // seam-free; composite the halo but write back only the affected tiles (both
-        // advection and diffusion are identity in the halo — velocity/rate 0 there).
+        // seam-free; composite the halo but write back only the affected tiles.
         let Some((halo, lo, region_origin, w, h)) = region_rect(coords) else {
             return; // empty or larger than MAX_REGION_DIM — leave the plain deposit
         };
         let device = &self.ctx.device;
         let (a_color, a_aux) = self.composite_halo(encoder, map, &halo, region_origin, w, h);
-
-        // Diffusion rate = the stroke's footprint opacity (0 in the halo → identity).
-        let foot: Vec<_> = scratch
-            .iter()
-            .map(|(c, t)| (c.origin(), t.color_view().clone(), t.aux_view().clone()))
-            .collect();
-        let (rate_color, _rate_aux) = self.composite_region(encoder, &foot, region_origin, w, h);
-        let rate_view = rate_color.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Advection velocity = dir · drag, injected from the segments (0 in the halo).
-        let vel_tex = self.region_tex(w, h, self.color_space.aux_format(), "stark flow velocity");
-        let vel_view = vel_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
-        let inject = InjectUniform {
-            st: [sx, sy, -region_origin.x * sx - 1.0, -region_origin.y * sy + 1.0],
-            knobs: [drag * FLOW_DRAG_PX, 0.0, 0.0, 0.0],
-        };
-        let inject_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark flow inject params"),
-            contents: bytemuck::bytes_of(&inject),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let inject_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark flow inject bg"),
-            layout: &self.fluid_inject_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: inject_buf.as_entire_binding() }],
-        });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark flow inject"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &vel_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.fluid_inject_pipeline);
-            pass.set_bind_group(0, &inject_bg, &[]);
-            pass.set_vertex_buffer(0, instance_buf.slice(..));
-            pass.draw(0..4, 0..instances);
-        }
-
-        // Ping-pong region B + per-pass uniforms.
+        // B is the advection ping-pong scratch and the bleed's horizontal-blur target.
         let b_color = self.region_tex(w, h, self.color_space.color_format(), "stark flow color b");
         let b_aux = self.region_tex(w, h, self.color_space.aux_format(), "stark flow aux b");
-        let advect_uni = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark flow advect params"),
-            contents: bytemuck::bytes_of(&FluidUniform { knobs: [1.0, 0.0, 0.0, 0.0] }),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let diffuse_uni = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark flow diffuse params"),
-            contents: bytemuck::bytes_of(&DiffuseUniform { knobs: [bleed, 0.0, 0.0, 0.0] }),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
         let av_c = a_color.create_view(&wgpu::TextureViewDescriptor::default());
         let av_a = a_aux.create_view(&wgpu::TextureViewDescriptor::default());
         let bv_c = b_color.create_view(&wgpu::TextureViewDescriptor::default());
@@ -945,27 +889,70 @@ impl StrokeRenderer {
             store: wgpu::StoreOp::Store,
         };
 
-        // Each iteration: advect (A→B; identity if drag 0), then diffuse (B→A; identity
-        // if bleed 0). Two passes/iter, so the result lands back in A (FLOW_ITERS even).
-        for _ in 0..FLOW_ITERS {
-            // Advect A → B.
-            let advect_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark flow advect bg"),
-                layout: &self.fluid_advect_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: advect_uni.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&vel_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&av_c) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&av_a) },
-                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
-                ],
+        // --- Drag: inject the stroke's velocity (dir · drag), then semi-Lagrangian-
+        //     advect FLOW_ITERS times, ping-ponging A↔B (even count → result back in A).
+        if drag > 0.0 {
+            let vel_tex = self.region_tex(w, h, self.color_space.aux_format(), "stark flow velocity");
+            let vel_view = vel_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
+            let inject = InjectUniform {
+                st: [sx, sy, -region_origin.x * sx - 1.0, -region_origin.y * sy + 1.0],
+                knobs: [drag * FLOW_DRAG_PX, 0.0, 0.0, 0.0],
+            };
+            let inject_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark flow inject params"),
+                contents: bytemuck::bytes_of(&inject),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let inject_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark flow inject bg"),
+                layout: &self.fluid_inject_bgl,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: inject_buf.as_entire_binding() }],
             });
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("stark flow inject"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &vel_view, resolve_target: None, depth_slice: None, ops: store,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.fluid_inject_pipeline);
+                pass.set_bind_group(0, &inject_bg, &[]);
+                pass.set_vertex_buffer(0, instance_buf.slice(..));
+                pass.draw(0..4, 0..instances);
+            }
+
+            let advect_uni = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark flow advect params"),
+                contents: bytemuck::bytes_of(&FluidUniform { knobs: [1.0, 0.0, 0.0, 0.0] }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            for i in 0..FLOW_ITERS {
+                let (sc, sa, dc, da) = if i % 2 == 0 {
+                    (&av_c, &av_a, &bv_c, &bv_a)
+                } else {
+                    (&bv_c, &bv_a, &av_c, &av_a)
+                };
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark flow advect bg"),
+                    layout: &self.fluid_advect_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: advect_uni.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&vel_view) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(sc) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(sa) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
+                    ],
+                });
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark flow advect"),
                     color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment { view: &bv_c, resolve_target: None, depth_slice: None, ops: store }),
-                        Some(wgpu::RenderPassColorAttachment { view: &bv_a, resolve_target: None, depth_slice: None, ops: store }),
+                        Some(wgpu::RenderPassColorAttachment { view: dc, resolve_target: None, depth_slice: None, ops: store }),
+                        Some(wgpu::RenderPassColorAttachment { view: da, resolve_target: None, depth_slice: None, ops: store }),
                     ],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -973,39 +960,86 @@ impl StrokeRenderer {
                     multiview_mask: None,
                 });
                 pass.set_pipeline(&self.fluid_advect_pipeline);
-                pass.set_bind_group(0, &advect_bg, &[]);
+                pass.set_bind_group(0, &bg, &[]);
                 pass.draw(0..3, 0..1);
             }
-            // Diffuse B → A.
-            let diffuse_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark flow diffuse bg"),
-                layout: &self.diffuse_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: diffuse_uni.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&bv_c) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bv_a) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&rate_view) },
-                ],
-            });
-            {
+        }
+
+        // --- Bleed: a separable Gaussian (σ ∝ bleed) gated by the footprint rate.
+        //     H pass blurs A → B (pure); V pass blurs B → C and mixes the full Gaussian
+        //     back over the original A by rate·wet (identity where rate is 0). Result in
+        //     C; with no bleed the (advected) A is written back directly.
+        let bleed_result = if bleed > 0.0 {
+            let foot: Vec<_> = scratch
+                .iter()
+                .map(|(c, t)| (c.origin(), t.color_view().clone(), t.aux_view().clone()))
+                .collect();
+            let (rate_color, _rate_aux) = self.composite_region(encoder, &foot, region_origin, w, h);
+            let rate_view = rate_color.create_view(&wgpu::TextureViewDescriptor::default());
+            let c_color = self.region_tex(w, h, self.color_space.color_format(), "stark flow color c");
+            let c_aux = self.region_tex(w, h, self.color_space.aux_format(), "stark flow aux c");
+            let cv_c = c_color.create_view(&wgpu::TextureViewDescriptor::default());
+            let cv_a = c_aux.create_view(&wgpu::TextureViewDescriptor::default());
+            let sigma = bleed * MAX_SIGMA;
+
+            // The two blur passes share a bind-group shape; only the uniform + targets
+            // differ. `orig`/`rate` are bound for both but only used by the V pass.
+            let blur_pass = |encoder: &mut wgpu::CommandEncoder,
+                             uni: &wgpu::Buffer,
+                             src_c: &wgpu::TextureView,
+                             src_a: &wgpu::TextureView,
+                             dst_c: &wgpu::TextureView,
+                             dst_a: &wgpu::TextureView| {
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark flow blur bg"),
+                    layout: &self.blur_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: uni.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src_c) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(src_a) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&av_c) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&av_a) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&rate_view) },
+                    ],
+                });
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark flow diffuse"),
+                    label: Some("stark flow blur"),
                     color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment { view: &av_c, resolve_target: None, depth_slice: None, ops: store }),
-                        Some(wgpu::RenderPassColorAttachment { view: &av_a, resolve_target: None, depth_slice: None, ops: store }),
+                        Some(wgpu::RenderPassColorAttachment { view: dst_c, resolve_target: None, depth_slice: None, ops: store }),
+                        Some(wgpu::RenderPassColorAttachment { view: dst_a, resolve_target: None, depth_slice: None, ops: store }),
                     ],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.diffuse_pipeline);
-                pass.set_bind_group(0, &diffuse_bg, &[]);
+                pass.set_pipeline(&self.blur_pipeline);
+                pass.set_bind_group(0, &bg, &[]);
                 pass.draw(0..3, 0..1);
-            }
-        }
+            };
 
-        self.writeback_region(encoder, pool, map, coords, &a_color, &a_aux, lo);
+            let h_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark flow blur-h params"),
+                contents: bytemuck::bytes_of(&BlurUniform { knobs: [1.0, 0.0, sigma, 0.0] }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let v_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark flow blur-v params"),
+                contents: bytemuck::bytes_of(&BlurUniform { knobs: [0.0, 1.0, sigma, 1.0] }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            blur_pass(encoder, &h_buf, &av_c, &av_a, &bv_c, &bv_a); // horizontal: A → B
+            blur_pass(encoder, &v_buf, &bv_c, &bv_a, &cv_c, &cv_a); // vertical + combine → C
+            Some((c_color, c_aux))
+        } else {
+            None
+        };
+
+        let (rc, ra) = match &bleed_result {
+            Some((c, a)) => (c, a),
+            None => (&a_color, &a_aux),
+        };
+        self.writeback_region(encoder, pool, map, coords, rc, ra, lo);
     }
 
     /// A transient region texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`).
@@ -1754,16 +1788,17 @@ fn build_integrate_pipeline(
     (pipeline, bgl)
 }
 
-/// Build the wet-on-wet diffusion pipeline (`diffuse` shader) — DESIGN §6.2. A
-/// fullscreen pass with a `Params` uniform + three sampled region textures (src
-/// color/aux + footprint rate), writing the color+aux MRT of the ping-pong target.
-fn build_diffuse_pipeline(
+/// Build the Wet-brush bleed pipeline (`blur` shader) — DESIGN §6.2. A fullscreen
+/// separable-Gaussian pass with a `Params` uniform + five sampled region textures
+/// (src color/aux to blur, original color/aux + footprint rate for the combine),
+/// writing the color+aux MRT of the ping-pong target.
+fn build_blur_pipeline(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark diffuse"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::diffuse().into()),
+        label: Some("stark blur"),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::blur().into()),
     });
     let load_tex = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -1776,7 +1811,7 @@ fn build_diffuse_pipeline(
         count: None,
     };
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark diffuse bgl"),
+        label: Some("stark blur bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -1788,18 +1823,20 @@ fn build_diffuse_pipeline(
                 },
                 count: None,
             },
-            load_tex(1), // src color
+            load_tex(1), // src color (to blur)
             load_tex(2), // src aux
-            load_tex(3), // footprint rate
+            load_tex(3), // original color (for the combine)
+            load_tex(4), // original aux
+            load_tex(5), // footprint rate
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("stark diffuse layout"),
+        label: Some("stark blur layout"),
         bind_group_layouts: &[Some(&bgl)],
         immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("stark diffuse pipeline"),
+        label: Some("stark blur pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,

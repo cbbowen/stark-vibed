@@ -33,8 +33,8 @@ fn main() {
     // Stroke integrate pass: merge a stroke's scratch slab into the layer (§6.2/§6.1).
     compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
 
-    // Wet-on-wet diffusion pass (ping-pong over a stroke region) — DESIGN §6.2.
-    compiler.build_artifact(&"package::diffuse".parse().unwrap(), "diffuse");
+    // Separable Gaussian bleed pass for the Wet brush — DESIGN §6.2.
+    compiler.build_artifact(&"package::blur".parse().unwrap(), "blur");
 
     // Fluid advect+inject micro-sim passes (over a stroke region) — DESIGN §6.2.
     compiler.build_artifact(&"package::fluid_inject".parse().unwrap(), "fluid_inject");

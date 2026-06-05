@@ -3,7 +3,7 @@
 // Shares all geometry/sweep math with the other color spaces via
 // `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile in the
 // normalized representation (DESIGN.md §6.1): colour is premultiplied by **opacity**
-// (not coverage), thickness lives in the aux. The brush's soft footprint coverage is
+// (not coverage), height lives in the aux. The brush's soft footprint coverage is
 // split as `√cov` across the opacity and the thickness, so when the media shader
 // combines them into the visible alpha (`1 − exp(−K·op·T)`) the coverage is applied
 // exactly once. Within a stroke the colour target over-blends (premult-consistent)

@@ -10,9 +10,9 @@
 // rewritten identically to its neighbour's interior (the seam invariant, §6.4).
 //
 // In the normalized representation (§6.1): color = latent·opacity with opacity in
-// `.a`, aux = (thickness, wet). The substrate composite is therefore the ordinary
+// `.a`, aux = (height, wet). The substrate composite is therefore the ordinary
 // premultiplied-"over" on color (premultiplied by opacity) and an additive sum of
-// thickness/wet — which is exactly what the old direct deposit did, now explicit so
+// height/wet — which is exactly what the old direct deposit did, now explicit so
 // brush dynamics (knife, blend modes) can plug in as new `mode`s.
 
 struct Params {

@@ -36,9 +36,9 @@ pub fn integrate() -> &'static str {
     include_wesl!("integrate")
 }
 
-/// WGSL wet-on-wet diffusion pass (ping-pong over a stroke region) — DESIGN §6.2.
-pub fn diffuse() -> &'static str {
-    include_wesl!("diffuse")
+/// WGSL separable Gaussian bleed pass for the Wet brush (one direction) — DESIGN §6.2.
+pub fn blur() -> &'static str {
+    include_wesl!("blur")
 }
 
 /// WGSL fluid velocity-injection pass (segments → velocity region) — DESIGN §6.2.

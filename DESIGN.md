@@ -367,7 +367,7 @@ that affect more than color (GOALS §1):
 ```rust
 pub struct GpuTile {
     pub color:  wgpu::Texture,   // Rgba16Float — Oklab (L,a,b) + premult alpha
-    pub height: wgpu::Texture,   // R16Float — paint thickness / impasto
+    pub height: wgpu::Texture,   // R16Float — total paint height, thickness computed by subtracting surface height
     pub wet:    wgpu::Texture,   // R16Float — wetness for wet-on-wet mixing
     // future channels (normal, granulation, …) are additive here
 }
@@ -629,17 +629,20 @@ wet paint diffuses at boundaries), and conservative smearing. The model:
   the weave's peaks and stays in its valleys — scraping reveals canvas texture. A
   loaded knife also lays a thin film of its own colour (load white → snowy ridge).
 - **Wet paint — bleed + drag (`BrushDynamics::Wet`).** Since paint is always wet,
-  the wet brush flows the freshly-laid region with two independently-configurable,
-  simultaneously-applied effects (DESIGN §6.2): **bleed** = a few `wet`-weighted,
-  colour-conserving *diffusion* iterations (softens boundaries into alla-prima
-  blends), and **drag** = *advection* of the paint along a velocity field injected
-  from the stroke's motion (an Eulerian advect-only micro-sim — rakes/pulls wet paint
-  in the stroke direction). Both run over a composited haloed region and ping-pong a
-  fixed iteration count (each iteration: one advect + one diffuse pass; either is
-  identity when its param is 0), then write back — reusing the Mixer's region
-  machinery. Velocity is transient. An optional historized **`Settle`** action could
-  run more iterations on demand ("let the colours marry"); true incompressible swirls
-  (pressure projection) layer on top of the advection core later.
+  the wet brush flows the freshly-laid region with two independently-configurable
+  effects, both localized to the footprint (DESIGN §6.2): **bleed** = a colour-
+  conserving **separable Gaussian** whose radius scales with the param, mixed back
+  over the paint by footprint·wetness (softens boundaries into alla-prima blends), and
+  **drag** = *advection* of the paint along a velocity field injected from the stroke's
+  motion (an Eulerian advect-only micro-sim — rakes/pulls wet paint in the stroke
+  direction). Both run over a composited haloed region, then write back — reusing the
+  Mixer's region machinery; velocity is transient. The Gaussian replaced an explicit
+  (Jacobi) diffusion that spread only ≈√iterations px/stroke — a two-pass Gaussian
+  bleeds a wide radius for the cost of two passes (the *algorithm*, not a compute
+  shader, was the bottleneck). Drag is still iterative (its distance is linear in
+  iterations, so it isn't iteration-starved). An optional historized **`Settle`**
+  action could re-run the flow on demand ("let the colours marry"); true incompressible
+  swirls (pressure projection) layer on top of the advection core later.
 
 *Determinism* is unchanged: every medium stroke is a pure function of `base` +
 the `StrokeRecord` (fixed iteration counts), so replay and `preview == committed`
