@@ -133,9 +133,8 @@ struct TileInstance {
 struct MixerUniform {
     brush_ch: [f32; 4],
     origin_dims: [f32; 4], // region origin.xy (canvas px), dims.xy (px)
-    // Mixer: pickup, color_inject, flatten_step, capacity. Knife: bite, carry, …
-    knobs: [f32; 4],
-    counts: [u32; 4], // segment_count, lead-in columns, reservoir width, mode (0=mixer, 1=knife)
+    knobs: [f32; 4],       // smear, add, flatten_step, reservoir capacity
+    counts: [u32; 4],      // segment_count, lead-in columns, reservoir width, _
 }
 
 #[derive(Clone)]
@@ -509,27 +508,23 @@ impl StrokeRenderer {
             label: Some("stark stroke commit"),
         });
 
-        // A reservoir scan smears color along the stroke for two brushes: the Mixer
-        // (lifts wet canvas color) and the carry Knife (drags the paint it scrapes off,
-        // mixer.wesl mode 1, storing premultiplied dragged paint per band). Both reuse
-        // the same region-composite + serial-scan machinery. Every other brush gets a
-        // 1×1 texel of its own color, so the deposit shader stays uniform.
-        let scan = match rec.brush.dynamics {
-            BrushDynamics::Mixer(mp) => Some((
-                [mp.pickup, mp.color_inject, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY],
-                0u32,
-            )),
-            BrushDynamics::Knife(kp) if kp.carry > 0.0 => Some((
-                [kp.bite, kp.carry, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY],
-                1u32,
-            )),
+        // The Dry brush's `smear` runs the reservoir scan: a serial walk that lifts
+        // canvas paint (pickup) + injects the brush's own colour (add) into a per-band
+        // reservoir, storing premultiplied carried paint that the deposit lays — fading
+        // as the load runs out. Only runs when smearing; every other case (plain paint,
+        // erase, Wet) gets a 1×1 texel of the brush colour so the deposit stays uniform.
+        let dry = match rec.brush.dynamics {
+            BrushDynamics::Dry(mp) => Some(mp),
             _ => None,
         };
-        // The knife re-lays dragged paint only when its scan actually ran; an oversized
-        // stroke skips the region composite and degrades to a plain knife.
-        let mut knife_carry = false;
+        let scan = dry
+            .filter(|mp| mp.smear > 0.0)
+            .map(|mp| [mp.smear, mp.add, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY]);
+        // The smear runs only when its scan actually ran; an oversized stroke skips the
+        // region composite and degrades to a plain (scrape/paint) deposit.
+        let mut smearing = false;
         let reservoir_view = match scan.zip(stroke_bbox(&segments)) {
-            Some(((knobs, mode), bbox)) => {
+            Some((knobs, bbox)) => {
                 let tex = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("stark reservoir"),
                     size: wgpu::Extent3d {
@@ -547,9 +542,9 @@ impl StrokeRenderer {
                 let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 self.encode_mixer(
                     &mut encoder, base, &coords, &segments, &instance_buf, &view, bbox,
-                    (lead, width), channels, knobs, mode,
+                    (lead, width), channels, knobs,
                 );
-                knife_carry = mode == 1;
+                smearing = true;
                 view
             }
             None => self.flat_reservoir(&mut encoder, channels),
@@ -592,24 +587,21 @@ impl StrokeRenderer {
             });
         }
 
-        // Integrate mode: Normal for every brush except the Knife, which scrapes +
-        // films + ridges. The scrape is tooth-gated by the canvas surface (`relief`
-        // makes it a no-op on Flat). Carry lays the dragged paint fully (`load` = 1),
-        // since the dragged amount already rides the scratch's opacity.
-        let knife = match rec.brush.dynamics {
-            BrushDynamics::Knife(kp) => Some(kp),
-            _ => None,
-        };
-        let integrate_mode = match knife {
-            Some(kp) => [
+        // Integrate mode: the Dry brush scrapes (remove) + films (add) + ridges; Wet
+        // uses Normal (mode 0) for its deposit. The scrape is tooth-gated by the canvas
+        // surface (`relief` makes it a no-op on Flat). When smearing, the film fraction
+        // is forced to 1 — the carried amount already rides the scratch's opacity;
+        // otherwise `add` is the own-paint film fraction (`remove`=`add`=0 → plain paint).
+        let integrate_mode = match dry {
+            Some(mp) => [
                 1.0,
-                kp.bite,
-                if knife_carry { 1.0 } else { kp.load },
+                mp.remove,
+                if smearing { 1.0 } else { mp.add },
                 rec.brush.tooth * self.surface.relief,
             ],
             None => [0.0; 4],
         };
-        let ridge = knife.map_or(0.0, |kp| kp.ridge);
+        let ridge = dry.map_or(0.0, |mp| mp.ridge);
 
         // Wet brush: after the Normal deposit, diffuse the stroke region (DESIGN.md
         // §6.2). Collect this stroke's scratch footprints so the diffusion localizes
@@ -628,14 +620,9 @@ impl StrokeRenderer {
             let origin = coord.origin();
             let xform = TileXform {
                 params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, u_per_px],
-                // surf.z flags the carry knife so the deposit takes its opacity from
-                // the reservoir's dragged amount rather than the brush opacity.
-                surf: [
-                    1.0 / SURFACE_TILE_PX,
-                    rec.brush.tooth,
-                    if knife_carry { 1.0 } else { 0.0 },
-                    0.0,
-                ],
+                // The deposit reads its opacity from the reservoir alpha uniformly (the
+                // smear's per-band load, or 1 for the flat reservoir), so no mode flag.
+                surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark sweep xform"),
@@ -1191,7 +1178,6 @@ impl StrokeRenderer {
         pad: (u32, u32),
         channels: [f32; 4],
         knobs: [f32; 4],
-        mode: u32,
     ) {
         let (origin, w, h) = bbox;
         let (lead, width) = pad;
@@ -1323,7 +1309,7 @@ impl StrokeRenderer {
             brush_ch: channels,
             origin_dims: [origin.x, origin.y, w as f32, h as f32],
             knobs,
-            counts: [segments.len() as u32, lead, width, mode],
+            counts: [segments.len() as u32, lead, width, 0],
         };
         let uni_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark mixer params"),
@@ -1392,7 +1378,7 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// the spline, then make each polyline edge a segment. The one-way load reservoir
 /// (`drain`) depletes with arc distance; radius follows pressure. The deposited
 /// color comes from the reservoir texture (the brush's own color, or per-segment ×
-/// per-band pickup for a [`BrushDynamics::Mixer`] brush — see `encode_mixer`).
+/// per-band smear for a [`BrushDynamics::Dry`] brush — see `encode_mixer`).
 fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
     let b = &rec.brush;
     let pts = crate::path::flatten(&rec.path, crate::path::FLATTEN_STEP);

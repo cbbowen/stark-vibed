@@ -18,7 +18,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, KnifeParams, Tool, WetParams};
+use stark_core::document::{BrushDynamics, DryParams, Tool, WetParams};
 use stark_core::geom::Vec2;
 use stark_core::{MediaParams, RgbaImage};
 
@@ -101,13 +101,13 @@ fn render_shifted_knife(shift: Vec2) -> RgbaImage {
     });
     engine.process(InputCommand::EndStroke);
 
-    // The knife scrape under test, through the same 4-tile corner.
+    // The Dry scrape+smear+ridge under test, through the same 4-tile corner.
     let mut knife = brush(RED, 28.0);
     knife.tooth = 0.0;
-    knife.dynamics = BrushDynamics::Knife(KnifeParams {
-        bite: 0.5,
-        load: 0.0,
-        carry: 0.5,
+    knife.dynamics = BrushDynamics::Dry(DryParams {
+        smear: 0.5,
+        remove: 0.5,
+        add: 0.0,
         ridge: 1.0,
     });
     engine.process(InputCommand::SetBrush(knife));

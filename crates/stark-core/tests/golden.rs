@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushShape, KnifeParams, MixerParams, Tool, WetParams};
+use stark_core::document::{BrushDynamics, BrushShape, DryParams, Tool, WetParams};
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
 
@@ -142,7 +142,7 @@ fn golden_smear_mixer() {
     );
 
     let mut brush = brush(RED, 16.0);
-    brush.dynamics = BrushDynamics::Mixer(MixerParams::default());
+    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.5, remove: 0.0, add: 0.1, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -177,10 +177,10 @@ fn golden_knife_scrape() {
     let mut knife = brush(RED, 22.0);
     // Explicit (not `::default()`) so this "clean scrape" golden is stable regardless
     // of the default knife's feel: hard bite, no film, no carry, no ridge.
-    knife.dynamics = BrushDynamics::Knife(KnifeParams {
-        bite: 0.8,
-        load: 0.0,
-        carry: 0.0,
+    knife.dynamics = BrushDynamics::Dry(DryParams {
+        smear: 0.0,
+        remove: 0.8,
+        add: 0.0,
         ridge: 0.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -226,10 +226,10 @@ fn golden_knife_tooth() {
     let mut knife = brush(RED, 26.0);
     knife.tooth = 1.0; // full tooth: the gate bites only the weave's peaks
     // Explicit params so the tooth-reveal golden is stable against the default knife.
-    knife.dynamics = BrushDynamics::Knife(KnifeParams {
-        bite: 0.8,
-        load: 0.0,
-        carry: 0.0,
+    knife.dynamics = BrushDynamics::Dry(DryParams {
+        smear: 0.0,
+        remove: 0.8,
+        add: 0.0,
         ridge: 0.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -266,10 +266,10 @@ fn golden_knife_carry() {
     );
 
     let mut knife = brush(RED, 40.0);
-    knife.dynamics = BrushDynamics::Knife(KnifeParams {
-        bite: 0.8,
-        load: 0.0,
-        carry: 0.9,
+    knife.dynamics = BrushDynamics::Dry(DryParams {
+        smear: 0.9,
+        remove: 0.8,
+        add: 0.0,
         ridge: 0.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -305,10 +305,10 @@ fn golden_knife_ridge() {
     );
 
     let mut knife = brush(RED, 30.0);
-    knife.dynamics = BrushDynamics::Knife(KnifeParams {
-        bite: 0.15, // gentle scrape: keep the colour ~uniform so the lip reads as relief
-        load: 0.0,
-        carry: 0.0,
+    knife.dynamics = BrushDynamics::Dry(DryParams {
+        smear: 0.0,
+        remove: 0.15, // gentle scrape: keep the colour ~uniform so the lip reads as relief
+        add: 0.0,
         ridge: 1.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -323,6 +323,40 @@ fn golden_knife_ridge() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("knife_ridge", &img, 6);
+}
+
+#[test]
+fn golden_smudge_paint() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    // The unified Dry brush running all three axes at once (DESIGN.md §6.2): a green
+    // bar, then a red stroke that simultaneously *removes* (lightens the bar), *smears*
+    // (drags green along the path), and *adds* (lays its own red) — a single brush doing
+    // what previously needed the knife and mixer together. The result past the bar is a
+    // fading red↔green blend over partly-scraped paper, not reachable by any one axis.
+    paint(
+        &mut engine,
+        GREEN,
+        38.0,
+        &[Vec2::new(0.0, -90.0), Vec2::new(0.0, 90.0)],
+    );
+
+    let mut brush = brush(RED, 18.0);
+    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.7, remove: 0.5, add: 0.4, ridge: 0.0 });
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-110.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(110.0, 0.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("smudge_paint", &img, 6);
 }
 
 #[test]
@@ -456,7 +490,7 @@ fn golden_smear_mixer_cap() {
     );
 
     let mut brush = brush(RED, 25.0);
-    brush.dynamics = BrushDynamics::Mixer(MixerParams::default());
+    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.5, remove: 0.0, add: 0.1, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -494,7 +528,7 @@ fn golden_lateral_pickup() {
 
     let mut brush = brush(RED, 30.0);
     brush.hardness = 0.9; // near-solid, so it opaquely covers the green bar
-    brush.dynamics = BrushDynamics::Mixer(MixerParams::default());
+    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.5, remove: 0.0, add: 0.1, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,

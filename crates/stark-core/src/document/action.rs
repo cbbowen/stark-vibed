@@ -42,26 +42,53 @@ pub enum BrushShape {
 }
 
 /// How a brush interacts with paint already on the canvas (DESIGN.md §6.2,
-/// "Wet mixing & brush dynamics"). This is the pluggable fidelity axis: `Dry` is
-/// the one-way model; `Mixer` smears existing wet paint; future `Bleed`/`Fluid`
-/// tiers slot in here.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+/// "Wet mixing & brush dynamics"). The pluggable fidelity axis.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BrushDynamics {
-    /// No canvas pickup — paint flows one way and thins via `drain`. The default,
-    /// so existing strokes, goldens, and saved files are unchanged.
-    #[default]
-    Dry,
-    /// Mixer/smudge: lift wet paint under the brush into a reservoir and carry it,
-    /// so the stroke smears what is already on the canvas (DESIGN.md §6.2).
-    Mixer(MixerParams),
-    /// Palette knife: subtractively *scrape* paint off the canvas (and optionally
-    /// lay a thin film of its own color), via the mutable-medium write-back path
-    /// (DESIGN.md §6.2).
-    Knife(KnifeParams),
+    /// The unified paint-manipulation brush: independently **smear** (move paint),
+    /// **remove** (scrape it off), and **add** (lay the brush's own paint). Spans
+    /// erasing, smearing, painting, and every blend; the everyday dry brush is just
+    /// `smear=0, remove=0, add=1` (the default) (DESIGN.md §6.2).
+    Dry(DryParams),
     /// Wet paint that simultaneously **bleeds** (isotropic wet-on-wet diffusion) and
-    /// **drags** (advection along the stroke's motion) — both run each iteration over
-    /// the stroke region, independently configurable (DESIGN.md §6.2).
+    /// **drags** (advection along the stroke's motion) — both run over the stroke
+    /// region, independently configurable (DESIGN.md §6.2).
     Wet(WetParams),
+}
+
+impl Default for BrushDynamics {
+    /// The everyday brush: add the brush's own paint, no smear/remove.
+    fn default() -> Self {
+        BrushDynamics::Dry(DryParams::default())
+    }
+}
+
+/// Parameters of the unified [`BrushDynamics::Dry`] brush (DESIGN.md §6.2). The
+/// three axes compose freely: `remove`-only = eraser, `smear`-only = smudge,
+/// `add`-only = paint, and combinations everything between (e.g. `smear`+`remove` =
+/// a smudge that lightens the source).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DryParams {
+    /// How much existing paint the brush **moves** (picks up and carries along the
+    /// stroke), in [0, 1]: 0 = none, 1 = maximum smear. A copy-pickup — the source is
+    /// only lightened by `remove` — so the carried paint fades out on bare canvas.
+    pub smear: f32,
+    /// How much paint the brush **removes** (scrapes off) per unit contact, in [0, 1]:
+    /// 0 = none, 1 = scrape fully clean. Tooth-gated by the canvas surface.
+    pub remove: f32,
+    /// How much of the brush's own paint it **adds**, in [0, 1]: 0 = lays none (pure
+    /// smear/erase), 1 = a full deposit (ordinary painting).
+    pub add: f32,
+    /// How strongly displaced paint **piles into ridges** at the edges of the stroke,
+    /// in [0, 1] — the impasto lip (DESIGN.md §6.2, lateral pile-up). `#[serde(default)]`.
+    #[serde(default)]
+    pub ridge: f32,
+}
+
+impl Default for DryParams {
+    fn default() -> Self {
+        Self { smear: 0.0, remove: 0.0, add: 1.0, ridge: 0.0 }
+    }
 }
 
 /// Parameters of the [`BrushDynamics::Wet`] flow (DESIGN.md §6.2): wet paint that
@@ -83,63 +110,6 @@ pub struct WetParams {
 impl Default for WetParams {
     fn default() -> Self {
         Self { bleed: 0.5, drag: 0.1 }
-    }
-}
-
-/// Parameters of the [`BrushDynamics::Mixer`] reservoir (DESIGN.md §6.2).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MixerParams {
-    /// Fraction of the wet canvas paint pulled into the reservoir per unit step
-    /// (scaled by canvas wetness and how much paint is present). 0 = no pickup.
-    pub pickup: f32,
-    /// How much of the brush's own color is injected as it deposits: 0 = pure
-    /// smudge (only carries picked-up paint), 1 = always lays its own color.
-    pub color_inject: f32,
-}
-
-impl Default for MixerParams {
-    fn default() -> Self {
-        Self {
-            pickup: 0.5,
-            color_inject: 0.1,
-        }
-    }
-}
-
-/// Parameters of the [`BrushDynamics::Knife`] subtractive scrape (DESIGN.md §6.2).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct KnifeParams {
-    /// How much paint the knife removes per unit coverage, in [0, 1]: 0 = no
-    /// removal, 1 = scrape fully clean where it bears down hardest.
-    pub bite: f32,
-    /// How much of the knife's own color it lays as it scrapes, in [0, 1]: 0 = a
-    /// clean scrape that only removes, 1 = lays a full film of its loaded color.
-    pub load: f32,
-    /// How strongly the knife **drags** scraped paint downstream, in [0, 1]: 0 = a
-    /// clean scrape (removed paint vanishes), 1 = the scraped paint accumulates in
-    /// the knife and is re-laid along the path, fading out as the load depletes
-    /// (DESIGN.md §6.2, conservative reservoir carry). The source is still
-    /// lightened by `bite`, so high `bite` + lower `carry` lifts paint; equal
-    /// values smear it forward. `#[serde(default)]` so pre-carry files load.
-    #[serde(default)]
-    pub carry: f32,
-    /// How strongly displaced paint **piles into ridges** at the edges of the
-    /// knife's path, in [0, 1]: 0 = no ridge, 1 = a pronounced raised lip
-    /// (DESIGN.md §6.2, lateral pile-up). The ridge rises in the footprint's soft
-    /// transition band — where paint is being pushed aside — so it only forms over
-    /// existing paint and catches raking light as impasto relief. `#[serde(default)]`.
-    #[serde(default)]
-    pub ridge: f32,
-}
-
-impl Default for KnifeParams {
-    fn default() -> Self {
-        Self {
-            bite: 0.5,
-            load: 0.0,
-            carry: 0.0,
-            ridge: 0.5,
-        }
     }
 }
 
@@ -197,7 +167,7 @@ impl Default for BrushParams {
             shape: BrushShape::Round,
             follow_path: true,
             angle_jitter: 0.0,
-            dynamics: BrushDynamics::Dry,
+            dynamics: BrushDynamics::default(),
             tooth: 0.5,
         }
     }

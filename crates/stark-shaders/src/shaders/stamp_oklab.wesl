@@ -11,7 +11,7 @@
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
 //   target 1: aux   (Rg16Float)   — (thickness, wet·op)
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, is_carry};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color};
 
 @vertex
 fn vs_main(
@@ -30,25 +30,17 @@ fn fs_main(in: VsOut) -> FsOut {
     let cov = surface_tooth(in.misc.z, 1.0 - exp(-flow * swept_depth(in)), in.clip.xy);
     let scov = sqrt(cov); // split the footprint coverage across opacity and thickness
 
-    // Each part of the tip lays the color its lateral band picked up (DESIGN §6.2).
+    // Each part of the tip lays the color its lateral band carries (DESIGN §6.2). The
+    // reservoir alpha is the carried *presence*: 1 for a plain brush (flat reservoir
+    // `(C, 1)`), or the smear's per-band load `(C·load, load)`. Either way the deposit
+    // is `(C · presence · op · √cov, presence · op · √cov)` — premultiplied by opacity,
+    // with the smear automatically fading as its load runs out.
     let ch = reservoir_color(in.u, in.local);
-
-    // Color is premultiplied by opacity. For a normal/mixer brush the reservoir holds
-    // straight colour `(C, 1)` and the opacity is the brush's own (`in.op`). For the
-    // carry knife the reservoir already holds premultiplied dragged paint `(C·d, d)`,
-    // so the deposit is just that scaled by √cov — the dragged amount `d` is the
-    // opacity, fading the smear as the knife empties.
-    var col: vec4<f32>;
-    if is_carry() {
-        col = vec4<f32>(ch.xyz * scov, ch.a * scov);
-    } else {
-        let op = in.op * scov;
-        col = vec4<f32>(ch.xyz * op, op);
-    }
+    let op = in.op * scov;
     let thick = in.misc.z * scov; // thickness laid here (height rate · √cov)
 
     var out: FsOut;
-    out.color = col;                                  // premult by opacity; over-blends
-    out.aux = vec4<f32>(thick, in.misc.w * col.a, 0.0, 0.0); // additive thickness, wet·op
+    out.color = vec4<f32>(ch.xyz * op, ch.a * op);
+    out.aux = vec4<f32>(thick, in.misc.w * out.color.a, 0.0, 0.0); // additive thickness, wet·op
     return out;
 }

@@ -504,10 +504,10 @@ in the action log, so not a trait object):
 
 ```rust
 enum BrushDynamics {
-    Dry,             // one-way `drain` load — the DEFAULT, so existing strokes,
-                     //   goldens, and saved files are unchanged
-    Mixer(MixerParams),   // additive copy-smear pickup (above)
-    Knife(KnifeParams),   // subtractive: scrape/redistribute paint (mutable medium)
+    // The unified paint-manipulation brush (mutable medium): independently smear
+    // (move), remove (scrape), and add (lay own paint). Spans erase/smear/paint and
+    // every blend; the everyday dry brush is just { smear:0, remove:0, add:1 }.
+    Dry(DryParams), // { smear, remove, add, ridge } — the DEFAULT
     Wet(WetParams),       // wet paint: bleed (diffuse) + drag (advect along the stroke)
 }
 ```
@@ -561,7 +561,7 @@ the deposit (`gpu/stroke.rs::encode_mixer`):
    reservoir smoothly off both ends; the sampler's edge clamp only ever hits the
    outermost pad column.
 
-A non-mixer brush gets a 1×1 reservoir cleared to its own color (a render-pass
+A non-smear brush gets a 1×1 reservoir cleared to its own color (a render-pass
 clear, so the driver does the f16 encode — no CPU half-float path), keeping the
 deposit shader uniform. `SegmentInstance` is padded to 48 B so the same buffer is a
 valid `std430` `array<Instance>` for the compute pass. The native goldens exercise
@@ -580,14 +580,13 @@ than model drying, we lean on *digital* — to glaze over "dry" paint (old-maste
 layering), the user adds a **new document layer**, which composites over the work
 as if it were dry. So there is no time/age decay and no dry action.
 
-*Known limitation — non-conservative lift (copy-smear).* The Mixer pickup is
-**non-destructive**: it copies canvas color into the reservoir but does **not**
-remove paint from the source, so the source never lightens and total pigment is
-not conserved (a long smear can "duplicate" color rather than drag a finite amount
-of it). True mass-conserving lift requires the stroke to also *reduce* `base`
-coverage where it lifts — i.e. *write* the source, which the additive/over deposit
-cannot express. This is exactly what the **mutable-medium** path below adds; the
-Mixer can adopt it to become conservative.
+*Conservative vs copy smear.* The `smear` pickup alone is **non-destructive**: it
+copies canvas color into the reservoir but does **not** remove paint from the source,
+so the source never lightens (a long smear can "duplicate" color rather than drag a
+finite amount). To conserve pigment, combine it with `remove` — the scrape *writes*
+(lightens) the source where the smear lifts, which the additive/over deposit alone
+cannot express. Both axes live on one brush (below), so `smear + remove` is a true
+mass-conserving drag and `smear` alone is a cheap copy-smear.
 
 **Mutable medium — subtractive & wet diffusion.** The deposit above is
 *additive/over*: a stroke can only **add** premultiplied color and accumulate
@@ -621,13 +620,17 @@ wet paint diffuses at boundaries), and conservative smearing. The model:
   identically to the neighbour's interior over their overlap — the same property
   that lets the additive deposit render aprons without a copy (§6.4). The seam
   regression test extends to the medium path.
-- **Subtractive knife (`BrushDynamics::Knife`).** The combine *reduces* `height`,
-  `coverage`, `wet` along the path by a pressure-scaled bite; lifted paint loads
-  onto the per-segment × lateral-band **reservoir** (shared with the Mixer, now
-  source-reducing → conservative), is dragged downstream, and piles at the lateral
-  edges as ridges. The dormant surface **tooth** gates the scrape so paint clears
-  the weave's peaks and stays in its valleys — scraping reveals canvas texture. A
-  loaded knife also lays a thin film of its own colour (load white → snowy ridge).
+- **Unified `Dry` brush (`smear` / `remove` / `add` / `ridge`).** One combine
+  spans the whole continuum (erase ⇄ smear ⇄ paint). **remove** *reduces* `color`,
+  `opacity`, `thickness` along the path by a contact-scaled amount, tooth-gated by the
+  surface so the scrape clears the weave's peaks and reveals canvas texture. **smear**
+  runs the per-segment × lateral-band **reservoir** (pickup of canvas paint, fading
+  over distance) so dragged paint is carried downstream; pairing it with `remove` makes
+  the lift source-reducing → conservative. **add** lays the brush's own paint as a film
+  (0 = pure smear/erase, 1 = ordinary painting). **ridge** piles displaced paint into
+  impasto lips at the path edges. Dry painting is just `add` with `smear=remove=0`
+  (skips the reservoir); the integrate's "over" with `remove=0, add=1` reproduces the
+  additive deposit exactly (the Phase-0 equivalence).
 - **Wet paint — bleed + drag (`BrushDynamics::Wet`).** Since paint is always wet,
   the wet brush flows the freshly-laid region with two independently-configurable
   effects, both localized to the footprint (DESIGN §6.2): **bleed** = a colour-

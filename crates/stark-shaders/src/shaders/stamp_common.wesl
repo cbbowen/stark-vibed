@@ -11,7 +11,7 @@ struct TileXform {
     // params.w = 1 / stroke arc length (canvas px → normalized longitudinal pos).
     params: vec4<f32>,
     // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth;
-    // surf.z = carry-knife flag (see `is_carry`); surf.w unused.
+    // surf.z/surf.w unused.
     surf: vec4<f32>,
 }
 
@@ -91,14 +91,6 @@ fn sweep_vertex(
 fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
     let along = u.x + local.x * u.y;
     return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
-}
-
-// Whether this is the carry knife's scratch pass (`surf.z` set). The carry scan
-// stores *premultiplied* dragged paint `(C·amount, amount)` in the reservoir, so the
-// deposit takes its opacity from that amount (which fades as the knife runs out)
-// instead of the brush's own opacity (DESIGN.md §6.2).
-fn is_carry() -> bool {
-    return xf.surf.z > 0.5;
 }
 
 // Bilinear lookup of the prefix-τ (fp32) at brush-local (xl, yl) ∈ [-1,1]: 0

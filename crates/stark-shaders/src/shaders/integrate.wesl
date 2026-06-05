@@ -16,10 +16,10 @@
 // brush dynamics (knife, blend modes) can plug in as new `mode`s.
 
 struct Params {
-    // mode.x (0 = Normal, 1 = Knife), bite, load (film fraction), tooth·relief.
+    // mode.x (0 = Normal, 1 = Dry), remove (scrape), add (film fraction), tooth·relief.
     mode: vec4<f32>,
     // tile texture origin in canvas px (.xy), inv surface-tile (.z), ridge (.w) —
-    // .xyz feed the knife's tooth gate (sampling the surface in canvas space).
+    // .xyz feed the Dry scrape's tooth gate (sampling the surface in canvas space).
     surf: vec4<f32>,
 }
 
@@ -57,21 +57,22 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         out.color = s_c + base_c * (1.0 - s_c.a);
         out.aux = base_a + s_a;
     } else {
-        // KNIFE — scrape, then lay the knife's footprint as a film, then pile ridges.
-        // The new representation makes the scrape trivially premult-consistent: scaling
-        // the opacity-premultiplied color *and* the thickness by `(1−factor)` lightens
-        // the paint with no dark fringe (the bug the old coverage-premult model had).
-        let bite = p.mode.y;
-        let load = p.mode.z;   // own-color film fraction (Rust forces 1 for carry)
+        // DRY — scrape (remove), then lay the footprint/smear as a film (add), then
+        // pile ridges. The normalized representation makes the scrape trivially premult-
+        // consistent: scaling the opacity-premultiplied color *and* the thickness by
+        // `(1−factor)` lightens the paint with no dark fringe.
+        let remove = p.mode.y;
+        let load = p.mode.z;   // film fraction (Rust forces 1 when smearing — the
+                               // dragged amount already rides the scratch opacity)
         let tooth = p.mode.w;  // tooth·relief (0 on Flat → gate is a no-op)
         let canvas = p.surf.xy + frag.xy;
         let hs = textureSampleLevel(surface, surface_samp, canvas * p.surf.z, 0.0).r;
         let gate = 1.0 - tooth * (1.0 - hs);
-        // The scratch opacity is the knife's contact (and, for carry, the dragged
-        // amount it lays — they coincide, which is fine: a knife that has run out of
+        // The scratch opacity is the brush's contact (and, when smearing, the carried
+        // amount it lays — they coincide, which is fine: a smear that has run out of
         // carried paint is also barely bearing down).
         let contact = s_c.a;
-        let factor = clamp(bite * contact * gate, 0.0, 1.0);
+        let factor = clamp(remove * contact * gate, 0.0, 1.0);
 
         let scraped_c = base_c * (1.0 - factor);
         let scraped_a = base_a * (1.0 - factor);
