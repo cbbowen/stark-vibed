@@ -30,7 +30,7 @@ use crate::geom::{
 };
 use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::context::GpuContext;
-use crate::gpu::tile::{TileHandle, TilePool, SCRATCH_AUX_FORMAT};
+use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
 
 /// Global tuning so a default brush (`flow = 1`) reads as a solid stroke;
 /// `flow` is an optical-depth-per-length rate (DESIGN.md §6.2).
@@ -436,9 +436,9 @@ impl StrokeRenderer {
         &self,
         pool: &TilePool,
         assets: &AssetStore,
-        base: &HashTrieMap<TileCoord, TileHandle>,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
         rec: &StrokeRecord,
-    ) -> HashTrieMap<TileCoord, TileHandle> {
+    ) -> HashTrieMap<TileCoord, TilePairHandle> {
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
         let segments = generate_segments(rec);
@@ -587,7 +587,7 @@ impl StrokeRenderer {
         // integrate pass merges it over the base into a fresh CoW tile (DESIGN.md
         // §6.2/§6.1). `empty` (cleared) stands in as the base wherever the stroke
         // touches bare canvas — acquired tiles are undefined, so clear it once here.
-        let empty = pool.acquire();
+        let empty = pool.acquire(AllocSource::IntegrateEmptyBase);
         {
             let clear = wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -637,7 +637,7 @@ impl StrokeRenderer {
             BrushDynamics::Wet(wp) => Some(wp),
             _ => None,
         };
-        let mut wet_scratch: Vec<(TileCoord, TileHandle)> = Vec::new();
+        let mut wet_scratch: Vec<(TileCoord, TilePairHandle)> = Vec::new();
 
         let mut new_map = base.clone();
         for coord in &coords {
@@ -669,7 +669,7 @@ impl StrokeRenderer {
             // Footprint → cleared scratch tile: within-stroke accumulation (the color
             // target over-blends opacity-premultiplied colour, the aux accumulates
             // thickness/wet/smear-lifted additively). The scratch aux is the wide format.
-            let scratch = pool.acquire_scratch();
+            let scratch = pool.acquire_scratch(AllocSource::MixerScratch);
             {
                 let clear = wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -706,7 +706,7 @@ impl StrokeRenderer {
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let dst = pool.acquire();
+            let dst = pool.acquire(AllocSource::IntegrateDestination);
             let base_tile = base.get(coord).unwrap_or(&empty);
             let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark integrate bg"),
@@ -874,9 +874,9 @@ impl StrokeRenderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         pool: &TilePool,
-        map: &mut HashTrieMap<TileCoord, TileHandle>,
+        map: &mut HashTrieMap<TileCoord, TilePairHandle>,
         coords: &BTreeSet<TileCoord>,
-        scratch: &[(TileCoord, TileHandle)],
+        scratch: &[(TileCoord, TilePairHandle)],
         instance_buf: &wgpu::Buffer,
         instances: u32,
         bleed: f32,
@@ -1077,7 +1077,7 @@ impl StrokeRenderer {
     fn composite_halo(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        map: &HashTrieMap<TileCoord, TileHandle>,
+        map: &HashTrieMap<TileCoord, TilePairHandle>,
         halo: &[TileCoord],
         region_origin: Vec2,
         w: u32,
@@ -1099,7 +1099,7 @@ impl StrokeRenderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         pool: &TilePool,
-        map: &mut HashTrieMap<TileCoord, TileHandle>,
+        map: &mut HashTrieMap<TileCoord, TilePairHandle>,
         coords: &BTreeSet<TileCoord>,
         color_tex: &wgpu::Texture,
         aux_tex: &wgpu::Texture,
@@ -1107,7 +1107,7 @@ impl StrokeRenderer {
     ) {
         let block = wgpu::Extent3d { width: TILE_TEX, height: TILE_TEX, depth_or_array_layers: 1 };
         for c in coords {
-            let dst = pool.acquire();
+            let dst = pool.acquire(AllocSource::FlowWritebackRegion);
             let src_origin = wgpu::Origin3d {
                 x: (c.origin().x - lo.x) as u32,
                 y: (c.origin().y - lo.y) as u32,
@@ -1215,7 +1215,7 @@ impl StrokeRenderer {
     fn encode_mixer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        base: &HashTrieMap<TileCoord, TileHandle>,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
         coords: &BTreeSet<TileCoord>,
         segments: &[Segment],
         instance_buf: &wgpu::Buffer,

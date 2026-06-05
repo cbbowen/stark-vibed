@@ -17,7 +17,7 @@ use crate::document::{
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::{
     Compositor, Environment, EnvironmentId, GpuContext, StrokeRenderer, Surface, SurfaceId,
-    TileHandle, TilePool,
+    TilePairHandle, TilePool,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -232,7 +232,7 @@ impl Engine {
         // tagging each tile with its layer opacity. Normal-blend layers compose
         // correctly under premultiplied "over"; richer blend modes (which need
         // per-layer isolation) are a follow-up.
-        let mut tiles: Vec<(crate::geom::TileCoord, TileHandle, f32)> = Vec::new();
+        let mut tiles: Vec<(crate::geom::TileCoord, TilePairHandle, f32)> = Vec::new();
         for layer in doc.layers.iter() {
             if !layer.visible || layer.opacity <= 0.0 {
                 continue;
@@ -627,7 +627,7 @@ fn build_gpu(
     surface: &Surface,
     environment: &Environment,
 ) -> (TilePool, StrokeRenderer, Compositor) {
-    let pool = TilePool::new(gpu.clone(), cs.color_format(), cs.aux_format());
+    let pool = TilePool::new(gpu.clone(), [cs.color_format(), cs.aux_format()]);
     let stroke = StrokeRenderer::new(gpu, cs.clone(), surface.clone());
     let compositor = Compositor::new(
         gpu,

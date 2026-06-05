@@ -2,9 +2,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/stark-core",
-    "crates/stark-shaders",
-    "crates/stark-ui",
+    "crates/*",
 ]
 # stark-ui is a wasm/web app (Dioxus web + WebGPU); keep it out of the native
 # default build/test so `cargo build`/`cargo test` stay host-only. Build it with

@@ -6,7 +6,7 @@ use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::TileCoord;
-use crate::gpu::tile::TileHandle;
+use crate::gpu::tile::TilePairHandle;
 
 /// Stable identifier for a layer within a document.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub struct Layer {
     /// Whether the layer contributes to the composite.
     pub visible: bool,
     /// Only populated tiles exist — this sparsity is the infinite canvas.
-    pub tiles: HashTrieMap<TileCoord, TileHandle>,
+    pub tiles: HashTrieMap<TileCoord, TilePairHandle>,
 }
 
 impl Layer {

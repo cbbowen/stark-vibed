@@ -4,8 +4,6 @@
 * Support changing surface without resetting the document.
 * Reorderable and hidable panels (show from menu).
 * `Engine::apply_ctx` does a _lot_ of cloning.
+* BUG: Smear loses paint because it hits the `RESERVOIR_CAPACITY` cap. But the math in the shader currently breaks down if it's higher than 1.0.
 
-With that bugfix out of the way, let's return to the UI improvements. I want to make Panels a unified, first-class UI element. This includes all of the existing panels: Color, Brush, Lighting, and Layers. I want Panels to have a few key capabilities:
-1. They can be reordered by dragging the "title bar". This should be accompanied by a pleasant animation where panels shift to their new positions.
-2. They can be closed with a button in the top-right of the panel.
-3. When closed, they can be shown again via a dedicated menu.
+* Wet dynamics runs out of memory in Firefox and the instance crashes in Chromium, which I suspect is the same issue. Look into whether resources are not being cleaned up correctly. It may be useful to log the high water mark for allocated tiles (per format). If necessary, we could even track the source of each allocation by introducing an enum.

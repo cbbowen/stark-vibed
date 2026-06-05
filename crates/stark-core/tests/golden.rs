@@ -268,7 +268,7 @@ fn golden_knife_carry() {
     let mut knife = brush(RED, 40.0);
     knife.dynamics = BrushDynamics::Dry(DryParams {
         smear: 0.9,
-        remove: 0.8,
+        remove: 0.0,
         add: 0.0,
         ridge: 0.0,
     });

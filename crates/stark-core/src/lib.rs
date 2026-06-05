@@ -83,7 +83,7 @@ pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};
 pub use gpu::{
-    Compositor, EnvironmentId, GpuContext, MediaParams, StrokeRenderer, SurfaceId, TileHandle,
+    Compositor, EnvironmentId, GpuContext, MediaParams, StrokeRenderer, SurfaceId, TilePairHandle,
     TilePool,
 };
 pub use image::RgbaImage;

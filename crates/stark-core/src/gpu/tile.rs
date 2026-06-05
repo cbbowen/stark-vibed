@@ -35,13 +35,23 @@ const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
 /// integrate to read, without disturbing the compact persistent layout (DESIGN §6.2).
 pub const SCRATCH_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AllocSource {
+    #[default]
+    Unknown,
+    IntegrateEmptyBase,
+    IntegrateDestination,
+    FlowWritebackRegion,
+    MixerScratch,
+}
+
 /// One pooled GPU texture (`TILE_TEX` square). `Option` only so [`Drop`] can move it
 /// back to the pool's free list for its format.
 struct GpuTex {
     tex: Option<wgpu::Texture>,
     view: wgpu::TextureView,
-    format: wgpu::TextureFormat,
     pool: Weak<Mutex<PoolInner>>,
+    source: AllocSource,
 }
 
 impl Drop for GpuTex {
@@ -50,7 +60,8 @@ impl Drop for GpuTex {
             && let Ok(mut inner) = pool.lock()
             && let Some(t) = self.tex.take()
         {
-            inner.free.entry(self.format).or_default().push(t);
+            inner.free.push(t);
+            *inner.sources.get_mut(&self.source).expect("source not recorded") -= 1;
         }
     }
 }
@@ -68,18 +79,20 @@ impl TexHandle {
     }
 }
 
+// TODO: Remove this. Callers should just get two handles.
 /// A tile's two channels (`color` + `aux`), each a pooled texture.
-struct Tile {
+struct TilePair {
     color: TexHandle,
     aux: TexHandle,
 }
 
+// TODO: Remove this. Callers should just get two handles.
 /// A handle to a tile. Cloning is cheap (Arc bumps), which is what makes persistent
 /// `DocState` snapshots cheap (DESIGN.md §5.1).
 #[derive(Clone)]
-pub struct TileHandle(Arc<Tile>);
+pub struct TilePairHandle(Arc<TilePair>);
 
-impl TileHandle {
+impl TilePairHandle {
     pub fn color(&self) -> &wgpu::Texture {
         self.0.color.texture()
     }
@@ -94,9 +107,29 @@ impl TileHandle {
     }
 }
 
+#[derive(Default)]
 struct PoolInner {
     /// Recycled textures, one free list per format.
-    free: HashMap<wgpu::TextureFormat, Vec<wgpu::Texture>>,
+    free: Vec<wgpu::Texture>,
+    /// The total number of textures available to this pool.
+    capacity: usize,
+    /// Current allocation sources.
+    sources: HashMap<AllocSource, usize>,
+}
+
+impl PoolInner {
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn allocated(&self) -> usize {
+        self.capacity.checked_sub(self.free.len()).expect("capacity less than free")
+    }
+
+    fn increase_capacity(&mut self, format: wgpu::TextureFormat) {
+        self.capacity += 1;
+        tracing::debug!(format = ?format, capacity = self.capacity(), sources = ?self.sources, "increased texture pool capacity");
+    }
 }
 
 /// Recycling allocator for tile textures (DESIGN.md §6.1). Hands out one texture at a
@@ -105,67 +138,71 @@ struct PoolInner {
 #[derive(Clone)]
 pub struct TilePool {
     ctx: GpuContext,
-    /// Channel texture formats, chosen by the document's color space (§6.7).
-    color_format: wgpu::TextureFormat,
-    aux_format: wgpu::TextureFormat,
-    inner: Arc<Mutex<PoolInner>>,
+    format_pools: HashMap<wgpu::TextureFormat, Arc<Mutex<PoolInner>>>,
 }
 
 impl TilePool {
     pub fn new(
         ctx: GpuContext,
-        color_format: wgpu::TextureFormat,
-        aux_format: wgpu::TextureFormat,
+        formats: impl IntoIterator<Item=wgpu::TextureFormat>,
     ) -> Self {
+        let format_pools = formats.into_iter().map(|f| (f, Arc::default())).collect();
         Self {
             ctx,
-            color_format,
-            aux_format,
-            inner: Arc::new(Mutex::new(PoolInner { free: HashMap::new() })),
+            format_pools,
         }
     }
 
+    // TODO: Replace this with `acquire_tex` calls.
     /// Acquire a persistent tile (color-space `color` + `aux` formats), reusing
     /// recycled textures when available. Contents are undefined until painted or cleared.
-    pub fn acquire(&self) -> TileHandle {
-        self.tile(self.aux_format)
+    pub fn acquire(&self, source: AllocSource) -> TilePairHandle {
+        self.tile(wgpu::TextureFormat::Rg16Float, source)
     }
 
+    // TODO: Replace this with `acquire_tex` calls.
     /// Acquire a brush-dynamics *scratch* tile: the same colour channel, but a wider
     /// [`SCRATCH_AUX_FORMAT`] aux (an extra channel the deposit/integrate use internally).
-    pub fn acquire_scratch(&self) -> TileHandle {
-        self.tile(SCRATCH_AUX_FORMAT)
+    pub fn acquire_scratch(&self, source: AllocSource) -> TilePairHandle {
+        self.tile(SCRATCH_AUX_FORMAT, source)
     }
 
-    fn tile(&self, aux_format: wgpu::TextureFormat) -> TileHandle {
-        let color = self.acquire_tex(self.color_format);
-        let aux = self.acquire_tex(aux_format);
-        TileHandle(Arc::new(Tile { color, aux }))
+    // TODO: Remove this once the two callers above have been removed.
+    fn tile(&self, aux_format: wgpu::TextureFormat, source: AllocSource) -> TilePairHandle {
+        let color = self.acquire_tex(wgpu::TextureFormat::Rgba16Float, source);
+        let aux = self.acquire_tex(aux_format, source);
+        TilePairHandle(Arc::new(TilePair { color, aux }))
     }
 
-    fn acquire_tex(&self, format: wgpu::TextureFormat) -> TexHandle {
-        let recycled = {
-            let mut inner = self.inner.lock().expect("tile pool poisoned");
-            inner.free.get_mut(&format).and_then(Vec::pop)
+    // TODO: Document.
+    pub fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
+        let pool = self.format_pools.get(&format).expect("unsupported format");
+        let tex = {
+            let mut pool = pool.lock().expect("tile pool poisoned");
+            *pool.sources.entry(source).or_default() += 1;
+            if let Some(tex) = pool.free.pop() {
+                tex
+            } else {
+                pool.increase_capacity(format);
+                self.create_texture(format)
+            }
         };
-        let tex = recycled.unwrap_or_else(|| self.create_texture(format));
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         TexHandle(Arc::new(GpuTex {
             tex: Some(tex),
             view,
-            format,
-            pool: Arc::downgrade(&self.inner),
+            pool: Arc::downgrade(&pool),
+            source,
         }))
     }
 
     /// Number of recycled color-format textures available (for tests).
     pub fn free_count(&self) -> usize {
-        self.inner
+        let format = wgpu::TextureFormat::Rgba16Float;
+        self.format_pools.get(&format).expect("unsupported format")
             .lock()
             .expect("tile pool poisoned")
-            .free
-            .get(&self.color_format)
-            .map_or(0, Vec::len)
+            .free.len()
     }
 
     fn create_texture(&self, format: wgpu::TextureFormat) -> wgpu::Texture {

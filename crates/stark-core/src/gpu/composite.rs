@@ -21,7 +21,7 @@ use crate::geom::{
 use crate::gpu::context::GpuContext;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
-use crate::gpu::tile::TileHandle;
+use crate::gpu::tile::TilePairHandle;
 
 /// Mirrors `View` in `composite.wesl` (32 bytes).
 #[repr(C)]
@@ -371,7 +371,7 @@ impl Compositor {
         target: &wgpu::TextureView,
         view: ViewTransform,
         bg_channels: [f32; 4],
-        tiles: &[(TileCoord, TileHandle, f32)],
+        tiles: &[(TileCoord, TilePairHandle, f32)],
     ) {
         let device = &self.ctx.device;
         if view.viewport != self.size {

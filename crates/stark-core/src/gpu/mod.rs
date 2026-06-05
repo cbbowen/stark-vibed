@@ -14,4 +14,4 @@ pub use context::GpuContext;
 pub use environment::{Environment, EnvironmentId};
 pub use stroke::StrokeRenderer;
 pub use surface::{Surface, SurfaceId};
-pub use tile::{TileHandle, TilePool};
+pub use tile::{TilePairHandle, TilePool};

@@ -7,12 +7,6 @@
 
 pub use glam::Vec2;
 
-/// Edge length of a square tile's *interior*, in canvas pixels (DESIGN.md §6.1).
-/// This is the addressing stride: tile `(i, j)` owns canvas
-/// `[i*TILE_SIZE, (i+1)*TILE_SIZE)` — aprons (below) overlap neighbors and are
-/// not owned.
-pub const TILE_SIZE: u32 = 256;
-
 /// Apron (halo) width in pixels carried around each tile's interior, replicated
 /// from the neighboring canvas content (DESIGN.md §6.4). The compositor samples a
 /// tile's interior with bilinear filtering; without an apron the filter clamps at
@@ -24,7 +18,13 @@ pub const TILE_APRON: u32 = 1;
 
 /// Physical edge length of a tile's channel textures: interior plus an apron on
 /// every side. Tiles are stored at this size; only the interior is presented.
-pub const TILE_TEX: u32 = TILE_SIZE + 2 * TILE_APRON;
+pub const TILE_TEX: u32 = 256;
+
+/// Edge length of a square tile's *interior*, in canvas pixels (DESIGN.md §6.1).
+/// This is the addressing stride: tile `(i, j)` owns canvas
+/// `[i*TILE_SIZE, (i+1)*TILE_SIZE)` — aprons (below) overlap neighbors and are
+/// not owned.
+pub const TILE_SIZE: u32 = TILE_TEX - 2 * TILE_APRON;
 
 /// Maps a tile's interior quad corner (`∈ [0, 1]`) to a UV coordinate in the
 /// apron'd texture: `uv = corner * INTERIOR_UV_SCALE + INTERIOR_UV_BIAS`. The

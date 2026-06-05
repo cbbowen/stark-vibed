@@ -4,7 +4,7 @@
 //!
 //! Needs a GPU adapter; skips (rather than fails) where none is available.
 
-use stark_core::gpu::{GpuContext, TilePool};
+use stark_core::gpu::{GpuContext, TilePool, tile::AllocSource};
 
 /// Acquire a context or skip the test if the machine has no usable adapter.
 fn context_or_skip() -> Option<GpuContext> {
@@ -22,14 +22,14 @@ fn pool_recycles_dropped_tiles() {
     let Some(ctx) = context_or_skip() else { return };
     let pool = TilePool::new(
         ctx,
-        wgpu::TextureFormat::Rgba16Float,
-        wgpu::TextureFormat::Rg16Float,
+        [wgpu::TextureFormat::Rgba16Float,
+        wgpu::TextureFormat::Rg16Float],
     );
 
     assert_eq!(pool.free_count(), 0, "fresh pool has no recycled tiles");
 
-    let a = pool.acquire();
-    let b = pool.acquire();
+    let a = pool.acquire(AllocSource::Unknown);
+    let b = pool.acquire(AllocSource::Unknown);
     assert_eq!(pool.free_count(), 0, "live tiles are not in the free list");
 
     drop(a);
@@ -38,6 +38,6 @@ fn pool_recycles_dropped_tiles() {
     assert_eq!(pool.free_count(), 2);
 
     // A subsequent acquire reuses a recycled texture rather than allocating.
-    let _c = pool.acquire();
+    let _c = pool.acquire(AllocSource::Unknown);
     assert_eq!(pool.free_count(), 1, "acquire reuses a recycled tile");
 }
