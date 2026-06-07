@@ -188,6 +188,53 @@ pub struct StrokeRenderer {
     fluid_advect_bgl: wgpu::BindGroupLayout,
 }
 
+/// GPU resources scoped to one `render()` call: the wet-flow / smear-pickup region
+/// (and reservoir) textures and the instance buffer. They're sized per-stroke, so —
+/// unlike the fixed-`TILE_TEX` tile pool — they can't be recycled, and a *live* wet
+/// stroke re-renders on every pointer move. Left to drop they'd only release the JS
+/// handle and wait on GC, which can't keep up → the tab OOMs. So they're collected here
+/// (cheap `Arc` clones) and **`destroy()`d on drop**, which `render` arranges to happen
+/// right after the submit — safe, because WebGPU defers the real free until the in-flight
+/// work referencing them completes.
+#[derive(Default)]
+struct ScopedResources {
+    textures: Vec<wgpu::Texture>,
+    buffers: Vec<wgpu::Buffer>,
+}
+
+impl ScopedResources {
+    /// Register a per-stroke texture; returns it unchanged (the clone keeps the GPU
+    /// resource alive until this `ScopedResources` drops).
+    fn texture(&mut self, tex: wgpu::Texture) -> wgpu::Texture {
+        self.textures.push(tex.clone());
+        tex
+    }
+
+    /// Register a per-stroke buffer; returns it unchanged.
+    fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
+        self.buffers.push(buf.clone());
+        buf
+    }
+}
+
+impl Drop for ScopedResources {
+    fn drop(&mut self) {
+        if !self.textures.is_empty() || !self.buffers.is_empty() {
+            tracing::trace!(
+                textures = self.textures.len(),
+                buffers = self.buffers.len(),
+                "destroying scoped stroke resources",
+            );
+        }
+        for tex in self.textures.drain(..) {
+            tex.destroy();
+        }
+        for buf in self.buffers.drain(..) {
+            buf.destroy();
+        }
+    }
+}
+
 /// Mode + params for the integrate pass (`integrate.wesl` `Params`).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -446,6 +493,11 @@ impl StrokeRenderer {
             return base.clone();
         }
 
+        // Per-stroke region/reservoir textures + the instance buffer register here and are
+        // `destroy()`d when this drops (at the end of `render`, after the submit below) —
+        // freeing them deterministically instead of leaking to JS GC (DESIGN.md §6.2).
+        let mut scoped = ScopedResources::default();
+
         // Resolve the brush's prefix-τ texture: image brushes from the asset
         // store; the round tip generated (and cached) from its hardness.
         let prefix_view = match rec.brush.shape {
@@ -500,14 +552,14 @@ impl StrokeRenderer {
         // buffer large, and Chrome/Dawn caps map-at-creation buffers well below the
         // normal `maxBufferSize`, so a long stroke would panic in `createBuffer`.
         let instance_bytes = bytemuck::cast_slice(&instances);
-        let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buf = scoped.buffer(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark sweep instances"),
             size: instance_bytes.len() as u64,
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
+        }));
         self.ctx.queue.write_buffer(&instance_buf, 0, instance_bytes);
 
         let coords = affected_tiles(&segments);
@@ -530,8 +582,8 @@ impl StrokeRenderer {
         // The smear runs only when its scan actually ran; an oversized stroke skips the
         // region composite and degrades to a plain (scrape/paint) deposit.
         let mut smearing = false;
-        let reservoir_tex = |label| {
-            device.create_texture(&wgpu::TextureDescriptor {
+        let mut reservoir_tex = |label| {
+            scoped.texture(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
                     width,
@@ -544,7 +596,7 @@ impl StrokeRenderer {
                 format: wgpu::TextureFormat::Rgba16Float,
                 usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
-            })
+            }))
         };
         // The colour reservoir and the companion height reservoir (the smear-lifted
         // height; zero for a non-smear brush, whose own height is laid from the per-
@@ -556,7 +608,7 @@ impl StrokeRenderer {
                 let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
                 let aux_view = aux.create_view(&wgpu::TextureViewDescriptor::default());
                 self.encode_mixer(
-                    &mut encoder, base, &coords, &segments, &instance_buf, &color_view,
+                    &mut scoped, &mut encoder, base, &coords, &segments, &instance_buf, &color_view,
                     &aux_view, bbox, (lead, width), channels, knobs,
                 );
                 smearing = true;
@@ -751,12 +803,18 @@ impl StrokeRenderer {
         // pass over it (DESIGN.md §6.2). No-op when both params are 0.
         if let Some(wp) = wet {
             self.encode_flow(
-                &mut encoder, pool, &mut new_map, &coords, &wet_scratch, &instance_buf,
+                &mut scoped, &mut encoder, pool, &mut new_map, &coords, &wet_scratch, &instance_buf,
                 instances.len() as u32, wp.bleed, wp.drag,
             );
         }
 
         self.ctx.queue.submit([encoder.finish()]);
+
+        // `scoped` drops here, *after* the submit — destroying this stroke's per-stroke
+        // region/reservoir textures + instance buffer. They aren't pooled (sized per
+        // stroke) and a live wet stroke re-renders every pointer move, so left to JS GC
+        // they pile up and OOM the tab; `destroy()` after submit reclaims them at once
+        // (WebGPU keeps the memory until the in-flight work that uses them completes).
         new_map
     }
 
@@ -766,6 +824,7 @@ impl StrokeRenderer {
     /// carry `COPY_SRC` so they can be sliced back into tiles.
     fn composite_region(
         &self,
+        scoped: &mut ScopedResources,
         encoder: &mut wgpu::CommandEncoder,
         tiles: &[(Vec2, wgpu::TextureView, wgpu::TextureView)],
         origin: Vec2,
@@ -777,8 +836,8 @@ impl StrokeRenderer {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_SRC;
-        let make = |format, label| {
-            device.create_texture(&wgpu::TextureDescriptor {
+        let mut make = move |format, label| {
+            scoped.texture(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: extent,
                 mip_level_count: 1,
@@ -787,7 +846,7 @@ impl StrokeRenderer {
                 format,
                 usage,
                 view_formats: &[],
-            })
+            }))
         };
         let color_tex = make(self.color_space.color_format(), "stark region color");
         let aux_tex = make(self.color_space.aux_format(), "stark region aux");
@@ -872,6 +931,7 @@ impl StrokeRenderer {
     #[allow(clippy::too_many_arguments)]
     fn encode_flow(
         &self,
+        scoped: &mut ScopedResources,
         encoder: &mut wgpu::CommandEncoder,
         pool: &TilePool,
         map: &mut HashTrieMap<TileCoord, TilePairHandle>,
@@ -891,10 +951,10 @@ impl StrokeRenderer {
             return; // empty or larger than MAX_REGION_DIM — leave the plain deposit
         };
         let device = &self.ctx.device;
-        let (a_color, a_aux) = self.composite_halo(encoder, map, &halo, region_origin, w, h);
+        let (a_color, a_aux) = self.composite_halo(scoped, encoder, map, &halo, region_origin, w, h);
         // B is the advection ping-pong scratch and the bleed's horizontal-blur target.
-        let b_color = self.region_tex(w, h, self.color_space.color_format(), "stark flow color b");
-        let b_aux = self.region_tex(w, h, self.color_space.aux_format(), "stark flow aux b");
+        let b_color = self.region_tex(scoped, w, h, self.color_space.color_format(), "stark flow color b");
+        let b_aux = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow aux b");
         let av_c = a_color.create_view(&wgpu::TextureViewDescriptor::default());
         let av_a = a_aux.create_view(&wgpu::TextureViewDescriptor::default());
         let bv_c = b_color.create_view(&wgpu::TextureViewDescriptor::default());
@@ -907,7 +967,7 @@ impl StrokeRenderer {
         // --- Drag: inject the stroke's velocity (dir · drag), then semi-Lagrangian-
         //     advect FLOW_ITERS times, ping-ponging A↔B (even count → result back in A).
         if drag > 0.0 {
-            let vel_tex = self.region_tex(w, h, self.color_space.aux_format(), "stark flow velocity");
+            let vel_tex = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow velocity");
             let vel_view = vel_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
             let inject = InjectUniform {
@@ -989,10 +1049,10 @@ impl StrokeRenderer {
                 .iter()
                 .map(|(c, t)| (c.origin(), t.color_view().clone(), t.aux_view().clone()))
                 .collect();
-            let (rate_color, _rate_aux) = self.composite_region(encoder, &foot, region_origin, w, h);
+            let (rate_color, _rate_aux) = self.composite_region(scoped, encoder, &foot, region_origin, w, h);
             let rate_view = rate_color.create_view(&wgpu::TextureViewDescriptor::default());
-            let c_color = self.region_tex(w, h, self.color_space.color_format(), "stark flow color c");
-            let c_aux = self.region_tex(w, h, self.color_space.aux_format(), "stark flow aux c");
+            let c_color = self.region_tex(scoped, w, h, self.color_space.color_format(), "stark flow color c");
+            let c_aux = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow aux c");
             let cv_c = c_color.create_view(&wgpu::TextureViewDescriptor::default());
             let cv_a = c_aux.create_view(&wgpu::TextureViewDescriptor::default());
             let sigma = bleed * MAX_SIGMA;
@@ -1058,8 +1118,15 @@ impl StrokeRenderer {
     }
 
     /// A transient region texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`).
-    fn region_tex(&self, w: u32, h: u32, format: wgpu::TextureFormat, label: &str) -> wgpu::Texture {
-        self.ctx.device.create_texture(&wgpu::TextureDescriptor {
+    fn region_tex(
+        &self,
+        scoped: &mut ScopedResources,
+        w: u32,
+        h: u32,
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> wgpu::Texture {
+        scoped.texture(self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -1070,12 +1137,13 @@ impl StrokeRenderer {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
-        })
+        }))
     }
 
     /// Composite the post-deposit tiles for `halo` into a fresh region (color, aux).
     fn composite_halo(
         &self,
+        scoped: &mut ScopedResources,
         encoder: &mut wgpu::CommandEncoder,
         map: &HashTrieMap<TileCoord, TilePairHandle>,
         halo: &[TileCoord],
@@ -1087,7 +1155,7 @@ impl StrokeRenderer {
             .iter()
             .filter_map(|c| map.get(c).map(|t| (c.origin(), t.color_view().clone(), t.aux_view().clone())))
             .collect();
-        self.composite_region(encoder, &post, region_origin, w, h)
+        self.composite_region(scoped, encoder, &post, region_origin, w, h)
     }
 
     /// Slice a processed region back into fresh CoW tiles for the affected `coords`.
@@ -1214,6 +1282,7 @@ impl StrokeRenderer {
     #[allow(clippy::too_many_arguments)]
     fn encode_mixer(
         &self,
+        scoped: &mut ScopedResources,
         encoder: &mut wgpu::CommandEncoder,
         base: &HashTrieMap<TileCoord, TilePairHandle>,
         coords: &BTreeSet<TileCoord>,
@@ -1237,19 +1306,18 @@ impl StrokeRenderer {
             depth_or_array_layers: 1,
         };
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let make_tex = |format, label| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: extent,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default())
+        let mut make_tex = move |format, label| {
+            scoped.texture(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            }))
+            .create_view(&wgpu::TextureViewDescriptor::default())
         };
         let region_color = make_tex(self.color_space.color_format(), "stark mixer region color");
         let region_aux = make_tex(self.color_space.aux_format(), "stark mixer region aux");
