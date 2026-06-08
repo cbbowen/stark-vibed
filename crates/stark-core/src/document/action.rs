@@ -45,10 +45,14 @@ pub enum BrushShape {
 /// "Wet mixing & brush dynamics"). The pluggable fidelity axis.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BrushDynamics {
-    /// The unified paint-manipulation brush: independently **smear** (move paint),
-    /// **remove** (scrape it off), and **add** (lay the brush's own paint). Spans
-    /// erasing, smearing, painting, and every blend; the everyday dry brush is just
-    /// `smear=0, remove=0, add=1` (the default) (DESIGN.md §6.2).
+    /// The unified paint-manipulation brush, driven by an explicit **tool reservoir**:
+    /// **lift** picks canvas paint up onto the tool, **deposit** lays tool paint back
+    /// down, and **add** lays the brush's own paint. With `add=0` paint is conserved —
+    /// it only *moves* between canvas and tool — so dragging from a painted region onto
+    /// bare canvas asymptotically empties the tool there. Spans erasing
+    /// (`lift=1, deposit=0`), smudging (`lift+deposit`), painting (`add`), and every
+    /// blend; the everyday dry brush is just `add=1, lift=0, deposit=0` (the default)
+    /// (DESIGN.md §6.2).
     Dry(DryParams),
     /// Wet paint that simultaneously **bleeds** (isotropic wet-on-wet diffusion) and
     /// **drags** (advection along the stroke's motion) — both run over the stroke
@@ -63,22 +67,27 @@ impl Default for BrushDynamics {
     }
 }
 
-/// Parameters of the unified [`BrushDynamics::Dry`] brush (DESIGN.md §6.2). The
-/// three axes compose freely: `remove`-only = eraser, `smear`-only = smudge,
-/// `add`-only = paint, and combinations everything between (e.g. `smear`+`remove` =
-/// a smudge that lightens the source).
+/// Parameters of the unified [`BrushDynamics::Dry`] brush (DESIGN.md §6.2), driven by a
+/// **tool reservoir** that fills (lift) and empties (deposit). The three axes compose
+/// freely: `lift`-only = eraser, `lift`+`deposit` (`add=0`) = a conservative smudge that
+/// moves paint without creating or destroying it, `add`-only = ordinary paint, and every
+/// blend between.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DryParams {
-    /// How much existing paint the brush **moves** (picks up and carries along the
-    /// stroke), in [0, 1]: 0 = none, 1 = maximum smear. A copy-pickup — the source is
-    /// only lightened by `remove` — so the carried paint fades out on bare canvas.
-    pub smear: f32,
-    /// How much paint the brush **removes** (scrapes off) per unit contact, in [0, 1]:
-    /// 0 = none, 1 = scrape fully clean. Tooth-gated by the canvas surface.
-    pub remove: f32,
-    /// How much of the brush's own paint it **adds**, in [0, 1]: 0 = lays none (pure
-    /// smear/erase), 1 = a full deposit (ordinary painting).
+    /// How much of the brush's own paint it **adds** directly to the canvas per step, in
+    /// [0, 1]: 0 = lays none (pure lift/deposit), 1 = a full deposit (ordinary painting).
+    /// Bypasses the tool reservoir.
     pub add: f32,
+    /// How much canvas paint the brush **lifts** onto the tool per step, as a fraction of
+    /// the paint present, in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Tooth-gated
+    /// by the canvas surface. `#[serde(default)]` so pre-rewrite documents load.
+    #[serde(default)]
+    pub lift: f32,
+    /// How much tool paint the brush **deposits** back onto the canvas per step, as a
+    /// fraction of the paint on the tool, in [0, 1]: 0 = hold it all (an eraser fills but
+    /// never lays back), 1 = lay it all immediately. `#[serde(default)]`.
+    #[serde(default)]
+    pub deposit: f32,
     /// How strongly displaced paint **piles into ridges** at the edges of the stroke,
     /// in [0, 1] — the impasto lip (DESIGN.md §6.2, lateral pile-up). `#[serde(default)]`.
     #[serde(default)]
@@ -87,7 +96,7 @@ pub struct DryParams {
 
 impl Default for DryParams {
     fn default() -> Self {
-        Self { smear: 0.0, remove: 0.0, add: 1.0, ridge: 0.0 }
+        Self { add: 1.0, lift: 0.0, deposit: 0.0, ridge: 0.0 }
     }
 }
 

@@ -22,17 +22,18 @@ struct TileXform {
 // in (DESIGN.md §6.4).
 @group(2) @binding(0) var surface_tex: texture_2d<f32>;
 @group(2) @binding(1) var surface_samp: sampler;
-// The stroke's color reservoir: one column per swept segment (the brush color as
-// it evolves along the stroke) × one row per lateral band across the tip, so each
-// part of the brush carries the color it picked up (DESIGN.md §6.2). For a dry
-// brush it is a 1×1 texel of the brush color. Linear filtering interpolates both
-// axes for free — across the tip (bands) and along the stroke (segments) — so this
-// shader is agnostic to the band count; the mixer compute pass populates it.
+// The stroke's deposit reservoir: one column per swept segment (the paint the brush lays
+// as it evolves along the stroke) × one row per lateral band across the tip, so each part
+// of the brush carries the colour it picked up (DESIGN.md §6.2). For a plain brush it is a
+// 1×1 texel of the brush colour. Linear filtering interpolates both axes for free — across
+// the tip (bands) and along the stroke (segments) — so this shader is agnostic to the band
+// count; the mixer compute pass populates it (deposit·tool + add·brush).
 @group(3) @binding(0) var reservoir: texture_2d<f32>;
 @group(3) @binding(1) var reservoir_samp: sampler;
-// Companion reservoir carrying *only* the smear-lifted canvas height as a per-stamp rate
-// (zero where nothing was lifted). The brush's own height is laid separately from the
-// per-segment attribute, so the deposit is one continuous sum (DESIGN §6.1/§6.2).
+// Companion reservoir carrying the deposit's height (.x) and wet (.y) rates plus the
+// **subtractive** lifted opacity-mass rate (.z) — the amount the brush took off the canvas
+// to fill the tool, which the integrate scrapes back off (DESIGN §6.1/§6.2). Zero for a
+// plain brush, whose flat reservoir lays only the brush's own paint.
 @group(3) @binding(2) var aux_reservoir: texture_2d<f32>;
 
 struct VsOut {
@@ -97,14 +98,18 @@ fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
 }
 
-// The smear-lifted height *rate* at the same reservoir position (already divided by the
-// segment-overlap count, so the additive deposit reconstructs the lifted height).
-fn reservoir_aux(u: vec2<f32>, local: vec2<f32>) -> f32 {
+// The tool's **net height transfer** at the reservoir position (per-column: deposited −
+// lifted height; the deposit shader spreads it over the footprint and the integrate
+// coverage-normalizes it). Zero for a plain brush, whose own height rides the per-segment
+// attribute. This is the conserved quantity — what the integrate adds to the base (DESIGN §6.1).
+fn reservoir_net_height(u: vec2<f32>, local: vec2<f32>) -> f32 {
     let along = u.x + local.x * u.y;
     return textureSampleLevel(aux_reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0).x;
 }
 
-// How much of the brush's own height the deposit lays (the `add` axis), in [0, 1].
+// How much of the brush's *own* paint (the per-segment height/wet attributes) the deposit
+// lays — the `add` axis, in [0, 1]. The tool deposit (lift/deposit) rides the reservoir
+// instead, so this gates only the own-paint contribution.
 fn add_frac() -> f32 {
     return xf.surf.z;
 }

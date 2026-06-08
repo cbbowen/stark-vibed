@@ -377,6 +377,22 @@ The color texture stores **Oklab** components, not sRGB/RGB. Linear 16-bit float
 comfortably holds Oklab's range and the negative `a`/`b` chroma axes, and keeps
 blends perceptually uniform (GOALS §1). Alpha is premultiplied against `L,a,b`.
 
+> **The color alpha channel is *only* the paint's per-unit-thickness opacity** — a
+> material property (how opaque the pigment is per unit of thickness). It says
+> **nothing** about how much paint is on the canvas, nor even whether any paint is
+> present. **The amount (and presence) of paint is the `height` channel** (precisely,
+> `height − surface_height`, the paint *thickness*). The two combine only at display
+> time in the translucent-slab law `visible = 1 − exp(−K · opacity · thickness)`
+> (media pass, §6.3). Consequences that the brush dynamics must respect:
+> - To **conserve paint** (move it without creating or destroying), conserve
+>   **height** — never the alpha. Alpha is per-unit and is carried as a
+>   height-weighted blend of the picked-up paint's opacity; it is not consumed.
+> - A thin layer of opaque paint (alpha ≈ 1, tiny thickness) is *barely visible*; a
+>   thick layer of translucent paint can be very visible. Opacity alone is not coverage.
+> - Lifting paint reduces the canvas **height** (less paint), leaving the remaining
+>   paint's per-unit alpha unchanged; the source lightens because thickness — not
+>   alpha — drops.
+
 Channels are referenced through a small `ChannelSet` descriptor so the renderer,
 compositor, and tile pool agree on layout without hard-coding it everywhere — a
 new channel is a descriptor entry plus shader usage, not a structural rewrite.

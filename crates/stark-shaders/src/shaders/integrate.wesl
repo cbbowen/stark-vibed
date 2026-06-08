@@ -16,7 +16,10 @@
 // brush dynamics (knife, blend modes) can plug in as new `mode`s.
 
 struct Params {
-    // mode.x (0 = Normal, 1 = Dry), remove (scrape), add (film fraction), tooth·relief.
+    // mode.x (0 = Normal, 1 = Dry); the other components are unused. The Dry branch conserves
+    // paint by adding the mixer's per-pixel **net height transfer** (deposited − lifted,
+    // carried in the scratch aux's `.w`, coverage-normalized by `.z`) to the base — height is
+    // the amount of paint; the colour alpha is per-unit opacity only (DESIGN §6.1).
     mode: vec4<f32>,
     // tile texture origin in canvas px (.xy), inv surface-tile (.z), ridge (.w) —
     // .xyz feed the Dry scrape's tooth gate (sampling the surface in canvas space).
@@ -57,45 +60,36 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         out.color = s_c + base_c * (1.0 - s_c.a);
         out.aux = base_a + s_a;
     } else {
-        // DRY — scrape (remove), then lay the footprint/smear as a film (add), then
-        // pile ridges. The normalized representation makes the scrape trivially premult-
-        // consistent: scaling the opacity-premultiplied color *and* the thickness by
-        // `(1−factor)` lightens the paint with no dark fringe.
-        let remove = p.mode.y;
-        let load = p.mode.z;   // colour/wet film fraction = the `add` axis (Rust forces 1
-                               // when smearing — the carried paint rides the scratch).
-                               // Thickness is NOT re-filmed by it: the stamp already
-                               // applied `add` to the brush's own height, and the smear's
-                               // lifted height is carried in full.
-        let tooth = p.mode.w;  // tooth·relief (0 on Flat → gate is a no-op)
-        let canvas = p.surf.xy + frag.xy;
-        let hs = textureSampleLevel(surface, surface_samp, canvas * p.surf.z, 0.0).r;
-        let gate = 1.0 - tooth * (1.0 - hs);
-        let contact = s_c.a; // scratch opacity = the brush's contact, for the `remove` scrape
-        // Two scrapes, both scaling colour + thickness by `(1−factor)` (premult-consistent,
-        // no dark fringe): `remove` destroys paint (contact·gate-scaled), and the **smear**
-        // removes *exactly the height it re-lays here* — `s_a.z` is the smear-lifted
-        // thickness the deposit laid (carried from behind), so taking that same fraction of
-        // the base **moves** paint instead of duplicating it (conservative: over a uniform
-        // field the scrape cancels the re-lay → no change; at edges it drags).
-        let smear_move = s_a.z / max(base_a.x, 1e-4);
-        let factor = clamp(remove * contact * gate + smear_move, 0.0, 1.0);
+        // DRY — paint is moved by transferring **height** (the amount; DESIGN §6.1), not by
+        // scaling alpha. The mixer emitted, per column, the conserved net height transfer
+        // (deposited − lifted) into the scratch aux's `.w`, laid additively across the
+        // overlapping segment quads; `.z` is the summed footprint coverage. Dividing recovers
+        // the per-pixel transfer at the canvas-height scale, which we add to the base. With
+        // `add=0` what's deposited here was lifted elsewhere → total canvas+tool height is
+        // conserved (the source lightens because its *thickness* drops, not its alpha).
+        let cov = s_a.z;                 // accumulated footprint coverage (Σ√cov)
+        // The brush's soft footprint coverage at this pixel ∈ [0,1] (1 under the core, →0 at
+        // the feathered edge). The net transfer was laid through the soft footprint then
+        // accumulated across the overlapping quads, so `s_a.w / cov` recovers the per-column
+        // amount but *divides out the soft edge* — leaving a hard cutoff at the footprint
+        // boundary. Re-multiplying by `contact` restores the brush shape: the lift/deposit
+        // feathers with the tip instead of stopping abruptly (it still ≈ the per-column amount
+        // under the core where contact ≈ 1, so conservation holds).
+        let contact = 1.0 - exp(-cov);
+        let net = (s_a.w / max(cov, 1e-4)) * contact; // conserved transfer, brush-feathered
 
-        let scraped_c = base_c * (1.0 - factor);
-        let scraped_a = base_a * (1.0 - factor);
+        // Colour: lay the deposit (deposit·tool + add·brush) over the base (premultiplied
+        // "over"). The lift does NOT touch colour — removing paint reduces height, and the
+        // media's `1−exp(−opacity·thickness)` makes the source fade as its thickness drops.
+        out.color = s_c + base_c * (1.0 - s_c.a);
+        // Height = base + the brush's own add-height (`s_a.x`, impasto) + the conserved net
+        // transfer. Wet rides the own attribute (`s_a.y`).
+        out.aux = vec4<f32>(max(base_a.x + s_a.x + net, 0.0), base_a.y + s_a.y, 0.0, 0.0);
 
-        // Film the scratch over the scraped base. Colour (and its premult opacity) and
-        // wet take the `load` (= add) fraction; thickness is laid in full — the stamp
-        // already gated the brush's own height by `add`, and the smear's lifted height is
-        // carried whole, so re-filming it would apply `add` twice.
-        let film = s_c * load;
-        out.color = film + scraped_c * (1.0 - film.a);
-        out.aux = vec4<f32>(scraped_a.x + s_a.x, scraped_a.y + s_a.y * load, 0.0, 0.0);
-
-        // Lateral pile-up: paint shoved aside heaps into the footprint's transition
-        // band — `4·contact·(1−contact)` peaks at the soft edge, zero at the covered
-        // core and outside — scaled by the base paint present. A pure function of the
-        // local contact (no neighbour reads), so the tile apron stays seamless (§6.4).
+        // Lateral pile-up: paint shoved aside heaps into the footprint's transition band —
+        // `4·contact·(1−contact)` peaks at the soft edge, zero at the covered core and
+        // outside — scaled by the base paint present. A pure function of the local coverage
+        // (no neighbour reads), so the tile apron stays seamless (§6.4).
         let edge = 4.0 * contact * (1.0 - contact);
         out.aux.x = out.aux.x + p.surf.w * edge * base_a.x;
     }

@@ -122,10 +122,6 @@ impl PoolInner {
         self.capacity
     }
 
-    pub fn allocated(&self) -> usize {
-        self.capacity.checked_sub(self.free.len()).expect("capacity less than free")
-    }
-
     fn increase_capacity(&mut self, format: wgpu::TextureFormat) {
         self.capacity += 1;
         tracing::debug!(format = ?format, capacity = self.capacity(), sources = ?self.sources, "increased texture pool capacity");

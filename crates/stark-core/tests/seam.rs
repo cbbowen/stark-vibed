@@ -101,13 +101,13 @@ fn render_shifted_knife(shift: Vec2) -> RgbaImage {
     });
     engine.process(InputCommand::EndStroke);
 
-    // The Dry scrape+smear+ridge under test, through the same 4-tile corner.
+    // The Dry lift+deposit+ridge under test, through the same 4-tile corner.
     let mut knife = brush(RED, 28.0);
     knife.tooth = 0.0;
     knife.dynamics = BrushDynamics::Dry(DryParams {
-        smear: 0.5,
-        remove: 0.5,
         add: 0.0,
+        lift: 0.5,
+        deposit: 0.5,
         ridge: 1.0,
     });
     engine.process(InputCommand::SetBrush(knife));

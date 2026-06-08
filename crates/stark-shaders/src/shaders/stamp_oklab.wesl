@@ -11,7 +11,7 @@
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
 //   target 1: aux   (Rg16Float)   — (thickness, wet·op)
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, reservoir_aux, add_frac};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, reservoir_net_height, add_frac};
 
 @vertex
 fn vs_main(
@@ -30,27 +30,29 @@ fn fs_main(in: VsOut) -> FsOut {
     let cov = surface_tooth(in.misc.z, 1.0 - exp(-flow * swept_depth(in)), in.clip.xy);
     let scov = sqrt(cov); // split the footprint coverage across opacity and thickness
 
-    // Each part of the tip lays the color its lateral band carries (DESIGN §6.2). The
-    // reservoir alpha is the carried *presence*: 1 for a plain brush (flat reservoir
-    // `(C, 1)`), or the smear's per-band load `(C·load, load)`. Either way the deposit
-    // is `(C · presence · op · √cov, presence · op · √cov)` — premultiplied by opacity,
-    // with the smear automatically fading as its load runs out.
+    // Colour laid here is the reservoir's deposit payload (premultiplied): for a plain
+    // brush the flat reservoir's `add·brush`; for a lift/deposit brush the mixer's
+    // `deposit·tool + add·brush` (the brush's own colour is folded in by the mixer, since
+    // one colour texture carries both). The sweep colour target over-blends it, so per-arc
+    // rates sum through the overlapping segment quads to the local deposit.
     let ch = reservoir_color(in.u, in.local);
     let op = in.op * scov;
-    // Thickness laid here is one continuous sum (no branch): the brush's own height rate
-    // (`in.misc.z`, gated by the `add` axis) plus the smear-lifted canvas height the
-    // reservoir carries (a rate already normalized by the segment overlap, zero where
-    // nothing was lifted). Both ride `√cov`, so the footprint coverage applies once.
-    // Height is independent of opacity (DESIGN §6.1).
-    let lifted = reservoir_aux(in.u, in.local); // smear-lifted height rate (canvas paint)
-    let thick = (add_frac() * in.misc.z + lifted) * scov;
+
+    let net_h = reservoir_net_height(in.u, in.local); // tool net height transfer (per-column)
+    let af = add_frac();
 
     var out: FsOut;
     out.color = vec4<f32>(ch.xyz * op, ch.a * op);
-    // aux = (thickness, wet·op, **smear-lifted thickness alone**, _). The wide scratch aux
-    // carries the lifted part separately so the integrate can scrape exactly what the smear
-    // re-lays — moving paint, not duplicating it (DESIGN §6.2). Persistent tiles keep only
-    // (thickness, wet); the integrate writes that compact form out.
-    out.aux = vec4<f32>(thick, in.misc.w * out.color.a, lifted * scov, 0.0);
+    // The wide scratch aux separates the height contributions so the integrate can treat them
+    // differently (DESIGN §6.1/§6.2):
+    //   .x = the brush's *own* add-height (per-segment attr `in.misc.z`, gated by `add`),
+    //        laid plain-paint style (additive over the overlap → builds impasto);
+    //   .y = the brush's own wet;
+    //   .z = footprint coverage (√cov), summed for the integrate's normalization + ridge;
+    //   .w = the tool's **net height transfer** (deposited − lifted), which the integrate
+    //        divides by the coverage and adds to the base — paint *moves*, conserving height
+    //        with `add=0`. Height is the amount of paint; the colour alpha is per-unit
+    //        opacity only and never represents amount (§6.1).
+    out.aux = vec4<f32>(af * in.misc.z * scov, af * in.misc.w * op, scov, net_h * scov);
     return out;
 }

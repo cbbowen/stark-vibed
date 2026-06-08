@@ -509,8 +509,8 @@ fn BrushPanel() -> Element {
                 "Bristles"
             }
         }
-            // Brush dynamics: the unified Dry brush (smear/remove/add — erase, smear,
-            // paint, and everything between) or the Wet flow brush (DESIGN §6.2).
+            // Brush dynamics: the unified Dry brush (add/lift/deposit — paint, erase,
+            // smudge, and everything between) or the Wet flow brush (DESIGN §6.2).
             div { class: "brush-shapes",
                 button {
                     class: chip(is_dry),
@@ -532,16 +532,18 @@ fn BrushPanel() -> Element {
             // Canvas tooth: how strongly the surface weave gates deposition (§6.4).
             Slider { label: "Tooth", min: 0.0, max: 1.0, value: brush.tooth,
                 oninput: move |v| update_brush(state, move |b| b.tooth = v) }
-            // Dry controls: how much paint it moves (smear), removes (scrape), and
-            // adds (own paint), plus the impasto ridge (DESIGN.md §6.2). The three axes
-            // span erasing, smearing, painting, and every blend.
+            // Dry controls: how much of its own paint it adds, how much canvas paint it
+            // lifts onto the tool, and how much it deposits back, plus the impasto ridge
+            // (DESIGN.md §6.2). The axes span painting (add), erasing (lift), smudging
+            // (lift+deposit), and every conservative blend (add=0 moves paint, never
+            // creating or destroying it).
             if is_dry {
-                Slider { label: "Smear", min: 0.0, max: 1.0, value: mp.smear,
-                    oninput: move |v| set_dry(state, move |m| m.smear = v) }
-                Slider { label: "Remove", min: 0.0, max: 1.0, value: mp.remove,
-                    oninput: move |v| set_dry(state, move |m| m.remove = v) }
                 Slider { label: "Add", min: 0.0, max: 1.0, value: mp.add,
                     oninput: move |v| set_dry(state, move |m| m.add = v) }
+                Slider { label: "Lift", min: 0.0, max: 1.0, value: mp.lift,
+                    oninput: move |v| set_dry(state, move |m| m.lift = v) }
+                Slider { label: "Deposit", min: 0.0, max: 1.0, value: mp.deposit,
+                    oninput: move |v| set_dry(state, move |m| m.deposit = v) }
                 Slider { label: "Ridge", min: 0.0, max: 1.0, value: mp.ridge,
                     oninput: move |v| set_dry(state, move |m| m.ridge = v) }
             }

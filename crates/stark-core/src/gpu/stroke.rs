@@ -131,9 +131,9 @@ struct TileInstance {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MixerUniform {
-    brush_ch: [f32; 4],
+    brush_ch: [f32; 4],    // brush colour channels (.xyz); .w = `add` axis
     origin_dims: [f32; 4], // region origin.xy (canvas px), dims.xy (px)
-    knobs: [f32; 4],       // smear, add, flatten_step, reservoir capacity
+    knobs: [f32; 4],       // lift, deposit, flatten_step, reservoir capacity
     counts: [u32; 4],      // segment_count, lead-in columns, reservoir width, _
 }
 
@@ -567,21 +567,25 @@ impl StrokeRenderer {
             label: Some("stark stroke commit"),
         });
 
-        // The Dry brush's `smear` runs the reservoir scan: a serial walk that lifts
-        // canvas paint (pickup) + injects the brush's own colour (add) into a per-band
-        // reservoir, storing premultiplied carried paint that the deposit lays — fading
-        // as the load runs out. Only runs when smearing; every other case (plain paint,
-        // erase, Wet) gets a 1×1 texel of the brush colour so the deposit stays uniform.
+        // The Dry brush runs the reservoir scan whenever it lifts or deposits: a serial
+        // walk that lifts canvas paint onto a per-band tool, deposits a fraction back, and
+        // folds in the brush's own `add` colour — emitting the deposit payload plus a
+        // subtractive lift-mass (so the integrate scrapes exactly what was lifted). Pure
+        // `add` (plain paint), erase-via-flat, and Wet take the cheap flat-reservoir path:
+        // a 1×1 texel of the brush colour (scaled by `add`) so the deposit stays uniform.
         let dry = match rec.brush.dynamics {
             BrushDynamics::Dry(mp) => Some(mp),
             _ => None,
         };
+        // How much of the brush's own paint the deposit lays (the `add` axis); non-Dry
+        // (Wet) lays its full own paint. Folded into the reservoir colour (mixer/flat) and
+        // used to gate the brush's own height/wet in the stamp.
+        let add_frac = dry.map_or(1.0, |mp| mp.add);
         let scan = dry
-            .filter(|mp| mp.smear > 0.0)
-            .map(|mp| [mp.smear, mp.add, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY]);
-        // The smear runs only when its scan actually ran; an oversized stroke skips the
-        // region composite and degrades to a plain (scrape/paint) deposit.
-        let mut smearing = false;
+            .filter(|mp| mp.lift > 0.0 || mp.deposit > 0.0)
+            .map(|mp| [mp.lift, mp.deposit, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY]);
+        // The scan runs only when it actually fired; an oversized stroke skips the region
+        // composite and degrades to a plain (flat-reservoir) deposit.
         let mut reservoir_tex = |label| {
             scoped.texture(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -609,12 +613,11 @@ impl StrokeRenderer {
                 let aux_view = aux.create_view(&wgpu::TextureViewDescriptor::default());
                 self.encode_mixer(
                     &mut scoped, &mut encoder, base, &coords, &segments, &instance_buf, &color_view,
-                    &aux_view, bbox, (lead, width), channels, knobs,
+                    &aux_view, bbox, (lead, width), channels, add_frac, knobs,
                 );
-                smearing = true;
                 (color_view, aux_view)
             }
-            None => self.flat_reservoir(&mut encoder, channels),
+            None => self.flat_reservoir(&mut encoder, channels, add_frac),
         };
         let reservoir_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep reservoir bg"),
@@ -658,29 +661,15 @@ impl StrokeRenderer {
             });
         }
 
-        // Integrate mode: the Dry brush scrapes (remove) + films (add) + ridges; Wet
-        // uses Normal (mode 0) for its deposit. The scrape is tooth-gated by the canvas
-        // surface (`relief` makes it a no-op on Flat). When smearing, the film fraction
-        // is forced to 1 — the carried amount already rides the scratch's opacity;
-        // otherwise `add` is the own-paint film fraction (`remove`=`add`=0 → plain paint).
-        //
-        // `mode.y` is `remove` alone (the destructive scrape). The *smear's* scrape is no
-        // longer folded in here: the integrate now removes exactly the smear-lifted height
-        // the deposit re-laid (`scratch.aux.z`), conserving paint as it drags — see
-        // integrate.wesl.
+        // Integrate mode: `mode.x` selects the Dry branch (conserve height by adding the
+        // mixer's net transfer; lay the deposit over) vs Normal (mode 0, Wet's deposit). The
+        // lift now rides the mixer's net-height transfer and the tooth-reveal emerges from
+        // the media's `thickness = height − surface`, so no other mode fields are needed.
         let integrate_mode = match dry {
-            Some(mp) => [
-                1.0,
-                mp.remove,
-                if smearing { 1.0 } else { mp.add },
-                rec.brush.tooth * self.surface.relief,
-            ],
+            Some(_) => [1.0, 0.0, 0.0, 0.0],
             None => [0.0; 4],
         };
         let ridge = dry.map_or(0.0, |mp| mp.ridge);
-        // How much of the brush's own height the deposit lays (the `add` axis). The stamp
-        // adds it as `add·height_rate`; non-Dry brushes (Wet) lay their full height.
-        let add_frac = dry.map_or(1.0, |mp| mp.add);
 
         // Wet brush: after the Normal deposit, diffuse the stroke region (DESIGN.md
         // §6.2). Collect this stroke's scratch footprints so the diffusion localizes
@@ -1211,14 +1200,15 @@ impl StrokeRenderer {
         view
     }
 
-    /// A 1×1 reservoir holding the brush's own color (alpha 1 = full footprint contact),
-    /// plus a 1×1 height reservoir cleared to 0 (no smear pickup), for brushes without a
-    /// scan. Cleared (not CPU-uploaded) so the driver does the f16 encode; the deposit
-    /// samples one uniform color across the whole tip and adds zero lifted height.
+    /// A 1×1 reservoir holding the brush's own color premultiplied by `add` (so the
+    /// deposit lays `add·brush`), plus a 1×1 aux cleared to 0 (no tool deposit, no lift),
+    /// for brushes without a scan. Cleared (not CPU-uploaded) so the driver does the f16
+    /// encode; the deposit samples one uniform color across the whole tip.
     fn flat_reservoir(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         channels: [f32; 4],
+        add: f32,
     ) -> (wgpu::TextureView, wgpu::TextureView) {
         let make = |label| {
             self.ctx
@@ -1245,11 +1235,13 @@ impl StrokeRenderer {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
+                        // Premultiplied by `add`: colour = channels·add, opacity = add, so
+                        // the deposit lays `add·brush` (the stamp scales by op = in.op·√cov).
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: channels[0] as f64,
-                            g: channels[1] as f64,
-                            b: channels[2] as f64,
-                            a: 1.0,
+                            r: (channels[0] * add) as f64,
+                            g: (channels[1] * add) as f64,
+                            b: (channels[2] * add) as f64,
+                            a: add as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -1293,6 +1285,7 @@ impl StrokeRenderer {
         bbox: (Vec2, u32, u32),
         pad: (u32, u32),
         channels: [f32; 4],
+        add: f32,
         knobs: [f32; 4],
     ) {
         let (origin, w, h) = bbox;
@@ -1421,7 +1414,8 @@ impl StrokeRenderer {
 
         // ---- Pass B: the serial reservoir scan, writing the reservoir texture.
         let uni = MixerUniform {
-            brush_ch: channels,
+            // The brush's own colour (.xyz) and the `add` axis (.w) the walk folds in.
+            brush_ch: [channels[0], channels[1], channels[2], add],
             origin_dims: [origin.x, origin.y, w as f32, h as f32],
             knobs,
             counts: [segments.len() as u32, lead, width, 0],

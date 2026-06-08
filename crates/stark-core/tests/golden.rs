@@ -142,7 +142,7 @@ fn golden_smear_mixer() {
     );
 
     let mut brush = brush(RED, 16.0);
-    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.5, remove: 0.0, add: 0.1, ridge: 0.0 });
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.1, lift: 0.5, deposit: 0.5, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -178,9 +178,9 @@ fn golden_knife_scrape() {
     // Explicit (not `::default()`) so this "clean scrape" golden is stable regardless
     // of the default knife's feel: hard bite, no film, no carry, no ridge.
     knife.dynamics = BrushDynamics::Dry(DryParams {
-        smear: 0.0,
-        remove: 0.8,
         add: 0.0,
+        lift: 0.8,
+        deposit: 0.0, // lift onto the tool, lay nothing back → a clean scrape/erase
         ridge: 0.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -227,9 +227,9 @@ fn golden_knife_tooth() {
     knife.tooth = 1.0; // full tooth: the gate bites only the weave's peaks
     // Explicit params so the tooth-reveal golden is stable against the default knife.
     knife.dynamics = BrushDynamics::Dry(DryParams {
-        smear: 0.0,
-        remove: 0.8,
         add: 0.0,
+        lift: 0.8,
+        deposit: 0.0, // lift onto the tool, lay nothing back → a clean scrape/erase
         ridge: 0.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -267,9 +267,9 @@ fn golden_knife_carry() {
 
     let mut knife = brush(RED, 40.0);
     knife.dynamics = BrushDynamics::Dry(DryParams {
-        smear: 0.9,
-        remove: 0.0,
         add: 0.0,
+        lift: 0.9,     // lift green onto the tool (lightening the source)
+        deposit: 0.12, // slowly re-lay it onto the bare runway, dragging a long fading tail
         ridge: 0.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -306,9 +306,9 @@ fn golden_knife_ridge() {
 
     let mut knife = brush(RED, 30.0);
     knife.dynamics = BrushDynamics::Dry(DryParams {
-        smear: 0.0,
-        remove: 0.15, // gentle scrape: keep the colour ~uniform so the lip reads as relief
         add: 0.0,
+        lift: 0.15, // gentle lift: keep the colour ~uniform so the lip reads as relief
+        deposit: 0.0,
         ridge: 1.0,
     });
     engine.process(InputCommand::SetBrush(knife));
@@ -332,10 +332,11 @@ fn golden_smudge_paint() {
     };
 
     // The unified Dry brush running all three axes at once (DESIGN.md §6.2): a green
-    // bar, then a red stroke that simultaneously *removes* (lightens the bar), *smears*
-    // (drags green along the path), and *adds* (lays its own red) — a single brush doing
-    // what previously needed the knife and mixer together. The result past the bar is a
-    // fading red↔green blend over partly-scraped paper, not reachable by any one axis.
+    // bar, then a red stroke that simultaneously *lifts* (picking green up and lightening
+    // the bar), *deposits* (dragging green along the path), and *adds* (lays its own red) —
+    // a single brush doing what previously needed the knife and mixer together. The result
+    // past the bar is a fading red↔green blend over partly-lifted paper, not reachable by
+    // any one axis.
     paint(
         &mut engine,
         GREEN,
@@ -344,7 +345,7 @@ fn golden_smudge_paint() {
     );
 
     let mut brush = brush(RED, 18.0);
-    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.7, remove: 0.5, add: 0.4, ridge: 0.0 });
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.4, lift: 0.7, deposit: 0.4, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -361,18 +362,18 @@ fn golden_smudge_paint() {
 
 #[test]
 fn empty_smear_adds_no_height() {
-    // Regression (DESIGN §6.1/§6.2): a pure smear (smear>0, add=0, remove=0) over BARE
-    // canvas must deposit nothing — there is no paint on the tool, so no colour *and no
-    // height*. The earlier bug laid the brush's height ungated by the reservoir presence,
-    // raising relief out of nothing. Now height rides the reservoir (zero when empty), so
-    // the smeared-empty canvas must render bit-close to the untouched paper.
+    // Regression (DESIGN §6.1/§6.2): lift+deposit (add=0) over BARE canvas must deposit
+    // nothing — there is no paint to lift, so the tool stays empty and lays no colour *and
+    // no height*. The earlier bug laid the brush's height ungated by the reservoir presence,
+    // raising relief out of nothing. Now everything rides the tool (zero when empty), so
+    // the lifted-empty canvas must render bit-close to the untouched paper.
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
     let blank = engine.render_to_image(PAPER);
 
     let mut brush = brush(RED, 24.0);
-    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 1.0, remove: 0.0, add: 0.0, ridge: 0.0 });
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.0, lift: 1.0, deposit: 1.0, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -521,7 +522,7 @@ fn golden_smear_mixer_cap() {
     );
 
     let mut brush = brush(RED, 25.0);
-    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.5, remove: 0.0, add: 0.1, ridge: 0.0 });
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.1, lift: 0.5, deposit: 0.5, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -559,7 +560,7 @@ fn golden_lateral_pickup() {
 
     let mut brush = brush(RED, 30.0);
     brush.hardness = 0.9; // near-solid, so it opaquely covers the green bar
-    brush.dynamics = BrushDynamics::Dry(DryParams { smear: 0.5, remove: 0.0, add: 0.1, ridge: 0.0 });
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.1, lift: 0.5, deposit: 0.5, ridge: 0.0 });
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
