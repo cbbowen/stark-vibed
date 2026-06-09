@@ -67,3 +67,36 @@ fn read_texture_bytes(
 pub fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
     read_texture_bytes(ctx, texture, size, 4)
 }
+
+/// Read an `Rgba16Float` texture back as `f32` RGBA (4 per texel). The texture must carry
+/// `COPY_SRC`. Used by reservoir-visualization debugging (DESIGN.md §6.2).
+pub fn read_rgba16f(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<f32> {
+    let bytes = read_texture_bytes(ctx, texture, size, 8); // 4 × f16
+    bytes
+        .chunks_exact(2)
+        .map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]])))
+        .collect()
+}
+
+/// Decode an IEEE-754 half-precision float to `f32`.
+fn f16_to_f32(h: u16) -> f32 {
+    let sign = (h >> 15) & 1;
+    let exp = (h >> 10) & 0x1f;
+    let mant = h & 0x3ff;
+    let val = match exp {
+        0 => (mant as f32) * 2f32.powi(-24), // subnormal (and zero)
+        0x1f => {
+            if mant == 0 {
+                f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        _ => (1.0 + mant as f32 / 1024.0) * 2f32.powi(exp as i32 - 15),
+    };
+    if sign == 1 {
+        -val
+    } else {
+        val
+    }
+}

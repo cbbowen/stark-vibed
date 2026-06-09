@@ -125,7 +125,13 @@ fn step(prev: Tool, sample: vec2<f32>, steps: f32, bru: vec3<f32>) -> StepOut {
     out.tool = tool;
     out.dep_rgb = params.brush_ch.xyz * ao + tool.ch * tool.op * (1.0 - ao);
     out.dep_op = ao + tool.op * (1.0 - ao);
-    out.net_h = dep_h - lift_h; // conserved: deposited − lifted
+    // The tool advanced over `steps` flatten-steps of arc; the lift/deposit amounts above
+    // are proportional to that. Emit the per-flatten-step **rate** (÷ steps) so the reservoir
+    // holds a length-independent value — the arc each segment covers is reapplied by the
+    // deposit's footprint accumulation. Without this, the short remainder segment at the
+    // stroke end (and any short segment on a curve) gets a fractional-step net → a one-column
+    // dip → a visible seam (DESIGN §6.2).
+    out.net_h = (dep_h - lift_h) / max(steps, 1e-4); // per-flatten-step net (deposited − lifted)
     return out;
 }
 
@@ -184,8 +190,11 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let perpl = vec2<f32>(-dl.y, dl.x);
     let endp = instances[li].start + dl * instances[li].geom.y; // last segment's end
     let brul = instances[li].aux.xyz;
+    // The deposit maps the last segment's *end* (local.x = length/radius) to column
+    // `lead+count`, so the first lead-out column continues from `endp` itself (fwd = 0) —
+    // not one step past it, which would shift the cap and leave a one-segment seam at the end.
     for (var k = lead + count; k < width; k = k + 1u) {
-        let fwd = f32(k - (lead + count) + 1u) * flatten_step; // distance past the end
+        let fwd = f32(k - (lead + count)) * flatten_step; // distance past the end (0 at the end)
         let s = step(tool, endp + dl * fwd + perpl * (lateral * rl), 1.0, brul);
         tool = s.tool;
         store_res(s, k, j);

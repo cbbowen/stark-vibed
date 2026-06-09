@@ -40,9 +40,10 @@ struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) local: vec2<f32>, // brush-local (x in radius units from start, y in [-1,1])
     @location(1) misc: vec4<f32>,  // length/radius, flow, height(thickness rate), wet
-    // Reservoir longitudinal mapping into the padded texture: u.x = this segment's
-    // start column-center; u.y = radius · (u per px travelled), so local.x (radii
-    // travelled) advances u to the fragment's true arc-length position.
+    // Reservoir column mapping into the padded texture: u.x = this segment's start
+    // column-center; u.y = u-advance per radius travelled, so local.x (radii from the
+    // segment start) advances u to the next column at the segment's end — by segment
+    // *index*, not arc distance, so non-uniform segment lengths stay aligned.
     @location(2) u: vec2<f32>,
     @location(3) op: f32, // brush opacity at this segment (drives the opacity channel)
 }
@@ -59,8 +60,8 @@ fn sweep_vertex(
     vi: u32,
     start: vec2<f32>,
     dir: vec2<f32>,   // unit tangent
-    geom: vec4<f32>,  // radius, length, flow, reservoir column (u)
-    aux: vec4<f32>,   // height(thickness rate), wet, opacity, _
+    geom: vec4<f32>,  // radius, length, flow, reservoir start column (u)
+    aux: vec4<f32>,   // height(thickness rate), wet, opacity, reservoir u-advance per radius
 ) -> VsOut {
     let radius = geom.x;
     let lr = geom.y / radius; // segment length in radius units
@@ -77,9 +78,9 @@ fn sweep_vertex(
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.local = vec2<f32>(cx, cy);
     out.misc = vec4<f32>(lr, geom.z, aux.x, aux.y);
-    // u.x = segment-start arc length (normalized, texel-centered); u.y converts
-    // brush-local x (radii) into normalized longitudinal travel (radius / length).
-    out.u = vec2<f32>(geom.w, radius * xf.params.w);
+    // u.x = segment-start column-center; u.y = per-segment u-advance per radius (aux.w),
+    // so traversing the segment moves exactly one reservoir column.
+    out.u = vec2<f32>(geom.w, aux.w);
     out.op = aux.z;
     return out;
 }

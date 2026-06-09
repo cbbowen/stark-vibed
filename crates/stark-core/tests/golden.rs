@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushShape, DryParams, Tool, WetParams};
+use stark_core::document::{BrushDynamics, BrushShape, DryParams, StrokeRecord, Tool, WetParams};
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
 
@@ -358,6 +358,137 @@ fn golden_smudge_paint() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("smudge_paint", &img, 6);
+}
+
+/// Visualize the brush-dynamics reservoir for diagnosis (DESIGN.md §6.2): each reservoir
+/// column (along the stroke) × band (across the tip), scaled up into blocks. Two strips:
+/// the **net height transfer** per column (the conserved lift/deposit — diverging colour,
+/// red = deposits paint, blue = lifts it, grey = neutral) and the **deposit opacity**
+/// (the tool's per-unit alpha, greyscale). Discontinuities here show as column-aligned
+/// seams, making per-segment artifacts legible.
+fn reservoir_image(color: &[f32], aux: &[f32], w: u32, bands: u32) -> stark_core::RgbaImage {
+    let scale = 4u32;
+    let net_max = (0..(w * bands) as usize)
+        .map(|i| aux[i * 4].abs())
+        .fold(1e-4f32, f32::max);
+    let strips = 2u32;
+    let (ow, oh) = (w * scale, bands * strips * scale);
+    let mut px = vec![0u8; (ow * oh * 4) as usize];
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let col = ox / scale;
+            let strip = (oy / scale) / bands;
+            let band = (oy / scale) % bands;
+            let idx = (band * w + col) as usize;
+            let rgba = if strip == 0 {
+                let n = (aux[idx * 4] / net_max).clamp(-1.0, 1.0);
+                if n >= 0.0 {
+                    [40 + (n * 215.0) as u8, 40, 40, 255]
+                } else {
+                    [40, 40, 40 + (-n * 215.0) as u8, 255]
+                }
+            } else {
+                let a = (color[idx * 4 + 3].clamp(0.0, 1.0) * 255.0) as u8;
+                [a, a, a, 255]
+            };
+            let o = ((oy * ow + ox) * 4) as usize;
+            px[o..o + 4].copy_from_slice(&rgba);
+        }
+    }
+    stark_core::RgbaImage::new(ow, oh, px)
+}
+
+#[test]
+fn golden_reservoir_viz() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // The same setup as `golden_dry_smear_artifact`, but visualizing the reservoir the
+    // deposit samples rather than the rendered canvas — so a per-column discontinuity in
+    // lift/deposit is directly legible.
+    paint(
+        &mut engine,
+        RED,
+        50.0,
+        &[Vec2::new(-90.0, 50.0), Vec2::new(90.0, 50.0)],
+    );
+    let layer = engine.observe().active_layer;
+    let mut brush = brush(RED, 50.0);
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.0, lift: 1.0, deposit: 0.05, ridge: 0.0 });
+    let rec = StrokeRecord {
+        layer,
+        tool: Tool::Brush,
+        brush,
+        path: vec![
+            InputSample::at(Vec2::new(0.0, 50.0)),
+            InputSample::at(Vec2::new(0.0, -25.0)),
+        ],
+        seed: 0,
+    };
+    let (color, aux, w, bands) = engine.debug_reservoir(&rec).expect("mixer should run");
+    let img = reservoir_image(&color, &aux, w, bands);
+    assert_golden("reservoir_viz", &img, 6);
+}
+
+#[test]
+fn golden_dry_smear_artifact() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    paint(
+        &mut engine,
+        RED,
+        50.0,
+        &[Vec2::new(-90.0, 50.0), Vec2::new(90.0, 50.0)],
+    );
+
+    let mut brush = brush(RED, 50.0);
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.0, lift: 1.0, deposit: 0.05, ridge: 0.0 });
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(0.0, 50.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, -25.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("dry_smear_artifact", &img, 6);
+}
+
+#[test]
+fn golden_dry_erase_artifact() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+
+    paint(
+        &mut engine,
+        RED,
+        50.0,
+        &[Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)],
+    );
+
+    let mut brush = brush(RED, 50.0);
+    brush.dynamics = BrushDynamics::Dry(DryParams { add: 0.0, lift: 1.0, deposit: 0.0, ridge: 0.0 });
+    engine.process(InputCommand::SetBrush(brush));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-90.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 0.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(Vec2::new(0.0, 1.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("dry_erase_artifact", &img, 6);
 }
 
 #[test]

@@ -517,33 +517,38 @@ impl StrokeRenderer {
             }],
         });
 
-        // The reservoir is parameterized by distance, not segment index: the columns
-        // run along the stroke's arc length, one per segment (≈ `step` px apart) plus
-        // a half-brush of *lead-in* and *lead-out* padding so the round end caps —
-        // which the sweep extends a radius beyond each endpoint — are covered by the
-        // mixer's walk extended into those pads, rather than clamping to a flat slab.
-        // `geom.w` is a segment start's column-center texel-u in that padded texture;
-        // the deposit advances it by the fragment's own travel to the true arc
-        // position (`local.x·radius·u_per_px`, see mixer.wesl).
+        // The reservoir has one column **per segment** (the mixer writes net paint at the
+        // integer column `lead + i`), plus a half-brush of *lead-in*/*lead-out* padding so
+        // the round end caps — which the sweep extends a radius beyond each endpoint — are
+        // covered by the mixer's walk into those pads rather than clamping to a flat slab.
+        // The deposit must sample **by that same column index**, not by arc distance: with
+        // non-uniform segments (the short flatten remainder at the end, or a curve's varying
+        // lengths) `dist/step` drifts away from `i`, so an arc-based mapping would read the
+        // wrong column — a discontinuity ≈ one segment long at the stroke's end (the bug this
+        // fixes). `geom.w` is segment `i`'s start column-center; `aux.w` is its `u`-advance
+        // per radius travelled (`radius/(length·width)`), so traversing the segment advances
+        // exactly one column to the next — independent of how long the segment is.
         let count = segments.len();
         let total = segments.iter().map(|s| s.length).sum::<f32>().max(1e-3);
-        let step = total / count as f32; // ≈ FLATTEN_STEP, the column spacing
+        let step = total / count as f32; // ≈ FLATTEN_STEP, used only for the lead/tail pad
         let lead = (segments.first().unwrap().radius / step).ceil() as u32;
         let tail = (segments.last().unwrap().radius / step).ceil() as u32;
         let width = lead + count as u32 + tail;
-        let u_per_px = 1.0 / (step * width as f32); // normalized-u per px travelled
         let instances: Vec<SegmentInstance> = segments
             .iter()
-            .map(|s| SegmentInstance {
+            .enumerate()
+            .map(|(i, s)| SegmentInstance {
                 start: s.start.to_array(),
                 dir: s.dir.to_array(),
                 geom: [
                     s.radius,
                     s.length,
                     s.flow,
-                    (lead as f32 + 0.5 + s.dist / step) / width as f32,
+                    (lead as f32 + i as f32 + 0.5) / width as f32,
                 ],
-                aux: [s.height, s.wet, s.opacity, 0.0],
+                // aux.w = u-advance per radius travelled, so local.x ∈ [0, length/radius]
+                // sweeps exactly one column (geom.w → next column) regardless of segment len.
+                aux: [s.height, s.wet, s.opacity, s.radius / (s.length.max(1e-3) * width as f32)],
             })
             .collect();
         // The mixer compute pass reads this buffer to drive its reservoir scan, so
@@ -687,7 +692,8 @@ impl StrokeRenderer {
             let apron = TILE_APRON as f32;
             let origin = coord.origin();
             let xform = TileXform {
-                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, u_per_px],
+                // params.w unused: the reservoir u-advance is now per-segment (instance aux.w).
+                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, 0.0],
                 // surf.z = the `add` fraction: the deposit lays `add·height_rate` of the
                 // brush's own height plus the reservoir's smear-lifted height (one
                 // continuous sum, no branch). Opacity always comes from the reservoir alpha.
@@ -805,6 +811,96 @@ impl StrokeRenderer {
         // they pile up and OOM the tab; `destroy()` after submit reclaims them at once
         // (WebGPU keeps the memory until the in-flight work that uses them completes).
         new_map
+    }
+
+    /// Debugging: run *only* the mixer reservoir scan for `rec` over `base` and read the
+    /// two reservoir textures back to the CPU as `f32` RGBA (DESIGN.md §6.2). Returns
+    /// `(reservoir_color, aux_reservoir, width, bands)` where `aux_reservoir.x` is the net
+    /// height transfer per column. `None` if the stroke is empty or doesn't run the mixer
+    /// (`lift = deposit = 0`). Used by the reservoir-visualization golden to inspect the
+    /// per-column lift/deposit the deposit pass samples.
+    pub fn debug_reservoir(
+        &self,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        rec: &StrokeRecord,
+    ) -> Option<(Vec<f32>, Vec<f32>, u32, u32)> {
+        let dry = match rec.brush.dynamics {
+            BrushDynamics::Dry(mp) => Some(mp),
+            _ => None,
+        }?;
+        if dry.lift <= 0.0 && dry.deposit <= 0.0 {
+            return None;
+        }
+        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
+        let channels = self.color_space.rgb_to_channels(rgb);
+        let segments = generate_segments(rec);
+        if segments.is_empty() {
+            return None;
+        }
+        let bbox = stroke_bbox(&segments)?;
+
+        let count = segments.len();
+        let total = segments.iter().map(|s| s.length).sum::<f32>().max(1e-3);
+        let step = total / count as f32;
+        let lead = (segments.first().unwrap().radius / step).ceil() as u32;
+        let tail = (segments.last().unwrap().radius / step).ceil() as u32;
+        let width = lead + count as u32 + tail;
+        let instances: Vec<SegmentInstance> = segments
+            .iter()
+            .enumerate()
+            .map(|(i, s)| SegmentInstance {
+                start: s.start.to_array(),
+                dir: s.dir.to_array(),
+                geom: [s.radius, s.length, s.flow, (lead as f32 + i as f32 + 0.5) / width as f32],
+                aux: [s.height, s.wet, s.opacity, s.radius / (s.length.max(1e-3) * width as f32)],
+            })
+            .collect();
+
+        let device = &self.ctx.device;
+        let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark dbg instances"),
+            size: std::mem::size_of_val(&instances[..]) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.ctx.queue.write_buffer(&instance_buf, 0, bytemuck::cast_slice(&instances));
+
+        let coords = affected_tiles(&segments);
+        let knobs = [dry.lift, dry.deposit, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY];
+        // Reservoir textures sized to the padded width × bands, with COPY_SRC for readback.
+        let make = |label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height: LATERAL_BANDS, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let color = make("stark dbg reservoir");
+        let aux = make("stark dbg aux reservoir");
+        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let aux_view = aux.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut scoped = ScopedResources::default();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("stark dbg reservoir"),
+        });
+        self.encode_mixer(
+            &mut scoped, &mut encoder, base, &coords, &segments, &instance_buf, &color_view,
+            &aux_view, bbox, (lead, width), channels, dry.add, knobs,
+        );
+        self.ctx.queue.submit([encoder.finish()]);
+
+        let size = crate::geom::Extent2 { width, height: LATERAL_BANDS };
+        let color_data = crate::gpu::readback::read_rgba16f(&self.ctx, &color, size);
+        let aux_data = crate::gpu::readback::read_rgba16f(&self.ctx, &aux, size);
+        Some((color_data, aux_data, width, LATERAL_BANDS))
     }
 
     /// Composite the given tiles' channels into a fresh 1:1 region (color, aux),

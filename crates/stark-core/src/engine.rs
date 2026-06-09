@@ -387,6 +387,19 @@ impl Engine {
         self.timeline.current()
     }
 
+    /// Debugging: run the brush-dynamics reservoir scan for `rec` over the active layer and
+    /// read the two reservoir textures back (DESIGN.md §6.2). Returns
+    /// `(reservoir_color, aux_reservoir, width, bands)` as `f32` RGBA, or `None` if the
+    /// stroke is empty or doesn't run the mixer. See `StrokeRenderer::debug_reservoir`.
+    pub fn debug_reservoir(
+        &self,
+        rec: &crate::document::StrokeRecord,
+    ) -> Option<(Vec<f32>, Vec<f32>, u32, u32)> {
+        let doc = self.document();
+        let idx = doc.layer_index(self.session.active_layer)?;
+        self.stroke.debug_reservoir(&doc.layer_at(idx).tiles, rec)
+    }
+
     /// The GPU context this engine renders with (for surface/readback setup).
     pub fn gpu(&self) -> &GpuContext {
         &self.gpu
