@@ -6,6 +6,7 @@
 // encode — lives here so it is written once.
 
 import package::color::{linear_to_srgb};
+import package::noise::{noise_2_to_4};
 
 struct Media {
     light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
@@ -80,12 +81,14 @@ fn background_color() -> vec4<f32> {
 // over screen pixels but divided by the canvas px they span (`surf_a.z`), so the
 // slope is per *canvas* px — the relief (and its gloss) is zoom-invariant rather
 // than steepening as you zoom out.
-fn surface_normal(p: vec2<i32>, dim: vec2<i32>) -> vec3<f32> {
+fn surface_normal(p: vec2f, dim: vec2<i32>) -> vec3<f32> {
+    let i = vec2<i32>(floor(p));
     let strength = m.light.w / m.surf_a.z;
-    let hl = height_at(p + vec2<i32>(-1, 0), dim);
-    let hr = height_at(p + vec2<i32>(1, 0), dim);
-    let hu = height_at(p + vec2<i32>(0, -1), dim);
-    let hd = height_at(p + vec2<i32>(0, 1), dim);
+    let noise = noise_2_to_4(m.surf_a.xy + p * m.surf_a.z, vec4f(1, 2, 3, 4)) / 64.0;
+    let hl = height_at(i + vec2<i32>(-1, 0), dim) + noise.x;
+    let hr = height_at(i + vec2<i32>(1, 0), dim) + noise.y;
+    let hu = height_at(i + vec2<i32>(0, -1), dim) + noise.z;
+    let hd = height_at(i + vec2<i32>(0, 1), dim) + noise.w;
     return normalize(vec3<f32>(-(hr - hl) * strength, -(hd - hu) * strength, 1.0));
 }
 
@@ -167,7 +170,7 @@ fn tonemap(x: vec3<f32>) -> vec3<f32> {
 // normal direction, plus a wet specular reflection that sharpens with `wet` so
 // impasto ridges glint with the studio lights. `base` is already the composited
 // paint-over-substrate color (the over happened in the caller's latent space).
-fn finish(base: vec3<f32>, wet: f32, p: vec2<i32>, dim: vec2<i32>) -> vec4<f32> {
+fn finish(base: vec3<f32>, wet: f32, p: vec2f, dim: vec2<i32>) -> vec4<f32> {
     let n = surface_normal(p, dim);
     let exposure = m.shade.x;
     let diffuse_lod = m.shade.y;

@@ -23,5 +23,5 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let latent = background_color().rgb * (1.0 - vis) + lab * vis;
     let wet = clamp(textureLoad(comp_aux, p, 0).y, 0.0, 1.0) * vis;
 
-    return finish(oklab_to_linear_srgb(latent), wet, p, dim);
+    return finish(oklab_to_linear_srgb(latent), wet, frag.xy, dim);
 }

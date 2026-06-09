@@ -30,5 +30,5 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     // Evaluate Mixbox's pigment polynomial → sRGB, then linearize for lighting.
     let srgb = clamp(mixbox_eval_polynomial(latent), vec3<f32>(0.0), vec3<f32>(1.0));
-    return finish(srgb_to_linear(srgb), wet, p, dim);
+    return finish(srgb_to_linear(srgb), wet, frag.xy, dim);
 }
