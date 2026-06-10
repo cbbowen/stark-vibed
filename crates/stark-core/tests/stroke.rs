@@ -1,39 +1,17 @@
-//! Step-2 stroke MVP tests (DESIGN.md §13 build order, step 2): the
-//! command/action split, copy-on-write tiles, and history undo/redo.
+//! Stroke engine tests: the step-2 MVP (command/action split, copy-on-write tiles,
+//! and history undo/redo — DESIGN.md §13 build order, step 2) plus the conservative
+//! dry-brush dynamics suite (add/lift/deposit, DESIGN.md §6.2).
 
 mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushParams, DryParams, Tool};
+use stark_core::document::{DryParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::Engine;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-
-/// A brush with the given [`DryParams`] dynamics.
-fn dry_brush(color: [f32; 4], radius: f32, p: DryParams) -> BrushParams {
-    let mut b = brush(color, radius);
-    b.dynamics = BrushDynamics::Dry(p);
-    b
-}
-
-/// Paint and commit a stroke through `points` with an explicit brush.
-fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
-    engine.process(InputCommand::SetBrush(b));
-    let mut it = points.iter();
-    let first = *it.next().expect("at least one point");
-    engine.process(InputCommand::StartStroke {
-        tool: Tool::Brush,
-        sample: InputSample::at(first),
-    });
-    for &p in it {
-        engine.process(InputCommand::StrokeTo {
-            sample: InputSample::at(p),
-        });
-    }
-    engine.process(InputCommand::EndStroke);
-}
+const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 fn paint_stroke(engine: &mut Engine) {
     paint(
@@ -50,12 +28,18 @@ fn paint_stroke(engine: &mut Engine) {
 
 // Lit paint is never a pure primary, so assert channel *dominance* rather than
 // near-saturation (the image-based-lighting media pass legitimately shades and
-// desaturates color — a warm studio tint and gloss sheen lift the other channels).
+// desaturates color). The margin must exceed the warm studio tint, not just noise:
+// even the neutral near-white PAPER renders red-dominant by ~33 levels under the
+// studio HDR, while actual red paint dominates by ~210 (and blue BG by ~180) — so 60
+// cleanly separates "lit substrate" from "paint". Tests below self-check this.
 fn is_red(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 20 && c[0] as i32 > c[2] as i32 + 20
+    c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
 }
 fn is_blue(c: [u8; 4]) -> bool {
-    c[2] as i32 > c[0] as i32 + 20 && c[2] as i32 > c[1] as i32 + 20
+    c[2] as i32 > c[0] as i32 + 60 && c[2] as i32 > c[1] as i32 + 60
+}
+fn is_green(c: [u8; 4]) -> bool {
+    c[1] as i32 > c[0] as i32 + 60 && c[1] as i32 > c[2] as i32 + 60
 }
 fn center(img: &stark_core::RgbaImage) -> [u8; 4] {
     img.pixel(img.width / 2, img.height / 2)
@@ -140,6 +124,13 @@ fn conservative_smear_preserves_uniform_field() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
+    // Self-check: bare lit paper must NOT read as red, or the `is_red` assertion below
+    // is vacuous (it would pass even if the smear destroyed the field). Guards the
+    // paper-colour / `is_red`-margin pairing.
+    assert!(
+        !is_red(center(&engine.render_to_image(PAPER))),
+        "lit bare paper reads as red — is_red can't discriminate paint here"
+    );
     // A broad solid red field across the middle of the canvas.
     paint(
         &mut engine,
@@ -161,7 +152,7 @@ fn conservative_smear_preserves_uniform_field() {
     let frac = frac_exceeding(&before, &after, 40);
     assert!(
         frac < 0.2,
-        "smearing a uniform field should move almost nothing, but {:.1}% of pixels changed",
+        "smearing a uniform field should move almost nothing, but {:.1}% of pixels differ by >40 levels",
         frac * 100.0
     );
 }
@@ -178,7 +169,7 @@ fn lift_deposit_carries_paint_onto_bare_canvas() {
         return;
     };
     let y = SIZE.height / 2;
-    let run_x = 116; // canvas ≈ -12, bare runway just past the patch's right edge
+    let run_x = SIZE.width / 2 - 12; // canvas −12, bare runway just past the patch's right edge
 
     // A red patch on the left; the right runway starts bare.
     paint(
@@ -207,6 +198,48 @@ fn lift_deposit_carries_paint_onto_bare_canvas() {
     assert!(
         (run_after[1] as i32) < run_before[1] as i32 - 15,
         "with add=0, the bare runway must gain carried paint (green drops): {run_before:?} -> {run_after:?}"
+    );
+}
+
+#[test]
+fn erase_does_not_retint() {
+    // An eraser (`lift > 0, deposit = 0, add = 0`) carries lifted paint on the tool but
+    // lays nothing back — so the paint it passes must only *thin* (height drops), never
+    // change colour. Colour blends by amount (§6.1): the deposit's tint is weighted by its
+    // height share, which is zero here. Regression guard for the bug where the carried
+    // colour was laid at full per-unit alpha regardless of amount, re-tinting everything
+    // the eraser crossed with whatever it first picked up.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let y = SIZE.height / 2;
+    let green_x = SIZE.width / 2 + 60; // canvas +60, inside the green bar
+
+    // A red patch on the left, a green bar on the right.
+    paint(
+        &mut engine,
+        RED,
+        40.0,
+        &[Vec2::new(-90.0, 0.0), Vec2::new(-50.0, 0.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        40.0,
+        &[Vec2::new(30.0, 0.0), Vec2::new(90.0, 0.0)],
+    );
+    let before = engine.render_to_image(PAPER).pixel(green_x, y);
+    assert!(is_green(before), "the bar should start green: {before:?}");
+
+    // Drag the eraser from inside the red patch across the green bar: it picks up red
+    // first, then crosses green while holding it.
+    let b = dry_brush(RED, 24.0, DryParams { add: 0.0, lift: 0.5, deposit: 0.0, ridge: 0.0 });
+    stroke_with(&mut engine, b, &[Vec2::new(-80.0, 0.0), Vec2::new(90.0, 0.0)]);
+    let after = engine.render_to_image(PAPER).pixel(green_x, y);
+
+    assert!(
+        !is_red(after),
+        "erasing across the green bar must thin it, not re-tint it red: {before:?} -> {after:?}"
     );
 }
 

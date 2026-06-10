@@ -12,11 +12,13 @@ use stark_core::{
 };
 use wasm_bindgen::JsCast;
 
-/// Warm paper-white background, in linear RGB.
+/// Paper-white background, in linear RGB. Kept neutral (not warm) — the studio
+/// environment light already tints the scene warm, and a neutral substrate keeps
+/// paint colours legible against it.
 pub const BG: wgpu::Color = wgpu::Color {
-    r: 0.92,
-    g: 0.90,
-    b: 0.85,
+    r: 0.97,
+    g: 0.97,
+    b: 0.97,
     a: 1.0,
 };
 pub const CANVAS_ID: &str = "stark-canvas";

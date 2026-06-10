@@ -9,7 +9,9 @@
 // exactly once. Within a stroke the colour target over-blends (premult-consistent)
 // and the aux target accumulates additively.
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
-//   target 1: aux   (Rg16Float)   — (thickness, wet·op)
+//   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
+//             (height, wet)) — (own add-height, own wet·op, footprint coverage √cov,
+//             net height transfer·√cov); the channel-by-channel story is in `fs_main`
 
 import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, reservoir_net_height, add_frac};
 

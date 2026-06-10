@@ -38,10 +38,6 @@ const SWEEP_FLOW_SCALE: f32 = 1.0;
 /// Resolution of the generated round-tip prefix texture.
 const ROUND_RES: u32 = 256;
 
-/// Cap on the wet-mixing reservoir load so pickup saturates (mirrors `capacity`
-/// in `mixer.wesl`).
-const RESERVOIR_CAPACITY: f32 = 1.0;
-
 /// Lateral reservoir bands across the brush tip: each picks up canvas color at its
 /// own offset, so one side of the brush can carry a different color than the other
 /// (DESIGN.md §6.2). This is the *height* of the reservoir texture; the mixer's
@@ -82,9 +78,6 @@ struct Segment {
     /// Drives the color/opacity channel; thickness (`height`) is independent now
     /// (DESIGN.md §6.1, normalized representation).
     opacity: f32,
-    /// Longitudinal offset: arc length from the stroke start to this segment's
-    /// start. Parameterizes the reservoir by distance (DESIGN.md §6.2).
-    dist: f32,
 }
 
 /// Per-segment instance data for the sweep shader. Padded to 48 bytes so the same
@@ -133,7 +126,7 @@ struct TileInstance {
 struct MixerUniform {
     brush_ch: [f32; 4],    // brush colour channels (.xyz); .w = `add` axis
     origin_dims: [f32; 4], // region origin.xy (canvas px), dims.xy (px)
-    knobs: [f32; 4],       // lift, deposit, flatten_step, reservoir capacity
+    knobs: [f32; 4],       // lift, deposit, flatten_step, _
     counts: [u32; 4],      // segment_count, lead-in columns, reservoir width, _
 }
 
@@ -146,11 +139,11 @@ pub struct StrokeRenderer {
     prefix_bgl: wgpu::BindGroupLayout,
     /// Cached round-tip prefix-τ, keyed by `hardness.to_bits()`.
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
-    /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for tooth.
+    /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for the tooth
+    /// gate — currently a pass-through stub (`surface_tooth` TODO in stamp_common.wesl);
+    /// no stamp/integrate shader reads the surface today, the weave shows through the
+    /// media pass instead.
     surface_bg: wgpu::BindGroup,
-    /// The surface itself, also bound to the integrate pass for the knife's
-    /// tooth-gated scrape (its `relief` makes the gate a no-op on `Flat`).
-    surface: Surface,
     /// Color reservoir (group 3 of the sweep pipeline): the per-segment × per-band
     /// color the deposit samples. `reservoir_sampler` is linear+clamp so it blends
     /// bands (and segments) for free.
@@ -239,8 +232,8 @@ impl Drop for ScopedResources {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct IntegrateUniform {
-    mode: [f32; 4], // mode.x (0=Normal, 1=Knife), bite, load, tooth·relief
-    surf: [f32; 4], // tile_tex_origin.x, .y, inv_surface_tile, ridge (knife tooth gate)
+    mode: [f32; 4],  // mode.x (0 = Normal, 1 = Dry); .yzw unused
+    ridge: [f32; 4], // ridge (lateral pile-up strength) in .x; .yzw unused
 }
 
 /// Params for the separable Gaussian bleed pass (`blur.wesl` `Params`).
@@ -458,7 +451,6 @@ impl StrokeRenderer {
             prefix_bgl,
             round_prefix: Arc::new(Mutex::new(None)),
             surface_bg,
-            surface,
             reservoir_bgl,
             reservoir_sampler,
             composite_pipeline,
@@ -588,7 +580,7 @@ impl StrokeRenderer {
         let add_frac = dry.map_or(1.0, |mp| mp.add);
         let scan = dry
             .filter(|mp| mp.lift > 0.0 || mp.deposit > 0.0)
-            .map(|mp| [mp.lift, mp.deposit, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY]);
+            .map(|mp| [mp.lift, mp.deposit, crate::path::FLATTEN_STEP, 0.0]);
         // The scan runs only when it actually fired; an oversized stroke skips the region
         // composite and degrades to a plain (flat-reservoir) deposit.
         let mut reservoir_tex = |label| {
@@ -742,14 +734,12 @@ impl StrokeRenderer {
                 pass.draw(0..4, 0..instances.len() as u32);
             }
 
-            // Integrate the scratch slab over the base into a fresh CoW tile. The
-            // params carry this tile's origin so the knife's tooth gate samples the
-            // canvas surface in canvas space.
+            // Integrate the scratch slab over the base into a fresh CoW tile.
             let integrate_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark integrate params"),
                 contents: bytemuck::bytes_of(&IntegrateUniform {
                     mode: integrate_mode,
-                    surf: [origin.x - apron, origin.y - apron, 1.0 / SURFACE_TILE_PX, ridge],
+                    ridge: [ridge, 0.0, 0.0, 0.0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -764,8 +754,6 @@ impl StrokeRenderer {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(base_tile.aux_view()) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(scratch.color_view()) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(scratch.aux_view()) },
-                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.surface.view) },
-                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.surface.sampler) },
                 ],
             });
             {
@@ -866,7 +854,7 @@ impl StrokeRenderer {
         self.ctx.queue.write_buffer(&instance_buf, 0, bytemuck::cast_slice(&instances));
 
         let coords = affected_tiles(&segments);
-        let knobs = [dry.lift, dry.deposit, crate::path::FLATTEN_STEP, RESERVOIR_CAPACITY];
+        let knobs = [dry.lift, dry.deposit, crate::path::FLATTEN_STEP, 0.0];
         // Reservoir textures sized to the padded width × bands, with COPY_SRC for readback.
         let make = |label| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -1226,6 +1214,7 @@ impl StrokeRenderer {
     }
 
     /// Composite the post-deposit tiles for `halo` into a fresh region (color, aux).
+    #[allow(clippy::too_many_arguments)]
     fn composite_halo(
         &self,
         scoped: &mut ScopedResources,
@@ -1596,6 +1585,8 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
         return segs;
     }
 
+    // `dist` (arc length from the stroke start) drives only the drain here; the
+    // reservoir is parameterized by segment *index*, not distance (see `render`).
     let make = |sample: &InputSample, dir: Vec2, len: f32, dist: f32| -> Segment {
         let load = (1.0 - b.drain * dist).max(0.0);
         Segment {
@@ -1609,7 +1600,6 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
             height: b.height * load,
             wet: b.wetness * load,
             opacity: b.color[3] * load,
-            dist,
         }
     };
 
@@ -1935,23 +1925,6 @@ fn build_integrate_pipeline(
             load_tex(2), // base aux
             load_tex(3), // scratch color
             load_tex(4), // scratch aux
-            // Canvas surface (filterable + sampler) for the knife's tooth gate.
-            wgpu::BindGroupLayoutEntry {
-                binding: 5,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 6,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

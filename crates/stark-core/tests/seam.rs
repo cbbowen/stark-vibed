@@ -42,6 +42,9 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
         height_strength: 2.5,
         specular: 0.3,
         surface_strength: 0.0,
+        // Like the weave, the normal dither is canvas-position-seeded — deliberately
+        // not translation invariant — so it must be off for these shift comparisons.
+        normal_dither: 0.0,
         ..MediaParams::default()
     });
 
@@ -85,6 +88,9 @@ fn render_shifted_knife(shift: Vec2) -> RgbaImage {
         height_strength: 2.5,
         specular: 0.3,
         surface_strength: 0.0,
+        // Like the weave, the normal dither is canvas-position-seeded — deliberately
+        // not translation invariant — so it must be off for these shift comparisons.
+        normal_dither: 0.0,
         ..MediaParams::default()
     });
 
@@ -140,6 +146,9 @@ fn render_shifted_wet(shift: Vec2) -> RgbaImage {
         height_strength: 2.5,
         specular: 0.3,
         surface_strength: 0.0,
+        // Like the weave, the normal dither is canvas-position-seeded — deliberately
+        // not translation invariant — so it must be off for these shift comparisons.
+        normal_dither: 0.0,
         ..MediaParams::default()
     });
 

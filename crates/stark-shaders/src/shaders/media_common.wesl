@@ -13,7 +13,7 @@ struct Media {
     bg: vec4<f32>,     // background (substrate) in latent color space
     shade: vec4<f32>,  // exposure, diffuse_lod, wet_gloss, max_lod
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
-    surf_b: vec4<f32>, // surface_strength, _, _, _
+    surf_b: vec4<f32>, // surface_strength, normal_dither, _, _
 }
 
 @group(0) @binding(0) var<uniform> m: Media;
@@ -84,7 +84,10 @@ fn background_color() -> vec4<f32> {
 fn surface_normal(p: vec2f, dim: vec2<i32>) -> vec3<f32> {
     let i = vec2<i32>(floor(p));
     let strength = m.light.w / m.surf_a.z;
-    let noise = noise_2_to_4(m.surf_a.xy + p * m.surf_a.z, vec4f(1, 2, 3, 4)) / 64.0;
+    // Normal dithering (canvas-anchored noise, scaled by `normal_dither`): breaks up
+    // banding in the relief shading. Position-seeded, so it is NOT translation
+    // invariant — the seam tests set the amplitude to 0, like `surface_strength`.
+    let noise = noise_2_to_4(m.surf_a.xy + p * m.surf_a.z, vec4f(1, 2, 3, 4)) * (m.surf_b.y / 64.0);
     let hl = height_at(i + vec2<i32>(-1, 0), dim) + noise.x;
     let hr = height_at(i + vec2<i32>(1, 0), dim) + noise.y;
     let hu = height_at(i + vec2<i32>(0, -1), dim) + noise.z;

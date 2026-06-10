@@ -6,23 +6,25 @@
 // onto the tool, **deposits** a fraction of the tool's paint back onto the canvas, and
 // **adds** the brush's own paint straight to the canvas. The walk writes two textures the
 // sweep/deposit shader then samples (linear filtering blends the bands for free):
-//   1. `reservoir`     — the tool's *deposit* payload (premultiplied colour the brush lays
-//                        this step, = deposit·tool + add·brush).
-//   2. `aux_reservoir` — `.x` deposited height, `.y` deposited wet, `.z` the **subtractive**
-//                        lifted opacity-mass (exactly what was taken off the canvas to fill
-//                        the tool). Because `.z` matches the tool's intake, the integrate
-//                        scrapes precisely what was lifted → paint is neither created nor
-//                        destroyed when `add = 0` (DESIGN §6.2).
+//   1. `reservoir`     — the deposit's *colour*: the tool's tint weighted by its height
+//                        share of the resulting paint, with the brush's own `add` colour
+//                        composited over it (premultiplied; see `step`).
+//   2. `aux_reservoir` — `.x` the **net height transfer** (deposited − lifted, as a
+//                        per-flatten-step rate); `.yzw` unused. Height is the amount of
+//                        paint (§6.1), so this one signed channel carries the
+//                        conservation: the integrate adds it to the base, and with
+//                        `add = 0` what is deposited here was lifted elsewhere — paint is
+//                        neither created nor destroyed (DESIGN §6.2).
 //
 // Running this on the GPU keeps pickup off the CPU entirely — WebGPU cannot block for a
 // buffer map, so a CPU readback is impossible (it panics in getMappedRange).
 //
-// The reservoir math mirrors `encode_mixer` in gpu/stroke.rs.
+// `encode_mixer` in gpu/stroke.rs encodes this pass (and the region composite feeding it).
 
 struct Params {
     brush_ch: vec4<f32>,    // the brush's own colour channels (.xyz); .w = `add` axis
     origin_dims: vec4<f32>, // region origin.xy (canvas px), region dims.xy (px)
-    knobs: vec4<f32>,       // lift, deposit, flatten_step, reservoir_capacity
+    knobs: vec4<f32>,       // lift, deposit, flatten_step, _
     counts: vec4<u32>,      // segment_count, lead-in columns, reservoir width, _
 }
 
@@ -31,8 +33,9 @@ struct Params {
 struct Instance {
     start: vec2<f32>,
     dir: vec2<f32>,
-    geom: vec4<f32>,  // radius, length, flow, reservoir column (u; unused here)
-    aux: vec4<f32>,   // height, wet, opacity, _ (the brush's own paint, for the `add` axis)
+    geom: vec4<f32>,  // radius, length, flow, reservoir start column (u; unused here)
+    aux: vec4<f32>,   // height, wet, opacity (the brush's own paint, for the `add` axis),
+                      // reservoir u-advance per radius (used by the deposit; unused here)
 }
 
 // Lateral reservoir bands across the brush width, so each part of the tip carries the
@@ -52,26 +55,30 @@ const BANDS: u32 = 16u;
 // The tool reservoir carried along the walk. `h` is the **amount** of paint the tool holds
 // = HEIGHT (the conserved quantity; DESIGN §6.1). `ch.xyz` is the per-unit latent colour and
 // `op` the per-unit opacity (a material property, *not* an amount) — both carried as
-// height-weighted blends of the paint lifted off the canvas. `wet` likewise. The tool starts
-// empty and fills only by lifting canvas height.
+// height-weighted blends of the paint lifted off the canvas. The tool starts empty and
+// fills only by lifting canvas height. Wetness is deliberately NOT carried: a dry tool
+// wicks moisture rather than transporting it, so the lift leaves the canvas wet channel
+// in place and the deposit lays only the brush's own wet (the `add`-gated per-segment
+// attribute in the deposit shader).
 struct Tool {
     ch: vec3<f32>,
     op: f32,
     h: f32,
-    wet: f32,
 }
 
 // What `step` emits for one reservoir texel, alongside the updated tool. The deposit colour
-// is the tool's tint at its per-unit opacity (premultiplied) plus the brush's own `add`
-// colour, laid through the sweep colour target's *over*-blend. `net_h` is the **conserved
-// height transfer** for this column: deposited height − lifted height. The integrate adds it
-// to the base, so paint *moves* (what's deposited here was lifted elsewhere) — with `add=0`
-// the total canvas+tool height is conserved (DESIGN §6.1/§6.2).
+// is the tool's tint weighted by its height share of the resulting paint (see the colour
+// block in `step`), with the brush's own `add` colour composited over it, laid through the
+// sweep colour target's *over*-blend. `net_h` is the **conserved height transfer** —
+// deposited − lifted — as a per-flatten-step *rate* (the segment's amount ÷ its `steps`,
+// so short segments store the same length-independent value as full ones; see `step`). The
+// integrate adds it to the base, so paint *moves* (what's deposited here was lifted
+// elsewhere) — with `add=0` the total canvas+tool height is conserved (DESIGN §6.1/§6.2).
 struct StepOut {
     tool: Tool,
     dep_rgb: vec3<f32>, // deposit+add premultiplied colour (over-blended)
     dep_op: f32,        // deposit+add per-unit opacity (over-blended)
-    net_h: f32,         // deposited height − lifted height (the conserved transfer, per-column)
+    net_h: f32,         // deposited − lifted height, as a per-flatten-step rate
 }
 
 // One step of the reservoir recurrence at `sample` (region px), covering `steps`
@@ -83,9 +90,7 @@ fn step(prev: Tool, sample: vec2<f32>, steps: f32, bru: vec3<f32>) -> StepOut {
     let texel = clamp(vec2<i32>(floor(sample - origin)), vec2<i32>(0), dims - vec2<i32>(1));
     let col = textureLoad(region_color, texel, 0); // premult colour, per-unit opacity in .w
     let a = min(col.w, 1.0);                         // canvas per-unit opacity
-    let aux = textureLoad(region_aux, texel, 0);     // canvas (height, wet)
-    let canvas_h = aux.x;                            // canvas paint AMOUNT (height)
-    let canvas_wet = aux.y;
+    let canvas_h = textureLoad(region_aux, texel, 0).x; // canvas paint AMOUNT (height)
     var canvas_ch = vec3<f32>(0.0);
     if a > 1e-4 {
         canvas_ch = col.xyz / a; // un-premultiply to per-unit latent colour
@@ -98,14 +103,13 @@ fn step(prev: Tool, sample: vec2<f32>, steps: f32, bru: vec3<f32>) -> StepOut {
     var tool = prev;
 
     // --- Lift: move a fraction of the canvas HEIGHT onto the tool. The tool's per-unit
-    // colour/opacity/wet become the height-weighted blend of what it holds and what it picks
+    // colour/opacity become the height-weighted blend of what it holds and what it picks
     // up (opacity is per-unit, so it averages — it is not accumulated like an amount).
     let lift_h = lift * canvas_h;
     let new_h = tool.h + lift_h;
     if new_h > 1e-4 {
         tool.ch = (tool.ch * tool.h + canvas_ch * lift_h) / new_h;
         tool.op = (tool.op * tool.h + a * lift_h) / new_h;
-        tool.wet = (tool.wet * tool.h + canvas_wet * lift_h) / new_h;
     }
     tool.h = new_h;
 
@@ -115,16 +119,25 @@ fn step(prev: Tool, sample: vec2<f32>, steps: f32, bru: vec3<f32>) -> StepOut {
     let dep_h = deposit * tool.h;
     tool.h = tool.h - dep_h;
 
-    // --- Colour: the tool's tint at its per-unit opacity, with the brush's own `add` colour
-    // composited over it (one colour texture carries both). `add` here only contributes the
-    // own *colour*; the own *height* (amount) rides the per-segment attribute in the deposit
-    // shader, gated by the same `add` axis. Visibility comes from height, so a deposit with
-    // tiny `net_h` stays faint even at full per-unit opacity.
+    // --- Colour: the tool's tint weighted by the deposit's **share of the resulting
+    // paint** — `dep_h / (remaining + dep_h)`, the height-fraction of the post-transfer
+    // paint that came off the tool — with the brush's own `add` colour composited over it
+    // (one colour texture carries both). Colour must blend by *amount* (height), not by
+    // per-unit opacity alone (§6.1): without the share weighting, a `deposit = 0` eraser
+    // would re-tint the paint it passes with carried colour at full alpha while laying
+    // nothing, and a tiny deposit would disproportionately re-tint thick paint. With it,
+    // an eraser leaves colour untouched (share 0), a deposit onto bare canvas lays the
+    // full tint (share 1), and everything between mixes in proportion. `add` here only
+    // contributes the own *colour*; the own height rides the per-segment attribute in the
+    // deposit shader, gated by the same `add` axis.
+    let remaining = canvas_h - lift_h; // canvas height left after the lift (lift ≤ 1)
+    let share = dep_h / max(remaining + dep_h, 1e-4);
+    let tint = tool.op * share;
     let ao = add * bru.z; // own-paint over-coverage (per-unit opacity × add)
     var out: StepOut;
     out.tool = tool;
-    out.dep_rgb = params.brush_ch.xyz * ao + tool.ch * tool.op * (1.0 - ao);
-    out.dep_op = ao + tool.op * (1.0 - ao);
+    out.dep_rgb = params.brush_ch.xyz * ao + tool.ch * tint * (1.0 - ao);
+    out.dep_op = ao + tint * (1.0 - ao);
     // The tool advanced over `steps` flatten-steps of arc; the lift/deposit amounts above
     // are proportional to that. Emit the per-flatten-step **rate** (÷ steps) so the reservoir
     // holds a length-independent value — the arc each segment covers is reapplied by the
@@ -155,7 +168,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     // Band j's lateral position across the tip, in radius units ∈ [-1, 1].
     let lateral = (2.0 * f32(j) + 1.0) / f32(BANDS) - 1.0;
 
-    var tool = Tool(vec3<f32>(0.0), 0.0, 0.0, 0.0); // starts empty; lift fills it
+    var tool = Tool(vec3<f32>(0.0), 0.0, 0.0); // starts empty; lift fills it
 
     // Lead-in: extrapolate behind the first segment along its tangent, lifting/depositing
     // there, so the start cap is part of the same continuous walk.

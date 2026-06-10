@@ -21,9 +21,8 @@ struct Params {
     // carried in the scratch aux's `.w`, coverage-normalized by `.z`) to the base — height is
     // the amount of paint; the colour alpha is per-unit opacity only (DESIGN §6.1).
     mode: vec4<f32>,
-    // tile texture origin in canvas px (.xy), inv surface-tile (.z), ridge (.w) —
-    // .xyz feed the Dry scrape's tooth gate (sampling the surface in canvas space).
-    surf: vec4<f32>,
+    // ridge (lateral pile-up strength) in .x; .yzw unused.
+    ridge: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -31,8 +30,6 @@ struct Params {
 @group(0) @binding(2) var base_aux: texture_2d<f32>;
 @group(0) @binding(3) var scratch_color: texture_2d<f32>;
 @group(0) @binding(4) var scratch_aux: texture_2d<f32>;
-@group(0) @binding(5) var surface: texture_2d<f32>; // canvas bump (height), canvas-space
-@group(0) @binding(6) var surface_samp: sampler;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -51,7 +48,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let base_c = textureLoad(base_color, c, 0);
     let base_a = textureLoad(base_aux, c, 0);
     let s_c = textureLoad(scratch_color, c, 0); // stroke slab: latent·opacity, opacity in .a
-    let s_a = textureLoad(scratch_aux, c, 0);    // stroke slab: (thickness, wet·opacity)
+    // Wide scratch aux: (own add-height, own wet·op, footprint coverage Σ√cov, net height
+    // transfer·√cov) — see stamp_oklab.wesl's fs_main for the channel-by-channel story.
+    let s_a = textureLoad(scratch_aux, c, 0);
 
     var out: FsOut;
     if p.mode.x < 0.5 {
@@ -74,7 +73,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // amount but *divides out the soft edge* — leaving a hard cutoff at the footprint
         // boundary. Re-multiplying by `contact` restores the brush shape: the lift/deposit
         // feathers with the tip instead of stopping abruptly (it still ≈ the per-column amount
-        // under the core where contact ≈ 1, so conservation holds).
+        // under the core where contact ≈ 1, so conservation holds there). Known approximation:
+        // in the feathered rim, `contact < 1` under-applies the transfer relative to the
+        // tool's intake (which the mixer computed at the band centerline) — a small
+        // non-conservation confined to the soft edge.
         let contact = 1.0 - exp(-cov);
         let net = (s_a.w / max(cov, 1e-4)) * contact; // conserved transfer, brush-feathered
 
@@ -83,7 +85,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // media's `1−exp(−opacity·thickness)` makes the source fade as its thickness drops.
         out.color = s_c + base_c * (1.0 - s_c.a);
         // Height = base + the brush's own add-height (`s_a.x`, impasto) + the conserved net
-        // transfer. Wet rides the own attribute (`s_a.y`).
+        // transfer. Wet rides the own attribute (`s_a.y`). The `max(…, 0)` clamp absorbs
+        // over-lift — when the reconstructed removal exceeds the local base (sub-pixel /
+        // f16 accumulation error), the excess is destroyed rather than going negative.
         out.aux = vec4<f32>(max(base_a.x + s_a.x + net, 0.0), base_a.y + s_a.y, 0.0, 0.0);
 
         // Lateral pile-up: paint shoved aside heaps into the footprint's transition band —
@@ -91,7 +95,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // outside — scaled by the base paint present. A pure function of the local coverage
         // (no neighbour reads), so the tile apron stays seamless (§6.4).
         let edge = 4.0 * contact * (1.0 - contact);
-        out.aux.x = out.aux.x + p.surf.w * edge * base_a.x;
+        out.aux.x = out.aux.x + p.ridge.x * edge * base_a.x;
     }
     return out;
 }

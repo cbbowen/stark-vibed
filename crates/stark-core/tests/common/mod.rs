@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushParams, Tool};
+use stark_core::document::{BrushDynamics, BrushParams, DryParams, Tool};
 use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::{Engine, RgbaImage};
@@ -17,8 +17,12 @@ use stark_core::{Engine, RgbaImage};
 pub const SIZE: Extent2 = Extent2 { width: 256, height: 256 };
 pub const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const BG: wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
-/// A warm paper substrate, for color spaces that composite over a light ground.
-pub const PAPER: wgpu::Color = wgpu::Color { r: 0.92, g: 0.90, b: 0.85, a: 1.0 };
+/// A neutral near-white paper substrate, for color spaces that composite over a light
+/// ground. Matches the app's default (`stark-ui` `render::BG`). Neutral on purpose: the
+/// studio HDR lights the scene warm, and a warm paper on top of that rendered so
+/// red-dominant it defeated channel-dominance checks like `is_red` (tests asserting "is
+/// paint here?" were vacuously true on bare paper).
+pub const PAPER: wgpu::Color = wgpu::Color { r: 0.97, g: 0.97, b: 0.97, a: 1.0 };
 
 /// Build a headless engine, or `None` if this machine has no usable adapter
 /// (the test should then skip rather than fail).
@@ -65,9 +69,17 @@ pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
     }
 }
 
-/// Paint and commit a stroke through the given canvas points with `color`.
-pub fn paint(engine: &mut Engine, color: [f32; 4], radius: f32, points: &[Vec2]) {
-    engine.process(InputCommand::SetBrush(brush(color, radius)));
+/// A brush with the given [`DryParams`] dynamics (the add/lift/deposit brush, §6.2).
+pub fn dry_brush(color: [f32; 4], radius: f32, p: DryParams) -> BrushParams {
+    BrushParams {
+        dynamics: BrushDynamics::Dry(p),
+        ..brush(color, radius)
+    }
+}
+
+/// Paint and commit a stroke through `points` with an explicit brush.
+pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
+    engine.process(InputCommand::SetBrush(b));
     let mut it = points.iter();
     let first = *it.next().expect("at least one point");
     engine.process(InputCommand::StartStroke {
@@ -80,6 +92,11 @@ pub fn paint(engine: &mut Engine, color: [f32; 4], radius: f32, points: &[Vec2])
         });
     }
     engine.process(InputCommand::EndStroke);
+}
+
+/// Paint and commit a stroke through the given canvas points with `color`.
+pub fn paint(engine: &mut Engine, color: [f32; 4], radius: f32, points: &[Vec2]) {
+    stroke_with(engine, brush(color, radius), points);
 }
 
 /// Fraction of pixels whose maximum per-channel difference exceeds `tol`.

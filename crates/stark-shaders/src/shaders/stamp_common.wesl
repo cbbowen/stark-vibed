@@ -8,7 +8,7 @@
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
     // params.z = 2 / TILE_TEX (full interior+apron maps to NDC);
-    // params.w = 1 / stroke arc length (canvas px → normalized longitudinal pos).
+    // params.w unused (the reservoir u-advance is per-instance — `SegmentInstance.aux.w`).
     params: vec4<f32>,
     // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth;
     // surf.z = add fraction (how much of the brush's own height to lay); surf.w unused.
@@ -30,10 +30,10 @@ struct TileXform {
 // count; the mixer compute pass populates it (deposit·tool + add·brush).
 @group(3) @binding(0) var reservoir: texture_2d<f32>;
 @group(3) @binding(1) var reservoir_samp: sampler;
-// Companion reservoir carrying the deposit's height (.x) and wet (.y) rates plus the
-// **subtractive** lifted opacity-mass rate (.z) — the amount the brush took off the canvas
-// to fill the tool, which the integrate scrapes back off (DESIGN §6.1/§6.2). Zero for a
-// plain brush, whose flat reservoir lays only the brush's own paint.
+// Companion reservoir carrying the tool's **net height transfer** in `.x` (deposited −
+// lifted, a per-flatten-step rate; `.yzw` unused) — the conserved quantity the integrate
+// adds to the base (DESIGN §6.1/§6.2). Zero for a plain brush, whose flat reservoir lays
+// only the brush's own paint.
 @group(3) @binding(2) var aux_reservoir: texture_2d<f32>;
 
 struct VsOut {
@@ -87,13 +87,17 @@ fn sweep_vertex(
 
 // The deposited channels for a fragment at brush-local `local` (x = travel in
 // radius units from the segment start, y across the tip ∈ [-1,1]). The reservoir
-// is parameterized by *distance along the stroke*: `u.x + local.x·u.y` is the
-// fragment's true position, so the color flows continuously across segments and
-// overlapping segment quads resolve to the same spot (no per-segment clamp). The
-// reservoir's walk is extended half a brush past each end (the mixer keeps picking
-// up canvas there), so the round caps continue it smoothly and the sampler's edge
-// clamp only ever hits the outermost pad column. Linear filtering does the band (y)
-// blend; a dry brush's 1×1 reservoir collapses to the brush color.
+// is parameterized by *segment index* along the stroke (one column per segment —
+// where the mixer writes), not by arc distance: `u.x + local.x·u.y` advances from
+// this segment's start column-center to the next column over the segment's length
+// (`u.y` is the per-segment advance, `aux.w`), so non-uniform segment lengths — the
+// short flatten remainder at the stroke end, a curve's varying steps — stay aligned
+// with their columns, the colour flows continuously across segments, and overlapping
+// segment quads resolve to the same spot (no per-segment clamp). The reservoir's
+// walk is extended half a brush past each end (the mixer keeps picking up canvas
+// there), so the round caps continue it smoothly and the sampler's edge clamp only
+// ever hits the outermost pad column. Linear filtering does the band (y) blend; a
+// dry brush's 1×1 reservoir collapses to the brush color.
 fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
     let along = u.x + local.x * u.y;
     return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
@@ -172,5 +176,10 @@ fn swept_depth(in: VsOut) -> f32 {
 // frag_xy.
 fn surface_tooth(height: f32, coverage: f32, frag_xy: vec2<f32>) -> f32 {
     // TODO: Find a more natural and physically-accurate way to implement this.
+    // While this is a pass-through stub (and with the integrate's tooth gate removed),
+    // NO shader reads the canvas surface at stamp/integrate time — the group(2)
+    // `surface_tex`/`surface_samp` bindings above are placeholders for this TODO, and
+    // the weave currently shows only through the media pass's
+    // `thickness = height − surface` and relief normals (DESIGN §6.3/§6.4).
     return coverage;
 }
