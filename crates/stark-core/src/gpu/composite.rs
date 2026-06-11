@@ -353,6 +353,26 @@ impl Compositor {
         self.media = media;
     }
 
+    /// Swap the canvas surface (bump), rebuilding the media bind group so the next
+    /// render shades against it (DESIGN.md §6.4). A view-time swap — the composited
+    /// tiles are untouched.
+    pub fn set_surface(&mut self, surface: Surface) {
+        self.surface = surface;
+        let (c, a, bg) = make_offscreen(
+            &self.ctx.device,
+            self.size,
+            self.color_format,
+            self.aux_format,
+            &self.media_bgl,
+            &self.media_buf,
+            &self.surface,
+            &self.environment,
+        );
+        self.comp_color_view = c;
+        self.comp_aux_view = a;
+        self.media_bg = bg;
+    }
+
     /// Swap the HDR lighting environment, rebuilding the media bind group so the
     /// next render samples it (DESIGN.md §6.3).
     pub fn set_environment(&mut self, environment: Environment) {

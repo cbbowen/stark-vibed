@@ -229,6 +229,24 @@
   background: #3a6ea5;
 }
 
+/* Native drop-down styled to the panel chrome (e.g. the Surface picker). */
+.select {
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  color: #eee;
+  background: #33333a;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.select option {
+  background: #2a2a2e;
+  color: #eee;
+}
+
 /* --- layer panel --- */
 .layer-header {
   display: flex;

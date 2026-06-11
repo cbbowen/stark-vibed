@@ -66,7 +66,8 @@ impl Renderer {
         self.engine.surface()
     }
 
-    /// Switch the canvas surface (resets the document — it affects deposition).
+    /// Switch the canvas surface in place — the document is preserved; existing
+    /// paint re-reads against the new weave (DESIGN.md §6.4).
     pub fn set_surface(&mut self, id: SurfaceId) {
         self.engine.set_surface(id);
     }

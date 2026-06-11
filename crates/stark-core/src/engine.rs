@@ -471,22 +471,35 @@ impl Engine {
         self.surface_assets.insert(id, png_bytes);
         if id == self.surface_id {
             self.surface = build_surface(&self.gpu, id, &self.surface_assets);
-            self.rebuild_gpu_for(self.color_space.id());
+            self.apply_surface();
         }
     }
 
-    /// Switch the canvas surface. Because the surface affects deposition, a
-    /// document uses one surface throughout, so this resets the document (like a
-    /// color-space switch) — the New Document flow is where it's chosen. Image
-    /// surfaces fall back to `Flat` until their bytes are registered.
+    /// Switch the canvas surface **in place** — the document is preserved
+    /// (DESIGN.md §6.4). The surface is view-time today: the weave shows through the
+    /// media pass (`thickness = height − surface`, relief normals), and the
+    /// deposition tooth gate is a pass-through stub, so existing paint simply
+    /// re-reads against the new weave. Image surfaces fall back to `Flat` until
+    /// their bytes are registered.
+    ///
+    /// NOTE: the chosen surface is still saved with the document (`CanvasMeta`,
+    /// §8). If a real tooth gate returns, mid-document switches would make replay
+    /// non-reproducible — the choice would then need to be historized as an action.
     pub fn set_surface(&mut self, id: SurfaceId) {
         if id == self.surface_id {
             return;
         }
-        self.reset_document();
         self.surface_id = id;
         self.surface = build_surface(&self.gpu, id, &self.surface_assets);
-        self.rebuild_gpu_for(self.color_space.id());
+        self.apply_surface();
+    }
+
+    /// Rebind the current surface in the subsystems that sample it (the sweep's
+    /// tooth gate and the media pass) — no pipeline or pool rebuild, no document
+    /// reset.
+    fn apply_surface(&mut self) {
+        self.stroke.set_surface(&self.surface);
+        self.compositor.set_surface(self.surface.clone());
     }
 
     /// The current lighting environment (DESIGN.md §6.3).

@@ -470,6 +470,27 @@ impl StrokeRenderer {
         }
     }
 
+    /// Swap the canvas surface bound to the sweep's tooth gate (group 2), without
+    /// touching pipelines or pools. The gate is currently a pass-through stub
+    /// (`surface_tooth` TODO), but keeping the binding current means tooth reads the
+    /// right weave the moment it returns (DESIGN.md §6.4).
+    pub fn set_surface(&mut self, surface: &Surface) {
+        self.surface_bg = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark sweep surface bg"),
+            layout: &self.pipeline.get_bind_group_layout(2),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&surface.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&surface.sampler),
+                },
+            ],
+        });
+    }
+
     /// Render `rec` over `base`, returning a copy-on-write tile map.
     pub fn render(
         &self,

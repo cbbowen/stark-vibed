@@ -36,6 +36,14 @@ const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
 const SURFACE_LINEN: Asset = asset!("/assets/surface/Linen.png");
 const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 
+/// The selectable canvas surfaces, in display order (DESIGN.md §6.4). Adding a
+/// surface = one row here (plus its asset fetch in [`set_surface`]); the Lighting
+/// panel's drop-down renders this table.
+const SURFACES: &[(SurfaceId, &str)] = &[
+    (SurfaceId::Flat, "Smooth"),
+    (SurfaceId::Linen, "Linen"),
+];
+
 /// Oklab a/b picker field, on screen (px) — a square `a`×`b` plane at the current `L`.
 const FIELD_PX: f32 = 220.0;
 /// Oklab `L` slider height, on screen (px).
@@ -695,6 +703,15 @@ fn LightingPanel() -> Element {
         c[1] * 100.0,
         c[2] * 100.0
     );
+    // The canvas surface (weave), switchable in place — the document is preserved;
+    // existing paint re-reads against the new bump (DESIGN.md §6.4). Reading the
+    // renderer signal keeps the drop-down in sync after the async switch lands.
+    let surf = state
+        .renderer
+        .read()
+        .as_ref()
+        .map(|r| r.surface())
+        .unwrap_or_default();
 
     rsx! {
         Slider { label: "Exposure", min: 0.1, max: 2.0, value: p.exposure,
@@ -711,6 +728,20 @@ fn LightingPanel() -> Element {
                 class: "swatch",
                 style: "{swatch}",
                 onclick: move |_| show_bg_picker.set(!show_bg_picker()),
+            }
+        }
+        div { class: "slider-row",
+            div { class: "slider-label", "Surface" }
+            select {
+                class: "select",
+                onchange: move |e| {
+                    if let Some((id, _)) = SURFACES.iter().find(|(s, _)| format!("{s:?}") == e.value()) {
+                        set_surface(state, *id);
+                    }
+                },
+                for (id, name) in SURFACES.iter().copied() {
+                    option { value: "{id:?}", selected: surf == id, "{name}" }
+                }
             }
         }
         // Pop-out colour selector: mounted only while open, so the picker re-seeds from
@@ -751,6 +782,47 @@ fn update_background(state: AppState, rgb: [f32; 3]) {
         r.set_background(rgb);
         r.paint();
     }
+}
+
+/// The bundled asset behind an image-backed surface (`None` for procedural ones,
+/// which need no bytes). The one place to map a new [`SURFACES`] row to its file.
+fn surface_asset(id: SurfaceId) -> Option<Asset> {
+    match id {
+        SurfaceId::Flat => None,
+        SurfaceId::Linen => Some(SURFACE_LINEN),
+    }
+}
+
+/// Switch the canvas surface in place and repaint — the document is preserved;
+/// existing paint re-reads against the new weave (DESIGN.md §6.4). Image-backed
+/// surfaces are fetched on first use (the bump maps stay out of the wasm binary),
+/// so this runs async, like `new_document`'s fetch.
+fn set_surface(state: AppState, id: SurfaceId) {
+    let mut renderer = state.renderer;
+    spawn(async move {
+        let needs_bytes = renderer
+            .read()
+            .as_ref()
+            .is_some_and(|r| !r.surface_loaded(id));
+        if needs_bytes && let Some(asset) = surface_asset(id) {
+            tracing::info!(surface = ?id, url = %asset, "fetching surface asset");
+            match dioxus::asset_resolver::read_asset_bytes(asset).await {
+                Ok(bytes) => {
+                    if let Some(r) = renderer.write().as_mut() {
+                        r.register_surface(id, bytes);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("surface fetch failed: {e}");
+                    return;
+                }
+            }
+        }
+        if let Some(r) = renderer.write().as_mut() {
+            r.set_surface(id);
+            r.paint();
+        }
+    });
 }
 
 /// A vertical menu rail on the far left for uncommon or keyboard-driven commands
@@ -927,16 +999,15 @@ fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId, on_clo
     let mut renderer = state.renderer;
     let mut obs = state.obs;
     spawn(async move {
-        // Fetch + register the surface bytes the first time it's chosen. Flat is
-        // procedural; the only image surface today is Linen.
-        let needs_bytes = surface != SurfaceId::Flat
-            && renderer
-                .read()
-                .as_ref()
-                .is_some_and(|r| !r.surface_loaded(surface));
-        if needs_bytes {
-            tracing::info!(?surface, url = %SURFACE_LINEN, "fetching surface asset");
-            match dioxus::asset_resolver::read_asset_bytes(SURFACE_LINEN).await {
+        // Fetch + register the surface bytes the first time it's chosen
+        // (procedural surfaces have no asset — see `surface_asset`).
+        let needs_bytes = renderer
+            .read()
+            .as_ref()
+            .is_some_and(|r| !r.surface_loaded(surface));
+        if needs_bytes && let Some(asset) = surface_asset(surface) {
+            tracing::info!(?surface, url = %asset, "fetching surface asset");
+            match dioxus::asset_resolver::read_asset_bytes(asset).await {
                 Ok(bytes) => {
                     tracing::info!(?surface, bytes = bytes.len(), "surface fetched; registering");
                     if let Some(r) = renderer.write().as_mut() {
