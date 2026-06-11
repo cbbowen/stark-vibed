@@ -179,6 +179,35 @@
   pointer-events: none;
 }
 
+/* A colour well showing the current value; clicking toggles the pop-out picker. */
+.swatch {
+  display: block;
+  width: 100%;
+  height: 24px;
+  border: 1px solid #ffffff2e;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.swatch:hover {
+  border-color: #ffffff66;
+}
+
+/* Pop-out colour selector: flies out beside the owning panel (the nearest
+   positioned ancestor is the `.panel`), styled as a small sibling panel. */
+.color-popout {
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 0;
+  background: var(--panel-background);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  z-index: 40;
+}
+
 /* --- brush panel --- */
 .brush-shapes {
   display: flex;

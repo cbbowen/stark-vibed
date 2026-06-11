@@ -19,7 +19,7 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
-use render::{Renderer, CANVAS_ID};
+use render::{Renderer, BG, CANVAS_ID};
 use stark_core::document::{
     BrushDynamics, BrushParams, BrushShape, DryParams, Tool, WetParams,
 };
@@ -333,16 +333,33 @@ fn Canvas() -> Element {
 #[component]
 fn ColorPanel() -> Element {
     let state = use_context::<AppState>();
-    // Oklab picker: a vertical `L` slider + a 2D `a`/`b` field. Signals are `Copy`, so
-    // they can be handed to several event closures and the free helpers below. Seed
-    // from the brush's current colour (peek → no re-render on every paint).
+    // Seed from the brush's current colour (peek → no re-render on every paint).
     let init = state
         .obs
         .peek()
         .as_ref()
         .map(|o| o.brush.color)
         .unwrap_or([0.85, 0.15, 0.1, 1.0]);
-    let lab = srgb_to_oklab(init);
+    rsx! {
+        OklabPicker {
+            init: [init[0], init[1], init[2]],
+            onchange: move |rgb: [f32; 3]| {
+                update_brush(state, move |br| {
+                    br.color = [rgb[0], rgb[1], rgb[2], br.color[3]];
+                });
+            },
+        }
+    }
+}
+
+/// Reusable Oklab colour picker: a vertical `L` slider + a 2D `a`/`b` field. Seeds its
+/// Oklab state from `init` (straight sRGB) when mounted and reports every pick through
+/// `onchange` as straight sRGB, gamut-clamped. Signals are `Copy`, so they can be handed
+/// to several event closures and the free helpers below. Used by the Color panel (brush
+/// colour) and the Lighting panel's canvas-colour pop-out.
+#[component]
+fn OklabPicker(init: [f32; 3], onchange: EventHandler<[f32; 3]>) -> Element {
+    let lab = srgb_to_oklab([init[0], init[1], init[2], 1.0]);
     let l = use_signal(|| lab[0]);
     let a = use_signal(|| lab[1]);
     let b = use_signal(|| lab[2]);
@@ -366,8 +383,8 @@ fn ColorPanel() -> Element {
             div {
                 class: "ab-field",
                 style: "background-image: {field()};",
-                onpointerdown: move |e| { picking_ab.set(true); pick_ab(state, a, b, l, &e); },
-                onpointermove: move |e| { if picking_ab() { pick_ab(state, a, b, l, &e); } },
+                onpointerdown: move |e| { picking_ab.set(true); pick_ab(onchange, a, b, l, &e); },
+                onpointermove: move |e| { if picking_ab() { pick_ab(onchange, a, b, l, &e); } },
                 onpointerup: move |_| picking_ab.set(false),
                 onpointerleave: move |_| picking_ab.set(false),
                 div { class: "ab-marker", style: "left:{ax}px; top:{by}px;" }
@@ -375,8 +392,8 @@ fn ColorPanel() -> Element {
             div {
                 class: "l-slider",
                 style: "background: {l_grad};",
-                onpointerdown: move |e| { picking_l.set(true); pick_l(state, l, a, b, &e); },
-                onpointermove: move |e| { if picking_l() { pick_l(state, l, a, b, &e); } },
+                onpointerdown: move |e| { picking_l.set(true); pick_l(onchange, l, a, b, &e); },
+                onpointermove: move |e| { if picking_l() { pick_l(onchange, l, a, b, &e); } },
                 onpointerup: move |_| picking_l.set(false),
                 onpointerleave: move |_| picking_l.set(false),
                 div { class: "l-marker", style: "top:{ly}px;" }
@@ -385,33 +402,30 @@ fn ColorPanel() -> Element {
     }
 }
 
-/// Push the current Oklab `(L, a, b)` into the brush colour, preserving its alpha.
+/// Report the current Oklab `(L, a, b)` through `onchange` as straight sRGB.
 /// Out-of-gamut points clamp to sRGB.
-fn apply_color(state: AppState, l: Signal<f32>, a: Signal<f32>, b: Signal<f32>) {
-    update_brush(state, move |br| {
-        let rgba = oklab_to_srgb([l(), a(), b(), br.color[3]]);
-        br.color = [
-            rgba[0].clamp(0.0, 1.0),
-            rgba[1].clamp(0.0, 1.0),
-            rgba[2].clamp(0.0, 1.0),
-            br.color[3],
-        ];
-    });
+fn apply_color(onchange: EventHandler<[f32; 3]>, l: Signal<f32>, a: Signal<f32>, b: Signal<f32>) {
+    let rgba = oklab_to_srgb([l(), a(), b(), 1.0]);
+    onchange.call([
+        rgba[0].clamp(0.0, 1.0),
+        rgba[1].clamp(0.0, 1.0),
+        rgba[2].clamp(0.0, 1.0),
+    ]);
 }
 
 /// Set `a`/`b` from a pointer position over the field (warm/+b at top), then apply.
-fn pick_ab(state: AppState, mut a: Signal<f32>, mut b: Signal<f32>, l: Signal<f32>, e: &Event<PointerData>) {
+fn pick_ab(onchange: EventHandler<[f32; 3]>, mut a: Signal<f32>, mut b: Signal<f32>, l: Signal<f32>, e: &Event<PointerData>) {
     let c = e.element_coordinates();
     a.set(((c.x as f32 / FIELD_PX) * 2.0 - 1.0).clamp(-1.0, 1.0) * AB);
     b.set((1.0 - (c.y as f32 / FIELD_PX) * 2.0).clamp(-1.0, 1.0) * AB);
-    apply_color(state, l, a, b);
+    apply_color(onchange, l, a, b);
 }
 
 /// Set `L` from a pointer position over the vertical slider (top = light), then apply.
-fn pick_l(state: AppState, mut l: Signal<f32>, a: Signal<f32>, b: Signal<f32>, e: &Event<PointerData>) {
+fn pick_l(onchange: EventHandler<[f32; 3]>, mut l: Signal<f32>, a: Signal<f32>, b: Signal<f32>, e: &Event<PointerData>) {
     let c = e.element_coordinates();
     l.set((1.0 - c.y as f32 / L_H).clamp(0.0, 1.0));
-    apply_color(state, l, a, b);
+    apply_color(onchange, l, a, b);
 }
 
 /// Render the Oklab `a`/`b` colour plane at lightness `l` as a small 24-bit BMP
@@ -670,6 +684,17 @@ fn LightingPanel() -> Element {
     // a view setting, not part of the observable document state).
     let media = use_signal(MediaParams::default);
     let p = media();
+    // The canvas substrate colour (straight sRGB), shown as a swatch that pops out an
+    // Oklab picker. Like the sliders, a view setting owned here (`Renderer::set_background`).
+    let mut bg = use_signal(|| [BG.r as f32, BG.g as f32, BG.b as f32]);
+    let mut show_bg_picker = use_signal(|| false);
+    let c = bg();
+    let swatch = format!(
+        "background: rgb({:.1}% {:.1}% {:.1}%);",
+        c[0] * 100.0,
+        c[1] * 100.0,
+        c[2] * 100.0
+    );
 
     rsx! {
         Slider { label: "Exposure", min: 0.1, max: 2.0, value: p.exposure,
@@ -680,6 +705,28 @@ fn LightingPanel() -> Element {
             oninput: move |v| update_media(state, media, move |m| m.surface_strength = v) }
         Slider { label: "Wet gloss", min: 0.0, max: 0.35, value: p.specular,
             oninput: move |v| update_media(state, media, move |m| m.specular = v) }
+        div { class: "slider-row",
+            div { class: "slider-label", "Canvas" }
+            button {
+                class: "swatch",
+                style: "{swatch}",
+                onclick: move |_| show_bg_picker.set(!show_bg_picker()),
+            }
+        }
+        // Pop-out colour selector: mounted only while open, so the picker re-seeds from
+        // the current colour each time. Positioned by `.color-popout` (flies out beside
+        // the panel, whose `.panel` is the nearest positioned ancestor).
+        if show_bg_picker() {
+            div { class: "color-popout",
+                OklabPicker {
+                    init: bg(),
+                    onchange: move |rgb: [f32; 3]| {
+                        bg.set(rgb);
+                        update_background(state, rgb);
+                    },
+                }
+            }
+        }
     }
 }
 
@@ -692,6 +739,16 @@ fn update_media(state: AppState, mut media: Signal<MediaParams>, f: impl FnOnce(
     let mut guard = renderer.write();
     if let Some(r) = guard.as_mut() {
         r.set_media_params(p);
+        r.paint();
+    }
+}
+
+/// Set the canvas substrate colour (straight sRGB, a view setting) and repaint.
+fn update_background(state: AppState, rgb: [f32; 3]) {
+    let mut renderer = state.renderer;
+    let mut guard = renderer.write();
+    if let Some(r) = guard.as_mut() {
+        r.set_background(rgb);
         r.paint();
     }
 }

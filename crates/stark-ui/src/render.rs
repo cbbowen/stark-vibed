@@ -12,9 +12,10 @@ use stark_core::{
 };
 use wasm_bindgen::JsCast;
 
-/// Paper-white background, in linear RGB. Kept neutral (not warm) — the studio
+/// Default paper-white background, as straight sRGB (the engine's
+/// `rgb_to_channels` linearizes it). Kept neutral (not warm) — the studio
 /// environment light already tints the scene warm, and a neutral substrate keeps
-/// paint colours legible against it.
+/// paint colours legible against it. The live value is [`Renderer::set_background`].
 pub const BG: wgpu::Color = wgpu::Color {
     r: 0.97,
     g: 0.97,
@@ -31,6 +32,9 @@ pub struct Renderer {
     engine: Engine,
     /// The built-in bristle brush, imported once its bytes are fetched (§6.6).
     bristle: Option<stark_core::AssetId>,
+    /// Canvas substrate colour (straight sRGB), a view setting like the lighting —
+    /// it feeds the media pass's `background_color()`, not the document (§6.3).
+    background: wgpu::Color,
 }
 
 impl Renderer {
@@ -97,6 +101,22 @@ impl Renderer {
         self.engine.set_media_params(params);
     }
 
+    /// The current canvas substrate colour, as straight sRGB components.
+    pub fn background(&self) -> [f32; 3] {
+        [self.background.r as f32, self.background.g as f32, self.background.b as f32]
+    }
+
+    /// Set the canvas substrate colour (straight sRGB). A view setting — it does not
+    /// touch the document, only how bare canvas renders (§6.3).
+    pub fn set_background(&mut self, rgb: [f32; 3]) {
+        self.background = wgpu::Color {
+            r: rgb[0] as f64,
+            g: rgb[1] as f64,
+            b: rgb[2] as f64,
+            a: 1.0,
+        };
+    }
+
     /// The built-in bristle brush's asset id, once its bytes have been imported.
     pub fn bristle(&self) -> Option<stark_core::AssetId> {
         self.bristle
@@ -136,7 +156,7 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.engine.render(&view, BG);
+        self.engine.render(&view, self.background);
         frame.present();
     }
 }
@@ -249,5 +269,6 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
         config,
         engine,
         bristle: None,
+        background: BG,
     }
 }
