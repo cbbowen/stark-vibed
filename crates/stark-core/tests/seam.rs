@@ -173,7 +173,7 @@ fn render_shifted_wet(shift: Vec2) -> RgbaImage {
     // Both axes on, so the test covers the advect + diffuse write-back together.
     let mut wet = brush(RED, 24.0);
     wet.tooth = 0.0;
-    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.9, drag: 0.9 });
+    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.9, drag: 0.9 });
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,

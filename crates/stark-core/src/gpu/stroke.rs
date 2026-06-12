@@ -155,6 +155,10 @@ pub struct StrokeRenderer {
     // on the GPU, no readback (DESIGN.md §6.2). Built once; cheap to clone (wgpu
     // handles are Arc-backed).
     composite_pipeline: wgpu::RenderPipeline,
+    /// Same composite, but with the wide [`SCRATCH_AUX_FORMAT`] aux target — for
+    /// compositing *scratch* tiles into a region without dropping their extra
+    /// channels (the flow's footprint-coverage mask rides scratch aux `.z`).
+    composite_wide_pipeline: wgpu::RenderPipeline,
     composite_sampler: wgpu::Sampler,
     composite_view_bgl: wgpu::BindGroupLayout,
     composite_tile_bgl: wgpu::BindGroupLayout,
@@ -428,7 +432,12 @@ impl StrokeRenderer {
 
         // ---- Wet-mixing pickup: base-region composite + reservoir compute ----
         let (composite_pipeline, composite_view_bgl, composite_tile_bgl) =
-            build_composite_pipeline(device, color_space.as_ref());
+            build_composite_pipeline(device, color_space.as_ref(), color_space.aux_format());
+        // The wide variant's (structurally identical) bind group layouts are discarded:
+        // WebGPU bind-group compatibility is structural, so groups made with the layouts
+        // above bind to both pipelines.
+        let (composite_wide_pipeline, _, _) =
+            build_composite_pipeline(device, color_space.as_ref(), SCRATCH_AUX_FORMAT);
         let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("stark mixer composite sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -454,6 +463,7 @@ impl StrokeRenderer {
             reservoir_bgl,
             reservoir_sampler,
             composite_pipeline,
+            composite_wide_pipeline,
             composite_sampler,
             composite_view_bgl,
             composite_tile_bgl,
@@ -595,10 +605,14 @@ impl StrokeRenderer {
             BrushDynamics::Dry(mp) => Some(mp),
             _ => None,
         };
-        // How much of the brush's own paint the deposit lays (the `add` axis); non-Dry
-        // (Wet) lays its full own paint. Folded into the reservoir colour (mixer/flat) and
-        // used to gate the brush's own height/wet in the stamp.
-        let add_frac = dry.map_or(1.0, |mp| mp.add);
+        // How much of the brush's own paint the deposit lays — the `add` axis of either
+        // dynamics (the Wet flow deposits ahead of its bleed/drag; with `add = 0` it only
+        // works paint already on the canvas). Folded into the reservoir colour
+        // (mixer/flat) and used to gate the brush's own height/wet in the stamp.
+        let add_frac = match rec.brush.dynamics {
+            BrushDynamics::Dry(mp) => mp.add,
+            BrushDynamics::Wet(wp) => wp.add,
+        };
         let scan = dry
             .filter(|mp| mp.lift > 0.0 || mp.deposit > 0.0)
             .map(|mp| [mp.lift, mp.deposit, crate::path::FLATTEN_STEP, 0.0]);
@@ -914,8 +928,12 @@ impl StrokeRenderer {
 
     /// Composite the given tiles' channels into a fresh 1:1 region (color, aux),
     /// reusing the region pipeline. `tiles` = (canvas origin, color view, aux view);
-    /// `origin`/`w`/`h` define the region rect in canvas px. The region textures also
-    /// carry `COPY_SRC` so they can be sliced back into tiles.
+    /// `origin`/`w`/`h` define the region rect in canvas px. With `wide_aux` the aux
+    /// region is the wide [`SCRATCH_AUX_FORMAT`] (for *scratch* tiles, whose extra
+    /// channels — e.g. the footprint coverage in `.z` — must survive the composite);
+    /// otherwise the colour-space's compact aux. The region textures also carry
+    /// `COPY_SRC` so they can be sliced back into tiles.
+    #[allow(clippy::too_many_arguments)]
     fn composite_region(
         &self,
         scoped: &mut ScopedResources,
@@ -924,7 +942,13 @@ impl StrokeRenderer {
         origin: Vec2,
         w: u32,
         h: u32,
+        wide_aux: bool,
     ) -> (wgpu::Texture, wgpu::Texture) {
+        let (aux_format, pipeline) = if wide_aux {
+            (SCRATCH_AUX_FORMAT, &self.composite_wide_pipeline)
+        } else {
+            (self.color_space.aux_format(), &self.composite_pipeline)
+        };
         let device = &self.ctx.device;
         let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -943,7 +967,7 @@ impl StrokeRenderer {
             }))
         };
         let color_tex = make(self.color_space.color_format(), "stark region color");
-        let aux_tex = make(self.color_space.aux_format(), "stark region aux");
+        let aux_tex = make(aux_format, "stark region aux");
         let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let aux_view = aux_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -1002,7 +1026,7 @@ impl StrokeRenderer {
                 multiview_mask: None,
             });
             if let Some(ib) = &inst_buf {
-                pass.set_pipeline(&self.composite_pipeline);
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &view_bg, &[]);
                 pass.set_vertex_buffer(0, ib.slice(..));
                 for (i, bg) in bgs.iter().enumerate() {
@@ -1143,8 +1167,13 @@ impl StrokeRenderer {
                 .iter()
                 .map(|(c, t)| (c.origin(), t.color_view().clone(), t.aux_view().clone()))
                 .collect();
-            let (rate_color, _rate_aux) = self.composite_region(scoped, encoder, &foot, region_origin, w, h);
-            let rate_view = rate_color.create_view(&wgpu::TextureViewDescriptor::default());
+            // The bleed's mask must be the brush's *footprint coverage* (wide scratch
+            // aux `.z`, laid regardless of the deposit) — NOT the deposited opacity,
+            // which an `add = 0` blender leaves at zero everywhere, silently disabling
+            // the bleed. Wide composite so `.z` survives into the region.
+            let (_rate_color, rate_aux) =
+                self.composite_region(scoped, encoder, &foot, region_origin, w, h, true);
+            let rate_view = rate_aux.create_view(&wgpu::TextureViewDescriptor::default());
             let c_color = self.region_tex(scoped, w, h, self.color_space.color_format(), "stark flow color c");
             let c_aux = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow aux c");
             let cv_c = c_color.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1250,7 +1279,7 @@ impl StrokeRenderer {
             .iter()
             .filter_map(|c| map.get(c).map(|t| (c.origin(), t.color_view().clone(), t.aux_view().clone())))
             .collect();
-        self.composite_region(scoped, encoder, &post, region_origin, w, h)
+        self.composite_region(scoped, encoder, &post, region_origin, w, h, false)
     }
 
     /// Slice a processed region back into fresh CoW tiles for the affected `coords`.
@@ -1726,10 +1755,13 @@ fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
 
 /// Build the base-region composite pipeline for wet mixing — a 1:1 re-composite
 /// of the active layer under the stroke, reusing the `composite` shader (DESIGN
-/// §6.2, §6.3). Returns `(pipeline, view bgl, tile bgl)`.
+/// §6.2, §6.3). `aux_format` is the aux target: the colour-space's compact format
+/// for canvas tiles, or the wide [`SCRATCH_AUX_FORMAT`] when compositing scratch
+/// tiles whose extra channels must survive. Returns `(pipeline, view bgl, tile bgl)`.
 fn build_composite_pipeline(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
+    aux_format: wgpu::TextureFormat,
 ) -> (
     wgpu::RenderPipeline,
     wgpu::BindGroupLayout,
@@ -1809,7 +1841,7 @@ fn build_composite_pipeline(
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: color_space.aux_format(),
+                    format: aux_format,
                     blend: Some(color_space.aux_blend()),
                     write_mask: wgpu::ColorWrites::ALL,
                 }),

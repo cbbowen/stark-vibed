@@ -591,9 +591,14 @@ fn BrushPanel() -> Element {
                 Slider { label: "Ridge", min: 0.0, max: 1.0, value: mp.ridge,
                     oninput: move |v| set_dry(state, move |m| m.ridge = v) }
             }
-            // Wet-only controls: how strongly the wet paint bleeds (diffuses) and how
-            // strongly the brush drags it along the stroke (DESIGN.md §6.2).
+            // Wet-only controls: how much of its own paint the stroke adds, how
+            // strongly the wet paint bleeds (diffuses), and how strongly the brush
+            // drags it along the stroke (DESIGN.md §6.2). With Add at 0 the brush lays
+            // nothing and only works the paint already on the canvas. (These will get
+            // the same ternary treatment as the Dry mix.)
             if is_wet {
+                Slider { label: "Add", min: 0.0, max: 1.0, value: wp.add,
+                    oninput: move |v| set_wet(state, move |w| w.add = v) }
                 Slider { label: "Bleed", min: 0.0, max: 1.0, value: wp.bleed,
                     oninput: move |v| set_wet(state, move |w| w.bleed = v) }
                 Slider { label: "Drag", min: 0.0, max: 1.0, value: wp.drag,

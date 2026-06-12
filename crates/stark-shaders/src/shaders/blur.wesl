@@ -6,8 +6,9 @@
 //
 // Pass 1 (horizontal, `combine`=0) is a pure blur. Pass 2 (vertical, `combine`=1)
 // finishes the 2-D Gaussian and mixes it back over the *original* region, gated by the
-// footprint rate × wetness — so the bleed stays localized to where the brush bore down
-// and is identity where the rate is 0 (the halo / tile aprons), keeping the region
+// footprint rate × the arriving (blurred) wetness — so the bleed stays localized to
+// where the brush bore down, wet paint spreads outward onto bare canvas, and the pass
+// is identity where the rate is 0 (the halo / tile aprons), keeping the region
 // write-back seam-free. Diffusing the premultiplied colour conserves pigment (symmetric
 // kernel); thickness diffuses too, so wet impasto levels. `textureLoad` (exact texels)
 // keeps it deterministic.
@@ -21,7 +22,10 @@ struct Params {
 @group(0) @binding(2) var src_aux: texture_2d<f32>;
 @group(0) @binding(3) var orig_color: texture_2d<f32>;
 @group(0) @binding(4) var orig_aux: texture_2d<f32>;
-@group(0) @binding(5) var rate_tex: texture_2d<f32>; // footprint: opacity in .a
+// The stroke's footprint, composited from the wide scratch aux: accumulated coverage
+// (Σ√cov) in `.z`. Deposit-independent — an `add = 0` blender still has full coverage
+// where it bore down, so it bleeds the paint under it while laying none of its own.
+@group(0) @binding(5) var rate_tex: texture_2d<f32>;
 
 // Max kernel radius (px) — the loop bound; covers `sigma` up to ≈ MAX_RADIUS / 3
 // (kept in sync with `MAX_SIGMA` in gpu/stroke.rs).
@@ -69,11 +73,19 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         out.aux = blur_a;
     } else {
         // Vertical pass + combine: blend the full Gaussian over the original, gated by
-        // how hard the brush bore down (rate) and how wet the paint is.
+        // how hard the brush bore down (footprint coverage, saturated to contact like
+        // the integrate's) and how wet the paint is. Wetness is taken from the
+        // **blurred** channels — the paint *arriving* at this pixel — not the
+        // destination's own: wet paint must bleed outward onto bare canvas (whose own
+        // wetness is 0, but whose neighbourhood is wet), instead of stopping in a hard
+        // edge at the paint boundary. Inside a wet field the centre tap dominates, so
+        // this reduces to the local wetness; far from any wet paint the blurred
+        // neighbourhood is empty and the pass stays identity.
         let oc = textureLoad(orig_color, c, 0);
         let oa = textureLoad(orig_aux, c, 0);
-        let wet = clamp(oa.y / max(oc.a, 1e-4), 0.0, 1.0);
-        let r = clamp(textureLoad(rate_tex, c, 0).a * wet, 0.0, 1.0);
+        let wet = clamp(blur_a.y / max(blur_c.a, 1e-4), 0.0, 1.0);
+        let contact = 1.0 - exp(-textureLoad(rate_tex, c, 0).z);
+        let r = clamp(contact * wet, 0.0, 1.0);
         out.color = mix(oc, blur_c, r);
         out.aux = mix(oa, blur_a, r);
     }

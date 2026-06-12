@@ -460,7 +460,7 @@ fn golden_wet_blend() {
 
     let blue = [0.10, 0.20, 0.85, 1.0];
     let mut wet = brush(blue, 26.0);
-    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.9, drag: 0.0 });
+    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.9, drag: 0.0 });
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -473,6 +473,29 @@ fn golden_wet_blend() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("wet_blend", &img, 6);
+}
+
+#[test]
+fn golden_wet_blend_no_add() {
+    // A Wet brush with `add = 0` is a pure blender (DESIGN.md §6.2): it lays none of
+    // its own paint and only works what's already on the canvas. A red and a green
+    // field meet near x = 0; dragging the add-less blender down that boundary must
+    // soften it into a red↔green gradient. Regression guard: the bleed's footprint
+    // mask used to be the *deposited opacity* — identically zero when `add = 0` — so
+    // the blender silently did nothing; the mask is the brush's footprint coverage,
+    // which is deposit-independent.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 50.0, &[Vec2::new(-95.0, 0.0), Vec2::new(-2.0, 0.0)]);
+    paint(&mut engine, GREEN, 50.0, &[Vec2::new(2.0, 0.0), Vec2::new(95.0, 0.0)]);
+
+    let mut blender = brush(RED, 26.0); // its own colour is irrelevant: add = 0 lays nothing
+    blender.dynamics = BrushDynamics::Wet(WetParams { add: 0.0, bleed: 0.9, drag: 0.0 });
+    stroke_with(&mut engine, blender, &[Vec2::new(0.0, -80.0), Vec2::new(0.0, 80.0)]);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("wet_blend_no_add", &img, 6);
 }
 
 #[test]
@@ -500,7 +523,7 @@ fn golden_wet_drag() {
     );
 
     let mut wet = brush(RED, 24.0);
-    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.0, drag: 0.9 });
+    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.0, drag: 0.9 });
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -539,7 +562,7 @@ fn golden_wet_flow() {
     );
 
     let mut wet = brush(RED, 24.0);
-    wet.dynamics = BrushDynamics::Wet(WetParams { bleed: 0.8, drag: 0.8 });
+    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.8, drag: 0.8 });
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,

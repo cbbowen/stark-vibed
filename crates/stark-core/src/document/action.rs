@@ -101,11 +101,19 @@ impl Default for DryParams {
 }
 
 /// Parameters of the [`BrushDynamics::Wet`] flow (DESIGN.md §6.2): wet paint that
-/// simultaneously bleeds and drags. Both are independent; 0 disables that behaviour
-/// (`bleed`-only = alla-prima diffusion, `drag`-only = a fluid rake). The iteration
-/// count and per-step distances are fixed (for deterministic replay).
+/// **adds** the brush's own paint, then simultaneously bleeds and drags it. All three
+/// are independent; 0 disables that behaviour (`add`-only = plain wet paint,
+/// `bleed`-only = alla-prima diffusion of what's already there, `drag`-only = a fluid
+/// rake). The iteration count and per-step distances are fixed (for deterministic
+/// replay).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WetParams {
+    /// How much of the brush's own paint it **adds**, in [0, 1] — the same axis as
+    /// [`DryParams::add`]: 0 lays nothing (the stroke only bleeds/drags paint already
+    /// on the canvas), 1 = a full deposit. Defaults to 1 on load so documents saved
+    /// before this field keep their always-deposit behaviour.
+    #[serde(default = "default_wet_add")]
+    pub add: f32,
     /// How strongly the wet paint bleeds and levels, in [0, 1]: 0 = none, 1 = maximum
     /// bleed. Scales the per-iteration diffusion rate.
     pub bleed: f32,
@@ -116,9 +124,13 @@ pub struct WetParams {
     pub drag: f32,
 }
 
+fn default_wet_add() -> f32 {
+    1.0
+}
+
 impl Default for WetParams {
     fn default() -> Self {
-        Self { bleed: 0.5, drag: 0.1 }
+        Self { add: 1.0, bleed: 0.5, drag: 0.1 }
     }
 }
 
