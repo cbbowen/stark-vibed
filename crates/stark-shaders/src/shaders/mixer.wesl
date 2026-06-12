@@ -9,12 +9,14 @@
 //   1. `reservoir`     — the deposit's *colour*: the tool's tint weighted by its height
 //                        share of the resulting paint, with the brush's own `add` colour
 //                        composited over it (premultiplied; see `step`).
-//   2. `aux_reservoir` — `.x` the **net height transfer** (deposited − lifted, as a
-//                        per-flatten-step rate); `.yzw` unused. Height is the amount of
-//                        paint (§6.1), so this one signed channel carries the
-//                        conservation: the integrate adds it to the base, and with
-//                        `add = 0` what is deposited here was lifted elsewhere — paint is
-//                        neither created nor destroyed (DESIGN §6.2).
+//   2. `aux_reservoir` — `.x` the **deposited height** (≥ 0, a per-flatten-step rate);
+//                        `.yzw` unused. The lift's *subtraction* deliberately does NOT
+//                        ride this banded texture: the integrate removes
+//                        `lift × contact` of the base height per-pixel — exact, where
+//                        the banded reconstruction of `lift × canvas_h` left residue an
+//                        eraser could never clean up. The tool's intake here (banded)
+//                        and that exact removal agree in expectation, so paint stays
+//                        approximately conserved with `add = 0` (DESIGN §6.1/§6.2).
 //
 // Running this on the GPU keeps pickup off the CPU entirely — WebGPU cannot block for a
 // buffer map, so a CPU readback is impossible (it panics in getMappedRange).
@@ -43,7 +45,7 @@ struct Instance {
 // `j` sits at brush-local y = (2j+1)/BANDS − 1 (the row's texel center mapped onto
 // [-1,1]); the deposit samples the texture at the matching y, so the two stay aligned with
 // no shared offset constant. The reservoir texture's height is `BANDS` (set in stroke.rs).
-const BANDS: u32 = 16u;
+const BANDS: u32 = 64u;
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var region_color: texture_2d<f32>;
@@ -69,16 +71,17 @@ struct Tool {
 // What `step` emits for one reservoir texel, alongside the updated tool. The deposit colour
 // is the tool's tint weighted by its height share of the resulting paint (see the colour
 // block in `step`), with the brush's own `add` colour composited over it, laid through the
-// sweep colour target's *over*-blend. `net_h` is the **conserved height transfer** —
-// deposited − lifted — as a per-flatten-step *rate* (the segment's amount ÷ its `steps`,
-// so short segments store the same length-independent value as full ones; see `step`). The
-// integrate adds it to the base, so paint *moves* (what's deposited here was lifted
-// elsewhere) — with `add=0` the total canvas+tool height is conserved (DESIGN §6.1/§6.2).
+// sweep colour target's *over*-blend. `dep_h` is the **deposited height** as a
+// per-flatten-step *rate* (the segment's amount ÷ its `steps`, so short segments store the
+// same length-independent value as full ones; see `step`). The integrate adds it to the
+// base; the lift's matching removal is computed per-pixel there (`lift × contact`), not
+// here — with `add = 0` what is deposited was lifted elsewhere, so paint moves and the
+// total canvas+tool height is (approximately) conserved (DESIGN §6.1/§6.2).
 struct StepOut {
     tool: Tool,
     dep_rgb: vec3<f32>, // deposit+add premultiplied colour (over-blended)
     dep_op: f32,        // deposit+add per-unit opacity (over-blended)
-    net_h: f32,         // deposited − lifted height, as a per-flatten-step rate
+    dep_h: f32,         // deposited height (≥ 0), as a per-flatten-step rate
 }
 
 // One step of the reservoir recurrence at `sample` (region px), covering `steps`
@@ -138,23 +141,23 @@ fn step(prev: Tool, sample: vec2<f32>, steps: f32, bru: vec3<f32>) -> StepOut {
     out.tool = tool;
     out.dep_rgb = params.brush_ch.xyz * ao + tool.ch * tint * (1.0 - ao);
     out.dep_op = ao + tint * (1.0 - ao);
-    // The tool advanced over `steps` flatten-steps of arc; the lift/deposit amounts above
-    // are proportional to that. Emit the per-flatten-step **rate** (÷ steps) so the reservoir
+    // The tool advanced over `steps` flatten-steps of arc; the deposit amount above is
+    // proportional to that. Emit the per-flatten-step **rate** (÷ steps) so the reservoir
     // holds a length-independent value — the arc each segment covers is reapplied by the
     // deposit's footprint accumulation. Without this, the short remainder segment at the
-    // stroke end (and any short segment on a curve) gets a fractional-step net → a one-column
-    // dip → a visible seam (DESIGN §6.2).
-    out.net_h = (dep_h - lift_h) / max(steps, 1e-4); // per-flatten-step net (deposited − lifted)
+    // stroke end (and any short segment on a curve) gets a fractional-step amount → a
+    // one-column dip → a visible seam (DESIGN §6.2).
+    out.dep_h = dep_h / max(steps, 1e-4); // per-flatten-step deposited height
     return out;
 }
 
 // Store one reservoir column for band `j`. The deposit colour goes to `reservoir`
-// (premultiplied; the sweep's colour target over-blends it) and the conserved net height
-// transfer (deposited − lifted) to `aux_reservoir.x` (DESIGN §6.1/§6.2).
+// (premultiplied; the sweep's colour target over-blends it) and the deposited height
+// rate to `aux_reservoir.x` (DESIGN §6.1/§6.2).
 fn store_res(s: StepOut, col: u32, band: u32) {
     let p = vec2<i32>(i32(col), i32(band));
     textureStore(reservoir, p, vec4<f32>(s.dep_rgb, s.dep_op));
-    textureStore(aux_reservoir, p, vec4<f32>(s.net_h, 0.0, 0.0, 0.0));
+    textureStore(aux_reservoir, p, vec4<f32>(s.dep_h, 0.0, 0.0, 0.0));
 }
 
 @compute @workgroup_size(BANDS)

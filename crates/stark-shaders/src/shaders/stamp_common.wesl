@@ -30,10 +30,12 @@ struct TileXform {
 // count; the mixer compute pass populates it (deposit·tool + add·brush).
 @group(3) @binding(0) var reservoir: texture_2d<f32>;
 @group(3) @binding(1) var reservoir_samp: sampler;
-// Companion reservoir carrying the tool's **net height transfer** in `.x` (deposited −
-// lifted, a per-flatten-step rate; `.yzw` unused) — the conserved quantity the integrate
-// adds to the base (DESIGN §6.1/§6.2). Zero for a plain brush, whose flat reservoir lays
-// only the brush's own paint.
+// Companion reservoir carrying the tool's **deposited height** in `.x` (≥ 0, a
+// per-flatten-step rate; `.yzw` unused) — what the integrate adds to the base. The lift's
+// matching removal does not ride this banded texture: the integrate computes it per-pixel
+// (`lift × contact` of the exact base height), so an eraser leaves no banded residue
+// (DESIGN §6.1/§6.2). Zero for a plain brush, whose flat reservoir lays only the brush's
+// own paint.
 @group(3) @binding(2) var aux_reservoir: texture_2d<f32>;
 
 struct VsOut {
@@ -103,11 +105,10 @@ fn reservoir_color(u: vec2<f32>, local: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0);
 }
 
-// The tool's **net height transfer** at the reservoir position (per-column: deposited −
-// lifted height; the deposit shader spreads it over the footprint and the integrate
-// coverage-normalizes it). Zero for a plain brush, whose own height rides the per-segment
-// attribute. This is the conserved quantity — what the integrate adds to the base (DESIGN §6.1).
-fn reservoir_net_height(u: vec2<f32>, local: vec2<f32>) -> f32 {
+// The tool's **deposited height** at the reservoir position (per-column rate, ≥ 0; the
+// deposit shader spreads it over the footprint and the integrate coverage-normalizes it).
+// Zero for a plain brush, whose own height rides the per-segment attribute (DESIGN §6.1).
+fn reservoir_dep_height(u: vec2<f32>, local: vec2<f32>) -> f32 {
     let along = u.x + local.x * u.y;
     return textureSampleLevel(aux_reservoir, reservoir_samp, vec2<f32>(along, local.y * 0.5 + 0.5), 0.0).x;
 }

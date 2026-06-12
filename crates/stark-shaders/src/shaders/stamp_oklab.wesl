@@ -11,9 +11,9 @@
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
 //             (height, wet)) — (own add-height, own wet·op, footprint coverage √cov,
-//             net height transfer·√cov); the channel-by-channel story is in `fs_main`
+//             deposited height·√cov); the channel-by-channel story is in `fs_main`
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, reservoir_net_height, add_frac};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, reservoir_dep_height, add_frac};
 
 @vertex
 fn vs_main(
@@ -40,7 +40,7 @@ fn fs_main(in: VsOut) -> FsOut {
     let ch = reservoir_color(in.u, in.local);
     let op = in.op * scov;
 
-    let net_h = reservoir_net_height(in.u, in.local); // tool net height transfer (per-column)
+    let dep_h = reservoir_dep_height(in.u, in.local); // tool deposited height (per-column rate)
     let af = add_frac();
 
     var out: FsOut;
@@ -50,11 +50,12 @@ fn fs_main(in: VsOut) -> FsOut {
     //   .x = the brush's *own* add-height (per-segment attr `in.misc.z`, gated by `add`),
     //        laid plain-paint style (additive over the overlap → builds impasto);
     //   .y = the brush's own wet;
-    //   .z = footprint coverage (√cov), summed for the integrate's normalization + ridge;
-    //   .w = the tool's **net height transfer** (deposited − lifted), which the integrate
-    //        divides by the coverage and adds to the base — paint *moves*, conserving height
-    //        with `add=0`. Height is the amount of paint; the colour alpha is per-unit
-    //        opacity only and never represents amount (§6.1).
-    out.aux = vec4<f32>(af * in.misc.z * scov, af * in.misc.w * op, scov, net_h * scov);
+    //   .z = footprint coverage (√cov), summed for the integrate's per-pixel contact —
+    //        which both feathers the tool deposit and drives the lift's exact
+    //        multiplicative removal (`lift × contact` of the base height) — and the ridge;
+    //   .w = the tool's **deposited height** (≥ 0), which the integrate divides by the
+    //        coverage and adds to the base. Height is the amount of paint; the colour
+    //        alpha is per-unit opacity only and never represents amount (§6.1).
+    out.aux = vec4<f32>(af * in.misc.z * scov, af * in.misc.w * op, scov, dep_h * scov);
     return out;
 }

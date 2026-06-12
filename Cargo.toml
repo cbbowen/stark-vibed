@@ -1,6 +1,5 @@
 # Stark workspace. See DESIGN.md for the architecture this layout implements.
 [workspace]
-resolver = "2"
 members = [
     "crates/*",
 ]

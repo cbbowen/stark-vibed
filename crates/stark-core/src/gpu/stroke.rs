@@ -43,7 +43,7 @@ const ROUND_RES: u32 = 256;
 /// (DESIGN.md §6.2). This is the *height* of the reservoir texture; the mixer's
 /// `BANDS` constant must match. The stamp shader samples the texture and is
 /// otherwise agnostic to this count.
-const LATERAL_BANDS: u32 = 16;
+const LATERAL_BANDS: u32 = 64;
 
 /// Largest base-region edge (canvas px) composited for wet-mixing pickup. Strokes
 /// whose bounding box exceeds this skip pickup for that stroke — rare, and it
@@ -236,7 +236,7 @@ impl Drop for ScopedResources {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct IntegrateUniform {
-    mode: [f32; 4],  // mode.x (0 = Normal, 1 = Dry); .yzw unused
+    mode: [f32; 4],  // mode.x (0 = Normal, 1 = Dry); mode.y = lift; .zw unused
     ridge: [f32; 4], // ridge (lateral pile-up strength) in .x; .yzw unused
 }
 
@@ -693,12 +693,12 @@ impl StrokeRenderer {
             });
         }
 
-        // Integrate mode: `mode.x` selects the Dry branch (conserve height by adding the
-        // mixer's net transfer; lay the deposit over) vs Normal (mode 0, Wet's deposit). The
-        // lift now rides the mixer's net-height transfer and the tooth-reveal emerges from
-        // the media's `thickness = height − surface`, so no other mode fields are needed.
+        // Integrate mode: `mode.x` selects the Dry branch vs Normal (mode 0, Wet's
+        // deposit); `mode.y` is the `lift` axis — the integrate removes `lift × contact`
+        // of the base height per-pixel (exact, no banded residue), while the tool's
+        // deposit rides the mixer's banded reservoir. See integrate.wesl.
         let integrate_mode = match dry {
-            Some(_) => [1.0, 0.0, 0.0, 0.0],
+            Some(mp) => [1.0, mp.lift, 0.0, 0.0],
             None => [0.0; 4],
         };
         let ridge = dry.map_or(0.0, |mp| mp.ridge);

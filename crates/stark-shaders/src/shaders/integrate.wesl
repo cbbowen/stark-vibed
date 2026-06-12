@@ -16,10 +16,11 @@
 // brush dynamics (knife, blend modes) can plug in as new `mode`s.
 
 struct Params {
-    // mode.x (0 = Normal, 1 = Dry); the other components are unused. The Dry branch conserves
-    // paint by adding the mixer's per-pixel **net height transfer** (deposited − lifted,
-    // carried in the scratch aux's `.w`, coverage-normalized by `.z`) to the base — height is
-    // the amount of paint; the colour alpha is per-unit opacity only (DESIGN §6.1).
+    // mode.x (0 = Normal, 1 = Dry); mode.y = the `lift` axis. The Dry branch removes
+    // `lift × contact` of the base height **per-pixel** (exact — the base is right here,
+    // so an eraser leaves no banded residue) and adds the mixer's deposited height
+    // (scratch aux `.w`, coverage-normalized by `.z`) — height is the amount of paint;
+    // the colour alpha is per-unit opacity only (DESIGN §6.1).
     mode: vec4<f32>,
     // ridge (lateral pile-up strength) in .x; .yzw unused.
     ridge: vec4<f32>,
@@ -60,35 +61,36 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         out.aux = base_a + s_a;
     } else {
         // DRY — paint is moved by transferring **height** (the amount; DESIGN §6.1), not by
-        // scaling alpha. The mixer emitted, per column, the conserved net height transfer
-        // (deposited − lifted) into the scratch aux's `.w`, laid additively across the
-        // overlapping segment quads; `.z` is the summed footprint coverage. Dividing recovers
-        // the per-pixel transfer at the canvas-height scale, which we add to the base. With
-        // `add=0` what's deposited here was lifted elsewhere → total canvas+tool height is
-        // conserved (the source lightens because its *thickness* drops, not its alpha).
+        // scaling alpha. The two directions are split deliberately:
+        //
+        //   LIFT is **multiplicative and per-pixel**: remove `lift × contact` of the base
+        //   height, where `contact` saturates the exact swept coverage (`.z`). The base is
+        //   right here, so the removal is exact — a `lift = 1` eraser takes the core to
+        //   zero with nothing left behind (the old reconstruction from the mixer's 16
+        //   lateral bands smeared point samples of the base height across the brush width,
+        //   leaving residue an eraser could never clean up). Multiplicative also can't
+        //   overshoot, so no clamp absorbs error.
+        //
+        //   DEPOSIT stays the mixer's banded approximation: `.w` (deposited height rate ≥ 0,
+        //   laid through the soft footprint and accumulated over the overlapping quads) ÷
+        //   coverage recovers the per-column amount, × `contact` re-feathers the brush
+        //   shape. Diffuse carried paint tolerates the banding that the subtraction didn't.
+        //
+        // The tool's banded intake and the exact removal agree in expectation, so with
+        // `add = 0` paint still moves rather than appearing/vanishing (approximately
+        // conserved; the source lightens because its *thickness* drops, not its alpha).
         let cov = s_a.z;                 // accumulated footprint coverage (Σ√cov)
-        // The brush's soft footprint coverage at this pixel ∈ [0,1] (1 under the core, →0 at
-        // the feathered edge). The net transfer was laid through the soft footprint then
-        // accumulated across the overlapping quads, so `s_a.w / cov` recovers the per-column
-        // amount but *divides out the soft edge* — leaving a hard cutoff at the footprint
-        // boundary. Re-multiplying by `contact` restores the brush shape: the lift/deposit
-        // feathers with the tip instead of stopping abruptly (it still ≈ the per-column amount
-        // under the core where contact ≈ 1, so conservation holds there). Known approximation:
-        // in the feathered rim, `contact < 1` under-applies the transfer relative to the
-        // tool's intake (which the mixer computed at the band centerline) — a small
-        // non-conservation confined to the soft edge.
         let contact = 1.0 - exp(-cov);
-        let net = (s_a.w / max(cov, 1e-4)) * contact; // conserved transfer, brush-feathered
+        let lift_frac = clamp(p.mode.y * contact, 0.0, 1.0);
+        let dep = (s_a.w / max(cov, 1e-4)) * contact;
 
         // Colour: lay the deposit (deposit·tool + add·brush) over the base (premultiplied
         // "over"). The lift does NOT touch colour — removing paint reduces height, and the
         // media's `1−exp(−opacity·thickness)` makes the source fade as its thickness drops.
         out.color = s_c + base_c * (1.0 - s_c.a);
-        // Height = base + the brush's own add-height (`s_a.x`, impasto) + the conserved net
-        // transfer. Wet rides the own attribute (`s_a.y`). The `max(…, 0)` clamp absorbs
-        // over-lift — when the reconstructed removal exceeds the local base (sub-pixel /
-        // f16 accumulation error), the excess is destroyed rather than going negative.
-        out.aux = vec4<f32>(max(base_a.x + s_a.x + net, 0.0), base_a.y + s_a.y, 0.0, 0.0);
+        // Height = lift-scraped base + the brush's own add-height (`s_a.x`, impasto) + the
+        // tool's deposit. Wet rides the own attribute (`s_a.y`).
+        out.aux = vec4<f32>(base_a.x * (1.0 - lift_frac) + s_a.x + dep, base_a.y + s_a.y, 0.0, 0.0);
 
         // Lateral pile-up: paint shoved aside heaps into the footprint's transition band —
         // `4·contact·(1−contact)` peaks at the soft edge, zero at the covered core and
