@@ -129,8 +129,11 @@ fn default_wet_add() -> f32 {
 }
 
 impl Default for WetParams {
+    /// Mostly deposit with a gentle bleed and a whisper of drag. Normalized to sum
+    /// to 1, matching the UI's barycentric control — the axes' common scale is
+    /// redundant with the stroke's rate, so the mix is what matters (DESIGN.md §6.2).
     fn default() -> Self {
-        Self { add: 1.0, bleed: 0.5, drag: 0.1 }
+        Self { add: 0.6, bleed: 0.3, drag: 0.1 }
     }
 }
 

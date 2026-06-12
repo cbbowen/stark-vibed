@@ -591,18 +591,24 @@ fn BrushPanel() -> Element {
                 Slider { label: "Ridge", min: 0.0, max: 1.0, value: mp.ridge,
                     oninput: move |v| set_dry(state, move |m| m.ridge = v) }
             }
-            // Wet-only controls: how much of its own paint the stroke adds, how
-            // strongly the wet paint bleeds (diffuses), and how strongly the brush
-            // drags it along the stroke (DESIGN.md §6.2). With Add at 0 the brush lays
-            // nothing and only works the paint already on the canvas. (These will get
-            // the same ternary treatment as the Dry mix.)
+            // Wet dynamics: the add/bleed/drag mix as a ternary pad, normalized to sum
+            // to 1 like the Dry mix (the common scale is redundant with Rate; DESIGN.md
+            // §6.2). Vertices: pure wet paint (Add), pure blender (Bleed — lays nothing,
+            // diffuses what's under the stroke, wicking outward onto bare canvas), pure
+            // fluid rake (Drag — advects paint along the stroke's motion).
             if is_wet {
-                Slider { label: "Add", min: 0.0, max: 1.0, value: wp.add,
-                    oninput: move |v| set_wet(state, move |w| w.add = v) }
-                Slider { label: "Bleed", min: 0.0, max: 1.0, value: wp.bleed,
-                    oninput: move |v| set_wet(state, move |w| w.bleed = v) }
-                Slider { label: "Drag", min: 0.0, max: 1.0, value: wp.drag,
-                    oninput: move |v| set_wet(state, move |w| w.drag = v) }
+                div { class: "slider-row",
+                    div { class: "slider-label", "Dynamics" }
+                    TernaryPad {
+                        labels: ["Add".to_string(), "Bleed".to_string(), "Drag".to_string()],
+                        value: [wp.add, wp.bleed, wp.drag],
+                        onchange: move |w: [f32; 3]| set_wet(state, move |p| {
+                            p.add = w[0];
+                            p.bleed = w[1];
+                            p.drag = w[2];
+                        }),
+                    }
+                }
             }
     }
 }
