@@ -229,6 +229,66 @@
   background: #3a6ea5;
 }
 
+/* --- ternary (barycentric) pad: triangle + vertex labels + marker --- */
+.ternary {
+  position: relative;
+  width: 220px; /* mirrors TRI_W in main.rs */
+  height: 222px; /* TRI_LBL + TRI_H + TRI_LBL */
+  margin: 0 auto; /* the pad is narrower than the panel's content; keep it centered */
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.ternary-tri {
+  position: absolute;
+  left: 0;
+  top: 16px; /* mirrors TRI_LBL */
+  width: 220px;
+  height: 190px; /* mirrors TRI_H */
+  clip-path: polygon(50% 0, 0 100%, 100% 100%);
+  background: #33333a;
+  /* Like the labels/marker: the .ternary container must be every pointer event's
+     target, or element_coordinates() comes back relative to this (label-band-offset)
+     child and the marker lands 16px off the click. */
+  pointer-events: none;
+}
+
+.ternary-label {
+  position: absolute;
+  font-size: 11px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.ternary-top {
+  top: 0;
+  left: 0;
+  right: 0;
+  text-align: center;
+}
+
+.ternary-left {
+  bottom: 0;
+  left: 0;
+}
+
+.ternary-right {
+  bottom: 0;
+  right: 0;
+}
+
+.ternary-marker {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #0008;
+  pointer-events: none;
+}
+
 /* Native drop-down styled to the panel chrome (e.g. the Surface picker). */
 .select {
   width: 100%;

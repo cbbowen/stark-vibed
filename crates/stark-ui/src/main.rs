@@ -56,6 +56,13 @@ const AB: f32 = 0.32;
 /// while dragging `L`). `N·3` is a multiple of 4, so BMP rows need no padding.
 const FIELD_N: usize = 96;
 
+/// Ternary pad triangle, on screen (px): width matches the colour field, height makes
+/// it equilateral (`w·√3/2`). Mirrored by `.ternary`/`.ternary-tri` in stark.css.
+const TRI_W: f32 = 220.0;
+const TRI_H: f32 = 190.0;
+/// Vertical room above/below the ternary triangle for its vertex labels (px).
+const TRI_LBL: f32 = 16.0;
+
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
 /// blocks carry class names, not inline styles. Custom properties are global, so
@@ -295,9 +302,14 @@ fn Canvas() -> Element {
                     resize(state, size.width as u32, size.height as u32);
                 }
             },
+            // Strokes and pans capture the pointer (like the pads/pickers): leaving the
+            // window mid-stroke keeps painting — the infinite canvas extends past the
+            // viewport anyway — and the interaction ends on release/cancel, never by
+            // crossing the canvas edge.
             onpointerdown: move |e| {
                 match e.trigger_button() {
                     Some(MouseButton::Primary) => {
+                        capture_pointer(&e);
                         if (state.space_down)() {
                             panning.set(true);
                         } else {
@@ -307,6 +319,7 @@ fn Canvas() -> Element {
                     }
                     Some(MouseButton::Auxiliary) => {
                         e.prevent_default(); // suppress middle-click autoscroll
+                        capture_pointer(&e);
                         panning.set(true);
                     }
                     _ => {}
@@ -321,7 +334,7 @@ fn Canvas() -> Element {
                 last_position.set(Some(elem_xy(&e)));
             },
             onpointerup: move |_| end_interaction(state, &mut drawing, &mut panning),
-            onpointerleave: move |_| {
+            onpointercancel: move |_| {
                 end_interaction(state, &mut drawing, &mut panning);
                 last_position.set(None);
             },
@@ -391,19 +404,21 @@ fn OklabPicker(init: [f32; 3], onchange: EventHandler<[f32; 3]>) -> Element {
             div {
                 class: "ab-field",
                 style: "background-image: {field()};",
-                onpointerdown: move |e| { picking_ab.set(true); pick_ab(onchange, a, b, l, &e); },
+                // Pointer capture: the drag keeps tracking while the button is held,
+                // even outside the field (picks clamp to the gamut box).
+                onpointerdown: move |e| { capture_pointer(&e); picking_ab.set(true); pick_ab(onchange, a, b, l, &e); },
                 onpointermove: move |e| { if picking_ab() { pick_ab(onchange, a, b, l, &e); } },
                 onpointerup: move |_| picking_ab.set(false),
-                onpointerleave: move |_| picking_ab.set(false),
+                onpointercancel: move |_| picking_ab.set(false),
                 div { class: "ab-marker", style: "left:{ax}px; top:{by}px;" }
             }
             div {
                 class: "l-slider",
                 style: "background: {l_grad};",
-                onpointerdown: move |e| { picking_l.set(true); pick_l(onchange, l, a, b, &e); },
+                onpointerdown: move |e| { capture_pointer(&e); picking_l.set(true); pick_l(onchange, l, a, b, &e); },
                 onpointermove: move |e| { if picking_l() { pick_l(onchange, l, a, b, &e); } },
                 onpointerup: move |_| picking_l.set(false),
-                onpointerleave: move |_| picking_l.set(false),
+                onpointercancel: move |_| picking_l.set(false),
                 div { class: "l-marker", style: "top:{ly}px;" }
             }
         }
@@ -554,18 +569,25 @@ fn BrushPanel() -> Element {
             // Canvas tooth: how strongly the surface weave gates deposition (§6.4).
             Slider { label: "Tooth", min: 0.0, max: 1.0, value: brush.tooth,
                 oninput: move |v| update_brush(state, move |b| b.tooth = v) }
-            // Dry controls: how much of its own paint it adds, how much canvas paint it
-            // lifts onto the tool, and how much it deposits back, plus the impasto ridge
-            // (DESIGN.md §6.2). The axes span painting (add), erasing (lift), smudging
-            // (lift+deposit), and every conservative blend (add=0 moves paint, never
-            // creating or destroying it).
+            // Dry dynamics: the add/lift/deposit mix as a ternary pad — the three axes'
+            // common scale is redundant with Rate (scaling all of them is the same as
+            // pressing harder), so the pad normalizes them to sum to 1 and only the mix
+            // is chosen here (DESIGN.md §6.2). Vertices: pure paint (Add), pure erase
+            // (Lift), pure lay-back (Deposit); the Lift–Deposit edge is the conservative
+            // smudge (add = 0 moves paint, never creating or destroying it).
             if is_dry {
-                Slider { label: "Add", min: 0.0, max: 1.0, value: mp.add,
-                    oninput: move |v| set_dry(state, move |m| m.add = v) }
-                Slider { label: "Lift", min: 0.0, max: 1.0, value: mp.lift,
-                    oninput: move |v| set_dry(state, move |m| m.lift = v) }
-                Slider { label: "Deposit", min: 0.0, max: 1.0, value: mp.deposit,
-                    oninput: move |v| set_dry(state, move |m| m.deposit = v) }
+                div { class: "slider-row",
+                    div { class: "slider-label", "Dynamics" }
+                    TernaryPad {
+                        labels: ["Add".to_string(), "Lift".to_string(), "Deposit".to_string()],
+                        value: [mp.add, mp.lift, mp.deposit],
+                        onchange: move |w: [f32; 3]| set_dry(state, move |m| {
+                            m.add = w[0];
+                            m.lift = w[1];
+                            m.deposit = w[2];
+                        }),
+                    }
+                }
                 Slider { label: "Ridge", min: 0.0, max: 1.0, value: mp.ridge,
                     oninput: move |v| set_dry(state, move |m| m.ridge = v) }
             }
@@ -1231,6 +1253,23 @@ async fn sleep_ms(ms: i32) {
 #[cfg(not(target_arch = "wasm32"))]
 async fn sleep_ms(_ms: i32) {}
 
+/// Capture the pointer for the element under `e`, so the in-progress drag keeps
+/// streaming move/up events to it while the button is held — even after the pointer
+/// leaves the element. The capture releases automatically on pointer-up, which is
+/// guaranteed to be delivered to the capturing element.
+#[cfg(target_arch = "wasm32")]
+fn capture_pointer(e: &Event<PointerData>) {
+    use dioxus::web::WebEventExt;
+    use wasm_bindgen::JsCast;
+    if let Some(ev) = e.try_as_web_event()
+        && let Some(target) = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    {
+        let _ = target.set_pointer_capture(ev.pointer_id());
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn capture_pointer(_e: &Event<PointerData>) {}
+
 #[component]
 fn Slider(label: String, min: f32, max: f32, value: f32, oninput: EventHandler<f32>) -> Element {
     rsx! {
@@ -1245,6 +1284,66 @@ fn Slider(label: String, min: f32, max: f32, value: f32, oninput: EventHandler<f
             }
         }
     }
+}
+
+/// Ternary (barycentric) pad: drag a marker inside a triangle whose vertices are the
+/// pure axes (`labels[0]` top, `labels[1]` bottom-left, `labels[2]` bottom-right).
+/// Reports the marker's barycentric coordinates — weights ≥ 0 summing to 1 — so three
+/// knobs whose common scale is redundant (overactuated against a separate rate/strength
+/// control) collapse to the two degrees of freedom that matter. Controlled: the marker
+/// tracks `value` (normalized defensively, so legacy non-normalized params display
+/// sensibly) and every drag reports through `onchange`. Used for the dry brush's
+/// add/lift/deposit; the wet brush's mix gets the same treatment (DESIGN.md §6.2).
+#[component]
+fn TernaryPad(labels: [String; 3], value: [f32; 3], onchange: EventHandler<[f32; 3]>) -> Element {
+    let mut picking = use_signal(|| false);
+
+    // Marker position from the (normalized) weights: p = Σ wᵢ·Vᵢ over the triangle's
+    // vertices V₀=(W/2, 0), V₁=(0, H), V₂=(W, H), shifted down by the label band.
+    let s: f32 = value.iter().sum();
+    let v = if s > 1e-4 { value.map(|x| x / s) } else { [1.0, 0.0, 0.0] };
+    let mx = v[0] * TRI_W * 0.5 + v[2] * TRI_W;
+    let my = (v[1] + v[2]) * TRI_H + TRI_LBL;
+
+    let pick = move |e: &Event<PointerData>| {
+        let c = e.element_coordinates();
+        onchange.call(ternary_weights(c.x as f32, c.y as f32 - TRI_LBL));
+    };
+
+    rsx! {
+        div {
+            class: "ternary",
+            // Pointer capture keeps the drag streaming here while the button is held,
+            // even outside the pad (weights clamp onto the simplex); the drag ends on
+            // up/cancel, never on leaving the bounds.
+            onpointerdown: move |e| { capture_pointer(&e); picking.set(true); pick(&e); },
+            onpointermove: move |e| { if picking() { pick(&e); } },
+            onpointerup: move |_| picking.set(false),
+            onpointercancel: move |_| picking.set(false),
+            div { class: "ternary-tri" }
+            div { class: "ternary-label ternary-top", "{labels[0]}" }
+            div { class: "ternary-label ternary-left", "{labels[1]}" }
+            div { class: "ternary-label ternary-right", "{labels[2]}" }
+            div { class: "ternary-marker", style: "left:{mx}px; top:{my}px;" }
+        }
+    }
+}
+
+/// Barycentric weights of a pointer position in the ternary triangle's local space
+/// (origin at the label band's bottom-left, vertices as in [`TernaryPad`]). Positions
+/// outside the triangle clamp onto it: negative weights drop to 0 and the rest
+/// renormalize — so dragging past an edge or vertex pins the opposite weights to
+/// exactly 0, which is also how a pure single- or two-axis mix is dialled in.
+fn ternary_weights(px: f32, py: f32) -> [f32; 3] {
+    let (x0, y0) = (TRI_W * 0.5, 0.0f32);
+    let (x1, y1) = (0.0f32, TRI_H);
+    let (x2, y2) = (TRI_W, TRI_H);
+    let denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+    let w0 = ((y1 - y2) * (px - x2) + (x2 - x1) * (py - y2)) / denom;
+    let w1 = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / denom;
+    let w = [w0, w1, 1.0 - w0 - w1].map(|x| x.max(0.0));
+    let s: f32 = w.iter().sum();
+    if s > 0.0 { w.map(|x| x / s) } else { [1.0, 0.0, 0.0] }
 }
 
 // --- command dispatch ---
