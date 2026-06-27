@@ -87,7 +87,7 @@ fn surface_normal(p: vec2f, dim: vec2<i32>) -> vec3<f32> {
     // Normal dithering (canvas-anchored noise, scaled by `normal_dither`): breaks up
     // banding in the relief shading. Position-seeded, so it is NOT translation
     // invariant — the seam tests set the amplitude to 0, like `surface_strength`.
-    let noise = noise_2_to_4(m.surf_a.xy + p * m.surf_a.z, vec4f(1, 2, 3, 4)) * (m.surf_b.y / 64.0);
+    let noise = noise_2_to_4(m.surf_a.xy + p * m.surf_a.z, 0x12778282) * (m.surf_b.y / 64.0);
     let hl = height_at(i + vec2<i32>(-1, 0), dim) + noise.x;
     let hr = height_at(i + vec2<i32>(1, 0), dim) + noise.y;
     let hu = height_at(i + vec2<i32>(0, -1), dim) + noise.z;
