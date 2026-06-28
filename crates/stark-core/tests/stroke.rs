@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{DryParams, Tool};
+use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
 use stark_core::Engine;
 
@@ -141,7 +141,7 @@ fn conservative_smear_preserves_uniform_field() {
     let before = engine.render_to_image(PAPER);
 
     // A conservative smear (add = 0) kept well inside the field.
-    let b = dry_brush(RED, 24.0, DryParams { add: 0.0, lift: 0.5, deposit: 0.5, ridge: 0.0 });
+    let b = dry_brush(RED, 24.0, BrushDynamics { add: 0.0, load: 0.5, deposit: 0.5, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0)]);
     let after = engine.render_to_image(PAPER);
 
@@ -182,7 +182,7 @@ fn lift_deposit_carries_paint_onto_bare_canvas() {
     assert!(run_before[1] > 170, "the runway should start bare paper: {run_before:?}");
 
     // Drag from inside the patch rightward across the bare runway.
-    let b = dry_brush(RED, 28.0, DryParams { add: 0.0, lift: 0.9, deposit: 0.3, ridge: 0.0 });
+    let b = dry_brush(RED, 28.0, BrushDynamics { add: 0.0, load: 0.9, deposit: 0.3, ridge: 0.0, ..Default::default() });
     stroke_with(
         &mut engine,
         b,
@@ -233,7 +233,7 @@ fn erase_does_not_retint() {
 
     // Drag the eraser from inside the red patch across the green bar: it picks up red
     // first, then crosses green while holding it.
-    let b = dry_brush(RED, 24.0, DryParams { add: 0.0, lift: 0.5, deposit: 0.0, ridge: 0.0 });
+    let b = dry_brush(RED, 24.0, BrushDynamics { add: 0.0, load: 0.5, deposit: 0.0, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(-80.0, 0.0), Vec2::new(90.0, 0.0)]);
     let after = engine.render_to_image(PAPER).pixel(green_x, y);
 
@@ -252,7 +252,7 @@ fn lift_over_empty_canvas_adds_nothing() {
         return;
     };
     let blank = engine.render_to_image(PAPER);
-    let b = dry_brush(RED, 24.0, DryParams { add: 0.0, lift: 1.0, deposit: 1.0, ridge: 0.0 });
+    let b = dry_brush(RED, 24.0, BrushDynamics { add: 0.0, load: 1.0, deposit: 1.0, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)]);
     let after = engine.render_to_image(PAPER);
     assert!(

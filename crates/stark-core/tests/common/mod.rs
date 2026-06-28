@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushParams, DryParams, Tool};
+use stark_core::document::{BrushDynamics, BrushParams, Tool};
 use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::{Engine, RgbaImage};
@@ -69,10 +69,10 @@ pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
     }
 }
 
-/// A brush with the given [`DryParams`] dynamics (the add/lift/deposit brush, §6.2).
-pub fn dry_brush(color: [f32; 4], radius: f32, p: DryParams) -> BrushParams {
+/// A brush with the given unified [`BrushDynamics`] (§6.2).
+pub fn dry_brush(color: [f32; 4], radius: f32, dynamics: BrushDynamics) -> BrushParams {
     BrushParams {
-        dynamics: BrushDynamics::Dry(p),
+        dynamics,
         ..brush(color, radius)
     }
 }

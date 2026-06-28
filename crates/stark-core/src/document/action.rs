@@ -57,99 +57,60 @@ pub enum OrientationSource {
     Pen,
 }
 
-/// How a brush interacts with paint already on the canvas (DESIGN.md §6.2,
-/// "Wet mixing & brush dynamics"). The pluggable fidelity axis.
+/// How a brush interacts with paint already on the canvas (DESIGN.md §6.2). One
+/// **unified tool**, not a mode switch: every axis is a flux on the single conserved
+/// quantity — paint **height** (the amount; DESIGN §6.1) — and the axes compose freely.
+/// `add` is the only *source* (the brush's own paint); the rest move paint that is
+/// already on the canvas, so with `add = 0` the tool conserves height (it only moves
+/// paint around). The everyday dry brush is just `add = 1` with the rest 0 (the default).
+///
+/// Two axes are **vertical** flux between the canvas and a transient per-stroke *tool*
+/// reservoir — Lagrangian, giving crisp long-range *directed* transport:
+/// - [`load`](Self::load)    — lift canvas paint up onto the tool,
+/// - [`deposit`](Self::deposit) — lay tool paint back down.
+///
+/// Three are **horizontal** flux across the canvas — Eulerian, giving local
+/// omnidirectional flow over a composited stroke region:
+/// - [`drag`](Self::drag)  — advect paint along the brush's motion (conservative
+///   finite-volume; the velocity is injected from the stroke and de-rippled),
+/// - [`bleed`](Self::bleed) — isotropic wet-on-wet diffusion / leveling,
+/// - [`ridge`](Self::ridge) — pile displaced paint into impasto lips at the edges.
+///
+/// `load`-only is an eraser; `load`+`deposit` (`add = 0`) a conservative smudge;
+/// `add`-only ordinary paint; `drag`/`bleed` a rake / alla-prima blender. All flow runs
+/// with fixed iteration counts, so replay stays deterministic (DESIGN §6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum BrushDynamics {
-    /// The unified paint-manipulation brush, driven by an explicit **tool reservoir**:
-    /// **lift** picks canvas paint up onto the tool, **deposit** lays tool paint back
-    /// down, and **add** lays the brush's own paint. With `add=0` paint is conserved —
-    /// it only *moves* between canvas and tool — so dragging from a painted region onto
-    /// bare canvas asymptotically empties the tool there. Spans erasing
-    /// (`lift=1, deposit=0`), smudging (`lift+deposit`), painting (`add`), and every
-    /// blend; the everyday dry brush is just `add=1, lift=0, deposit=0` (the default)
-    /// (DESIGN.md §6.2).
-    Dry(DryParams),
-    /// Wet paint that simultaneously **bleeds** (isotropic wet-on-wet diffusion) and
-    /// **drags** (advection along the stroke's motion) — both run over the stroke
-    /// region, independently configurable (DESIGN.md §6.2).
-    Wet(WetParams),
-}
-
-impl Default for BrushDynamics {
-    /// The everyday brush: add the brush's own paint, no smear/remove.
-    fn default() -> Self {
-        BrushDynamics::Dry(DryParams::default())
-    }
-}
-
-/// Parameters of the unified [`BrushDynamics::Dry`] brush (DESIGN.md §6.2), driven by a
-/// **tool reservoir** that fills (lift) and empties (deposit). The three axes compose
-/// freely: `lift`-only = eraser, `lift`+`deposit` (`add=0`) = a conservative smudge that
-/// moves paint without creating or destroying it, `add`-only = ordinary paint, and every
-/// blend between.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DryParams {
-    /// How much of the brush's own paint it **adds** directly to the canvas per step, in
-    /// [0, 1]: 0 = lays none (pure lift/deposit), 1 = a full deposit (ordinary painting).
-    /// Bypasses the tool reservoir.
+pub struct BrushDynamics {
+    /// The brush's own paint laid directly, in [0, 1]: 0 = lays none (pure manipulation of
+    /// existing paint), 1 = a full deposit (ordinary painting). The only source term.
     pub add: f32,
-    /// How much canvas paint the brush **lifts** onto the tool per step, as a fraction of
-    /// the paint present, in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Tooth-gated
-    /// by the canvas surface. `#[serde(default)]` so pre-rewrite documents load.
+    /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
+    /// in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Vertical flux canvas → tool.
     #[serde(default)]
-    pub lift: f32,
-    /// How much tool paint the brush **deposits** back onto the canvas per step, as a
-    /// fraction of the paint on the tool, in [0, 1]: 0 = hold it all (an eraser fills but
-    /// never lays back), 1 = lay it all immediately. `#[serde(default)]`.
+    pub load: f32,
+    /// Tool paint **deposited** back per step, as a fraction of the paint on the tool, in
+    /// [0, 1]: 0 = hold it all (an eraser fills but never lays back), 1 = lay it all
+    /// immediately. Vertical flux tool → canvas.
     #[serde(default)]
     pub deposit: f32,
-    /// How strongly displaced paint **piles into ridges** at the edges of the stroke,
-    /// in [0, 1] — the impasto lip (DESIGN.md §6.2, lateral pile-up). `#[serde(default)]`.
+    /// Strength of **drag** (advection of paint along the stroke's motion), in [0, 1]:
+    /// 0 = none, 1 = maximum. Horizontal flux; scales the injected velocity.
+    #[serde(default)]
+    pub drag: f32,
+    /// Strength of **bleed** (isotropic wet-on-wet diffusion), in [0, 1]: 0 = none, 1 =
+    /// maximum. Horizontal flux; scales the per-stroke Gaussian radius.
+    #[serde(default)]
+    pub bleed: f32,
+    /// How strongly displaced paint **piles into ridges** at the footprint edges, in
+    /// [0, 1] — the impasto lip (DESIGN.md §6.2). A conservative lateral redistribution.
     #[serde(default)]
     pub ridge: f32,
 }
 
-impl Default for DryParams {
+impl Default for BrushDynamics {
+    /// The everyday brush: lay the brush's own paint, manipulate nothing.
     fn default() -> Self {
-        Self { add: 1.0, lift: 0.0, deposit: 0.0, ridge: 0.0 }
-    }
-}
-
-/// Parameters of the [`BrushDynamics::Wet`] flow (DESIGN.md §6.2): wet paint that
-/// **adds** the brush's own paint, then simultaneously bleeds and drags it. All three
-/// are independent; 0 disables that behaviour (`add`-only = plain wet paint,
-/// `bleed`-only = alla-prima diffusion of what's already there, `drag`-only = a fluid
-/// rake). The iteration count and per-step distances are fixed (for deterministic
-/// replay).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct WetParams {
-    /// How much of the brush's own paint it **adds**, in [0, 1] — the same axis as
-    /// [`DryParams::add`]: 0 lays nothing (the stroke only bleeds/drags paint already
-    /// on the canvas), 1 = a full deposit. Defaults to 1 on load so documents saved
-    /// before this field keep their always-deposit behaviour.
-    #[serde(default = "default_wet_add")]
-    pub add: f32,
-    /// How strongly the wet paint bleeds and levels, in [0, 1]: 0 = none, 1 = maximum
-    /// bleed. Scales the per-iteration diffusion rate.
-    pub bleed: f32,
-    /// How strongly the brush drags wet paint along its motion, in [0, 1]: 0 = none,
-    /// 1 = maximum drag. Scales the injected velocity. `#[serde(default)]` so the
-    /// pre-unification `Wet` strokes load (drag 0 = pure bleed).
-    #[serde(default)]
-    pub drag: f32,
-}
-
-fn default_wet_add() -> f32 {
-    1.0
-}
-
-impl Default for WetParams {
-    /// Mostly deposit with a gentle bleed and a whisper of drag. Normalized to sum
-    /// to 1, matching the UI's barycentric control — the axes' common scale is
-    /// redundant with the stroke's rate, so the mix is what matters (DESIGN.md §6.2).
-    fn default() -> Self {
-        Self { add: 0.6, bleed: 0.3, drag: 0.1 }
+        Self { add: 1.0, load: 0.0, deposit: 0.0, drag: 0.0, bleed: 0.0, ridge: 0.0 }
     }
 }
 
@@ -182,8 +143,9 @@ pub struct BrushParams {
     /// carried `follow_path`, now ignored on load) come in as `FollowStroke`.
     #[serde(default)]
     pub orientation: OrientationSource,
-    /// Canvas-pickup behavior (DESIGN.md §6.2). `#[serde(default)]` so documents
-    /// saved before this field load as `Dry`.
+    /// How the brush manipulates paint already on the canvas (DESIGN.md §6.2) — the
+    /// unified six-axis tool. `#[serde(default)]` so documents saved before this field
+    /// load as the everyday `add = 1` brush.
     #[serde(default)]
     pub dynamics: BrushDynamics,
     /// Canvas **tooth** in [0, 1]: how strongly the surface bump (DESIGN.md §6.4)

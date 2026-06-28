@@ -7,7 +7,7 @@ use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
 use stark_core::document::{
-    BrushDynamics, BrushShape, DryParams, OrientationSource, StrokeRecord, Tool, WetParams,
+    BrushDynamics, BrushShape, OrientationSource, StrokeRecord, Tool,
 };
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
@@ -183,7 +183,7 @@ fn golden_smear_mixer() {
         &[Vec2::new(0.0, -90.0), Vec2::new(0.0, 90.0)],
     );
 
-    let b = dry_brush(RED, 16.0, DryParams { add: 0.1, lift: 0.5, deposit: 0.5, ridge: 0.0 });
+    let b = dry_brush(RED, 16.0, BrushDynamics { add: 0.1, load: 0.5, deposit: 0.5, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -209,12 +209,11 @@ fn golden_knife_scrape() {
 
     // Explicit (not `::default()`) so this "clean scrape" golden is stable regardless
     // of the default knife's feel: hard bite, no film, no carry, no ridge.
-    let knife = dry_brush(RED, 22.0, DryParams {
+    let knife = dry_brush(RED, 22.0, BrushDynamics {
         add: 0.0,
-        lift: 0.8,
+        load: 0.8,
         deposit: 0.0, // lift onto the tool, lay nothing back → a clean scrape/erase
-        ridge: 0.0,
-    });
+        ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, knife, &[Vec2::new(0.0, -80.0), Vec2::new(0.0, 80.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -248,12 +247,11 @@ fn golden_knife_tooth() {
     );
 
     // Explicit params so the tooth-reveal golden is stable against the default knife.
-    let mut knife = dry_brush(RED, 26.0, DryParams {
+    let mut knife = dry_brush(RED, 26.0, BrushDynamics {
         add: 0.0,
-        lift: 0.8,
+        load: 0.8,
         deposit: 0.0, // lift onto the tool, lay nothing back → a clean scrape/erase
-        ridge: 0.0,
-    });
+        ridge: 0.0, ..Default::default() });
     knife.tooth = 1.0; // full tooth: the gate bites only the weave's peaks
     stroke_with(&mut engine, knife, &[Vec2::new(0.0, -80.0), Vec2::new(0.0, 80.0)]);
 
@@ -280,12 +278,11 @@ fn golden_knife_carry() {
         &[Vec2::new(0.0, -80.0), Vec2::new(0.0, 80.0)],
     );
 
-    let knife = dry_brush(RED, 40.0, DryParams {
+    let knife = dry_brush(RED, 40.0, BrushDynamics {
         add: 0.0,
-        lift: 0.9,     // lift green onto the tool (lightening the source)
+        load: 0.9,     // lift green onto the tool (lightening the source)
         deposit: 0.12, // slowly re-lay it onto the bare runway, dragging a long fading tail
-        ridge: 0.0,
-    });
+        ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, knife, &[Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -310,12 +307,11 @@ fn golden_knife_ridge() {
         &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
     );
 
-    let knife = dry_brush(RED, 30.0, DryParams {
+    let knife = dry_brush(RED, 30.0, BrushDynamics {
         add: 0.0,
-        lift: 0.15, // gentle lift: keep the colour ~uniform so the lip reads as relief
+        load: 0.15, // gentle load: keep the colour ~uniform so the lip reads as relief
         deposit: 0.0,
-        ridge: 1.0,
-    });
+        ridge: 1.0, ..Default::default() });
     stroke_with(&mut engine, knife, &[Vec2::new(0.0, -80.0), Vec2::new(0.0, 80.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -341,7 +337,7 @@ fn golden_smudge_paint() {
         &[Vec2::new(0.0, -90.0), Vec2::new(0.0, 90.0)],
     );
 
-    let b = dry_brush(RED, 18.0, DryParams { add: 0.4, lift: 0.7, deposit: 0.4, ridge: 0.0 });
+    let b = dry_brush(RED, 18.0, BrushDynamics { add: 0.4, load: 0.7, deposit: 0.4, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -404,7 +400,7 @@ fn golden_reservoir_viz() {
     let rec = StrokeRecord {
         layer,
         tool: Tool::Brush,
-        brush: dry_brush(RED, 50.0, DryParams { add: 0.0, lift: 1.0, deposit: 0.05, ridge: 0.0 }),
+        brush: dry_brush(RED, 50.0, BrushDynamics { add: 0.0, load: 1.0, deposit: 0.05, ridge: 0.0, ..Default::default() }),
         path: vec![
             InputSample::at(Vec2::new(0.0, 50.0)),
             InputSample::at(Vec2::new(0.0, -25.0)),
@@ -429,7 +425,7 @@ fn golden_dry_smear_artifact() {
         &[Vec2::new(-90.0, 50.0), Vec2::new(90.0, 50.0)],
     );
 
-    let b = dry_brush(RED, 50.0, DryParams { add: 0.0, lift: 1.0, deposit: 0.05, ridge: 0.0 });
+    let b = dry_brush(RED, 50.0, BrushDynamics { add: 0.0, load: 1.0, deposit: 0.05, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(0.0, 50.0), Vec2::new(0.0, -25.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -449,7 +445,7 @@ fn golden_dry_erase_artifact() {
         &[Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)],
     );
 
-    let b = dry_brush(RED, 50.0, DryParams { add: 0.0, lift: 1.0, deposit: 0.0, ridge: 0.0 });
+    let b = dry_brush(RED, 50.0, BrushDynamics { add: 0.0, load: 1.0, deposit: 0.0, ridge: 0.0, ..Default::default() });
     stroke_with(
         &mut engine,
         b,
@@ -472,7 +468,7 @@ fn empty_smear_adds_no_height() {
     };
     let blank = engine.render_to_image(PAPER);
 
-    let b = dry_brush(RED, 24.0, DryParams { add: 0.0, lift: 1.0, deposit: 1.0, ridge: 0.0 });
+    let b = dry_brush(RED, 24.0, BrushDynamics { add: 0.0, load: 1.0, deposit: 1.0, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0)]);
 
     let after = engine.render_to_image(PAPER);
@@ -502,7 +498,7 @@ fn golden_wet_blend() {
 
     let blue = [0.10, 0.20, 0.85, 1.0];
     let mut wet = brush(blue, 26.0);
-    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.9, drag: 0.0 });
+    wet.dynamics = BrushDynamics { add: 1.0, bleed: 0.9, drag: 0.0, ..Default::default() };
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -533,7 +529,7 @@ fn golden_wet_blend_no_add() {
     paint(&mut engine, GREEN, 50.0, &[Vec2::new(2.0, 0.0), Vec2::new(95.0, 0.0)]);
 
     let mut blender = brush(RED, 26.0); // its own colour is irrelevant: add = 0 lays nothing
-    blender.dynamics = BrushDynamics::Wet(WetParams { add: 0.0, bleed: 0.9, drag: 0.0 });
+    blender.dynamics = BrushDynamics { add: 0.0, bleed: 0.9, drag: 0.0, ..Default::default() };
     stroke_with(&mut engine, blender, &[Vec2::new(0.0, -80.0), Vec2::new(0.0, 80.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -565,7 +561,7 @@ fn golden_wet_drag() {
     );
 
     let mut wet = brush(RED, 24.0);
-    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.0, drag: 0.9 });
+    wet.dynamics = BrushDynamics { add: 1.0, bleed: 0.0, drag: 0.9, ..Default::default() };
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -604,7 +600,7 @@ fn golden_wet_flow() {
     );
 
     let mut wet = brush(RED, 24.0);
-    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.8, drag: 0.8 });
+    wet.dynamics = BrushDynamics { add: 1.0, bleed: 0.8, drag: 0.8, ..Default::default() };
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -635,7 +631,7 @@ fn golden_smear_mixer_cap() {
         &[Vec2::new(-90.0, -90.0), Vec2::new(-90.0, 90.0)],
     );
 
-    let b = dry_brush(RED, 25.0, DryParams { add: 0.1, lift: 0.5, deposit: 0.5, ridge: 0.0 });
+    let b = dry_brush(RED, 25.0, BrushDynamics { add: 0.1, load: 0.5, deposit: 0.5, ridge: 0.0, ..Default::default() });
     stroke_with(&mut engine, b, &[Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)]);
 
     let img = engine.render_to_image(PAPER);
@@ -663,7 +659,7 @@ fn golden_lateral_pickup() {
         &[Vec2::new(-110.0, 17.0), Vec2::new(110.0, 17.0)],
     );
 
-    let mut b = dry_brush(RED, 30.0, DryParams { add: 0.1, lift: 0.5, deposit: 0.5, ridge: 0.0 });
+    let mut b = dry_brush(RED, 30.0, BrushDynamics { add: 0.1, load: 0.5, deposit: 0.5, ridge: 0.0, ..Default::default() });
     b.hardness = 0.9; // near-solid, so it opaquely covers the green bar
     stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
 

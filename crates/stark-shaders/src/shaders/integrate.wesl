@@ -16,15 +16,20 @@
 // brush dynamics (knife, blend modes) can plug in as new `mode`s.
 
 struct Params {
-    // mode.x (0 = Normal, 1 = Dry); mode.y = the `lift` axis. The Dry branch removes
-    // `lift × contact` of the base height **per-pixel** (exact — the base is right here,
-    // so an eraser leaves no banded residue) and adds the mixer's deposited height
-    // (scratch aux `.w`, coverage-normalized by `.z`) — height is the amount of paint;
-    // the colour alpha is per-unit opacity only (DESIGN §6.1).
+    // mode.x = the `load` (lift) axis; mode.y = ridge strength; .zw unused. There is one
+    // unified merge (no Normal/Dry branch): the lift removes `load × contact` of the base
+    // height **per-pixel** (exact — the base is right here, so an eraser leaves no banded
+    // residue), the deposit adds the mixer's height (scratch aux `.w`, coverage-normalized
+    // by `.z`), and ridge redistributes paint laterally. With `load = 0` and a flat
+    // reservoir (deposit 0) it reduces exactly to the old additive "over" deposit — height
+    // is the amount of paint; the colour alpha is per-unit opacity only (DESIGN §6.1).
     mode: vec4<f32>,
-    // ridge (lateral pile-up strength) in .x; .yzw unused.
-    ridge: vec4<f32>,
 }
+
+// Strength of the ridge doublet at `ridge = 1` (the band's pile/scrape peaks ≈ this ×
+// the local base height). Strong enough that the per-bristle corrugation reads, not just
+// the round outer rim.
+const RIDGE_GAIN: f32 = 3.0;
 
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var base_color: texture_2d<f32>;
@@ -53,51 +58,50 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // transfer·√cov) — see stamp_oklab.wesl's fs_main for the channel-by-channel story.
     let s_a = textureLoad(scratch_aux, c, 0);
 
+    // ONE unified merge — paint moves by transferring **height** (the amount; DESIGN §6.1),
+    // never by scaling alpha. The directions are split deliberately:
+    //
+    //   LIFT (`load`, mode.x) is **multiplicative and per-pixel**: remove `load × contact`
+    //   of the base height, where `contact` saturates the exact swept coverage (`.z`). The
+    //   base is right here, so the removal is exact — a `load = 1` eraser takes the core to
+    //   zero with nothing left behind (a banded reconstruction across the brush width would
+    //   leave residue an eraser could never clean up). Multiplicative can't overshoot, so no
+    //   clamp absorbs error.
+    //
+    //   DEPOSIT is the mixer's banded approximation: `.w` (deposited height rate ≥ 0, laid
+    //   through the soft footprint and accumulated over the overlapping quads) ÷ coverage
+    //   recovers the per-column amount, × `contact` re-feathers the brush shape. Diffuse
+    //   carried paint tolerates the banding that the subtraction didn't.
+    //
+    // With `load = 0` and a flat reservoir (`.w = 0`) this is exactly `out.aux = base + s_a`
+    // and `out.color = s_c over base` — the old additive deposit. The tool's banded intake
+    // and the exact removal agree in expectation, so with `add = 0` paint moves rather than
+    // appearing/vanishing (approximately conserved; the source lightens because its
+    // *thickness* drops, not its alpha).
+    let cov = s_a.z;                 // accumulated footprint coverage (Σ√cov)
+    let contact = 1.0 - exp(-cov);
+    let lift_frac = clamp(p.mode.x * contact, 0.0, 1.0);
+    let dep = (s_a.w / max(cov, 1e-4)) * contact;
+
+    // Colour: lay the deposit (deposit·tool + add·brush) over the base (premultiplied
+    // "over"). The lift does NOT touch colour — removing paint reduces height, and the
+    // media's `1−exp(−opacity·thickness)` makes the source fade as its thickness drops.
     var out: FsOut;
-    if p.mode.x < 0.5 {
-        // NORMAL — composite the stroke slab over the base: premultiplied "over" on
-        // the opacity-premultiplied color, additive on thickness and wet.
-        out.color = s_c + base_c * (1.0 - s_c.a);
-        out.aux = base_a + s_a;
-    } else {
-        // DRY — paint is moved by transferring **height** (the amount; DESIGN §6.1), not by
-        // scaling alpha. The two directions are split deliberately:
-        //
-        //   LIFT is **multiplicative and per-pixel**: remove `lift × contact` of the base
-        //   height, where `contact` saturates the exact swept coverage (`.z`). The base is
-        //   right here, so the removal is exact — a `lift = 1` eraser takes the core to
-        //   zero with nothing left behind (the old reconstruction from the mixer's 16
-        //   lateral bands smeared point samples of the base height across the brush width,
-        //   leaving residue an eraser could never clean up). Multiplicative also can't
-        //   overshoot, so no clamp absorbs error.
-        //
-        //   DEPOSIT stays the mixer's banded approximation: `.w` (deposited height rate ≥ 0,
-        //   laid through the soft footprint and accumulated over the overlapping quads) ÷
-        //   coverage recovers the per-column amount, × `contact` re-feathers the brush
-        //   shape. Diffuse carried paint tolerates the banding that the subtraction didn't.
-        //
-        // The tool's banded intake and the exact removal agree in expectation, so with
-        // `add = 0` paint still moves rather than appearing/vanishing (approximately
-        // conserved; the source lightens because its *thickness* drops, not its alpha).
-        let cov = s_a.z;                 // accumulated footprint coverage (Σ√cov)
-        let contact = 1.0 - exp(-cov);
-        let lift_frac = clamp(p.mode.y * contact, 0.0, 1.0);
-        let dep = (s_a.w / max(cov, 1e-4)) * contact;
+    out.color = s_c + base_c * (1.0 - s_c.a);
+    // Height = lift-scraped base + the brush's own add-height (`s_a.x`, impasto) + the
+    // tool's deposit. Wet rides the own attribute (`s_a.y`).
+    out.aux = vec4<f32>(base_a.x * (1.0 - lift_frac) + s_a.x + dep, base_a.y + s_a.y, 0.0, 0.0);
 
-        // Colour: lay the deposit (deposit·tool + add·brush) over the base (premultiplied
-        // "over"). The lift does NOT touch colour — removing paint reduces height, and the
-        // media's `1−exp(−opacity·thickness)` makes the source fade as its thickness drops.
-        out.color = s_c + base_c * (1.0 - s_c.a);
-        // Height = lift-scraped base + the brush's own add-height (`s_a.x`, impasto) + the
-        // tool's deposit. Wet rides the own attribute (`s_a.y`).
-        out.aux = vec4<f32>(base_a.x * (1.0 - lift_frac) + s_a.x + dep, base_a.y + s_a.y, 0.0, 0.0);
-
-        // Lateral pile-up: paint shoved aside heaps into the footprint's transition band —
-        // `4·contact·(1−contact)` peaks at the soft edge, zero at the covered core and
-        // outside — scaled by the base paint present. A pure function of the local coverage
-        // (no neighbour reads), so the tile apron stays seamless (§6.4).
-        let edge = 4.0 * contact * (1.0 - contact);
-        out.aux.x = out.aux.x + p.ridge.x * edge * base_a.x;
-    }
+    // Lateral pile-up (`ridge`, mode.y): paint shoved aside heaps into an impasto lip at the
+    // stroke rim. Exact mass conservation of a lateral move needs neighbour reads, which the
+    // seam-free pass forbids (a tile's apron must be a pure function of canvas position,
+    // §6.4). Instead a **doublet** across the soft transition band — pile on the outer side,
+    // scrape just inside — is odd about the band's midpoint, so it is approximately zero-mean
+    // over the footprint (bounded by the local paint, never the old unbounded additive lip):
+    //   edge = 4·contact·(1−contact) localizes to the band; (1−2·contact) flips sign across
+    //   it (+ at the low-coverage outer rim, − at the covered inner core).
+    let edge = 4.0 * contact * (1.0 - contact);
+    let doublet = edge * (1.0 - 2.0 * contact);
+    out.aux.x = max(out.aux.x + p.mode.y * RIDGE_GAIN * base_a.x * doublet, 0.0);
     return out;
 }

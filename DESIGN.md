@@ -515,22 +515,37 @@ and each writes its row of the reservoir texture. The deposit maps brush-local
 rolled over, fading smoothly across the width. Band count is purely the texture's
 height; nothing else in the deposit changes when it varies.
 
-*Pluggable axis.* Brush dynamics are a serde **enum** on `BrushParams` (it lives
-in the action log, so not a trait object):
+*One unified tool — the same conservation law for every axis.* Brush dynamics are
+**not** a Dry/Wet mode switch but a single struct on `BrushParams` (it lives in the
+action log, so a flat record, not a trait object), whose axes all compose freely:
 
 ```rust
-enum BrushDynamics {
-    // The unified paint-manipulation brush (mutable medium): independently smear
-    // (move), remove (scrape), and add (lay own paint). Spans erase/smear/paint and
-    // every blend; the everyday dry brush is just { smear:0, remove:0, add:1 }.
-    Dry(DryParams), // { smear, remove, add, ridge } — the DEFAULT
-    Wet(WetParams),       // wet paint: bleed (diffuse) + drag (advect along the stroke)
+struct BrushDynamics {
+    add: f32,     // the only SOURCE: lay the brush's own paint (1 = ordinary painting)
+    load: f32,    // vertical flux canvas → tool: lift paint onto the tool
+    deposit: f32, // vertical flux tool → canvas: lay tool paint back down
+    drag: f32,    // horizontal flux: advect paint along the stroke's motion
+    bleed: f32,   // horizontal flux: isotropic wet-on-wet diffusion / leveling
+    ridge: f32,   // horizontal flux: pile displaced paint into an impasto rim
 }
 ```
 
-The renderer dispatches on it; the enum is the seam where higher-fidelity tiers
-plug in. Pure smudge vs. mixer is a parameter (own-color injection), not a code
-path.
+Every axis is a **flux on the one conserved quantity — paint `height`** (the amount;
+§6.1). `add` is the only source; with `add = 0` the tool merely *moves* paint, never
+creating or destroying it. The split that unifies the old "dry reservoir" and "wet
+fluid" worlds: **`load`/`deposit` are vertical** flux between the canvas and a transient
+per-stroke *tool reservoir* (Lagrangian — crisp, long-range, *directed* transport with no
+numerical diffusion), while **`drag`/`bleed`/`ridge` are horizontal** flux across the
+canvas (Eulerian — local, omnidirectional flow over a composited region). The everyday
+dry brush is just `add = 1` with the rest 0 (the default); `load`-only is an eraser,
+`load`+`deposit` a conservative smudge, `drag` a rake, `bleed` an alla-prima blender, and
+any blend is valid because the axes are orthogonal flux terms, not modes.
+
+The renderer runs one pipeline — reservoir scan (if `load`/`deposit`) → a single unified
+*integrate* → region flow (if `drag`/`bleed`) — each stage gated by its axis (0 = skip).
+There is no Normal/Dry integrate branch: the unified merge with `load = 0` and a flat
+reservoir reduces *exactly* to the old additive "over" deposit, so a pure-`add` brush
+takes the identical fast path.
 
 *Determinism via per-stroke canvas read.* PICKUP samples **`base`** — the
 pre-stroke committed canvas that `Action::apply`/`render` already hold. Two
@@ -636,38 +651,45 @@ wet paint diffuses at boundaries), and conservative smearing. The model:
   identically to the neighbour's interior over their overlap — the same property
   that lets the additive deposit render aprons without a copy (§6.4). The seam
   regression test extends to the medium path.
-- **Unified `Dry` brush (`smear` / `remove` / `add` / `ridge`).** One combine
-  spans the whole continuum (erase ⇄ smear ⇄ paint). **remove** *reduces* `color`,
-  `opacity`, `thickness` along the path by a contact-scaled amount, tooth-gated by the
-  surface so the scrape clears the weave's peaks and reveals canvas texture. **smear**
-  runs the per-segment × lateral-band **reservoir** (pickup of canvas paint, fading
-  over distance) so dragged paint is carried downstream; pairing it with `remove` makes
-  the lift source-reducing → conservative. **add** lays the brush's own paint as a film
-  (0 = pure smear/erase, 1 = ordinary painting). **ridge** piles displaced paint into
-  impasto lips at the path edges. Dry painting is just `add` with `smear=remove=0`
-  (skips the reservoir); the integrate's "over" with `remove=0, add=1` reproduces the
-  additive deposit exactly (the Phase-0 equivalence).
-- **Wet paint — bleed + drag (`BrushDynamics::Wet`).** Since paint is always wet,
-  the wet brush flows the freshly-laid region with two independently-configurable
-  effects, both localized to the footprint (DESIGN §6.2): **bleed** = a colour-
-  conserving **separable Gaussian** whose radius scales with the param, mixed back
-  over the paint by footprint·wetness (softens boundaries into alla-prima blends), and
-  **drag** = *advection* of the paint along a velocity field injected from the stroke's
-  motion (an Eulerian advect-only micro-sim — rakes/pulls wet paint in the stroke
-  direction). Both run over a composited haloed region, then write back — reusing the
-  Mixer's region machinery; velocity is transient. The Gaussian replaced an explicit
-  (Jacobi) diffusion that spread only ≈√iterations px/stroke — a two-pass Gaussian
-  bleeds a wide radius for the cost of two passes (the *algorithm*, not a compute
-  shader, was the bottleneck). Drag is still iterative (its distance is linear in
-  iterations, so it isn't iteration-starved). An optional historized **`Settle`**
-  action could re-run the flow on demand ("let the colours marry"); true incompressible
-  swirls (pressure projection) layer on top of the advection core later.
+- **Vertical flux — the tool (`load` / `deposit` / `add` / `ridge`).** One combine
+  spans the whole continuum (erase ⇄ smudge ⇄ paint). **load** lifts a contact-scaled
+  fraction of the base `height` onto the tool — a multiplicative, per-pixel removal (the
+  base is right here, so it is *exact*: a `load = 1` eraser clears the core with no banded
+  residue), tooth-gated by the surface so the scrape clears the weave's peaks. **deposit**
+  lays the tool's height back down through the per-segment × lateral-band **reservoir**
+  (pickup fading over distance), so dragged paint is carried downstream; `load`+`deposit`
+  with `add = 0` is a true mass-conserving smudge. **add** lays the brush's own paint as a
+  film (0 = pure manipulation, 1 = ordinary painting). **ridge** piles displaced paint into
+  an impasto rim — a **zero-mean doublet** across the soft transition band (pile on the
+  outer rim, scrape just inside), so it redistributes height rather than fabricating it
+  (exact conservation of a lateral move needs neighbour reads, which the seam-free combine
+  forbids; the doublet is conservative in aggregate and bounded by the local paint). Plain
+  painting is `add = 1` with the rest 0: the integrate with `load = 0` and a flat reservoir
+  reproduces the additive deposit *exactly* (the Phase-0 equivalence).
+- **Horizontal flux — the flow (`drag` / `bleed`).** Since paint is always wet, the same
+  brush then flows the freshly-laid region, both effects localized to the footprint:
+  **bleed** = a colour-conserving **separable Gaussian** (radius ∝ param) mixed back over
+  the paint by footprint·wetness (alla-prima blends), and **drag** = **conservative
+  finite-volume advection** of `height` (and the height-weighted colour/wet) along a
+  velocity field injected from the stroke's motion. The advection updates each cell by the
+  net flux through its four faces (donor-cell, MUSCL/minmod-limited); adjacent cells share
+  the same face flux, so they telescope and **Σ height is conserved exactly and locally** —
+  no "breathing" canvas. The injected velocity is 0 at the footprint edge and in the halo,
+  so a zero-velocity cell's update is exact identity → the flow is seam-free, like the
+  bleed. (This replaced a semi-Lagrangian back-trace, which was dissipative *and*
+  non-conservative; the cost is that explicit FV takes small CFL-bounded steps, so a
+  satisfying drag throw needs more iterations.) Both run over a composited haloed region,
+  then write back — reusing the Mixer's region machinery; velocity is transient. An optional
+  historized **`Settle`** action could re-run the flow on demand ("let the colours marry");
+  true incompressible swirls (pressure projection) layer on top of the conservative
+  advection core later.
 
-*Determinism* is unchanged: every medium stroke is a pure function of `base` +
-the `StrokeRecord` (fixed iteration counts), so replay and `preview == committed`
-hold exactly as for the additive deposit. *Perf:* `Dry` keeps the fast direct
-additive path; only medium brushes pay the read-modify-write, bounded by the
-affected-tile set (and `MAX_REGION_DIM` for the diffusion tier).
+*Determinism* is unchanged: every stroke is a pure function of `base` + the
+`StrokeRecord` (fixed iteration counts), so replay and `preview == committed` hold
+exactly as for the additive deposit. *Perf:* a pure-`add` brush keeps the fast direct
+additive path (no reservoir scan, no region flow); only the axes that manipulate existing
+paint pay for the passes they switch on, bounded by the affected-tile set (and
+`MAX_REGION_DIM` for the region tiers).
 
 ### 6.3 Compositing & the "old masters" look
 
@@ -1217,6 +1239,10 @@ above; they layer on top of it.
    region-based wet-on-wet diffusion + an optional `Settle` action (Phase 2).
    Single-buffer, always-wet; glazing is left to document layers. Extend the seam
    test to the write-back path; golden per phase.
+   *Since unified (§6.2):* the Dry/Knife/Wet enum variants collapsed into **one
+   six-axis tool** (`add`/`load`/`deposit`/`drag`/`bleed`/`ridge`), every axis a flux on
+   the single conserved quantity (paint `height`) — the integrate is one unified branch,
+   the drag is conservative finite-volume advection, and the ridge a zero-mean doublet.
 
 Each step is independently testable through `stark-core` before any UI exists,
 which is exactly the leverage the frontend/backend split was meant to provide.

@@ -43,6 +43,11 @@ const CFL: f32 = 0.4;
 // Retained so the bind-group layout is unchanged; the finite-volume update uses
 // `textureLoad` (integer taps), so no sampler is needed.
 @group(0) @binding(4) var samp: sampler;
+// The brush's **shaped** footprint coverage (Σ√cov in `.z`), which gates the velocity:
+// the rake drags paint only where the brush actually touches (bristle streaks, stamp
+// mask), not in a round capsule. 0 outside the footprint → velocity 0 there → the halo is
+// untouched and the write-back stays seam-free.
+@group(0) @binding(5) var rate: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -63,8 +68,14 @@ fn load_color(c: vec2<i32>, dims: vec2<i32>) -> vec4<f32> {
 fn load_aux(c: vec2<i32>, dims: vec2<i32>) -> vec4<f32> {
     return textureLoad(src_aux, clamp(c, vec2<i32>(0), dims - vec2<i32>(1)), 0);
 }
+// Velocity gated by the shaped footprint coverage: `contact = 1 − exp(−Σ√cov)` ∈ [0,1],
+// so the rake follows the brush shape (full under a bristle, ~0 in a gap) and vanishes
+// outside the footprint (seam-safe). The conservative update telescopes for any velocity
+// field, so gating preserves exact mass conservation.
 fn load_vel(c: vec2<i32>, dims: vec2<i32>) -> vec2<f32> {
-    return textureLoad(velocity, clamp(c, vec2<i32>(0), dims - vec2<i32>(1)), 0).xy;
+    let cl = clamp(c, vec2<i32>(0), dims - vec2<i32>(1));
+    let cov = textureLoad(rate, cl, 0).z;
+    return textureLoad(velocity, cl, 0).xy * (1.0 - exp(-cov));
 }
 
 // Per-component minmod: the smaller-magnitude slope when both agree in sign, else 0.
@@ -119,9 +130,21 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let c_d = load_color(ci + vec2<i32>(0, -1), dims);
     let c_u = load_color(ci + vec2<i32>(0, 1), dims);
     let c_uu = load_color(ci + vec2<i32>(0, 2), dims);
-    let color = c_c
-        + advect_axis(uL, uR, c_ll, c_l, c_c, c_r, c_rr)
-        + advect_axis(uD, uU, c_dd, c_d, c_c, c_u, c_uu);
+    // Monotone (flux-corrected) limiter: clamp the update to the immediate stencil's range.
+    // The injected drag field is NOT divergence-free, so over the iterations a naive
+    // conservative update would *pump* a cell unboundedly at a convergence zone (→ +∞ → a
+    // blown-white rim) and empty it at a divergence zone (→ negative → black) — NaN once
+    // ±∞ meets in a flux. Bounding each cell to its neighbours' min/max makes the field
+    // unable to exceed its own initial range (no blowup, height stays ≥ 0), stays
+    // conservative where the field is smooth, and is identity in the zero-velocity halo
+    // (φ_C is in range) → seam-safe.
+    let c_lo = min(min(min(min(c_c, c_l), c_r), c_d), c_u);
+    let c_hi = max(max(max(max(c_c, c_l), c_r), c_d), c_u);
+    let color = clamp(
+        c_c + advect_axis(uL, uR, c_ll, c_l, c_c, c_r, c_rr)
+            + advect_axis(uD, uU, c_dd, c_d, c_c, c_u, c_uu),
+        c_lo, c_hi,
+    );
 
     // Aux (height, wet): same update. Only .xy are stored (Rg16Float); .zw are ignored.
     let a_ll = load_aux(ci + vec2<i32>(-2, 0), dims);
@@ -133,9 +156,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let a_d = load_aux(ci + vec2<i32>(0, -1), dims);
     let a_u = load_aux(ci + vec2<i32>(0, 1), dims);
     let a_uu = load_aux(ci + vec2<i32>(0, 2), dims);
-    let aux = a_c
-        + advect_axis(uL, uR, a_ll, a_l, a_c, a_r, a_rr)
-        + advect_axis(uD, uU, a_dd, a_d, a_c, a_u, a_uu);
+    let a_lo = min(min(min(min(a_c, a_l), a_r), a_d), a_u);
+    let a_hi = max(max(max(max(a_c, a_l), a_r), a_d), a_u);
+    let aux = clamp(
+        a_c + advect_axis(uL, uR, a_ll, a_l, a_c, a_r, a_rr)
+            + advect_axis(uD, uU, a_dd, a_d, a_c, a_u, a_uu),
+        a_lo, a_hi,
+    );
 
     var out: FsOut;
     out.color = color;

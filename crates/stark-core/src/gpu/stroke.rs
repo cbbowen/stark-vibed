@@ -24,7 +24,7 @@ use wgpu::util::DeviceExt;
 use crate::assets::{build_prefix_tau, AssetStore};
 use crate::colorspace::ColorSpace;
 use crate::command::InputSample;
-use crate::document::{BrushDynamics, BrushShape, OrientationSource, StrokeRecord};
+use crate::document::{BrushShape, OrientationSource, StrokeRecord};
 use crate::geom::{
     TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
 };
@@ -60,8 +60,8 @@ const MAX_REGION_DIM: u32 = 2048;
 const FLOW_ITERS: u32 = 24;
 const FLOW_DRAG_PX: f32 = 2.5;
 
-/// Standard deviation (canvas px) of the Wet brush's separable-Gaussian **bleed** at
-/// full `WetParams::bleed`. The bleed runs in 2 passes (vs the old explicit diffusion's
+/// Standard deviation (canvas px) of the separable-Gaussian **bleed** at full
+/// `BrushDynamics::bleed`. The bleed runs in 2 passes (vs the old explicit diffusion's
 /// many) and reaches ~`3·MAX_SIGMA` px — kept in sync with `MAX_RADIUS` in `blur.wesl`,
 /// and well under the region's one-tile halo so the bleed reads only composited data.
 const MAX_SIGMA: f32 = 14.0;
@@ -190,9 +190,6 @@ pub struct StrokeRenderer {
     fluid_inject_bgl: wgpu::BindGroupLayout,
     fluid_advect_pipeline: wgpu::RenderPipeline,
     fluid_advect_bgl: wgpu::BindGroupLayout,
-    /// Velocity de-rippling pass (separable Gaussian over the injected field); built once.
-    fluid_smooth_pipeline: wgpu::RenderPipeline,
-    fluid_smooth_bgl: wgpu::BindGroupLayout,
 }
 
 /// GPU resources scoped to one `render()` call: the wet-flow / smear-pickup region
@@ -242,12 +239,11 @@ impl Drop for ScopedResources {
     }
 }
 
-/// Mode + params for the integrate pass (`integrate.wesl` `Params`).
+/// Params for the integrate pass (`integrate.wesl` `Params`).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct IntegrateUniform {
-    mode: [f32; 4],  // mode.x (0 = Normal, 1 = Dry); mode.y = lift; .zw unused
-    ridge: [f32; 4], // ridge (lateral pile-up strength) in .x; .yzw unused
+    mode: [f32; 4], // mode.x = load (lift fraction); mode.y = ridge strength; .zw unused
 }
 
 /// Params for the separable Gaussian bleed pass (`blur.wesl` `Params`).
@@ -461,8 +457,6 @@ impl StrokeRenderer {
             build_fluid_inject_pipeline(device, color_space.as_ref());
         let (fluid_advect_pipeline, fluid_advect_bgl) =
             build_fluid_advect_pipeline(device, color_space.as_ref());
-        let (fluid_smooth_pipeline, fluid_smooth_bgl) =
-            build_fluid_smooth_pipeline(device, color_space.as_ref());
 
         Self {
             ctx: ctx.clone(),
@@ -489,8 +483,6 @@ impl StrokeRenderer {
             fluid_inject_bgl,
             fluid_advect_pipeline,
             fluid_advect_bgl,
-            fluid_smooth_pipeline,
-            fluid_smooth_bgl,
         }
     }
 
@@ -610,27 +602,20 @@ impl StrokeRenderer {
             label: Some("stark stroke commit"),
         });
 
-        // The Dry brush runs the reservoir scan whenever it lifts or deposits: a serial
-        // walk that lifts canvas paint onto a per-band tool, deposits a fraction back, and
-        // folds in the brush's own `add` colour — emitting the deposit payload plus a
-        // subtractive lift-mass (so the integrate scrapes exactly what was lifted). Pure
-        // `add` (plain paint), erase-via-flat, and Wet take the cheap flat-reservoir path:
-        // a 1×1 texel of the brush colour (scaled by `add`) so the deposit stays uniform.
-        let dry = match rec.brush.dynamics {
-            BrushDynamics::Dry(mp) => Some(mp),
-            _ => None,
-        };
-        // How much of the brush's own paint the deposit lays — the `add` axis of either
-        // dynamics (the Wet flow deposits ahead of its bleed/drag; with `add = 0` it only
-        // works paint already on the canvas). Folded into the reservoir colour
+        // The unified tool (DESIGN §6.2): one set of axes, each gated independently. The
+        // reservoir scan runs whenever the tool lifts or deposits — a serial walk that lifts
+        // canvas paint onto a per-band tool, deposits a fraction back, and folds in the
+        // brush's own `add` colour, emitting the deposit payload plus a subtractive
+        // lift-mass (so the integrate scrapes exactly what was lifted). A pure-`add` brush
+        // (no load/deposit) takes the cheap flat-reservoir path: a 1×1 texel of the brush
+        // colour (scaled by `add`) so the deposit stays uniform.
+        let d = rec.brush.dynamics;
+        // `add` gates how much of the brush's own paint the deposit lays (with `add = 0` the
+        // brush only works paint already on the canvas). Folded into the reservoir colour
         // (mixer/flat) and used to gate the brush's own height/wet in the stamp.
-        let add_frac = match rec.brush.dynamics {
-            BrushDynamics::Dry(mp) => mp.add,
-            BrushDynamics::Wet(wp) => wp.add,
-        };
-        let scan = dry
-            .filter(|mp| mp.lift > 0.0 || mp.deposit > 0.0)
-            .map(|mp| [mp.lift, mp.deposit, crate::path::FLATTEN_STEP, 0.0]);
+        let add_frac = d.add;
+        let scan = (d.load > 0.0 || d.deposit > 0.0)
+            .then_some([d.load, d.deposit, crate::path::FLATTEN_STEP, 0.0]);
         // The scan runs only when it actually fired; an oversized stroke skips the region
         // composite and degrades to a plain (flat-reservoir) deposit.
         let mut reservoir_tex = |label| {
@@ -708,23 +693,17 @@ impl StrokeRenderer {
             });
         }
 
-        // Integrate mode: `mode.x` selects the Dry branch vs Normal (mode 0, Wet's
-        // deposit); `mode.y` is the `lift` axis — the integrate removes `lift × contact`
-        // of the base height per-pixel (exact, no banded residue), while the tool's
-        // deposit rides the mixer's banded reservoir. See integrate.wesl.
-        let integrate_mode = match dry {
-            Some(mp) => [1.0, mp.lift, 0.0, 0.0],
-            None => [0.0; 4],
-        };
-        let ridge = dry.map_or(0.0, |mp| mp.ridge);
+        // Integrate params: `mode.x` is the `load` axis — the integrate removes
+        // `load × contact` of the base height per-pixel (exact, no banded residue), while
+        // the tool's deposit rides the mixer's banded reservoir. One always-unified branch
+        // now: with `load = 0` and a flat reservoir it reduces exactly to the old additive
+        // "over" deposit (DESIGN §6.2). `mode.y` is the conservative-ridge strength.
+        let integrate_mode = [d.load, d.ridge, 0.0, 0.0];
 
-        // Wet brush: after the Normal deposit, diffuse the stroke region (DESIGN.md
-        // §6.2). Collect this stroke's scratch footprints so the diffusion localizes
-        // to where the brush bore down.
-        let wet = match rec.brush.dynamics {
-            BrushDynamics::Wet(wp) => Some(wp),
-            _ => None,
-        };
+        // Flow (drag + bleed): after the deposit, work the freshly-laid region (DESIGN.md
+        // §6.2). Collect this stroke's scratch footprints so the flow localizes to where the
+        // brush bore down. Runs only when an axis is non-zero.
+        let flow = d.drag > 0.0 || d.bleed > 0.0;
         let mut wet_scratch: Vec<(TileCoord, TilePairHandle)> = Vec::new();
 
         let mut new_map = base.clone();
@@ -789,7 +768,6 @@ impl StrokeRenderer {
                 label: Some("stark integrate params"),
                 contents: bytemuck::bytes_of(&IntegrateUniform {
                     mode: integrate_mode,
-                    ridge: [ridge, 0.0, 0.0, 0.0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -826,18 +804,18 @@ impl StrokeRenderer {
                 pass.set_bind_group(0, &integrate_bg, &[]);
                 pass.draw(0..3, 0..1);
             }
-            if wet.is_some() {
+            if flow {
                 wet_scratch.push((*coord, scratch.clone()));
             }
             new_map = new_map.insert(*coord, dst);
         }
 
-        // Wet flow: drag (advect) + bleed (diffuse) the freshly-deposited region in one
-        // pass over it (DESIGN.md §6.2). No-op when both params are 0.
-        if let Some(wp) = wet {
+        // Flow: drag (conservative advection) + bleed (diffusion) over the freshly-deposited
+        // region (DESIGN.md §6.2). No-op when both axes are 0.
+        if flow {
             self.encode_flow(
                 &mut scoped, &mut encoder, pool, &mut new_map, &coords, &wet_scratch, &instance_buf,
-                instances.len() as u32, wp.bleed, wp.drag, rec.brush.radius,
+                instances.len() as u32, d.bleed, d.drag,
             );
         }
 
@@ -862,11 +840,8 @@ impl StrokeRenderer {
         base: &HashTrieMap<TileCoord, TilePairHandle>,
         rec: &StrokeRecord,
     ) -> Option<(Vec<f32>, Vec<f32>, u32, u32)> {
-        let dry = match rec.brush.dynamics {
-            BrushDynamics::Dry(mp) => Some(mp),
-            _ => None,
-        }?;
-        if dry.lift <= 0.0 && dry.deposit <= 0.0 {
+        let d = rec.brush.dynamics;
+        if d.load <= 0.0 && d.deposit <= 0.0 {
             return None;
         }
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
@@ -905,7 +880,7 @@ impl StrokeRenderer {
         self.ctx.queue.write_buffer(&instance_buf, 0, bytemuck::cast_slice(&instances));
 
         let coords = affected_tiles(&segments);
-        let knobs = [dry.lift, dry.deposit, crate::path::FLATTEN_STEP, 0.0];
+        let knobs = [d.load, d.deposit, crate::path::FLATTEN_STEP, 0.0];
         // Reservoir textures sized to the padded width × bands, with COPY_SRC for readback.
         let make = |label| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -932,7 +907,7 @@ impl StrokeRenderer {
         });
         self.encode_mixer(
             &mut scoped, &mut encoder, base, &coords, &segments, &instance_buf, &color_view,
-            &aux_view, bbox, (lead, width), channels, dry.add, knobs,
+            &aux_view, bbox, (lead, width), channels, d.add, knobs,
         );
         self.ctx.queue.submit([encoder.finish()]);
 
@@ -1075,7 +1050,6 @@ impl StrokeRenderer {
         instances: u32,
         bleed: f32,
         drag: f32,
-        radius: f32,
     ) {
         if bleed <= 0.0 && drag <= 0.0 {
             return; // nothing to flow — the plain deposit stands
@@ -1099,8 +1073,23 @@ impl StrokeRenderer {
             store: wgpu::StoreOp::Store,
         };
 
-        // --- Drag: inject the stroke's velocity (dir · drag), then semi-Lagrangian-
-        //     advect FLOW_ITERS times, ping-ponging A↔B (even count → result back in A).
+        // Footprint coverage region — the brush's **shaped** Σ√cov (wide scratch aux `.z`,
+        // bristle streaks / stamp mask and all), composited from the stroke's scratch
+        // footprints. Shared by the drag (which gates its velocity by this, so the rake
+        // follows the brush shape instead of a round capsule) and the bleed (mix mask). It
+        // is 0 outside the footprint / in the halo, so gating leaves the halo untouched →
+        // the write-back aprons stay seam-free.
+        let foot: Vec<_> = scratch
+            .iter()
+            .map(|(c, t)| (c.origin(), t.color_view().clone(), t.aux_view().clone()))
+            .collect();
+        let (_rate_color, rate_aux) =
+            self.composite_region(scoped, encoder, &foot, region_origin, w, h, true);
+        let rate_view = rate_aux.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // --- Drag: inject the stroke's velocity (dir · drag), gate it by the footprint
+        //     coverage (shape), then conservatively advect FLOW_ITERS times, ping-ponging
+        //     A↔B (even count → result back in A).
         if drag > 0.0 {
             let vel_tex = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow velocity");
             let vel_view = vel_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1136,49 +1125,12 @@ impl StrokeRenderer {
                 pass.draw(0..4, 0..instances);
             }
 
-            // Condition the injected field: a separable Gaussian (σ ∝ brush radius) softens
-            // its hard footprint edge and per-segment ripple (sharp divergences the
-            // conservative advection would pile paint into at the boundary) while keeping the
-            // brush-scale convergence. H: vel → vel2; V: vel2 → vel (result back in vel_view).
-            let smooth_sigma = (0.35 * radius).clamp(2.0, 8.0);
-            let vel2_tex = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow velocity smooth");
-            let vel2_view = vel2_tex.create_view(&wgpu::TextureViewDescriptor::default());
-            let smooth_pass = |encoder: &mut wgpu::CommandEncoder,
-                               dir: [f32; 2],
-                               src: &wgpu::TextureView,
-                               dst: &wgpu::TextureView| {
-                let uni = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("stark flow vel-smooth params"),
-                    contents: bytemuck::bytes_of(&BlurUniform {
-                        knobs: [dir[0], dir[1], smooth_sigma, 0.0],
-                    }),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark flow vel-smooth bg"),
-                    layout: &self.fluid_smooth_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: uni.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
-                    ],
-                });
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark flow vel-smooth"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: dst, resolve_target: None, depth_slice: None, ops: store,
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&self.fluid_smooth_pipeline);
-                pass.set_bind_group(0, &bg, &[]);
-                pass.draw(0..3, 0..1);
-            };
-            smooth_pass(encoder, [1.0, 0.0], &vel_view, &vel2_view);
-            smooth_pass(encoder, [0.0, 1.0], &vel2_view, &vel_view);
-
+            // The injected velocity already ramps to 0 at the footprint edge (the inject's
+            // capsule falloff) and is 0 in the halo, so a zero-velocity cell's finite-volume
+            // update is exact identity — the advection leaves the halo untouched and the
+            // region write-back stays seam-free. (No velocity smoothing: it spread nonzero
+            // velocity into the halo, breaking that property; the conservative scheme's
+            // crispness is governed by its CFL limit instead — see fluid_advect.wesl.)
             let advect_uni = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark flow advect params"),
                 contents: bytemuck::bytes_of(&FluidUniform { knobs: [1.0, 0.0, 0.0, 0.0] }),
@@ -1199,6 +1151,7 @@ impl StrokeRenderer {
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(sc) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(sa) },
                         wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&rate_view) },
                     ],
                 });
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1223,17 +1176,9 @@ impl StrokeRenderer {
         //     back over the original A by rate·wet (identity where rate is 0). Result in
         //     C; with no bleed the (advected) A is written back directly.
         let bleed_result = if bleed > 0.0 {
-            let foot: Vec<_> = scratch
-                .iter()
-                .map(|(c, t)| (c.origin(), t.color_view().clone(), t.aux_view().clone()))
-                .collect();
-            // The bleed's mask must be the brush's *footprint coverage* (wide scratch
-            // aux `.z`, laid regardless of the deposit) — NOT the deposited opacity,
-            // which an `add = 0` blender leaves at zero everywhere, silently disabling
-            // the bleed. Wide composite so `.z` survives into the region.
-            let (_rate_color, rate_aux) =
-                self.composite_region(scoped, encoder, &foot, region_origin, w, h, true);
-            let rate_view = rate_aux.create_view(&wgpu::TextureViewDescriptor::default());
+            // The bleed's mask is the shared footprint coverage region (`rate_view`, wide
+            // scratch aux `.z`) — laid regardless of the deposit, so an `add = 0` blender
+            // still bleeds where it bore down.
             let c_color = self.region_tex(scoped, w, h, self.color_space.color_format(), "stark flow color c");
             let c_aux = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow aux c");
             let cv_c = c_color.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1688,7 +1633,7 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// the spline, then make each polyline edge a segment. The one-way load reservoir
 /// (`drain`) depletes with arc distance; radius follows pressure. The deposited
 /// color comes from the reservoir texture (the brush's own color, or per-segment ×
-/// per-band smear for a [`BrushDynamics::Dry`] brush — see `encode_mixer`).
+/// per-band smear when the tool lifts/deposits — see `encode_mixer`).
 fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
     let b = &rec.brush;
     let pts = crate::path::flatten(&rec.path, crate::path::FLATTEN_STEP);
@@ -2300,6 +2245,7 @@ fn build_fluid_advect_pipeline(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            filter_tex(5), // footprint coverage (shape gate for the velocity)
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2342,71 +2288,3 @@ fn build_fluid_advect_pipeline(
     (pipeline, bgl)
 }
 
-/// Build the velocity-smoothing pipeline (`fluid_smooth` shader) — DESIGN §6.2. A
-/// separable Gaussian over the injected velocity region (Rg16Float), run H then V to
-/// wash out the per-segment ripple before the conservative advection reads it.
-fn build_fluid_smooth_pipeline(
-    device: &wgpu::Device,
-    color_space: &dyn ColorSpace,
-) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark fluid smooth"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::fluid_smooth().into()),
-    });
-    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark fluid smooth bgl"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-        ],
-    });
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("stark fluid smooth layout"),
-        bind_group_layouts: &[Some(&bgl)],
-        immediate_size: 0,
-    });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("stark fluid smooth pipeline"),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_space.aux_format(), // Rg16Float velocity
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-    (pipeline, bgl)
-}

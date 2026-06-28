@@ -21,7 +21,7 @@ use dioxus::prelude::*;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, BG, CANVAS_ID};
 use stark_core::document::{
-    BrushDynamics, BrushParams, BrushShape, DryParams, OrientationSource, Tool, WetParams,
+    BrushDynamics, BrushParams, BrushShape, OrientationSource, Tool,
 };
 use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 use stark_core::geom::Vec2;
@@ -517,19 +517,8 @@ fn BrushPanel() -> Element {
         .map(|o| o.brush)
         .unwrap_or_default();
     let is_round = matches!(brush.shape, BrushShape::Round);
-    // Current dynamics params (or the defaults to show when switching on).
-    let dry = match brush.dynamics {
-        BrushDynamics::Dry(mp) => Some(mp),
-        _ => None,
-    };
-    let wet = match brush.dynamics {
-        BrushDynamics::Wet(wp) => Some(wp),
-        _ => None,
-    };
-    let is_dry = dry.is_some();
-    let is_wet = wet.is_some();
-    let mp = dry.unwrap_or_default();
-    let wp = wet.unwrap_or_default();
+    // The unified six-axis tool (DESIGN §6.2) — all axes are independent.
+    let d = brush.dynamics;
 
     let chip = |active: bool| if active { "chip active" } else { "chip" };
 
@@ -564,20 +553,6 @@ fn BrushPanel() -> Element {
                     }
                 }
             }
-            // Brush dynamics: the unified Dry brush (add/lift/deposit — paint, erase,
-            // smudge, and everything between) or the Wet flow brush (DESIGN §6.2).
-            div { class: "brush-shapes",
-                button {
-                    class: chip(is_dry),
-                    onclick: move |_| set_dynamics(state, BrushDynamics::Dry(DryParams::default())),
-                    "Dry"
-                }
-                button {
-                    class: chip(is_wet),
-                    onclick: move |_| set_dynamics(state, BrushDynamics::Wet(WetParams::default())),
-                    "Wet"
-                }
-            }
             Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
                 oninput: move |v| update_brush(state, move |b| b.radius = v) }
             Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
@@ -587,47 +562,26 @@ fn BrushPanel() -> Element {
             // Canvas tooth: how strongly the surface weave gates deposition (§6.4).
             Slider { label: "Tooth", min: 0.0, max: 1.0, value: brush.tooth,
                 oninput: move |v| update_brush(state, move |b| b.tooth = v) }
-            // Dry dynamics: the add/lift/deposit mix as a ternary pad — the three axes'
-            // common scale is redundant with Rate (scaling all of them is the same as
-            // pressing harder), so the pad normalizes them to sum to 1 and only the mix
-            // is chosen here (DESIGN.md §6.2). Vertices: pure paint (Add), pure erase
-            // (Lift), pure lay-back (Deposit); the Lift–Deposit edge is the conservative
-            // smudge (add = 0 moves paint, never creating or destroying it).
-            if is_dry {
-                div { class: "slider-row",
-                    div { class: "slider-label", "Dynamics" }
-                    TernaryPad {
-                        labels: ["Add".to_string(), "Lift".to_string(), "Deposit".to_string()],
-                        value: [mp.add, mp.lift, mp.deposit],
-                        onchange: move |w: [f32; 3]| set_dry(state, move |m| {
-                            m.add = w[0];
-                            m.lift = w[1];
-                            m.deposit = w[2];
-                        }),
-                    }
-                }
-                Slider { label: "Ridge", min: 0.0, max: 1.0, value: mp.ridge,
-                    oninput: move |v| set_dry(state, move |m| m.ridge = v) }
-            }
-            // Wet dynamics: the add/bleed/drag mix as a ternary pad, normalized to sum
-            // to 1 like the Dry mix (the common scale is redundant with Rate; DESIGN.md
-            // §6.2). Vertices: pure wet paint (Add), pure blender (Bleed — lays nothing,
-            // diffuses what's under the stroke, wicking outward onto bare canvas), pure
-            // fluid rake (Drag — advects paint along the stroke's motion).
-            if is_wet {
-                div { class: "slider-row",
-                    div { class: "slider-label", "Dynamics" }
-                    TernaryPad {
-                        labels: ["Add".to_string(), "Bleed".to_string(), "Drag".to_string()],
-                        value: [wp.add, wp.bleed, wp.drag],
-                        onchange: move |w: [f32; 3]| set_wet(state, move |p| {
-                            p.add = w[0];
-                            p.bleed = w[1];
-                            p.drag = w[2];
-                        }),
-                    }
-                }
-            }
+            // The unified six-axis tool (DESIGN §6.2) — all independent, all flux on the
+            // one conserved quantity (paint height). `add` is the only source (the brush's
+            // own paint, 1 = ordinary painting); the rest move paint already on the canvas.
+            // Vertical (tool) flux: Load lifts canvas paint onto the tool, Deposit lays it
+            // back (Load alone = eraser; Load+Deposit with Add 0 = conservative smudge).
+            // Horizontal (canvas) flux: Drag advects along the motion, Bleed diffuses
+            // wet-on-wet, Ridge piles displaced paint into an impasto rim.
+            div { class: "slider-label", style: "margin-top: 8px;", "Dynamics" }
+            Slider { label: "Add", min: 0.0, max: 1.0, value: d.add,
+                oninput: move |v| set_dyn(state, move |x| x.add = v) }
+            Slider { label: "Load", min: 0.0, max: 1.0, value: d.load,
+                oninput: move |v| set_dyn(state, move |x| x.load = v) }
+            Slider { label: "Deposit", min: 0.0, max: 1.0, value: d.deposit,
+                oninput: move |v| set_dyn(state, move |x| x.deposit = v) }
+            Slider { label: "Drag", min: 0.0, max: 1.0, value: d.drag,
+                oninput: move |v| set_dyn(state, move |x| x.drag = v) }
+            Slider { label: "Bleed", min: 0.0, max: 1.0, value: d.bleed,
+                oninput: move |v| set_dyn(state, move |x| x.bleed = v) }
+            Slider { label: "Ridge", min: 0.0, max: 1.0, value: d.ridge,
+                oninput: move |v| set_dyn(state, move |x| x.ridge = v) }
     }
 }
 
@@ -639,32 +593,14 @@ fn set_shape(state: AppState, shape: BrushShape, spacing: f32) {
     });
 }
 
-/// Set the brush's canvas-pickup behavior (DESIGN.md §6.2).
-fn set_dynamics(state: AppState, dynamics: BrushDynamics) {
-    update_brush(state, move |b| b.dynamics = dynamics);
-}
-
 /// Set what orients the brush shape as it sweeps (DESIGN.md §6.6).
 fn set_orientation(state: AppState, orientation: OrientationSource) {
     update_brush(state, move |b| b.orientation = orientation);
 }
 
-/// Edit the Dry brush params in place (no-op if the brush isn't Dry).
-fn set_dry(state: AppState, f: impl FnOnce(&mut DryParams)) {
-    update_brush(state, move |b| {
-        if let BrushDynamics::Dry(mp) = &mut b.dynamics {
-            f(mp);
-        }
-    });
-}
-
-/// Edit the wet-diffusion params in place (no-op if the brush isn't Wet).
-fn set_wet(state: AppState, f: impl FnOnce(&mut WetParams)) {
-    update_brush(state, move |b| {
-        if let BrushDynamics::Wet(wp) = &mut b.dynamics {
-            f(wp);
-        }
-    });
+/// Edit the unified brush dynamics in place (DESIGN.md §6.2).
+fn set_dyn(state: AppState, f: impl FnOnce(&mut BrushDynamics)) {
+    update_brush(state, move |b| f(&mut b.dynamics));
 }
 
 /// Select the built-in bristle brush. It's fetched + imported once at startup

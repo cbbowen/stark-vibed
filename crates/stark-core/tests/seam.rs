@@ -18,7 +18,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, DryParams, Tool, WetParams};
+use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{MediaParams, RgbaImage};
 
@@ -110,12 +110,11 @@ fn render_shifted_knife(shift: Vec2) -> RgbaImage {
     // The Dry lift+deposit+ridge under test, through the same 4-tile corner.
     let mut knife = brush(RED, 28.0);
     knife.tooth = 0.0;
-    knife.dynamics = BrushDynamics::Dry(DryParams {
+    knife.dynamics = BrushDynamics {
         add: 0.0,
-        lift: 0.5,
+        load: 0.5,
         deposit: 0.5,
-        ridge: 1.0,
-    });
+        ridge: 1.0, ..Default::default() };
     engine.process(InputCommand::SetBrush(knife));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
@@ -173,7 +172,7 @@ fn render_shifted_wet(shift: Vec2) -> RgbaImage {
     // Both axes on, so the test covers the advect + diffuse write-back together.
     let mut wet = brush(RED, 24.0);
     wet.tooth = 0.0;
-    wet.dynamics = BrushDynamics::Wet(WetParams { add: 1.0, bleed: 0.9, drag: 0.9 });
+    wet.dynamics = BrushDynamics { add: 1.0, bleed: 0.9, drag: 0.9, ..Default::default() };
     engine.process(InputCommand::SetBrush(wet));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
