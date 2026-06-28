@@ -50,12 +50,14 @@ const LATERAL_BANDS: u32 = 64;
 /// bounds the transient GPU memory of the region texture (DESIGN.md §6.2).
 const MAX_REGION_DIM: u32 = 2048;
 
-/// Fixed flow iterations per stroke for the Wet brush — each runs one advect + one
-/// diffuse pass (DESIGN.md §6.2). Constant so replay is deterministic; `WetParams`
-/// `bleed`/`drag` scale the per-iteration diffusion rate / injected velocity. Even so
-/// the advect-then-diffuse ping-pong lands the result back in region A. `FLOW_DRAG_PX`
-/// is the per-iteration drag distance (canvas px) at full `drag`.
-const FLOW_ITERS: u32 = 12;
+/// Fixed advection iterations per stroke for the drag axis (DESIGN.md §6.2). Constant so
+/// replay is deterministic. The conservative finite-volume advection is explicit, so each
+/// step may move at most ~CFL (≈0.4) texels (`fluid_advect.wesl`); unlike the old
+/// unconditionally-stable semi-Lagrangian back-trace it cannot take one big jump, so a
+/// satisfying drag throw needs many small stable steps. At full `drag` the injected
+/// `FLOW_DRAG_PX` saturates the CFL clamp across the footprint core (a smooth top-hat →
+/// near-zero internal divergence → no piling), so the throw is ≈ `FLOW_ITERS · CFL` px.
+const FLOW_ITERS: u32 = 24;
 const FLOW_DRAG_PX: f32 = 2.5;
 
 /// Standard deviation (canvas px) of the Wet brush's separable-Gaussian **bleed** at
@@ -188,6 +190,9 @@ pub struct StrokeRenderer {
     fluid_inject_bgl: wgpu::BindGroupLayout,
     fluid_advect_pipeline: wgpu::RenderPipeline,
     fluid_advect_bgl: wgpu::BindGroupLayout,
+    /// Velocity de-rippling pass (separable Gaussian over the injected field); built once.
+    fluid_smooth_pipeline: wgpu::RenderPipeline,
+    fluid_smooth_bgl: wgpu::BindGroupLayout,
 }
 
 /// GPU resources scoped to one `render()` call: the wet-flow / smear-pickup region
@@ -456,6 +461,8 @@ impl StrokeRenderer {
             build_fluid_inject_pipeline(device, color_space.as_ref());
         let (fluid_advect_pipeline, fluid_advect_bgl) =
             build_fluid_advect_pipeline(device, color_space.as_ref());
+        let (fluid_smooth_pipeline, fluid_smooth_bgl) =
+            build_fluid_smooth_pipeline(device, color_space.as_ref());
 
         Self {
             ctx: ctx.clone(),
@@ -482,6 +489,8 @@ impl StrokeRenderer {
             fluid_inject_bgl,
             fluid_advect_pipeline,
             fluid_advect_bgl,
+            fluid_smooth_pipeline,
+            fluid_smooth_bgl,
         }
     }
 
@@ -828,7 +837,7 @@ impl StrokeRenderer {
         if let Some(wp) = wet {
             self.encode_flow(
                 &mut scoped, &mut encoder, pool, &mut new_map, &coords, &wet_scratch, &instance_buf,
-                instances.len() as u32, wp.bleed, wp.drag,
+                instances.len() as u32, wp.bleed, wp.drag, rec.brush.radius,
             );
         }
 
@@ -1066,6 +1075,7 @@ impl StrokeRenderer {
         instances: u32,
         bleed: f32,
         drag: f32,
+        radius: f32,
     ) {
         if bleed <= 0.0 && drag <= 0.0 {
             return; // nothing to flow — the plain deposit stands
@@ -1125,6 +1135,49 @@ impl StrokeRenderer {
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
                 pass.draw(0..4, 0..instances);
             }
+
+            // Condition the injected field: a separable Gaussian (σ ∝ brush radius) softens
+            // its hard footprint edge and per-segment ripple (sharp divergences the
+            // conservative advection would pile paint into at the boundary) while keeping the
+            // brush-scale convergence. H: vel → vel2; V: vel2 → vel (result back in vel_view).
+            let smooth_sigma = (0.35 * radius).clamp(2.0, 8.0);
+            let vel2_tex = self.region_tex(scoped, w, h, self.color_space.aux_format(), "stark flow velocity smooth");
+            let vel2_view = vel2_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let smooth_pass = |encoder: &mut wgpu::CommandEncoder,
+                               dir: [f32; 2],
+                               src: &wgpu::TextureView,
+                               dst: &wgpu::TextureView| {
+                let uni = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("stark flow vel-smooth params"),
+                    contents: bytemuck::bytes_of(&BlurUniform {
+                        knobs: [dir[0], dir[1], smooth_sigma, 0.0],
+                    }),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark flow vel-smooth bg"),
+                    layout: &self.fluid_smooth_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: uni.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                    ],
+                });
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("stark flow vel-smooth"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: dst, resolve_target: None, depth_slice: None, ops: store,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.fluid_smooth_pipeline);
+                pass.set_bind_group(0, &bg, &[]);
+                pass.draw(0..3, 0..1);
+            };
+            smooth_pass(encoder, [1.0, 0.0], &vel_view, &vel2_view);
+            smooth_pass(encoder, [0.0, 1.0], &vel2_view, &vel_view);
 
             let advect_uni = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark flow advect params"),
@@ -2282,6 +2335,75 @@ fn build_fluid_advect_pipeline(
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
             ],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, bgl)
+}
+
+/// Build the velocity-smoothing pipeline (`fluid_smooth` shader) — DESIGN §6.2. A
+/// separable Gaussian over the injected velocity region (Rg16Float), run H then V to
+/// wash out the per-segment ripple before the conservative advection reads it.
+fn build_fluid_smooth_pipeline(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("stark fluid smooth"),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::fluid_smooth().into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark fluid smooth bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("stark fluid smooth layout"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("stark fluid smooth pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_space.aux_format(), // Rg16Float velocity
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
         }),
         multiview_mask: None,
         cache: None,

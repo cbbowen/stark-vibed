@@ -46,7 +46,12 @@ pub fn fluid_inject() -> &'static str {
     include_wesl!("fluid_inject")
 }
 
-/// WGSL fluid semi-Lagrangian advection pass (over a stroke region) — DESIGN §6.2.
+/// WGSL conservative finite-volume advection pass (over a stroke region) — DESIGN §6.2.
 pub fn fluid_advect() -> &'static str {
     include_wesl!("fluid_advect")
+}
+
+/// WGSL separable velocity-smoothing pass (de-ripples the injected field) — DESIGN §6.2.
+pub fn fluid_smooth() -> &'static str {
+    include_wesl!("fluid_smooth")
 }

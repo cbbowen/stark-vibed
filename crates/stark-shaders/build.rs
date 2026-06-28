@@ -39,6 +39,7 @@ fn main() {
     // Fluid advect+inject micro-sim passes (over a stroke region) — DESIGN §6.2.
     compiler.build_artifact(&"package::fluid_inject".parse().unwrap(), "fluid_inject");
     compiler.build_artifact(&"package::fluid_advect".parse().unwrap(), "fluid_advect");
+    compiler.build_artifact(&"package::fluid_smooth".parse().unwrap(), "fluid_smooth");
 
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
