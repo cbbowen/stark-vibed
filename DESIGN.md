@@ -813,13 +813,17 @@ pub enum BrushShape {
     Round,            // procedural soft disc; `hardness` applies
     Stamp(AssetId),   // sampled coverage mask from an imported image
 }
-// BrushParams gains:  shape: BrushShape, follow_path: bool, angle_jitter: f32
+// BrushParams gains:  shape: BrushShape, orientation: OrientationSource
 ```
 
-`follow_path`/`angle_jitter` rotate each stamp to the stroke tangent (with
-seeded jitter), which is what makes a bristle brush read as a real stroke rather
-than a rubber stamp. Content-addressing is the load-bearing choice, and it keeps
-every existing invariant intact:
+`orientation` (`FollowStroke` | `Pen`) sets how the swept footprint is angled:
+`FollowStroke` keeps the shape's native axis on the stroke tangent (what makes a
+bristle brush read as a real stroke rather than a rubber stamp), while `Pen` pins
+it to the pen's tilt azimuth in canvas space, like a calligraphy nib. The swept
+integral runs along the travel direction, so the shape is pre-rotated into a
+per-orientation prefix-τ volume (§6.2) indexed by the relative angle.
+Content-addressing is the load-bearing choice, and it keeps every existing
+invariant intact:
 
 - **The action log stays tiny.** `StrokeRecord` carries a 32-byte `AssetId`, not
   a 100 KB image; a thousand strokes with one brush reference one blob.

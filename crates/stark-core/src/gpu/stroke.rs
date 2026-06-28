@@ -24,7 +24,7 @@ use wgpu::util::DeviceExt;
 use crate::assets::{build_prefix_tau, AssetStore};
 use crate::colorspace::ColorSpace;
 use crate::command::InputSample;
-use crate::document::{BrushDynamics, BrushShape, StrokeRecord};
+use crate::document::{BrushDynamics, BrushShape, OrientationSource, StrokeRecord};
 use crate::geom::{
     TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
 };
@@ -78,6 +78,10 @@ struct Segment {
     /// Drives the color/opacity channel; thickness (`height`) is independent now
     /// (DESIGN.md §6.1, normalized representation).
     opacity: f32,
+    /// Shape orientation for this segment as a fraction of a full turn ∈ [0, 1): the
+    /// relative angle between the shape's native axis and the travel direction, used to
+    /// pick the prefix-τ orientation layer. 0 for follow-stroke (DESIGN.md §6.6).
+    orient: f32,
 }
 
 /// Per-segment instance data for the sweep shader. Padded to 48 bytes so the same
@@ -87,9 +91,10 @@ struct Segment {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct SegmentInstance {
     start: [f32; 2],
-    dir: [f32; 2],   // unit tangent
-    geom: [f32; 4],  // radius, length, flow, reservoir column u ∈ [0,1]
-    aux: [f32; 4],   // height (thickness rate), wet, opacity, _ (→ 48 B std430)
+    dir: [f32; 2],    // unit tangent
+    geom: [f32; 4],   // radius, length, flow, reservoir column u ∈ [0,1]
+    aux: [f32; 4],    // height (thickness rate), wet, opacity, reservoir u-advance per radius
+    extra: [f32; 4],  // orientation (turns ∈ [0,1)), _, _, _ (→ 64 B std430)
 }
 
 /// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
@@ -285,8 +290,8 @@ impl StrokeRenderer {
             }],
         });
 
-        // The prefix-τ texture is R32Float, sampled via textureLoad (not
-        // filterable), so the shader does its own bilinear lookup.
+        // The prefix-τ texture is a R32Float 2D-array (x, y, + orientation layers), sampled
+        // via textureLoad (not filterable), so the shader does its own trilinear lookup.
         let prefix_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark sweep prefix bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -294,7 +299,7 @@ impl StrokeRenderer {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
                     multisampled: false,
                 },
                 count: None,
@@ -396,7 +401,7 @@ impl StrokeRenderer {
                     array_stride: std::mem::size_of::<SegmentInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
                     ],
                 }],
             },
@@ -572,6 +577,7 @@ impl StrokeRenderer {
                 // aux.w = u-advance per radius travelled, so local.x ∈ [0, length/radius]
                 // sweeps exactly one column (geom.w → next column) regardless of segment len.
                 aux: [s.height, s.wet, s.opacity, s.radius / (s.length.max(1e-3) * width as f32)],
+                extra: [s.orient, 0.0, 0.0, 0.0],
             })
             .collect();
         // The mixer compute pass reads this buffer to drive its reservoir scan, so
@@ -876,6 +882,7 @@ impl StrokeRenderer {
                 dir: s.dir.to_array(),
                 geom: [s.radius, s.length, s.flow, (lead as f32 + i as f32 + 0.5) / width as f32],
                 aux: [s.height, s.wet, s.opacity, s.radius / (s.length.max(1e-3) * width as f32)],
+                extra: [s.orient, 0.0, 0.0, 0.0],
             })
             .collect();
 
@@ -1329,8 +1336,10 @@ impl StrokeRenderer {
         {
             return view.clone();
         }
+        // The round tip is rotation-invariant, so a single orientation layer suffices —
+        // the shader's wrapping lookup reads it for every orientation (DESIGN.md §6.6).
         let coverage = round_coverage(hardness, ROUND_RES);
-        let (_tex, view) = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, &coverage);
+        let (_tex, view) = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &coverage);
         *cache = Some((key, view.clone()));
         view
     }
@@ -1650,6 +1659,7 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
             height: b.height * load,
             wet: b.wetness * load,
             opacity: b.color[3] * load,
+            orient: orientation_turns(b.orientation, dir, sample.tilt),
         }
     };
 
@@ -1672,6 +1682,26 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
         segs.push(make(p, Vec2::new(1.0, 0.0), r * 0.6, 0.0));
     }
     segs
+}
+
+/// The shape's orientation for a segment, as a fraction of a full turn ∈ [0, 1): the
+/// relative angle between the shape's native axis and the travel direction `dir`, which
+/// picks the prefix-τ orientation layer (DESIGN.md §6.6).
+///
+/// - [`OrientationSource::FollowStroke`]: the shape tracks the tangent, so the relative
+///   angle is always 0 (the historical behaviour; for a round tip it is moot anyway).
+/// - [`OrientationSource::Pen`]: the shape is pinned to the pen's azimuth (the tilt
+///   direction) in canvas space, so relative to the travel direction it is `α − φ` — as
+///   the stroke curves the footprint angle stays fixed in the world, like a nib.
+fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2) -> f32 {
+    match source {
+        OrientationSource::FollowStroke => 0.0,
+        OrientationSource::Pen => {
+            let alpha = tilt.y.atan2(tilt.x); // pen azimuth (0 when the pen is upright / mouse)
+            let phi = dir.y.atan2(dir.x); // travel direction
+            ((alpha - phi) / std::f32::consts::TAU).rem_euclid(1.0)
+        }
+    }
 }
 
 /// Integer-pixel bounding box of a stroke (segments ± radius), or `None` if the

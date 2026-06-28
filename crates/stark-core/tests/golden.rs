@@ -6,7 +6,9 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, BrushShape, DryParams, StrokeRecord, Tool, WetParams};
+use stark_core::document::{
+    BrushDynamics, BrushShape, DryParams, OrientationSource, StrokeRecord, Tool, WetParams,
+};
 use stark_core::geom::Vec2;
 use stark_core::SurfaceId;
 
@@ -123,6 +125,46 @@ fn golden_bristle_stroke() {
 
     let img = engine.render_to_image(PAPER);
     assert_golden("bristle_stroke", &img, 6);
+}
+
+#[test]
+fn golden_pen_orientation_stroke() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let id = engine.import_brush(BRISTLES).expect("import brush shape");
+
+    // The anisotropic bristle mask in `Pen` orientation: the footprint is pinned to the
+    // pen's tilt azimuth (here a constant 45° in canvas space) instead of tracking the
+    // stroke tangent. So as this stroke changes direction the bristle streaks keep the
+    // *same* world angle — the whole point of arbitrary orientation (DESIGN.md §6.6).
+    let mut brush = brush(RED, 60.0);
+    brush.shape = BrushShape::Stamp(id);
+    brush.orientation = OrientationSource::Pen;
+    brush.spacing = 0.06;
+    brush.drain = 0.0;
+    engine.process(InputCommand::SetBrush(brush));
+
+    // A fixed tilt azimuth (atan2(1, 1) = 45°) on every sample, while the stroke itself
+    // bends from rightward to downward — so travel direction and shape orientation diverge.
+    let tilt = Vec2::new(1.0, 1.0);
+    let sample = |x: f32, y: f32| InputSample {
+        pos: Vec2::new(x, y),
+        pressure: 1.0,
+        tilt,
+        time: 0.0,
+    };
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: sample(-80.0, -50.0),
+    });
+    for &(x, y) in &[(0.0, -50.0), (60.0, -10.0), (60.0, 70.0)] {
+        engine.process(InputCommand::StrokeTo { sample: sample(x, y) });
+    }
+    engine.process(InputCommand::EndStroke);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("pen_orientation_stroke", &img, 6);
 }
 
 #[test]

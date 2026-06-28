@@ -30,7 +30,7 @@ struct Params {
     counts: vec4<u32>,      // segment_count, lead-in columns, reservoir width, _
 }
 
-// Must match `SegmentInstance` (gpu/stroke.rs): std430 layout, 48 bytes. Read-only:
+// Must match `SegmentInstance` (gpu/stroke.rs): std430 layout, 64 bytes. Read-only:
 // the scan writes only the reservoir textures, nothing goes back into the instances.
 struct Instance {
     start: vec2<f32>,
@@ -38,6 +38,7 @@ struct Instance {
     geom: vec4<f32>,  // radius, length, flow, reservoir start column (u; unused here)
     aux: vec4<f32>,   // height, wet, opacity (the brush's own paint, for the `add` axis),
                       // reservoir u-advance per radius (used by the deposit; unused here)
+    extra: vec4<f32>, // orientation (turns; used by the deposit; unused here), _, _, _
 }
 
 // Lateral reservoir bands across the brush width, so each part of the tip carries the

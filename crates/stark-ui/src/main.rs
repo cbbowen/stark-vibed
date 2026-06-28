@@ -21,7 +21,7 @@ use dioxus::prelude::*;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, BG, CANVAS_ID};
 use stark_core::document::{
-    BrushDynamics, BrushParams, BrushShape, DryParams, Tool, WetParams,
+    BrushDynamics, BrushParams, BrushShape, DryParams, OrientationSource, Tool, WetParams,
 };
 use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 use stark_core::geom::Vec2;
@@ -546,6 +546,24 @@ fn BrushPanel() -> Element {
                 "Bristles"
             }
         }
+            // Shape orientation source (DESIGN §6.6) — only meaningful for non-round tips,
+            // which alone carry per-orientation footprint slices. Follow = the shape tracks
+            // the stroke tangent (default); Pen = it stays pinned to the pen's tilt azimuth,
+            // like a calligraphy nib held at a fixed angle as the stroke curves.
+            if !is_round {
+                div { class: "brush-shapes",
+                    button {
+                        class: chip(brush.orientation == OrientationSource::FollowStroke),
+                        onclick: move |_| set_orientation(state, OrientationSource::FollowStroke),
+                        "Follow"
+                    }
+                    button {
+                        class: chip(brush.orientation == OrientationSource::Pen),
+                        onclick: move |_| set_orientation(state, OrientationSource::Pen),
+                        "Pen"
+                    }
+                }
+            }
             // Brush dynamics: the unified Dry brush (add/lift/deposit — paint, erase,
             // smudge, and everything between) or the Wet flow brush (DESIGN §6.2).
             div { class: "brush-shapes",
@@ -624,6 +642,11 @@ fn set_shape(state: AppState, shape: BrushShape, spacing: f32) {
 /// Set the brush's canvas-pickup behavior (DESIGN.md §6.2).
 fn set_dynamics(state: AppState, dynamics: BrushDynamics) {
     update_brush(state, move |b| b.dynamics = dynamics);
+}
+
+/// Set what orients the brush shape as it sweeps (DESIGN.md §6.6).
+fn set_orientation(state: AppState, orientation: OrientationSource) {
+    update_brush(state, move |b| b.orientation = orientation);
 }
 
 /// Edit the Dry brush params in place (no-op if the brush isn't Dry).

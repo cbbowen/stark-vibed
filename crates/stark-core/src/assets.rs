@@ -81,7 +81,13 @@ impl AssetStore {
                 None => encode_coverage_png(w, h, &coverage)?,
             };
             let cov: Vec<f32> = coverage.iter().map(|&b| b as f32 / 255.0).collect();
-            let (texture, view) = build_prefix_tau(&self.ctx, w, h, &cov);
+            // One coverage layer per shape orientation (DESIGN.md §6.6): the swept-depth
+            // integral runs along the stroke's travel axis, so to orient the footprint at
+            // an arbitrary angle we pre-rotate the shape into the travel frame, layer 0
+            // being the identity (the native, follow-stroke orientation).
+            let layers = orientation_layers(w, h);
+            let rotated = rotate_layers(&cov, w, h, layers);
+            let (texture, view) = build_prefix_tau(&self.ctx, w, h, layers, &rotated);
             slot.insert(Mask {
                 bytes,
                 view,
@@ -115,25 +121,95 @@ impl AssetStore {
 
 }
 
-/// Build a brush's **prefix-τ** texture (DESIGN.md §6.2): per row, the running
-/// integral of optical depth `κ = −ln(1−coverage)` along the travel axis (x),
-/// normalized to brush-local units (x spans `[-1, 1]`, width 2). Stored as
-/// `R32Float` and sampled (via `textureLoad` + manual bilinear) by the sweep
-/// shader: a segment's swept depth at a point is `prefix(u) − prefix(u−d)`.
+/// Largest number of orientation slices a brush's prefix-τ volume holds (DESIGN.md
+/// §6.6). With linear interpolation between adjacent layers this is ~5.6° resolution
+/// — smooth for any practical pen rotation.
+pub const MAX_ORIENTATION_LAYERS: u32 = 64;
+
+/// Memory budget (bytes) for one brush's prefix-τ volume. The layer count is chosen so
+/// `width × height × layers × 4 (R32Float)` stays under this — so a large detailed
+/// stamp keeps its full resolution (layer 0 is the identity, so follow-stroke strokes
+/// are unchanged) and trades orientation granularity for memory instead.
+const PREFIX_BUDGET_BYTES: u32 = 64 << 20; // 64 MiB
+
+/// How many orientation slices to build for a `width × height` shape: as many as the
+/// memory budget allows, capped at [`MAX_ORIENTATION_LAYERS`] and at least 1.
+pub fn orientation_layers(width: u32, height: u32) -> u32 {
+    let per_layer = (width * height * 4).max(1);
+    (PREFIX_BUDGET_BYTES / per_layer).clamp(1, MAX_ORIENTATION_LAYERS)
+}
+
+/// Pre-rotate a normalized `[-1, 1]²` coverage mask into `layers` orientation slices
+/// (DESIGN.md §6.6). Slice `l` rotates the shape by `2π·l/layers` into the travel frame
+/// (so the sweep's x-integral yields the swept depth at that orientation); slice 0 is the
+/// identity, kept bit-exact so follow-stroke strokes match the un-rotated mask. Bilinear
+/// sampling, zero outside the source. Returns a `layers × height × width` buffer.
+fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<f32> {
+    let (w, h) = (width as usize, height as usize);
+    let mut out = vec![0.0f32; w * h * layers as usize];
+    // Layer 0: identity (bit-exact copy of the source).
+    out[..w * h].copy_from_slice(coverage);
+    let sample = |sx: f32, sy: f32| -> f32 {
+        // sx, sy in normalized [-1, 1]; bilinear sample of the source, 0 outside.
+        let fx = (sx * 0.5 + 0.5) * width as f32 - 0.5;
+        let fy = (sy * 0.5 + 0.5) * height as f32 - 0.5;
+        let x0 = fx.floor();
+        let y0 = fy.floor();
+        let (tx, ty) = (fx - x0, fy - y0);
+        let at = |xi: f32, yi: f32| -> f32 {
+            if xi < 0.0 || yi < 0.0 || xi >= width as f32 || yi >= height as f32 {
+                0.0
+            } else {
+                coverage[yi as usize * w + xi as usize]
+            }
+        };
+        let a = at(x0, y0) * (1.0 - tx) + at(x0 + 1.0, y0) * tx;
+        let b = at(x0, y0 + 1.0) * (1.0 - tx) + at(x0 + 1.0, y0 + 1.0) * tx;
+        a * (1.0 - ty) + b * ty
+    };
+    for l in 1..layers as usize {
+        let theta = std::f32::consts::TAU * l as f32 / layers as f32;
+        let (s, c) = theta.sin_cos();
+        let base = l * w * h;
+        for y in 0..h {
+            let py = (y as f32 + 0.5) / height as f32 * 2.0 - 1.0;
+            for x in 0..w {
+                let px = (x as f32 + 0.5) / width as f32 * 2.0 - 1.0;
+                // Sample the source at R(-θ)·(px, py): the image rotates by +θ.
+                let sx = px * c + py * s;
+                let sy = -px * s + py * c;
+                out[base + y * w + x] = sample(sx, sy);
+            }
+        }
+    }
+    out
+}
+
+/// Build a brush's **prefix-τ** volume (DESIGN.md §6.2, §6.6): for each orientation
+/// `layer` and each row, the running integral of optical depth `κ = −ln(1−coverage)`
+/// along the travel axis (x), normalized to brush-local units (x spans `[-1, 1]`, width
+/// 2). Stored as a `R32Float` **2D-array** texture (the array axis is orientation, sampled
+/// with wrapping) and read via `textureLoad` + manual trilinear by the sweep shader: a
+/// segment's swept depth at a point is `prefix(u) − prefix(u−d)` on its layer. (A 2D array
+/// rather than a true 3D texture so the mask keeps its full width/height — 3D textures are
+/// capped far smaller, e.g. 256px, by `maxTextureDimension3D`.)
 ///
-/// Shared by [`AssetStore`] (image brushes, at import) and the stroke renderer
-/// (the round tip, regenerated per `hardness`). `coverage` is `width × height`
-/// row-major in `[0, 1]`.
+/// Shared by [`AssetStore`] (image brushes, at import — many layers) and the stroke
+/// renderer (the round tip, regenerated per `hardness` — rotation-invariant, 1 layer).
+/// `coverage` is `layers × height × width` row-major in `[0, 1]`.
 pub fn build_prefix_tau(
     ctx: &GpuContext,
     width: u32,
     height: u32,
+    layers: u32,
     coverage: &[f32],
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let w = width as usize;
     let dx = 2.0 / width as f32; // brush-local width of one column
     let mut prefix = vec![0.0f32; coverage.len()];
-    for y in 0..height as usize {
+    for y in 0..(height * layers) as usize {
+        // Rows are contiguous across layers (layer-major, then row), so one linear pass
+        // integrates every layer's rows independently.
         let mut acc = 0.0f32;
         for x in 0..w {
             let m = coverage[y * w + x].clamp(0.0, 0.999);
@@ -142,13 +218,14 @@ pub fn build_prefix_tau(
         }
     }
 
+    let extent = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: layers,
+    };
     let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("stark brush prefix-tau"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -164,13 +241,14 @@ pub fn build_prefix_tau(
             bytes_per_row: Some(width * 4),
             rows_per_image: Some(height),
         },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
+        extent,
     );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    // Always a 2D-array view (even for the single-layer round tip) so the shader binds one
+    // texture type for every brush.
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
     (texture, view)
 }
 

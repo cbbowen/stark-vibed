@@ -22,8 +22,9 @@ fn vs_main(
     @location(1) dir: vec2<f32>,
     @location(2) geom: vec4<f32>,
     @location(3) aux: vec4<f32>,
+    @location(4) extra: vec4<f32>,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, aux);
+    return sweep_vertex(vi, start, dir, geom, aux, extra);
 }
 
 @fragment

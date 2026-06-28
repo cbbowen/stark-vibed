@@ -41,6 +41,22 @@ pub enum BrushShape {
     Stamp(crate::assets::AssetId),
 }
 
+/// What sets the brush shape's orientation as it sweeps along the stroke (DESIGN.md
+/// §6.6). The swept-depth integral runs along the stroke's travel direction, so the
+/// shape is looked up in a per-orientation prefix-τ texture indexed by the *relative*
+/// angle between the shape's native axis and the travel direction.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OrientationSource {
+    /// The shape's native axis tracks the stroke tangent — the relative angle is always
+    /// 0, so the footprint always faces along the motion (the historical behaviour).
+    #[default]
+    FollowStroke,
+    /// The shape stays pinned to the pen's orientation (the tilt azimuth) in canvas
+    /// space; as the stroke curves under a fixed pen the footprint angle stays put,
+    /// like a calligraphy nib.
+    Pen,
+}
+
 /// How a brush interacts with paint already on the canvas (DESIGN.md §6.2,
 /// "Wet mixing & brush dynamics"). The pluggable fidelity axis.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -160,10 +176,12 @@ pub struct BrushParams {
     pub drain: f32,
     /// Brush tip shape (DESIGN.md §6.6).
     pub shape: BrushShape,
-    /// Rotate each stamp to the stroke tangent (organic, directional strokes).
-    pub follow_path: bool,
-    /// Random per-stamp rotation in radians (seeded; 0 = none).
-    pub angle_jitter: f32,
+    /// What orients the shape as it sweeps (DESIGN.md §6.6) — the successor to the old
+    /// `follow_path`/`angle_jitter` knobs: `FollowStroke` is the former `follow_path =
+    /// true`. `#[serde(default)]` so documents saved before this field (which instead
+    /// carried `follow_path`, now ignored on load) come in as `FollowStroke`.
+    #[serde(default)]
+    pub orientation: OrientationSource,
     /// Canvas-pickup behavior (DESIGN.md §6.2). `#[serde(default)]` so documents
     /// saved before this field load as `Dry`.
     #[serde(default)]
@@ -189,8 +207,7 @@ impl Default for BrushParams {
             wetness: 0.7,
             drain: 0.0015,
             shape: BrushShape::Round,
-            follow_path: true,
-            angle_jitter: 0.0,
+            orientation: OrientationSource::default(),
             dynamics: BrushDynamics::default(),
             tooth: 0.5,
         }

@@ -16,7 +16,11 @@ struct TileXform {
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
-@group(1) @binding(0) var prefix_tex: texture_2d<f32>;
+// Prefix-τ volume (DESIGN.md §6.2, §6.6): x = travel, y = lateral, array layer = shape
+// orientation (one slice per relative angle, sampled with wrapping). Round tips are
+// rotation-invariant and have a single slice; image stamps carry up to
+// MAX_ORIENTATION_LAYERS. A 2D array (not a 3D texture) so the mask keeps its full size.
+@group(1) @binding(0) var prefix_tex: texture_2d_array<f32>;
 // The canvas surface (tileable bump/height), sampled in canvas space so the
 // weave gates deposition consistently regardless of which tile a fragment lands
 // in (DESIGN.md §6.4).
@@ -48,6 +52,9 @@ struct VsOut {
     // *index*, not arc distance, so non-uniform segment lengths stay aligned.
     @location(2) u: vec2<f32>,
     @location(3) op: f32, // brush opacity at this segment (drives the opacity channel)
+    // Shape orientation in turns ∈ [0,1): the relative angle between the shape's native
+    // axis and the travel direction, picking the prefix-τ orientation slice (§6.6).
+    @location(4) orient: f32,
 }
 
 struct FsOut {
@@ -64,6 +71,7 @@ fn sweep_vertex(
     dir: vec2<f32>,   // unit tangent
     geom: vec4<f32>,  // radius, length, flow, reservoir start column (u)
     aux: vec4<f32>,   // height(thickness rate), wet, opacity, reservoir u-advance per radius
+    extra: vec4<f32>, // orientation (turns ∈ [0,1)), _, _, _
 ) -> VsOut {
     let radius = geom.x;
     let lr = geom.y / radius; // segment length in radius units
@@ -84,6 +92,7 @@ fn sweep_vertex(
     // so traversing the segment moves exactly one reservoir column.
     out.u = vec2<f32>(geom.w, aux.w);
     out.op = aux.z;
+    out.orient = extra.x;
     return out;
 }
 
@@ -139,10 +148,9 @@ fn add_frac() -> f32 {
 //   3. Precision. Fixed-function bilinear uses reduced-precision fractional
 //      weights on many GPUs; the fp32 `mix` below keeps full precision for the
 //      cancellation-sensitive difference.
-fn prefix_at(xl: f32, yl: f32) -> f32 {
-    if xl <= -1.0 {
-        return 0.0;
-    }
+// Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl). Factored out so
+// `prefix_at` can blend two adjacent slices (the orientation axis).
+fn prefix_slice(xl: f32, yl: f32, zi: i32) -> f32 {
     let dim = vec2<f32>(textureDimensions(prefix_tex));
     let ux = clamp(xl * 0.5 + 0.5, 0.0, 1.0) * dim.x - 0.5;
     let uy = clamp(yl * 0.5 + 0.5, 0.0, 1.0) * dim.y - 0.5;
@@ -154,19 +162,40 @@ fn prefix_at(xl: f32, yl: f32) -> f32 {
     let xi1 = clamp(i32(x0) + 1, 0, i32(dim.x) - 1);
     let yi0 = clamp(i32(y0), 0, i32(dim.y) - 1);
     let yi1 = clamp(i32(y0) + 1, 0, i32(dim.y) - 1);
-    let p00 = textureLoad(prefix_tex, vec2<i32>(xi0, yi0), 0).r;
-    let p10 = textureLoad(prefix_tex, vec2<i32>(xi1, yi0), 0).r;
-    let p01 = textureLoad(prefix_tex, vec2<i32>(xi0, yi1), 0).r;
-    let p11 = textureLoad(prefix_tex, vec2<i32>(xi1, yi1), 0).r;
+    let p00 = textureLoad(prefix_tex, vec2<i32>(xi0, yi0), zi, 0).r;
+    let p10 = textureLoad(prefix_tex, vec2<i32>(xi1, yi0), zi, 0).r;
+    let p01 = textureLoad(prefix_tex, vec2<i32>(xi0, yi1), zi, 0).r;
+    let p11 = textureLoad(prefix_tex, vec2<i32>(xi1, yi1), zi, 0).r;
     return mix(mix(p00, p10, fx), mix(p01, p11, fx), fy);
 }
 
+// Trilinear lookup of the prefix-τ volume at brush-local (xl, yl) ∈ [-1,1] and shape
+// orientation `w` (turns ∈ [0,1)). The orientation axis wraps (a full turn is periodic),
+// so the two bracketing slices are chosen modulo the slice count. The x,y bilinear is
+// hand-rolled for the same reasons (R32Float isn't filterable, the asymmetric travel-edge
+// boundary, fp32 precision); 0 before the leading edge, clamp-to-row-total past the
+// trailing edge. A single-slice (round) volume collapses to that one slice for every `w`.
+fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
+    if xl <= -1.0 {
+        return 0.0;
+    }
+    let nz = i32(textureNumLayers(prefix_tex));
+    let fl = fract(w) * f32(nz);
+    let l0f = floor(fl);
+    let fw = fl - l0f;
+    let z0 = (i32(l0f) % nz + nz) % nz;
+    let z1 = (z0 + 1) % nz;
+    let a = prefix_slice(xl, yl, z0);
+    let b = prefix_slice(xl, yl, z1);
+    return mix(a, b, fw);
+}
+
 // Swept geometric optical depth over the fragment's segment: the brush footprint
-// integrated as it travels, as a difference of prefix sums. Sums exactly across a
-// stroke's overlapping segment quads (under "over" for τ, or additively for
-// amounts), reconstructing the continuous path integral.
+// integrated as it travels, as a difference of prefix sums on the segment's orientation
+// slice. Sums exactly across a stroke's overlapping segment quads (under "over" for τ, or
+// additively for amounts), reconstructing the continuous path integral.
 fn swept_depth(in: VsOut) -> f32 {
-    let depth = prefix_at(in.local.x, in.local.y) - prefix_at(in.local.x - in.misc.x, in.local.y);
+    let depth = prefix_at(in.local.x, in.local.y, in.orient) - prefix_at(in.local.x - in.misc.x, in.local.y, in.orient);
     return max(depth, 0.0);
 }
 
