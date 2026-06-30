@@ -105,12 +105,40 @@ pub struct BrushDynamics {
     /// [0, 1] — the impasto lip (DESIGN.md §6.2). A conservative lateral redistribution.
     #[serde(default)]
     pub ridge: f32,
+    /// Initial paint **pre-loaded onto the tool** reservoir before the stroke starts, as a
+    /// height (the "load a glob on the palette knife" param). 0 = the tool starts empty (the
+    /// historical behaviour). It depletes as the tool [`deposit`](Self::deposit)s and refills
+    /// as it [`load`](Self::load)s — a finite carried amount, unlike the inexhaustible
+    /// [`add`](Self::add) source (DESIGN.md §6.2).
+    #[serde(default)]
+    pub charge: f32,
+    /// How strongly **pen pressure** modulates the scrape ([`load`](Self::load)), in [0, 1]:
+    /// 0 = `load` is constant across the stroke (the historical behaviour), 1 = `load` scales
+    /// fully with per-sample pressure (a palette knife scrapes more the harder you press).
+    #[serde(default)]
+    pub load_pressure: f32,
+    /// How strongly **pen tilt toward the direction of motion** modulates the
+    /// [`deposit`](Self::deposit), in [0, 1]: 0 = `deposit` is constant (the historical
+    /// behaviour, and the fallback with no pen tilt), 1 = `deposit` scales fully with the
+    /// forward lean (tilting the knife into the stroke lays more paint down).
+    #[serde(default)]
+    pub deposit_tilt: f32,
 }
 
 impl Default for BrushDynamics {
     /// The everyday brush: lay the brush's own paint, manipulate nothing.
     fn default() -> Self {
-        Self { add: 1.0, load: 0.0, deposit: 0.0, drag: 0.0, bleed: 0.0, ridge: 0.0 }
+        Self {
+            add: 1.0,
+            load: 0.0,
+            deposit: 0.0,
+            drag: 0.0,
+            bleed: 0.0,
+            ridge: 0.0,
+            charge: 0.0,
+            load_pressure: 0.0,
+            deposit_tilt: 0.0,
+        }
     }
 }
 

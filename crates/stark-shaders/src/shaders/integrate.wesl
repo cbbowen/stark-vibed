@@ -16,13 +16,18 @@
 // brush dynamics (knife, blend modes) can plug in as new `mode`s.
 
 struct Params {
-    // mode.x = the `load` (lift) axis; mode.y = ridge strength; .zw unused. There is one
-    // unified merge (no Normal/Dry branch): the lift removes `load × contact` of the base
-    // height **per-pixel** (exact — the base is right here, so an eraser leaves no banded
-    // residue), the deposit adds the mixer's height (scratch aux `.w`, coverage-normalized
-    // by `.z`), and ridge redistributes paint laterally. With `load = 0` and a flat
-    // reservoir (deposit 0) it reduces exactly to the old additive "over" deposit — height
-    // is the amount of paint; the colour alpha is per-unit opacity only (DESIGN §6.1).
+    // mode.x = the constant `load` (lift) axis; mode.y = ridge strength; mode.z unused;
+    // mode.w selects the **per-pixel scrape** path. There is one unified merge (no
+    // Normal/Dry branch): the lift removes `load × contact` of the base height **per-pixel**
+    // (exact — the base is right here, so an eraser leaves no banded residue), the deposit
+    // adds the mixer's height (scratch aux `.w`, coverage-normalized by `.z`), and ridge
+    // redistributes paint laterally. With `load = 0` and a flat reservoir (deposit 0) it
+    // reduces exactly to the old additive "over" deposit — height is the amount of paint;
+    // the colour alpha is per-unit opacity only (DESIGN §6.1).
+    //
+    // mode.w = 0: `load` is constant — use mode.x (every existing brush; unchanged path).
+    // mode.w = 1: pen pressure modulated the scrape — read the coverage-weighted per-pixel
+    //             load from `scrape_tex` instead (the palette knife; DESIGN §6.2).
     mode: vec4<f32>,
 }
 
@@ -36,6 +41,9 @@ const RIDGE_GAIN: f32 = 3.0;
 @group(0) @binding(2) var base_aux: texture_2d<f32>;
 @group(0) @binding(3) var scratch_color: texture_2d<f32>;
 @group(0) @binding(4) var scratch_aux: texture_2d<f32>;
+// Per-pixel scrape: Σ(load·√cov) over the overlapping segment quads (the palette knife's
+// pressure-modulated removal). Only read when `mode.w = 1`; a 1×1 dummy is bound otherwise.
+@group(0) @binding(5) var scrape_tex: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -80,7 +88,15 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // *thickness* drops, not its alpha).
     let cov = s_a.z;                 // accumulated footprint coverage (Σ√cov)
     let contact = 1.0 - exp(-cov);
-    let lift_frac = clamp(p.mode.x * contact, 0.0, 1.0);
+    // The effective `load`: constant (mode.x) for every existing brush, or the per-pixel
+    // coverage-weighted load Σ(load·√cov)/Σ√cov when pressure modulated the scrape (mode.w).
+    // The latter reduces to the former when load is constant, so the only difference is that
+    // it now varies along the stroke — still exact and residue-free per pixel (DESIGN §6.2).
+    var load_eff = p.mode.x;
+    if p.mode.w > 0.5 {
+        load_eff = textureLoad(scrape_tex, c, 0).x / max(cov, 1e-4);
+    }
+    let lift_frac = clamp(load_eff * contact, 0.0, 1.0);
     let dep = (s_a.w / max(cov, 1e-4)) * contact;
 
     // Colour: lay the deposit (deposit·tool + add·brush) over the base (premultiplied

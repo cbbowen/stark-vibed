@@ -570,12 +570,26 @@ fn BrushPanel() -> Element {
             // Horizontal (canvas) flux: Drag advects along the motion, Bleed diffuses
             // wet-on-wet, Ridge piles displaced paint into an impasto rim.
             div { class: "slider-label", style: "margin-top: 8px;", "Dynamics" }
+            // One-click presets: the plain brush (own paint only) and the palette knife
+            // (no own paint; pressure-scrapes and tilt-deposits a finite pre-charge, §6.2).
+            div { class: "brush-shapes",
+                button { class: "chip", onclick: move |_| set_brush_preset(state), "Brush" }
+                button { class: "chip", onclick: move |_| set_knife(state), "Palette Knife" }
+            }
             Slider { label: "Add", min: 0.0, max: 1.0, value: d.add,
                 oninput: move |v| set_dyn(state, move |x| x.add = v) }
             Slider { label: "Load", min: 0.0, max: 1.0, value: d.load,
                 oninput: move |v| set_dyn(state, move |x| x.load = v) }
             Slider { label: "Deposit", min: 0.0, max: 1.0, value: d.deposit,
                 oninput: move |v| set_dyn(state, move |x| x.deposit = v) }
+            // Palette-knife axes: the initial glob the knife carries, and how strongly pen
+            // pressure / tilt-toward-motion drive the scrape / deposit (DESIGN §6.2).
+            Slider { label: "Charge", min: 0.0, max: 2.0, value: d.charge,
+                oninput: move |v| set_dyn(state, move |x| x.charge = v) }
+            Slider { label: "Load→Pressure", min: 0.0, max: 1.0, value: d.load_pressure,
+                oninput: move |v| set_dyn(state, move |x| x.load_pressure = v) }
+            Slider { label: "Deposit→Tilt", min: 0.0, max: 1.0, value: d.deposit_tilt,
+                oninput: move |v| set_dyn(state, move |x| x.deposit_tilt = v) }
             Slider { label: "Drag", min: 0.0, max: 1.0, value: d.drag,
                 oninput: move |v| set_dyn(state, move |x| x.drag = v) }
             Slider { label: "Bleed", min: 0.0, max: 1.0, value: d.bleed,
@@ -601,6 +615,34 @@ fn set_orientation(state: AppState, orientation: OrientationSource) {
 /// Edit the unified brush dynamics in place (DESIGN.md §6.2).
 fn set_dyn(state: AppState, f: impl FnOnce(&mut BrushDynamics)) {
     update_brush(state, move |b| f(&mut b.dynamics));
+}
+
+/// Reset to the everyday brush: lay the brush's own paint, manipulate nothing.
+fn set_brush_preset(state: AppState) {
+    set_dyn(state, |d| *d = BrushDynamics::default());
+}
+
+/// The palette knife (DESIGN.md §6.2): no own paint (`add = 0`), a finite pre-`charge` it
+/// carries, pen pressure fully drives the scrape (`load` + `load_pressure`), and pen tilt
+/// toward the motion fully drives the `deposit` (`deposit_tilt`). A hard edge + tooth so it
+/// reads as a blade riding the weave.
+fn set_knife(state: AppState) {
+    update_brush(state, |b| {
+        b.shape = BrushShape::Round;
+        b.hardness = 0.9;
+        b.tooth = 0.7;
+        b.dynamics = BrushDynamics {
+            add: 0.0,
+            load: 1.0,
+            deposit: 0.6,
+            charge: 0.5,
+            load_pressure: 1.0,
+            deposit_tilt: 1.0,
+            drag: 0.0,
+            bleed: 0.0,
+            ridge: 0.0,
+        };
+    });
 }
 
 /// Select the built-in bristle brush. It's fetched + imported once at startup
@@ -1407,6 +1449,10 @@ fn sample(state: AppState, e: &Event<PointerData>) -> InputSample {
     InputSample {
         pos: view.screen_to_canvas(elem_xy(&e)),
         pressure: e.pressure(),
+        // Pen tilt (degrees from vertical, ±90 per axis) → a canvas-space lean vector. The
+        // palette knife's deposit reads its component along the stroke direction (DESIGN
+        // §6.2); a mouse reports (0, 0), so the deposit falls back to its constant rate.
+        tilt: Vec2::new(e.tilt_x() as f32, e.tilt_y() as f32) / 90.0,
         ..Default::default()
     }
 }

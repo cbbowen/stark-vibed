@@ -55,6 +55,10 @@ struct VsOut {
     // Shape orientation in turns ∈ [0,1): the relative angle between the shape's native
     // axis and the travel direction, picking the prefix-τ orientation slice (§6.6).
     @location(4) orient: f32,
+    // Per-segment **scrape** rate (`load` modulated by pen pressure, §6.2). Only the scrape
+    // sweep variant (`fs_scrape`) reads it — to write a coverage-weighted per-pixel load the
+    // integrate uses for the exact removal; the plain fragment ignores it.
+    @location(5) load: f32,
 }
 
 struct FsOut {
@@ -93,6 +97,7 @@ fn sweep_vertex(
     out.u = vec2<f32>(geom.w, aux.w);
     out.op = aux.z;
     out.orient = extra.x;
+    out.load = extra.y; // per-segment scrape rate (pressure-modulated); read by fs_scrape
     return out;
 }
 

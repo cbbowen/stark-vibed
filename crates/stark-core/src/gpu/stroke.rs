@@ -38,6 +38,12 @@ const SWEEP_FLOW_SCALE: f32 = 1.0;
 /// Resolution of the generated round-tip prefix texture.
 const ROUND_RES: u32 = 256;
 
+/// Format of the per-tile **scrape** target (the third sweep MRT on the pressure-modulated
+/// scrape path): one channel carries the coverage-weighted per-pixel load Σ(load·√cov) the
+/// integrate uses for the exact removal (DESIGN.md §6.2). Transient (sweep → integrate),
+/// never persisted.
+const SCRAPE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+
 /// Lateral reservoir bands across the brush tip: each picks up canvas color at its
 /// own offset, so one side of the brush can carry a different color than the other
 /// (DESIGN.md §6.2). This is the *height* of the reservoir texture; the mixer's
@@ -80,6 +86,14 @@ struct Segment {
     /// Drives the color/opacity channel; thickness (`height`) is independent now
     /// (DESIGN.md §6.1, normalized representation).
     opacity: f32,
+    /// Per-segment **scrape** rate (the `load` axis modulated by pen pressure, DESIGN.md
+    /// §6.2): the fraction of canvas height this segment lifts onto the tool. The mixer reads
+    /// it to drive the per-band intake; the scrape sweep variant routes it to the integrate
+    /// for the exact per-pixel removal.
+    load: f32,
+    /// Per-segment **deposit** rate (the `deposit` axis modulated by pen tilt toward motion,
+    /// DESIGN.md §6.2): the fraction of tool height this segment lays back down.
+    deposit: f32,
     /// Shape orientation for this segment as a fraction of a full turn ∈ [0, 1): the
     /// relative angle between the shape's native axis and the travel direction, used to
     /// pick the prefix-τ orientation layer. 0 for follow-stroke (DESIGN.md §6.6).
@@ -96,7 +110,7 @@ struct SegmentInstance {
     dir: [f32; 2],    // unit tangent
     geom: [f32; 4],   // radius, length, flow, reservoir column u ∈ [0,1]
     aux: [f32; 4],    // height (thickness rate), wet, opacity, reservoir u-advance per radius
-    extra: [f32; 4],  // orientation (turns ∈ [0,1)), _, _, _ (→ 64 B std430)
+    extra: [f32; 4],  // orientation (turns ∈ [0,1)), load (scrape rate), deposit rate, _ (→ 64 B std430)
 }
 
 /// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
@@ -133,7 +147,7 @@ struct TileInstance {
 struct MixerUniform {
     brush_ch: [f32; 4],    // brush colour channels (.xyz); .w = `add` axis
     origin_dims: [f32; 4], // region origin.xy (canvas px), dims.xy (px)
-    knobs: [f32; 4],       // lift, deposit, flatten_step, _
+    knobs: [f32; 4],       // charge (tool pre-load height), brush opacity, flatten_step, _
     counts: [u32; 4],      // segment_count, lead-in columns, reservoir width, _
 }
 
@@ -142,6 +156,13 @@ pub struct StrokeRenderer {
     ctx: GpuContext,
     color_space: Arc<dyn ColorSpace>,
     pipeline: wgpu::RenderPipeline,
+    /// Sweep variant with a third MRT target (the [`SCRAPE_FORMAT`] per-pixel load) for the
+    /// pressure-modulated scrape path. Structurally identical bind groups (the `fs_scrape`
+    /// entry only adds an output), so it shares `uniform_bgl`/`prefix_bgl`/etc.
+    scrape_pipeline: wgpu::RenderPipeline,
+    /// 1×1 zero [`SCRAPE_FORMAT`] view bound to the integrate's scrape slot on the
+    /// non-scrape path (the shader never samples it there — `mode.w = 0`).
+    dummy_scrape: wgpu::TextureView,
     uniform_bgl: wgpu::BindGroupLayout,
     prefix_bgl: wgpu::BindGroupLayout,
     /// Cached round-tip prefix-τ, keyed by `hardness.to_bits()`.
@@ -436,6 +457,72 @@ impl StrokeRenderer {
             cache: None,
         });
 
+        // Scrape variant: identical to the sweep pipeline but with a third MRT target (the
+        // per-pixel load, additively blended like the aux) and the `fs_scrape` fragment.
+        // Used only when pen pressure modulates the scrape (`load_pressure > 0`); every
+        // other stroke uses the 2-target `pipeline` above (DESIGN.md §6.2).
+        let scrape_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark sweep scrape pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SegmentInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+                    ],
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_scrape"),
+                compilation_options: Default::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: color_space.color_format(),
+                        blend: Some(color_space.color_blend()),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: SCRATCH_AUX_FORMAT,
+                        blend: Some(color_space.aux_blend()),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    // Per-pixel load Σ(load·√cov): additive across overlapping segments.
+                    Some(wgpu::ColorTargetState {
+                        format: SCRAPE_FORMAT,
+                        blend: Some(color_space.aux_blend()),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // 1×1 zero scrape texture for the integrate's scrape slot on the non-scrape path.
+        let dummy_scrape = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("stark dummy scrape"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: SCRAPE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
         // ---- Wet-mixing pickup: base-region composite + reservoir compute ----
         let (composite_pipeline, composite_view_bgl, composite_tile_bgl) =
             build_composite_pipeline(device, color_space.as_ref(), color_space.aux_format());
@@ -462,6 +549,8 @@ impl StrokeRenderer {
             ctx: ctx.clone(),
             color_space,
             pipeline,
+            scrape_pipeline,
+            dummy_scrape,
             uniform_bgl,
             prefix_bgl,
             round_prefix: Arc::new(Mutex::new(None)),
@@ -578,7 +667,7 @@ impl StrokeRenderer {
                 // aux.w = u-advance per radius travelled, so local.x ∈ [0, length/radius]
                 // sweeps exactly one column (geom.w → next column) regardless of segment len.
                 aux: [s.height, s.wet, s.opacity, s.radius / (s.length.max(1e-3) * width as f32)],
-                extra: [s.orient, 0.0, 0.0, 0.0],
+                extra: [s.orient, s.load, s.deposit, 0.0],
             })
             .collect();
         // The mixer compute pass reads this buffer to drive its reservoir scan, so
@@ -614,8 +703,12 @@ impl StrokeRenderer {
         // brush only works paint already on the canvas). Folded into the reservoir colour
         // (mixer/flat) and used to gate the brush's own height/wet in the stamp.
         let add_frac = d.add;
+        // The mixer's per-band tool now reads lift/deposit **per-segment** (the instance
+        // `extra.yz`), so the scan uniform carries the stroke-constant rest: the tool's
+        // initial pre-`charge` and the brush opacity (for the pre-charge's per-unit colour),
+        // plus the flatten step. Runs whenever the tool lifts or deposits (DESIGN §6.2).
         let scan = (d.load > 0.0 || d.deposit > 0.0)
-            .then_some([d.load, d.deposit, crate::path::FLATTEN_STEP, 0.0]);
+            .then_some([d.charge, rec.brush.color[3], crate::path::FLATTEN_STEP, 0.0]);
         // The scan runs only when it actually fired; an oversized stroke skips the region
         // composite and degrades to a plain (flat-reservoir) deposit.
         let mut reservoir_tex = |label| {
@@ -693,12 +786,19 @@ impl StrokeRenderer {
             });
         }
 
-        // Integrate params: `mode.x` is the `load` axis — the integrate removes
+        // Scrape path: when pen pressure modulates the scrape (`load_pressure > 0`), the
+        // removal is no longer a stroke-constant `load` — it varies per segment. The sweep
+        // then writes a coverage-weighted per-pixel load into a third scratch target and the
+        // integrate reads it (`mode.w = 1`). With `load_pressure = 0` (every existing brush)
+        // we keep the exact constant-`mode.x` path → bit-identical output (DESIGN §6.2).
+        let scrape = d.load > 0.0 && d.load_pressure > 0.0;
+
+        // Integrate params: `mode.x` is the constant `load` axis — the integrate removes
         // `load × contact` of the base height per-pixel (exact, no banded residue), while
-        // the tool's deposit rides the mixer's banded reservoir. One always-unified branch
-        // now: with `load = 0` and a flat reservoir it reduces exactly to the old additive
-        // "over" deposit (DESIGN §6.2). `mode.y` is the conservative-ridge strength.
-        let integrate_mode = [d.load, d.ridge, 0.0, 0.0];
+        // the tool's deposit rides the mixer's banded reservoir. With `load = 0` and a flat
+        // reservoir it reduces exactly to the old additive "over" deposit (DESIGN §6.2).
+        // `mode.y` is the conservative-ridge strength; `mode.w` selects the per-pixel scrape.
+        let integrate_mode = [d.load, d.ridge, 0.0, if scrape { 1.0 } else { 0.0 }];
 
         // Flow (drag + bleed): after the deposit, work the freshly-laid region (DESIGN.md
         // §6.2). Collect this stroke's scratch footprints so the flow localizes to where the
@@ -738,23 +838,43 @@ impl StrokeRenderer {
             // target over-blends opacity-premultiplied colour, the aux accumulates
             // thickness/wet/smear-lifted additively). The scratch aux is the wide format.
             let scratch = pool.acquire_scratch(AllocSource::MixerScratch);
+            // On the scrape path, a third (transient) target collects the coverage-weighted
+            // per-pixel load the integrate reads (DESIGN.md §6.2); scoped → freed after submit.
+            let scrape_view = scrape.then(|| {
+                scoped
+                    .texture(device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("stark sweep scrape"),
+                        size: wgpu::Extent3d { width: TILE_TEX, height: TILE_TEX, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: SCRAPE_FORMAT,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    }))
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            });
             {
                 let clear = wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                     store: wgpu::StoreOp::Store,
                 };
+                let mut color_attachments = vec![
+                    Some(wgpu::RenderPassColorAttachment { view: scratch.color_view(), resolve_target: None, depth_slice: None, ops: clear }),
+                    Some(wgpu::RenderPassColorAttachment { view: scratch.aux_view(), resolve_target: None, depth_slice: None, ops: clear }),
+                ];
+                if let Some(sv) = &scrape_view {
+                    color_attachments.push(Some(wgpu::RenderPassColorAttachment { view: sv, resolve_target: None, depth_slice: None, ops: clear }));
+                }
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
-                    color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment { view: scratch.color_view(), resolve_target: None, depth_slice: None, ops: clear }),
-                        Some(wgpu::RenderPassColorAttachment { view: scratch.aux_view(), resolve_target: None, depth_slice: None, ops: clear }),
-                    ],
+                    color_attachments: &color_attachments,
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.pipeline);
+                pass.set_pipeline(if scrape { &self.scrape_pipeline } else { &self.pipeline });
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &self.surface_bg, &[]);
@@ -782,6 +902,7 @@ impl StrokeRenderer {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(base_tile.aux_view()) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(scratch.color_view()) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(scratch.aux_view()) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(scrape_view.as_ref().unwrap_or(&self.dummy_scrape)) },
                 ],
             });
             {
@@ -866,7 +987,7 @@ impl StrokeRenderer {
                 dir: s.dir.to_array(),
                 geom: [s.radius, s.length, s.flow, (lead as f32 + i as f32 + 0.5) / width as f32],
                 aux: [s.height, s.wet, s.opacity, s.radius / (s.length.max(1e-3) * width as f32)],
-                extra: [s.orient, 0.0, 0.0, 0.0],
+                extra: [s.orient, s.load, s.deposit, 0.0],
             })
             .collect();
 
@@ -880,7 +1001,9 @@ impl StrokeRenderer {
         self.ctx.queue.write_buffer(&instance_buf, 0, bytemuck::cast_slice(&instances));
 
         let coords = affected_tiles(&segments);
-        let knobs = [d.load, d.deposit, crate::path::FLATTEN_STEP, 0.0];
+        // Lift/deposit are per-segment (instance `extra.yz`); the uniform carries charge +
+        // brush opacity + flatten step (see `render`).
+        let knobs = [d.charge, rec.brush.color[3], crate::path::FLATTEN_STEP, 0.0];
         // Reservoir textures sized to the padded width × bands, with COPY_SRC for readback.
         let make = |label| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -1644,8 +1767,26 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
 
     // `dist` (arc length from the stroke start) drives only the drain here; the
     // reservoir is parameterized by segment *index*, not distance (see `render`).
+    let dyn_ = b.dynamics;
     let make = |sample: &InputSample, dir: Vec2, len: f32, dist: f32| -> Segment {
-        let load = (1.0 - b.drain * dist).max(0.0);
+        let drain = (1.0 - b.drain * dist).max(0.0);
+        // Palette-knife dynamics (DESIGN.md §6.2): pen **pressure** modulates the scrape
+        // (`load`) and pen **tilt toward the direction of motion** modulates the `deposit`.
+        // Each `*_response` knob in [0,1] cross-fades from the constant axis value (response
+        // = 0, the historical behaviour and the no-pen fallback) to fully input-driven
+        // (response = 1). `lerp(a, b, t)` here is `a + (b − a)·t`.
+        let press = sample.pressure.clamp(0.0, 1.0);
+        let load = dyn_.load * (1.0 - dyn_.load_pressure + dyn_.load_pressure * press);
+        // Deposit, modulated by pen tilt **relative to the fallback** so the response is
+        // continuous through vertical (DESIGN.md §6.2). `forward` is the signed lean along the
+        // travel direction — the **un-normalized** tilt projected onto the unit `dir`, so a
+        // bigger tilt leans harder: > 0 leans into the motion, < 0 leans back, and **0 = an
+        // upright pen OR a mouse**. The deposit is the constant fallback `dyn_.deposit` at
+        // `forward = 0`, scaled up toward 2× as the pen leans forward and down toward 0 as it
+        // leans back — a smooth swing about the fallback (`deposit_tilt` sets its size; 0 = no
+        // tilt response). No magnitude threshold, so passing through vertical never jumps.
+        let forward = sample.tilt.dot(dir).clamp(-1.0, 1.0);
+        let deposit = dyn_.deposit * (1.0 + dyn_.deposit_tilt * forward);
         Segment {
             start: sample.pos,
             dir,
@@ -1653,10 +1794,12 @@ fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
             length: len,
             // `flow` now drives only the footprint build-up; the brush's opacity
             // (color[3]) rides the separate opacity channel (DESIGN.md §6.1).
-            flow: b.flow * load * SWEEP_FLOW_SCALE,
-            height: b.height * load,
-            wet: b.wetness * load,
-            opacity: b.color[3] * load,
+            flow: b.flow * drain * SWEEP_FLOW_SCALE,
+            height: b.height * drain,
+            wet: b.wetness * drain,
+            opacity: b.color[3] * drain,
+            load,
+            deposit,
             orient: orientation_turns(b.orientation, dir, sample.tilt),
         }
     };
@@ -2006,6 +2149,7 @@ fn build_integrate_pipeline(
             load_tex(2), // base aux
             load_tex(3), // scratch color
             load_tex(4), // scratch aux
+            load_tex(5), // per-pixel scrape load (or a 1×1 dummy on the non-scrape path)
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
