@@ -102,6 +102,23 @@ impl Renderer {
         self.engine.set_media_params(params);
     }
 
+    /// The current media/lighting parameters (so a second renderer — the brush
+    /// editor's preview — can mirror the main canvas's look).
+    pub fn media_params(&self) -> MediaParams {
+        self.engine.media_params()
+    }
+
+    /// The shared GPU handles (cheap `Arc` clones), so a second renderer can be
+    /// built on the same device via [`init_shared`].
+    pub fn gpu(&self) -> GpuContext {
+        self.engine.gpu().clone()
+    }
+
+    /// The surface's current size in CSS pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
     /// The current canvas substrate colour, as straight sRGB components.
     pub fn background(&self) -> [f32; 3] {
         [self.background.r as f32, self.background.g as f32, self.background.b as f32]
@@ -183,13 +200,14 @@ async fn next_frame() {
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
-/// Look up the canvas element the app rendered into the DOM.
-pub fn canvas_element() -> web_sys::HtmlCanvasElement {
+/// Look up a canvas element the app rendered into the DOM (the main painting
+/// canvas, or the brush editor's preview canvas).
+pub fn canvas_element(id: &str) -> web_sys::HtmlCanvasElement {
     web_sys::window()
         .expect("window")
         .document()
         .expect("document")
-        .get_element_by_id(CANVAS_ID)
+        .get_element_by_id(id)
         .expect("canvas element present")
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .expect("element is a canvas")
@@ -228,6 +246,30 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
         .await
         .expect("request device");
 
+    let gpu = GpuContext::from_parts(instance, adapter, device, queue);
+    finish_init(canvas, surface, gpu).await
+}
+
+/// Build a second [`Renderer`] on the app's **existing** GPU device: a new
+/// surface bound to `canvas` plus its own `Engine` (its own document), sharing
+/// `gpu`'s instance/device/queue. Used by the brush editor's preview canvas —
+/// cheap (no adapter/device request), and the preview document stays fully
+/// isolated from the real one.
+pub async fn init_shared(canvas: web_sys::HtmlCanvasElement, gpu: GpuContext) -> Renderer {
+    let surface: wgpu::Surface<'static> = gpu
+        .instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+        .expect("create preview canvas surface");
+    finish_init(canvas, surface, gpu).await
+}
+
+/// Shared tail of [`init`]/[`init_shared`]: size the drawing buffer, pick the
+/// surface format, configure, and build the engine.
+async fn finish_init(
+    canvas: web_sys::HtmlCanvasElement,
+    surface: wgpu::Surface<'static>,
+    gpu: GpuContext,
+) -> Renderer {
     // Size the drawing buffer to the canvas's laid-out size (CSS pixels). We
     // measure the *element*, not the window, so an embedded/sub-window canvas
     // works too. Crucially we do it here — after the async device setup and a
@@ -242,7 +284,7 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
 
     // Pick a non-sRGB format: the media pass already encodes display sRGB, so an
     // sRGB surface would double-encode (DESIGN.md §6.5).
-    let caps = surface.get_capabilities(&adapter);
+    let caps = surface.get_capabilities(&gpu.adapter);
     let format = caps
         .formats
         .iter()
@@ -260,9 +302,8 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
     };
-    surface.configure(&device, &config);
+    surface.configure(&gpu.device, &config);
 
-    let gpu = GpuContext::from_parts(instance, adapter, device, queue);
     let engine = Engine::new(gpu, format, Extent2::new(width, height));
     Renderer {
         canvas,

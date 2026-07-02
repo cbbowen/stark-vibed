@@ -7,6 +7,7 @@
 //!
 //! Run with `dx serve --web -p stark-ui` in a WebGPU-capable browser.
 
+mod brush_editor;
 mod components;
 mod render;
 
@@ -18,6 +19,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
+use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, BG, CANVAS_ID};
 use stark_core::document::{
@@ -217,13 +219,17 @@ struct AppState {
     obs: Signal<Option<ObservableState>>,
     /// Whether the user is holding space.
     space_down: Signal<bool>,
+    /// Whether the brush editor dialog is open (rendered at the app root so its
+    /// backdrop escapes the panels' `backdrop-filter` containing blocks).
+    brush_editor_open: Signal<bool>,
 }
 
 fn app() -> Element {
     let renderer = use_signal(|| None::<Renderer>);
     let obs = use_signal(|| None::<ObservableState>);
     let space_down = use_signal(|| false);
-    let state = AppState { renderer, obs, space_down };
+    let brush_editor_open = use_signal(|| false);
+    let state = AppState { renderer, obs, space_down, brush_editor_open };
     use_context_provider(|| state);
 
     // Floating-panel layout: order + which are open. Provided so the panel chrome and
@@ -240,7 +246,7 @@ fn app() -> Element {
         let mut renderer = renderer;
         let mut obs = obs;
         spawn(async move {
-            let mut r = render::init(render::canvas_element()).await;
+            let mut r = render::init(render::canvas_element(CANVAS_ID)).await;
             // Fetch the built-in brush at runtime (kept out of the wasm binary)
             // and import it once, so the Bristles chip is ready (DESIGN.md §6.6).
             if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(BRISTLE_BRUSH).await {
@@ -281,6 +287,17 @@ fn app() -> Element {
 
             // Floating tool panels, stacked top-right — order + visibility are data-driven.
             PanelStack {}
+
+            // The brush editor dialog (mounted only while open, so each open
+            // re-inits its preview against the current canvas look).
+            if (state.brush_editor_open)() {
+                BrushEditorModal {
+                    on_close: move |_| {
+                        let mut open = state.brush_editor_open;
+                        open.set(false);
+                    }
+                }
+            }
         }
     }
 }
@@ -507,6 +524,9 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
+/// The floating Brush panel: the everyday quick controls (shape, size, opacity,
+/// rate). Everything else — the full grouped parameter set with a live test
+/// stroke — lives in the brush editor dialog ("Edit brush…").
 #[component]
 fn BrushPanel() -> Element {
     let state = use_context::<AppState>();
@@ -517,8 +537,6 @@ fn BrushPanel() -> Element {
         .map(|o| o.brush)
         .unwrap_or_default();
     let is_round = matches!(brush.shape, BrushShape::Round);
-    // The unified six-axis tool (DESIGN §6.2) — all axes are independent.
-    let d = brush.dynamics;
 
     let chip = |active: bool| if active { "chip active" } else { "chip" };
 
@@ -535,67 +553,20 @@ fn BrushPanel() -> Element {
                 "Bristles"
             }
         }
-            // Shape orientation source (DESIGN §6.6) — only meaningful for non-round tips,
-            // which alone carry per-orientation footprint slices. Follow = the shape tracks
-            // the stroke tangent (default); Pen = it stays pinned to the pen's tilt azimuth,
-            // like a calligraphy nib held at a fixed angle as the stroke curves.
-            if !is_round {
-                div { class: "brush-shapes",
-                    button {
-                        class: chip(brush.orientation == OrientationSource::FollowStroke),
-                        onclick: move |_| set_orientation(state, OrientationSource::FollowStroke),
-                        "Follow"
-                    }
-                    button {
-                        class: chip(brush.orientation == OrientationSource::Pen),
-                        onclick: move |_| set_orientation(state, OrientationSource::Pen),
-                        "Pen"
-                    }
-                }
-            }
-            Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
-                oninput: move |v| update_brush(state, move |b| b.radius = v) }
-            Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
-                oninput: move |v| update_brush(state, move |b| b.color[3] = v) }
-            Slider { label: "Rate", min: 0.05, max: 1.0, value: brush.flow,
-                oninput: move |v| update_brush(state, move |b| b.flow = v) }
-            // Canvas tooth: how strongly the surface weave gates deposition (§6.4).
-            Slider { label: "Tooth", min: 0.0, max: 1.0, value: brush.tooth,
-                oninput: move |v| update_brush(state, move |b| b.tooth = v) }
-            // The unified six-axis tool (DESIGN §6.2) — all independent, all flux on the
-            // one conserved quantity (paint height). `add` is the only source (the brush's
-            // own paint, 1 = ordinary painting); the rest move paint already on the canvas.
-            // Vertical (tool) flux: Load lifts canvas paint onto the tool, Deposit lays it
-            // back (Load alone = eraser; Load+Deposit with Add 0 = conservative smudge).
-            // Horizontal (canvas) flux: Drag advects along the motion, Bleed diffuses
-            // wet-on-wet, Ridge piles displaced paint into an impasto rim.
-            div { class: "slider-label", style: "margin-top: 8px;", "Dynamics" }
-            // One-click presets: the plain brush (own paint only) and the palette knife
-            // (no own paint; pressure-scrapes and tilt-deposits a finite pre-charge, §6.2).
-            div { class: "brush-shapes",
-                button { class: "chip", onclick: move |_| set_brush_preset(state), "Brush" }
-                button { class: "chip", onclick: move |_| set_knife(state), "Palette Knife" }
-            }
-            Slider { label: "Add", min: 0.0, max: 1.0, value: d.add,
-                oninput: move |v| set_dyn(state, move |x| x.add = v) }
-            Slider { label: "Load", min: 0.0, max: 1.0, value: d.load,
-                oninput: move |v| set_dyn(state, move |x| x.load = v) }
-            Slider { label: "Deposit", min: 0.0, max: 1.0, value: d.deposit,
-                oninput: move |v| set_dyn(state, move |x| x.deposit = v) }
-            // Palette-knife axes: the initial glob the knife carries, and how strongly pen
-            // pressure / tilt-toward-motion drive the scrape / deposit (DESIGN §6.2).
-            Slider { label: "Charge", min: 0.0, max: 2.0, value: d.charge,
-                oninput: move |v| set_dyn(state, move |x| x.charge = v) }
-            Slider { label: "Load→Pressure", min: 0.0, max: 1.0, value: d.load_pressure,
-                oninput: move |v| set_dyn(state, move |x| x.load_pressure = v) }
-            Slider { label: "Deposit→Tilt", min: 0.0, max: 1.0, value: d.deposit_tilt,
-                oninput: move |v| set_dyn(state, move |x| x.deposit_tilt = v) }
-            Slider { label: "Drag", min: 0.0, max: 1.0, value: d.drag,
-                oninput: move |v| set_dyn(state, move |x| x.drag = v) }
-            Slider { label: "Bleed", min: 0.0, max: 1.0, value: d.bleed,
-                oninput: move |v| set_dyn(state, move |x| x.bleed = v) }
-            Slider { label: "Ridge", min: 0.0, max: 1.0, value: d.ridge,
-                oninput: move |v| set_dyn(state, move |x| x.ridge = v) }
+        Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
+            oninput: move |v| update_brush(state, move |b| b.radius = v) }
+        Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
+            oninput: move |v| update_brush(state, move |b| b.color[3] = v) }
+        Slider { label: "Rate", min: 0.05, max: 1.0, value: brush.flow,
+            oninput: move |v| update_brush(state, move |b| b.flow = v) }
+        button {
+            class: "be-open",
+            onclick: move |_| {
+                let mut open = state.brush_editor_open;
+                open.set(true);
+            },
+            "Edit brush\u{2026}"
+        }
     }
 }
 

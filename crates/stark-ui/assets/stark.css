@@ -435,6 +435,161 @@
   line-height: 1.45;
 }
 
+/* --- brush editor dialog --- */
+
+/* "Edit brush…" entry point at the bottom of the Brush panel. */
+.be-open {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 0;
+  border: 1px solid #ffffff1f;
+  border-radius: 6px;
+  background: transparent;
+  color: #e8e8ea;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.be-open:hover {
+  background: #ffffff14;
+}
+
+/* Wider dialog; the preview stays pinned while the sections scroll. */
+.be-dialog {
+  width: 560px;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.be-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.be-preview-wrap {
+  position: relative;
+  margin-bottom: 10px;
+}
+
+.brush-preview {
+  display: block;
+  width: 100%;
+  height: 200px;
+  border-radius: 10px;
+  background: #fff;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.be-preview-hint {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  font-size: 11px;
+  color: #00000059;
+  pointer-events: none;
+  user-select: none;
+}
+
+.be-preview-reset {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 7px;
+  background: #00000014;
+  color: #000000a6;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.be-preview-reset:hover {
+  background: #00000029;
+}
+
+.be-presets {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.be-presets-label {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-right: 4px;
+}
+
+.be-sections {
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+.be-section {
+  border-top: 1px solid #ffffff14;
+}
+
+.be-section-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px;
+  border: none;
+  background: none;
+  color: #e8e8ea;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.be-chevron {
+  display: inline-block;
+  opacity: 0.6;
+  transition: transform 120ms ease;
+}
+
+.be-chevron.open {
+  transform: rotate(90deg);
+}
+
+.be-section-body {
+  padding: 0 2px 10px;
+}
+
+.be-section-desc {
+  font-size: 11px;
+  opacity: 0.55;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+/* A modulation slider indented under the axis it modulates. */
+.be-sub {
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid #ffffff1f;
+}
+
+/* In-section "Show more / Show less" disclosure. */
+.be-more {
+  border: none;
+  background: none;
+  padding: 2px 0;
+  color: #9fc3e8;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 /* --- buttons --- */
 .btn {
   padding: 8px 16px;
