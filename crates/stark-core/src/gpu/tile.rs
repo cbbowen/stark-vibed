@@ -42,6 +42,7 @@ pub enum AllocSource {
     IntegrateEmptyBase,
     IntegrateDestination,
     StrokeScratch,
+    DynamicsWriteback,
 }
 
 /// One pooled GPU texture (`TILE_TEX` square). `Option` only so [`Drop`] can move it

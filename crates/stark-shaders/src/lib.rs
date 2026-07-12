@@ -30,3 +30,14 @@ pub fn media_mixbox() -> &'static str {
 pub fn integrate() -> &'static str {
     include_wesl!("integrate")
 }
+
+/// WGSL compute shader for the brush-dynamics **sequential stamp loop**
+/// (snapshot / pickup / deposit entry points) — DESIGN §6.2.
+pub fn dynamics() -> &'static str {
+    include_wesl!("dynamics")
+}
+
+/// WGSL region→tile write-back for the stamp loop — DESIGN §6.2/§6.4.
+pub fn slice() -> &'static str {
+    include_wesl!("slice")
+}

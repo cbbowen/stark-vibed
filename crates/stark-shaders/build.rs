@@ -30,6 +30,11 @@ fn main() {
     // Stroke integrate pass: merge a stroke's scratch slab into the layer (§6.2/§6.1).
     compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
 
+    // Brush dynamics: the sequential stamp loop (compute) + the region→tile
+    // write-back — DESIGN §6.2.
+    compiler.build_artifact(&"package::dynamics".parse().unwrap(), "dynamics");
+    compiler.build_artifact(&"package::slice".parse().unwrap(), "slice");
+
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
 }

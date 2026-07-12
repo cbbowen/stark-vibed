@@ -35,6 +35,13 @@ struct Mask {
     view: wgpu::TextureView,
     #[allow(dead_code)]
     texture: wgpu::Texture,
+    /// The plain (unrotated) coverage mask, for per-stamp footprint sampling in the
+    /// brush-dynamics stamp loop (DESIGN.md §6.2) — orientation is applied by rotating
+    /// the sample coordinates, so a single layer suffices (unlike the prefix-τ, whose
+    /// integration axis is baked in).
+    coverage_view: wgpu::TextureView,
+    #[allow(dead_code)]
+    coverage_texture: wgpu::Texture,
 }
 
 #[derive(Default)]
@@ -88,10 +95,14 @@ impl AssetStore {
             let layers = orientation_layers(w, h);
             let rotated = rotate_layers(&cov, w, h, layers);
             let (texture, view) = build_prefix_tau(&self.ctx, w, h, layers, &rotated);
+            let (coverage_texture, coverage_view) =
+                build_coverage_r8(&self.ctx, w, h, &coverage);
             slot.insert(Mask {
                 bytes,
                 view,
                 texture,
+                coverage_view,
+                coverage_texture,
             });
         }
         Ok(id)
@@ -106,6 +117,17 @@ impl AssetStore {
             .masks
             .get(&id)
             .map(|m| m.view.clone())
+    }
+
+    /// A clonable view of the brush's plain coverage mask for `id`, if loaded —
+    /// sampled per stamp by the brush-dynamics loop (DESIGN.md §6.2).
+    pub fn coverage_view(&self, id: AssetId) -> Option<wgpu::TextureView> {
+        self.inner
+            .lock()
+            .expect("asset store poisoned")
+            .masks
+            .get(&id)
+            .map(|m| m.coverage_view.clone())
     }
 
     /// Source bytes of every loaded asset, for bundling into the save file (§8).
@@ -249,6 +271,45 @@ pub fn build_prefix_tau(
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     });
+    (texture, view)
+}
+
+/// Upload a coverage mask as a filterable `R8Unorm` texture — the per-stamp
+/// footprint the brush-dynamics loop samples (rotating the sample coordinates
+/// for orientation, so no pre-rotated layers are needed). Shared by the asset
+/// store (image brushes) and the stroke renderer (the round tip, per hardness).
+pub fn build_coverage_r8(
+    ctx: &GpuContext,
+    width: u32,
+    height: u32,
+    coverage: &[u8],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let extent = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("stark brush coverage"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    ctx.queue.write_texture(
+        texture.as_image_copy(),
+        coverage,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width),
+            rows_per_image: Some(height),
+        },
+        extent,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
 }
 

@@ -18,7 +18,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::Tool;
+use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{MediaParams, RgbaImage};
 
@@ -96,6 +96,86 @@ fn apron_makes_tiles_seamless_under_zoom() {
         worst <= 25 && frac < 0.07,
         "tile seam: corner vs interior render differ by up to {worst} levels \
          on {:.2}% of pixels — the apron is not covering tile boundaries",
+        frac * 100.0
+    );
+}
+
+/// Like `render_shifted`, but the height-bearing stroke is a **stamp-loop smudge**
+/// (DESIGN.md §6.2): lay a red field through the corner, then drag a smearing
+/// brush along it. Exercises the region write-back path — the whole-block slice
+/// from the shared region must keep aprons bit-identical to neighbour interiors,
+/// and the halo composite must give rewritten tiles real neighbour content.
+fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
+    let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
+    engine.set_media_params(MediaParams {
+        height_strength: 2.5,
+        specular: 0.3,
+        surface_strength: 0.0,
+        // Canvas-position-seeded (deliberately not translation invariant), so off
+        // for these shift comparisons — like the weave.
+        normal_dither: 0.0,
+        ..MediaParams::default()
+    });
+
+    // A wide base field along the diagonal, fully containing the smudge's path.
+    let mut field = brush(RED, 60.0);
+    field.tooth = 0.0;
+    engine.process(InputCommand::SetBrush(field));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(shift + Vec2::new(60.0, 60.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    // The smudge under test, through the same 4-tile corner.
+    let mut smudge = brush(RED, 28.0);
+    smudge.tooth = 0.0;
+    smudge.dynamics = BrushDynamics {
+        add: 0.0,
+        load: 0.6,
+        deposit: 0.5,
+        ..Default::default()
+    };
+    engine.process(InputCommand::SetBrush(smudge));
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
+    });
+    engine.process(InputCommand::StrokeTo {
+        sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
+    });
+    engine.process(InputCommand::EndStroke);
+
+    let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
+    engine.process(InputCommand::Pan { delta: -shift });
+    engine.process(InputCommand::Zoom {
+        anchor: center_px,
+        factor: 2.0,
+    });
+    engine.render_to_image(BG)
+}
+
+#[test]
+fn apron_makes_dynamics_writeback_seamless_under_zoom() {
+    if engine_or_skip().is_none() {
+        return; // no usable GPU adapter
+    }
+
+    // Same invariant as above, for the stamp loop's region write-back: a smudge
+    // straddling the 4-tile corner must render identically to the same smudge
+    // shifted into one tile's interior. A missing halo (or a slice that didn't
+    // cover whole blocks) would seam the relief along every tile boundary.
+    let corner = render_shifted_smudge(Vec2::ZERO);
+    let interior = render_shifted_smudge(Vec2::new(128.0, 128.0));
+
+    let (frac, worst) = diff_fraction(&corner, &interior);
+    assert!(
+        worst <= 25 && frac < 0.07,
+        "dynamics write-back seam: corner vs interior differ by up to {worst} levels \
+         on {:.2}% of pixels — the region write-back is not covering tile boundaries",
         frac * 100.0
     );
 }
