@@ -51,7 +51,7 @@ fn read_texture_bytes(
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll device");
 
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().expect("slice is mapped");
     let mut out = Vec::with_capacity((unpadded * size.height) as usize);
     for row in 0..size.height {
         let start = (row * padded) as usize;

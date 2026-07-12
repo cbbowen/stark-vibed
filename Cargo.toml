@@ -1,5 +1,6 @@
 # Stark workspace. See DESIGN.md for the architecture this layout implements.
 [workspace]
+resolver = "3"
 members = [
     "crates/*",
 ]
@@ -18,12 +19,12 @@ rust-version = "1.85"
 
 # Single source of truth for shared dependency versions (GOALS §Notable Dependencies).
 [workspace.dependencies]
-wgpu = "29.0.3"
+wgpu = "30"
 glam = { version = "0.33", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
-rpds = "1.2"
+rpds = "1"
 thiserror = "2"
-pollster = "0.4"
+pollster = "1"
 wesl = "0.4"
 history = { git = "https://github.com/cbbowen/history" }
 png = "0.18"

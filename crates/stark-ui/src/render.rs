@@ -175,7 +175,7 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.engine.render(&view, self.background);
-        frame.present();
+        self.engine.gpu().queue.present(frame);
     }
 }
 
@@ -227,8 +227,8 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
             compatible_surface: Some(&surface),
+            ..Default::default()
         })
         .await
         .expect("request adapter (WebGPU unavailable?)");
@@ -301,6 +301,7 @@ async fn finish_init(
         alpha_mode: caps.alpha_modes[0],
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
+        color_space: wgpu::SurfaceColorSpace::default(),
     };
     surface.configure(&gpu.device, &config);
 
