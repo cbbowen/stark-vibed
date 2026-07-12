@@ -26,6 +26,10 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlCanvasElement",
     "PointerEvent",
+    # Session tickets ride the URL fragment (collab.rs): read it to auto-join,
+    # replaceState to reflect/clear it without adding history entries.
+    "Location",
+    "History",
 ] }
 console_error_panic_hook = "0.1"
 # Routes `tracing` events to the browser console (set as the global subscriber).

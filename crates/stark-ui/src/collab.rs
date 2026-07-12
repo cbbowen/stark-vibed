@@ -130,6 +130,7 @@ pub fn leave(state: AppState) {
     }
     let mut ticket = state.collab_ticket;
     ticket.set(None);
+    set_url_ticket(None);
     set_phase(state, CollabPhase::Solo);
     spawn(async move {
         session.shutdown().await;
@@ -166,8 +167,12 @@ pub fn flush_outbox(state: AppState) {
 
 /// Store the live session and start the incoming pump.
 fn install(state: AppState, mut session: CollabSession) {
+    let ticket_text = session.ticket().to_string();
+    // The page URL *is* the invitation: anyone opening it joins this session
+    // (via this peer — every member is a valid entry point).
+    set_url_ticket(Some(&ticket_text));
     let mut ticket = state.collab_ticket;
-    ticket.set(Some(session.ticket().to_string()));
+    ticket.set(Some(ticket_text));
 
     let mut events = session.take_events().expect("fresh session events");
     let mut session_sig = state.collab_session;
@@ -216,6 +221,46 @@ fn fail(state: AppState, message: String) {
     set_phase(state, CollabPhase::Solo);
 }
 
+// --- tickets in the URL fragment ---
+//
+// A live session's ticket rides the page URL as `…#stark…`, so sharing a
+// drawing is just sharing the address, and opening such a link joins on load.
+// The fragment is the right vehicle: it never leaves the browser (not sent to
+// the server), and tickets are base32 — no percent-encoding surprises.
+
+/// The session ticket in the current page URL, if any.
+pub fn url_ticket() -> Option<String> {
+    let hash = web_sys::window()?.location().hash().ok()?;
+    let ticket = hash.strip_prefix('#').unwrap_or(&hash);
+    ticket.starts_with("stark").then(|| ticket.to_string())
+}
+
+/// Reflect (or clear) the live session's ticket in the URL bar. Uses
+/// `replaceState` so joining/leaving doesn't pollute tab history.
+fn set_url_ticket(ticket: Option<&str>) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let url = match ticket {
+        Some(t) => format!("#{t}"),
+        // Rebuild path + query without a fragment (an empty replaceState URL
+        // would keep the current one, hash included).
+        None => {
+            let location = window.location();
+            format!(
+                "{}{}",
+                location.pathname().unwrap_or_default(),
+                location.search().unwrap_or_default()
+            )
+        }
+    };
+    if let Ok(history) = window.history()
+        && let Err(e) = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url))
+    {
+        tracing::warn!("failed to update URL fragment: {e:?}");
+    }
+}
+
 /// The "Shared drawing" dialog: start sharing, join from a ticket, or (while
 /// live) read out the ticket and leave.
 #[component]
@@ -237,7 +282,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                 div { class: "modal-title", "Shared Drawing" }
 
                 if let Some(message) = error {
-                    div { class: "collab-error", "{message}" }
+                    div { class: "collab-error", {message} }
                 }
 
                 match phase {
@@ -285,7 +330,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                     },
                     CollabPhase::Shared => rsx! {
                         div { class: "modal-subtitle",
-                            "Live. Send this ticket to anyone who should paint with you — every member can share it."
+                            "Live. Send the page URL (the ticket rides the #fragment) — or this ticket — to anyone who should paint with you. Every member can share it."
                         }
                         textarea {
                             class: "ticket-text",

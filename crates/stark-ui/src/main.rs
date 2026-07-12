@@ -284,6 +284,13 @@ fn app() -> Element {
             r.paint();
             obs.set(Some(r.observe()));
             renderer.set(Some(r));
+
+            // A `#stark…` fragment in the page URL is a session invitation:
+            // join it now that the engine is up (DESIGN.md §12.4).
+            if let Some(ticket) = collab::url_ticket() {
+                tracing::info!("joining shared session from URL fragment");
+                collab::join(state, ticket);
+            }
         });
     });
 
@@ -1037,6 +1044,9 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId, on_close: EventHandler<()>) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
+    // Replacing the document abandons any shared session (and clears the
+    // ticket from the URL) — the fresh canvas is private until re-shared.
+    collab::leave(state);
     spawn(async move {
         // Fetch + register the surface bytes the first time it's chosen
         // (procedural surfaces have no asset — see `surface_asset`).

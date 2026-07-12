@@ -1058,7 +1058,11 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   Dioxus UI uses the same code path the native loopback tests exercise. The UI
   glue is two pumps: `dispatch` drains the engine outbox into
   `CollabSession::broadcast`, and a spawned task feeds `RemoteEvent`s into
-  `merge_remote`/`import_brush` and repaints.
+  `merge_remote`/`import_brush` and repaints. **The page URL is the
+  invitation:** a live session's ticket rides the URL fragment
+  (`…#stark…`, via `replaceState`; cleared on leave), and opening a link with
+  one auto-joins on load — the fragment never leaves the browser, so no server
+  sees the ticket.
 - **Presence (cursors, selections, names):** still future — ephemeral, broadcast
   over gossip but **never historized** — it's session state, the same category
   as pan/zoom (§3). Other users' live, in-progress strokes would render onto
