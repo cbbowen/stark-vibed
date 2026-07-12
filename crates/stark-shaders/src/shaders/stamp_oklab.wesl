@@ -10,10 +10,9 @@
 // and the aux target accumulates additively.
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
-//             (height, wet)) — (own add-height, own wet·op, footprint coverage √cov,
-//             deposited height·√cov); the channel-by-channel story is in `fs_main`
+//             (height, wet)) — (height, wet·op, footprint coverage √cov, unused)
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, reservoir_color, reservoir_dep_height, add_frac};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, brush_color};
 
 @vertex
 fn vs_main(
@@ -27,75 +26,25 @@ fn vs_main(
     return sweep_vertex(vi, start, dir, geom, aux, extra);
 }
 
-// The footprint deposit for one fragment, shared by the plain and scrape sweep variants.
-// `scov` (= √coverage) is returned so the scrape variant can weight its per-pixel load.
-struct Shaded {
-    color: vec4<f32>,
-    aux: vec4<f32>,
-    scov: f32,
-}
-
-fn shade(in: VsOut) -> Shaded {
+@fragment
+fn fs_main(in: VsOut) -> FsOut {
     let flow = in.misc.y;
     let cov = surface_tooth(in.misc.z, 1.0 - exp(-flow * swept_depth(in)), in.clip.xy);
     let scov = sqrt(cov); // split the footprint coverage across opacity and thickness
-
-    // Colour laid here is the reservoir's deposit payload (premultiplied): for a plain
-    // brush the flat reservoir's `add·brush`; for a lift/deposit brush the mixer's
-    // `deposit·tool + add·brush` (the brush's own colour is folded in by the mixer, since
-    // one colour texture carries both). The sweep colour target over-blends it, so per-arc
-    // rates sum through the overlapping segment quads to the local deposit.
-    let ch = reservoir_color(in.u, in.local);
     let op = in.op * scov;
 
-    let dep_h = reservoir_dep_height(in.u, in.local); // tool deposited height (per-column rate)
-    let af = add_frac();
-
-    var s: Shaded;
-    s.color = vec4<f32>(ch.xyz * op, ch.a * op);
-    // The wide scratch aux separates the height contributions so the integrate can treat them
-    // differently (DESIGN §6.1/§6.2):
-    //   .x = the brush's *own* add-height (per-segment attr `in.misc.z`, gated by `add`),
-    //        laid plain-paint style (additive over the overlap → builds impasto);
-    //   .y = the brush's own wet;
-    //   .z = footprint coverage (√cov), summed for the integrate's per-pixel contact —
-    //        which both feathers the tool deposit and drives the lift's exact
-    //        multiplicative removal (`lift × contact` of the base height) — and the ridge;
-    //   .w = the tool's **deposited height** (≥ 0), which the integrate divides by the
-    //        coverage and adds to the base. Height is the amount of paint; the colour
-    //        alpha is per-unit opacity only and never represents amount (§6.1).
-    s.aux = vec4<f32>(af * in.misc.z * scov, af * in.misc.w * op, scov, dep_h * scov);
-    s.scov = scov;
-    return s;
-}
-
-@fragment
-fn fs_main(in: VsOut) -> FsOut {
-    let s = shade(in);
     var out: FsOut;
-    out.color = s.color;
-    out.aux = s.aux;
-    return out;
-}
-
-// Scrape variant (used when pen pressure modulates the scrape, `load_pressure > 0`): the
-// extra target carries the **coverage-weighted per-segment load**, Σ(load·√cov), which
-// accumulates additively across the overlapping segment quads. The integrate divides it by
-// Σ√cov (aux.z) to recover the per-pixel effective load, then removes `load × contact` of
-// the exact base height — exact per-pixel, residue-free, but now varying along the stroke
-// with pressure (DESIGN §6.2). Identical to `fs_main` on the colour/aux targets.
-struct FsOutScrape {
-    @location(0) color: vec4<f32>,
-    @location(1) aux: vec4<f32>,
-    @location(2) scrape: vec4<f32>,
-}
-
-@fragment
-fn fs_scrape(in: VsOut) -> FsOutScrape {
-    let s = shade(in);
-    var out: FsOutScrape;
-    out.color = s.color;
-    out.aux = s.aux;
-    out.scrape = vec4<f32>(in.load * s.scov, 0.0, 0.0, 0.0);
+    // Premultiplied by opacity: the colour target over-blends, so per-arc rates sum
+    // through the overlapping segment quads to the local deposit.
+    out.color = vec4<f32>(brush_color() * op, op);
+    // The wide scratch aux (DESIGN §6.1):
+    //   .x = laid height (per-segment attr `in.misc.z`; additive over the overlap →
+    //        builds impasto);
+    //   .y = laid wet;
+    //   .z = footprint coverage (√cov), summed across the overlapping quads;
+    //   .w = unused.
+    // Height is the amount of paint; the colour alpha is per-unit opacity only and
+    // never represents amount (§6.1).
+    out.aux = vec4<f32>(in.misc.z * scov, in.misc.w * op, scov, 0.0);
     return out;
 }

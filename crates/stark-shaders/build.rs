@@ -27,18 +27,8 @@ fn main() {
     // Mixbox color space: latent→RGB polynomial in the media pass (DESIGN.md §6.7).
     compiler.build_artifact(&"package::media_mixbox".parse().unwrap(), "media_mixbox");
 
-    // Wet-mixing reservoir scan (compute), color-space-agnostic (DESIGN.md §6.2).
-    compiler.build_artifact(&"package::mixer".parse().unwrap(), "mixer");
-
     // Stroke integrate pass: merge a stroke's scratch slab into the layer (§6.2/§6.1).
     compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
-
-    // Separable Gaussian bleed pass for the Wet brush — DESIGN §6.2.
-    compiler.build_artifact(&"package::blur".parse().unwrap(), "blur");
-
-    // Fluid advect+inject micro-sim passes (over a stroke region) — DESIGN §6.2.
-    compiler.build_artifact(&"package::fluid_inject".parse().unwrap(), "fluid_inject");
-    compiler.build_artifact(&"package::fluid_advect".parse().unwrap(), "fluid_advect");
 
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");

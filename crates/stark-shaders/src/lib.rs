@@ -25,28 +25,8 @@ pub fn media_mixbox() -> &'static str {
     include_wesl!("media_mixbox")
 }
 
-/// WGSL compute pass for wet-mixing pickup (the reservoir scan) — DESIGN §6.2.
-pub fn mixer() -> &'static str {
-    include_wesl!("mixer")
-}
-
 /// WGSL stroke integrate pass: merge a stroke's scratch slab into the layer over
-/// the base (Normal; knife/blend modes slot in) — DESIGN §6.2/§6.1.
+/// the base — DESIGN §6.2/§6.1.
 pub fn integrate() -> &'static str {
     include_wesl!("integrate")
-}
-
-/// WGSL separable Gaussian bleed pass for the Wet brush (one direction) — DESIGN §6.2.
-pub fn blur() -> &'static str {
-    include_wesl!("blur")
-}
-
-/// WGSL fluid velocity-injection pass (segments → velocity region) — DESIGN §6.2.
-pub fn fluid_inject() -> &'static str {
-    include_wesl!("fluid_inject")
-}
-
-/// WGSL conservative finite-volume advection pass (over a stroke region) — DESIGN §6.2.
-pub fn fluid_advect() -> &'static str {
-    include_wesl!("fluid_advect")
 }

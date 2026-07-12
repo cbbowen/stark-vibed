@@ -41,8 +41,7 @@ pub enum AllocSource {
     Unknown,
     IntegrateEmptyBase,
     IntegrateDestination,
-    FlowWritebackRegion,
-    MixerScratch,
+    StrokeScratch,
 }
 
 /// One pooled GPU texture (`TILE_TEX` square). `Option` only so [`Drop`] can move it
@@ -170,8 +169,8 @@ impl TilePool {
         TilePairHandle(Arc::new(TilePair { color, aux }))
     }
 
-    // TODO: Document.
-    pub fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
+    /// Acquire one pooled texture of `format`, reusing a recycled one when available.
+    fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
         let pool = self.format_pools.get(&format).expect("unsupported format");
         let tex = {
             let mut pool = pool.lock().expect("tile pool poisoned");

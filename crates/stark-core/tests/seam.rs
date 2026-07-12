@@ -18,7 +18,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::{BrushDynamics, Tool};
+use stark_core::document::Tool;
 use stark_core::geom::Vec2;
 use stark_core::{MediaParams, RgbaImage};
 
@@ -75,123 +75,6 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     engine.render_to_image(BG)
 }
 
-/// Like `render_shifted`, but the height-bearing stroke is a **medium** (knife)
-/// write-back rather than the additive deposit: lay a wide red field through the
-/// corner, then scrape a knife along it with carry + ridge on. This exercises the
-/// read-modify-write combine path (footprint→scratch→combine→CoW), whose apron
-/// must stay bit-identical to the neighbor's interior just like the deposit's
-/// (DESIGN.md §6.2/§6.4) — the ridge term is deliberately a function of the local
-/// coverage only (no neighbor reads) so it can't introduce a boundary discontinuity.
-fn render_shifted_knife(shift: Vec2) -> RgbaImage {
-    let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
-    engine.set_media_params(MediaParams {
-        height_strength: 2.5,
-        specular: 0.3,
-        surface_strength: 0.0,
-        // Like the weave, the normal dither is canvas-position-seeded — deliberately
-        // not translation invariant — so it must be off for these shift comparisons.
-        normal_dither: 0.0,
-        ..MediaParams::default()
-    });
-
-    // A wide base field along the diagonal, fully containing the knife's path.
-    let mut field = brush(RED, 60.0);
-    field.tooth = 0.0;
-    engine.process(InputCommand::SetBrush(field));
-    engine.process(InputCommand::StartStroke {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
-    });
-    engine.process(InputCommand::StrokeTo {
-        sample: InputSample::at(shift + Vec2::new(60.0, 60.0)),
-    });
-    engine.process(InputCommand::EndStroke);
-
-    // The Dry lift+deposit+ridge under test, through the same 4-tile corner.
-    let mut knife = brush(RED, 28.0);
-    knife.tooth = 0.0;
-    knife.dynamics = BrushDynamics {
-        add: 0.0,
-        load: 0.5,
-        deposit: 0.5,
-        ridge: 1.0, ..Default::default() };
-    engine.process(InputCommand::SetBrush(knife));
-    engine.process(InputCommand::StartStroke {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
-    });
-    engine.process(InputCommand::StrokeTo {
-        sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
-    });
-    engine.process(InputCommand::EndStroke);
-
-    let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
-    engine.process(InputCommand::Pan { delta: -shift });
-    engine.process(InputCommand::Zoom {
-        anchor: center_px,
-        factor: 2.0,
-    });
-    engine.render_to_image(BG)
-}
-
-/// Like `render_shifted`, but the stroke is a **wet** brush whose post-deposit
-/// diffusion runs over a composited region and is sliced back into tiles. The region
-/// must include a one-tile halo so each rewritten tile's apron reads its neighbour's
-/// real interior; otherwise the copy-back overwrites aprons toward unaffected
-/// neighbours with empty region content — a seam, glaring in the relief normals.
-fn render_shifted_wet(shift: Vec2) -> RgbaImage {
-    let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
-    engine.set_media_params(MediaParams {
-        height_strength: 2.5,
-        specular: 0.3,
-        surface_strength: 0.0,
-        // Like the weave, the normal dither is canvas-position-seeded — deliberately
-        // not translation invariant — so it must be off for these shift comparisons.
-        normal_dither: 0.0,
-        ..MediaParams::default()
-    });
-
-    // A broad base field covering all four tiles around the corner, so the corner the
-    // view is centred on has paint in every quadrant.
-    let mut field = brush(RED, 90.0);
-    field.tooth = 0.0;
-    engine.process(InputCommand::SetBrush(field));
-    engine.process(InputCommand::StartStroke {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(-150.0, 0.0)),
-    });
-    engine.process(InputCommand::StrokeTo {
-        sample: InputSample::at(shift + Vec2::new(150.0, 0.0)),
-    });
-    engine.process(InputCommand::EndStroke);
-
-    // The wet stroke under test, confined to the corner's +,+ tile (offset from the
-    // corner by more than radius+apron so it does NOT touch the other three tiles).
-    // The visible corner is therefore an affected/unaffected tile boundary cutting
-    // through painted canvas — exactly where a missing-halo apron seams the relief.
-    // Both axes on, so the test covers the advect + diffuse write-back together.
-    let mut wet = brush(RED, 24.0);
-    wet.tooth = 0.0;
-    wet.dynamics = BrushDynamics { add: 1.0, bleed: 0.9, drag: 0.9, ..Default::default() };
-    engine.process(InputCommand::SetBrush(wet));
-    engine.process(InputCommand::StartStroke {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(40.0, 40.0)),
-    });
-    engine.process(InputCommand::StrokeTo {
-        sample: InputSample::at(shift + Vec2::new(85.0, 85.0)),
-    });
-    engine.process(InputCommand::EndStroke);
-
-    let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
-    engine.process(InputCommand::Pan { delta: -shift });
-    engine.process(InputCommand::Zoom {
-        anchor: center_px,
-        factor: 2.0,
-    });
-    engine.render_to_image(BG)
-}
-
 #[test]
 fn apron_makes_tiles_seamless_under_zoom() {
     if engine_or_skip().is_none() {
@@ -213,59 +96,6 @@ fn apron_makes_tiles_seamless_under_zoom() {
         worst <= 25 && frac < 0.07,
         "tile seam: corner vs interior render differ by up to {worst} levels \
          on {:.2}% of pixels — the apron is not covering tile boundaries",
-        frac * 100.0
-    );
-}
-
-#[test]
-fn apron_makes_medium_writeback_seamless_under_zoom() {
-    if engine_or_skip().is_none() {
-        return; // no usable GPU adapter
-    }
-
-    // Same invariant as above, but for the knife's read-modify-write path: a scrape
-    // straddling the 4-tile corner must render identically to the same scrape shifted
-    // into one tile's interior. A broken apron in the combine pass (or a ridge that
-    // sampled neighbors) would seam along every tile boundary.
-    let corner = render_shifted_knife(Vec2::ZERO);
-    let interior = render_shifted_knife(Vec2::new(128.0, 128.0));
-
-    // A real missing apron seams a *contiguous* band along every tile boundary — many
-    // pixels differing by tens of levels. A smear's laid height rides the per-column
-    // reservoir, whose region composite carries an unavoidable f16 sub-texel difference
-    // at internal tile boundaries; with the exaggerated relief here that surfaces as a
-    // *handful* of isolated specks — all under ~14 levels, none above 20 — not a band.
-    // So gate on the significantly-different *area* (>12 levels): a real seam blows past
-    // it (a stark ridge, well over 0.5% of pixels), the precision specks sit ~0.01%.
-    let frac_any = diff_fraction(&corner, &interior).0;
-    let frac_big = frac_exceeding(&corner, &interior, 12);
-    assert!(
-        frac_big < 0.005 && frac_any < 0.07,
-        "medium write-back seam: {:.3}% of pixels differ by >12 levels ({:.2}% differ at \
-         all) — the combine pass is not covering tile boundaries",
-        frac_big * 100.0,
-        frac_any * 100.0,
-    );
-}
-
-#[test]
-fn apron_makes_wet_diffusion_seamless_under_zoom() {
-    if engine_or_skip().is_none() {
-        return; // no usable GPU adapter
-    }
-
-    // The wet brush's region-diffusion write-back must be seam-free: a wet stroke
-    // straddling the 4-tile corner must render identically to the same stroke inside
-    // one tile's interior. Without the halo composite, rewritten tiles' aprons toward
-    // unaffected neighbours land on empty region → a relief seam along the boundary.
-    let corner = render_shifted_wet(Vec2::ZERO);
-    let interior = render_shifted_wet(Vec2::new(128.0, 128.0));
-
-    let (frac, worst) = diff_fraction(&corner, &interior);
-    assert!(
-        worst <= 25 && frac < 0.07,
-        "wet diffusion seam: corner vs interior differ by up to {worst} levels \
-         on {:.2}% of pixels — the region write-back is not covering tile boundaries",
         frac * 100.0
     );
 }
