@@ -87,7 +87,7 @@ pub struct BrushDynamics {
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
     /// in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Vertical flux canvas → tool.
     #[serde(default)]
-    pub load: f32,
+    pub lift: f32,
     /// Tool paint **deposited** back per step, as a fraction of the paint on the tool, in
     /// [0, 1]: 0 = hold it all (an eraser fills but never lays back), 1 = lay it all
     /// immediately. Vertical flux tool → canvas.
@@ -130,7 +130,7 @@ impl Default for BrushDynamics {
     fn default() -> Self {
         Self {
             add: 1.0,
-            load: 0.0,
+            lift: 0.0,
             deposit: 0.0,
             drag: 0.0,
             bleed: 0.0,

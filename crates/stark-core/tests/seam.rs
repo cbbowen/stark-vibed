@@ -135,7 +135,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     smudge.tooth = 0.0;
     smudge.dynamics = BrushDynamics {
         add: 0.0,
-        load: 0.6,
+        lift: 0.6,
         deposit: 0.5,
         ..Default::default()
     };

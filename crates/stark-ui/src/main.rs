@@ -604,7 +604,7 @@ fn set_knife(state: AppState) {
         b.tooth = 0.7;
         b.dynamics = BrushDynamics {
             add: 0.0,
-            load: 1.0,
+            lift: 1.0,
             deposit: 0.6,
             charge: 0.5,
             load_pressure: 1.0,

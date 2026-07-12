@@ -57,7 +57,7 @@ fn conservative_smear_preserves_uniform_field() {
     let b = dyn_brush(
         RED,
         24.0,
-        BrushDynamics { add: 0.0, load: 0.5, deposit: 0.5, ..Default::default() },
+        BrushDynamics { add: 0.0, lift: 0.5, deposit: 0.5, ..Default::default() },
     );
     stroke_with(&mut engine, b, &[Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0)]);
     let after = engine.render_to_image(PAPER);
@@ -98,7 +98,7 @@ fn smear_carries_paint_onto_bare_canvas() {
     let b = dyn_brush(
         RED,
         28.0,
-        BrushDynamics { add: 0.0, load: 0.9, deposit: 0.3, ..Default::default() },
+        BrushDynamics { add: 0.0, lift: 0.9, deposit: 0.3, ..Default::default() },
     );
     stroke_with(
         &mut engine,
@@ -149,7 +149,7 @@ fn eraser_thins_without_retint() {
     let b = dyn_brush(
         RED,
         24.0,
-        BrushDynamics { add: 0.0, load: 0.5, deposit: 0.0, ..Default::default() },
+        BrushDynamics { add: 0.0, lift: 0.5, deposit: 0.0, ..Default::default() },
     );
     stroke_with(&mut engine, b, &[Vec2::new(-80.0, 0.0), Vec2::new(90.0, 0.0)]);
     let after = engine.render_to_image(PAPER).pixel(green_x, y);
@@ -171,7 +171,7 @@ fn smear_over_empty_canvas_adds_nothing() {
     let b = dyn_brush(
         RED,
         24.0,
-        BrushDynamics { add: 0.0, load: 1.0, deposit: 1.0, ..Default::default() },
+        BrushDynamics { add: 0.0, lift: 1.0, deposit: 1.0, ..Default::default() },
     );
     stroke_with(&mut engine, b, &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)]);
     let after = engine.render_to_image(PAPER);
@@ -227,7 +227,7 @@ fn dynamics_stroke_is_deterministic() {
         let b = dyn_brush(
             RED,
             16.0,
-            BrushDynamics { add: 0.1, load: 0.5, deposit: 0.5, ..Default::default() },
+            BrushDynamics { add: 0.1, lift: 0.5, deposit: 0.5, ..Default::default() },
         );
         stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
         Some(engine.render_to_image(PAPER))
@@ -258,7 +258,7 @@ fn golden_smudge_drag() {
     let b = dyn_brush(
         RED,
         16.0,
-        BrushDynamics { add: 0.1, load: 0.5, deposit: 0.5, ..Default::default() },
+        BrushDynamics { add: 0.1, lift: 0.5, deposit: 0.5, ..Default::default() },
     );
     stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
     let img = engine.render_to_image(PAPER);
@@ -282,7 +282,7 @@ fn golden_self_smear() {
     let b = dyn_brush(
         RED,
         18.0,
-        BrushDynamics { add: 0.5, load: 0.6, deposit: 0.5, ..Default::default() },
+        BrushDynamics { add: 0.5, lift: 0.6, deposit: 0.5, ..Default::default() },
     );
     // Down through the bar, loop around, and back across its own trail.
     engine.process(InputCommand::SetBrush(b));

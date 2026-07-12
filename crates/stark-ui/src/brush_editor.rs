@@ -192,11 +192,11 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // Each axis and how the pen modulates it live together: the
                         // modulation slider sits indented under its axis, and only
                         // appears while that axis is active (it has no effect at 0).
-                        Slider { label: "Load", min: 0.0, max: 1.0, value: d.load,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.load = v) }
-                        if d.load > 0.005 {
+                        Slider { label: "Lift", min: 0.0, max: 1.0, value: d.lift,
+                            oninput: move |v| edit(state, preview, move |b| b.dynamics.lift = v) }
+                        if d.lift > 0.005 {
                             div { class: "be-sub",
-                                Slider { label: "Pressure \u{2192} Load", min: 0.0, max: 1.0, value: d.load_pressure,
+                                Slider { label: "Pressure \u{2192} Lift", min: 0.0, max: 1.0, value: d.load_pressure,
                                     oninput: move |v| edit(state, preview, move |b| b.dynamics.load_pressure = v) }
                             }
                         }

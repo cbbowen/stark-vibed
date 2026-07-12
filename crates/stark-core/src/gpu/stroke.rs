@@ -425,7 +425,7 @@ impl StrokeRenderer {
         // (DESIGN.md §6.2); pure-`add` brushes keep the swept fast path below.
         // `None` (an oversized stroke region) degrades to the fast path too.
         let d = rec.brush.dynamics;
-        if (d.load > 0.0 || d.deposit > 0.0 || d.charge > 0.0)
+        if (d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0)
             && let Some(map) = self.render_dynamic(pool, assets, base, rec, channels)
         {
             return map;
@@ -1235,7 +1235,7 @@ fn generate_stamps(rec: &StrokeRecord) -> Vec<StampPoint> {
     // Cap the stamp count: an extremely long stroke stretches its spacing instead.
     let min_step = (total / MAX_STAMPS as f32).max(0.25);
 
-    let load = d.load.clamp(0.0, 1.0);
+    let lift = d.lift.clamp(0.0, 1.0);
     let deposit = d.deposit.clamp(0.0, 1.0);
     let make_stamp = |sample: InputSample, dir: Vec2, dist: f32, step: f32| -> StampPoint {
         let radius = (b.radius * sample.pressure).max(0.5);
@@ -1249,7 +1249,7 @@ fn generate_stamps(rec: &StrokeRecord) -> Vec<StampPoint> {
             pos: sample.pos,
             rot,
             radius,
-            lift: 1.0 - (1.0 - load).powf(ds),
+            lift: 1.0 - (1.0 - lift).powf(ds),
             dep: 1.0 - (1.0 - deposit).powf(ds),
             add_h: b.height * d.add * drain * ds * ADD_GAIN,
             add_wet: b.wetness * d.add * drain * ds * ADD_GAIN,
