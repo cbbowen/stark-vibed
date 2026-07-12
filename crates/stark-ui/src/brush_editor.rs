@@ -7,8 +7,9 @@
 //! on the real canvas. One test stroke — a seeded default with a pressure bell
 //! and a ramping forward tilt (so pressure/tilt-driven settings respond even
 //! with a mouse), or whatever the user last drew on the preview — is re-stroked
-//! (undo → set brush → replay → paint) after every setting change, so the
-//! stroke updates live as sliders drag.
+//! (undo → set brush → replay → paint) as settings change — throttled to one
+//! re-stroke per [`RESTROKE_THROTTLE_MS`] so slider drags stay responsive while
+//! the stroke still updates live.
 //!
 //! Settings are grouped into collapsible sections by what they affect, with
 //! rarely-used knobs behind a per-section "Show more" and modulation sliders
@@ -25,11 +26,17 @@ use stark_core::{EnvironmentId, InputCommand, InputSample};
 use crate::render::{self, Renderer};
 use crate::{
     capture_pointer, set_bristles, set_brush_preset, set_knife, set_orientation, set_shape,
-    update_brush, AppState, Slider,
+    sleep_ms, update_brush, AppState, Slider,
 };
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
+
+/// Minimum gap between slider-driven preview re-strokes. A re-stroke replays the
+/// whole test stroke through the engine, and slider `input` events fire faster
+/// than that can run, so unthrottled drags back up and the slider lags. ~10
+/// updates a second still reads as live.
+const RESTROKE_THROTTLE_MS: i32 = 100;
 
 /// Shared `Copy` handle to the preview's signals.
 #[derive(Clone, Copy)]
@@ -44,6 +51,10 @@ struct Preview {
     drawing: Signal<bool>,
     /// Whether a committed stroke is on the preview document (undo it before replaying).
     committed: Signal<bool>,
+    /// Re-stroke throttle gate: `None` when idle; while the post-re-stroke
+    /// cooldown runs, `Some(dirty)` records whether an edit arrived during it
+    /// (and so a trailing re-stroke is owed).
+    throttle: Signal<Option<bool>>,
 }
 
 /// The brush editor dialog. Mounted only while open (so each open re-inits the
@@ -57,6 +68,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         rec: use_signal(Vec::new),
         drawing: use_signal(|| false),
         committed: use_signal(|| false),
+        throttle: use_signal(|| None),
     };
 
     // Section fold state: the everyday groups start open, the specialised ones closed.
@@ -386,10 +398,34 @@ fn restroke(state: AppState, mut preview: Preview) {
     preview.committed.set(true);
 }
 
-/// Apply a brush edit to the real document brush, then re-stroke the preview.
-fn edit(state: AppState, preview: Preview, f: impl FnOnce(&mut BrushParams)) {
+/// Apply a brush edit to the real document brush, then re-stroke the preview —
+/// throttled, so a slider drag re-strokes at most every [`RESTROKE_THROTTLE_MS`]
+/// instead of once per `input` event. The brush itself always updates
+/// immediately; only the preview render is deferred.
+///
+/// Leading + trailing: an edit while idle re-strokes at once and starts a
+/// cooldown; edits during a cooldown just mark it dirty, and the cooldown task
+/// re-strokes with the latest brush (repeating until a window passes clean), so
+/// the preview always settles on the final slider value.
+fn edit(state: AppState, mut preview: Preview, f: impl FnOnce(&mut BrushParams)) {
     update_brush(state, f);
+    if preview.throttle.peek().is_some() {
+        preview.throttle.set(Some(true));
+        return;
+    }
+    preview.throttle.set(Some(false));
     restroke(state, preview);
+    spawn(async move {
+        loop {
+            sleep_ms(RESTROKE_THROTTLE_MS).await;
+            if *preview.throttle.peek() != Some(true) {
+                break;
+            }
+            preview.throttle.set(Some(false));
+            restroke(state, preview);
+        }
+        preview.throttle.set(None);
+    });
 }
 
 /// Restore the default test stroke and re-render it.
