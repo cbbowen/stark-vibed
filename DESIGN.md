@@ -269,10 +269,15 @@ The document does **not** call the `history` crate directly; it goes through a
 
 ```rust
 pub trait Timeline {
-    fn push(&mut self, action: Action, ctx: &mut ApplyCtx) -> Result<()>;
+    fn push(&mut self, action: Action, ctx: &mut ApplyCtx);
     fn current(&self) -> &DocState;
-    fn undo(&mut self, ctx: &mut ApplyCtx) -> Result<()>;
-    fn redo(&mut self, ctx: &mut ApplyCtx) -> Result<()>;
+    fn undo(&mut self, ctx: &mut ApplyCtx) -> bool;   // navigation (solo)
+    fn redo(&mut self, ctx: &mut ApplyCtx) -> bool;
+    fn clone_actions(&self) -> Vec<Action>;           // the save payload (§8)
+    // Shared-mode hooks, defaulted so LinearTimeline ignores them (§12):
+    fn undo_as_action(&self) -> Option<ActionId> { None } // what Undo should target
+    fn redo_as_action(&self) -> Option<ActionId> { None } // which Undo to un-undo
+    fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool { false }
 }
 ```
 
@@ -350,10 +355,14 @@ There are deliberately two undo mechanisms, and they don't conflict:
   pure `history` navigation, nothing written to the log.
 - **`ActionKind::Undo(target)`** — undo *as a logged action*. This exists for
   collaboration (§12), where "undo" must be a fact other peers can see and order,
-  and must mean "undo *my* action" not "undo whatever happened last." Applying it
-  re-derives the state as if `target` were absent (`replay_without`). Single-user
-  mode never needs to emit this, but the variant exists from the start so the log
-  format is collaboration-stable.
+  and must mean "undo *my* action" not "undo whatever happened last." It is
+  deliberately **not interpreted by `Action::apply`** (undo needs the whole log,
+  not just the prior state): the timeline layer computes the log's **effective
+  sequence** — every non-`Undo` action not suppressed by an effective `Undo`
+  (`timeline::effective_actions`) — and only that is ever materialized. Redo is
+  an `Undo` of an `Undo`. Single-user mode never emits these (solo undo is pure
+  `history` navigation), and a solo *load* of a shared log simply replays the
+  effective sequence, flattening the undos away.
 
 ## 6. Rendering the canvas (infinite, tiled, multi-channel)
 
@@ -949,12 +958,14 @@ back to a PNG data URL — correct but laggy; the WebGPU surface replaced it,
 touching only `stark-ui`.) Run with `dx serve --web -p stark-ui` in a WebGPU
 browser. A native winit/desktop surface frontend could reuse the same engine.
 
-## 12. Collaboration (peer-to-peer, future)
+## 12. Collaboration (peer-to-peer)
 
-GOALS targets long-term **multi-user editing in a peer-to-peer model** over
-`iroh`. This is explicitly future work, but the core is shaped now so it arrives
-as an additive layer, never a rewrite. Three properties already in place make it
-tractable:
+GOALS targets **multi-user editing in a peer-to-peer model** over `iroh` —
+**implemented** (build-order step 12) exactly as the additive layer this
+section always planned: `ReplicatedTimeline` in `stark-core` (the merge
+semantics), `stark-net` (the wire), and a share/join dialog in `stark-ui`.
+The engine and GPU code were untouched. Three properties already in place
+made it tractable:
 
 1. The document is a **log of id-tagged, deterministic actions** (§4), not mutable
    pixels.
@@ -973,60 +984,95 @@ CRDT / replicated log" pattern, and it fits Stark almost for free since replay i
 already how we derive every pixel.
 
 - **Lamport clocks** give causal-consistent ordering; ties break on `actor` id.
+  Every merge advances the local clock past the remote action
+  (`Engine::merge_remote`), so an action always orders after everything its
+  author had seen — which also guarantees an `Undo` orders after its target.
 - **Commutativity isn't required**, only a deterministic order — paint is not
   commutative (later strokes cover earlier ones), and a fixed order captures
   exactly the "whoever's stroke is ordered later wins the overlap" intuition.
-- **Layers and tiles localize conflicts.** Concurrent strokes on different layers
-  or different tiles never interact; only same-tile overlaps depend on order, and
-  there the resolution is simply the total order. `im`'s structural diffing
-  (§5.1) lets a peer reapply only the tiles a late-arriving remote action
-  actually touches.
+- **`Undo` is resolved at the timeline layer, not in `apply`** (§5.4): one
+  descending pass over the total order computes which actions are *undone*,
+  and the **effective sequence** (non-`Undo`, non-undone, in order) is what the
+  `history` cache materializes. Duplicates (gossip redelivery) are rejected by
+  id — merging is idempotent.
 
 ### 12.2 Inserting a late action (the one real cost)
 
-When a remote action arrives with a `lamport` *earlier* than actions already
-applied locally, correctness requires the affected tiles reflect the reordered
-sequence. Because state derives from replay, the `ReplicatedTimeline` rewinds to
-the insertion point (a retained `history` snapshot at or before it) and replays
-forward — but only for the **tiles in the union of footprints** from that point
-on. Unaffected tiles keep their existing `Arc`s untouched. Cost scales with
-concurrent-edit overlap, not document size. Frequent, dense `history` checkpoints
-(cheap, per §5) keep the rewind shallow.
+When a remote action arrives with an id *earlier* than actions already applied
+locally (or an `Undo` changes effectiveness mid-log), correctness requires the
+canvas reflect the reordered sequence. Because state derives from replay,
+`ReplicatedTimeline` diffs the new effective sequence against the materialized
+one, pops `history` back to the first divergence, and replays forward. The
+untouched prefix keeps its snapshots (and its tiles' `Arc`s) as-is; `history`'s
+dense snapshot retention (cheap, per §5) keeps the pops shallow. *Future
+optimization:* restrict the replay to the union of the reordered actions'
+tile footprints — v1 replays whole actions from the divergence point, which is
+correct and scales with how concurrent the editing actually is.
 
 ### 12.3 Undo under collaboration
 
 This is why `ActionKind::Undo(target)` exists (§5.4): in a shared log, undo must
 be *my* action others can observe and order, and "undo my last stroke" must skip
-peers' intervening strokes. `Undo(target)` logs the intent; replay derives state
-as if `target` (and any already-undone-by-it) were absent. Redo is an `Undo` of
-an `Undo`. Local solo editing keeps using the fast `history`-navigation path and
-emits none of these.
+peers' intervening strokes. The engine asks the timeline first
+(`undo_as_action`/`redo_as_action`) and only falls back to navigation undo when
+they return `None` (solo). The concrete rules:
+
+- **Undo targets** my most recent *effective* ordinary (non-`Undo`) action.
+- **Redo** emits an `Undo` of my most recent effective `Undo` whose target is an
+  ordinary action still undone — but only if that `Undo` is newer than my newest
+  effective ordinary action, so a fresh edit clears the redo stack, matching
+  solo expectations. Chains (Z Z Y Y) walk correctly because each redo
+  suppresses exactly one undo.
+- A file saved mid-session carries the **full log**; a solo load replays the
+  effective sequence (undone work flattens away), while a joining peer gets the
+  full log so later redos still resolve.
 
 ### 12.4 Transport — `stark-net` over iroh
 
-Core stays **network-agnostic**; `stark-net` adapts iroh to the `Timeline`:
+Core stays **network-agnostic**; `stark-net` adapts iroh (1.0) to the engine's
+hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
+`take_outbox`):
 
-- **Identity:** an iroh `NodeId` *is* the `ActorId`. No central server.
-- **Live edits:** `iroh-gossip` broadcasts each newly committed `Action` (small —
-  a sampled path, not pixels) to the session's peers; received actions are fed
-  into `ReplicatedTimeline::merge`.
-- **Join / catch-up:** a joining peer pulls the action log (and optionally a
-  checkpoint blob to skip cold replay) via **iroh blobs / docs**, then subscribes
-  to gossip for the live tail. The save format (§8) *is* this payload.
-- **Assets:** brush-shape images are content-addressed blobs (§6.6); a stroke
-  referencing an unknown `AssetId` fetches that blob by hash before rendering —
-  exactly what iroh blobs are for. The action gossip stays tiny (ids only).
-- **Presence (cursors, selections, names):** ephemeral, broadcast over gossip but
-  **never historized** — it's session state, the same category as pan/zoom (§3).
-  Other users' live, in-progress strokes render onto preview tiles exactly like
-  the local in-flight stroke, and only become `Action`s when their author commits.
+- **Identity:** an iroh `EndpointId` (public key) maps to the `ActorId` — its
+  first 8 bytes (`actor_from_endpoint_id`; collision odds across a session's
+  peers are negligible). No central server. At share time the host's solo
+  (`ActorId::SOLO`) actions are rewritten to its real actor — before any peer
+  has seen them — so pre-share strokes stay undoable.
+- **Live edits:** `iroh-gossip` broadcasts each newly committed `Action`
+  (postcard-encoded; small — a fitted path, not pixels) on the session's random
+  `TopicId`; received actions are fed into `Engine::merge_remote`. The gossip
+  message ceiling is raised (256 KiB) so long strokes fit.
+- **Join / catch-up:** a joining peer connects over the `stark/collab/0` ALPN
+  and requests a **snapshot** — the save-format container (§8), assets bundled —
+  then rides the gossip tail. It joins the topic *before* fetching, so the
+  snapshot/gossip overlap covers the seam (dedup by id). Every member serves
+  snapshots from a session **mirror** (log + assets, CPU-side), so sessions
+  survive the original sharer leaving, and any member can mint a **ticket**
+  (`stark…` base32: an `EndpointAddr` + the topic).
+- **Assets:** brush-shape images are content-addressed (§6.6); a stroke
+  referencing an unknown `AssetId` fetches those bytes over the same ALPN from
+  the peer that delivered the stroke (with retries; a miss degrades to the
+  round tip rather than blocking the log). The action gossip stays tiny (ids
+  only).
+- **Browser:** iroh runs in wasm over its relay (WebSocket) transport, so the
+  Dioxus UI uses the same code path the native loopback tests exercise. The UI
+  glue is two pumps: `dispatch` drains the engine outbox into
+  `CollabSession::broadcast`, and a spawned task feeds `RemoteEvent`s into
+  `merge_remote`/`import_brush` and repaints.
+- **Presence (cursors, selections, names):** still future — ephemeral, broadcast
+  over gossip but **never historized** — it's session state, the same category
+  as pan/zoom (§3). Other users' live, in-progress strokes would render onto
+  preview tiles exactly like the local in-flight stroke, and only become
+  `Action`s when their author commits. (Today a peer's stroke appears when
+  committed.)
 
 ### 12.5 What we deliberately defer
 
-Authentication/permissions, large-session scaling (gossip fan-out, log
-compaction/GC of fully-superseded tiles), and offline-merge UX are out of scope
-for the first collaboration cut. None of them perturb the convergence model
-above; they layer on top of it.
+Authentication/permissions (anyone with a ticket can write), presence (§12.4),
+large-session scaling (gossip fan-out, log compaction/GC of fully-superseded
+tiles), recovery from gossip loss (a lagged receiver warns; a re-join
+resnapshots), and offline-merge UX are out of scope for this first cut. None of
+them perturb the convergence model above; they layer on top of it.
 
 ## 13. Suggested build order
 
@@ -1084,10 +1130,17 @@ above; they layer on top of it.
    image bytes and calls `Engine::import_brush`, so users can bring arbitrary
    brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
    from step 7 already accept arbitrary bytes.
-12. **Collaboration (§12):** introduce the `Timeline` trait split (refactor only,
-   no behavior change), then `ReplicatedTimeline`, then `stark-net` over iroh —
-   testable headlessly by merging two engines' logs and asserting identical
-   golden output (convergence as a test).
+12. **Collaboration (§12) — DONE (2026-07-12):** `ReplicatedTimeline` behind
+   the existing `Timeline` seam (total-ordered log + effective-sequence
+   resolution of `ActionKind::Undo` + rewind/replay merge over the `history`
+   cache), engine hooks (`start_collaboration`/`join_collaboration`/
+   `merge_remote`/`take_outbox`, undo routed through `undo_as_action`), and
+   `stark-net` over iroh 1.0 (gossip live actions; snapshot/asset ALPN;
+   tickets). Convergence **is** a test, twice: headless cross-merged engines
+   (`stark-core/tests/collab.rs`) and two engines over real loopback iroh
+   endpoints (`stark-net/tests/sync.rs`) must render bit-identical canvases.
+   UI: "Shared drawing" dialog (share / join-by-ticket / leave) with two pumps
+   in `stark-ui/src/collab.rs`. Presence/permissions remain future (§12.5).
 13. **Mutable medium — subtractive & wet diffusion (§6.2):** the read-modify-write
    *write-back* path (footprint→scratch → combine → CoW tile), validated by a
    medium-`Dry` equivalence test (Phase 0); then `BrushDynamics::Knife` —

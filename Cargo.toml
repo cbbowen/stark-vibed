@@ -9,6 +9,7 @@ members = [
 # `dx serve --platform web` or `cargo build -p stark-ui --target wasm32-unknown-unknown`.
 default-members = [
     "crates/stark-core",
+    "crates/stark-net",
     "crates/stark-shaders",
 ]
 

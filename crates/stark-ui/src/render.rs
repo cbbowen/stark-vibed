@@ -140,6 +140,55 @@ impl Renderer {
         self.bristle
     }
 
+    // --- collaboration (DESIGN.md §12) — thin engine delegates for the
+    // session glue in `collab.rs`. ---
+
+    /// Convert the current document into a shared one, authored as `actor`.
+    pub fn start_collaboration(&mut self, actor: stark_core::document::ActorId) {
+        self.engine.start_collaboration(actor);
+    }
+
+    /// Replace the document with a joined session's log.
+    pub fn join_collaboration(
+        &mut self,
+        file: &stark_core::DocumentFile,
+        actor: stark_core::document::ActorId,
+    ) {
+        self.engine.join_collaboration(file, actor);
+    }
+
+    /// Leave a shared session (keep the canvas, stop broadcasting).
+    pub fn end_collaboration(&mut self) {
+        self.engine.end_collaboration();
+    }
+
+    /// Snapshot the document (full shared log + referenced assets).
+    pub fn document_file(&self) -> stark_core::DocumentFile {
+        self.engine.document_file()
+    }
+
+    /// Integrate one remote action; returns whether it was new.
+    pub fn merge_remote(&mut self, action: stark_core::document::Action) -> bool {
+        self.engine.merge_remote(action)
+    }
+
+    /// Drain locally-committed actions awaiting broadcast.
+    pub fn take_outbox(&mut self) -> Vec<stark_core::document::Action> {
+        self.engine.take_outbox()
+    }
+
+    /// Import a remote peer's brush image so its strokes render faithfully.
+    pub fn import_brush(&self, png_bytes: &[u8]) {
+        if let Err(e) = self.engine.import_brush(png_bytes) {
+            tracing::warn!("remote brush import failed: {e}");
+        }
+    }
+
+    /// Every imported brush asset, to seed a session's asset mirror.
+    pub fn all_asset_bytes(&self) -> Vec<(stark_core::AssetId, Vec<u8>)> {
+        self.engine.all_asset_bytes()
+    }
+
     /// Import the built-in bristle brush from fetched bytes, caching its id.
     pub fn load_bristle(&mut self, png_bytes: &[u8]) {
         match self.engine.import_brush(png_bytes) {

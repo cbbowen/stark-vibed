@@ -1,0 +1,27 @@
+# iroh transport for shared multi-user drawings (DESIGN.md §12.4). Adapts the
+# wire (gossip live actions + a catch-up/asset ALPN) to stark-core's
+# network-agnostic ReplicatedTimeline; pulled in by the frontend, or omitted.
+[package]
+name = "stark-net"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+stark-core = { path = "../stark-core" }
+iroh = "1"
+iroh-gossip = "0.101"
+n0-future = "0.3"
+postcard = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["sync"] }
+data-encoding = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+pollster = { workspace = true }
+wgpu = { workspace = true }
+glam = { workspace = true }

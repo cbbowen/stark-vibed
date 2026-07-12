@@ -407,6 +407,36 @@
   margin-top: 18px;
 }
 
+/* --- shared-drawing dialog (collab.rs) --- */
+.ticket-input,
+.ticket-text {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #ffffff1f;
+  background: #ffffff08;
+  color: #e8e8ea;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.ticket-input::placeholder {
+  color: #e8e8ea66;
+}
+
+.ticket-text {
+  resize: none;
+  height: 96px;
+  word-break: break-all;
+}
+
+.collab-error {
+  font-size: 12px;
+  color: #ff8484;
+  margin-bottom: 12px;
+}
+
 /* --- color-space cards --- */
 .space-card {
   padding: 12px 14px;

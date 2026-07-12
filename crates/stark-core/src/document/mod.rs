@@ -11,4 +11,4 @@ pub use action::{
 };
 pub use layer::{BlendMode, Layer, LayerId};
 pub use state::{CanvasBounds, DocState};
-pub use timeline::{LinearTimeline, Timeline};
+pub use timeline::{effective_actions, LinearTimeline, ReplicatedTimeline, Timeline};

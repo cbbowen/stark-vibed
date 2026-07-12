@@ -60,7 +60,16 @@
 //!   `Flat` (default) is a no-op; `Linen` is the built-in weave. Saved in `CanvasMeta`.
 //!   The engine embeds no image bytes — the frontend fetches them at runtime and
 //!   provides them via [`Engine::register_surface`] (DESIGN §6.6).
-//! - [ ] Step 11: brush file upload · Step 12: collaboration.
+//! - [x] Step 12: collaboration (DESIGN §12) — [`document::ReplicatedTimeline`]:
+//!   the shared log as a replicated-log CRDT (total order = `ActionId`,
+//!   deterministic replay ⇒ strong eventual consistency), with
+//!   `ActionKind::Undo` resolved into an *effective sequence* at the timeline
+//!   layer and the `history` cache rewound/replayed on out-of-order merges.
+//!   Engine hooks: [`Engine::start_collaboration`], [`Engine::join_collaboration`],
+//!   [`Engine::merge_remote`], [`Engine::take_outbox`]. The `stark-net` crate
+//!   carries it over iroh (gossip + snapshot/asset ALPN); convergence is
+//!   asserted pixel-identical in `tests/collab.rs` and `stark-net/tests/sync.rs`.
+//! - [ ] Step 11: brush file upload.
 
 pub mod assets;
 pub mod color;

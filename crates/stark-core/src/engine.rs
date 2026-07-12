@@ -11,8 +11,9 @@ use crate::assets::{AssetId, AssetStore};
 use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::InputCommand;
 use crate::document::{
-    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
-    DocState, Layer, LayerId, LinearTimeline, StrokeRecord, Timeline, Tool,
+    effective_actions, Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape,
+    CanvasBounds, DocState, Layer, LayerId, LinearTimeline, ReplicatedTimeline, StrokeRecord,
+    Timeline, Tool,
 };
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::{
@@ -84,6 +85,11 @@ pub struct Engine {
     actor: ActorId,
     clock: u64,
     next_layer: u64,
+    /// Locally-committed actions awaiting broadcast to peers (DESIGN.md §12.4).
+    /// Only populated in a shared session (`outbox_enabled`), and drained by the
+    /// transport via [`Engine::take_outbox`]; solo mode never accumulates.
+    outbox: Vec<Action>,
+    outbox_enabled: bool,
 }
 
 impl Engine {
@@ -135,9 +141,11 @@ impl Engine {
             timeline,
             session,
             preview: None,
-            actor: ActorId(0),
+            actor: ActorId::SOLO,
             clock: 0,
             next_layer: 1,
+            outbox: Vec::new(),
+            outbox_enabled: false,
         }
     }
 
@@ -165,13 +173,24 @@ impl Engine {
             }
             InputCommand::Undo => {
                 self.preview = None;
-                let mut ctx = self.apply_ctx();
-                self.timeline.undo(&mut ctx);
+                // Shared sessions log undo as an action peers can order
+                // (DESIGN.md §5.4, §12.3); solo falls back to navigation.
+                if let Some(target) = self.timeline.undo_as_action() {
+                    self.commit(ActionKind::Undo(target));
+                } else {
+                    let mut ctx = self.apply_ctx();
+                    self.timeline.undo(&mut ctx);
+                }
             }
             InputCommand::Redo => {
                 self.preview = None;
-                let mut ctx = self.apply_ctx();
-                self.timeline.redo(&mut ctx);
+                // Redo is an `Undo` of an `Undo` in a shared session.
+                if let Some(target) = self.timeline.redo_as_action() {
+                    self.commit(ActionKind::Undo(target));
+                } else {
+                    let mut ctx = self.apply_ctx();
+                    self.timeline.redo(&mut ctx);
+                }
             }
             InputCommand::SetTool(tool) => self.session.tool = tool,
             InputCommand::SetBrush(brush) => {
@@ -324,8 +343,11 @@ impl Engine {
                 eprintln!("skipping unreadable brush asset: {e}");
             }
         }
-        for action in &file.actions {
-            self.replay_one(action.clone());
+        // Replay only the *effective* sequence: a file saved from a shared
+        // session is the full log, including `Undo` actions and the actions
+        // they suppress (DESIGN.md §12.3). A solo load flattens those away.
+        for action in effective_actions(&file.actions) {
+            self.replay_one(action);
         }
         self.resync_counters(&file.actions);
     }
@@ -349,8 +371,8 @@ impl Engine {
         for (_, bytes) in &file.assets {
             let _ = self.assets.insert_bytes(bytes);
         }
-        for action in &file.actions {
-            self.replay_one(action.clone());
+        for action in effective_actions(&file.actions) {
+            self.replay_one(action);
             on_frame(self.render_to_image(background));
         }
         self.resync_counters(&file.actions);
@@ -419,13 +441,123 @@ impl Engine {
         self.assets.import(png_bytes)
     }
 
+    // --- collaboration (DESIGN.md §12) -----------------------------------
+    //
+    // The engine stays network-agnostic: it owns the merge semantics (the
+    // `ReplicatedTimeline`) and these hooks; `stark-net` owns the wire.
+
+    /// Whether this engine is in a shared session (replicated timeline active).
+    pub fn is_shared(&self) -> bool {
+        self.outbox_enabled
+    }
+
+    /// This engine's author id for new actions.
+    pub fn actor(&self) -> ActorId {
+        self.actor
+    }
+
+    /// Start sharing the **current** document as `actor` (the host side).
+    /// Converts the linear history into a [`ReplicatedTimeline`] over the same
+    /// log. Solo-authored actions ([`ActorId::SOLO`]) are rewritten to `actor`
+    /// — done once, before any peer has seen them — so the sharer can still
+    /// undo their pre-share strokes (undo targets *my* actions, §12.3).
+    pub fn start_collaboration(&mut self, actor: ActorId) {
+        if self.is_shared() {
+            return;
+        }
+        let mut log = self.timeline.clone_actions();
+        for a in &mut log {
+            if a.id.actor == ActorId::SOLO {
+                a.id.actor = actor;
+            }
+        }
+        let mut ctx = self.apply_ctx();
+        let initial = DocState::with_layer(ROOT_LAYER);
+        self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, &mut ctx));
+        self.actor = actor;
+        self.outbox_enabled = true;
+        self.preview = None;
+    }
+
+    /// Join a shared session (the peer side): replace the document with the
+    /// session's **full** log — including `Undo` actions, which the replicated
+    /// timeline resolves — and author future actions as `actor`.
+    pub fn join_collaboration(&mut self, file: &DocumentFile, actor: ActorId) {
+        self.reset_document();
+        if file.canvas.surface != self.surface_id {
+            self.surface_id = file.canvas.surface;
+            self.surface = build_surface(&self.gpu, self.surface_id, &self.surface_assets);
+            self.rebuild_gpu_for(self.color_space.id());
+        }
+        if file.canvas.color_space != self.color_space.id() {
+            self.rebuild_gpu_for(file.canvas.color_space);
+        }
+        for (_, bytes) in &file.assets {
+            if let Err(e) = self.assets.insert_bytes(bytes) {
+                tracing::warn!("skipping unreadable brush asset: {e}");
+            }
+        }
+        let mut ctx = self.apply_ctx();
+        let initial = DocState::with_layer(ROOT_LAYER);
+        self.timeline = Box::new(ReplicatedTimeline::from_log(
+            actor,
+            initial,
+            file.actions.clone(),
+            &mut ctx,
+        ));
+        self.resync_counters(&file.actions);
+        self.actor = actor;
+        self.outbox_enabled = true;
+    }
+
+    /// Leave a shared session: stop queueing broadcasts. The replicated
+    /// timeline (and the shared log) stays — editing continues solo on the
+    /// same canvas, and a later [`Self::start_collaboration`] re-shares it.
+    pub fn end_collaboration(&mut self) {
+        self.outbox.clear();
+        self.outbox_enabled = false;
+    }
+
+    /// Integrate an action authored by a peer (DESIGN.md §12.1). Idempotent —
+    /// duplicates are rejected by id. Advances the Lamport clock past the
+    /// remote action so future local ids order after everything seen.
+    pub fn merge_remote(&mut self, action: Action) -> bool {
+        self.clock = self.clock.max(action.id.lamport + 1);
+        if let ActionKind::AddLayer { id, .. } = &action.kind {
+            self.next_layer = self.next_layer.max(id.0 + 1);
+        }
+        let mut ctx = self.apply_ctx();
+        let merged = self.timeline.merge(action, &mut ctx);
+        // The live preview is rendered over the committed state; re-base it if
+        // a remote stroke landed mid-gesture.
+        if merged && self.session.is_stroking() {
+            self.refresh_preview();
+        }
+        merged
+    }
+
+    /// Drain locally-committed actions awaiting broadcast (empty when solo).
+    pub fn take_outbox(&mut self) -> Vec<Action> {
+        std::mem::take(&mut self.outbox)
+    }
+
+    /// Every imported brush asset (id + canonical PNG bytes) — used to seed a
+    /// transport session's asset mirror so peers can fetch any brush a future
+    /// stroke references (DESIGN.md §12.4).
+    pub fn all_asset_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
+        self.assets.all_bytes()
+    }
+
     fn commit(&mut self, kind: ActionKind) {
         let action = Action {
             id: self.next_action_id(),
             kind,
         };
         let mut ctx = self.apply_ctx();
-        self.timeline.push(action, &mut ctx);
+        self.timeline.push(action.clone(), &mut ctx);
+        if self.outbox_enabled {
+            self.outbox.push(action);
+        }
     }
 
     /// The document's color space id (DESIGN.md §6.7).
@@ -540,7 +672,9 @@ impl Engine {
         self.compositor = compositor;
     }
 
-    /// Reset to an empty document (one root layer) before a load/replay.
+    /// Reset to an empty document (one root layer) before a load/replay. Also
+    /// leaves any shared session: the caller (UI/transport) tears down the
+    /// network side; `join_collaboration` re-enables after its reset.
     fn reset_document(&mut self) {
         self.timeline = Box::new(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
         self.preview = None;
@@ -548,6 +682,9 @@ impl Engine {
         self.next_layer = 1;
         self.session.cancel_stroke();
         self.session.active_layer = ROOT_LAYER;
+        self.actor = ActorId::SOLO;
+        self.outbox.clear();
+        self.outbox_enabled = false;
     }
 
     /// Commit one already-built action onto the timeline (replays its GPU work).

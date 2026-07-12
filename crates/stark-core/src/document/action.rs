@@ -18,6 +18,14 @@ use crate::gpu::tile::TilePool;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActorId(pub u64);
 
+impl ActorId {
+    /// The fixed author id used when not collaborating. When a document is
+    /// first shared, its solo-authored actions are rewritten to the sharer's
+    /// real actor id (so the sharer can still undo them, DESIGN.md §12.3);
+    /// after that every action in a shared log carries a peer-derived id.
+    pub const SOLO: ActorId = ActorId(0);
+}
+
 /// Globally-unique action id; also the total order key `(lamport, actor)`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActionId {
@@ -227,8 +235,17 @@ pub enum ActionKind {
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
     MoveLayer { id: LayerId, above: Option<LayerId> },
-    // `Undo(ActionId)` (undo-as-an-action) arrives with the replicated timeline
-    // in step 7 (DESIGN.md §5.4, §12); single-user undo uses timeline navigation.
+    /// Undo **as a logged action** (DESIGN.md §5.4, §12.3): a fact peers can see
+    /// and order, meaning "derive the document as if `target` were absent".
+    /// Redo is an `Undo` of an `Undo`. Emitted only in shared sessions; solo
+    /// undo stays pure timeline navigation and never logs one.
+    ///
+    /// Deliberately **not interpreted by [`Action::apply`]** — undo needs the
+    /// whole log, not just the prior state, so the timeline layer resolves
+    /// which actions are *effective* (see [`super::timeline::effective_actions`])
+    /// and only ever materializes those. Appended last so postcard decoding of
+    /// older files is unaffected.
+    Undo(ActionId),
 }
 
 /// A committed document mutation with its identity.
@@ -272,6 +289,10 @@ impl history::Action for Action {
             ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
             ActionKind::SetLayerVisible(id, visible) => state.set_layer_visible(*id, *visible),
             ActionKind::MoveLayer { id, above } => state.move_layer(*id, *above),
+            // Resolved at the timeline layer (effective-sequence filtering); an
+            // `Undo` should never be materialized through `apply`. Identity, so
+            // a stray one is harmless rather than wrong.
+            ActionKind::Undo(_) => state,
         })
     }
 }

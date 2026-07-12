@@ -7,6 +7,9 @@ description = "Dioxus web frontend for Stark (DESIGN.md §11): WASM backend + We
 
 [dependencies]
 stark-core = { path = "../stark-core" }
+# Shared multi-user drawings over iroh (DESIGN.md §12.4). In the browser iroh
+# runs over its relay (WebSocket) transport — same code path as native.
+stark-net = { path = "../stark-net" }
 dioxus = { version = "0.7.9", features = ["web", "asset"] }
 wgpu = { workspace = true }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }

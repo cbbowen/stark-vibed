@@ -8,6 +8,7 @@
 //! Run with `dx serve --web -p stark-ui` in a WebGPU-capable browser.
 
 mod brush_editor;
+mod collab;
 mod components;
 mod render;
 
@@ -222,6 +223,15 @@ struct AppState {
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     brush_editor_open: Signal<bool>,
+    /// The live shared-drawing session, if any (DESIGN.md §12). `!Send` iroh
+    /// handles live in unsync storage beside the renderer.
+    collab_session: Signal<Option<stark_net::CollabSession>>,
+    /// The shareable ticket string, while hosting/joined.
+    collab_ticket: Signal<Option<String>>,
+    /// Where the session lifecycle stands (drives the dialog + rail badge).
+    collab_phase: Signal<collab::CollabPhase>,
+    /// The last share/join failure, surfaced in the dialog.
+    collab_error: Signal<Option<String>>,
 }
 
 fn app() -> Element {
@@ -229,7 +239,20 @@ fn app() -> Element {
     let obs = use_signal(|| None::<ObservableState>);
     let space_down = use_signal(|| false);
     let brush_editor_open = use_signal(|| false);
-    let state = AppState { renderer, obs, space_down, brush_editor_open };
+    let collab_session = use_signal(|| None::<stark_net::CollabSession>);
+    let collab_ticket = use_signal(|| None::<String>);
+    let collab_phase = use_signal(collab::CollabPhase::default);
+    let collab_error = use_signal(|| None::<String>);
+    let state = AppState {
+        renderer,
+        obs,
+        space_down,
+        brush_editor_open,
+        collab_session,
+        collab_ticket,
+        collab_phase,
+        collab_error,
+    };
     use_context_provider(|| state);
 
     // Floating-panel layout: order + which are open. Provided so the panel chrome and
@@ -839,6 +862,8 @@ fn CommandRail() -> Element {
     let state = use_context::<AppState>();
     let layout = use_context::<PanelLayout>();
     let mut show_new_doc = use_signal(|| false);
+    let mut show_session = use_signal(|| false);
+    let live = (state.collab_phase)() == collab::CollabPhase::Shared;
     let (can_undo, can_redo) = state
         .obs
         .read()
@@ -859,6 +884,12 @@ fn CommandRail() -> Element {
                             value: "new-document".to_string(),
                             on_select: move |_| show_new_doc.set(true),
                             span { "New document…" }
+                        }
+                        MenubarItem {
+                            index: 3usize,
+                            value: "shared-drawing".to_string(),
+                            on_select: move |_| show_session.set(true),
+                            span { if live { "Shared drawing \u{25CF}" } else { "Shared drawing…" } }
                         }
                         MenubarItem {
                             index: 0usize,
@@ -903,6 +934,9 @@ fn CommandRail() -> Element {
         }
         if show_new_doc() {
             NewDocumentModal { on_close: move |_| show_new_doc.set(false) }
+        }
+        if show_session() {
+            collab::SessionModal { on_close: move |_| show_session.set(false) }
         }
     }
 }
@@ -1332,15 +1366,19 @@ fn ternary_weights(px: f32, py: f32) -> [f32; 3] {
 // --- command dispatch ---
 
 /// Apply a command, repaint the surface, and refresh the observable snapshot.
+/// In a shared session, whatever the command committed is then broadcast.
 fn dispatch(state: AppState, command: InputCommand) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
-    let mut guard = renderer.write();
-    if let Some(r) = guard.as_mut() {
-        r.process(command);
-        r.paint();
-        obs.set(Some(r.observe()));
+    {
+        let mut guard = renderer.write();
+        if let Some(r) = guard.as_mut() {
+            r.process(command);
+            r.paint();
+            obs.set(Some(r.observe()));
+        }
     }
+    collab::flush_outbox(state);
 }
 
 /// Resize the surface/engine, then repaint.
