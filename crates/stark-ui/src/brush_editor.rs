@@ -7,9 +7,11 @@
 //! on the real canvas. One test stroke — a seeded default with a pressure bell
 //! and a ramping forward tilt (so pressure/tilt-driven settings respond even
 //! with a mouse), or whatever the user last drew on the preview — is re-stroked
-//! (undo → set brush → replay → paint) as settings change — throttled to one
-//! re-stroke per [`RESTROKE_THROTTLE_MS`] so slider drags stay responsive while
-//! the stroke still updates live.
+//! (undo → set brush → replay → paint) as settings change. Slider edits are
+//! throttled to one apply per [`EDIT_THROTTLE_MS`], and the replay commits the
+//! whole stroke as a single render (`Engine::replay_stroke` — no per-sample
+//! live-preview refresh, which would be O(n²) and starve the GPU), so drags
+//! stay responsive and the finished stroke appears in one go.
 //!
 //! Settings are grouped into collapsible sections by what they affect, with
 //! rarely-used knobs behind a per-section "Show more" and modulation sliders
@@ -32,11 +34,16 @@ use crate::{
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
 
-/// Minimum gap between slider-driven preview re-strokes. A re-stroke replays the
-/// whole test stroke through the engine, and slider `input` events fire faster
-/// than that can run, so unthrottled drags back up and the slider lags. ~10
-/// updates a second still reads as live.
-const RESTROKE_THROTTLE_MS: i32 = 100;
+/// Minimum gap between slider edits taking effect. Each edit dispatches to the
+/// engine, repaints the main canvas, refreshes `obs` (re-rendering this whole
+/// dialog and every other `obs` reader), and replays the test stroke (~a
+/// frame's worth of GPU) — fine at this rate, not at slider `input`-event
+/// rate. The slider thumb itself is a native range input and keeps moving
+/// smoothly between commits.
+const EDIT_THROTTLE_MS: i32 = 50;
+
+/// A deferred brush mutation: the latest slider edit during a throttle window.
+type BrushEdit = Box<dyn FnOnce(&mut BrushParams)>;
 
 /// Shared `Copy` handle to the preview's signals.
 #[derive(Clone, Copy)]
@@ -51,10 +58,10 @@ struct Preview {
     drawing: Signal<bool>,
     /// Whether a committed stroke is on the preview document (undo it before replaying).
     committed: Signal<bool>,
-    /// Re-stroke throttle gate: `None` when idle; while the post-re-stroke
-    /// cooldown runs, `Some(dirty)` records whether an edit arrived during it
-    /// (and so a trailing re-stroke is owed).
-    throttle: Signal<Option<bool>>,
+    /// Edit throttle gate: whether the post-edit cooldown is running.
+    cooling: Signal<bool>,
+    /// The latest edit deferred during the cooldown, owed a trailing apply.
+    pending: Signal<Option<BrushEdit>>,
 }
 
 /// The brush editor dialog. Mounted only while open (so each open re-inits the
@@ -68,8 +75,34 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         rec: use_signal(Vec::new),
         drawing: use_signal(|| false),
         committed: use_signal(|| false),
-        throttle: use_signal(|| None),
+        cooling: use_signal(|| false),
+        pending: use_signal(|| None),
     };
+
+    // TEMPORARY diagnostic (slider drag-lag hunt): while the dialog is open, log
+    // every frame that blows its budget. During a drag the console then shows
+    // whether jank is continuous (something per-event/per-frame) or clustered at
+    // the throttled applies (the apply itself is one long stall).
+    use_future(move || async move {
+        let mut last = js_sys::Date::now();
+        loop {
+            render::next_frame().await;
+            let now = js_sys::Date::now();
+            if now - last > 34.0 {
+                tracing::info!("frame stall: {:.0}ms", now - last);
+            }
+            last = now;
+        }
+    });
+
+    // If the dialog closes mid-cooldown the throttle task is cancelled with it;
+    // commit any deferred edit so the tail of a drag isn't lost.
+    use_drop(move || {
+        let mut pending = preview.pending;
+        if let Some(f) = pending.write().take() {
+            update_brush(state, f);
+        }
+    });
 
     // Section fold state: the everyday groups start open, the specialised ones closed.
     let tip_open = use_signal(|| true);
@@ -327,16 +360,11 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     r.set_media_params(media);
     r.set_background(bg);
 
-    // Seed and paint the default test stroke with the current brush.
-    let samples = default_stroke(&r);
-    if let Some(brush) = state.obs.peek().as_ref().map(|o| o.brush) {
-        r.process(InputCommand::SetBrush(brush));
-        replay(&mut r, &samples);
-        preview.committed.set(true);
-    }
+    // Seed the default test stroke and render it with the current brush.
     r.paint();
-    preview.samples.set(samples);
+    preview.samples.set(default_stroke(&r));
     preview.renderer.set(Some(r));
+    restroke(state, preview);
 }
 
 /// The seeded test stroke: an S-curve across the preview with a pressure bell
@@ -364,19 +392,12 @@ fn default_stroke(r: &Renderer) -> Vec<InputSample> {
         .collect()
 }
 
-/// Feed a recorded test stroke through the preview engine's normal stroke path.
-fn replay(r: &mut Renderer, samples: &[InputSample]) {
-    let mut it = samples.iter();
-    let Some(first) = it.next() else { return };
-    r.process(InputCommand::StartStroke { tool: Tool::Brush, sample: *first });
-    for s in it {
-        r.process(InputCommand::StrokeTo { sample: *s });
-    }
-    r.process(InputCommand::EndStroke);
-}
-
 /// Re-render the test stroke with the current brush: undo the committed one,
-/// push the brush, replay, paint. No-op while the user is drawing on the preview.
+/// push the brush, replay as a single commit, paint. `Renderer::replay_stroke`
+/// skips the per-sample live-preview refresh (O(n²) across a replay), so the
+/// whole re-stroke is one full-stroke render — about a frame's worth of GPU —
+/// and the finished stroke is presented in one go, no progressive redraw.
+/// No-op while the user is drawing on the preview.
 fn restroke(state: AppState, mut preview: Preview) {
     if *preview.drawing.peek() {
         return;
@@ -392,47 +413,49 @@ fn restroke(state: AppState, mut preview: Preview) {
         r.process(InputCommand::Undo);
     }
     r.process(InputCommand::SetBrush(brush));
-    replay(r, &samples);
+    r.replay_stroke(Tool::Brush, &samples);
     r.paint();
     drop(guard);
     preview.committed.set(true);
 }
 
-/// Apply a brush edit to the real document brush, then re-stroke the preview —
-/// throttled, so a slider drag re-strokes at most every [`RESTROKE_THROTTLE_MS`]
-/// instead of once per `input` event. The brush itself always updates
-/// immediately; only the preview render is deferred.
+/// Apply a brush edit to the real document brush and re-stroke the preview —
+/// throttled to one apply per [`EDIT_THROTTLE_MS`] instead of one per `input`
+/// event, since the apply itself (engine dispatch, main-canvas repaint, `obs`
+/// refresh re-rendering the dialog, preview re-stroke) is what makes an
+/// unthrottled drag choppy. The slider thumb is a native range input, so it
+/// keeps moving smoothly between commits.
 ///
-/// Leading + trailing: an edit while idle re-strokes at once and starts a
-/// cooldown; edits during a cooldown just mark it dirty, and the cooldown task
-/// re-strokes with the latest brush (repeating until a window passes clean), so
-/// the preview always settles on the final slider value.
+/// Leading + trailing: an edit while idle applies at once and starts a
+/// cooldown; edits during a cooldown are deferred (latest wins — slider edits
+/// set absolute values, and one pointer drags one slider at a time), and the
+/// cooldown task applies them each window until one passes clean, so the brush
+/// always settles on the final slider value.
 ///
-/// Scope invariant: the cooldown task is the only thing that resets `throttle`
-/// to `None`, and `spawn` ties it to the scope whose rsx wrote the `oninput`
+/// Scope invariant: the cooldown task is the only thing that resets `cooling`
+/// to `false`, and `spawn` ties it to the scope whose rsx wrote the `oninput`
 /// closure. Today that's `BrushEditorModal` itself, which also owns the
-/// `Preview` signals — task and state die together on close, which is why a
-/// plain `spawn` (not `spawn_forever`) is correct. Don't move the slider rows
-/// into a child `#[component]`: the task would then die on a section fold with
-/// `throttle` stuck at `Some`, gating all further re-strokes.
-fn edit(state: AppState, mut preview: Preview, f: impl FnOnce(&mut BrushParams)) {
-    update_brush(state, f);
-    if preview.throttle.peek().is_some() {
-        preview.throttle.set(Some(true));
+/// `Preview` signals — task and state die together on close (the `use_drop`
+/// there flushes a still-pending edit), which is why a plain `spawn` (not
+/// `spawn_forever`) is correct. Don't move the slider rows into a child
+/// `#[component]`: the task would then die on a section fold with `cooling`
+/// stuck at `true`, gating all further edits.
+fn edit(state: AppState, mut preview: Preview, f: impl FnOnce(&mut BrushParams) + 'static) {
+    if *preview.cooling.peek() {
+        preview.pending.set(Some(Box::new(f)));
         return;
     }
-    preview.throttle.set(Some(false));
+    preview.cooling.set(true);
+    update_brush(state, f);
     restroke(state, preview);
     spawn(async move {
         loop {
-            sleep_ms(RESTROKE_THROTTLE_MS).await;
-            if *preview.throttle.peek() != Some(true) {
-                break;
-            }
-            preview.throttle.set(Some(false));
+            sleep_ms(EDIT_THROTTLE_MS).await;
+            let Some(f) = preview.pending.write().take() else { break };
+            update_brush(state, f);
             restroke(state, preview);
         }
-        preview.throttle.set(None);
+        preview.cooling.set(false);
     });
 }
 

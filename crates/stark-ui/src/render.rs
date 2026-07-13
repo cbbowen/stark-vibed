@@ -5,10 +5,11 @@
 //! app stores it in a signal, calls [`Renderer::paint`] after each command, and
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
+use stark_core::document::Tool;
 use stark_core::geom::Extent2;
 use stark_core::{
-    ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, MediaParams, ObservableState,
-    SurfaceId, ViewTransform,
+    ColorSpaceId, Engine, EnvironmentId, GpuContext, InputCommand, InputSample, MediaParams,
+    ObservableState, SurfaceId, ViewTransform,
 };
 use wasm_bindgen::JsCast;
 
@@ -40,6 +41,12 @@ pub struct Renderer {
 impl Renderer {
     pub fn process(&mut self, command: InputCommand) {
         self.engine.process(command);
+    }
+
+    /// Replay a full stroke as one commit — a single render, no per-sample
+    /// live-preview refresh (see `Engine::replay_stroke`).
+    pub fn replay_stroke(&mut self, tool: Tool, samples: &[InputSample]) {
+        self.engine.replay_stroke(tool, samples);
     }
 
     pub fn observe(&self) -> ObservableState {
@@ -239,7 +246,7 @@ fn canvas_size(canvas: &web_sys::HtmlCanvasElement) -> (u32, u32) {
 
 /// Await one animation frame, so a layout pass (and any just-applied stylesheet)
 /// is reflected before we measure the canvas.
-async fn next_frame() {
+pub(crate) async fn next_frame() {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         web_sys::window()
             .expect("window")

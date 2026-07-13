@@ -242,6 +242,25 @@ impl Engine {
         }
     }
 
+    /// Replay a whole recorded stroke as a single commit: start → samples →
+    /// end, skipping the per-sample live-preview refresh. `refresh_preview`
+    /// re-renders the entire in-flight stroke after every sample — right for
+    /// interactive drawing (the user must see each move), but O(n²) across a
+    /// replay where nothing is presented in between. This renders the stroke
+    /// exactly once, at commit. Used by the brush editor's test-stroke replay.
+    pub fn replay_stroke(&mut self, tool: Tool, samples: &[crate::command::InputSample]) {
+        let mut it = samples.iter();
+        let Some(first) = it.next() else { return };
+        self.session.start_stroke(tool, *first, self.clock);
+        for s in it {
+            self.session.stroke_to(*s);
+        }
+        if let Some(rec) = self.session.end_stroke() {
+            self.commit(ActionKind::CommitStroke(rec));
+        }
+        self.preview = None;
+    }
+
     /// Render the current canvas (preview if stroking, else committed) into
     /// `target`, clearing to `background` first (DESIGN.md §6.4).
     pub fn render(&mut self, target: &wgpu::TextureView, background: wgpu::Color) {
