@@ -164,19 +164,27 @@ fn apron_makes_dynamics_writeback_seamless_under_zoom() {
         return; // no usable GPU adapter
     }
 
-    // Same invariant as above, for the stamp loop's region write-back: a smudge
-    // straddling the 4-tile corner must render identically to the same smudge
-    // shifted into one tile's interior. A missing halo (or a slice that didn't
-    // cover whole blocks) would seam the relief along every tile boundary.
+    // Same invariant as above, for the swept-exchange loop's region write-back: a
+    // smudge straddling the 4-tile corner must render identically to the same
+    // smudge shifted into one tile's interior. A missing halo (or a slice that
+    // didn't cover whole blocks) would seam the relief along every tile boundary.
     let corner = render_shifted_smudge(Vec2::ZERO);
     let interior = render_shifted_smudge(Vec2::new(128.0, 128.0));
 
-    let (frac, worst) = diff_fraction(&corner, &interior);
+    // The two runs' *regions* differ in size (the corner stroke spans more tiles),
+    // so the pickup's normalized-coordinate bilinear samples (`world / rdim`)
+    // round differently at ~1 ulp; through f16 storage and the exaggerated relief
+    // lighting that surfaces as a broad, imperceptible (≤ a few levels) residual
+    // over the smudged area — not a seam. A real missing halo is a *contiguous
+    // band* of tens of levels along every boundary, so gate on the significantly-
+    // different area instead of the any-difference area.
+    let (_, worst) = diff_fraction(&corner, &interior);
+    let frac_big = frac_exceeding(&corner, &interior, 12);
     assert!(
-        worst <= 25 && frac < 0.07,
-        "dynamics write-back seam: corner vs interior differ by up to {worst} levels \
-         on {:.2}% of pixels — the region write-back is not covering tile boundaries",
-        frac * 100.0
+        worst <= 25 && frac_big < 0.005,
+        "dynamics write-back seam: corner vs interior differ by up to {worst} levels, \
+         {:.3}% of pixels by >12 — the region write-back is not covering tile boundaries",
+        frac_big * 100.0
     );
 }
 

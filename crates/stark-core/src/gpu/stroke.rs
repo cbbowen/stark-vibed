@@ -127,23 +127,13 @@ struct SliceUniform {
     offset: [f32; 4],
 }
 
-/// One stamp of the sequential loop (DESIGN.md §6.2): where the tip lands, its
-/// frame, and this stamp's exchange rates. All precomputed CPU-side as pure
-/// functions of the `StrokeRecord`, so replay is deterministic.
-#[derive(Copy, Clone)]
-struct StampPoint {
-    pos: Vec2,
-    /// The brush frame's x-axis in canvas space (unit): the travel tangent, or the
-    /// pen azimuth for a pinned nib (§6.6).
-    rot: Vec2,
-    radius: f32,
-    /// Fraction of the canvas paint under the tip lifted onto the tool this stamp.
-    lift: f32,
-    /// Fraction of the tool's carried paint laid back down this stamp.
-    dep: f32,
-    /// The brush's own paint (`add` axis): height laid this stamp at full coverage.
-    add_h: f32,
-    add_wet: f32,
+/// One dispatch step of the sequential swept-exchange loop (DESIGN.md §6.2):
+/// either a reservoir `pickup` or a segment's `snapshot`+`deposit` pair. `slot`
+/// is the 80-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as a
+/// pure function of the `StrokeRecord`, so replay is deterministic.
+struct LoopDispatch {
+    pickup: bool,
+    slot: [f32; 20],
 }
 
 /// GPU objects for the brush-dynamics stamp loop (DESIGN.md §6.2), built once.
@@ -162,6 +152,10 @@ struct DynamicsKit {
     pickup_bgl: wgpu::BindGroupLayout,
     deposit_pipeline: wgpu::ComputePipeline,
     deposit_bgl: wgpu::BindGroupLayout,
+    /// The deposit's prefix-τ volume binding (group 1) — the same texture the
+    /// swept fast path samples, so the exchange footprint *is* the definite
+    /// integral of the brush along the travel (compute-visible variant).
+    prefix_bgl: wgpu::BindGroupLayout,
     /// Bilinear clamp sampler for the region / reservoir / coverage lookups.
     exchange_sampler: wgpu::Sampler,
     // Region → CoW tile write-back.
@@ -681,12 +675,14 @@ impl StrokeRenderer {
         view
     }
 
-    /// Render a paint-manipulating stroke via the **sequential stamp loop**
-    /// (DESIGN.md §6.2): composite the base under the stroke into a 1:1 region,
-    /// walk the stamps *in order* on the GPU — each stamp exchanging paint between
-    /// the evolving region and a 2-D tool reservoir — then slice the evolved region
-    /// back into fresh CoW tiles. Returns `None` when the stroke's region exceeds
-    /// [`MAX_REGION_DIM`]; the caller degrades to the plain swept deposit.
+    /// Render a paint-manipulating stroke via the **sequential swept-exchange
+    /// loop** (DESIGN.md §6.2): composite the base under the stroke into a 1:1
+    /// region, then walk the stroke *in order* on the GPU — the canvas-side
+    /// exchange swept per flattened segment through the prefix-τ integral (the
+    /// same definite-integral footprint as the plain deposit), the 2-D tool
+    /// reservoir updated at `spacing · radius` cadence — and slice the evolved
+    /// region back into fresh CoW tiles. Returns `None` when the stroke's region
+    /// exceeds [`MAX_REGION_DIM`]; the caller degrades to the plain swept deposit.
     fn render_dynamic(
         &self,
         pool: &TilePool,
@@ -695,19 +691,34 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         channels: [f32; 4],
     ) -> Option<HashTrieMap<TileCoord, TilePairHandle>> {
-        let stamps = generate_stamps(rec);
-        if stamps.is_empty() {
+        // The same flattened segments as the fast path; extremely long strokes
+        // re-flatten coarser so the dispatch count stays bounded.
+        let mut segments = generate_segments(rec);
+        if segments.len() > MAX_STAMPS {
+            let total: f32 = segments.iter().map(|s| s.length).sum();
+            segments = generate_segments_step(
+                rec,
+                (total / MAX_STAMPS as f32).max(crate::path::FLATTEN_STEP),
+            );
+        }
+        if segments.is_empty() {
             return Some(base.clone());
         }
-        let coords = stamp_tiles(&stamps);
+        let coords = affected_tiles(&segments);
         let (halo, lo, region_origin, w, h) = region_rect(&coords)?;
 
         let kit = &self.dynamics;
         let device = &self.ctx.device;
         let mut scoped = ScopedResources::default();
 
-        // Footprint coverage mask: image brushes from the store; the round tip
-        // generated (and cached) from its hardness.
+        // The brush's swept-footprint prefix-τ (shared with the fast path) and its
+        // plain coverage mask (the reservoir texels' own footprint weights).
+        let prefix_view = match rec.brush.shape {
+            BrushShape::Stamp(id) => assets
+                .prefix_view(id)
+                .unwrap_or_else(|| self.round_prefix(rec.brush.hardness)),
+            BrushShape::Round => self.round_prefix(rec.brush.hardness),
+        };
         let cov_view = match rec.brush.shape {
             BrushShape::Stamp(id) => assets
                 .coverage_view(id)
@@ -847,11 +858,14 @@ impl StrokeRenderer {
         }
 
         // ---- Tool reservoir (ping-pong) + footprint snapshot textures. The
-        // footprint quad reaches radius·√2 at rotated corners, plus filter margin.
+        // snapshot rect must cover a segment quad's AABB at any rotation: half
+        // extents (radius + len/2 + margin, radius + margin), bounded by √2 × the
+        // half-diagonal.
         let loop_usage =
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING;
-        let rmax = stamps.iter().fold(0.5f32, |m, s| m.max(s.radius));
-        let dsize = (2.0 * (rmax * std::f32::consts::SQRT_2 + 2.0)).ceil() as u32;
+        let rmax = segments.iter().fold(0.5f32, |m, s| m.max(s.radius));
+        let lmax = segments.iter().fold(0.0f32, |m, s| m.max(s.length));
+        let dsize = (2.0 * std::f32::consts::SQRT_2 * (rmax + lmax * 0.5 + 1.5)).ceil() as u32;
         let under_color = make_tex(&mut scoped, (dsize, dsize), loop_usage, "stark dynamics under color");
         let under_aux = make_tex(&mut scoped, (dsize, dsize), loop_usage, "stark dynamics under aux");
         // The first reservoir is initialized by a render clear (the driver does the
@@ -909,32 +923,15 @@ impl StrokeRenderer {
             });
         }
 
-        // ---- Per-stamp params, one 256-byte slot each (dynamic uniform offsets —
-        // the standard way to vary a uniform across dispatches within one pass).
+        // ---- The dispatch plan (segments + interleaved pickups), one 256-byte
+        // slot each (dynamic uniform offsets — the standard way to vary a uniform
+        // across dispatches within one pass).
+        let plan = dynamics_plan(rec, &segments, region_origin, dsize, channels);
         const STRIDE: usize = 256;
-        let mut data = vec![0u8; stamps.len() * STRIDE];
-        let half = (dsize / 2) as f32;
-        for (i, s) in stamps.iter().enumerate() {
-            let p = s.pos - region_origin;
-            let vals: [f32; 16] = [
-                p.x,
-                p.y,
-                s.rot.x,
-                s.rot.y,
-                s.radius,
-                s.lift,
-                s.dep,
-                s.add_h,
-                channels[0],
-                channels[1],
-                channels[2],
-                rec.brush.color[3],
-                (p.x - half).floor(),
-                (p.y - half).floor(),
-                s.add_wet,
-                0.0,
-            ];
-            data[i * STRIDE..i * STRIDE + 64].copy_from_slice(bytemuck::cast_slice(&vals));
+        const SLOT: usize = 80; // sizeof the `Stamp` uniform (5 × vec4)
+        let mut data = vec![0u8; plan.len() * STRIDE];
+        for (i, d) in plan.iter().enumerate() {
+            data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::cast_slice(&d.slot));
         }
         let stamp_buf = scoped.buffer(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark dynamics stamps"),
@@ -944,15 +941,15 @@ impl StrokeRenderer {
         }));
         self.ctx.queue.write_buffer(&stamp_buf, 0, &data);
 
-        // ---- Bind groups. `params` binds a single 64-byte window whose dynamic
-        // offset selects the stamp; pickup/deposit come in two flavours for the
-        // reservoir ping-pong (src = stamp index % 2).
+        // ---- Bind groups. `params` binds a single slot-sized window whose dynamic
+        // offset selects the dispatch; pickup/deposit come in two flavours for the
+        // reservoir ping-pong.
         let params = || wgpu::BindGroupEntry {
             binding: 0,
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: &stamp_buf,
                 offset: 0,
-                size: wgpu::BufferSize::new(64),
+                size: wgpu::BufferSize::new(SLOT as u64),
             }),
         };
         fn tex(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
@@ -1003,7 +1000,6 @@ impl StrokeRenderer {
                     entries: &[
                         params(),
                         samp(),
-                        tex(6, &cov_view),
                         tex(7, &brush_color[i]),
                         tex(8, &brush_aux[i]),
                         tex(11, &under_color),
@@ -1014,6 +1010,13 @@ impl StrokeRenderer {
                 })
             })
             .collect();
+        // The deposit's prefix-τ volume (group 1) — the same view the fast path
+        // binds, so the exchange footprint is the identical definite integral.
+        let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark dynamics prefix bg"),
+            layout: &kit.prefix_bgl,
+            entries: &[tex(0, &prefix_view)],
+        });
 
         // ---- The loop: snapshot → pickup → deposit per stamp, in stroke order.
         // One compute pass; the implicit barriers between dispatches give the
@@ -1026,18 +1029,28 @@ impl StrokeRenderer {
             });
             let du = dsize.div_ceil(8);
             let bu = BRUSH_RES.div_ceil(8);
-            for i in 0..stamps.len() {
+            // The prefix-τ (used by `deposit` only) rides at group 1 for the
+            // whole pass; other pipelines' layouts simply don't reach it.
+            cpass.set_bind_group(1, &prefix_bg, &[]);
+            // `cur` = the reservoir texture holding the current tool state: each
+            // pickup reads `cur` and writes the other, then flips; the segment
+            // deposits in between read `cur` (the post-pickup state).
+            let mut cur = 0usize;
+            for (i, d) in plan.iter().enumerate() {
                 let off = (i * STRIDE) as u32;
-                let pp = i % 2;
-                cpass.set_pipeline(&kit.snapshot_pipeline);
-                cpass.set_bind_group(0, &snapshot_bg, &[off]);
-                cpass.dispatch_workgroups(du, du, 1);
-                cpass.set_pipeline(&kit.pickup_pipeline);
-                cpass.set_bind_group(0, &pickup_bgs[pp], &[off]);
-                cpass.dispatch_workgroups(bu, bu, 1);
-                cpass.set_pipeline(&kit.deposit_pipeline);
-                cpass.set_bind_group(0, &deposit_bgs[pp], &[off]);
-                cpass.dispatch_workgroups(du, du, 1);
+                if d.pickup {
+                    cpass.set_pipeline(&kit.pickup_pipeline);
+                    cpass.set_bind_group(0, &pickup_bgs[cur], &[off]);
+                    cpass.dispatch_workgroups(bu, bu, 1);
+                    cur = 1 - cur;
+                } else {
+                    cpass.set_pipeline(&kit.snapshot_pipeline);
+                    cpass.set_bind_group(0, &snapshot_bg, &[off]);
+                    cpass.dispatch_workgroups(du, du, 1);
+                    cpass.set_pipeline(&kit.deposit_pipeline);
+                    cpass.set_bind_group(0, &deposit_bgs[cur], &[off]);
+                    cpass.dispatch_workgroups(du, du, 1);
+                }
             }
         }
 
@@ -1129,8 +1142,14 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// the spline, then make each polyline edge a segment. The one-way load reservoir
 /// (`drain`) depletes with arc distance; radius follows pressure.
 fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
+    generate_segments_step(rec, crate::path::FLATTEN_STEP)
+}
+
+/// [`generate_segments`] with an explicit flatten step — the swept-exchange loop
+/// re-flattens coarser when a stroke would otherwise exceed [`MAX_STAMPS`].
+fn generate_segments_step(rec: &StrokeRecord, step: f32) -> Vec<Segment> {
     let b = &rec.brush;
-    let pts = crate::path::flatten(&rec.path, crate::path::FLATTEN_STEP);
+    let pts = crate::path::flatten(&rec.path, step);
     let mut segs = Vec::new();
     if pts.is_empty() {
         return segs;
@@ -1218,113 +1237,69 @@ fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
     coords
 }
 
-/// Build swept stamps for the sequential loop (DESIGN.md §6.2): flatten the
-/// spline, then walk it at `spacing · radius` arc-length steps. Every per-stamp
-/// rate is normalized by the travel since the last stamp, so the exchange over
-/// one radius of travel applies each axis' full fraction — independent of the
-/// spacing setting. Pure CPU float math → replay-deterministic.
-fn generate_stamps(rec: &StrokeRecord) -> Vec<StampPoint> {
+/// Build the swept-exchange dispatch plan (DESIGN.md §6.2): one `snapshot` +
+/// `deposit` pair per flattened segment (the canvas-side exchange, swept through
+/// the prefix-τ integral), interleaved with reservoir `pickup` steps every
+/// `spacing · radius` of travel. λ = ln(1 − axis) makes every rate exponential in
+/// exposure, so the exchange composes exactly across overlapping segment quads —
+/// the continuous path integral, independent of any spacing. Pure CPU float math
+/// → replay-deterministic.
+fn dynamics_plan(
+    rec: &StrokeRecord,
+    segments: &[Segment],
+    region_origin: Vec2,
+    dsize: u32,
+    channels: [f32; 4],
+) -> Vec<LoopDispatch> {
     let b = &rec.brush;
     let d = b.dynamics;
-    let pts = crate::path::flatten(&rec.path, crate::path::FLATTEN_STEP);
-    if pts.is_empty() {
-        return Vec::new();
-    }
     let spacing = b.spacing.clamp(0.05, 2.0);
-    let total: f32 = pts.windows(2).map(|w| (w[1].pos - w[0].pos).length()).sum();
-    // Cap the stamp count: an extremely long stroke stretches its spacing instead.
-    let min_step = (total / MAX_STAMPS as f32).max(0.25);
+    // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean).
+    let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0);
+    let l_lift = lambda(d.lift);
+    let l_dep = lambda(d.deposit);
+    let half = (dsize / 2) as f32;
 
-    let lift = d.lift.clamp(0.0, 1.0);
-    let deposit = d.deposit.clamp(0.0, 1.0);
-    let make_stamp = |sample: InputSample, dir: Vec2, dist: f32, step: f32| -> StampPoint {
-        let radius = (b.radius * sample.pressure).max(0.5);
-        let drain = (1.0 - b.drain * dist).max(0.0);
-        // Normalized travel since the last stamp: one radius applies the full axis.
-        let ds = step / radius;
-        let turns = orientation_turns(b.orientation, dir, sample.tilt);
-        let (s, c) = (turns * std::f32::consts::TAU).sin_cos();
-        let rot = Vec2::new(dir.x * c - dir.y * s, dir.x * s + dir.y * c);
-        StampPoint {
-            pos: sample.pos,
-            rot,
-            radius,
-            lift: 1.0 - (1.0 - lift).powf(ds),
-            dep: 1.0 - (1.0 - deposit).powf(ds),
-            add_h: b.height * d.add * drain * ds * ADD_GAIN,
-            add_wet: b.wetness * d.add * drain * ds * ADD_GAIN,
-        }
-    };
-
-    // First stamp at the start; direction from the first non-degenerate edge (a
-    // click gets an arbitrary frame — its round footprint doesn't care).
-    let first_dir = pts
-        .windows(2)
-        .map(|w| w[1].pos - w[0].pos)
-        .find(|v| v.length() > 1e-5)
-        .map(|v| v.normalize())
-        .unwrap_or(Vec2::new(1.0, 0.0));
-    let first_r = (b.radius * pts[0].pressure).max(0.5);
-    let mut out: Vec<StampPoint> = Vec::new();
-    out.push(make_stamp(pts[0], first_dir, 0.0, (spacing * first_r).max(min_step)));
-    let mut last_r = first_r;
-
-    let mut dist = 0.0f32;
-    let mut since = 0.0f32; // arc distance since the last stamp
-    for w in pts.windows(2) {
-        let (p0, p1) = (&w[0], &w[1]);
-        let v = p1.pos - p0.pos;
-        let len = v.length();
-        if len < 1e-6 {
-            continue;
-        }
-        let dir = v / len;
-        let mut t = 0.0f32;
-        loop {
-            let step = (spacing * last_r).max(min_step);
-            let need = step - since;
-            if t + need > len {
-                since += len - t;
-                dist += len - t;
-                break;
-            }
-            t += need;
-            dist += need;
-            let f = t / len;
-            let sample = InputSample {
-                pos: p0.pos + v * f,
-                pressure: p0.pressure + (p1.pressure - p0.pressure) * f,
-                tilt: p0.tilt + (p1.tilt - p0.tilt) * f,
-                time: p0.time + (p1.time - p0.time) * f as f64,
-            };
-            let stamp = make_stamp(sample, dir, dist, step);
-            last_r = stamp.radius;
-            out.push(stamp);
+    let mut plan = Vec::new();
+    let mut since = f32::INFINITY; // travel since the last pickup; ∞ forces the first
+    for s in segments {
+        let step = (spacing * s.radius).max(0.5);
+        if since >= step {
+            // Reservoir update: the tool exchanges for the travel just covered
+            // (the first pickup uses one nominal step — a fresh tip arriving).
+            let ds = if since.is_finite() { since } else { step };
+            let (sn, cs) = (s.orient * std::f32::consts::TAU).sin_cos();
+            let rot = Vec2::new(s.dir.x * cs - s.dir.y * sn, s.dir.x * sn + s.dir.y * cs);
+            let p = s.start - region_origin;
+            plan.push(LoopDispatch {
+                pickup: true,
+                slot: [
+                    p.x, p.y, rot.x, rot.y,
+                    s.radius, 0.0, l_lift, l_dep,
+                    channels[0], channels[1], channels[2], s.opacity,
+                    0.0, 0.0, s.orient, ds / s.radius,
+                    0.0, 0.0, 0.0, 0.0,
+                ],
+            });
             since = 0.0;
         }
+        // The segment's swept exchange: quad frame = start + travel tangent; the
+        // snapshot rect is centred on the segment midpoint.
+        let p = s.start - region_origin;
+        let mid = p + s.dir * (s.length * 0.5);
+        plan.push(LoopDispatch {
+            pickup: false,
+            slot: [
+                p.x, p.y, s.dir.x, s.dir.y,
+                s.radius, s.length / s.radius, l_lift, l_dep,
+                channels[0], channels[1], channels[2], s.opacity,
+                (mid.x - half).floor(), (mid.y - half).floor(), s.orient, 1.0,
+                s.height * d.add * ADD_GAIN, s.wet * d.add * ADD_GAIN, 0.0, 0.0,
+            ],
+        });
+        since += s.length;
     }
-    out
-}
-
-/// Tiles whose texture (interior + apron) any stamp's rotated footprint square
-/// can overlap (reach = radius·√2 at the corners) — the stamp loop's write-back
-/// set, mirroring [`affected_tiles`] for the swept path.
-fn stamp_tiles(stamps: &[StampPoint]) -> BTreeSet<TileCoord> {
-    let tile = TILE_SIZE as f32;
-    let mut coords = BTreeSet::new();
-    for s in stamps {
-        let reach = Vec2::splat(s.radius * std::f32::consts::SQRT_2 + TILE_APRON as f32);
-        let lo = s.pos - reach;
-        let hi = s.pos + reach;
-        let (x0, x1) = ((lo.x / tile).floor() as i32, (hi.x / tile).floor() as i32);
-        let (y0, y1) = ((lo.y / tile).floor() as i32, (hi.y / tile).floor() as i32);
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                coords.insert(TileCoord::new(x, y));
-            }
-        }
-    }
-    coords
+    plan
 }
 
 /// The haloed, tile-aligned region for a stroke's affected `coords`: those tiles
@@ -1471,7 +1446,7 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: true,
-            min_binding_size: wgpu::BufferSize::new(64),
+            min_binding_size: wgpu::BufferSize::new(80), // sizeof `Stamp` (5 × vec4)
         },
         count: None,
     };
@@ -1524,7 +1499,6 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
         entries: &[
             params_entry,
             csamp,
-            ctex(6, true),
             ctex(7, true),
             ctex(8, true),
             ctex(11, false),
@@ -1533,10 +1507,25 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
             stor(14),
         ],
     });
-    let cpipe = |label: &str, entry: &str, bgl: &wgpu::BindGroupLayout| {
+    // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
+    // prefix binding, but compute-visible.
+    let prefix_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark dynamics prefix bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    });
+    let cpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(label),
-            bind_group_layouts: &[Some(bgl)],
+            bind_group_layouts: bgls,
             immediate_size: 0,
         });
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1548,9 +1537,14 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
             cache: None,
         })
     };
-    let snapshot_pipeline = cpipe("stark dynamics snapshot", "snapshot", &snapshot_bgl);
-    let pickup_pipeline = cpipe("stark dynamics pickup", "pickup", &pickup_bgl);
-    let deposit_pipeline = cpipe("stark dynamics deposit", "deposit", &deposit_bgl);
+    let snapshot_pipeline =
+        cpipe("stark dynamics snapshot", "snapshot", &[Some(&snapshot_bgl)]);
+    let pickup_pipeline = cpipe("stark dynamics pickup", "pickup", &[Some(&pickup_bgl)]);
+    let deposit_pipeline = cpipe(
+        "stark dynamics deposit",
+        "deposit",
+        &[Some(&deposit_bgl), Some(&prefix_bgl)],
+    );
     let exchange_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("stark dynamics exchange sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1644,6 +1638,7 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
         exchange_sampler,
         slice_pipeline,
         slice_bgl,
+        prefix_bgl,
         round_cov: Arc::new(Mutex::new(None)),
     }
 }

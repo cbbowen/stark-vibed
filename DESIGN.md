@@ -474,39 +474,49 @@ degenerate segment given a minimal length.
 stroke onto CoW preview tiles; commit/replay render the same `StrokeRecord`
 through the same path → same stamps, same pixels.
 
-**Wet mixing & brush dynamics — the sequential stamp loop.** To smear paint
-already on the canvas — the core of a natural-media feel — the brush picks up wet
-pigment under it, carries it, and lays down an evolving mix downstream. This is
-**sequential and order-dependent** (what's under the brush includes what it
-deposited a moment ago), which is exactly what the swept-segment model is not.
-Rather than approximating the sequence with a parallel pass, the loop embraces
-it, all on the GPU with no readback (`gpu/stroke.rs::render_dynamic`,
-`dynamics.wesl`):
+**Wet mixing & brush dynamics — the sequential swept-exchange loop.** To smear
+paint already on the canvas — the core of a natural-media feel — the brush picks
+up wet pigment under it, carries it, and lays down an evolving mix downstream.
+This is **sequential and order-dependent** (what's under the brush includes what
+it deposited a moment ago), which the parallel swept pass cannot express. The
+loop embraces the sequence *without giving up the definite-integral rendering*:
+the canvas-side exchange is **swept per flattened segment through the same
+prefix-τ integral as the plain deposit**, so a dynamics stroke has the identical
+continuous, dab-free footprint. All on the GPU with no readback
+(`gpu/stroke.rs::render_dynamic`, `dynamics.wesl`):
 
 1. **Region composite.** The base tiles under the stroke (the affected set plus a
    one-tile ring) are composited once into a 1:1 canvas **region** texture
    (colour + the wide aux). This is the working canvas the stroke evolves.
    Bounded by `MAX_REGION_DIM`; an oversized stroke degrades to the plain swept
    deposit.
-2. **The loop.** The flattened path is walked at `spacing · radius` arc-length
-   steps (capped at `MAX_STAMPS`); each stamp runs three small compute dispatches
-   inside a **single compute pass** — the implicit barriers between dispatches
-   give the sequential semantics, and usage scopes are per-dispatch, so the
-   region can be sampled by one dispatch and storage-written by the next with no
-   copies and no pass churn. Per-stamp parameters ride one dynamic-offset uniform
-   buffer (a 256-byte slot per stamp).
-   - **snapshot** — copy the footprint's region texels into an `under` scratch,
-     so the deposit can read-modify-write the region.
-   - **pickup** — one thread per **tool reservoir** texel. The reservoir is a
-     real 2-D texture in brush-local coordinates (`BRUSH_RES`², ping-ponged), so
-     each part of the tip carries what *it* rolled through. Each texel samples
-     the evolving region under its spot on the canvas, lifts `load · cov` of the
-     canvas height onto the tool, and depletes the tool by this stamp's deposit.
-   - **deposit** — one thread per footprint texel: remove the lifted height from
-     the canvas and lay the parcel (the tool's deposit + the brush's own `add`
-     paint) over the snapshot, writing the region in place. Both dispatches read
-     the *same* pre-stamp reservoir and snapshot, so what the pickup depletes is
-     exactly what the deposit lays.
+2. **The loop.** The stroke's flattened segments (the same ones the fast path
+   sweeps; re-flattened coarser past `MAX_STAMPS`) run *in order* inside a
+   **single compute pass** — the implicit barriers between dispatches give the
+   sequential semantics, and usage scopes are per-dispatch, so the region can be
+   sampled by one dispatch and storage-written by the next with no copies and no
+   pass churn. Per-dispatch parameters ride one dynamic-offset uniform buffer.
+   - Per segment, **snapshot** (copy the segment quad's region texels into an
+     `under` scratch, so the exchange can read-modify-write the region) then
+     **deposit** — one thread per footprint texel. A texel's **exposure** to the
+     segment is the prefix-τ difference `e(x) = prefix(u) − prefix(u−d)` — the
+     brush's coverage integrated along the travel — and every exchange rate is
+     exponential in exposure, `1 − exp(λ·e)` with `λ = ln(1 − axis)`. Exposures
+     add across the overlapping quads of consecutive segments, so the rates
+     compose **exactly**: the whole stroke applies `1 − (1−axis)^∫e`, the
+     continuous path integral, independent of any spacing — no dabbing. The
+     dispatch removes the lifted height, then lays the parcel (the tool's
+     deposit + the brush's own `add` paint, the latter *linear* in exposure —
+     literally the plain deposit's swept height).
+   - At `spacing · radius` cadence, **pickup** — one thread per **tool
+     reservoir** texel. The reservoir is a real 2-D texture in brush-local
+     coordinates (`BRUSH_RES`², ping-ponged), so each part of the tip carries
+     what *it* rolled through. Each texel samples the evolving region under its
+     spot with exposure `cov · Δs/r` (its footprint weight × the travel since
+     the last pickup — the same exponential law, so depletion matches what the
+     interleaved segments lay), lifts canvas height onto the tool, and depletes
+     the tool by the upcoming deposits. The reservoir colour thus advances at a
+     coarser, cheap cadence while the canvas footprint stays continuous.
 3. **Write-back.** Each affected tile's full `TILE_TEX` block is sliced out of
    the shared region into a fresh CoW tile (`slice.wesl`, narrowing the wide aux
    to the persistent `(height, wet)`). Aprons are bit-identical to neighbour
@@ -520,42 +530,43 @@ weighted blends, and a parcel's blend weight is its own *visible* alpha
 (`1 − exp(−K·mass)`, the same translucent-slab law as the media pass), so thick
 deposits cover while thin glazes tint. The lift never touches the source's colour
 or alpha: the source fades because its **thickness** drops. Both sides of every
-transfer evaluate the same rate over the same footprint, so with `add = 0` total
-height (canvas + tool) is conserved up to resampling error. Per-stamp rates are
-normalized by the travel since the last stamp (`1 − (1−axis)^(Δs/r)`), so the
-behaviour is independent of the spacing setting.
+transfer integrate the same exponential rate over the same footprint (the canvas
+side through the prefix-τ, the reservoir side as `cov · Δs/r` — two quadratures
+of the same bilinear form), so with `add = 0` total height (canvas + tool) is
+conserved up to resampling error, independent of the pickup cadence.
 
 *Order-dependence is real.* Pickup reads the region as already modified by
-earlier stamps, so a stroke smears **its own trail** when it crosses it; drag
-falls out naturally (`load` + `deposit` physically carries paint downstream);
-and there is no band or column structure to alias — the failure modes of the
-earlier 1-D per-band reservoir (banded seams, base-only reads, copy-smear)
+earlier segments, so a stroke smears **its own trail** when it crosses it; drag
+falls out naturally (`lift` + `deposit` physically carries paint downstream);
+and there is no band, column, or stamp structure to alias — the failure modes of
+the earlier 1-D per-band reservoir (banded seams, base-only reads, copy-smear)
 do not exist in this model.
 
 *The axes* (`BrushDynamics` on `BrushParams` — a flat record in the action log):
 
 - `add` — lay the brush's own paint; the only inexhaustible **source**. A
   pure-`add` brush takes the swept fast path above, untouched by the loop.
-- `load` — vertical flux canvas → tool (an eraser when alone).
-- `deposit` — vertical flux tool → canvas (`load`+`deposit` with `add = 0` is a
+- `lift` — vertical flux canvas → tool (an eraser when alone).
+- `deposit` — vertical flux tool → canvas (`lift`+`deposit` with `add = 0` is a
   true mass-conserving smudge).
 - `charge` — a finite glob pre-loaded onto the tool (the palette-knife scoop);
-  it depletes as the tool deposits and refills as it loads.
+  it depletes as the tool deposits and refills as it lifts.
 - `drag`, `bleed`, `ridge`, `load_pressure`, `deposit_tilt` — **currently
   inert**, awaiting reintroduction as refinements *of the loop*: a forward
   deposit offset for the bow-wave drag, a footprint-local blur for bleed, edge
-  displacement for ridge, and per-stamp pressure/tilt modulation of the rates
-  (the loop already carries per-stamp state, so each is a local change).
+  displacement for ridge, and per-segment pressure/tilt modulation of the rates
+  (the loop already carries per-dispatch state, so each is a local change).
 
 *Determinism* — a stroke is a pure function of `base` + the `StrokeRecord`
-(fixed stamp walk, fixed shader math), so replay and `preview == committed` hold
-and the log stays compact: only path + params are stored, never per-stamp data.
-*Perf* — three footprint/reservoir-sized dispatches per stamp inside one pass; a
-live stroke re-renders per pointer move (incremental live rendering — caching the
-region and reservoir across moves — is a known future optimization, complicated
-by the incremental path re-fit). *Paint never dries* — wetness persists, the
-whole canvas stays workable; to glaze over "dry" paint the user adds a **new
-document layer**, which composites as if dry, so no drying model is needed.
+(fixed segment/pickup plan, fixed shader math), so replay and
+`preview == committed` hold and the log stays compact: only path + params are
+stored, never per-segment data. *Perf* — two footprint-sized dispatches per
+segment plus a reservoir-sized one per pickup, inside one pass; a live stroke
+re-renders per pointer move (incremental live rendering — caching the region and
+reservoir across moves — is a known future optimization, complicated by the
+incremental path re-fit). *Paint never dries* — wetness persists, the whole
+canvas stays workable; to glaze over "dry" paint the user adds a **new document
+layer**, which composites as if dry, so no drying model is needed.
 
 
 ### 6.3 Compositing & the "old masters" look
@@ -1123,13 +1134,15 @@ them perturb the convergence model above; they layer on top of it.
    the media pass evaluates Mixbox's polynomial, generated from the licensed
    submodule at build time). `CanvasMeta.color_space` selects it; golden per space.
 10. **Wet mixing & brush dynamics (§6.2) — DONE (rewritten 2026-07):** the
-   **sequential stamp loop** — region composite → ordered per-stamp compute
-   dispatches exchanging height between the evolving region and a 2-D tool
-   reservoir → whole-block region write-back. `add`/`load`/`deposit`/`charge`
-   are live; `drag`/`bleed`/`ridge`/`load_pressure`/`deposit_tilt` await
-   reintroduction as loop refinements. Goldens `smudge_drag`/`self_smear` plus
-   the conservation/eraser/charge/determinism suite (`tests/dynamics.rs`) and
-   the write-back seam regression (`tests/seam.rs`).
+   **sequential swept-exchange loop** — region composite → ordered per-segment
+   compute dispatches exchanging height between the evolving region and a 2-D
+   tool reservoir, the canvas side swept through the prefix-τ definite integral
+   (rates exponential in exposure, so they compose exactly — dab-free) → whole-
+   block region write-back. `add`/`lift`/`deposit`/`charge` are live;
+   `drag`/`bleed`/`ridge`/`load_pressure`/`deposit_tilt` await reintroduction as
+   loop refinements. Goldens `smudge_drag`/`self_smear` plus the conservation/
+   eraser/charge/determinism suite (`tests/dynamics.rs`) and the write-back seam
+   regression (`tests/seam.rs`).
 11. **Brush file upload:** a `<input type="file">` in the brush panel that reads
    image bytes and calls `Engine::import_brush`, so users can bring arbitrary
    brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
