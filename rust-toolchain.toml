@@ -1,0 +1,4 @@
+# The `history` dependency uses #![feature(associated_type_defaults)].
+[toolchain]
+channel = "nightly"
+targets = ["wasm32-unknown-unknown"]
