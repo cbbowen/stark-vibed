@@ -9,7 +9,15 @@
 //! The session itself lives in a signal beside the renderer; iroh runs in the
 //! browser over its relay transport, so this is the same code path native
 //! tests exercise over UDP.
+//!
+//! Every task in this module is spawned with `spawn_forever`: `spawn` ties a
+//! task to the calling component's scope, and these calls originate in modal
+//! button handlers — closing the modal must not cancel session work. The
+//! incoming pump outlives even its entry point, so its handle is kept in
+//! [`AppState::collab_pump`] and cancelled when the session it serves is
+//! replaced ([`install`]) or torn down ([`leave`]).
 
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_net::{
     actor_from_endpoint_id, Broadcaster, CollabSession, NetOptions, RemoteEvent, SecretKey,
@@ -37,7 +45,7 @@ pub fn share(state: AppState) {
         return;
     }
     set_phase(state, CollabPhase::Connecting);
-    spawn(async move {
+    spawn_forever(async move {
         // The actor id derives from the endpoint identity, and the shared log
         // must carry it before the snapshot is served — so generate the key
         // first, convert the engine, then bind the session around it.
@@ -85,7 +93,7 @@ pub fn join(state: AppState, ticket_text: String) {
         }
     };
     set_phase(state, CollabPhase::Connecting);
-    spawn(async move {
+    spawn_forever(async move {
         match CollabSession::join(&ticket, NetOptions::default()).await {
             Ok((session, file)) => {
                 let assets = {
@@ -122,6 +130,10 @@ pub fn leave(state: AppState) {
     let Some(session) = session_sig.write().take() else {
         return;
     };
+    let mut pump = state.collab_pump;
+    if let Some(task) = pump.write().take() {
+        task.cancel();
+    }
     {
         let mut renderer = state.renderer;
         if let Some(r) = renderer.write().as_mut() {
@@ -132,7 +144,7 @@ pub fn leave(state: AppState) {
     ticket.set(None);
     set_url_ticket(None);
     set_phase(state, CollabPhase::Solo);
-    spawn(async move {
+    spawn_forever(async move {
         session.shutdown().await;
     });
 }
@@ -156,7 +168,7 @@ pub fn flush_outbox(state: AppState) {
     else {
         return;
     };
-    spawn(async move {
+    spawn_forever(async move {
         for action in actions {
             if let Err(e) = tx.broadcast(action).await {
                 tracing::warn!("broadcast failed: {e}");
@@ -179,7 +191,7 @@ fn install(state: AppState, mut session: CollabSession) {
     session_sig.set(Some(session));
     set_phase(state, CollabPhase::Shared);
 
-    spawn(async move {
+    let task = spawn_forever(async move {
         let mut renderer = state.renderer;
         let mut obs = state.obs;
         while let Some(event) = events.recv().await {
@@ -204,6 +216,10 @@ fn install(state: AppState, mut session: CollabSession) {
         }
         tracing::info!("collab event stream ended");
     });
+    let mut pump = state.collab_pump;
+    if let Some(old) = pump.write().replace(task) {
+        old.cancel();
+    }
 }
 
 fn set_phase(state: AppState, phase: CollabPhase) {

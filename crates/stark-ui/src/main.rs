@@ -15,6 +15,7 @@ mod render;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use dioxus::dioxus_core::Task;
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
@@ -232,6 +233,10 @@ struct AppState {
     collab_phase: Signal<collab::CollabPhase>,
     /// The last share/join failure, surfaced in the dialog.
     collab_error: Signal<Option<String>>,
+    /// The incoming-event pump for `collab_session`. Its lifetime is tied to
+    /// the session's: [`collab::install`] replaces it, [`collab::leave`]
+    /// cancels it.
+    collab_pump: Signal<Option<Task>>,
 }
 
 fn app() -> Element {
@@ -243,6 +248,7 @@ fn app() -> Element {
     let collab_ticket = use_signal(|| None::<String>);
     let collab_phase = use_signal(collab::CollabPhase::default);
     let collab_error = use_signal(|| None::<String>);
+    let collab_pump = use_signal(|| None::<Task>);
     let state = AppState {
         renderer,
         obs,
@@ -252,6 +258,7 @@ fn app() -> Element {
         collab_ticket,
         collab_phase,
         collab_error,
+        collab_pump,
     };
     use_context_provider(|| state);
 
