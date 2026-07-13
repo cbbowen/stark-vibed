@@ -407,6 +407,14 @@ fn restroke(state: AppState, mut preview: Preview) {
 /// cooldown; edits during a cooldown just mark it dirty, and the cooldown task
 /// re-strokes with the latest brush (repeating until a window passes clean), so
 /// the preview always settles on the final slider value.
+///
+/// Scope invariant: the cooldown task is the only thing that resets `throttle`
+/// to `None`, and `spawn` ties it to the scope whose rsx wrote the `oninput`
+/// closure. Today that's `BrushEditorModal` itself, which also owns the
+/// `Preview` signals — task and state die together on close, which is why a
+/// plain `spawn` (not `spawn_forever`) is correct. Don't move the slider rows
+/// into a child `#[component]`: the task would then die on a section fold with
+/// `throttle` stuck at `Some`, gating all further re-strokes.
 fn edit(state: AppState, mut preview: Preview, f: impl FnOnce(&mut BrushParams)) {
     update_brush(state, f);
     if preview.throttle.peek().is_some() {

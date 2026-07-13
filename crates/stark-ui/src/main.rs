@@ -15,7 +15,7 @@ mod render;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use dioxus::dioxus_core::Task;
+use dioxus::dioxus_core::{spawn_forever, Task};
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
@@ -841,7 +841,10 @@ fn surface_asset(id: SurfaceId) -> Option<Asset> {
 /// so this runs async, like `new_document`'s fetch.
 fn set_surface(state: AppState, id: SurfaceId) {
     let mut renderer = state.renderer;
-    spawn(async move {
+    // `spawn_forever`: the caller is LightingPanel's scope, and hiding the
+    // panel mid-fetch must not cancel the switch (only root-owned signals are
+    // touched, so outliving the panel is safe).
+    spawn_forever(async move {
         let needs_bytes = renderer
             .read()
             .as_ref()
@@ -1044,17 +1047,19 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 /// maps stay out of the wasm binary — DESIGN.md §6.6), so this runs async.
 ///
 /// It owns closing the modal (`on_close`), calling it only once the work is done.
-/// Crucial: `spawn` ties the task to the *calling component's* scope, so if the
-/// modal closed synchronously first, unmounting it would cancel this task mid-
-/// fetch (silently — the symptom: the surface never applies). Keeping the modal
-/// mounted until completion keeps the task alive.
+/// `spawn_forever`, not `spawn`: a plain spawn would tie the task to the
+/// modal's scope, and the backdrop/Cancel still work during the fetch — a
+/// dismissal would cancel it mid-flight *after* `collab::leave` already ran
+/// (session gone, document never replaced). The task must outlive the modal;
+/// calling `on_close` after it unmounted is harmless (the callback lives in
+/// CommandRail's scope, which persists).
 fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId, on_close: EventHandler<()>) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
     // Replacing the document abandons any shared session (and clears the
     // ticket from the URL) — the fresh canvas is private until re-shared.
     collab::leave(state);
-    spawn(async move {
+    spawn_forever(async move {
         // Fetch + register the surface bytes the first time it's chosen
         // (procedural surfaces have no asset — see `surface_asset`).
         let needs_bytes = renderer
