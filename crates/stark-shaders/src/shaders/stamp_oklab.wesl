@@ -35,8 +35,10 @@ fn fs_main(in: VsOut) -> FsOut {
 
     var out: FsOut;
     // Premultiplied by opacity: the colour target over-blends, so per-arc rates sum
-    // through the overlapping segment quads to the local deposit.
-    out.color = vec4<f32>(brush_color() * op, op);
+    // through the overlapping segment quads to the local deposit. The colour is
+    // per-fragment: colour dynamics jitter it across the footprint and along the
+    // stroke (DESIGN.md §6.2).
+    out.color = vec4<f32>(brush_color(in) * op, op);
     // The wide scratch aux (DESIGN §6.1):
     //   .x = laid height (per-segment attr `in.misc.z`; additive over the overlap →
     //        builds impasto);

@@ -29,7 +29,8 @@ use wgpu::util::DeviceExt;
 use crate::assets::{build_coverage_r8, build_prefix_tau, AssetStore};
 use crate::colorspace::ColorSpace;
 use crate::command::InputSample;
-use crate::document::{BrushShape, OrientationSource, StrokeRecord};
+use crate::document::{BrushShape, ColorDynamics, NoiseKind, OrientationSource, StrokeRecord};
+use crate::noise::NOISE_TILE_PX;
 use crate::geom::{
     TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
 };
@@ -77,6 +78,9 @@ struct Segment {
     /// relative angle between the shape's native axis and the travel direction, used to
     /// pick the prefix-τ orientation layer. 0 for follow-stroke (DESIGN.md §6.6).
     orient: f32,
+    /// Arc length from the stroke start to this segment's start (canvas px) — the
+    /// third axis of the colour-dynamics noise lookup (DESIGN.md §6.2).
+    dist: f32,
 }
 
 /// Per-segment instance data for the sweep shader.
@@ -87,7 +91,7 @@ struct SegmentInstance {
     dir: [f32; 2],   // unit tangent
     geom: [f32; 4],  // radius, length, flow, _
     aux: [f32; 4],   // height (thickness rate), wet, opacity, _
-    extra: [f32; 4], // orientation (turns ∈ [0,1)), _, _, _
+    extra: [f32; 4], // orientation (turns ∈ [0,1)), arc length at segment start, _, _
 }
 
 /// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
@@ -98,9 +102,12 @@ struct SegmentInstance {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct TileXform {
-    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
-    color: [f32; 4],  // brush channels (.xyz), _
-    surf: [f32; 4],   // inv surface-tile (canvas px → bump uv), tooth, _, _
+    params: [f32; 4],     // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
+    color: [f32; 4],      // brush channels (.xyz), _
+    surf: [f32; 4],       // inv surface-tile (canvas px → bump uv), tooth, _, _
+    noise_freq: [f32; 4], // colour-dynamics frequency (x, y, arc), 1/NOISE_TILE_PX
+    noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
+    noise_off: [f32; 4],  // per-stroke noise lookup translation, _
 }
 
 /// Mirrors `View` in `composite.wesl`: canvas→region NDC + tile/apron uv mapping.
@@ -129,11 +136,11 @@ struct SliceUniform {
 
 /// One dispatch step of the sequential swept-exchange loop (DESIGN.md §6.2):
 /// either a reservoir `pickup` or a segment's `snapshot`+`deposit` pair. `slot`
-/// is the 80-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as a
-/// pure function of the `StrokeRecord`, so replay is deterministic.
+/// is the 144-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
+/// a pure function of the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
     pickup: bool,
-    slot: [f32; 20],
+    slot: [f32; 36],
 }
 
 /// GPU objects for the brush-dynamics stamp loop (DESIGN.md §6.2), built once.
@@ -174,6 +181,13 @@ pub struct StrokeRenderer {
     prefix_bgl: wgpu::BindGroupLayout,
     /// Cached round-tip prefix-τ, keyed by `hardness.to_bits()`.
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
+    /// Colour dynamics (DESIGN.md §6.2): the sweep's noise bind group layout
+    /// (group 3), the shared wrap/linear sampler, the 1×1×1 zero volume bound
+    /// when a brush's jitter is off, and the lazily-baked per-kind fields.
+    noise_bgl: wgpu::BindGroupLayout,
+    noise_sampler: wgpu::Sampler,
+    dummy_noise: wgpu::TextureView,
+    noise_cache: Arc<Mutex<Vec<(NoiseKind, wgpu::TextureView)>>>,
     /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for the tooth
     /// gate — currently a pass-through stub (`surface_tooth` TODO in stamp_common.wesl);
     /// no stamp/integrate shader reads the surface today, the weave shows through the
@@ -314,9 +328,49 @@ impl StrokeRenderer {
             ],
         });
 
+        // Group 3: the colour-dynamics noise field (a tileable 3-D volume) + its
+        // repeat sampler (DESIGN.md §6.2).
+        let noise_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark sweep noise bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        // Wrapping on every axis — the noise volume tiles (that's the whole point).
+        let noise_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("stark noise sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let (_dummy_tex, dummy_noise) = crate::noise::dummy_noise_texture(ctx);
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stark sweep layout"),
-            bind_group_layouts: &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&surface_bgl)],
+            bind_group_layouts: &[
+                Some(&uniform_bgl),
+                Some(&prefix_bgl),
+                Some(&surface_bgl),
+                Some(&noise_bgl),
+            ],
             immediate_size: 0,
         });
 
@@ -376,6 +430,10 @@ impl StrokeRenderer {
             uniform_bgl,
             prefix_bgl,
             round_prefix: Arc::new(Mutex::new(None)),
+            noise_bgl,
+            noise_sampler,
+            dummy_noise,
+            noise_cache: Arc::new(Mutex::new(Vec::new())),
             surface_bg,
             integrate_pipeline,
             integrate_bgl,
@@ -454,6 +512,27 @@ impl StrokeRenderer {
             }],
         });
 
+        // Colour dynamics (DESIGN.md §6.2): the noise volume for this brush and
+        // the stroke's lookup parameters. An inactive brush binds the zero
+        // volume with zero amplitudes — the deposit is exactly the constant
+        // colour.
+        let noise_view = self.noise_view(&rec.brush.color_dynamics);
+        let (nfreq, namp, noff) = noise_uniform(rec);
+        let noise_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark sweep noise bg"),
+            layout: &self.noise_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&noise_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.noise_sampler),
+                },
+            ],
+        });
+
         let instances: Vec<SegmentInstance> = segments
             .iter()
             .map(|s| SegmentInstance {
@@ -461,7 +540,7 @@ impl StrokeRenderer {
                 dir: s.dir.to_array(),
                 geom: [s.radius, s.length, s.flow, 0.0],
                 aux: [s.height, s.wet, s.opacity, 0.0],
-                extra: [s.orient, 0.0, 0.0, 0.0],
+                extra: [s.orient, s.dist, 0.0, 0.0],
             })
             .collect();
         // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
@@ -523,6 +602,9 @@ impl StrokeRenderer {
                 params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, 0.0],
                 color: channels,
                 surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
+                noise_freq: nfreq,
+                noise_amp: namp,
+                noise_off: noff,
             };
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark sweep xform"),
@@ -568,6 +650,7 @@ impl StrokeRenderer {
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &self.surface_bg, &[]);
+                pass.set_bind_group(3, &noise_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
                 pass.draw(0..4, 0..instances.len() as u32);
             }
@@ -655,6 +738,23 @@ impl StrokeRenderer {
         view
     }
 
+    /// The colour-dynamics noise volume for a brush: the baked field for its
+    /// kind (built once, cached — the bake is a fixed pure function, so at most
+    /// one texture per [`NoiseKind`] ever exists), or the 1×1×1 zero volume when
+    /// the jitter is off (amplitudes all 0 ⇒ the shader adds exactly nothing).
+    fn noise_view(&self, cd: &ColorDynamics) -> wgpu::TextureView {
+        if !cd.is_active() {
+            return self.dummy_noise.clone();
+        }
+        let mut cache = self.noise_cache.lock().expect("noise cache poisoned");
+        if let Some((_, view)) = cache.iter().find(|(k, _)| *k == cd.noise) {
+            return view.clone();
+        }
+        let (_tex, view) = crate::noise::build_noise_texture(&self.ctx, cd.noise);
+        cache.push((cd.noise, view.clone()));
+        view
+    }
+
     /// The round tip's coverage texture for `hardness`, cached like the prefix.
     fn round_coverage_view(&self, hardness: f32) -> wgpu::TextureView {
         let key = hardness.to_bits();
@@ -725,6 +825,9 @@ impl StrokeRenderer {
                 .unwrap_or_else(|| self.round_coverage_view(rec.brush.hardness)),
             BrushShape::Round => self.round_coverage_view(rec.brush.hardness),
         };
+        // Colour dynamics for the brush's own `add` paint — the same field and
+        // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
+        let noise_view = self.noise_view(&rec.brush.color_dynamics);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark dynamics stroke"),
@@ -928,7 +1031,7 @@ impl StrokeRenderer {
         // across dispatches within one pass).
         let plan = dynamics_plan(rec, &segments, region_origin, dsize, channels);
         const STRIDE: usize = 256;
-        const SLOT: usize = 80; // sizeof the `Stamp` uniform (5 × vec4)
+        const SLOT: usize = 144; // sizeof the `Stamp` uniform (9 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
         for (i, d) in plan.iter().enumerate() {
             data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::cast_slice(&d.slot));
@@ -1006,6 +1109,11 @@ impl StrokeRenderer {
                         tex(12, &under_aux),
                         tex(13, &region_color),
                         tex(14, &region_aux),
+                        tex(15, &noise_view),
+                        wgpu::BindGroupEntry {
+                            binding: 16,
+                            resource: wgpu::BindingResource::Sampler(&self.noise_sampler),
+                        },
                     ],
                 })
             })
@@ -1170,6 +1278,7 @@ fn generate_segments_step(rec: &StrokeRecord, step: f32) -> Vec<Segment> {
             wet: b.wetness * drain,
             opacity: b.color[3] * drain,
             orient: orientation_turns(b.orientation, dir, sample.tilt),
+            dist,
         }
     };
 
@@ -1192,6 +1301,42 @@ fn generate_segments_step(rec: &StrokeRecord, step: f32) -> Vec<Segment> {
         segs.push(make(p, Vec2::new(1.0, 0.0), r * 0.6, 0.0));
     }
     segs
+}
+
+/// The stroke's colour-dynamics uniform triplet — (frequency + 1/NOISE_TILE_PX,
+/// per-channel amplitude, per-stroke lookup translation) — shared by the sweep's
+/// `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter
+/// identically. Inactive jitter zeroes frequency *and* amplitude, so with the
+/// zero volume bound the shader's early-out keeps the deposit bit-identical.
+fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]) {
+    let cd = rec.brush.color_dynamics;
+    let (freq, amp) = if cd.is_active() {
+        (cd.frequency, cd.amplitude)
+    } else {
+        ([0.0; 3], [0.0; 3])
+    };
+    let off = noise_offset(rec.seed);
+    (
+        [freq[0], freq[1], freq[2], 1.0 / NOISE_TILE_PX],
+        [amp[0], amp[1], amp[2], 0.0],
+        [off[0], off[1], off[2], 0.0],
+    )
+}
+
+/// The per-stroke noise lookup translation in [0, 1)³, derived from the stroke
+/// seed via splitmix64 — each stroke samples a fresh part of the tileable field,
+/// deterministically (replay and live == committed hold, DESIGN.md §6.2).
+fn noise_offset(seed: u64) -> [f32; 3] {
+    let mut state = seed;
+    [(); 3].map(|_| {
+        state = state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^= z >> 31;
+        // Top 24 bits → [0, 1): exact in f32, uniform.
+        (z >> 40) as f32 / (1u64 << 24) as f32
+    })
 }
 
 /// The shape's orientation for a segment, as a fraction of a full turn ∈ [0, 1): the
@@ -1259,6 +1404,9 @@ fn dynamics_plan(
     let l_lift = lambda(d.lift);
     let l_dep = lambda(d.deposit);
     let half = (dsize / 2) as f32;
+    // Colour dynamics for the `add` paint — the same uniform triplet as the fast
+    // path, so both paths sample the identical field (DESIGN.md §6.2).
+    let (nfreq, namp, noff) = noise_uniform(rec);
 
     let mut plan = Vec::new();
     let mut since = f32::INFINITY; // travel since the last pickup; ∞ forces the first
@@ -1279,6 +1427,11 @@ fn dynamics_plan(
                     channels[0], channels[1], channels[2], s.opacity,
                     0.0, 0.0, s.orient, ds / s.radius,
                     0.0, 0.0, 0.0, 0.0,
+                    // f–i (colour dynamics) — unused by `pickup`.
+                    0.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0,
                 ],
             });
             since = 0.0;
@@ -1295,6 +1448,11 @@ fn dynamics_plan(
                 channels[0], channels[1], channels[2], s.opacity,
                 (mid.x - half).floor(), (mid.y - half).floor(), s.orient, 1.0,
                 s.height * d.add * ADD_GAIN, s.wet * d.add * ADD_GAIN, 0.0, 0.0,
+                // f–i: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
+                nfreq[0], nfreq[1], nfreq[2], nfreq[3],
+                namp[0], namp[1], namp[2], s.dist,
+                noff[0], noff[1], noff[2], 0.0,
+                region_origin.x, region_origin.y, 0.0, 0.0,
             ],
         });
         since += s.length;
@@ -1446,7 +1604,7 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: true,
-            min_binding_size: wgpu::BufferSize::new(80), // sizeof `Stamp` (5 × vec4)
+            min_binding_size: wgpu::BufferSize::new(144), // sizeof `Stamp` (9 × vec4)
         },
         count: None,
     };
@@ -1505,6 +1663,23 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
             ctex(12, false),
             stor(13),
             stor(14),
+            // The colour-dynamics noise volume + its repeat sampler (§6.2).
+            wgpu::BindGroupLayoutEntry {
+                binding: 15,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 16,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
     });
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's

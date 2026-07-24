@@ -7,7 +7,7 @@ pub mod timeline;
 
 pub use action::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
-    OrientationSource, StrokeRecord, Tool,
+    ColorDynamics, NoiseKind, OrientationSource, StrokeRecord, Tool,
 };
 pub use layer::{BlendMode, Layer, LayerId};
 pub use state::{CanvasBounds, DocState};

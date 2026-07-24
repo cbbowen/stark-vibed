@@ -82,6 +82,7 @@ pub mod geom;
 pub mod gpu;
 pub mod image;
 pub mod io;
+pub mod noise;
 pub mod path;
 pub mod session;
 

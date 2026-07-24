@@ -83,3 +83,27 @@ fn noise_3_to_4(p: vec3f, seed: u32) -> vec4f {
     let h = _pcg4d(vec4u(bitcast<u32>(p.x), bitcast<u32>(p.y), bitcast<u32>(p.z), seed));
     return vec4f(_unit(h.x), _unit(h.y), _unit(h.z), _unit(h.w));
 }
+
+// --- colour dynamics (DESIGN.md §6.2) ---------------------------------------------
+// Per-channel colour offset at a canvas position + arc length along the stroke:
+// sample the baked tileable 3-D noise field (signed, ≈[-1,1] per channel; built
+// on the CPU in stark-core's noise.rs) and scale each channel by its amplitude.
+// The lookup domain is (canvas.x, canvas.y, arc) — canvas-anchored, so the
+// offset is a pure function of canvas position + the stroke and tile aprons stay
+// bit-consistent (§6.4).
+//   freq: per-axis frequency .xyz, with 1/NOISE_TILE_PX pre-folded into .w.
+//   amp:  per colour-channel amplitude (0 = that channel holds still).
+//   off:  the per-stroke lookup translation (derived from the stroke seed).
+// The sampler must wrap (repeat) on all three axes.
+fn color_jitter(
+    tex: texture_3d<f32>,
+    s: sampler,
+    canvas: vec2f,
+    arc: f32,
+    freq: vec4f,
+    amp: vec3f,
+    off: vec3f,
+) -> vec3f {
+    let q = vec3f(canvas.x * freq.x, canvas.y * freq.y, arc * freq.z) * freq.w + off;
+    return amp * textureSampleLevel(tex, s, q, 0.0).xyz;
+}

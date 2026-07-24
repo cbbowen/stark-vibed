@@ -37,6 +37,7 @@
 // is a pure function of what it reads. Replay and live == committed hold.
 
 import package::stamp_common::{prefix_at};
+import package::noise::{color_jitter};
 
 struct Stamp {
     // a: position .xy (region px) + frame x-axis .zw (unit vector). For a segment
@@ -56,6 +57,17 @@ struct Stamp {
     d: vec4<f32>,
     // e: `add` rates per unit exposure: height .x, wet .y. .zw unused.
     e: vec4<f32>,
+    // f–i: colour dynamics (DESIGN.md §6.2) for the brush's own `add` paint —
+    // the same field/domain as the fast path's jitter, so the two paths agree.
+    // f: noise frequency per lookup axis .xyz, 1/NOISE_TILE_PX in .w.
+    f: vec4<f32>,
+    // g: per colour-channel noise amplitude .xyz (all 0 = off); arc length at
+    //    the segment start (canvas px) in .w.
+    g: vec4<f32>,
+    // h: per-stroke noise lookup translation .xyz; .w unused.
+    h: vec4<f32>,
+    // i: the region's canvas origin .xy (region px → canvas px); .zw unused.
+    i: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
@@ -86,6 +98,10 @@ struct Stamp {
 // The region, written in place by `deposit`.
 @group(0) @binding(13) var region_color_w: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(14) var region_aux_w: texture_storage_2d<rgba16float, write>;
+// The colour-dynamics noise field + its repeat sampler (deposit only): jitters
+// the brush's own `add` paint exactly like the fast path's stamp (DESIGN §6.2).
+@group(0) @binding(15) var dyn_noise_tex: texture_3d<f32>;
+@group(0) @binding(16) var dyn_noise_samp: sampler;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const EPS: f32 = 1e-5;
@@ -245,6 +261,17 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var m = uc.a * h;
     let canvas_lat = uc.rgb / max(uc.a, EPS);
 
+    // The brush's own colour at this texel: the stroke colour offset by the
+    // colour-dynamics field, sampled at the same (canvas, arc) domain as the fast
+    // path (canvas = region origin + region px; arc clamped to the segment body,
+    // continuous across overlapping quads).
+    var own_lat = st.c.xyz;
+    if any(st.g.xyz != vec3<f32>(0.0, 0.0, 0.0)) {
+        let canvas = st.i.xy + p;
+        let arc = st.g.w + clamp(xl, 0.0, st.b.y) * st.b.x;
+        own_lat += color_jitter(dyn_noise_tex, dyn_noise_samp, canvas, arc, st.f, st.g.xyz, st.h.xyz);
+    }
+
     // The parcel this segment lays: the tool's deposit + the brush's own `add`
     // paint — the latter linear in exposure, i.e. exactly the plain deposit's
     // path-integral height.
@@ -252,9 +279,9 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let add_h = st.e.x * e;
     let par_h = dep_h + add_h;
     let par_m = b_c.a * dep_h + st.c.w * add_h;
-    var par_lat = st.c.xyz;
+    var par_lat = own_lat;
     if par_m > EPS {
-        par_lat = (b_c.rgb * (b_c.a * dep_h) + st.c.xyz * (st.c.w * add_h)) / par_m;
+        par_lat = (b_c.rgb * (b_c.a * dep_h) + own_lat * (st.c.w * add_h)) / par_m;
     }
     let par_wet = b_a.y * dep + st.e.y * e;
 

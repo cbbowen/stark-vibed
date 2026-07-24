@@ -21,9 +21,9 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use stark_core::document::{BrushParams, BrushShape, OrientationSource, Tool};
+use stark_core::document::{BrushParams, BrushShape, NoiseKind, OrientationSource, Tool};
 use stark_core::geom::Vec2;
-use stark_core::{EnvironmentId, InputCommand, InputSample};
+use stark_core::{ColorSpaceId, EnvironmentId, InputCommand, InputSample};
 
 use crate::render::{self, Renderer};
 use crate::{
@@ -107,6 +107,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // Section fold state: the everyday groups start open, the specialised ones closed.
     let tip_open = use_signal(|| true);
     let paint_open = use_signal(|| true);
+    let color_open = use_signal(|| false);
     let pickup_open = use_signal(|| false);
     let flow_open = use_signal(|| false);
     let surface_open = use_signal(|| false);
@@ -123,6 +124,19 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         .unwrap_or_default();
     let is_round = matches!(brush.shape, BrushShape::Round);
     let d = brush.dynamics;
+    let cd = brush.color_dynamics;
+    // The jitter channels are the *colour space's* channels — label them for
+    // whatever space the document is in.
+    let space = state
+        .renderer
+        .read()
+        .as_ref()
+        .map(|r| r.color_space())
+        .unwrap_or(ColorSpaceId::Oklab);
+    let ch_labels = match space {
+        ColorSpaceId::Mixbox => ["Pigment 1", "Pigment 2", "Pigment 3"],
+        _ => ["Lightness", "Green \u{2194} red", "Blue \u{2194} yellow"],
+    };
     let chip = |active: bool| if active { "chip active" } else { "chip" };
 
     rsx! {
@@ -228,6 +242,36 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             // Reservoir depletion per px travelled — the stroke runs dry.
                             Slider { label: "Drain", min: 0.0, max: 0.01, value: brush.drain,
                                 oninput: move |v| edit(state, preview, move |b| b.drain = v) }
+                        }
+                    }
+
+                    Section {
+                        title: "Color dynamics", desc: "The colour wanders across the brush and along the stroke, following a noise field.",
+                        open: color_open,
+                        div { class: "brush-shapes",
+                            button { class: chip(cd.noise == NoiseKind::Simplex),
+                                onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Simplex),
+                                "Simplex" }
+                            button { class: chip(cd.noise == NoiseKind::White),
+                                onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::White),
+                                "White" }
+                        }
+                        // How far each colour channel wanders (± in the channel's units).
+                        for i in 0..3 {
+                            Slider { label: ch_labels[i].to_string(), min: 0.0, max: 0.5, value: cd.amplitude[i],
+                                oninput: move |v| edit(state, preview, move |b| b.color_dynamics.amplitude[i] = v) }
+                        }
+                        // How fast it wanders along each lookup axis; the modulation
+                        // sliders live only while some channel is active (no effect at 0).
+                        if cd.amplitude.iter().any(|a| *a > 0.0) {
+                            div { class: "be-sub",
+                                Slider { label: "Scale \u{2192} canvas X", min: 0.0, max: 8.0, value: cd.frequency[0],
+                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[0] = v) }
+                                Slider { label: "Scale \u{2192} canvas Y", min: 0.0, max: 8.0, value: cd.frequency[1],
+                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[1] = v) }
+                                Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[2],
+                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[2] = v) }
+                            }
                         }
                     }
 

@@ -568,8 +568,29 @@ incremental path re-fit). *Paint never dries* — wetness persists, the whole
 canvas stays workable; to glaze over "dry" paint the user adds a **new document
 layer**, which composites as if dry, so no drying model is needed.
 
-
-### 6.3 Compositing & the "old masters" look
+**Colour dynamics (colour jitter).** The applied colour can vary **across the
+brush and along the stroke**: `BrushParams.color_dynamics` (historized — it
+changes stored pixels) holds a noise kind plus three per-axis **frequency** and
+three per-channel **amplitude** factors. A 3-channel, exactly **tileable 3-D
+noise volume** — `White` (per-texel hash) or `Simplex` (a periodic simplex
+lattice: gradients hashed from `q = 6·(i,j,k) − (i+j+k)·𝟙 mod 6·P`, which is
+invariant under input translation by the period `P`, a multiple of 3) — is baked
+**once on the CPU with fixed constants** (`noise.rs`, `Rgba8Snorm` 64³, no
+transcendentals ⇒ bit-reproducible across platforms) and sampled with a repeat
+sampler. The lookup domain is `(canvas.x·f₀, canvas.y·f₁, arc·f₂)/NOISE_TILE_PX`
+plus a per-stroke translation derived from the stroke `seed`: the two canvas
+axes vary the colour across the footprint (and, being canvas-anchored, keep the
+deposit a pure function of canvas position + the stroke, so tile aprons stay
+bit-consistent — §6.4); the **arc-length** axis evolves it along the stroke, and
+clamping the arc to each segment's body makes it *continuous across overlapping
+segment quads* (a trailing margin's arc equals the next segment's start — no
+joint artifacts). The sampled signed noise offsets the brush's **channel triple
+in the current colour space** (Oklab `L,a,b`; Mixbox concentrations), applied
+per fragment in the sweep stamp (`brush_color`, stamp_common.wesl) and per texel
+to the `add` paint in the exchange loop's `deposit` (dynamics.wesl) — both
+paths share the field and parameters, so a brush looks the same whichever path
+renders it. Amplitude 0 (the default) binds a 1×1×1 zero volume and early-outs —
+bit-identical to the constant-colour deposit (all prior goldens unchanged).
 
 `Compositor` blends layers bottom-to-top per dirty tile **in Oklab**, then a
 **media pass** turns the height/wet channels into the painterly result: it derives surface

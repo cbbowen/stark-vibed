@@ -150,6 +150,59 @@ impl Default for BrushDynamics {
     }
 }
 
+/// The kind of noise field driving [`ColorDynamics`] (DESIGN.md §6.2). Each kind
+/// is baked once into a small tileable 3-D texture (`noise.rs`), so lookups are
+/// cheap and deterministic across replay, peers, and builds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NoiseKind {
+    /// Uncorrelated per-texel randomness — grainy speckle.
+    White,
+    /// Smooth organic gradient noise (a seamlessly tiling simplex-class noise) —
+    /// soft, flowing variation.
+    #[default]
+    Simplex,
+}
+
+/// Colour dynamics (colour jitter): lets the applied colour vary **across the
+/// brush and along the stroke** (DESIGN.md §6.2). A 3-channel tileable 3-D noise
+/// field is sampled at `(canvas.x, canvas.y, arc length)` — the two canvas axes
+/// give spatial variation across the footprint (and keep tile aprons consistent,
+/// §6.4: the offset is a pure function of canvas position + the stroke), the
+/// third evolves the colour along the stroke — and the three noise channels
+/// offset the three colour channels *of the current colour space* (Oklab
+/// `L, a, b`; Mixbox pigment concentrations). The per-stroke `seed` translates
+/// the lookup so each stroke draws a fresh part of the field, deterministically.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColorDynamics {
+    /// Which noise field to sample.
+    pub noise: NoiseKind,
+    /// Frequency scale per lookup axis (canvas x, canvas y, arc length): 1 = one
+    /// noise tile per [`crate::noise::NOISE_TILE_PX`] canvas px; higher = finer
+    /// variation along that axis; 0 = constant along that axis.
+    pub frequency: [f32; 3],
+    /// Noise amplitude per colour channel, in the colour space's own units
+    /// (noise is signed, so a channel wanders ±amplitude). All 0 = off — the
+    /// exact historical constant-colour deposit.
+    pub amplitude: [f32; 3],
+}
+
+impl Default for ColorDynamics {
+    fn default() -> Self {
+        Self {
+            noise: NoiseKind::default(),
+            frequency: [1.0; 3],
+            amplitude: [0.0; 3],
+        }
+    }
+}
+
+impl ColorDynamics {
+    /// Whether the jitter has any effect (any channel amplitude non-zero).
+    pub fn is_active(&self) -> bool {
+        self.amplitude.iter().any(|a| *a != 0.0)
+    }
+}
+
 /// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
 /// the Oklab working space at stamp time (DESIGN.md §6.5).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,6 +244,11 @@ pub struct BrushParams {
     /// preserves the look of documents saved before it existed.
     #[serde(default)]
     pub tooth: f32,
+    /// Colour dynamics (colour jitter) — how the applied colour varies across the
+    /// brush and along the stroke (DESIGN.md §6.2). Historized (it changes stored
+    /// pixels); the default (amplitude 0) is the historical constant colour.
+    #[serde(default)]
+    pub color_dynamics: ColorDynamics,
 }
 
 impl Default for BrushParams {
@@ -208,6 +266,7 @@ impl Default for BrushParams {
             orientation: OrientationSource::default(),
             dynamics: BrushDynamics::default(),
             tooth: 0.5,
+            color_dynamics: ColorDynamics::default(),
         }
     }
 }

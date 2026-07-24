@@ -5,16 +5,25 @@
 // turns that depth into channel deposits (see stamp_oklab.wesl; the Mixbox space
 // reuses it, since its deposit is the same premultiplied-"over").
 
+import package::noise::{color_jitter};
+
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
     // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); params.w unused.
     params: vec4<f32>,
     // The brush's colour in the color space's channels (.xyz); .w unused. Constant
     // across the stroke — per-segment variation (pressure, drain) rides the instance
-    // attributes instead.
+    // attributes, and colour dynamics (below) jitter it per fragment.
     color: vec4<f32>,
     // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth; .zw unused.
     surf: vec4<f32>,
+    // Colour dynamics (DESIGN.md §6.2): noise frequency per lookup axis
+    // (canvas x, canvas y, arc) in .xyz with 1/NOISE_TILE_PX pre-folded into .w.
+    noise_freq: vec4<f32>,
+    // Per colour-channel noise amplitude .xyz (all 0 = jitter off); .w unused.
+    noise_amp: vec4<f32>,
+    // Per-stroke noise lookup translation .xyz (from the stroke seed); .w unused.
+    noise_off: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
@@ -28,6 +37,11 @@ struct TileXform {
 // in (DESIGN.md §6.4).
 @group(2) @binding(0) var surface_tex: texture_2d<f32>;
 @group(2) @binding(1) var surface_samp: sampler;
+// The colour-dynamics noise field (DESIGN.md §6.2): a tileable 3-D volume
+// (three signed channels) sampled at (canvas.x, canvas.y, arc) with a repeat
+// sampler. A 1×1×1 zero volume is bound when the brush's jitter is off.
+@group(3) @binding(0) var noise_tex: texture_3d<f32>;
+@group(3) @binding(1) var noise_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -37,6 +51,10 @@ struct VsOut {
     // Shape orientation in turns ∈ [0,1): the relative angle between the shape's native
     // axis and the travel direction, picking the prefix-τ orientation slice (§6.6).
     @location(3) orient: f32,
+    // Arc length of the segment's start from the stroke start (.x, canvas px) and the
+    // segment radius (.y) — together they recover the fragment's own arc length for the
+    // colour-dynamics lookup.
+    @location(4) sinfo: vec2<f32>,
 }
 
 struct FsOut {
@@ -53,7 +71,7 @@ fn sweep_vertex(
     dir: vec2<f32>,   // unit tangent
     geom: vec4<f32>,  // radius, length, flow, _
     aux: vec4<f32>,   // height(thickness rate), wet, opacity, _
-    extra: vec4<f32>, // orientation (turns ∈ [0,1)), _, _, _
+    extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at segment start, _, _
 ) -> VsOut {
     let radius = geom.x;
     let lr = geom.y / radius; // segment length in radius units
@@ -72,12 +90,28 @@ fn sweep_vertex(
     out.misc = vec4<f32>(lr, geom.z, aux.x, aux.y);
     out.op = aux.z;
     out.orient = extra.x;
+    out.sinfo = vec2<f32>(extra.y, radius);
     return out;
 }
 
-// The brush's colour channels (per the color space), constant over the stroke.
-fn brush_color() -> vec3<f32> {
-    return xf.color.xyz;
+// The brush's colour channels (per the color space) at this fragment: the
+// stroke-constant colour, offset by the colour-dynamics noise field (DESIGN.md
+// §6.2). The lookup domain is (canvas position, arc length along the stroke):
+// canvas-anchored, so the deposit stays a pure function of canvas position + the
+// stroke (tile aprons remain bit-consistent, §6.4). The arc is clamped to the
+// segment body, which makes it *continuous* across the overlapping quads of
+// consecutive segments (a trailing margin's arc equals the next segment's start).
+fn brush_color(in: VsOut) -> vec3<f32> {
+    if all(xf.noise_amp.xyz == vec3<f32>(0.0, 0.0, 0.0)) {
+        return xf.color.xyz;
+    }
+    let canvas = xf.params.xy + in.clip.xy;
+    let arc = in.sinfo.x + clamp(in.local.x, 0.0, in.misc.x) * in.sinfo.y;
+    let jitter = color_jitter(
+        noise_tex, noise_samp, canvas, arc,
+        xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xyz,
+    );
+    return xf.color.xyz + jitter;
 }
 
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0
