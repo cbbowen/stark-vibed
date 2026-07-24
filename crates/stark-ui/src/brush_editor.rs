@@ -79,22 +79,6 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         pending: use_signal(|| None),
     };
 
-    // TEMPORARY diagnostic (slider drag-lag hunt): while the dialog is open, log
-    // every frame that blows its budget. During a drag the console then shows
-    // whether jank is continuous (something per-event/per-frame) or clustered at
-    // the throttled applies (the apply itself is one long stall).
-    use_future(move || async move {
-        let mut last = js_sys::Date::now();
-        loop {
-            render::next_frame().await;
-            let now = js_sys::Date::now();
-            if now - last > 34.0 {
-                tracing::info!("frame stall: {:.0}ms", now - last);
-            }
-            last = now;
-        }
-    });
-
     // If the dialog closes mid-cooldown the throttle task is cancelled with it;
     // commit any deferred edit so the tail of a drag isn't lost.
     use_drop(move || {
