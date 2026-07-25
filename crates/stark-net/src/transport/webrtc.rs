@@ -22,20 +22,18 @@
 //! peer behind a hostile NAT still joins, just with relay latency — and because
 //! the mesh floods, one peer stuck on relay never isolates anyone else.
 //!
-//! # Status
+//! # Two wires, one node
 //!
-//! Compiled but not yet selected by [`CollabSession`](crate::CollabSession),
-//! which still builds the iroh transport on every target. Switching over also
-//! means serving the catch-up/asset ALPN through the facade — it owns its
-//! endpoints and exposes no `Endpoint`/`Router` — and none of that can be
-//! exercised outside a browser. See the `webrtc` feature note in `Cargo.toml`.
-
-// Everything here is reachable only once the session selects this transport.
-#![allow(dead_code)]
+//! The facade owns its endpoints and exposes no `Endpoint`/`Router`, so the
+//! catch-up/asset protocol cannot ride an iroh `ProtocolHandler` here. Instead
+//! [`serve_catchup`] accepts that ALPN through the facade and answers with
+//! [`proto::answer`] — the same protocol the iroh backend serves, only the
+//! plumbing differs.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use iroh::EndpointId;
 use iroh_webrtc_transport::browser::{
@@ -47,11 +45,9 @@ use n0_future::task;
 use crate::mesh::{
     MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError, PeerId, TransportResult,
 };
+use crate::mirror::Mirror;
 
-use super::iroh::to_endpoint_id;
-
-/// The mesh ALPN, shared with the iroh transport so either side can speak it.
-pub(crate) const ALPN: &[u8] = super::iroh::ALPN;
+use super::{to_endpoint_id, MESH_ALPN as ALPN};
 
 /// Matches the iroh transport's ceiling.
 const MAX_FRAME: usize = 1024 * 1024;
@@ -210,6 +206,55 @@ impl MeshRecv for WebRtcRecv {
                 None => return Ok(None),
             }
         }
+    }
+}
+
+/// Serve the catch-up/asset protocol over the facade, for as long as the node
+/// lives. Every peer is a provider, so a joiner can bootstrap from any member.
+pub(crate) fn serve_catchup(node: BrowserWebRtcNode, mirror: Arc<Mutex<Mirror>>) {
+    task::spawn(async move {
+        let acceptor = match node.accept(crate::proto::ALPN).await {
+            Ok(acceptor) => acceptor,
+            Err(e) => {
+                tracing::error!("cannot serve catch-up over webrtc: {e:?}");
+                return;
+            }
+        };
+        loop {
+            match acceptor.accept().await {
+                Ok(Some(conn)) => {
+                    // One task per peer: a slow fetch must not stall the others.
+                    task::spawn(serve_catchup_conn(conn, mirror.clone()));
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::debug!("catch-up accept ended: {e:?}");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Answer requests on one connection until the peer goes away.
+async fn serve_catchup_conn(conn: BrowserWebRtcConnection, mirror: Arc<Mutex<Mirror>>) {
+    loop {
+        let Ok(stream) = conn.accept_bi().await else { return };
+        // The peer half-closes after its request, so this returns the whole of it.
+        let Ok(request) = stream.read_to_end().await else { return };
+        let response = match crate::proto::decode_request(&request)
+            .and_then(|req| crate::proto::answer(&mirror, req))
+        {
+            Ok(response) => response,
+            Err(e) => {
+                tracing::warn!("bad catch-up request over webrtc: {e}");
+                return;
+            }
+        };
+        if stream.send_all(&response).await.is_err() {
+            return;
+        }
+        let _ = stream.close_send().await;
     }
 }
 

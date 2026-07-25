@@ -13,27 +13,18 @@ use std::sync::Arc;
 
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::mesh::{
     MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError, PeerId, TransportResult,
 };
 
-/// The mesh's own ALPN, distinct from the catch-up/asset protocol.
-pub(crate) const ALPN: &[u8] = b"stark/mesh/0";
+use super::{to_endpoint_id, to_peer_id, MESH_ALPN as ALPN};
 
 /// Hard ceiling on a single frame, so a bad length prefix cannot make us
 /// allocate wildly. Comfortably above the mesh's own `max_frame`.
 const MAX_FRAME: usize = 1024 * 1024;
-
-pub(crate) fn to_peer_id(id: EndpointId) -> PeerId {
-    PeerId(*id.as_bytes())
-}
-
-pub(crate) fn to_endpoint_id(peer: PeerId) -> Option<EndpointId> {
-    EndpointId::from_bytes(peer.as_bytes()).ok()
-}
 
 /// Dials peers over an [`Endpoint`] and receives connections from [`MeshProto`].
 #[derive(Debug)]

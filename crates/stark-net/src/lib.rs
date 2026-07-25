@@ -20,6 +20,7 @@
 //! [`Engine::merge_remote`](stark_core::Engine::merge_remote) /
 //! [`Engine::import_brush`](stark_core::Engine::import_brush).
 
+mod backend;
 pub mod mesh;
 mod mirror;
 mod proto;
@@ -37,9 +38,9 @@ pub use iroh::{EndpointId, SecretKey};
 /// feature (DESIGN.md §12.4). Re-exported so the frontend can reach it without a
 /// separate dependency.
 ///
-/// The mesh's binding onto it lives in `transport::webrtc` and compiles under
-/// this feature, but [`CollabSession`] does not select it yet — see the
-/// `webrtc` note in `Cargo.toml` for what remains.
+/// On wasm the feature switches the session onto it wholesale — see the
+/// `webrtc` note in `Cargo.toml`. Sessions are driven the same way either way;
+/// nothing here needs to be used directly.
 #[cfg(feature = "webrtc")]
 pub use iroh_webrtc_transport;
 

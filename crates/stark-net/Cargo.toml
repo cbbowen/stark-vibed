@@ -14,16 +14,21 @@ publish = false
 # traffic otherwise crosses n0's relays; WebRTC gives lower-latency direct paths
 # with automatic relay fallback per connection.
 #
-# The blocker this used to carry is gone: the live wire is now `crate::mesh`,
-# which is built on explicit dial/accept and so *can* run over the facade
-# (iroh-gossip could not — it is a self-dialing swarm). `transport::webrtc`
-# implements the mesh's WebRTC binding and is compiled by this feature.
+# This is only possible because the live wire is `crate::mesh`, built on explicit
+# dial/accept — iroh-gossip could not use the facade, being a self-dialing swarm.
 #
-# Not yet switched on at the session level: `CollabSession` still constructs the
-# iroh transport on every target, because moving it onto the facade also means
-# serving the catch-up/asset ALPN through the facade (it owns its endpoints and
-# exposes no `Endpoint`/`Router`), and none of that is verifiable outside a
-# browser. See vendor/iroh-webrtc-transport/VENDORING.md.
+# On **wasm** the feature swaps the whole session backend (`crate::backend`):
+# both wires — mesh live actions and the catch-up/asset ALPN — ride facade
+# connections dialed `webrtc_preferred`, so each falls back to relay on its own
+# if the WebRTC handshake fails. `CollabSession`'s public API is unchanged.
+#
+# On **native** it changes nothing at the session level: iroh already hole-punches,
+# so peers get direct connections without WebRTC. The feature only pulls the
+# crate in there so it builds and can be tested.
+#
+# NOT verified end-to-end: the wasm path compiles and its protocol is shared with
+# the (well-tested) iroh path, but exercising real browser WebRTC needs a browser.
+# See vendor/iroh-webrtc-transport/VENDORING.md.
 webrtc = ["dep:iroh-webrtc-transport"]
 
 [dependencies]

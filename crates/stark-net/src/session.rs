@@ -15,33 +15,27 @@
 //! keeping the properties that matter: every peer receives every action, once,
 //! even without a direct connection to its author.
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iroh::endpoint::presets;
-use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh::{EndpointAddr, EndpointId, SecretKey};
 use n0_future::task;
 use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
 use stark_core::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
+use crate::backend::{self, Dialer, Shutdown};
 use crate::mesh::{Mesh, MeshConfig, MeshEvent, TopicId};
 use crate::mirror::Mirror;
-use crate::proto::{self, AssetResponse, CollabProto, Request, Wire};
+use crate::proto::{AssetResponse, Request, Wire};
 use crate::ticket::SessionTicket;
-use crate::transport::iroh::{to_peer_id, IrohMeshTransport};
+use crate::transport::to_peer_id;
 use crate::Result;
 
 /// A long stroke's fitted control points can be sizeable, so the ceiling sits
 /// well past any plausible single action (paths are RDP-simplified; pixels
 /// never ride the mesh).
 const MAX_MESH_FRAME: usize = 256 * 1024;
-
-/// How long to wait for relay/publish readiness before minting a ticket.
-const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -97,8 +91,8 @@ impl NetOptions {
 /// A live shared session: broadcasts local actions, serves joiners and asset
 /// requests, and surfaces remote edits as [`RemoteEvent`]s.
 pub struct CollabSession {
-    endpoint: Endpoint,
-    router: Router,
+    local_id: EndpointId,
+    shutdown: Shutdown,
     topic: TopicId,
     mesh: Mesh,
     mirror: Arc<Mutex<Mirror>>,
@@ -114,14 +108,14 @@ impl CollabSession {
     /// [`SecretKey`] first and pass it in `opts` so the actor id is known
     /// before binding.
     pub async fn host(doc: DocumentFile, opts: NetOptions) -> Result<Self> {
-        let (endpoint, router, mirror, transport) =
-            bind_stack(Mirror::from_file(&doc), &opts).await?;
+        let mirror = Arc::new(Mutex::new(Mirror::from_file(&doc)));
+        let bound = backend::bind(mirror.clone(), &opts).await?;
         // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
         let topic = TopicId::from_bytes(SecretKey::generate().to_bytes());
         // The first member starts the swarm alone; joiners bootstrap from it.
-        let (mesh, events) = Mesh::spawn(transport, mesh_config(topic), []);
-        let ticket_addr = reachable_addr(&endpoint, &opts).await;
-        Ok(Self::finish(endpoint, router, topic, mesh, events, mirror, ticket_addr))
+        let (mesh, events) = Mesh::spawn(bound.transport, mesh_config(topic), []);
+        let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
+        Ok(Self::finish(bound.dialer, bound.shutdown, topic, mesh, events, mirror, ticket_addr)?)
     }
 
     /// Join an existing session from a ticket. Returns the session and the
@@ -129,55 +123,65 @@ impl CollabSession {
     /// [`Engine::join_collaboration`](stark_core::Engine::join_collaboration)
     /// (with [`CollabSession::actor_id`] as the actor).
     pub async fn join(ticket: &SessionTicket, opts: NetOptions) -> Result<(Self, DocumentFile)> {
-        let empty = Mirror::from_file(&DocumentFile::new(Vec::new()));
-        let (endpoint, router, mirror, transport) = bind_stack(empty, &opts).await?;
+        let mirror = Arc::new(Mutex::new(Mirror::from_file(&DocumentFile::new(Vec::new()))));
+        let bound = backend::bind(mirror.clone(), &opts).await?;
 
-        // Connect first: this also teaches the endpoint the peer's address, so
-        // the mesh can dial it by bare id below.
-        let conn = endpoint.connect(ticket.addr.clone(), proto::ALPN).await?;
+        // Open the catch-up connection first: on iroh this also teaches the
+        // endpoint the peer's address, so the mesh can dial it by bare id below.
+        let catchup = bound.dialer.open(ticket.addr.clone()).await?;
 
         // Enter the live swarm *before* fetching the snapshot: everything
         // before the join is in the snapshot, everything after rides the mesh,
         // and the overlap deduplicates by action id. The ticket's peer is our
         // one contact; the rest of the swarm arrives through peer exchange.
         let (mesh, events) = Mesh::spawn(
-            transport,
+            bound.transport,
             mesh_config(ticket.topic),
             [to_peer_id(ticket.addr.id)],
         );
         wait_for_swarm(&mesh).await;
 
-        let snapshot = proto::request(&conn, Request::Snapshot).await?;
-        conn.close(0u8.into(), b"joined");
+        let snapshot = catchup.request(Request::Snapshot).await?;
+        catchup.close().await;
         let file = DocumentFile::from_bytes(&snapshot)?;
         *mirror.lock().expect("mirror poisoned") = Mirror::from_file(&file);
 
-        let ticket_addr = reachable_addr(&endpoint, &opts).await;
-        let session =
-            Self::finish(endpoint, router, ticket.topic, mesh, events, mirror, ticket_addr);
+        let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
+        let session = Self::finish(
+            bound.dialer,
+            bound.shutdown,
+            ticket.topic,
+            mesh,
+            events,
+            mirror,
+            ticket_addr,
+        )?;
         Ok((session, file))
     }
 
     fn finish(
-        endpoint: Endpoint,
-        router: Router,
+        dialer: Dialer,
+        shutdown: Shutdown,
         topic: TopicId,
         mesh: Mesh,
         mesh_events: mpsc::UnboundedReceiver<MeshEvent>,
         mirror: Arc<Mutex<Mirror>>,
         ticket_addr: EndpointAddr,
-    ) -> Self {
+    ) -> Result<Self> {
+        let local_id = dialer.local_id()?;
         let (tx, rx) = mpsc::unbounded_channel();
-        task::spawn(recv_loop(endpoint.clone(), mesh_events, mirror.clone(), tx));
-        Self {
-            endpoint,
-            router,
+        // The receive loop is the only thing that dials afterwards (to fetch
+        // brush assets), so it takes the dialer with it.
+        task::spawn(recv_loop(dialer, mesh_events, mirror.clone(), tx));
+        Ok(Self {
+            local_id,
+            shutdown,
             topic,
             mesh,
             mirror,
             events: Some(rx),
             ticket_addr,
-        }
+        })
     }
 
     /// The ticket others use to join — every member can hand one out (it
@@ -191,7 +195,7 @@ impl CollabSession {
 
     /// The author id this session's identity maps to.
     pub fn actor_id(&self) -> ActorId {
-        actor_from_endpoint_id(self.endpoint.id())
+        actor_from_endpoint_id(self.local_id)
     }
 
     /// The stream of remote edits. Take it once and pump it into the engine.
@@ -226,10 +230,7 @@ impl CollabSession {
     /// Leave the session gracefully.
     pub async fn shutdown(self) {
         self.mesh.shutdown();
-        if let Err(e) = self.router.shutdown().await {
-            tracing::warn!("router shutdown: {e}");
-        }
-        self.endpoint.close().await;
+        self.shutdown.run().await;
     }
 }
 
@@ -273,32 +274,6 @@ fn mesh_config(topic: TopicId) -> MeshConfig {
     }
 }
 
-/// Bind the endpoint and the protocol stack shared by host and joiner: the mesh
-/// (live actions) and the catch-up/asset protocol, on one router.
-async fn bind_stack(
-    mirror: Mirror,
-    opts: &NetOptions,
-) -> Result<(Endpoint, Router, Arc<Mutex<Mirror>>, IrohMeshTransport)> {
-    let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
-    let endpoint = if opts.local_only {
-        Endpoint::builder(presets::Minimal).secret_key(secret).bind().await?
-    } else {
-        Endpoint::builder(presets::N0).secret_key(secret).bind().await?
-    };
-    let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
-    let mirror = Arc::new(Mutex::new(mirror));
-    let router = Router::builder(endpoint.clone())
-        .accept(crate::transport::iroh::ALPN, mesh_proto)
-        .accept(
-            proto::ALPN,
-            CollabProto {
-                mirror: mirror.clone(),
-            },
-        )
-        .spawn();
-    Ok((endpoint, router, mirror, transport))
-}
-
 /// Wait (bounded) until the mesh has met at least one peer, so a joiner does
 /// not miss the actions committed while it was fetching the snapshot. Best
 /// effort: joining still proceeds if the swarm is slow, since the snapshot plus
@@ -316,44 +291,10 @@ async fn wait_for_swarm(mesh: &Mesh) {
     tracing::warn!("joined without meeting a peer yet; relying on catch-up");
 }
 
-/// The address peers should dial, for tickets. With public infrastructure we
-/// wait (bounded) for the relay handshake so the ticket carries a relay URL;
-/// local-only tickets carry the bound sockets (loopback-normalized).
-async fn reachable_addr(endpoint: &Endpoint, opts: &NetOptions) -> EndpointAddr {
-    if !opts.local_only {
-        // `online()` pends forever with no WAN; bound wait, then best effort.
-        let _ = n0_future::time::timeout(ONLINE_TIMEOUT, endpoint.online()).await;
-        return endpoint.addr();
-    }
-    // Local-only is native-only: a browser has no UDP sockets to advertise
-    // (wasm iroh is relay-borne), so `local_only` there yields a bare-id
-    // ticket that only same-machine tests could ever have used anyway.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut addr = EndpointAddr::new(endpoint.id());
-        for sock in endpoint.bound_sockets() {
-            let sock = if sock.ip().is_unspecified() {
-                let loopback: IpAddr = if sock.is_ipv4() {
-                    Ipv4Addr::LOCALHOST.into()
-                } else {
-                    Ipv6Addr::LOCALHOST.into()
-                };
-                SocketAddr::new(loopback, sock.port())
-            } else {
-                sock
-            };
-            addr = addr.with_ip_addr(sock);
-        }
-        addr
-    }
-    #[cfg(target_arch = "wasm32")]
-    EndpointAddr::new(endpoint.id())
-}
-
 /// The mesh receive loop: decode, resolve asset dependencies, mirror, forward
 /// to the engine.
 async fn recv_loop(
-    endpoint: Endpoint,
+    dialer: Dialer,
     mut events: mpsc::UnboundedReceiver<MeshEvent>,
     mirror: Arc<Mutex<Mirror>>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
@@ -394,7 +335,7 @@ async fn recv_loop(
             && !mirror.lock().expect("mirror poisoned").has_asset(id)
         {
             let sources = asset_sources(origin, from);
-            match fetch_asset(&endpoint, &sources, id).await {
+            match fetch_asset(&dialer, &sources, id).await {
                 Some(bytes) => {
                     mirror
                         .lock()
@@ -425,7 +366,7 @@ async fn recv_loop(
 fn asset_sources(origin: crate::mesh::PeerId, from: crate::mesh::PeerId) -> Vec<EndpointId> {
     let mut ids = Vec::with_capacity(2);
     for peer in [origin, from] {
-        if let Some(id) = crate::transport::iroh::to_endpoint_id(peer)
+        if let Some(id) = crate::transport::to_endpoint_id(peer)
             && !ids.contains(&id)
         {
             ids.push(id);
@@ -447,17 +388,13 @@ fn referenced_asset(action: &Action) -> Option<AssetId> {
 
 /// Fetch a content-addressed brush image, trying each source in turn and
 /// retrying (a peer may still be fetching it itself).
-async fn fetch_asset(
-    endpoint: &Endpoint,
-    sources: &[EndpointId],
-    id: AssetId,
-) -> Option<Vec<u8>> {
+async fn fetch_asset(dialer: &Dialer, sources: &[EndpointId], id: AssetId) -> Option<Vec<u8>> {
     for attempt in 0..ASSET_RETRIES {
         if attempt > 0 {
             n0_future::time::sleep(ASSET_RETRY_DELAY).await;
         }
         for &source in sources {
-            match try_fetch_asset(endpoint, source, id).await {
+            match try_fetch_asset(dialer, source, id).await {
                 Ok(Some(bytes)) => return Some(bytes),
                 Ok(None) => continue,
                 Err(e) => tracing::debug!("asset fetch attempt {attempt} failed: {e}"),
@@ -468,15 +405,13 @@ async fn fetch_asset(
 }
 
 async fn try_fetch_asset(
-    endpoint: &Endpoint,
+    dialer: &Dialer,
     from: EndpointId,
     id: AssetId,
 ) -> Result<Option<Vec<u8>>> {
-    let conn = endpoint
-        .connect(EndpointAddr::new(from), proto::ALPN)
-        .await?;
-    let response = proto::request(&conn, Request::Asset(id)).await?;
-    conn.close(0u8.into(), b"done");
+    let catchup = dialer.open(EndpointAddr::new(from)).await?;
+    let response = catchup.request(Request::Asset(id)).await?;
+    catchup.close().await;
     let AssetResponse(bytes) = postcard::from_bytes(&response)?;
     Ok(bytes)
 }
@@ -485,7 +420,7 @@ impl std::fmt::Debug for CollabSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CollabSession")
             .field("topic", &self.topic)
-            .field("endpoint", &self.endpoint.id())
+            .field("endpoint", &self.local_id)
             .finish_non_exhaustive()
     }
 }
