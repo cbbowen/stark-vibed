@@ -8,6 +8,21 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# Direct peer connections on the web target via the vendored WebRTC custom
+# transport for iroh (vendor/iroh-webrtc-transport). On the web, iroh cannot
+# hole-punch and relays all traffic through n0's relays (higher latency);
+# WebRTC gives lower-latency direct paths.
+#
+# SCAFFOLDING ONLY for now: the crate is vendored, ported to iroh 1.0, and built
+# behind this flag, but stark-net's gossip-based session is NOT yet routed over
+# it. The crate's browser facade binds its own endpoints and cannot host
+# iroh-gossip (it's built for explicit dial/accept connections, not a
+# self-dialing swarm), so the live-edit wire needs a redesign before it can use
+# WebRTC on web. See vendor/iroh-webrtc-transport/VENDORING.md. Enabling this
+# today pulls the crate into the build but does not change the wire.
+webrtc = ["dep:iroh-webrtc-transport"]
+
 [dependencies]
 stark-core = { path = "../stark-core" }
 iroh = "1"
@@ -19,6 +34,22 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["sync"] }
 data-encoding = "2"
+
+# The web target is what WebRTC is for; pull in the browser facade there.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.iroh-webrtc-transport]
+path = "../../vendor/iroh-webrtc-transport"
+optional = true
+default-features = false
+features = ["browser"]
+
+# Native iroh already establishes direct connections, so WebRTC isn't needed
+# host-side; build the native backend anyway so the feature compiles for
+# tests/dev.
+[target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies.iroh-webrtc-transport]
+path = "../../vendor/iroh-webrtc-transport"
+optional = true
+default-features = false
+features = ["native"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

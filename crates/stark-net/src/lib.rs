@@ -31,6 +31,14 @@ pub use ticket::SessionTicket;
 // Re-exports so frontends don't need a direct iroh dependency for the basics.
 pub use iroh::{EndpointId, SecretKey};
 
+/// The vendored WebRTC custom transport for iroh, available behind the `webrtc`
+/// feature (DESIGN.md §12.4). Re-exported so the frontend can reach it without a
+/// separate dependency. NOTE: the session wire does not yet route over WebRTC —
+/// this is scaffolding pending a transport redesign (see the crate's
+/// `VENDORING.md` and the `webrtc` feature note in `Cargo.toml`).
+#[cfg(feature = "webrtc")]
+pub use iroh_webrtc_transport;
+
 /// Errors from session setup and the wire.
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {
