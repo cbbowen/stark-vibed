@@ -34,6 +34,12 @@ use crate::{
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
 
+/// The test stroke's fixed RGB (straight sRGB): a pleasant blue, so it reads
+/// clearly over the red reference stroke beneath it — the preview is about the
+/// brush's *behaviour*, not its colour. Only RGB is forced; the brush's own
+/// alpha (the Opacity slider) still applies.
+const PREVIEW_STROKE_BLUE: [f32; 3] = [0.16, 0.42, 0.86];
+
 /// Minimum gap between slider edits taking effect. Each edit dispatches to the
 /// engine, repaints the main canvas, refreshes `obs` (re-rendering this whole
 /// dialog and every other `obs` reader), and replays the test stroke (~a
@@ -388,6 +394,12 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     r.set_media_params(media);
     r.set_background(bg);
 
+    // Lay the fixed red reference stroke: committed once, beneath the
+    // replayable test stroke, so the user can preview how the brush interacts
+    // with paint already on the canvas. `restroke`'s single undo never reaches
+    // it (it only ever removes the test stroke committed on top).
+    paint_reference_stroke(&mut r);
+
     // Seed the default test stroke and render it with the current brush.
     r.paint();
     preview.samples.set(default_stroke(&r));
@@ -420,6 +432,43 @@ fn default_stroke(r: &Renderer) -> Vec<InputSample> {
         .collect()
 }
 
+/// The fixed reference stroke laid on the preview canvas before any test
+/// stroke: a simple, hard-edged, opaque **red vertical** line down the middle,
+/// committed once at init so the user can see how the brush being edited
+/// interacts with paint already on the canvas (smudge, drag, bleed, …). Plain
+/// `add` paint, no dynamics, no tooth, no drain — a clean, unchanging target.
+fn paint_reference_stroke(r: &mut Renderer) {
+    let (w, h) = r.size();
+    let (w, h) = (w as f32, h as f32);
+    let view = r.view();
+    let x = w * 0.5;
+    const N: usize = 8;
+    let samples: Vec<InputSample> = (0..N)
+        .map(|i| {
+            let t = i as f32 / (N - 1) as f32;
+            let y = h * -0.25 + t * h * 1.25;
+            InputSample {
+                pos: view.screen_to_canvas(Vec2::new(x, y)),
+                pressure: 1.0,
+                ..Default::default()
+            }
+        })
+        .collect();
+    let brush = BrushParams {
+        color: [0.82, 0.15, 0.12, 1.0],
+        radius: 25.0,
+        spacing: 0.08,
+        hardness: 0.9,
+        height: 0.4,
+        wetness: 0.0,
+        drain: 0.0,
+        tooth: 0.0,
+        ..BrushParams::default()
+    };
+    r.process(InputCommand::SetBrush(brush));
+    r.replay_stroke(Tool::Brush, &samples);
+}
+
 /// Re-render the test stroke with the current brush: undo the committed one,
 /// push the brush, replay as a single commit, paint. `Renderer::replay_stroke`
 /// skips the per-sample live-preview refresh (O(n²) across a replay), so the
@@ -430,9 +479,12 @@ fn restroke(state: AppState, mut preview: Preview) {
     if *preview.drawing.peek() {
         return;
     }
-    let Some(brush) = state.obs.peek().as_ref().map(|o| o.brush) else {
+    let Some(mut brush) = state.obs.peek().as_ref().map(|o| o.brush) else {
         return;
     };
+    // Force the test stroke to the fixed preview blue so it reads over the red
+    // reference stroke; the brush's own alpha (Opacity) is left untouched.
+    brush.color[..3].copy_from_slice(&PREVIEW_STROKE_BLUE);
     let samples = preview.samples.peek().clone();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
