@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use super::layer::{BlendMode, Layer, LayerId};
 use super::state::DocState;
-use crate::command::InputSample;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
 
@@ -278,8 +277,12 @@ pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: Tool,
     pub brush: BrushParams,
-    /// Resampled input path, full fidelity.
-    pub path: Vec<InputSample>,
+    /// The fitted stroke curve: the control points the raw pointer samples were
+    /// smoothed and simplified down to (DESIGN.md §6.2), an order of magnitude
+    /// fewer points and all that is needed to reconstruct the stroke. The raw
+    /// samples are never stored — not in the file, not in the action log, not
+    /// on the wire.
+    pub path: Vec<crate::path::ControlPoint>,
     /// Seed for any brush jitter, making replay reproducible. Unused by the MVP
     /// brush but recorded so the format is stable.
     pub seed: u64,

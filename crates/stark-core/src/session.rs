@@ -9,14 +9,20 @@
 use crate::command::InputSample;
 use crate::document::{BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, StrokeRecord, Tool};
 use crate::geom::ViewTransform;
+use crate::path::PathFitter;
 
 /// Accumulates the stroke currently being drawn.
+///
+/// Pointer samples are fitted to control points *as they arrive* rather than
+/// buffered and re-fitted on every move (DESIGN.md §6.2): the builder holds only
+/// the fitter's short working window, and each new sample costs work proportional
+/// to that window instead of to the stroke so far.
 struct StrokeBuilder {
     tool: Tool,
     brush: BrushParams,
     layer: LayerId,
     seed: u64,
-    path: Vec<InputSample>,
+    fitter: PathFitter,
 }
 
 pub struct Session {
@@ -65,19 +71,21 @@ impl Session {
     /// deterministically (DESIGN.md §6.2). Replaces any abandoned in-flight one.
     pub fn start_stroke(&mut self, tool: Tool, sample: InputSample, seed: u64) {
         self.tool = tool;
+        let mut fitter = PathFitter::new();
+        fitter.push(sample);
         self.in_flight = Some(StrokeBuilder {
             tool,
             brush: self.brush,
             layer: self.active_layer,
             seed,
-            path: vec![sample],
+            fitter,
         });
     }
 
     /// Extend the in-flight stroke with another sample.
     pub fn stroke_to(&mut self, sample: InputSample) {
         if let Some(b) = self.in_flight.as_mut() {
-            b.path.push(sample);
+            b.fitter.push(sample);
         }
     }
 
@@ -87,9 +95,21 @@ impl Session {
         self.in_flight.as_ref().map(StrokeBuilder::to_record)
     }
 
+    /// How many spans of the in-flight stroke are settled — the prefix a live
+    /// preview could render once instead of repainting per pointer move
+    /// (see [`PathFitter::frozen_spans`]). 0 when no stroke is active.
+    pub fn frozen_spans(&self) -> usize {
+        self.in_flight
+            .as_ref()
+            .map_or(0, |b| b.fitter.frozen_spans())
+    }
+
     /// Finish the stroke, returning the record to commit (`None` if empty).
     pub fn end_stroke(&mut self) -> Option<StrokeRecord> {
-        self.in_flight.take().map(|b| b.to_record())
+        self.in_flight.take().map(|mut b| {
+            b.fitter.finish();
+            b.to_record()
+        })
     }
 
     /// Discard the in-flight stroke without committing.
@@ -104,13 +124,11 @@ impl StrokeBuilder {
             layer: self.layer,
             tool: self.tool,
             brush: self.brush,
-            // Smooth out pointer/pixel-quantization jitter, then fit to compact
-            // spline control points (DESIGN.md §6.2). Done for both preview and
-            // commit, so live == committed.
-            path: crate::path::simplify(
-                &crate::path::smooth(&self.path, crate::path::SMOOTH_RADIUS),
-                crate::path::SIMPLIFY_TOLERANCE,
-            ),
+            // The fitted control points (DESIGN.md §6.2). Mid-stroke this ends in
+            // a provisional knot at the newest sample, so the preview reaches the
+            // cursor; the same fitter produces the committed path, so live ==
+            // committed.
+            path: self.fitter.path(),
             seed: self.seed,
         }
     }

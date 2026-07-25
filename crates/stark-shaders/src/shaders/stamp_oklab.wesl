@@ -3,14 +3,30 @@
 // Shares all geometry/sweep math with the other color spaces via
 // `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile in the
 // normalized representation (DESIGN.md §6.1): colour is premultiplied by **opacity**
-// (not coverage), height lives in the aux. The brush's soft footprint coverage is
-// split as `√cov` across the opacity and the thickness, so when the media shader
-// combines them into the visible alpha (`1 − exp(−K·op·T)`) the coverage is applied
-// exactly once. Within a stroke the colour target over-blends (premult-consistent)
-// and the aux target accumulates additively.
+// (not coverage), height lives in the aux. Within a stroke the colour target
+// over-blends (premult-consistent) and the aux target accumulates additively.
+//
+// Every deposit here is a function of the segment's **swept optical depth** `τ`
+// alone, in one of exactly two forms — additive in `τ`, or `1 − exp(−k·τ)` — because
+// those are the two that compose *independently of how the path was cut into
+// segments*. `τ` itself sums exactly across overlapping quads (that is the whole
+// point of the prefix-τ construction), so an amount linear in it sums to the true
+// path integral, and a rate exponential in it multiplies out to `exp(−k·Στ)`. Any
+// other shape — notably a `√`, which is what the opacity/thickness split used to
+// apply per segment — makes the result depend on the *number* of segments: N pieces
+// of the same travel deposit `Σ√(τ/N) = √(Nτ)`, so the stroke silently gains weight
+// with sampling density. That is fine only while sampling is uniform; it is why
+// adaptive flattening (`path::flatten`) needs this form, and it makes the fast path
+// agree with the stamp loop's `add` axis, which was always linear in exposure
+// (`dynamics.wesl::deposit`).
+//
+// The cost of dropping the `√` split: the footprint's coverage now reaches the
+// media's visible alpha through *both* factors of `op · T`, so a soft tip's faint
+// edge falls off as `τ²` rather than `τ`. Tip hardness absorbs that; sampling
+// independence is not something a parameter can buy back.
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
-//             (height, wet)) — (height, wet·op, footprint coverage √cov, unused)
+//             (height, wet)) — (height, wet, footprint coverage, unused)
 
 import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, brush_color};
 
@@ -28,10 +44,15 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
-    let flow = in.misc.y;
-    let cov = surface_tooth(in.misc.z, 1.0 - exp(-flow * swept_depth(in)), in.clip.xy);
-    let scov = sqrt(cov); // split the footprint coverage across opacity and thickness
-    let op = in.op * scov;
+    // The segment's swept optical depth, scaled by the brush's flow (an
+    // optical-depth-per-length rate). Everything below is built from this.
+    let tau = in.misc.y * swept_depth(in);
+    let cov = surface_tooth(in.misc.z, 1.0 - exp(-tau), in.clip.xy);
+    // Per-unit opacity enters as an *absorption rate* rather than a factor, so the
+    // colour target's over-blend multiplies out to exactly `exp(−op · Στ)` — the
+    // stroke's coverage is the same whether the path was cut into one segment or a
+    // hundred.
+    let op = 1.0 - exp(-in.op * tau);
 
     var out: FsOut;
     // Premultiplied by opacity: the colour target over-blends, so per-arc rates sum
@@ -40,13 +61,15 @@ fn fs_main(in: VsOut) -> FsOut {
     // stroke (DESIGN.md §6.2).
     out.color = vec4<f32>(brush_color(in) * op, op);
     // The wide scratch aux (DESIGN §6.1):
-    //   .x = laid height (per-segment attr `in.misc.z`; additive over the overlap →
-    //        builds impasto);
-    //   .y = laid wet;
-    //   .z = footprint coverage (√cov), summed across the overlapping quads;
+    //   .x = laid height — linear in τ, so the additive target sums to the true path
+    //        integral of the footprint and a second pass builds impasto in full
+    //        (a saturating form would flatten out instead);
+    //   .y = laid wet, carried at the same rate so wet/height stays the brush's
+    //        wetness;
+    //   .z = footprint coverage (read by nothing today; kept for the write-back);
     //   .w = unused.
     // Height is the amount of paint; the colour alpha is per-unit opacity only and
     // never represents amount (§6.1).
-    out.aux = vec4<f32>(in.misc.z * scov, in.misc.w * op, scov, 0.0);
+    out.aux = vec4<f32>(in.misc.z * tau, in.misc.w * tau, cov, 0.0);
     return out;
 }

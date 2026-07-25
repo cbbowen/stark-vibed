@@ -69,7 +69,7 @@ stark/
 │   │   │   │   ├── composite.rs # layer compositing + media lighting → display
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
 │   │   │   ├── geom.rs          # tile coords, view transform, AABB
-│   │   │   ├── path.rs          # stroke fitting (RDP) + Catmull–Rom flatten (§6.2)
+│   │   │   ├── path.rs          # streaming stroke fit + adaptive Catmull–Rom flatten (§6.2)
 │   │   │   └── io.rs            # save/load of the action log
 │   │   └── tests/
 │   │       └── golden/         # scripted command sequences + reference PNGs
@@ -200,7 +200,7 @@ pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: ToolId,
     pub brush: BrushParams,       // color in Oklab (§6.5); shape by AssetId (§6.6)
-    pub path: Vec<InputSample>,   // cubic-spline control points, fitted (§6.2)
+    pub path: Vec<ControlPoint>,  // cubic-spline control points, fitted (§6.2)
     pub seed: u64,                // makes any brush jitter reproducible
 }
 ```
@@ -421,13 +421,30 @@ feels physical (see *Wet mixing & brush dynamics* below). Everything is
 deterministic — the only randomness is the explicit `seed` — so live paint,
 replay, and golden tests agree.
 
-**Path representation & cubic interpolation.** A `StrokeRecord`'s `path` is not
-the raw pointer samples but a compact set of **control points** fitted from them:
-the raw samples are first **low-pass smoothed** (a distance-windowed average,
-`path::smooth`) to shed pointer/pixel-quantization jitter, then reduced by
-**Ramer–Douglas–Peucker simplification** (at commit, in `path.rs`). Rendering
-expands those through a **centripetal Catmull–Rom spline** into a fine polyline,
-then walks it at even arc length (above). This solves several problems:
+**Path representation & cubic interpolation.** `path.rs` keeps three
+representations deliberately distinct: an **`InputSample`** is one raw pointer
+report (transient, never stored), a **`ControlPoint`** is a fitted curve knot
+(this is what `StrokeRecord::path` holds), and an **`IntermediateSample`** is a
+point *of the curve* — position plus its derivative, with the pen attributes
+interpolated there — produced at render time and consumed by the stamp generator.
+
+A `PathFitter` streams samples into control points: **low-pass smoothing** (a
+distance-windowed average) to shed pointer/pixel-quantization jitter, then
+**simplification** — Ramer–Douglas–Peucker's test applied to a forward window
+rather than to the whole stroke, so the fit is *append-only*. A committed knot is
+never revisited, which bounds live-preview work to the open window instead of the
+stroke so far, and lets a caller treat the settled prefix (`frozen_spans`, which
+lags by the two knots a Catmull–Rom span needs) as already rendered.
+
+Rendering expands those knots through a **centripetal Catmull–Rom spline** — in
+exact cubic Bézier form, so the derivative is closed-form — into a polyline, and
+subdivides **adaptively**: a piece is split until the straight segment standing in
+for it is within a bounded error in position, in *tangent direction*, and in the
+pen attributes. Sampling therefore follows the curve rather than arc length: a
+long gentle stroke costs a handful of segments where uniform stepping cost
+hundreds, and a corner still gets the density it needs. The tangent bound is what
+buys both — it is the term that cannot be fooled by a symmetric wiggle, and the
+one that spikes exactly at a corner. This solves several problems:
 
 - **No stair-step aliasing** — jittery pixel-stepped input (a slow diagonal drawn
   as right/up steps snapped to the device grid) is smoothed and collapses to a
@@ -440,10 +457,19 @@ then walks it at even arc length (above). This solves several problems:
   samples in the action log (§8).
 
 The per-stamp GPU instance is **unchanged**; only stroke→stamp generation
-differs. Live preview fits incrementally (re-fitting the in-flight samples each
-update), so the preview at release equals the committed stroke — preserving the
-live == committed invariant (§1.3). Fitting and Catmull–Rom evaluation are fixed
-float math, so determinism (and golden/replay/save-load equivalence) holds.
+differs. Live preview and commit run the *same* fitter — the preview path is the
+committed knots plus one provisional knot at the newest sample, itself within the
+simplification tolerance — so the preview at release equals the committed stroke,
+preserving the live == committed invariant (§1.3). Fitting and curve evaluation
+are fixed float math, so determinism (and golden/replay/save-load equivalence)
+holds.
+
+Adaptive sampling has one hard prerequisite, easy to violate silently: **the
+deposit must not depend on how the path was cut into segments** (see the swept
+deposit below). Anything a segment applies *per segment* rather than per fragment
+— the `drain` falloff, the stamp loop's reservoir cadence — also caps segment
+length, which the renderer supplies as a length bound rather than the fitter
+assuming one (`gpu::stroke::flatten_tolerance`).
 
 **Continuous stamping (swept segments).** Discrete dabs are still visible with
 hard tips. The fix: stamp each short *segment* of the flattened curve as one
@@ -460,6 +486,16 @@ So:
   as `1 − ∏(1−α) = 1 − exp(−Σ τ)`, it sums the depths **exactly** — no
   double-counting at joints, no scratch buffer, no second pass. The whole
   stroke's coverage is the continuous path integral `1 − exp(−τ_total)`.
+- **Every** channel a segment deposits must therefore be a function of that
+  segment's `τ` in one of exactly two shapes: *additive* in `τ` (an amount — the
+  height and wet the aux target sums), or `1 − exp(−k·τ)` (a rate — the opacity
+  the colour target over-blends). Those are the two that survive re-cutting the
+  path, because `τ` is what sums. Any other shape makes the stroke depend on the
+  *number* of segments rather than on the path: a per-segment `√`, for instance,
+  deposits `Σ√(τ/N) = √(N·τ)`, so the stroke silently gains weight with sampling
+  density. That is invisible while sampling is uniform and immediately visible
+  once it adapts, which is why the two forms are a standing constraint on the
+  stamp shaders and not a detail of one.
 
 This removes intra-stroke banding while keeping the single-pass over-blend
 architecture (both color spaces share one premultiplied-"over" stamp shader,
@@ -500,14 +536,27 @@ continuous, dab-free footprint. All on the GPU with no readback
      `under` scratch, so the exchange can read-modify-write the region) then
      **deposit** — one thread per footprint texel. A texel's **exposure** to the
      segment is the prefix-τ difference `e(x) = prefix(u) − prefix(u−d)` — the
-     brush's coverage integrated along the travel — and every exchange rate is
-     exponential in exposure, `1 − exp(λ·e)` with `λ = ln(1 − axis)`. Exposures
-     add across the overlapping quads of consecutive segments, so the rates
-     compose **exactly**: the whole stroke applies `1 − (1−axis)^∫e`, the
-     continuous path integral, independent of any spacing — no dabbing. The
-     dispatch removes the lifted height, then lays the parcel (the tool's
-     deposit + the brush's own `add` paint, the latter *linear* in exposure —
-     literally the plain deposit's swept height).
+     brush's coverage integrated along the travel — and exposures add across the
+     overlapping quads of consecutive segments, so what the loop applies must be
+     built from `e` in a way that survives re-cutting the path. Removal is
+     *multiplicative*, `h · exp(λ·e)` with `λ = ln(1 − lift)`, which composes
+     exactly: the whole stroke applies `(1−lift)^∫e`, the continuous path
+     integral, independent of any spacing — no dabbing. What the dispatch *adds*
+     (the tool's deposit, and the brush's own `add` paint) is a source term of
+     the same ODE, so it rides the integrating factor `∫₀ᵉ exp(λ·(e−s)) ds` —
+     the amount laid during the pass, discounted by the lift still acting on it
+     for the rest of the pass. That is the ODE's own solution rather than a
+     one-step Euler approximation of it, so `h·A₁+B₁` then `·A₂+B₂` equals the
+     single step over `e₁+e₂` exactly. A saturating `1 − exp(λ·e)` in the *added*
+     term instead dumps the tool's load into whichever quad reaches a spot first:
+     the stroke runs dry early and scallops at the segment spacing — invisible
+     under uniform 2px sampling, immediate under adaptive.
+   - The loop reads the reservoir at the tip's **mid-pass** position over each
+     texel — one sample for a segment during which the tip sweeps a whole range
+     of reservoir texels across that spot. That approximation, not the exchange
+     math, is what bounds segment length for a dynamics brush: about one
+     reservoir texel of travel (`gpu::stroke::flatten_tolerance`). Integrating
+     the reservoir along the pass would lift the cap.
    - At `spacing · radius` cadence, **pickup** — one thread per **tool
      reservoir** texel. The reservoir is a real 2-D texture in brush-local
      coordinates (`BRUSH_RES`², ping-ponged), so each part of the tip carries
@@ -939,8 +988,8 @@ assert_golden!("oil_blend_01", png, tolerance);
 
 - **Scripts** are command sequences (recorded or hand-written), exercising each
   tool, undo/redo, layer ops, load+replay.
-- **Determinism** is engineered in (seeded jitter, fixed resample step, fixed
-  adapter selection, explicit float formats). The comparator uses a small
+- **Determinism** is engineered in (seeded jitter, fixed flattening tolerances,
+  fixed adapter selection, explicit float formats). The comparator uses a small
   perceptual tolerance to absorb legitimate cross-GPU rounding; goldens may be
   keyed by adapter class if needed.
 - **Replay equivalence test:** paint a stroke, snapshot; undo then redo;
@@ -1148,6 +1197,13 @@ them perturb the convergence model above; they layer on top of it.
    Catmull–Rom spline. Kills diagonal stair-stepping, makes stamping read
    continuous, and shrinks the action log. Per-stamp GPU interface unchanged;
    preview fits incrementally to stay == committed. Re-bless goldens.
+   *Since revised (2026-07):* the fit is **streaming and append-only**
+   (`PathFitter`, forward-window RDP) and flattening is **adaptive** — bounded
+   error in position, tangent, and pen attributes rather than a fixed arc-length
+   step — so a long stroke costs segments proportional to how much it *bends*, not
+   to how far it runs. `ControlPoint` / `IntermediateSample` split off from
+   `InputSample`, and the swept deposit was made independent of segment count
+   (above), without which adaptive sampling changes stroke weight.
 9. **Pluggable color spaces (§6.7):** introduce `trait ColorSpace`, migrate the
    current pipeline to `OkLabColorSpace` (behavior-preserving refactor — goldens
    stay green), then add `MixboxColorSpace` — realistic pigment mixing via the

@@ -111,6 +111,34 @@ const TAU: f32 = 6.283185307179586;
 // viewer sees: a parcel's blend weight is its visible alpha.
 const OPACITY_K: f32 = 1.0;
 
+// How much of a *constant deposition rate* survives on the canvas at the end of a
+// segment of exposure `e`: `∫₀ᵉ exp(λ_lift·(e−s)) ds`, the amount laid at each
+// point of the pass discounted by the lift still acting on it for the rest of the
+// pass. Reduces to `e` when the brush does not lift.
+//
+// This is what makes the exchange **independent of how the path was cut into
+// segments** — the property adaptive flattening (`path::flatten`) depends on and
+// uniform 2px sampling used to hide. Within a segment the exchange is an ODE,
+// `dh/de = λ_lift·h + source`; the canvas-side `lift` alone composes exactly
+// (`h·exp(λ·e)` is multiplicative), but a source term added *after* the lift is a
+// one-step Euler integration of it, and one coarse step is not N fine ones. Using
+// the ODE's own solution instead makes any cut of the path agree exactly:
+//
+//     h·A₁ + B₁ then ·A₂ + B₂  ==  h·A₁A₂ + B₁₊₂     with A = exp(λ·e), B = k·W(e)
+//
+// Getting this wrong is visible, not subtle: the previous `1 − exp(λ_dep·e)` per
+// segment dumped the tool's load in the first quad that touched a spot, so a
+// carrying stroke ran dry early and showed arcs at the segment spacing. It only
+// shows once the tool is actually carrying paint — the `add` axis was already a
+// bare `e`, correct only because it had no lift to survive.
+fn laid_window(e: f32) -> f32 {
+    let k = -st.b.z; // the lift rate; 0 when the brush does not lift
+    if k < 1e-6 {
+        return e;
+    }
+    return (1.0 - exp(-k * e)) / k;
+}
+
 // Footprint coverage at brush-local `local` ∈ [-1,1]² (0 outside — image masks may
 // have non-zero borders, so the clamp sampler alone can't be trusted at the edge).
 fn coverage_at(local: vec2<f32>) -> f32 {
@@ -177,6 +205,8 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
     // deposits lay over the same interval.
     let e = coverage_at(local) * st.d.w;
     let lift = 1.0 - exp(st.b.z * e);
+    // The tool's own load decays exponentially as it gives paint up — a per-interval
+    // quantity, so unlike the canvas side it never depended on the segment cut.
     let dep = 1.0 - exp(st.b.w * e);
 
     let rdim = vec2<f32>(textureDimensions(region_color));
@@ -237,7 +267,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         return; // outside the swept footprint: the region keeps its value
     }
     let lift = 1.0 - exp(st.b.z * e);
-    let dep = 1.0 - exp(st.b.w * e);
+    // Both sources below are rates *per unit exposure* integrated over the segment
+    // through `laid_window`, so the pass composes exactly however the path was cut.
+    let laid = laid_window(e);
+    let dep = -st.b.w * laid;
 
     let uc = textureLoad(under_color, t, 0);
     let ua = textureLoad(under_aux, t, 0);
@@ -276,14 +309,14 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // paint — the latter linear in exposure, i.e. exactly the plain deposit's
     // path-integral height.
     let dep_h = b_a.x * dep;
-    let add_h = st.e.x * e;
+    let add_h = st.e.x * laid;
     let par_h = dep_h + add_h;
     let par_m = b_c.a * dep_h + st.c.w * add_h;
     var par_lat = own_lat;
     if par_m > EPS {
         par_lat = (b_c.rgb * (b_c.a * dep_h) + own_lat * (st.c.w * add_h)) / par_m;
     }
-    let par_wet = b_a.y * dep + st.e.y * e;
+    let par_wet = b_a.y * dep + st.e.y * laid;
 
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
     h += par_h;

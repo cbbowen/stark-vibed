@@ -30,9 +30,12 @@
 //!   coverage masks, [`document::BrushShape`] (`Round`/`Stamp`), path-following
 //!   rotated stamps, [`Engine::import_brush`], and referenced assets bundled
 //!   into the save file as compact grayscale PNGs (DESIGN §6.6, §8).
-//! - [x] Step 8: cubic stroke interpolation (DESIGN §6.2) — [`path`] fits raw
-//!   samples to spline control points (RDP) and flattens a centripetal
-//!   Catmull–Rom curve for stamping. Kills stair-stepping, shrinks the log.
+//! - [x] Step 8: cubic stroke interpolation (DESIGN §6.2) — [`path`] streams raw
+//!   samples into spline control points ([`path::PathFitter`], append-only) and
+//!   flattens a centripetal Catmull–Rom curve *adaptively* — bounded error in
+//!   position, tangent, and pen attributes instead of a fixed arc-length step, so
+//!   segment count follows how much the stroke bends, not how far it runs. Kills
+//!   stair-stepping, shrinks the log.
 //! - [x] Step 8b: continuous swept-segment stamping (DESIGN §6.2) — each segment
 //!   is one quad whose coverage is the brush swept along it via a precomputed
 //!   prefix-τ texture (`τ=−ln(1−α)`); over-blend sums depth exactly. Removes the

@@ -299,3 +299,87 @@ fn golden_self_smear() {
     let img = engine.render_to_image(PAPER);
     assert_golden("self_smear", &img, 6);
 }
+
+/// A dynamics stroke must read as one continuous mark, not a row of stamps.
+///
+/// The loop's transfers compose only if each is a function of the segment's swept
+/// exposure that survives re-cutting the path — additive in `e`, or multiplicative
+/// `exp(k·e)`. Anything saturating per segment (`1 − exp(k·e)` applied to a
+/// reservoir the segment does not deplete) deposits a steep ramp inside each quad,
+/// which shows up as arcs at the flattening's segment spacing. Uniform 2px
+/// sampling hid it; adaptive sampling does not.
+#[test]
+fn dynamics_stroke_reads_as_one_continuous_mark() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A long straight stroke with a big tip: `drain` fades it along its length, so
+    // the profile should be smooth and monotone. Banding shows as ripple against
+    // that ramp.
+    let b = BrushParams {
+        drain: 0.004,
+        ..dyn_brush(RED, 60.0, BrushDynamics { add: 0.6, lift: 0.2, deposit: 0.9, ..Default::default() })
+    };
+    stroke_with(&mut engine, b, &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)]);
+    let img = engine.render_to_image(PAPER);
+
+    // Walk the centre row across the stroke's body and track the red channel. A
+    // continuous stroke fades monotonically; each reversal is a band edge.
+    let y = img.height / 2;
+    let prof: Vec<i32> = (40..216).map(|x| img.pixel(x, y)[0] as i32).collect();
+    let mut reversals = 0;
+    for w in prof.windows(3) {
+        let (d0, d1) = (w[1] - w[0], w[2] - w[1]);
+        // Only count reversals big enough to be a band, not sampling noise.
+        if d0 * d1 < 0 && (d0.abs() > 1 || d1.abs() > 1) {
+            reversals += 1;
+        }
+    }
+    assert!(
+        reversals <= 6,
+        "stroke profile reverses {reversals}× across its body — per-segment banding",
+    );
+}
+
+/// A stroke that is *carrying* paint must still read as one continuous mark.
+///
+/// The stamp loop's exchange has to survive being re-cut into different segments,
+/// which adaptive flattening makes it do (uniform 2px sampling hid it). Two things
+/// break that and both show up here as scalloped arcs at the segment spacing: a
+/// deposit that is not the exchange ODE's own solution (`dynamics.wesl`'s
+/// `laid_window`), and segments long enough that the tool reservoir's single
+/// mid-pass sample jumps between them (`gpu::stroke::flatten_tolerance`). Only a
+/// loaded tool exposes either — the `add` axis alone is smooth, which is why this
+/// test smears existing paint rather than painting on bare canvas.
+#[test]
+fn a_carrying_stroke_reads_as_one_continuous_mark() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A slab to load the tool from, then a smear that drags it out across the canvas.
+    let mut slab = brush(GREEN, 70.0);
+    slab.drain = 0.0;
+    stroke_with(&mut engine, slab, &[Vec2::new(-115.0, 0.0), Vec2::new(-60.0, 0.0)]);
+
+    let smear = BrushParams {
+        hardness: 0.95,
+        drain: 0.0,
+        ..dyn_brush(RED, 60.0, BrushDynamics { add: 0.0, lift: 0.4, deposit: 0.9, ..Default::default() })
+    };
+    stroke_with(&mut engine, smear, &[Vec2::new(-100.0, 0.0), Vec2::new(115.0, 0.0)]);
+    let img = engine.render_to_image(PAPER);
+
+    // Green rises monotonically as the carried paint thins out; each reversal past
+    // the noise floor is a band edge.
+    let y = img.height / 2;
+    let prof: Vec<i32> = (100..230).map(|x| img.pixel(x, y)[1] as i32).collect();
+    let d: Vec<i32> = prof.windows(2).map(|w| w[1] - w[0]).collect();
+    let reversals = d
+        .windows(2)
+        .filter(|w| w[0] * w[1] < 0 && (w[0].abs() > 1 || w[1].abs() > 1))
+        .count();
+    assert!(
+        reversals <= 4,
+        "carried-paint profile reverses {reversals}× — per-segment scalloping",
+    );
+}

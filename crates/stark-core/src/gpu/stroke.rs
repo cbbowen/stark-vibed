@@ -28,8 +28,9 @@ use wgpu::util::DeviceExt;
 
 use crate::assets::{build_coverage_r8, build_prefix_tau, AssetStore};
 use crate::colorspace::ColorSpace;
-use crate::command::InputSample;
-use crate::document::{BrushShape, ColorDynamics, NoiseKind, OrientationSource, StrokeRecord};
+use crate::document::{
+    BrushParams, BrushShape, ColorDynamics, NoiseKind, OrientationSource, StrokeRecord,
+};
 use crate::noise::NOISE_TILE_PX;
 use crate::geom::{
     TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
@@ -57,7 +58,9 @@ const MAX_REGION_DIM: u32 = 2048;
 /// per-radius fidelity on extremely long strokes for bounded cost.
 const MAX_STAMPS: usize = 4096;
 /// Gain on the `add` axis in the stamp loop, tuned so `add = 1` at default
-/// spacing lays roughly the brush's `height` per pass of the tip.
+/// spacing lays roughly the brush's `height` per pass of the tip. The swept fast
+/// path needs no counterpart: it lays height directly as the brush's rate times
+/// the swept optical depth (`stamp_oklab.wesl`), with no correction factor.
 const ADD_GAIN: f32 = 2.0;
 
 /// One swept segment of the stroke.
@@ -792,14 +795,22 @@ impl StrokeRenderer {
         channels: [f32; 4],
     ) -> Option<HashTrieMap<TileCoord, TilePairHandle>> {
         // The same flattened segments as the fast path; extremely long strokes
-        // re-flatten coarser so the dispatch count stays bounded.
+        // re-flatten coarser so the dispatch count stays bounded. First stretch the
+        // length cap to the spacing that would hit the cap exactly, then relax the
+        // error bounds — each doubling roughly halves the count on a curved stroke.
+        // Bounded, and a pure function of the record, so replay matches.
         let mut segments = generate_segments(rec);
         if segments.len() > MAX_STAMPS {
             let total: f32 = segments.iter().map(|s| s.length).sum();
-            segments = generate_segments_step(
-                rec,
-                (total / MAX_STAMPS as f32).max(crate::path::FLATTEN_STEP),
-            );
+            let mut tol = flatten_tolerance(&rec.brush);
+            tol.max_len = tol.max_len.max(total / MAX_STAMPS as f32);
+            for _ in 0..8 {
+                segments = generate_segments_tol(rec, tol);
+                if segments.len() <= MAX_STAMPS {
+                    break;
+                }
+                tol = tol.relaxed(2.0);
+            }
         }
         if segments.is_empty() {
             return Some(base.clone());
@@ -1246,30 +1257,63 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Build swept segments from the fitted control points (DESIGN.md §6.2): flatten
-/// the spline, then make each polyline edge a segment. The one-way load reservoir
-/// (`drain`) depletes with arc distance; radius follows pressure.
-fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
-    generate_segments_step(rec, crate::path::FLATTEN_STEP)
+/// The flattening budget for a brush (DESIGN.md §6.2). The error bounds are
+/// brush-independent — sub-pixel position, a small tangent turn, a small attribute
+/// step — but a segment is swept with *constant* attributes, so any brush quantity
+/// that varies with distance travelled and is applied per segment (rather than
+/// recovered per fragment, as the colour-dynamics arc is) needs a length cap too.
+fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
+    let mut tol = crate::path::FLATTEN_TOLERANCE;
+    // `drain` fades flow/height/wet/opacity by `drain · dist`, sampled at the
+    // segment midpoint: cap the step it can take across one segment at ~2%.
+    if b.drain > 0.0 {
+        tol.max_len = tol.max_len.min(0.02 / b.drain);
+    }
+    // The stamp loop reads its tool reservoir at the tip's *mid-pass* position over
+    // each region texel — one representative sample for a segment during which the
+    // tip actually sweeps a whole range of reservoir texels across that spot
+    // (`dynamics.wesl::deposit`). That approximation only holds while a segment
+    // advances the tip by about a reservoir texel, so cap it there: the reservoir is
+    // [`BRUSH_RES`] texels across the tip's 2-radius width, and beyond ~1.5 of them
+    // the sampled load visibly jumps from segment to segment and the stroke scallops.
+    // (This also stays under the `spacing · radius` pickup cadence, and bounds the
+    // snapshot scratch, which is sized by the longest segment.)
+    let d = b.dynamics;
+    if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
+        let per_texel = 2.0 / BRUSH_RES as f32;
+        tol.max_len = tol.max_len.min((b.radius * per_texel * 1.5).max(0.5));
+    }
+    tol
 }
 
-/// [`generate_segments`] with an explicit flatten step — the swept-exchange loop
+/// Build swept segments from the fitted control points (DESIGN.md §6.2): flatten
+/// the curve adaptively, then make each polyline edge a segment. The one-way load
+/// reservoir (`drain`) depletes with arc distance; radius follows pressure.
+fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
+    generate_segments_tol(rec, flatten_tolerance(&rec.brush))
+}
+
+/// [`generate_segments`] with an explicit budget — the swept-exchange loop
 /// re-flattens coarser when a stroke would otherwise exceed [`MAX_STAMPS`].
-fn generate_segments_step(rec: &StrokeRecord, step: f32) -> Vec<Segment> {
+fn generate_segments_tol(rec: &StrokeRecord, tol: crate::path::FlattenTolerance) -> Vec<Segment> {
     let b = &rec.brush;
-    let pts = crate::path::flatten(&rec.path, step);
+    let pts = crate::path::flatten(&rec.path, tol);
     let mut segs = Vec::new();
     if pts.is_empty() {
         return segs;
     }
 
-    // `dist` (arc length from the stroke start) drives the drain.
-    let make = |sample: &InputSample, dir: Vec2, len: f32, dist: f32| -> Segment {
-        let drain = (1.0 - b.drain * dist).max(0.0);
+    // Attributes are constant across a swept segment, so they are taken at its
+    // *midpoint* rather than its start — with adaptive flattening a segment can be
+    // long, and start-sampling would lag every ramp by half a segment. `dist` is
+    // the exception: it is the segment start's arc length because the shader adds
+    // the fragment's own offset along the travel to it (stamp_common.wesl).
+    let make = |pos: Vec2, pressure: f32, tilt: Vec2, dir: Vec2, len: f32, dist: f32| {
+        let drain = (1.0 - b.drain * (dist + len * 0.5)).max(0.0);
         Segment {
-            start: sample.pos,
+            start: pos,
             dir,
-            radius: (b.radius * sample.pressure).max(0.5),
+            radius: (b.radius * pressure).max(0.5),
             length: len,
             // `flow` drives only the footprint build-up; the brush's opacity
             // (color[3]) rides the separate opacity channel (DESIGN.md §6.1).
@@ -1277,28 +1321,28 @@ fn generate_segments_step(rec: &StrokeRecord, step: f32) -> Vec<Segment> {
             height: b.height * drain,
             wet: b.wetness * drain,
             opacity: b.color[3] * drain,
-            orient: orientation_turns(b.orientation, dir, sample.tilt),
+            orient: orientation_turns(b.orientation, dir, tilt),
             dist,
         }
     };
 
-    let mut dist = 0.0f32;
     for w in pts.windows(2) {
-        let (a, c) = (&w[0], &w[1]);
+        let (a, c) = (w[0], w[1]);
         let v = c.pos - a.pos;
         let len = v.length();
         if len < 1e-5 {
             continue;
         }
-        segs.push(make(a, v / len, len, dist));
-        dist += len;
+        let pressure = (a.pressure + c.pressure) * 0.5;
+        let tilt = (a.tilt + c.tilt) * 0.5;
+        segs.push(make(a.pos, pressure, tilt, v / len, len, a.dist));
     }
 
     if segs.is_empty() {
         // A click: sweep a fraction of a radius so it deposits a soft blob.
-        let p = &pts[0];
+        let p = pts[0];
         let r = (b.radius * p.pressure).max(0.5);
-        segs.push(make(p, Vec2::new(1.0, 0.0), r * 0.6, 0.0));
+        segs.push(make(p.pos, p.pressure, p.tilt, Vec2::new(1.0, 0.0), r * 0.6, 0.0));
     }
     segs
 }
