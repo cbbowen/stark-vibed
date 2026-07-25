@@ -67,7 +67,7 @@
 //!   layer and the `history` cache rewound/replayed on out-of-order merges.
 //!   Engine hooks: [`Engine::start_collaboration`], [`Engine::join_collaboration`],
 //!   [`Engine::merge_remote`], [`Engine::take_outbox`]. The `stark-net` crate
-//!   carries it over iroh (gossip + snapshot/asset ALPN); convergence is
+//!   carries it over iroh (a broadcast mesh + snapshot/asset ALPN); convergence is
 //!   asserted pixel-identical in `tests/collab.rs` and `stark-net/tests/sync.rs`.
 //! - [ ] Step 11: brush file upload.
 

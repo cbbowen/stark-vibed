@@ -197,7 +197,7 @@ fn shared_save_solo_load_roundtrip() {
     );
 }
 
-/// Duplicate deliveries (gossip redelivery) are idempotent.
+/// Duplicate deliveries (redelivery by the transport) are idempotent.
 #[test]
 fn merge_is_idempotent() {
     let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {

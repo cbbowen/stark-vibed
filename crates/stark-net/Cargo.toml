@@ -1,5 +1,5 @@
 # iroh transport for shared multi-user drawings (DESIGN.md §12.4). Adapts the
-# wire (gossip live actions + a catch-up/asset ALPN) to stark-core's
+# wire (mesh-broadcast live actions + a catch-up/asset ALPN) to stark-core's
 # network-agnostic ReplicatedTimeline; pulled in by the frontend, or omitted.
 [package]
 name = "stark-net"
@@ -9,24 +9,26 @@ license.workspace = true
 publish = false
 
 [features]
-# Direct peer connections on the web target via the vendored WebRTC custom
-# transport for iroh (vendor/iroh-webrtc-transport). On the web, iroh cannot
-# hole-punch and relays all traffic through n0's relays (higher latency);
-# WebRTC gives lower-latency direct paths.
+# Direct peer connections on the web target via the vendored WebRTC facade
+# (vendor/iroh-webrtc-transport). On the web iroh cannot hole-punch, so all
+# traffic otherwise crosses n0's relays; WebRTC gives lower-latency direct paths
+# with automatic relay fallback per connection.
 #
-# SCAFFOLDING ONLY for now: the crate is vendored, ported to iroh 1.0, and built
-# behind this flag, but stark-net's gossip-based session is NOT yet routed over
-# it. The crate's browser facade binds its own endpoints and cannot host
-# iroh-gossip (it's built for explicit dial/accept connections, not a
-# self-dialing swarm), so the live-edit wire needs a redesign before it can use
-# WebRTC on web. See vendor/iroh-webrtc-transport/VENDORING.md. Enabling this
-# today pulls the crate into the build but does not change the wire.
+# The blocker this used to carry is gone: the live wire is now `crate::mesh`,
+# which is built on explicit dial/accept and so *can* run over the facade
+# (iroh-gossip could not — it is a self-dialing swarm). `transport::webrtc`
+# implements the mesh's WebRTC binding and is compiled by this feature.
+#
+# Not yet switched on at the session level: `CollabSession` still constructs the
+# iroh transport on every target, because moving it onto the facade also means
+# serving the catch-up/asset ALPN through the facade (it owns its endpoints and
+# exposes no `Endpoint`/`Router`), and none of that is verifiable outside a
+# browser. See vendor/iroh-webrtc-transport/VENDORING.md.
 webrtc = ["dep:iroh-webrtc-transport"]
 
 [dependencies]
 stark-core = { path = "../stark-core" }
 iroh = "1"
-iroh-gossip = "0.101"
 n0-future = "0.3"
 postcard = { workspace = true }
 serde = { workspace = true }

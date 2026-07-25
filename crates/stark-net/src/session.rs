@@ -1,13 +1,19 @@
 //! A live shared-drawing session over iroh (DESIGN.md §12.4).
 //!
 //! One [`CollabSession`] per shared document. The engine stays on the UI
-//! thread; the session runs the network side (gossip receive loop, catch-up
+//! thread; the session runs the network side (the mesh receive loop, catch-up
 //! server) on spawned tasks and talks to the engine through two thin streams:
 //!
 //! ```text
-//! engine.take_outbox() ──────────► session.broadcast(action) ──► gossip
-//! gossip/ALPN ──► RemoteEvent ──► engine.merge_remote / import_brush
+//! engine.take_outbox() ──────────► session.broadcast(action) ──► mesh
+//! mesh/ALPN ──► RemoteEvent ──► engine.merge_remote / import_brush
 //! ```
+//!
+//! Live actions ride the [`mesh`](crate::mesh) — a flood-with-deduplication
+//! broadcast over explicit peer connections. It replaces `iroh-gossip`, whose
+//! self-dialing swarm cannot run over WebRTC (see `crate::mesh` for why), while
+//! keeping the properties that matter: every peer receives every action, once,
+//! even without a direct connection to its author.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -17,29 +23,32 @@ use std::time::Duration;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
-use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
-use iroh_gossip::{Gossip, TopicId};
 use n0_future::task;
-use n0_future::StreamExt;
 use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
 use stark_core::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
+use crate::mesh::{Mesh, MeshConfig, MeshEvent, TopicId};
 use crate::mirror::Mirror;
 use crate::proto::{self, AssetResponse, CollabProto, Request, Wire};
 use crate::ticket::SessionTicket;
+use crate::transport::iroh::{to_peer_id, IrohMeshTransport};
 use crate::Result;
 
-/// Gossip's default max message is 4 KiB; a long stroke's fitted control
-/// points can exceed that, so raise the ceiling well past any plausible
-/// single action (paths are RDP-simplified; pixels never ride gossip).
-const MAX_GOSSIP_MESSAGE: usize = 256 * 1024;
+/// A long stroke's fitted control points can be sizeable, so the ceiling sits
+/// well past any plausible single action (paths are RDP-simplified; pixels
+/// never ride the mesh).
+const MAX_MESH_FRAME: usize = 256 * 1024;
 
 /// How long to wait for relay/publish readiness before minting a ticket.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Attempts (with delay) to fetch a brush asset from the delivering peer —
-/// it may still be fetching the blob itself.
+/// How long a joiner waits to meet the swarm before fetching the snapshot.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+const JOIN_POLL: Duration = Duration::from_millis(50);
+
+/// Attempts (with delay) to fetch a brush asset from a peer — it may still be
+/// fetching the blob itself.
 const ASSET_RETRIES: u32 = 5;
 const ASSET_RETRY_DELAY: Duration = Duration::from_millis(300);
 
@@ -91,7 +100,7 @@ pub struct CollabSession {
     endpoint: Endpoint,
     router: Router,
     topic: TopicId,
-    sender: GossipSender,
+    mesh: Mesh,
     mirror: Arc<Mutex<Mirror>>,
     events: Option<mpsc::UnboundedReceiver<RemoteEvent>>,
     ticket_addr: EndpointAddr,
@@ -105,13 +114,14 @@ impl CollabSession {
     /// [`SecretKey`] first and pass it in `opts` so the actor id is known
     /// before binding.
     pub async fn host(doc: DocumentFile, opts: NetOptions) -> Result<Self> {
-        let (endpoint, gossip, router, mirror) =
+        let (endpoint, router, mirror, transport) =
             bind_stack(Mirror::from_file(&doc), &opts).await?;
         // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
         let topic = TopicId::from_bytes(SecretKey::generate().to_bytes());
-        let (sender, receiver) = gossip.subscribe(topic, vec![]).await?.split();
+        // The first member starts the swarm alone; joiners bootstrap from it.
+        let (mesh, events) = Mesh::spawn(transport, mesh_config(topic), []);
         let ticket_addr = reachable_addr(&endpoint, &opts).await;
-        Ok(Self::finish(endpoint, router, topic, sender, receiver, mirror, ticket_addr))
+        Ok(Self::finish(endpoint, router, topic, mesh, events, mirror, ticket_addr))
     }
 
     /// Join an existing session from a ticket. Returns the session and the
@@ -120,20 +130,22 @@ impl CollabSession {
     /// (with [`CollabSession::actor_id`] as the actor).
     pub async fn join(ticket: &SessionTicket, opts: NetOptions) -> Result<(Self, DocumentFile)> {
         let empty = Mirror::from_file(&DocumentFile::new(Vec::new()));
-        let (endpoint, gossip, router, mirror) = bind_stack(empty, &opts).await?;
+        let (endpoint, router, mirror, transport) = bind_stack(empty, &opts).await?;
 
         // Connect first: this also teaches the endpoint the peer's address, so
-        // gossip can dial it by bare id below.
+        // the mesh can dial it by bare id below.
         let conn = endpoint.connect(ticket.addr.clone(), proto::ALPN).await?;
 
-        // Join the live feed *before* fetching the snapshot: everything before
-        // the join is in the snapshot, everything after rides gossip, and the
-        // overlap deduplicates by action id.
-        let (sender, mut receiver) = gossip
-            .subscribe(ticket.topic, vec![ticket.addr.id])
-            .await?
-            .split();
-        receiver.joined().await?;
+        // Enter the live swarm *before* fetching the snapshot: everything
+        // before the join is in the snapshot, everything after rides the mesh,
+        // and the overlap deduplicates by action id. The ticket's peer is our
+        // one contact; the rest of the swarm arrives through peer exchange.
+        let (mesh, events) = Mesh::spawn(
+            transport,
+            mesh_config(ticket.topic),
+            [to_peer_id(ticket.addr.id)],
+        );
+        wait_for_swarm(&mesh).await;
 
         let snapshot = proto::request(&conn, Request::Snapshot).await?;
         conn.close(0u8.into(), b"joined");
@@ -142,7 +154,7 @@ impl CollabSession {
 
         let ticket_addr = reachable_addr(&endpoint, &opts).await;
         let session =
-            Self::finish(endpoint, router, ticket.topic, sender, receiver, mirror, ticket_addr);
+            Self::finish(endpoint, router, ticket.topic, mesh, events, mirror, ticket_addr);
         Ok((session, file))
     }
 
@@ -150,18 +162,18 @@ impl CollabSession {
         endpoint: Endpoint,
         router: Router,
         topic: TopicId,
-        sender: GossipSender,
-        receiver: GossipReceiver,
+        mesh: Mesh,
+        mesh_events: mpsc::UnboundedReceiver<MeshEvent>,
         mirror: Arc<Mutex<Mirror>>,
         ticket_addr: EndpointAddr,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        task::spawn(recv_loop(endpoint.clone(), receiver, mirror.clone(), tx));
+        task::spawn(recv_loop(endpoint.clone(), mesh_events, mirror.clone(), tx));
         Self {
             endpoint,
             router,
             topic,
-            sender,
+            mesh,
             mirror,
             events: Some(rx),
             ticket_addr,
@@ -191,7 +203,7 @@ impl CollabSession {
     /// UI task that can't borrow the session across an `await`).
     pub fn broadcaster(&self) -> Broadcaster {
         Broadcaster {
-            sender: self.sender.clone(),
+            mesh: self.mesh.clone(),
             mirror: self.mirror.clone(),
         }
     }
@@ -213,6 +225,7 @@ impl CollabSession {
 
     /// Leave the session gracefully.
     pub async fn shutdown(self) {
+        self.mesh.shutdown();
         if let Err(e) = self.router.shutdown().await {
             tracing::warn!("router shutdown: {e}");
         }
@@ -222,10 +235,10 @@ impl CollabSession {
 
 /// A detached publishing handle onto a [`CollabSession`]: broadcast actions and
 /// register assets without holding the session itself. All clones share the
-/// same gossip sender and mirror.
+/// same mesh and mirror.
 #[derive(Clone)]
 pub struct Broadcaster {
-    sender: GossipSender,
+    mesh: Mesh,
     mirror: Arc<Mutex<Mirror>>,
 }
 
@@ -237,7 +250,10 @@ impl Broadcaster {
             .expect("mirror poisoned")
             .insert(action.clone());
         let bytes = postcard::to_allocvec(&Wire::Action(action))?;
-        self.sender.broadcast(bytes.into()).await?;
+        self.mesh
+            .broadcast(bytes)
+            .await
+            .map_err(|e| crate::NetError::Other(e.to_string()))?;
         Ok(())
     }
 
@@ -250,23 +266,29 @@ impl Broadcaster {
     }
 }
 
-/// Bind the endpoint and the protocol stack shared by host and joiner.
+fn mesh_config(topic: TopicId) -> MeshConfig {
+    MeshConfig {
+        max_frame: MAX_MESH_FRAME,
+        ..MeshConfig::new(topic)
+    }
+}
+
+/// Bind the endpoint and the protocol stack shared by host and joiner: the mesh
+/// (live actions) and the catch-up/asset protocol, on one router.
 async fn bind_stack(
     mirror: Mirror,
     opts: &NetOptions,
-) -> Result<(Endpoint, Gossip, Router, Arc<Mutex<Mirror>>)> {
+) -> Result<(Endpoint, Router, Arc<Mutex<Mirror>>, IrohMeshTransport)> {
     let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
     let endpoint = if opts.local_only {
         Endpoint::builder(presets::Minimal).secret_key(secret).bind().await?
     } else {
         Endpoint::builder(presets::N0).secret_key(secret).bind().await?
     };
-    let gossip = Gossip::builder()
-        .max_message_size(MAX_GOSSIP_MESSAGE)
-        .spawn(endpoint.clone());
+    let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
     let mirror = Arc::new(Mutex::new(mirror));
     let router = Router::builder(endpoint.clone())
-        .accept(iroh_gossip::ALPN, gossip.clone())
+        .accept(crate::transport::iroh::ALPN, mesh_proto)
         .accept(
             proto::ALPN,
             CollabProto {
@@ -274,7 +296,24 @@ async fn bind_stack(
             },
         )
         .spawn();
-    Ok((endpoint, gossip, router, mirror))
+    Ok((endpoint, router, mirror, transport))
+}
+
+/// Wait (bounded) until the mesh has met at least one peer, so a joiner does
+/// not miss the actions committed while it was fetching the snapshot. Best
+/// effort: joining still proceeds if the swarm is slow, since the snapshot plus
+/// later mesh traffic still converges.
+async fn wait_for_swarm(mesh: &Mesh) {
+    let deadline = JOIN_TIMEOUT.as_millis() / JOIN_POLL.as_millis().max(1);
+    for _ in 0..deadline {
+        match mesh.neighbors().await {
+            Ok(neighbors) if !neighbors.is_empty() => return,
+            Ok(_) => {}
+            Err(_) => return,
+        }
+        n0_future::time::sleep(JOIN_POLL).await;
+    }
+    tracing::warn!("joined without meeting a peer yet; relying on catch-up");
 }
 
 /// The address peers should dial, for tickets. With public infrastructure we
@@ -311,71 +350,88 @@ async fn reachable_addr(endpoint: &Endpoint, opts: &NetOptions) -> EndpointAddr 
     EndpointAddr::new(endpoint.id())
 }
 
-/// The gossip receive loop: decode, resolve asset dependencies, mirror,
-/// forward to the engine.
+/// The mesh receive loop: decode, resolve asset dependencies, mirror, forward
+/// to the engine.
 async fn recv_loop(
     endpoint: Endpoint,
-    mut receiver: GossipReceiver,
+    mut events: mpsc::UnboundedReceiver<MeshEvent>,
     mirror: Arc<Mutex<Mirror>>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
-    while let Some(event) = receiver.next().await {
-        let event = match event {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("gossip stream ended: {e}");
-                break;
+    while let Some(event) = events.recv().await {
+        let (origin, from, payload) = match event {
+            MeshEvent::Received { origin, from, payload } => (origin, from, payload),
+            MeshEvent::Lagged { origin } => {
+                // Dropped messages: peers converge again on the next snapshot
+                // fetch; flag it loudly for now (DESIGN.md §12.5).
+                tracing::warn!(%origin, "mesh lagged; some remote actions may be missing");
+                continue;
+            }
+            MeshEvent::NeighborUp(peer) => {
+                tracing::debug!(%peer, "peer joined the session");
+                continue;
+            }
+            MeshEvent::NeighborDown(peer) => {
+                tracing::debug!(%peer, "peer left the session");
+                continue;
             }
         };
-        match event {
-            Event::Received(msg) => {
-                let wire: Wire = match postcard::from_bytes(&msg.content) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        tracing::warn!("undecodable gossip message: {e}");
-                        continue;
-                    }
-                };
-                let Wire::Action(action) = wire;
 
-                // Resolve the stroke's brush image before surfacing the action
-                // so the engine can render it faithfully (a miss degrades to
-                // the round tip rather than blocking the log).
-                if let Some(id) = referenced_asset(&action)
-                    && !mirror.lock().expect("mirror poisoned").has_asset(id)
-                {
-                    match fetch_asset(&endpoint, msg.delivered_from, id).await {
-                        Some(bytes) => {
-                            mirror
-                                .lock()
-                                .expect("mirror poisoned")
-                                .insert_asset(id, bytes.clone());
-                            if tx.send(RemoteEvent::Asset { bytes }).is_err() {
-                                return;
-                            }
-                        }
-                        None => {
-                            tracing::warn!("brush asset {id:?} unavailable; stroke will fall back")
-                        }
+        let wire: Wire = match postcard::from_bytes(&payload) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!("undecodable mesh payload: {e}");
+                continue;
+            }
+        };
+        let Wire::Action(action) = wire;
+
+        // Resolve the stroke's brush image before surfacing the action so the
+        // engine can render it faithfully (a miss degrades to the round tip
+        // rather than blocking the log). The origin authored the stroke and so
+        // definitely has the asset; the neighbour that forwarded it may not.
+        if let Some(id) = referenced_asset(&action)
+            && !mirror.lock().expect("mirror poisoned").has_asset(id)
+        {
+            let sources = asset_sources(origin, from);
+            match fetch_asset(&endpoint, &sources, id).await {
+                Some(bytes) => {
+                    mirror
+                        .lock()
+                        .expect("mirror poisoned")
+                        .insert_asset(id, bytes.clone());
+                    if tx.send(RemoteEvent::Asset { bytes }).is_err() {
+                        return;
                     }
                 }
-
-                let fresh = mirror
-                    .lock()
-                    .expect("mirror poisoned")
-                    .insert(action.clone());
-                if fresh && tx.send(RemoteEvent::Action(action)).is_err() {
-                    return;
+                None => {
+                    tracing::warn!("brush asset {id:?} unavailable; stroke will fall back")
                 }
             }
-            Event::Lagged => {
-                // Dropped gossip messages: peers converge again on the next
-                // snapshot fetch; flag it loudly for now (DESIGN.md §12.5).
-                tracing::warn!("gossip receiver lagged; some remote actions may be missing");
-            }
-            _ => {}
+        }
+
+        let fresh = mirror
+            .lock()
+            .expect("mirror poisoned")
+            .insert(action.clone());
+        if fresh && tx.send(RemoteEvent::Action(action)).is_err() {
+            return;
         }
     }
+}
+
+/// Who to ask for a brush image: its author first, then whoever delivered the
+/// action (which may have it cached, and is known to be reachable).
+fn asset_sources(origin: crate::mesh::PeerId, from: crate::mesh::PeerId) -> Vec<EndpointId> {
+    let mut ids = Vec::with_capacity(2);
+    for peer in [origin, from] {
+        if let Some(id) = crate::transport::iroh::to_endpoint_id(peer)
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 /// The brush image a stroke depends on, if any (DESIGN.md §6.6).
@@ -389,17 +445,23 @@ fn referenced_asset(action: &Action) -> Option<AssetId> {
     }
 }
 
-/// Fetch a content-addressed brush image from the peer that delivered the
-/// referencing action (retrying — it may still be fetching it itself).
-async fn fetch_asset(endpoint: &Endpoint, from: EndpointId, id: AssetId) -> Option<Vec<u8>> {
+/// Fetch a content-addressed brush image, trying each source in turn and
+/// retrying (a peer may still be fetching it itself).
+async fn fetch_asset(
+    endpoint: &Endpoint,
+    sources: &[EndpointId],
+    id: AssetId,
+) -> Option<Vec<u8>> {
     for attempt in 0..ASSET_RETRIES {
         if attempt > 0 {
             n0_future::time::sleep(ASSET_RETRY_DELAY).await;
         }
-        match try_fetch_asset(endpoint, from, id).await {
-            Ok(Some(bytes)) => return Some(bytes),
-            Ok(None) => continue,
-            Err(e) => tracing::debug!("asset fetch attempt {attempt} failed: {e}"),
+        for &source in sources {
+            match try_fetch_asset(endpoint, source, id).await {
+                Ok(Some(bytes)) => return Some(bytes),
+                Ok(None) => continue,
+                Err(e) => tracing::debug!("asset fetch attempt {attempt} failed: {e}"),
+            }
         }
     }
     None

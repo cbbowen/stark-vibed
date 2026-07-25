@@ -216,7 +216,7 @@ impl ReplicatedTimeline {
     }
 
     /// Insert one action (local commit or remote merge). Returns whether it was
-    /// new. Idempotent: duplicates (gossip redelivery) are rejected by id.
+    /// new. Idempotent: duplicates (redelivery by the transport) are rejected by id.
     fn insert(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
         if !self.ids.insert(action.id) {
             return false;

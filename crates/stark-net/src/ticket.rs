@@ -1,15 +1,19 @@
 //! The shareable session ticket: everything a peer needs to join — how to
-//! reach one member (an [`EndpointAddr`]) and the session's gossip topic.
+//! reach one member (an [`EndpointAddr`]) and the session's topic.
 //!
 //! Displayed as `stark…` + base32 of the postcard encoding, so it survives
 //! chat clients and clipboards.
+//!
+//! One member is enough: the joiner connects to it and the [`mesh`](crate::mesh)
+//! introduces it to everyone else, so any member can hand out a ticket.
 
 use std::fmt;
 use std::str::FromStr;
 
 use iroh::EndpointAddr;
-use iroh_gossip::TopicId;
 use serde::{Deserialize, Serialize};
+
+use crate::mesh::TopicId;
 
 /// Human-pasteable prefix so tickets are recognizable in the wild.
 const PREFIX: &str = "stark";
@@ -18,7 +22,7 @@ const PREFIX: &str = "stark";
 pub struct SessionTicket {
     /// A reachable member of the session (initially the sharer).
     pub addr: EndpointAddr,
-    /// The gossip topic all live actions ride on.
+    /// The swarm all live actions ride on.
     pub topic: TopicId,
 }
 

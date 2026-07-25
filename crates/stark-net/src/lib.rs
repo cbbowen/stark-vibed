@@ -8,11 +8,11 @@
 //!   to the engine's [`ActorId`](stark_core::document::ActorId) via
 //!   [`actor_from_endpoint_id`].
 //! - **Live edits**: each committed [`Action`](stark_core::document::Action) is
-//!   broadcast over an `iroh-gossip` topic — a sampled path, never pixels.
+//!   broadcast over the [`mesh`] — a sampled path, never pixels.
 //! - **Join / catch-up**: a joining peer fetches the session snapshot — the
 //!   save-format [`DocumentFile`](stark_core::DocumentFile), which already
 //!   bundles referenced brush assets — over a dedicated ALPN, then rides the
-//!   gossip tail. Brush blobs a later stroke references are fetched over the
+//!   mesh tail. Brush blobs a later stroke references are fetched over the
 //!   same ALPN on demand (content-addressed, DESIGN.md §6.6).
 //!
 //! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_core::Engine::take_outbox)
@@ -20,10 +20,12 @@
 //! [`Engine::merge_remote`](stark_core::Engine::merge_remote) /
 //! [`Engine::import_brush`](stark_core::Engine::import_brush).
 
+pub mod mesh;
 mod mirror;
 mod proto;
 mod session;
 mod ticket;
+mod transport;
 
 pub use session::{actor_from_endpoint_id, Broadcaster, CollabSession, NetOptions, RemoteEvent};
 pub use ticket::SessionTicket;
@@ -31,11 +33,13 @@ pub use ticket::SessionTicket;
 // Re-exports so frontends don't need a direct iroh dependency for the basics.
 pub use iroh::{EndpointId, SecretKey};
 
-/// The vendored WebRTC custom transport for iroh, available behind the `webrtc`
+/// The vendored WebRTC transport for iroh, available behind the `webrtc`
 /// feature (DESIGN.md §12.4). Re-exported so the frontend can reach it without a
-/// separate dependency. NOTE: the session wire does not yet route over WebRTC —
-/// this is scaffolding pending a transport redesign (see the crate's
-/// `VENDORING.md` and the `webrtc` feature note in `Cargo.toml`).
+/// separate dependency.
+///
+/// The mesh's binding onto it lives in `transport::webrtc` and compiles under
+/// this feature, but [`CollabSession`] does not select it yet — see the
+/// `webrtc` note in `Cargo.toml` for what remains.
 #[cfg(feature = "webrtc")]
 pub use iroh_webrtc_transport;
 
@@ -52,8 +56,6 @@ pub enum NetError {
     Write(#[from] iroh::endpoint::WriteError),
     #[error("stream read failed: {0}")]
     Read(#[from] iroh::endpoint::ReadToEndError),
-    #[error("gossip error: {0}")]
-    Gossip(#[from] iroh_gossip::api::ApiError),
     #[error("encode/decode failed: {0}")]
     Codec(#[from] postcard::Error),
     #[error("document error: {0}")]
