@@ -44,7 +44,7 @@ fn golden_color_jitter_simplex() {
     };
     // Smooth organic wander in all three Oklab channels, at a scale that shows a
     // few colour "clouds" across the stroke.
-    let b = jitter_brush(NoiseKind::Simplex, [3.0, 3.0, 3.0], [0.18, 0.14, 0.14]);
+    let b = jitter_brush(NoiseKind::Simplex, [50.0, 50.0, 0.0], [0.18, 0.14, 0.14]);
     stroke_with(&mut engine, b, &S_CURVE);
     let img = engine.render_to_image(PAPER);
     assert_golden("color_jitter_simplex", &img, 6);

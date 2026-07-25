@@ -105,7 +105,9 @@ fn brush_color(in: VsOut) -> vec3<f32> {
     if all(xf.noise_amp.xyz == vec3<f32>(0.0, 0.0, 0.0)) {
         return xf.color.xyz;
     }
-    let canvas = xf.params.xy + in.clip.xy;
+    // TODO: Using a local parameterization, we no longer need 3D noise. 
+    // let canvas = xf.params.xy + in.clip.xy;
+    let canvas = vec2(0.0, in.local.y);
     let arc = in.sinfo.x + clamp(in.local.x, 0.0, in.misc.x) * in.sinfo.y;
     let jitter = color_jitter(
         noise_tex, noise_samp, canvas, arc,
