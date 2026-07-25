@@ -34,6 +34,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use iroh::EndpointId;
 use iroh_webrtc_transport::browser::{
@@ -51,6 +52,30 @@ use super::{to_endpoint_id, MESH_ALPN as ALPN};
 
 /// Matches the iroh transport's ceiling.
 const MAX_FRAME: usize = 1024 * 1024;
+
+/// Pause between accept retries, and how many consecutive failures mean this
+/// node itself is finished rather than one peer having dropped.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
+const ACCEPT_GIVE_UP_AFTER: u32 = 40;
+
+enum Retry {
+    Again,
+    GiveUp,
+}
+
+/// Decide whether a failed accept is worth retrying. Individual failures are
+/// expected — peers close tabs — so only a long unbroken run of them means the
+/// node is gone.
+async fn retry_accept(failures: &mut u32, what: &str, error: impl std::fmt::Debug) -> Retry {
+    *failures += 1;
+    if *failures >= ACCEPT_GIVE_UP_AFTER {
+        tracing::warn!("giving up accepting {what} connections after {failures}: {error:?}");
+        return Retry::GiveUp;
+    }
+    tracing::debug!("{what} accept failed ({failures}), retrying: {error:?}");
+    n0_future::time::sleep(ACCEPT_RETRY_DELAY).await;
+    Retry::Again
+}
 
 /// Facade errors are `JsValue`s; take them by `Debug` so this crate needs no
 /// `wasm-bindgen` dependency of its own.
@@ -108,14 +133,22 @@ impl MeshTransport for WebRtcMeshTransport {
     }
 
     async fn accept(&self) -> Option<WebRtcConn> {
+        let mut failures = 0u32;
         loop {
             let conn = match self.acceptor.accept().await {
-                Ok(Some(conn)) => conn,
-                Ok(None) => return None,
-                Err(e) => {
-                    tracing::debug!("webrtc accept failed: {e:?}");
-                    return None;
+                Ok(Some(conn)) => {
+                    failures = 0;
+                    conn
                 }
+                Ok(None) => return None,
+                // A peer vanishing (a closed browser tab) surfaces here as an
+                // error. Retry: giving up would stop this node accepting *any*
+                // future peer, so one departure would quietly end the session
+                // for everyone who has not joined yet.
+                Err(e) => match retry_accept(&mut failures, "mesh", e).await {
+                    Retry::Again => continue,
+                    Retry::GiveUp => return None,
+                },
             };
             let peer = match string_to_peer(conn.remote_endpoint_id()) {
                 Ok(peer) => peer,
@@ -220,19 +253,25 @@ pub(crate) fn serve_catchup(node: BrowserWebRtcNode, mirror: Arc<Mutex<Mirror>>)
                 return;
             }
         };
+        let mut failures = 0u32;
         loop {
             match acceptor.accept().await {
                 Ok(Some(conn)) => {
+                    failures = 0;
                     // One task per peer: a slow fetch must not stall the others.
                     task::spawn(serve_catchup_conn(conn, mirror.clone()));
                 }
                 Ok(None) => break,
-                Err(e) => {
-                    tracing::debug!("catch-up accept ended: {e:?}");
-                    break;
-                }
+                // Never stop serving because one peer went away: this is the
+                // path newcomers use to fetch the snapshot, so abandoning it
+                // would make this member unjoinable for the rest of the session.
+                Err(e) => match retry_accept(&mut failures, "catch-up", e).await {
+                    Retry::Again => continue,
+                    Retry::GiveUp => break,
+                },
             }
         }
+        tracing::debug!("catch-up server stopped");
     });
 }
 

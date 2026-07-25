@@ -106,6 +106,12 @@ pub trait MeshTransport: MaybeSend + MaybeSync + 'static {
     fn dial(&self, peer: PeerId) -> impl Future<Output = TransportResult<Self::Conn>> + MaybeSend;
 
     /// The next inbound connection, or `None` once the transport is closed.
+    ///
+    /// **`None` must mean permanently finished.** The mesh stops accepting for
+    /// good when it sees one, so a transient failure — a peer vanishing
+    /// mid-handshake, one bad connection — has to be swallowed and retried
+    /// internally. Returning `None` for those would leave the node running and
+    /// talking to its existing peers while silently refusing every new one.
     fn accept(&self) -> impl Future<Output = Option<Self::Conn>> + MaybeSend;
 }
 

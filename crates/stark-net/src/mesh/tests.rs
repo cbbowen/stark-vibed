@@ -465,6 +465,38 @@ async fn a_burst_arrives_complete_and_in_order_across_a_hop() {
     }
 }
 
+/// A peer dropping out must not cost the node its ability to take on new ones.
+/// The browser transport originally treated the error raised by a closing peer
+/// as "this node is finished accepting", which left the survivors talking to
+/// each other but unjoinable — the session quietly died with its founder.
+#[tokio::test]
+async fn a_peer_departing_does_not_stop_the_node_accepting_newcomers() {
+    let net = Network::default();
+    let (founder, _founder_events) = spawn_node(&net, 1, &[]);
+    let (survivor, mut survivor_events) = spawn_node(&net, 2, &[1]);
+    wait_for_neighbors(&survivor, 1).await;
+
+    // The founder goes away abruptly, as a closed browser tab would.
+    founder.shutdown();
+    net.cut(peer_id(1), peer_id(2));
+    for _ in 0..400 {
+        if survivor.neighbors().await.unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // A newcomer arrives knowing only the survivor.
+    let (newcomer, mut newcomer_events) = spawn_node(&net, 3, &[2]);
+    wait_for_neighbors(&survivor, 1).await;
+    wait_for_neighbors(&newcomer, 1).await;
+
+    newcomer.broadcast(b"hello from the newcomer".to_vec()).await.unwrap();
+    assert_eq!(next_payload(&mut survivor_events).await.1, b"hello from the newcomer");
+    survivor.broadcast(b"welcome".to_vec()).await.unwrap();
+    assert_eq!(next_payload(&mut newcomer_events).await.1, b"welcome");
+}
+
 #[tokio::test]
 async fn shutdown_stops_the_mesh() {
     let net = Network::default();
