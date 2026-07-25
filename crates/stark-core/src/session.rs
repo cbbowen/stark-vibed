@@ -7,7 +7,7 @@
 //! finished [`StrokeRecord`] to commit.
 
 use crate::command::InputSample;
-use crate::document::{BrushParams, LayerId, StrokeRecord, Tool};
+use crate::document::{BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, StrokeRecord, Tool};
 use crate::geom::ViewTransform;
 
 /// Accumulates the stroke currently being drawn.
@@ -27,12 +27,31 @@ pub struct Session {
     in_flight: Option<StrokeBuilder>,
 }
 
+fn hard_round_brush_params() -> BrushParams {
+    BrushParams {
+        radius: 120.0,
+        hardness: 0.95,
+        dynamics: BrushDynamics {
+            add: 0.5,
+            lift: 0.25,
+            deposit: 0.95,
+            ..BrushDynamics::default()
+        },
+        color_dynamics: ColorDynamics {
+            noise: NoiseKind::Simplex,
+            frequency: [1.0, 1.0, 4.0],
+            amplitude: [0.0, 0.1, 0.1],
+        },
+        ..BrushParams::default()
+    }
+}
+
 impl Session {
     pub fn new(view: ViewTransform, active_layer: LayerId) -> Self {
         Self {
             view,
             tool: Tool::Brush,
-            brush: BrushParams::default(),
+            brush: hard_round_brush_params(),
             active_layer,
             in_flight: None,
         }

@@ -41,9 +41,10 @@ pub enum Tool {
 }
 
 /// The brush tip shape (DESIGN.md §6.6).
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BrushShape {
     /// Procedural soft disc; `hardness` controls the falloff.
+    #[default]
     Round,
     /// A sampled coverage mask, referenced by content id (an imported image).
     Stamp(crate::assets::AssetId),
@@ -262,7 +263,7 @@ impl Default for BrushParams {
             height: 0.6,
             wetness: 0.7,
             drain: 0.0015,
-            shape: BrushShape::Round,
+            shape: BrushShape::default(),
             orientation: OrientationSource::default(),
             dynamics: BrushDynamics::default(),
             tooth: 0.5,
