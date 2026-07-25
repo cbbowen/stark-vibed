@@ -33,7 +33,7 @@ fn hard_round_brush_params() -> BrushParams {
         hardness: 0.95,
         dynamics: BrushDynamics {
             add: 0.5,
-            lift: 0.25,
+            lift: 0.1,
             deposit: 0.95,
             ..BrushDynamics::default()
         },

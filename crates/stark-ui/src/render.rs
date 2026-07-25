@@ -128,7 +128,11 @@ impl Renderer {
 
     /// The current canvas substrate colour, as straight sRGB components.
     pub fn background(&self) -> [f32; 3] {
-        [self.background.r as f32, self.background.g as f32, self.background.b as f32]
+        [
+            self.background.r as f32,
+            self.background.g as f32,
+            self.background.b as f32,
+        ]
     }
 
     /// Set the canvas substrate colour (straight sRGB). A view setting — it does not
@@ -269,6 +273,16 @@ pub fn canvas_element(id: &str) -> web_sys::HtmlCanvasElement {
         .expect("element is a canvas")
 }
 
+fn canvas_target<'a>(
+    #[allow(unused_variables)] canvas: web_sys::HtmlCanvasElement,
+) -> wgpu::SurfaceTarget<'a> {
+    #[cfg(target_arch = "wasm32")]
+    return wgpu::SurfaceTarget::Canvas(canvas);
+
+    #[allow(unreachable_code)]
+    wgpu::SurfaceTarget::Window(todo!("native support"));
+}
+
 /// Asynchronously create the WebGPU device, configure the surface to the
 /// canvas's current size, and build the engine (DESIGN.md §7).
 pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
@@ -277,7 +291,7 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
     let instance = wgpu::Instance::new(desc);
 
     let surface: wgpu::Surface<'static> = instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+        .create_surface(canvas_target(canvas.clone()))
         .expect("create canvas surface");
 
     let adapter = instance
@@ -314,7 +328,7 @@ pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
 pub async fn init_shared(canvas: web_sys::HtmlCanvasElement, gpu: GpuContext) -> Renderer {
     let surface: wgpu::Surface<'static> = gpu
         .instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+        .create_surface(canvas_target(canvas.clone()))
         .expect("create preview canvas surface");
     finish_init(canvas, surface, gpu).await
 }

@@ -16,7 +16,7 @@ dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version 
 tracing = { workspace = true, features = ["max_level_debug"] }
 
 # Web platform glue (the crate targets wasm32 via `dx serve --platform web`).
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
