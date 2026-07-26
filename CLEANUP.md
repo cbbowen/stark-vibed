@@ -21,7 +21,7 @@ undercut it: nothing enforces that net, and GPU tests self-skip.
 
 ---
 
-## Phase 0 — Lock the baseline
+## Phase 0 — Lock the baseline — **DONE**
 
 **0.1 Add `ci.yml`.** fmt-check, `clippy -D warnings`, `cargo test --workspace`,
 and a `wasm32-unknown-unknown` build of stark-ui. This has to land *before* the
@@ -34,7 +34,7 @@ selection test would go green having rendered nothing. Either install lavapipe i
 CI, or make skipping opt-in (`STARK_ALLOW_NO_GPU=1`) so a missing adapter fails by
 default.
 
-## Phase 1 — Mechanical, zero behavior change
+## Phase 1 — Mechanical, zero behavior change — **DONE**
 
 1. `cargo fmt --all` as one isolated commit + a `.git-blame-ignore-revs` entry.
 2. `cargo clippy --fix` handles 13 of the 18; hand-fix
@@ -48,6 +48,27 @@ default.
    `edition.workspace`/`license.workspace`, duplicates `nalgebra = "0.35"` instead
    of `workspace = true`, no `publish = false`, and it's the only underscore
    package name (`spline_fit`) in a hyphen workspace.
+
+### Found while doing Phases 0–1
+
+Three things the initial survey missed, all now handled or flagged:
+
+- **The vendored trees were workspace members.** Cargo promotes an unexcluded
+  path dependency to a member, so `cargo fmt --all` reformatted `vendor/mixbox`
+  and `vendor/iroh-webrtc-transport`, and `clippy --workspace` raised 50 warnings
+  in code that is not ours to fix. Both are now in `[workspace] exclude`. They
+  still build; their own test suites no longer run under `cargo test
+  --workspace` (hence 202 tests, not 256). Run them with
+  `cargo test --manifest-path vendor/iroh-webrtc-transport/Cargo.toml` if that
+  coverage is wanted back — **open question**, since the iroh 1.0 port is
+  precisely what those tests guard.
+- **The baseline clippy count of 18 was low.** Clippy only reports for crates it
+  recompiles, and the first run was against a warm cache. A cold workspace build
+  raised 31 in `crates/` (plus 50 in vendor). All now cleared.
+- **`TernaryPad` is orphaned.** The component, its three `TRI_*` constants,
+  `ternary_weights`, and ~50 lines of `.ternary*` CSS in stark.css are complete —
+  and nothing renders it. Marked `dead_code` with a pointer here rather than
+  deleted. **Open question:** wire it up or remove it (including the CSS)?
 
 ## Phase 2 — The big one: spline-fit is ~55% unreachable
 
@@ -188,6 +209,17 @@ win and is **independent** of 3 and 4, so it can run in parallel. Phase 3 items
 are independent of each other; 3.3 is the riskiest and should go last within that
 phase. Phase 4 needs decisions before code. Phase 5 can happen any time.
 
-Open questions: **Phase 2, prune or adopt?** (recommendation: prune), and
+Open questions: **Phase 2, prune or adopt?** (recommendation: prune),
 **Phase 4.1** — is the direct-method tier intentional, or should it collapse into
-`InputCommand`?
+`InputCommand`? — plus the two raised by Phases 0–1: whether to restore the
+vendored crates' test coverage, and whether `TernaryPad` lives or dies.
+
+## State after Phases 0–1
+
+| Check | Before | After |
+|---|---|---|
+| `cargo fmt --all --check` | ~309 hunks | clean |
+| `cargo clippy --workspace --all-targets -D warnings` | 31 warnings in `crates/` | clean |
+| `cargo test --workspace` | 256 pass (incl. 54 vendored) | 202 pass, 0 fail |
+| `cargo check -p stark-ui --target wasm32-unknown-unknown` | (unchecked) | clean |
+| CI | pages deploy only | + fmt / clippy / test / wasm |

@@ -1,0 +1,89 @@
+name: ci
+
+on:
+  push:
+    branches: ['master']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Formatting, lints, and a wasm32 type-check of the frontend. No GPU needed, so
+  # this stays fast and is the job that should go red on style regressions.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      # The toolchain (nightly + wasm32 target + rustfmt/clippy) comes from
+      # rust-toolchain.toml; rustup honours it on first cargo invocation.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-ci-lint-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # stark-ui is excluded from default-members (it is a wasm app), so nothing
+      # else in this workflow would compile it for its real target. `dx build` is
+      # reserved for the pages deploy; a plain cargo check catches wasm-only
+      # compile errors in a fraction of the time.
+      - name: Check stark-ui (wasm32)
+        run: cargo check -p stark-ui --target wasm32-unknown-unknown
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-ci-test-${{ hashFiles('**/Cargo.lock') }}
+
+      # Software Vulkan (lavapipe), so the GPU half of the suite actually runs.
+      # Without an adapter the golden / seam / dynamics / selection tests would
+      # otherwise have nothing to render.
+      - name: Install lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          vulkaninfo --summary || true
+
+      # Covers the five crates/ members only — the vendored trees are excluded
+      # from the workspace (see the root Cargo.toml), so their own test suites do
+      # not run here.
+      - name: Test
+        env:
+          WGPU_BACKEND: vulkan
+          # NOT set: STARK_ALLOW_NO_GPU. If lavapipe fails to produce an adapter
+          # we want a loud failure, not a suite of vacuous passes.
+          #
+          # Goldens are blessed against whichever adapter the author develops on,
+          # and a committed PNG can only match one adapter (see DESIGN.md §9), so
+          # comparing them here would fail on pixels rather than on behaviour.
+          # The strokes are still rendered — shader compilation, wgpu validation
+          # errors and panics are all still caught; only the pixel diff is
+          # dropped.
+          STARK_SKIP_GOLDEN: '1'
+        run: cargo test --workspace
