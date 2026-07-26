@@ -3,7 +3,7 @@
 #![cfg_attr(feature = "nightly", feature(lazy_type_alias))]
 
 use nalgebra::{Cholesky, Const, Dim, Dyn, OMatrix, SMatrix, SVector, convert};
-use snafu::prelude::*;
+use thiserror::Error;
 
 mod incremental;
 mod poly;
@@ -27,9 +27,9 @@ pub struct ClampedCardinalBSpline<T: Variable, D: Dim, P: Dim> {
     degree: P,
 }
 
-#[derive(Debug, Snafu)]
+#[derive(Debug, Error)]
 pub enum FromControlPointsError {
-    #[snafu(display("At least 2 control points are required (got {m})"))]
+    #[error("At least 2 control points are required (got {m})")]
     NotEnoughControlPoints { m: usize },
 }
 
@@ -48,7 +48,9 @@ impl<T: Variable, D: Dim, P: Dim> ClampedCardinalBSpline<T, D, P> {
     ) -> Result<Self, FromControlPointsError> {
         {
             let (m, _) = control_points.shape();
-            ensure!(m >= 2, NotEnoughControlPointsSnafu { m });
+            if m < 2 {
+                return Err(FromControlPointsError::NotEnoughControlPoints { m });
+            }
         }
         let knots = ClampedCardinalKnots;
         Ok(ClampedCardinalBSpline {
