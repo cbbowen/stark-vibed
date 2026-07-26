@@ -78,17 +78,16 @@ impl DocState {
     /// Replace the layer at `index`, returning a new document with bounds
     /// recomputed from all layers' populated tiles.
     pub fn with_layer_at(&self, index: usize, layer: Layer) -> Self {
-        let layers = self
-            .layers
-            .set(index, layer)
-            .expect("layer index in range");
+        let layers = self.layers.set(index, layer).expect("layer index in range");
         self.from_layers(layers)
     }
 
     /// Insert a new empty layer directly above `above` (or on top if `None`).
     pub fn insert_layer(&self, id: LayerId, above: Option<LayerId>) -> Self {
         let at = match above {
-            Some(target) => self.layer_index(target).map_or(self.layers.len(), |i| i + 1),
+            Some(target) => self
+                .layer_index(target)
+                .map_or(self.layers.len(), |i| i + 1),
             None => self.layers.len(),
         };
         // rpds::Vector has no insert-at; rebuild with the new layer spliced in.

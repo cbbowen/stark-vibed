@@ -17,11 +17,11 @@ use wgpu::util::DeviceExt;
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
 use crate::geom::{
-    Extent2, TileCoord, ViewTransform, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE,
+    Extent2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, ViewTransform,
 };
 use crate::gpu::context::GpuContext;
 use crate::gpu::environment::Environment;
-use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
+use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 use crate::gpu::tile::TilePairHandle;
 
 /// Mirrors `View` in `composite.wesl` and `overlay.wesl` (32 bytes).
@@ -172,10 +172,7 @@ impl Compositor {
 
         let tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark composite tile bgl"),
-            entries: &[
-                tex_entry(0),
-                tex_entry(1),
-            ],
+            entries: &[tex_entry(0), tex_entry(1)],
         });
 
         let comp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -414,7 +411,14 @@ impl Compositor {
 
         let instances = alloc_instances(device, 1);
         let (comp_color_view, comp_aux_view, media_bg) = make_offscreen(
-            device, size, color_format, aux_format, &media_bgl, &media_buf, &surface, &environment,
+            device,
+            size,
+            color_format,
+            aux_format,
+            &media_bgl,
+            &media_buf,
+            &surface,
+            &environment,
         );
 
         Self {
@@ -531,7 +535,12 @@ impl Compositor {
                 st: [scale.x, scale.y, translate.x, translate.y],
                 // `zoom` rides in `.w` for the outline pass, which measures its width
                 // in screen px from a canvas-space distance (§6.8).
-                misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, view.zoom],
+                misc: [
+                    TILE_SIZE as f32,
+                    INTERIOR_UV_SCALE,
+                    INTERIOR_UV_BIAS,
+                    view.zoom,
+                ],
             }),
         );
 
@@ -565,7 +574,12 @@ impl Compositor {
                     inv_zoom,
                     1.0 / SURFACE_TILE_PX,
                 ],
-                surf_b: [self.media.surface_strength, self.media.normal_dither, 0.0, 0.0],
+                surf_b: [
+                    self.media.surface_strength,
+                    self.media.normal_dither,
+                    0.0,
+                    0.0,
+                ],
             }),
         );
 
@@ -616,8 +630,14 @@ impl Compositor {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark composite pass"),
                 color_attachments: &[
-                    Some(clear_attachment(&self.comp_color_view, wgpu::Color::TRANSPARENT)),
-                    Some(clear_attachment(&self.comp_aux_view, wgpu::Color::TRANSPARENT)),
+                    Some(clear_attachment(
+                        &self.comp_color_view,
+                        wgpu::Color::TRANSPARENT,
+                    )),
+                    Some(clear_attachment(
+                        &self.comp_aux_view,
+                        wgpu::Color::TRANSPARENT,
+                    )),
                 ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -770,7 +790,10 @@ fn alloc_instances(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("stark composite instances"),
         contents: bytemuck::cast_slice(&vec![
-            Instance { origin: [0.0; 2], opacity: 1.0 };
+            Instance {
+                origin: [0.0; 2],
+                opacity: 1.0
+            };
             count.max(1)
         ]),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,

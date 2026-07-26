@@ -187,4 +187,3 @@ fn apron_makes_dynamics_writeback_seamless_under_zoom() {
         frac_big * 100.0
     );
 }
-

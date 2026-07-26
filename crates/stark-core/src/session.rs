@@ -55,7 +55,10 @@ impl SelectionDrag {
     fn push(&mut self, pos: Vec2) {
         self.current = pos;
         if self.tool == Tool::SelectLasso
-            && self.points.last().is_none_or(|q| q.distance(pos) >= LASSO_MIN_STEP)
+            && self
+                .points
+                .last()
+                .is_none_or(|q| q.distance(pos) >= LASSO_MIN_STEP)
         {
             self.points.push(pos);
         }

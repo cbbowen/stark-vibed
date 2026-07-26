@@ -611,11 +611,7 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
     ///
     /// The per-span root-finding this performs is ~90% of an E-step (see PERF.md), so
     /// this method isolates that hot work for benchmarking.
-    pub fn all_critical_points(
-        &self,
-        points: &[[T; D]],
-        tol: VariableTolerance<T>,
-    ) -> Vec<Vec<T>> {
+    pub fn all_critical_points(&self, points: &[[T; D]], tol: VariableTolerance<T>) -> Vec<Vec<T>> {
         let spans = self.span_polys();
         points
             .iter()
@@ -1193,7 +1189,11 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             }
             for (b, &(b0, b1)) in blocks.iter().enumerate() {
                 let lo = if b == 0 { domain.0 } else { ts[b0 - 1] };
-                let hi = if b + 1 == blocks.len() { domain.1 } else { ts[b1] };
+                let hi = if b + 1 == blocks.len() {
+                    domain.1
+                } else {
+                    ts[b1]
+                };
                 let block_cost = |t: T| {
                     let (k, u) = self.span_and_local(t);
                     let c: [T; D] = std::array::from_fn(|d| poly::eval(&spans[k].c[d], u));
@@ -1636,13 +1636,14 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
     ) -> OMatrix<T, Dyn, Const<E>> {
         let m = self.control_points.nrows();
         let have = prior.nrows();
-        let grown = OMatrix::<T, Dyn, Const<E>>::from_fn_generic(Dyn(m), Const::<E>, |j, d| {
-            match (j < have, have) {
-                (true, _) => prior[(j, d)],
-                (false, 0) => T::zero(),
-                (false, h) => prior[(h - 1, d)],
-            }
-        });
+        let grown =
+            OMatrix::<T, Dyn, Const<E>>::from_fn_generic(Dyn(m), Const::<E>, |j, d| {
+                match (j < have, have) {
+                    (true, _) => prior[(j, d)],
+                    (false, 0) => T::zero(),
+                    (false, h) => prior[(h - 1, d)],
+                }
+            });
         // Passenger channels are not regularized here: they are one-dimensional and
         // bounded by the data, and a caller that wants them smoothed can say so by
         // pre-smoothing its values.
@@ -1691,7 +1692,14 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
 
         // First EM step from the caller's assignment, its proximal prior the incoming
         // (polyline-initialized) control points. Then the initial objective.
-        let mut k0 = spline.m_step(&ts, &spline.control_points, points, settled.control_points, settled.tail, tol.smoothing);
+        let mut k0 = spline.m_step(
+            &ts,
+            &spline.control_points,
+            points,
+            settled.control_points,
+            settled.tail,
+            tol.smoothing,
+        );
         spline.control_points = k0.clone();
         let (mut ts0, mut l0) = spline.e_step(points, tol.into(), settled.after);
         let mut evals = 1usize;
@@ -1707,7 +1715,14 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             prev_l = Some(l0);
 
             // EM step 1: K1 = M(E(K0)); E(K0) is the assignment ts0 we already hold.
-            let k1 = spline.m_step(&ts0, &k0, points, settled.control_points, settled.tail, tol.smoothing);
+            let k1 = spline.m_step(
+                &ts0,
+                &k0,
+                points,
+                settled.control_points,
+                settled.tail,
+                tol.smoothing,
+            );
             spline.control_points = k1.clone();
             let (ts1, l1) = spline.e_step(points, tol.into(), settled.after);
             evals += 1;
@@ -1717,7 +1732,14 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             }
 
             // EM step 2: K2 = M(E(K1)).
-            let k2 = spline.m_step(&ts1, &k1, points, settled.control_points, settled.tail, tol.smoothing);
+            let k2 = spline.m_step(
+                &ts1,
+                &k1,
+                points,
+                settled.control_points,
+                settled.tail,
+                tol.smoothing,
+            );
             spline.control_points = k2.clone();
             let (ts2, l2) = spline.e_step(points, tol.into(), settled.after);
             evals += 1;
@@ -2731,7 +2753,9 @@ mod tests {
         let channel_at = |t: f64| {
             let (k, u) = s.span_and_local(t);
             let w = basis * s.u_powers(u);
-            (0..w.len()).map(|a| truth[(s.knot_row(k + a), 0)] * w[a]).sum::<f64>()
+            (0..w.len())
+                .map(|a| truth[(s.knot_row(k + a), 0)] * w[a])
+                .sum::<f64>()
         };
         let ts: Vec<f64> = (0..60)
             .map(|i| s.num_spans() as f64 * i as f64 / 59.0)
@@ -2773,9 +2797,10 @@ mod tests {
             .collect();
 
         // A prior two rows short of the polygon: the tail is seeded, not required.
-        let short = OMatrix::<f64, Dyn, Const<2>>::from_fn_generic(Dyn(m - 2), Const::<2>, |j, d| {
-            (j + d) as f64 * 0.25
-        });
+        let short =
+            OMatrix::<f64, Dyn, Const<2>>::from_fn_generic(Dyn(m - 2), Const::<2>, |j, d| {
+                (j + d) as f64 * 0.25
+            });
         let frozen = 3;
         let got = s.fit_channels(&ts, &values, frozen, &short);
         assert_eq!(got.nrows(), m);
@@ -2910,8 +2935,8 @@ mod tests {
             Settled {
                 control_points: 9,
                 after: 0.0,
-            tail: 0,
-        },
+                tail: 0,
+            },
             tol,
             &pts,
         );

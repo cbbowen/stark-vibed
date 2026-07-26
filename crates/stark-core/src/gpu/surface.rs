@@ -64,7 +64,9 @@ impl Surface {
             .output_buffer_size()
             .expect("surface: png output size");
         let mut buf = vec![0u8; size];
-        let info = reader.next_frame(&mut buf).expect("surface: decode png frame");
+        let info = reader
+            .next_frame(&mut buf)
+            .expect("surface: decode png frame");
         let (w, h) = (info.width, info.height);
 
         // Collapse to one height byte per texel (the source is 8-bit grayscale,
@@ -124,7 +126,11 @@ impl Surface {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Self { view, sampler, relief: 1.0 }
+        Self {
+            view,
+            sampler,
+            relief: 1.0,
+        }
     }
 }
 

@@ -28,7 +28,7 @@ mod session;
 mod ticket;
 mod transport;
 
-pub use session::{actor_from_endpoint_id, Broadcaster, CollabSession, NetOptions, RemoteEvent};
+pub use session::{Broadcaster, CollabSession, NetOptions, RemoteEvent, actor_from_endpoint_id};
 pub use ticket::SessionTicket;
 
 // Re-exports so frontends don't need a direct iroh dependency for the basics.

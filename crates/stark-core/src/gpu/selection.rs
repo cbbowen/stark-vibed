@@ -21,11 +21,11 @@ use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
 use crate::document::selection::{
-    lasso_edges, mask_tex_origin, Selection, SelectionOp, SelectionShape, MASK_TEX,
+    MASK_TEX, Selection, SelectionOp, SelectionShape, lasso_edges, mask_tex_origin,
 };
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
-use crate::gpu::tile::{AllocSource, TilePool, MASK_FORMAT};
+use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 
 /// Mirrors `Params` in `selection.wesl` (48 bytes).
 #[repr(C)]

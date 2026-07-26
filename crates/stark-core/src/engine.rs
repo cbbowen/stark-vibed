@@ -7,23 +7,23 @@
 
 use std::sync::Arc;
 
+use crate::Result;
 use crate::assets::{AssetId, AssetStore};
 use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::InputCommand;
 use crate::document::{
-    effective_actions, Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape,
-    CanvasBounds, DocState, Layer, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode,
-    StrokeRecord, Timeline, Tool,
+    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
+    DocState, Layer, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode, StrokeRecord,
+    Timeline, Tool, effective_actions,
 };
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
-    Compositor, Environment, EnvironmentId, GpuContext, SelectionRenderer, StrokeRenderer, Surface,
-    StrokeSpans, SurfaceId, TilePairHandle, TilePool,
+    Compositor, Environment, EnvironmentId, GpuContext, SelectionRenderer, StrokeRenderer,
+    StrokeSpans, Surface, SurfaceId, TilePairHandle, TilePool,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
-use crate::Result;
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
@@ -386,7 +386,10 @@ impl Engine {
     /// Render the current canvas (preview if stroking, else committed) into
     /// `target`, clearing to `background` first (DESIGN.md §6.4).
     pub fn render(&mut self, target: &wgpu::TextureView, background: wgpu::Color) {
-        let doc = self.preview.as_ref().unwrap_or_else(|| self.timeline.current());
+        let doc = self
+            .preview
+            .as_ref()
+            .unwrap_or_else(|| self.timeline.current());
 
         // Gather populated tiles bottom-to-top, skipping hidden layers and
         // tagging each tile with its layer opacity. Normal-blend layers compose
@@ -402,7 +405,11 @@ impl Engine {
             }
         }
 
-        let bg_channels = self.color_space.rgb_to_channels([background.r as f32, background.g as f32, background.b as f32]);
+        let bg_channels = self.color_space.rgb_to_channels([
+            background.r as f32,
+            background.g as f32,
+            background.b as f32,
+        ]);
 
         let view = self.session.view;
         let selection = doc.selection.clone();
@@ -926,8 +933,7 @@ impl Engine {
         // The tail reaches the end of the stroke, so the state it leaves the brush in
         // is handed to nobody — it is thrown away and rebuilt from the head on the next
         // move, which is exactly what makes the tail re-renderable.
-        let (preview, _) =
-            self.render_span_range(&head.state, tail_rec, tail, head.tool.as_ref());
+        let (preview, _) = self.render_span_range(&head.state, tail_rec, tail, head.tool.as_ref());
         self.preview = Some(preview);
         self.frozen_head = Some(head);
     }
@@ -1113,5 +1119,10 @@ pub async fn headless_engine_with(
     color_space: ColorSpaceId,
 ) -> Result<Engine> {
     let gpu = GpuContext::headless().await?;
-    Ok(Engine::new_with_color_space(gpu, target_format, viewport, color_space))
+    Ok(Engine::new_with_color_space(
+        gpu,
+        target_format,
+        viewport,
+        color_space,
+    ))
 }

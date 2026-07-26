@@ -20,8 +20,8 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_net::{
-    actor_from_endpoint_id, Broadcaster, CollabSession, NetOptions, RemoteEvent, SecretKey,
-    SessionTicket,
+    Broadcaster, CollabSession, NetOptions, RemoteEvent, SecretKey, SessionTicket,
+    actor_from_endpoint_id,
 };
 
 use crate::AppState;
@@ -62,7 +62,10 @@ pub fn share(state: AppState) {
             (r.document_file(), r.all_asset_bytes())
         };
 
-        let opts = NetOptions { secret: Some(secret), ..Default::default() };
+        let opts = NetOptions {
+            secret: Some(secret),
+            ..Default::default()
+        };
         match CollabSession::host(doc, opts).await {
             Ok(session) => {
                 // Seed every locally-imported brush so peers can fetch any the
@@ -163,8 +166,11 @@ pub fn flush_outbox(state: AppState) {
     if actions.is_empty() {
         return;
     }
-    let Some(tx): Option<Broadcaster> =
-        state.collab_session.read().as_ref().map(|s| s.broadcaster())
+    let Some(tx): Option<Broadcaster> = state
+        .collab_session
+        .read()
+        .as_ref()
+        .map(|s| s.broadcaster())
     else {
         return;
     };

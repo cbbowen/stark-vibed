@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_core::DocumentFile;
+use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_net::{CollabSession, NetOptions, RemoteEvent, SessionTicket};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -21,7 +21,11 @@ fn action(actor: ActorId, lamport: u64) -> Action {
 }
 
 fn ticket_of(session: &CollabSession) -> SessionTicket {
-    session.ticket().to_string().parse().expect("ticket round-trips")
+    session
+        .ticket()
+        .to_string()
+        .parse()
+        .expect("ticket round-trips")
 }
 
 /// Wait (bounded) for one remote action to arrive.

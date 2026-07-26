@@ -14,13 +14,13 @@ use std::sync::Arc;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::mesh::{
     MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError, PeerId, TransportResult,
 };
 
-use super::{to_endpoint_id, to_peer_id, MESH_ALPN as ALPN};
+use super::{MESH_ALPN as ALPN, to_endpoint_id, to_peer_id};
 
 /// Hard ceiling on a single frame, so a bad length prefix cannot make us
 /// allocate wildly. Comfortably above the mesh's own `max_frame`.
@@ -43,7 +43,9 @@ impl IrohMeshTransport {
                 endpoint,
                 inbound: Mutex::new(inbound_rx),
             },
-            MeshProto { inbound: inbound_tx },
+            MeshProto {
+                inbound: inbound_tx,
+            },
         )
     }
 }
@@ -153,13 +155,15 @@ pub(crate) struct IrohSender {
 
 impl MeshSender for IrohSender {
     async fn send(&self, frame: Vec<u8>) -> TransportResult<()> {
-        let len = u32::try_from(frame.len())
-            .map_err(|_| MeshTransportError::new("frame too large"))?;
+        let len =
+            u32::try_from(frame.len()).map_err(|_| MeshTransportError::new("frame too large"))?;
         let mut send = self.send.lock().await;
         send.write_all(&len.to_le_bytes())
             .await
             .map_err(MeshTransportError::new)?;
-        send.write_all(&frame).await.map_err(MeshTransportError::new)
+        send.write_all(&frame)
+            .await
+            .map_err(MeshTransportError::new)
     }
 
     fn close(&self) {
@@ -201,10 +205,10 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::time::Duration;
 
+    use iroh::SecretKey;
     use iroh::address_lookup::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
-    use iroh::SecretKey;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -231,7 +235,9 @@ mod tests {
             .await
             .expect("bind endpoint");
         let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
-        let router = Router::builder(endpoint.clone()).accept(ALPN, mesh_proto).spawn();
+        let router = Router::builder(endpoint.clone())
+            .accept(ALPN, mesh_proto)
+            .spawn();
         let addr = loopback_addr(&endpoint);
         TestPeer {
             addr,
@@ -268,9 +274,15 @@ mod tests {
             maintenance_interval: Duration::from_millis(100),
             ..MeshConfig::new(TOPIC)
         };
-        let bootstrap: Vec<PeerId> =
-            bootstrap.iter().map(|p| to_peer_id(p.endpoint.id())).collect();
-        Mesh::spawn(peer.transport.take().expect("one mesh per peer"), config, bootstrap)
+        let bootstrap: Vec<PeerId> = bootstrap
+            .iter()
+            .map(|p| to_peer_id(p.endpoint.id()))
+            .collect();
+        Mesh::spawn(
+            peer.transport.take().expect("one mesh per peer"),
+            config,
+            bootstrap,
+        )
     }
 
     async fn wait_for_neighbors(mesh: &Mesh, want: usize) {
@@ -287,7 +299,9 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
             match tokio::time::timeout_at(deadline, events.recv()).await {
-                Ok(Some(MeshEvent::Received { origin, payload, .. })) => return (origin, payload),
+                Ok(Some(MeshEvent::Received {
+                    origin, payload, ..
+                })) => return (origin, payload),
                 Ok(Some(_)) => continue,
                 Ok(None) => panic!("mesh event stream ended"),
                 Err(_) => panic!("timed out waiting for a payload over iroh"),
@@ -349,7 +363,11 @@ mod tests {
         a_mesh.broadcast(b"forwarded by b".to_vec()).await.unwrap();
 
         let (origin, payload) = next_payload(&mut c_events).await;
-        assert_eq!(origin, to_peer_id(a.endpoint.id()), "origin survives the hop");
+        assert_eq!(
+            origin,
+            to_peer_id(a.endpoint.id()),
+            "origin survives the hop"
+        );
         assert_eq!(payload, b"forwarded by b");
         assert!(
             !c_mesh

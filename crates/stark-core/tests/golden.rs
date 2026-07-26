@@ -4,11 +4,11 @@
 mod common;
 
 use common::*;
+use stark_core::SurfaceId;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{InputCommand, InputSample};
 use stark_core::document::{BrushShape, OrientationSource, Tool};
 use stark_core::geom::Vec2;
-use stark_core::SurfaceId;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
@@ -67,9 +67,24 @@ fn golden_mixbox_mix() {
     let yellow = [0.92, 0.82, 0.10, 1.0];
     let white = [0.96, 0.96, 0.96, 1.0];
 
-    paint(&mut engine, blue, 34.0, &[Vec2::new(-90.0, -70.0), Vec2::new(90.0, 70.0)]);
-    paint(&mut engine, yellow, 34.0, &[Vec2::new(-90.0, 70.0), Vec2::new(90.0, -70.0)]);
-    paint(&mut engine, white, 30.0, &[Vec2::new(-100.0, 55.0), Vec2::new(100.0, 55.0)]);
+    paint(
+        &mut engine,
+        blue,
+        34.0,
+        &[Vec2::new(-90.0, -70.0), Vec2::new(90.0, 70.0)],
+    );
+    paint(
+        &mut engine,
+        yellow,
+        34.0,
+        &[Vec2::new(-90.0, 70.0), Vec2::new(90.0, -70.0)],
+    );
+    paint(
+        &mut engine,
+        white,
+        30.0,
+        &[Vec2::new(-100.0, 55.0), Vec2::new(100.0, 55.0)],
+    );
 
     let img = engine.render_to_image(PAPER);
     assert_golden("mixbox_mix", &img, 6);
@@ -155,7 +170,9 @@ fn golden_pen_orientation_stroke() {
         sample: sample(-80.0, -50.0),
     });
     for &(x, y) in &[(0.0, -50.0), (60.0, -10.0), (60.0, 70.0)] {
-        engine.process(InputCommand::StrokeTo { sample: sample(x, y) });
+        engine.process(InputCommand::StrokeTo {
+            sample: sample(x, y),
+        });
     }
     engine.process(InputCommand::EndStroke);
 

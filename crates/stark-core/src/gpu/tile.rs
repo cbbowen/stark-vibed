@@ -68,7 +68,10 @@ impl Drop for GpuTex {
             && let Some(t) = self.tex.take()
         {
             inner.free.push(t);
-            *inner.sources.get_mut(&self.source).expect("source not recorded") -= 1;
+            *inner
+                .sources
+                .get_mut(&self.source)
+                .expect("source not recorded") -= 1;
         }
     }
 }
@@ -160,15 +163,9 @@ pub struct TilePool {
 }
 
 impl TilePool {
-    pub fn new(
-        ctx: GpuContext,
-        formats: impl IntoIterator<Item=wgpu::TextureFormat>,
-    ) -> Self {
+    pub fn new(ctx: GpuContext, formats: impl IntoIterator<Item = wgpu::TextureFormat>) -> Self {
         let format_pools = formats.into_iter().map(|f| (f, Arc::default())).collect();
-        Self {
-            ctx,
-            format_pools,
-        }
+        Self { ctx, format_pools }
     }
 
     // TODO: Replace this with `acquire_tex` calls.
@@ -224,10 +221,13 @@ impl TilePool {
     /// Number of recycled color-format textures available (for tests).
     pub fn free_count(&self) -> usize {
         let format = wgpu::TextureFormat::Rgba16Float;
-        self.format_pools.get(&format).expect("unsupported format")
+        self.format_pools
+            .get(&format)
+            .expect("unsupported format")
             .lock()
             .expect("tile pool poisoned")
-            .free.len()
+            .free
+            .len()
     }
 
     fn create_texture(&self, format: wgpu::TextureFormat) -> wgpu::Texture {

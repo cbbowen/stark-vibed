@@ -50,8 +50,13 @@ pub enum InputCommand {
     // Shared by painting and by the selection tools (DESIGN.md §6.8): from the
     // frontend's side both are press-drag-release, and the `tool` decides which the
     // session builds — a `StrokeRecord` or a `SelectionOp`.
-    StartStroke { tool: Tool, sample: InputSample },
-    StrokeTo { sample: InputSample },
+    StartStroke {
+        tool: Tool,
+        sample: InputSample,
+    },
+    StrokeTo {
+        sample: InputSample,
+    },
     EndStroke,
     CancelStroke,
 
@@ -63,10 +68,15 @@ pub enum InputCommand {
     SetTool(Tool),
     SetBrush(BrushParams),
     /// Pan the view by a screen-pixel drag delta.
-    Pan { delta: Vec2 },
+    Pan {
+        delta: Vec2,
+    },
     /// Zoom by `factor`, keeping the canvas point under `anchor` (a screen-pixel
     /// position, e.g. the cursor) fixed on screen.
-    Zoom { anchor: Vec2, factor: f32 },
+    Zoom {
+        anchor: Vec2,
+        factor: f32,
+    },
 
     // --- selection tool settings (session state, never historized — they shape the
     //     *next* op, and the op itself is what gets logged; DESIGN.md §6.8) ---
@@ -79,12 +89,17 @@ pub enum InputCommand {
     SetActiveLayer(LayerId),
 
     // --- document edits that ARE historized ---
-    AddLayer { above: Option<LayerId> },
+    AddLayer {
+        above: Option<LayerId>,
+    },
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
-    MoveLayer { id: LayerId, above: Option<LayerId> },
+    MoveLayer {
+        id: LayerId,
+        above: Option<LayerId>,
+    },
 
     // --- selection edits that ARE historized (DESIGN.md §6.8) ---
     /// Apply a selection op directly — the menu path (Select All / Deselect), and how

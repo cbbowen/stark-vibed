@@ -27,20 +27,20 @@ use bytemuck::{Pod, Zeroable};
 use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
-use crate::assets::{build_coverage_r8, build_prefix_tau, AssetStore};
+use crate::assets::{AssetStore, build_coverage_r8, build_prefix_tau};
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
 use crate::document::{
     BrushParams, BrushShape, ColorDynamics, NoiseKind, OrientationSource, StrokeRecord,
 };
-use crate::noise::NOISE_TILE_PX;
 use crate::geom::{
-    TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
+    INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2,
 };
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
+use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
+use crate::noise::NOISE_TILE_PX;
 
 /// Resolution of the generated round-tip prefix texture.
 const ROUND_RES: u32 = 256;
@@ -544,20 +544,23 @@ impl StrokeRenderer {
     /// (`surface_tooth` TODO), but keeping the binding current means tooth reads the
     /// right weave the moment it returns (DESIGN.md §6.4).
     pub fn set_surface(&mut self, surface: &Surface) {
-        self.surface_bg = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark sweep surface bg"),
-            layout: &self.pipeline.get_bind_group_layout(2),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&surface.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&surface.sampler),
-                },
-            ],
-        });
+        self.surface_bg = self
+            .ctx
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark sweep surface bg"),
+                layout: &self.pipeline.get_bind_group_layout(2),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&surface.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&surface.sampler),
+                    },
+                ],
+            });
     }
 
     /// Render `rec` over `base`, gated by `selection`, returning a copy-on-write tile
@@ -640,8 +643,7 @@ impl StrokeRenderer {
     ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
-        let (segments, end_dist) =
-            generate_segments_in(rec, flatten_tolerance(&rec.brush), spans);
+        let (segments, end_dist) = generate_segments_in(rec, flatten_tolerance(&rec.brush), spans);
         let carry = StrokeCarry {
             dist: end_dist,
             tool: None,
@@ -715,7 +717,9 @@ impl StrokeRenderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
-        self.ctx.queue.write_buffer(&instance_buf, 0, instance_bytes);
+        self.ctx
+            .queue
+            .write_buffer(&instance_buf, 0, instance_bytes);
 
         let coords = affected_tiles(&segments);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -760,7 +764,12 @@ impl StrokeRenderer {
             let apron = TILE_APRON as f32;
             let origin = coord.origin();
             let xform = TileXform {
-                params: [origin.x - apron, origin.y - apron, 2.0 / TILE_TEX as f32, 0.0],
+                params: [
+                    origin.x - apron,
+                    origin.y - apron,
+                    2.0 / TILE_TEX as f32,
+                    0.0,
+                ],
                 color: channels,
                 surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
                 noise_freq: nfreq,
@@ -993,7 +1002,13 @@ impl StrokeRenderer {
         // has already bounded, so this cannot be the oversized case — only the empty
         // one, and `segments` is non-empty.
         let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
-            return (base.clone(), StrokeCarry { dist: end_dist, tool: None });
+            return (
+                base.clone(),
+                StrokeCarry {
+                    dist: end_dist,
+                    tool: None,
+                },
+            );
         };
 
         let kit = &self.dynamics;
@@ -1055,13 +1070,28 @@ impl StrokeRenderer {
         let region_usage = wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::STORAGE_BINDING;
-        let region_color = make_tex(&mut scoped, (w, h), region_usage, "stark dynamics region color");
-        let region_aux = make_tex(&mut scoped, (w, h), region_usage, "stark dynamics region aux");
+        let region_color = make_tex(
+            &mut scoped,
+            (w, h),
+            region_usage,
+            "stark dynamics region color",
+        );
+        let region_aux = make_tex(
+            &mut scoped,
+            (w, h),
+            region_usage,
+            "stark dynamics region aux",
+        );
 
         // Composite pass: base tiles → region, 1:1 with canvas px.
         let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
         let view = ViewUniform {
-            st: [sx, sy, -region_origin.x * sx - 1.0, -region_origin.y * sy + 1.0],
+            st: [
+                sx,
+                sy,
+                -region_origin.x * sx - 1.0,
+                -region_origin.y * sy + 1.0,
+            ],
             misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
         };
         let view_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1172,8 +1202,18 @@ impl StrokeRenderer {
         let rmax = segments.iter().fold(0.5f32, |m, s| m.max(s.radius));
         let lmax = segments.iter().fold(0.0f32, |m, s| m.max(s.length));
         let dsize = (2.0 * std::f32::consts::SQRT_2 * (rmax + lmax * 0.5 + 1.5)).ceil() as u32;
-        let under_color = make_tex(&mut scoped, (dsize, dsize), loop_usage, "stark dynamics under color");
-        let under_aux = make_tex(&mut scoped, (dsize, dsize), loop_usage, "stark dynamics under aux");
+        let under_color = make_tex(
+            &mut scoped,
+            (dsize, dsize),
+            loop_usage,
+            "stark dynamics under color",
+        );
+        let under_aux = make_tex(
+            &mut scoped,
+            (dsize, dsize),
+            loop_usage,
+            "stark dynamics under aux",
+        );
         // A stroke that starts fresh initializes its first reservoir by a render clear
         // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
         // a [`ToolState`] copies into it instead, hence the COPY pair — which also
@@ -1707,7 +1747,14 @@ fn generate_segments_in(
         // A click: sweep a fraction of a radius so it deposits a soft blob.
         let p = pts[0];
         let r = (b.radius * p.pressure).max(0.5);
-        segs.push(make(p.pos, p.pressure, p.tilt, Vec2::new(1.0, 0.0), r * 0.6, 0.0));
+        segs.push(make(
+            p.pos,
+            p.pressure,
+            p.tilt,
+            Vec2::new(1.0, 0.0),
+            r * 0.6,
+            0.0,
+        ));
     }
     (segs, end_dist)
 }
@@ -1817,8 +1864,7 @@ fn dynamics_plan(
     // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
     // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
     // which is what a 0..1 knob should mean, rather than per unit optical depth.
-    let lambda =
-        |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
+    let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
     let l_lift = lambda(d.lift);
     let l_dep = lambda(d.deposit);
     let half = (dsize / 2) as f32;
@@ -1840,16 +1886,43 @@ fn dynamics_plan(
             plan.push(LoopDispatch {
                 pickup: true,
                 slot: [
-                    p.x, p.y, rot.x, rot.y,
-                    s.radius, 0.0, l_lift, l_dep,
-                    channels[0], channels[1], channels[2], s.opacity,
-                    0.0, 0.0, s.orient, ds / s.radius,
-                    0.0, 0.0, 0.0, 0.0,
+                    p.x,
+                    p.y,
+                    rot.x,
+                    rot.y,
+                    s.radius,
+                    0.0,
+                    l_lift,
+                    l_dep,
+                    channels[0],
+                    channels[1],
+                    channels[2],
+                    s.opacity,
+                    0.0,
+                    0.0,
+                    s.orient,
+                    ds / s.radius,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
                     // f–i (colour dynamics) — unused by `pickup`.
-                    0.0, 0.0, 0.0, 0.0,
-                    0.0, 0.0, 0.0, 0.0,
-                    0.0, 0.0, 0.0, 0.0,
-                    0.0, 0.0, 0.0, 0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
                 ],
             });
             since = 0.0;
@@ -1861,19 +1934,46 @@ fn dynamics_plan(
         plan.push(LoopDispatch {
             pickup: false,
             slot: [
-                p.x, p.y, s.dir.x, s.dir.y,
-                s.radius, s.length / s.radius, l_lift, l_dep,
-                channels[0], channels[1], channels[2], s.opacity,
-                (mid.x - half).floor(), (mid.y - half).floor(), s.orient, 1.0,
+                p.x,
+                p.y,
+                s.dir.x,
+                s.dir.y,
+                s.radius,
+                s.length / s.radius,
+                l_lift,
+                l_dep,
+                channels[0],
+                channels[1],
+                channels[2],
+                s.opacity,
+                (mid.x - half).floor(),
+                (mid.y - half).floor(),
+                s.orient,
+                1.0,
                 // e: the `add` source rate — height per unit exposure. The wet rate
                 // (.y) is 0: paint carries no wetness now that the brush has no
                 // wetness knob, so nothing ever adds to the gloss channel.
-                s.amount * ADD_GAIN, 0.0, 0.0, 0.0,
+                s.amount * ADD_GAIN,
+                0.0,
+                0.0,
+                0.0,
                 // f–i: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
-                nfreq[0], nfreq[1], nfreq[2], nfreq[3],
-                namp[0], namp[1], namp[2], s.dist,
-                noff[0], noff[1], noff[2], 0.0,
-                region_origin.x, region_origin.y, 0.0, 0.0,
+                nfreq[0],
+                nfreq[1],
+                nfreq[2],
+                nfreq[3],
+                namp[0],
+                namp[1],
+                namp[2],
+                s.dist,
+                noff[0],
+                noff[1],
+                noff[2],
+                0.0,
+                region_origin.x,
+                region_origin.y,
+                0.0,
+                0.0,
             ],
         });
         since += s.length;
@@ -2145,7 +2245,13 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
     };
     let snapshot_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("stark dynamics snapshot bgl"),
-        entries: &[params_entry, ctex(1, false), ctex(2, false), stor(3), stor(4)],
+        entries: &[
+            params_entry,
+            ctex(1, false),
+            ctex(2, false),
+            stor(3),
+            stor(4),
+        ],
     });
     let pickup_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("stark dynamics pickup bgl"),
@@ -2240,8 +2346,11 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
             cache: None,
         })
     };
-    let snapshot_pipeline =
-        cpipe("stark dynamics snapshot", "snapshot", &[Some(&snapshot_bgl)]);
+    let snapshot_pipeline = cpipe(
+        "stark dynamics snapshot",
+        "snapshot",
+        &[Some(&snapshot_bgl)],
+    );
     let pickup_pipeline = cpipe("stark dynamics pickup", "pickup", &[Some(&pickup_bgl)]);
     // `deplete` touches a subset of what `pickup` binds (no region), so it can share
     // the layout and its bind groups — unused entries are legal.
@@ -2441,7 +2550,11 @@ mod tests {
         let length = v.length();
         Segment {
             start,
-            dir: if length > 0.0 { v / length } else { Vec2::new(1.0, 0.0) },
+            dir: if length > 0.0 {
+                v / length
+            } else {
+                Vec2::new(1.0, 0.0)
+            },
             radius,
             length,
             amount: 0.0,
@@ -2462,7 +2575,10 @@ mod tests {
     fn the_region_gate_measures_the_region_the_render_builds() {
         let tile = TILE_SIZE as f32;
         let cases: Vec<(&str, Vec<Segment>)> = vec![
-            ("a dot", vec![seg(Vec2::new(10.0, 10.0), Vec2::new(10.5, 10.0), 4.0)]),
+            (
+                "a dot",
+                vec![seg(Vec2::new(10.0, 10.0), Vec2::new(10.5, 10.0), 4.0)],
+            ),
             (
                 "one tile-aligned span",
                 vec![seg(Vec2::ZERO, Vec2::new(tile, 0.0), 1.0)],
@@ -2486,7 +2602,11 @@ mod tests {
         ];
         for (what, segments) in cases {
             let want = region_rect(&affected_tiles(&segments)).map(|(_, _, _, w, h)| (w, h));
-            assert_eq!(region_dim(&segments), want, "region size disagrees for {what}");
+            assert_eq!(
+                region_dim(&segments),
+                want,
+                "region size disagrees for {what}"
+            );
         }
         assert_eq!(region_dim(&[]), None, "no segments is not a region");
     }

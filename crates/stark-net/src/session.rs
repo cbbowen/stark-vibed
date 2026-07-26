@@ -24,13 +24,13 @@ use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
 use stark_core::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
+use crate::Result;
 use crate::backend::{self, Dialer, Shutdown};
 use crate::mesh::{Mesh, MeshConfig, MeshEvent, TopicId};
 use crate::mirror::Mirror;
 use crate::proto::{AssetResponse, Request, Wire};
 use crate::ticket::SessionTicket;
 use crate::transport::to_peer_id;
-use crate::Result;
 
 /// A long stroke's fitted control points can be sizeable, so the ceiling sits
 /// well past any plausible single action (paths are RDP-simplified; pixels
@@ -53,7 +53,9 @@ const ASSET_RETRY_DELAY: Duration = Duration::from_millis(300);
 /// ≈ n²/2⁶⁵), and a collision would only merge two peers' undo scopes.
 pub fn actor_from_endpoint_id(id: EndpointId) -> ActorId {
     let bytes = id.as_bytes();
-    ActorId(u64::from_le_bytes(bytes[..8].try_into().expect("32-byte key")))
+    ActorId(u64::from_le_bytes(
+        bytes[..8].try_into().expect("32-byte key"),
+    ))
 }
 
 /// Something a peer did, to be applied to the local engine. Apply in order:
@@ -115,7 +117,15 @@ impl CollabSession {
         // The first member starts the swarm alone; joiners bootstrap from it.
         let (mesh, events) = Mesh::spawn(bound.transport, mesh_config(topic), []);
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        Ok(Self::finish(bound.dialer, bound.shutdown, topic, mesh, events, mirror, ticket_addr)?)
+        Ok(Self::finish(
+            bound.dialer,
+            bound.shutdown,
+            topic,
+            mesh,
+            events,
+            mirror,
+            ticket_addr,
+        )?)
     }
 
     /// Join an existing session from a ticket. Returns the session and the
@@ -123,7 +133,9 @@ impl CollabSession {
     /// [`Engine::join_collaboration`](stark_core::Engine::join_collaboration)
     /// (with [`CollabSession::actor_id`] as the actor).
     pub async fn join(ticket: &SessionTicket, opts: NetOptions) -> Result<(Self, DocumentFile)> {
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(&DocumentFile::new(Vec::new()))));
+        let mirror = Arc::new(Mutex::new(Mirror::from_file(
+            &DocumentFile::new(Vec::new()),
+        )));
         let bound = backend::bind(mirror.clone(), &opts).await?;
 
         // Open the catch-up connection first: on iroh this also teaches the
@@ -301,7 +313,11 @@ async fn recv_loop(
 ) {
     while let Some(event) = events.recv().await {
         let (origin, from, payload) = match event {
-            MeshEvent::Received { origin, from, payload } => (origin, from, payload),
+            MeshEvent::Received {
+                origin,
+                from,
+                payload,
+            } => (origin, from, payload),
             MeshEvent::Lagged { origin } => {
                 // Dropped messages: peers converge again on the next snapshot
                 // fetch; flag it loudly for now (DESIGN.md §12.5).

@@ -33,7 +33,10 @@ const SIMPLEX_PERIOD: i32 = 6;
 const CHANNEL_SEEDS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
 
 /// Bake `kind` and upload it as an `Rgba8Snorm` 3-D texture.
-pub fn build_noise_texture(ctx: &GpuContext, kind: NoiseKind) -> (wgpu::Texture, wgpu::TextureView) {
+pub fn build_noise_texture(
+    ctx: &GpuContext,
+    kind: NoiseKind,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let bytes = bake(kind, NOISE_RES);
     upload_3d(ctx, NOISE_RES, &bytes, "stark noise field")
 }
@@ -338,6 +341,9 @@ mod tests {
             "wrap seam steps ({seam_max}) exceed interior steps ({interior_max})"
         );
         // And the field resolves its features: steps stay well under full range.
-        assert!(interior_max < 100, "field under-resolved: step {interior_max}");
+        assert!(
+            interior_max < 100,
+            "field under-resolved: step {interior_max}"
+        );
     }
 }

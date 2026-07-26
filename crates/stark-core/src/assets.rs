@@ -25,7 +25,11 @@ pub struct AssetId(pub [u8; 32]);
 impl std::fmt::Debug for AssetId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // First 8 hex chars are plenty to identify in logs.
-        write!(f, "AssetId({:02x}{:02x}{:02x}{:02x}…)", self.0[0], self.0[1], self.0[2], self.0[3])
+        write!(
+            f,
+            "AssetId({:02x}{:02x}{:02x}{:02x}…)",
+            self.0[0], self.0[1], self.0[2], self.0[3]
+        )
     }
 }
 
@@ -95,8 +99,7 @@ impl AssetStore {
             let layers = orientation_layers(w, h);
             let rotated = rotate_layers(&cov, w, h, layers);
             let (texture, view) = build_prefix_tau(&self.ctx, w, h, layers, &rotated);
-            let (coverage_texture, coverage_view) =
-                build_coverage_r8(&self.ctx, w, h, &coverage);
+            let (coverage_texture, coverage_view) = build_coverage_r8(&self.ctx, w, h, &coverage);
             slot.insert(Mask {
                 bytes,
                 view,
@@ -140,7 +143,6 @@ impl AssetStore {
             .map(|(id, m)| (*id, m.bytes.clone()))
             .collect()
     }
-
 }
 
 /// Largest number of orientation slices a brush's prefix-τ volume holds (DESIGN.md
@@ -352,7 +354,12 @@ fn decode_coverage(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut reader = decoder
         .read_info()
         .map_err(|e| EngineError::Asset(e.to_string()))?;
-    let mut buf = vec![0u8; reader.output_buffer_size().ok_or_else(|| EngineError::Asset("missing size".into()))?];
+    let mut buf = vec![
+        0u8;
+        reader
+            .output_buffer_size()
+            .ok_or_else(|| EngineError::Asset("missing size".into()))?
+    ];
     let info = reader
         .next_frame(&mut buf)
         .map_err(|e| EngineError::Asset(e.to_string()))?;
@@ -360,9 +367,8 @@ fn decode_coverage(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
 
     let n = (info.width * info.height) as usize;
     let mut coverage = vec![0u8; n];
-    let lum = |r: u8, g: u8, b: u8| -> u32 {
-        (77 * r as u32 + 150 * g as u32 + 29 * b as u32) >> 8
-    };
+    let lum =
+        |r: u8, g: u8, b: u8| -> u32 { (77 * r as u32 + 150 * g as u32 + 29 * b as u32) >> 8 };
     match info.color_type {
         png::ColorType::Grayscale => {
             coverage.copy_from_slice(&buf[..n]);

@@ -266,9 +266,7 @@ impl ReplicatedTimeline {
             .iter()
             .rev()
             .find(|a| {
-                a.id.actor == self.actor
-                    && undo_target_of(a).is_none()
-                    && !undone.contains(&a.id)
+                a.id.actor == self.actor && undo_target_of(a).is_none() && !undone.contains(&a.id)
             })
             .map(|a| a.id)
     }
@@ -285,9 +283,7 @@ impl ReplicatedTimeline {
             .iter()
             .rev()
             .find(|a| {
-                a.id.actor == self.actor
-                    && undo_target_of(a).is_none()
-                    && !undone.contains(&a.id)
+                a.id.actor == self.actor && undo_target_of(a).is_none() && !undone.contains(&a.id)
             })
             .map(|a| a.id);
         self.log

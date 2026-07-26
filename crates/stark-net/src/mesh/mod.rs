@@ -139,7 +139,9 @@ pub struct Mesh {
 
 impl std::fmt::Debug for Mesh {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Mesh").field("local", &self.local).finish_non_exhaustive()
+        f.debug_struct("Mesh")
+            .field("local", &self.local)
+            .finish_non_exhaustive()
     }
 }
 
@@ -221,7 +223,13 @@ impl Mesh {
         };
         task::spawn(driver.run(inbox_rx));
 
-        (Self { local, commands: commands_tx }, events_rx)
+        (
+            Self {
+                local,
+                commands: commands_tx,
+            },
+            events_rx,
+        )
     }
 
     /// This node's identity.
@@ -241,13 +249,17 @@ impl Mesh {
 
     /// Introduce a peer. The mesh connects to it and folds it into the swarm.
     pub fn add_peer(&self, peer: PeerId) -> Result<(), MeshClosed> {
-        self.commands.send(Command::AddPeer(peer)).map_err(|_| MeshClosed)
+        self.commands
+            .send(Command::AddPeer(peer))
+            .map_err(|_| MeshClosed)
     }
 
     /// Currently connected neighbours (diagnostics and tests).
     pub async fn neighbors(&self) -> Result<Vec<PeerId>, MeshClosed> {
         let (tx, rx) = oneshot::channel();
-        self.commands.send(Command::Neighbors(tx)).map_err(|_| MeshClosed)?;
+        self.commands
+            .send(Command::Neighbors(tx))
+            .map_err(|_| MeshClosed)?;
         rx.await.map_err(|_| MeshClosed)
     }
 
@@ -261,9 +273,19 @@ impl Mesh {
 enum Ev<C: MeshConn> {
     Cmd(Command),
     Inbound(C),
-    Dialed { peer: PeerId, conn: Option<C> },
-    Frame { from: PeerId, frame: Frame, raw: Vec<u8> },
-    ConnLost { peer: PeerId, conn_id: u64 },
+    Dialed {
+        peer: PeerId,
+        conn: Option<C>,
+    },
+    Frame {
+        from: PeerId,
+        frame: Frame,
+        raw: Vec<u8>,
+    },
+    ConnLost {
+        peer: PeerId,
+        conn_id: u64,
+    },
     Tick,
 }
 
@@ -381,7 +403,14 @@ impl<T: MeshTransport> Driver<T> {
             task::spawn(read_loop::<T::Conn>(recv, peer, conn_id, inbox, max_frame));
         }
 
-        self.conns.insert(peer, Neighbor { conn_id, out, dialer });
+        self.conns.insert(
+            peer,
+            Neighbor {
+                conn_id,
+                out,
+                dialer,
+            },
+        );
         self.known.entry(peer).or_default().reset();
 
         // Greet: prove which swarm we are in and share who we know.
@@ -458,7 +487,11 @@ impl<T: MeshTransport> Driver<T> {
 
     fn handle_frame(&mut self, from: PeerId, frame: Frame, raw: Vec<u8>) {
         match frame {
-            Frame::Hello { topic, from: claimed, peers } => {
+            Frame::Hello {
+                topic,
+                from: claimed,
+                peers,
+            } => {
                 if topic != self.config.topic {
                     tracing::warn!(%from, "refusing mesh peer from another session");
                     self.conns.remove(&from);
@@ -479,7 +512,11 @@ impl<T: MeshTransport> Driver<T> {
                     self.dial_due_peers(true);
                 }
             }
-            Frame::Data { origin, seq, payload } => {
+            Frame::Data {
+                origin,
+                seq,
+                payload,
+            } => {
                 // Our own payload came back around; dedup already covers this,
                 // but skip the bookkeeping entirely.
                 if origin == self.local {
@@ -496,7 +533,11 @@ impl<T: MeshTransport> Driver<T> {
                 // Keep it moving before delivering locally: peers behind us in
                 // the flood should not wait on our consumer.
                 self.forward(&raw, from);
-                let _ = self.events.send(MeshEvent::Received { origin, from, payload });
+                let _ = self.events.send(MeshEvent::Received {
+                    origin,
+                    from,
+                    payload,
+                });
             }
         }
     }
@@ -549,7 +590,9 @@ impl<T: MeshTransport> Driver<T> {
     }
 
     fn send_to(&self, peer: PeerId, frame: &Frame) {
-        let Some(neighbor) = self.conns.get(&peer) else { return };
+        let Some(neighbor) = self.conns.get(&peer) else {
+            return;
+        };
         let Some(raw) = encode(frame) else { return };
         let _ = neighbor.out.send(raw);
     }
@@ -597,7 +640,14 @@ async fn read_loop<C: MeshConn>(
             // One malformed frame is not worth dropping a peer over.
             Err(e) => tracing::warn!(%peer, "undecodable mesh frame: {e}"),
             Ok(frame) => {
-                if inbox.send(Ev::Frame { from: peer, frame, raw }).is_err() {
+                if inbox
+                    .send(Ev::Frame {
+                        from: peer,
+                        frame,
+                        raw,
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }

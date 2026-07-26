@@ -4,10 +4,10 @@
 mod common;
 
 use common::*;
+use stark_core::Engine;
 use stark_core::command::{InputCommand, InputSample};
 use stark_core::document::{BrushParams, Tool};
 use stark_core::geom::Vec2;
-use stark_core::Engine;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
@@ -411,13 +411,17 @@ fn stroke_spans_multiple_tiles_via_cow() {
 
     // A radius-40 stroke straddling the canvas origin touches all four tiles
     // around (0,0); copy-on-write should have populated more than one.
-    let populated: usize = engine.document().layers.iter().map(|l| l.tiles.size()).sum();
+    let populated: usize = engine
+        .document()
+        .layers
+        .iter()
+        .map(|l| l.tiles.size())
+        .sum();
     assert!(
         populated >= 2,
         "stroke across the origin should populate multiple tiles, got {populated}"
     );
 }
-
 
 /// Per-move cost must not grow with the length of the stroke — which is the whole
 /// point of the frozen head (DESIGN.md §6.2, `engine::FrozenHead`).
@@ -439,7 +443,10 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// measure. It still catches the regression it exists for: a stroke re-rendered whole
 /// would climb from ~150 segments a move to several thousand.
 fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
-    let size = stark_core::geom::Extent2 { width: 1280, height: 800 };
+    let size = stark_core::geom::Extent2 {
+        width: 1280,
+        height: 800,
+    };
     let Ok(mut engine) = pollster::block_on(stark_core::engine::headless_engine(
         wgpu::TextureFormat::Rgba8UnormSrgb,
         size,

@@ -18,7 +18,7 @@
 
 use std::io::{Read, Write};
 
-use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
+use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::AssetId;
@@ -97,8 +97,8 @@ impl DocumentFile {
 
     /// Encode to the on-disk container: `MAGIC | version | deflate(postcard)`.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let body = postcard::to_allocvec(self)
-            .map_err(|e| EngineError::Serialize(e.to_string()))?;
+        let body =
+            postcard::to_allocvec(self).map_err(|e| EngineError::Serialize(e.to_string()))?;
 
         let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
         encoder.write_all(&body)?;

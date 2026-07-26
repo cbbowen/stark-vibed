@@ -145,15 +145,15 @@ mod imp {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use iroh::endpoint::{presets, Connection};
+    use iroh::endpoint::{Connection, presets};
     use iroh::protocol::Router;
     use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 
+    use crate::Result;
     use crate::mirror::Mirror;
     use crate::proto::{self, CollabProto, Request};
     use crate::session::NetOptions;
     use crate::transport::iroh::IrohMeshTransport;
-    use crate::Result;
 
     pub(crate) type SessionTransport = IrohMeshTransport;
 
@@ -169,9 +169,15 @@ mod imp {
     pub(crate) async fn bind(mirror: Arc<Mutex<Mirror>>, opts: &NetOptions) -> Result<Bound> {
         let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
         let endpoint = if opts.local_only {
-            Endpoint::builder(presets::Minimal).secret_key(secret).bind().await?
+            Endpoint::builder(presets::Minimal)
+                .secret_key(secret)
+                .bind()
+                .await?
         } else {
-            Endpoint::builder(presets::N0).secret_key(secret).bind().await?
+            Endpoint::builder(presets::N0)
+                .secret_key(secret)
+                .bind()
+                .await?
         };
         let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
         let router = Router::builder(endpoint.clone())
@@ -211,8 +217,7 @@ mod imp {
         pub async fn ticket_addr(&self, opts: &NetOptions) -> Result<EndpointAddr> {
             if !opts.local_only {
                 // `online()` pends forever with no WAN; bound wait, then best effort.
-                let _ =
-                    n0_future::time::timeout(ONLINE_TIMEOUT, self.endpoint.online()).await;
+                let _ = n0_future::time::timeout(ONLINE_TIMEOUT, self.endpoint.online()).await;
                 return Ok(self.endpoint.addr());
             }
             // Local-only is native-only: a browser has no UDP sockets to
@@ -272,4 +277,4 @@ mod imp {
 
 // `Bound`, `Catchup` and the transport type are reached through inference from
 // `bind`, so only the names the session spells out are re-exported.
-pub(crate) use imp::{bind, Dialer, Shutdown};
+pub(crate) use imp::{Dialer, Shutdown, bind};

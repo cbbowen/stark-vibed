@@ -22,8 +22,10 @@ fn pool_recycles_dropped_tiles() {
     let Some(ctx) = context_or_skip() else { return };
     let pool = TilePool::new(
         ctx,
-        [wgpu::TextureFormat::Rgba16Float,
-        wgpu::TextureFormat::Rg16Float],
+        [
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureFormat::Rg16Float,
+        ],
     );
 
     assert_eq!(pool.free_count(), 0, "fresh pool has no recycled tiles");
@@ -33,7 +35,11 @@ fn pool_recycles_dropped_tiles() {
     assert_eq!(pool.free_count(), 0, "live tiles are not in the free list");
 
     drop(a);
-    assert_eq!(pool.free_count(), 1, "dropping the last handle recycles the tile");
+    assert_eq!(
+        pool.free_count(),
+        1,
+        "dropping the last handle recycles the tile"
+    );
     drop(b);
     assert_eq!(pool.free_count(), 2);
 

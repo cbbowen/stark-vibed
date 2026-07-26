@@ -10,8 +10,8 @@
 mod common;
 
 use common::*;
-use stark_core::geom::Vec2;
 use stark_core::InputCommand;
+use stark_core::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];

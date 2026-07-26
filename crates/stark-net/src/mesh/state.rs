@@ -51,7 +51,10 @@ impl DeliveryTracker {
 
         // Sequences start at 1, so a watermark of 0 means "nothing yet".
         if seq == 0 || seq <= state.watermark || state.ahead.contains(&seq) {
-            return Delivery { fresh: false, lagged: false };
+            return Delivery {
+                fresh: false,
+                lagged: false,
+            };
         }
 
         state.ahead.insert(seq);
@@ -78,7 +81,10 @@ impl DeliveryTracker {
             lagged = true;
         }
 
-        Delivery { fresh: true, lagged }
+        Delivery {
+            fresh: true,
+            lagged,
+        }
     }
 }
 

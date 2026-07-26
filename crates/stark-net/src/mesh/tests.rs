@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
 use super::*;
 
@@ -140,7 +140,10 @@ impl MeshConn for MemConn {
     fn split(self) -> (MemSender, MemRecv) {
         (
             MemSender { tx: self.tx },
-            MemRecv { rx: self.rx, severed: self.severed },
+            MemRecv {
+                rx: self.rx,
+                severed: self.severed,
+            },
         )
     }
 }
@@ -227,7 +230,9 @@ async fn next_payload(events: &mut mpsc::UnboundedReceiver<MeshEvent>) -> (PeerI
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Some(MeshEvent::Received { origin, payload, .. })) => return (origin, payload),
+            Ok(Some(MeshEvent::Received {
+                origin, payload, ..
+            })) => return (origin, payload),
             Ok(Some(_)) => continue,
             Ok(None) => panic!("mesh event stream ended"),
             Err(_) => panic!("timed out waiting for a payload"),
@@ -317,8 +322,14 @@ async fn duplicates_are_suppressed_around_a_cycle() {
 
     // Give any echo time to circulate before asserting it did not.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(drained_payloads(&mut b_events).is_empty(), "B saw a duplicate");
-    assert!(drained_payloads(&mut c_events).is_empty(), "C saw a duplicate");
+    assert!(
+        drained_payloads(&mut b_events).is_empty(),
+        "B saw a duplicate"
+    );
+    assert!(
+        drained_payloads(&mut c_events).is_empty(),
+        "C saw a duplicate"
+    );
 }
 
 /// A joiner is told about one member (the ticket) and must find the rest.
@@ -364,7 +375,10 @@ async fn a_severed_link_is_redialed_and_traffic_resumes() {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(a.neighbors().await.unwrap().is_empty(), "cut should disconnect");
+    assert!(
+        a.neighbors().await.unwrap().is_empty(),
+        "cut should disconnect"
+    );
 
     net.heal(peer_id(1), peer_id(2));
 
@@ -491,8 +505,14 @@ async fn a_peer_departing_does_not_stop_the_node_accepting_newcomers() {
     wait_for_neighbors(&survivor, 1).await;
     wait_for_neighbors(&newcomer, 1).await;
 
-    newcomer.broadcast(b"hello from the newcomer".to_vec()).await.unwrap();
-    assert_eq!(next_payload(&mut survivor_events).await.1, b"hello from the newcomer");
+    newcomer
+        .broadcast(b"hello from the newcomer".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        next_payload(&mut survivor_events).await.1,
+        b"hello from the newcomer"
+    );
     survivor.broadcast(b"welcome".to_vec()).await.unwrap();
     assert_eq!(next_payload(&mut newcomer_events).await.1, b"welcome");
 }

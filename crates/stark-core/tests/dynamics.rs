@@ -6,8 +6,8 @@
 mod common;
 
 use common::*;
-use stark_core::document::{BrushDynamics, BrushParams, Tool};
 use stark_core::command::{InputCommand, InputSample};
+use stark_core::document::{BrushDynamics, BrushParams, Tool};
 use stark_core::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -57,9 +57,18 @@ fn conservative_smear_preserves_uniform_field() {
     let b = dyn_brush(
         RED,
         24.0,
-        BrushDynamics { add: 0.0, lift: 0.5, deposit: 0.5, ..Default::default() },
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.5,
+            deposit: 0.5,
+            ..Default::default()
+        },
     );
-    stroke_with(&mut engine, b, &[Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0)],
+    );
     let after = engine.render_to_image(PAPER);
 
     assert!(
@@ -93,12 +102,20 @@ fn smear_carries_paint_onto_bare_canvas() {
         &[Vec2::new(-90.0, 0.0), Vec2::new(-50.0, 0.0)],
     );
     let run_before = engine.render_to_image(PAPER).pixel(run_x, y);
-    assert!(run_before[1] > 170, "the runway should start bare paper: {run_before:?}");
+    assert!(
+        run_before[1] > 170,
+        "the runway should start bare paper: {run_before:?}"
+    );
 
     let b = dyn_brush(
         RED,
         28.0,
-        BrushDynamics { add: 0.0, lift: 0.9, deposit: 0.3, ..Default::default() },
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.9,
+            deposit: 0.3,
+            ..Default::default()
+        },
     );
     stroke_with(
         &mut engine,
@@ -149,9 +166,18 @@ fn eraser_thins_without_retint() {
     let b = dyn_brush(
         RED,
         24.0,
-        BrushDynamics { add: 0.0, lift: 0.5, deposit: 0.0, ..Default::default() },
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.5,
+            deposit: 0.0,
+            ..Default::default()
+        },
     );
-    stroke_with(&mut engine, b, &[Vec2::new(-80.0, 0.0), Vec2::new(90.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-80.0, 0.0), Vec2::new(90.0, 0.0)],
+    );
     let after = engine.render_to_image(PAPER).pixel(green_x, y);
 
     assert!(
@@ -171,9 +197,18 @@ fn smear_over_empty_canvas_adds_nothing() {
     let b = dyn_brush(
         RED,
         24.0,
-        BrushDynamics { add: 0.0, lift: 1.0, deposit: 1.0, ..Default::default() },
+        BrushDynamics {
+            add: 0.0,
+            lift: 1.0,
+            deposit: 1.0,
+            ..Default::default()
+        },
     );
-    stroke_with(&mut engine, b, &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
+    );
     let after = engine.render_to_image(PAPER);
     assert!(
         images_match(&blank, &after, 2),
@@ -193,9 +228,18 @@ fn charged_tool_lays_a_finite_glob() {
     let b = dyn_brush(
         RED,
         20.0,
-        BrushDynamics { add: 0.0, deposit: 0.12, charge: 2.0, ..Default::default() },
+        BrushDynamics {
+            add: 0.0,
+            deposit: 0.12,
+            charge: 2.0,
+            ..Default::default()
+        },
     );
-    stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
     let img = engine.render_to_image(PAPER);
 
     let start = img.pixel(20, y); // near the stroke start
@@ -232,9 +276,18 @@ fn dynamics_stroke_is_deterministic() {
         let b = dyn_brush(
             RED,
             16.0,
-            BrushDynamics { add: 0.1, lift: 0.5, deposit: 0.5, ..Default::default() },
+            BrushDynamics {
+                add: 0.1,
+                lift: 0.5,
+                deposit: 0.5,
+                ..Default::default()
+            },
         );
-        stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
+        stroke_with(
+            &mut engine,
+            b,
+            &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+        );
         Some(engine.render_to_image(PAPER))
     };
     let (Some(a), Some(b)) = (render(), render()) else {
@@ -263,9 +316,18 @@ fn golden_smudge_drag() {
     let b = dyn_brush(
         RED,
         16.0,
-        BrushDynamics { add: 0.1, lift: 0.5, deposit: 0.5, ..Default::default() },
+        BrushDynamics {
+            add: 0.1,
+            lift: 0.5,
+            deposit: 0.5,
+            ..Default::default()
+        },
     );
-    stroke_with(&mut engine, b, &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
     let img = engine.render_to_image(PAPER);
     assert_golden("smudge_drag", &img, 6);
 }
@@ -287,7 +349,12 @@ fn golden_self_smear() {
     let b = dyn_brush(
         RED,
         18.0,
-        BrushDynamics { add: 0.5, lift: 0.6, deposit: 0.5, ..Default::default() },
+        BrushDynamics {
+            add: 0.5,
+            lift: 0.6,
+            deposit: 0.5,
+            ..Default::default()
+        },
     );
     // Down through the bar, loop around, and back across its own trail.
     engine.process(InputCommand::SetBrush(b));
@@ -323,9 +390,22 @@ fn dynamics_stroke_reads_as_one_continuous_mark() {
     // that ramp.
     let b = BrushParams {
         drain: 0.004,
-        ..dyn_brush(RED, 60.0, BrushDynamics { add: 0.6, lift: 0.2, deposit: 0.9, ..Default::default() })
+        ..dyn_brush(
+            RED,
+            60.0,
+            BrushDynamics {
+                add: 0.6,
+                lift: 0.2,
+                deposit: 0.9,
+                ..Default::default()
+            },
+        )
     };
-    stroke_with(&mut engine, b, &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)],
+    );
     let img = engine.render_to_image(PAPER);
 
     // Walk the centre row across the stroke's body and track the red channel. A
@@ -364,14 +444,31 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
     // A slab to load the tool from, then a smear that drags it out across the canvas.
     let mut slab = brush(GREEN, 70.0);
     slab.drain = 0.0;
-    stroke_with(&mut engine, slab, &[Vec2::new(-115.0, 0.0), Vec2::new(-60.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        slab,
+        &[Vec2::new(-115.0, 0.0), Vec2::new(-60.0, 0.0)],
+    );
 
     let smear = BrushParams {
         hardness: 0.95,
         drain: 0.0,
-        ..dyn_brush(RED, 60.0, BrushDynamics { add: 0.0, lift: 0.4, deposit: 0.9, ..Default::default() })
+        ..dyn_brush(
+            RED,
+            60.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.4,
+                deposit: 0.9,
+                ..Default::default()
+            },
+        )
     };
-    stroke_with(&mut engine, smear, &[Vec2::new(-100.0, 0.0), Vec2::new(115.0, 0.0)]);
+    stroke_with(
+        &mut engine,
+        smear,
+        &[Vec2::new(-100.0, 0.0), Vec2::new(115.0, 0.0)],
+    );
     let img = engine.render_to_image(PAPER);
 
     // Green rises monotonically as the carried paint thins out; each reversal past

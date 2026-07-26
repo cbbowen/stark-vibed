@@ -12,9 +12,17 @@ use stark_core::{Engine, RgbaImage};
 use stark_net::{CollabSession, NetOptions, RemoteEvent, SessionTicket};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-const SIZE: Extent2 = Extent2 { width: 256, height: 256 };
+const SIZE: Extent2 = Extent2 {
+    width: 256,
+    height: 256,
+};
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const PAPER: wgpu::Color = wgpu::Color { r: 0.97, g: 0.97, b: 0.97, a: 1.0 };
+const PAPER: wgpu::Color = wgpu::Color {
+    r: 0.97,
+    g: 0.97,
+    b: 0.97,
+    a: 1.0,
+};
 
 fn engine_or_skip() -> Option<Engine> {
     match pollster::block_on(headless_engine(TARGET, SIZE)) {
@@ -39,7 +47,9 @@ fn paint(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
         sample: InputSample::at(*it.next().unwrap()),
     });
     for &p in it {
-        engine.process(InputCommand::StrokeTo { sample: InputSample::at(p) });
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
     }
     engine.process(InputCommand::EndStroke);
 }
@@ -100,7 +110,11 @@ async fn two_peers_converge_over_iroh() {
     };
 
     // --- host side: paint before sharing, then share ---
-    paint(&mut host, [0.9, 0.1, 0.1, 1.0], &[Vec2::new(40.0, 60.0), Vec2::new(216.0, 60.0)]);
+    paint(
+        &mut host,
+        [0.9, 0.1, 0.1, 1.0],
+        &[Vec2::new(40.0, 60.0), Vec2::new(216.0, 60.0)],
+    );
 
     let secret = stark_net::SecretKey::generate();
     let host_actor = stark_net::actor_from_endpoint_id(secret.public());
@@ -108,12 +122,19 @@ async fn two_peers_converge_over_iroh() {
 
     let mut host_session = CollabSession::host(
         host.document_file(),
-        NetOptions { secret: Some(secret), local_only: true },
+        NetOptions {
+            secret: Some(secret),
+            local_only: true,
+        },
     )
     .await
     .expect("host session");
     let mut host_events = host_session.take_events().expect("host events");
-    let ticket: SessionTicket = host_session.ticket().to_string().parse().expect("ticket text");
+    let ticket: SessionTicket = host_session
+        .ticket()
+        .to_string()
+        .parse()
+        .expect("ticket text");
 
     // --- peer side: join, catch up ---
     let (mut peer_session, snapshot) = CollabSession::join(&ticket, NetOptions::local())
@@ -129,8 +150,16 @@ async fn two_peers_converge_over_iroh() {
     ));
 
     // --- concurrent edits, crossing on the canvas ---
-    paint(&mut host, [0.1, 0.8, 0.2, 1.0], &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)]);
-    paint(&mut peer, [0.1, 0.2, 0.9, 1.0], &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)]);
+    paint(
+        &mut host,
+        [0.1, 0.8, 0.2, 1.0],
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+    paint(
+        &mut peer,
+        [0.1, 0.2, 0.9, 1.0],
+        &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
+    );
     flush_outbox(&mut host, &host_session).await;
     flush_outbox(&mut peer, &peer_session).await;
 

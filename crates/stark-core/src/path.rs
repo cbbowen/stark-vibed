@@ -359,8 +359,8 @@ impl PathFitter {
         // The arc-length term is not about accuracy: a dead-straight stroke is fitted
         // perfectly by a handful of control points forever, so nothing would ever
         // freeze and the renderer could never retire any of it.
-        let earns_it = err_as_is - err_grown > self.knot_cost
-            || self.arc - self.grown_at > KNOT_SPACING;
+        let earns_it =
+            err_as_is - err_grown > self.knot_cost || self.arc - self.grown_at > KNOT_SPACING;
         if earns_it {
             self.grown_at = self.arc;
             self.adopt(grown);
@@ -506,7 +506,12 @@ impl PathFitter {
         // is not a shape and has no curvature to penalize.
         let vals: Vec<[f32; CHANNELS]> = live.iter().map(|s| s.channels).collect();
         let attr = spline.fit_channels_smoothed(&ts, &vals, frozen, 0, &attr, 0.0);
-        Fit { geom, attr, lo, profile }
+        Fit {
+            geom,
+            attr,
+            lo,
+            profile,
+        }
     }
 
     /// Mean squared distance from the samples at and after `lo` to `fit`'s curve.
@@ -520,11 +525,9 @@ impl PathFitter {
     /// total grows with the window, so a fixed price would mean something different
     /// at every length.
     fn mean_error(&self, fit: &Fit, lo: usize) -> f32 {
-        let spline = spline_fit::ClampedCardinalBSpline::from_control_points(
-            Const::<3>,
-            fit.geom.clone(),
-        )
-        .expect("at least two control points");
+        let spline =
+            spline_fit::ClampedCardinalBSpline::from_control_points(Const::<3>, fit.geom.clone())
+                .expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc.max(1e-6);
         let live = &self.pts[lo.min(self.pts.len() - 1)..];
@@ -555,7 +558,8 @@ impl PathFitter {
         // control points are held, so that length is settled for good.
         let settled = self.frozen_spans() * ARC_SAMPLES_PER_SPAN;
         self.settled_profile = f.profile;
-        self.settled_profile.truncate((settled + 1).min(self.settled_profile.len()));
+        self.settled_profile
+            .truncate((settled + 1).min(self.settled_profile.len()));
     }
 
     fn grow_to(&mut self, m: usize) {
@@ -666,7 +670,9 @@ fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
         return f.clamp(0.0, 1.0) * spans;
     }
     let want = f.clamp(0.0, 1.0) * total;
-    let i = profile.partition_point(|&c| c < want).clamp(1, profile.len() - 1);
+    let i = profile
+        .partition_point(|&c| c < want)
+        .clamp(1, profile.len() - 1);
     let (a, b) = (profile[i - 1], profile[i]);
     let u = if b > a { (want - a) / (b - a) } else { 0.0 };
     (((i - 1) as f32 + u) / ARC_SAMPLES_PER_SPAN as f32).min(spans)
@@ -772,7 +778,13 @@ pub fn flatten_spans(
         // derivative, so the error test compares like with like.
         let mut a = sp.eval(0.0);
         a.dist = out.last().expect("start sample").dist;
-        let ends = (End { u: 0.0, s: a }, End { u: 1.0, s: sp.eval(1.0) });
+        let ends = (
+            End { u: 0.0, s: a },
+            End {
+                u: 1.0,
+                s: sp.eval(1.0),
+            },
+        );
         subdivide(&sp, ends.0, ends.1, MAX_SUBDIVISION_DEPTH, tol, &mut out);
     }
     out
@@ -981,11 +993,10 @@ mod tests {
                 .collect();
             let knots: Vec<ControlPoint> = ctrl.iter().map(|&p| ControlPoint::at(p)).collect();
 
-            let rows = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(
-                Dyn(m),
-                Const::<2>,
-                |j, d| if d == 0 { ctrl[j].x } else { ctrl[j].y },
-            );
+            let rows =
+                OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
+                    if d == 0 { ctrl[j].x } else { ctrl[j].y }
+                });
             let reference: CardinalCubicBSpline<f32, Const<2>> =
                 ClampedCardinalBSpline::from_control_points(Const::<3>, rows).unwrap();
 
@@ -1012,7 +1023,12 @@ mod tests {
         // What the clamped end condition buys: the stroke starts and finishes at the
         // first and last control point exactly, even though the interior ones are
         // only approached.
-        let knots = [knot(0.0, 0.0), knot(30.0, 40.0), knot(90.0, 10.0), knot(120.0, 60.0)];
+        let knots = [
+            knot(0.0, 0.0),
+            knot(30.0, 40.0),
+            knot(90.0, 10.0),
+            knot(120.0, 60.0),
+        ];
         let poly = flatten(&knots, FLATTEN_TOLERANCE);
         assert!((poly.first().unwrap().pos - knots[0].pos).length() < 1e-4);
         assert!((poly.last().unwrap().pos - knots[3].pos).length() < 1e-4);
@@ -1087,7 +1103,10 @@ mod tests {
                 let m = f.path().len();
                 if m > FREE_CONTROL_POINTS + 1 {
                     let free = m - f.frozen_spans().max(1);
-                    assert!(free >= FREE_CONTROL_POINTS, "{name}: only {free} free of {m}");
+                    assert!(
+                        free >= FREE_CONTROL_POINTS,
+                        "{name}: only {free} free of {m}"
+                    );
                     ever_froze |= f.frozen_spans() > 0;
                 }
             }
@@ -1095,15 +1114,12 @@ mod tests {
         }
     }
 
-
     #[test]
     fn fit_starts_and_ends_under_the_pointer() {
         // A least-squares fit does not pin its ends: an unassigned stretch of
         // parameter costs nothing, so without saying so the curve runs out past both
         // ends of the stroke — by 20px on the very data below, before this was fixed.
-        let pts: Vec<InputSample> = (0..20)
-            .map(|i| sample(i as f32, i as f32 * 0.9))
-            .collect();
+        let pts: Vec<InputSample> = (0..20).map(|i| sample(i as f32, i as f32 * 0.9)).collect();
         let fitted = fit(&pts);
         assert_eq!(fitted.first().unwrap().pos, pts.first().unwrap().pos);
         assert_eq!(fitted.last().unwrap().pos, pts.last().unwrap().pos);
@@ -1157,7 +1173,10 @@ mod tests {
         // following them, which is what the error bound below checks.
         // Traced, it would sit ~0 from every sample; smoothed, it splits the corners.
         let err = fit_error(&stair);
-        assert!((0.5..2.0).contains(&err), "err {err} — traced, not smoothed?");
+        assert!(
+            (0.5..2.0).contains(&err),
+            "err {err} — traced, not smoothed?"
+        );
     }
 
     #[test]
@@ -1177,7 +1196,10 @@ mod tests {
             .iter()
             .map(|p| (p.pos - Vec2::new(20.0, 0.0)).length())
             .fold(f32::INFINITY, f32::min);
-        assert!(nearest < 3.0, "corner lost: curve passes {nearest}px from it");
+        assert!(
+            nearest < 3.0,
+            "corner lost: curve passes {nearest}px from it"
+        );
     }
 
     #[test]
@@ -1193,8 +1215,14 @@ mod tests {
         // how a clamped B-spline is parameterized, so even exact input leaves a
         // residual, and a control point does reduce it. The fix is a correct
         // arc-to-parameter map, not a different price.
-        assert!(fitted.len() <= long.len(), "more control points than samples");
-        assert!(fit_error(&long) < 0.5, "a straight line should still be straight");
+        assert!(
+            fitted.len() <= long.len(),
+            "more control points than samples"
+        );
+        assert!(
+            fit_error(&long) < 0.5,
+            "a straight line should still be straight"
+        );
     }
 
     #[test]
@@ -1409,5 +1437,3 @@ mod tests {
         assert!(coarse < fine, "relaxed {coarse} vs fine {fine}");
     }
 }
-
-

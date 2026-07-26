@@ -48,7 +48,7 @@ use crate::mesh::{
 };
 use crate::mirror::Mirror;
 
-use super::{to_endpoint_id, MESH_ALPN as ALPN};
+use super::{MESH_ALPN as ALPN, to_endpoint_id};
 
 /// Matches the iroh transport's ceiling.
 const MAX_FRAME: usize = 1024 * 1024;
@@ -107,7 +107,11 @@ impl WebRtcMeshTransport {
     pub async fn new(node: BrowserWebRtcNode) -> TransportResult<Self> {
         let local = string_to_peer(node.endpoint_id())?;
         let acceptor = node.accept(ALPN).await.map_err(js_err)?;
-        Ok(Self { node, local, acceptor })
+        Ok(Self {
+            node,
+            local,
+            acceptor,
+        })
     }
 }
 
@@ -202,8 +206,8 @@ pub(crate) struct WebRtcSender {
 
 impl MeshSender for WebRtcSender {
     async fn send(&self, frame: Vec<u8>) -> TransportResult<()> {
-        let len = u32::try_from(frame.len())
-            .map_err(|_| MeshTransportError::new("frame too large"))?;
+        let len =
+            u32::try_from(frame.len()).map_err(|_| MeshTransportError::new("frame too large"))?;
         // One write: the facade's stream is a byte stream, so the length prefix
         // and body must not be able to interleave with another frame.
         let mut out = Vec::with_capacity(4 + frame.len());
@@ -278,9 +282,13 @@ pub(crate) fn serve_catchup(node: BrowserWebRtcNode, mirror: Arc<Mutex<Mirror>>)
 /// Answer requests on one connection until the peer goes away.
 async fn serve_catchup_conn(conn: BrowserWebRtcConnection, mirror: Arc<Mutex<Mirror>>) {
     loop {
-        let Ok(stream) = conn.accept_bi().await else { return };
+        let Ok(stream) = conn.accept_bi().await else {
+            return;
+        };
         // The peer half-closes after its request, so this returns the whole of it.
-        let Ok(request) = stream.read_to_end().await else { return };
+        let Ok(request) = stream.read_to_end().await else {
+            return;
+        };
         let response = match crate::proto::decode_request(&request)
             .and_then(|req| crate::proto::answer(&mirror, req))
         {

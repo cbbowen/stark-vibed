@@ -109,6 +109,9 @@ mod tests {
     #[test]
     fn gray_has_no_chroma() {
         let lab = srgb_to_oklab([0.5, 0.5, 0.5, 1.0]);
-        assert!(lab[1].abs() < 1e-3 && lab[2].abs() < 1e-3, "gray a,b ~ 0: {lab:?}");
+        assert!(
+            lab[1].abs() < 1e-3 && lab[2].abs() < 1e-3,
+            "gray a,b ~ 0: {lab:?}"
+        );
     }
 }

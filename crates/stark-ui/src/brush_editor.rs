@@ -28,8 +28,8 @@ use stark_core::{ColorSpaceId, EnvironmentId, InputCommand, InputSample};
 
 use crate::render::{self, Renderer};
 use crate::{
-    capture_pointer, set_bristles, set_brush_preset, set_knife, set_orientation, set_shape,
-    sleep_ms, update_brush, AppState, Slider,
+    AppState, Slider, capture_pointer, set_bristles, set_brush_preset, set_knife, set_orientation,
+    set_shape, sleep_ms, update_brush,
 };
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
@@ -334,12 +334,15 @@ fn More(open: Signal<bool>, children: Element) -> Element {
 /// stroke, and paint it with the current brush.
 async fn init_preview(state: AppState, mut preview: Preview) {
     // Copy everything out of the main renderer before any await (no held borrows).
-    let Some((gpu, surface_id, env_id, media, bg)) = state
-        .renderer
-        .peek()
-        .as_ref()
-        .map(|r| (r.gpu(), r.surface(), r.environment(), r.media_params(), r.background()))
-    else {
+    let Some((gpu, surface_id, env_id, media, bg)) = state.renderer.peek().as_ref().map(|r| {
+        (
+            r.gpu(),
+            r.surface(),
+            r.environment(),
+            r.media_params(),
+            r.background(),
+        )
+    }) else {
         return;
     };
 
@@ -501,7 +504,9 @@ fn edit(state: AppState, mut preview: Preview, f: impl FnOnce(&mut BrushParams) 
     spawn(async move {
         loop {
             sleep_ms(EDIT_THROTTLE_MS).await;
-            let Some(f) = preview.pending.write().take() else { break };
+            let Some(f) = preview.pending.write().take() else {
+                break;
+            };
             update_brush(state, f);
             restroke(state, preview);
         }
@@ -543,7 +548,10 @@ fn start_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
         preview.committed.set(false);
     }
     let s = preview_sample(r, e);
-    r.process(InputCommand::StartStroke { tool: Tool::Brush, sample: s });
+    r.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: s,
+    });
     r.paint();
     drop(guard);
     preview.rec.set(vec![s]);

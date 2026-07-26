@@ -38,7 +38,11 @@ fn screen_of(canvas: Vec2) -> (u32, u32) {
 fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
     let (x, y) = screen_of(canvas);
     let i = ((y * img.width + x) * 4) as usize;
-    let (r, g, b) = (img.pixels[i] as i32, img.pixels[i + 1] as i32, img.pixels[i + 2] as i32);
+    let (r, g, b) = (
+        img.pixels[i] as i32,
+        img.pixels[i + 1] as i32,
+        img.pixels[i + 2] as i32,
+    );
     r - g > 40 && r - b > 40
 }
 
@@ -57,7 +61,11 @@ fn crossing_stroke(engine: &mut stark_core::Engine) {
         engine,
         RED,
         14.0,
-        &[Vec2::new(-30.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(30.0, 0.0)],
+        &[
+            Vec2::new(-30.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(30.0, 0.0),
+        ],
     );
 }
 
@@ -119,8 +127,14 @@ fn inverting_swaps_which_half_paints() {
     crossing_stroke(&mut engine);
     let img = engine.render_to_image(PAPER);
 
-    assert!(!is_painted(&img, Vec2::new(-20.0, 0.0)), "inverted: left is now masked out");
-    assert!(is_painted(&img, Vec2::new(20.0, 0.0)), "inverted: right now paints");
+    assert!(
+        !is_painted(&img, Vec2::new(-20.0, 0.0)),
+        "inverted: left is now masked out"
+    );
+    assert!(
+        is_painted(&img, Vec2::new(20.0, 0.0)),
+        "inverted: right now paints"
+    );
 }
 
 #[test]
@@ -143,10 +157,19 @@ fn union_extends_and_subtract_cuts() {
     crossing_stroke(&mut engine);
     let img = engine.render_to_image(PAPER);
 
-    assert!(is_painted(&img, Vec2::new(-8.0, 0.0)), "original selection, uncut");
+    assert!(
+        is_painted(&img, Vec2::new(-8.0, 0.0)),
+        "original selection, uncut"
+    );
     assert!(is_painted(&img, Vec2::new(25.0, 0.0)), "added by the union");
-    assert!(!is_painted(&img, Vec2::new(-20.0, 0.0)), "removed by the subtract");
-    assert!(!is_painted(&img, Vec2::new(5.0, 0.0)), "never selected at all");
+    assert!(
+        !is_painted(&img, Vec2::new(-20.0, 0.0)),
+        "removed by the subtract"
+    );
+    assert!(
+        !is_painted(&img, Vec2::new(5.0, 0.0)),
+        "never selected at all"
+    );
 }
 
 #[test]
@@ -164,8 +187,14 @@ fn intersect_keeps_only_the_overlap() {
     let img = engine.render_to_image(PAPER);
 
     assert!(is_painted(&img, Vec2::new(-10.0, 0.0)), "in both");
-    assert!(!is_painted(&img, Vec2::new(-30.0, 0.0)), "only in the first");
-    assert!(!is_painted(&img, Vec2::new(20.0, 0.0)), "only in the second");
+    assert!(
+        !is_painted(&img, Vec2::new(-30.0, 0.0)),
+        "only in the first"
+    );
+    assert!(
+        !is_painted(&img, Vec2::new(20.0, 0.0)),
+        "only in the second"
+    );
 }
 
 #[test]
@@ -185,7 +214,10 @@ fn lasso_masks_its_interior() {
 
     // Probed within the stroke's body, not out at its cap, so this measures the mask
     // rather than the brush's falloff.
-    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)), "inside the triangle");
+    assert!(
+        is_painted(&img, Vec2::new(-20.0, 0.0)),
+        "inside the triangle"
+    );
     assert!(!is_painted(&img, Vec2::new(20.0, 0.0)), "outside it");
     // Just past the apex on the stroke's line, still outside the polygon.
     assert!(!is_painted(&img, Vec2::new(2.0, 0.0)), "beyond the apex");
@@ -210,11 +242,18 @@ fn selection_gates_the_brush_dynamics_path() {
     stroke_with(
         &mut engine,
         b,
-        &[Vec2::new(-30.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(30.0, 0.0)],
+        &[
+            Vec2::new(-30.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(30.0, 0.0),
+        ],
     );
     let img = engine.render_to_image(PAPER);
 
-    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)), "smearing brush paints inside");
+    assert!(
+        is_painted(&img, Vec2::new(-20.0, 0.0)),
+        "smearing brush paints inside"
+    );
     assert!(
         !is_painted(&img, Vec2::new(20.0, 0.0)),
         "smearing brush must not touch the canvas outside the selection"
@@ -229,7 +268,12 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
         return;
     };
     // Lay a bar of paint on the right (which will be *outside* the selection).
-    paint(&mut engine, RED, 20.0, &[Vec2::new(20.0, 0.0), Vec2::new(60.0, 0.0)]);
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(20.0, 0.0), Vec2::new(60.0, 0.0)],
+    );
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
 
     let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 16.0);
@@ -243,7 +287,11 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
     stroke_with(
         &mut engine,
         smudge,
-        &[Vec2::new(50.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(-30.0, 0.0)],
+        &[
+            Vec2::new(50.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(-30.0, 0.0),
+        ],
     );
     let img = engine.render_to_image(PAPER);
 
@@ -264,7 +312,10 @@ fn undo_and_redo_step_through_the_selection() {
     let masked = engine.render_to_image(PAPER);
 
     engine.process(InputCommand::Undo); // the stroke
-    assert!(engine.observe().has_selection, "the selection outlives the stroke");
+    assert!(
+        engine.observe().has_selection,
+        "the selection outlives the stroke"
+    );
     engine.process(InputCommand::Undo); // the selection itself
     assert!(!engine.observe().has_selection);
     assert!(
@@ -392,7 +443,10 @@ fn the_outline_is_drawn_on_the_boundary_only() {
             > 8
     };
     assert!(changed(Vec2::new(0.0, 0.0)), "the boundary is outlined");
-    assert!(!changed(Vec2::new(-20.0, 0.0)), "the interior is left alone");
+    assert!(
+        !changed(Vec2::new(-20.0, 0.0)),
+        "the interior is left alone"
+    );
     assert!(!changed(Vec2::new(20.0, 0.0)), "the exterior is left alone");
 }
 

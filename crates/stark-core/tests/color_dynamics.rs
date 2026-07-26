@@ -135,7 +135,10 @@ fn jitter_survives_save_load() {
     let bytes = a.save_bytes().expect("save");
     b.load_bytes(&bytes).expect("load");
     let (ia, ib) = (a.render_to_image(PAPER), b.render_to_image(PAPER));
-    assert!(images_match(&ia, &ib, 0), "jittered stroke not replay-lossless");
+    assert!(
+        images_match(&ia, &ib, 0),
+        "jittered stroke not replay-lossless"
+    );
 }
 
 /// The sequential exchange loop (a brush that also lifts/deposits canvas paint —
@@ -192,9 +195,6 @@ fn jittered_live_preview_matches_commit() {
     let samples: Vec<InputSample> = S_CURVE.iter().map(|&p| InputSample::at(p)).collect();
     replayed.replay_stroke(Tool::Brush, &samples);
 
-    let (il, ir) = (
-        live.render_to_image(PAPER),
-        replayed.render_to_image(PAPER),
-    );
+    let (il, ir) = (live.render_to_image(PAPER), replayed.render_to_image(PAPER));
     assert!(images_match(&il, &ir, 0), "live jitter != committed jitter");
 }

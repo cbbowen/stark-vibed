@@ -17,8 +17,8 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use stark_core::document::Action;
 use stark_core::AssetId;
+use stark_core::document::Action;
 
 use crate::mirror::Mirror;
 
@@ -72,7 +72,7 @@ pub(crate) fn decode_request(bytes: &[u8]) -> crate::Result<Request> {
 /// The iroh plumbing. Compiled only when the iroh backend is active; the WebRTC
 /// backend carries the same protocol over facade streams instead.
 #[cfg(not(all(feature = "webrtc", target_family = "wasm", target_os = "unknown")))]
-pub(crate) use iroh_wire::{request, CollabProto};
+pub(crate) use iroh_wire::{CollabProto, request};
 
 #[cfg(not(all(feature = "webrtc", target_family = "wasm", target_os = "unknown")))]
 mod iroh_wire {
@@ -81,7 +81,7 @@ mod iroh_wire {
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler};
 
-    use super::{answer, decode_request, Request};
+    use super::{Request, answer, decode_request};
     use crate::mirror::Mirror;
 
     /// Upper bound on an encoded request (a tag + a 32-byte asset id).
@@ -108,7 +108,9 @@ mod iroh_wire {
                     .map_err(AcceptError::from_err)?;
                 let req = decode_request(&req).map_err(AcceptError::from_err)?;
                 let response = answer(&self.mirror, req).map_err(AcceptError::from_err)?;
-                send.write_all(&response).await.map_err(AcceptError::from_err)?;
+                send.write_all(&response)
+                    .await
+                    .map_err(AcceptError::from_err)?;
                 send.finish().map_err(AcceptError::from_err)?;
             }
         }
@@ -118,7 +120,8 @@ mod iroh_wire {
     pub(crate) async fn request(conn: &Connection, req: Request) -> crate::Result<Vec<u8>> {
         let (mut send, mut recv) = conn.open_bi().await?;
         send.write_all(&postcard::to_allocvec(&req)?).await?;
-        send.finish().map_err(|e| crate::NetError::Other(e.to_string()))?;
+        send.finish()
+            .map_err(|e| crate::NetError::Other(e.to_string()))?;
         Ok(recv.read_to_end(MAX_RESPONSE).await?)
     }
 }

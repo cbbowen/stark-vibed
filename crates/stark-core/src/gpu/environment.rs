@@ -86,7 +86,12 @@ pub fn decode_hdr(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, u32, u32), String> {
 
 /// Read one scanline of `w` RGBE pixels into `scan`, advancing `pos`. Handles the
 /// new-style RLE header (`0x02 0x02 hi lo`) per channel, else flat/old quads.
-fn read_scanline(bytes: &[u8], pos: &mut usize, scan: &mut [[u8; 4]], w: usize) -> Result<(), String> {
+fn read_scanline(
+    bytes: &[u8],
+    pos: &mut usize,
+    scan: &mut [[u8; 4]],
+    w: usize,
+) -> Result<(), String> {
     // New-style RLE is only used for widths in [8, 0x7fff] and is flagged by a
     // leading 0x02 0x02 with the width in the next two bytes.
     let new_rle = w >= 8
@@ -232,7 +237,11 @@ impl Environment {
         let mip_count = 32 - (w.max(h)).leading_zeros(); // floor(log2(max))+1
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("stark environment"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: mip_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -264,7 +273,12 @@ impl Environment {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        Self { view, sampler, mip_count, mean_luminance }
+        Self {
+            view,
+            sampler,
+            mip_count,
+            mean_luminance,
+        }
     }
 }
 
@@ -290,7 +304,11 @@ fn write_mip(ctx: &GpuContext, texture: &wgpu::Texture, mip: u32, px: &[[f32; 3]
             bytes_per_row: Some(w * 8), // 4 channels × 2 bytes
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
 }
 
@@ -370,7 +388,10 @@ mod tests {
         // All finite and non-negative; a studio HDR has some bright (>1) values.
         assert!(pixels.iter().flatten().all(|c| c.is_finite() && *c >= 0.0));
         let max = pixels.iter().flatten().cloned().fold(0.0f32, f32::max);
-        assert!(max > 1.0, "studio HDR should contain values >1 (got max {max})");
+        assert!(
+            max > 1.0,
+            "studio HDR should contain values >1 (got max {max})"
+        );
     }
 
     #[test]
@@ -387,7 +408,10 @@ mod tests {
         };
         for &v in &[0.0f32, 0.25, 1.0, 2.5, 18.0, 500.0] {
             let back = half_to_f32(f32_to_f16(v));
-            assert!((back - v).abs() <= v.max(1.0) * 0.001 + 1e-3, "f16({v}) -> {back}");
+            assert!(
+                (back - v).abs() <= v.max(1.0) * 0.001 + 1e-3,
+                "f16({v}) -> {back}"
+            );
         }
         assert_eq!(f32_to_f16(-1.0), 0); // negatives clamp to 0
     }

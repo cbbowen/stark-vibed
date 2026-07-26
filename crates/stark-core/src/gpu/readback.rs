@@ -94,9 +94,5 @@ fn f16_to_f32(h: u16) -> f32 {
         }
         _ => (1.0 + mant as f32 / 1024.0) * 2f32.powi(exp as i32 - 15),
     };
-    if sign == 1 {
-        -val
-    } else {
-        val
-    }
+    if sign == 1 { -val } else { val }
 }

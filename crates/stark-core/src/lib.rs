@@ -98,9 +98,9 @@ pub mod image;
 pub mod io;
 pub mod noise;
 pub mod path;
+pub mod session;
 #[doc(hidden)]
 pub mod testdata;
-pub mod session;
 
 pub use assets::{AssetId, AssetStore};
 pub use colorspace::{ColorSpace, ColorSpaceId};
@@ -108,7 +108,7 @@ pub use command::{InputCommand, InputSample};
 pub use document::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};
-pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};
+pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gpu::{
     Compositor, EnvironmentId, GpuContext, MediaParams, StrokeRenderer, SurfaceId, TilePairHandle,
     TilePool,

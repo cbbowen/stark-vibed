@@ -14,15 +14,28 @@ use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::{Engine, RgbaImage};
 
-pub const SIZE: Extent2 = Extent2 { width: 256, height: 256 };
+pub const SIZE: Extent2 = Extent2 {
+    width: 256,
+    height: 256,
+};
 pub const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-pub const BG: wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+pub const BG: wgpu::Color = wgpu::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 1.0,
+    a: 1.0,
+};
 /// A neutral near-white paper substrate, for color spaces that composite over a light
 /// ground. Matches the app's default (`stark-ui` `render::BG`). Neutral on purpose: the
 /// studio HDR lights the scene warm, and a warm paper on top of that rendered so
 /// red-dominant it defeated channel-dominance checks like `is_red` (tests asserting "is
 /// paint here?" were vacuously true on bare paper).
-pub const PAPER: wgpu::Color = wgpu::Color { r: 0.97, g: 0.97, b: 0.97, a: 1.0 };
+pub const PAPER: wgpu::Color = wgpu::Color {
+    r: 0.97,
+    g: 0.97,
+    b: 0.97,
+    a: 1.0,
+};
 
 /// Set to `1` to allow GPU tests to skip when no adapter is available. **Unset by
 /// default, and deliberately so**: a skipped GPU test still reports `ok`, so a
@@ -136,7 +149,11 @@ pub fn diff_fraction(a: &RgbaImage, b: &RgbaImage) -> (f64, u8) {
 /// per-pixel worst, this distinguishes a contiguous seam (a band of many significantly-
 /// different pixels) from a handful of isolated precision specks.
 pub fn frac_exceeding(a: &RgbaImage, b: &RgbaImage, tol: u8) -> f64 {
-    assert_eq!((a.width, a.height), (b.width, b.height), "image size mismatch");
+    assert_eq!(
+        (a.width, a.height),
+        (b.width, b.height),
+        "image size mismatch"
+    );
     let mut bad = 0u64;
     for (pa, pb) in a.pixels.chunks_exact(4).zip(b.pixels.chunks_exact(4)) {
         let d = pa
@@ -192,7 +209,11 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
     );
 
     let mut bad = 0u64;
-    for (a, b) in img.pixels.chunks_exact(4).zip(golden.pixels.chunks_exact(4)) {
+    for (a, b) in img
+        .pixels
+        .chunks_exact(4)
+        .zip(golden.pixels.chunks_exact(4))
+    {
         let d = a
             .iter()
             .zip(b)
@@ -234,7 +255,11 @@ fn read_png(path: &Path) -> RgbaImage {
     let mut reader = decoder.read_info().expect("png info");
     let mut buf = vec![0u8; reader.output_buffer_size().expect("buffer size")];
     let info = reader.next_frame(&mut buf).expect("png frame");
-    assert_eq!(info.color_type, png::ColorType::Rgba, "golden must be RGBA8");
+    assert_eq!(
+        info.color_type,
+        png::ColorType::Rgba,
+        "golden must be RGBA8"
+    );
     buf.truncate(info.buffer_size());
     RgbaImage::new(info.width, info.height, buf)
 }

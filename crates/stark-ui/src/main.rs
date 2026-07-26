@@ -15,7 +15,7 @@ mod render;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use dioxus::dioxus_core::{spawn_forever, Task};
+use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
@@ -23,11 +23,11 @@ use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
-use render::{Renderer, BG, CANVAS_ID};
+use render::{BG, CANVAS_ID, Renderer};
+use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 use stark_core::document::{
     BrushDynamics, BrushParams, BrushShape, OrientationSource, SelectionMode, SelectionOp, Tool,
 };
-use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 use stark_core::geom::Vec2;
 use stark_core::{
     ColorSpaceId, EnvironmentId, InputCommand, InputSample, LayerInfo, MediaParams,
@@ -43,10 +43,7 @@ const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hd
 /// The selectable canvas surfaces, in display order (DESIGN.md §6.4). Adding a
 /// surface = one row here (plus its asset fetch in [`set_surface`]); the Lighting
 /// panel's drop-down renders this table.
-const SURFACES: &[(SurfaceId, &str)] = &[
-    (SurfaceId::Flat, "Smooth"),
-    (SurfaceId::Linen, "Linen"),
-];
+const SURFACES: &[(SurfaceId, &str)] = &[(SurfaceId::Flat, "Smooth"), (SurfaceId::Linen, "Linen")];
 
 /// Oklab a/b picker field, on screen (px) — a square `a`×`b` plane at the current `L`.
 const FIELD_PX: f32 = 220.0;
@@ -195,7 +192,11 @@ impl DragState {
                     return false;
                 }
                 let center = p.1 + p.2 * 0.5;
-                if *k < self.from { top >= center } else { bottom > center }
+                if *k < self.from {
+                    top >= center
+                } else {
+                    bottom > center
+                }
             })
             .count()
     }
@@ -470,8 +471,11 @@ fn OklabPicker(init: [f32; 3], onchange: EventHandler<[f32; 3]>) -> Element {
     let ly = (1.0 - l()) * L_H; // L: 1→top, 0→bottom
     // Exact 1-D oklab gradient for the L track at the current chroma (CSS interpolates
     // in oklab when asked, so the ramp is perceptually even).
-    let l_grad =
-        format!("linear-gradient(in oklab to top, oklab(0 {a:.4} {b:.4}), oklab(1 {a:.4} {b:.4}))", a = a(), b = b());
+    let l_grad = format!(
+        "linear-gradient(in oklab to top, oklab(0 {a:.4} {b:.4}), oklab(1 {a:.4} {b:.4}))",
+        a = a(),
+        b = b()
+    );
 
     rsx! {
         div { class: "color-pick",
@@ -511,7 +515,13 @@ fn apply_color(onchange: EventHandler<[f32; 3]>, l: Signal<f32>, a: Signal<f32>,
 }
 
 /// Set `a`/`b` from a pointer position over the field (warm/+b at top), then apply.
-fn pick_ab(onchange: EventHandler<[f32; 3]>, mut a: Signal<f32>, mut b: Signal<f32>, l: Signal<f32>, e: &Event<PointerData>) {
+fn pick_ab(
+    onchange: EventHandler<[f32; 3]>,
+    mut a: Signal<f32>,
+    mut b: Signal<f32>,
+    l: Signal<f32>,
+    e: &Event<PointerData>,
+) {
     let c = e.element_coordinates();
     a.set(((c.x as f32 / FIELD_PX) * 2.0 - 1.0).clamp(-1.0, 1.0) * AB);
     b.set((1.0 - (c.y as f32 / FIELD_PX) * 2.0).clamp(-1.0, 1.0) * AB);
@@ -519,7 +529,13 @@ fn pick_ab(onchange: EventHandler<[f32; 3]>, mut a: Signal<f32>, mut b: Signal<f
 }
 
 /// Set `L` from a pointer position over the vertical slider (top = light), then apply.
-fn pick_l(onchange: EventHandler<[f32; 3]>, mut l: Signal<f32>, a: Signal<f32>, b: Signal<f32>, e: &Event<PointerData>) {
+fn pick_l(
+    onchange: EventHandler<[f32; 3]>,
+    mut l: Signal<f32>,
+    a: Signal<f32>,
+    b: Signal<f32>,
+    e: &Event<PointerData>,
+) {
     let c = e.element_coordinates();
     l.set((1.0 - c.y as f32 / L_H).clamp(0.0, 1.0));
     apply_color(onchange, l, a, b);
@@ -575,8 +591,16 @@ fn base64(data: &[u8]) -> String {
             | (*chunk.get(2).unwrap_or(&0) as u32);
         out.push(T[(n >> 18 & 63) as usize] as char);
         out.push(T[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -685,7 +709,14 @@ fn SelectPanel() -> Element {
     let obs = state.obs.read();
     let (tool, mode, feather, active) = obs
         .as_ref()
-        .map(|o| (o.tool, o.selection_mode, o.selection_feather, o.has_selection))
+        .map(|o| {
+            (
+                o.tool,
+                o.selection_mode,
+                o.selection_feather,
+                o.has_selection,
+            )
+        })
         .unwrap_or((Tool::Brush, SelectionMode::Replace, 0.0, false));
     drop(obs);
 
@@ -801,7 +832,11 @@ fn LayerRow(info: LayerInfo) -> Element {
         .as_ref()
         .map(|o| o.active_layer == info.id)
         .unwrap_or(false);
-    let row_class = if active { "layer-row active" } else { "layer-row" };
+    let row_class = if active {
+        "layer-row active"
+    } else {
+        "layer-row"
+    };
 
     rsx! {
         div {
@@ -1106,7 +1141,11 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 
     // One selectable color-space card; `selected` toggles the highlight.
     let card = |id: ColorSpaceId, title: &str, desc: &str| {
-        let class = if choice() == id { "space-card selected" } else { "space-card" };
+        let class = if choice() == id {
+            "space-card selected"
+        } else {
+            "space-card"
+        };
         rsx! {
             div {
                 class,
@@ -1119,7 +1158,11 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 
     // Same card, for the canvas surface choice.
     let scard = |id: SurfaceId, title: &str, desc: &str| {
-        let class = if surf_choice() == id { "space-card selected" } else { "space-card" };
+        let class = if surf_choice() == id {
+            "space-card selected"
+        } else {
+            "space-card"
+        };
         rsx! {
             div {
                 class,
@@ -1178,7 +1221,12 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 /// (session gone, document never replaced). The task must outlive the modal;
 /// calling `on_close` after it unmounted is harmless (the callback lives in
 /// CommandRail's scope, which persists).
-fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId, on_close: EventHandler<()>) {
+fn new_document(
+    state: AppState,
+    color: ColorSpaceId,
+    surface: SurfaceId,
+    on_close: EventHandler<()>,
+) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
     // Replacing the document abandons any shared session (and clears the
@@ -1195,7 +1243,11 @@ fn new_document(state: AppState, color: ColorSpaceId, surface: SurfaceId, on_clo
             tracing::info!(?surface, url = %asset, "fetching surface asset");
             match dioxus::asset_resolver::read_asset_bytes(asset).await {
                 Ok(bytes) => {
-                    tracing::info!(?surface, bytes = bytes.len(), "surface fetched; registering");
+                    tracing::info!(
+                        ?surface,
+                        bytes = bytes.len(),
+                        "surface fetched; registering"
+                    );
                     if let Some(r) = renderer.write().as_mut() {
                         r.register_surface(surface, bytes);
                     }
@@ -1266,7 +1318,11 @@ fn Panel(id: PanelId, children: Element) -> Element {
             // Track the pointer 1:1 only while actively dragging this panel; the sliding
             // neighbours — and the dragged panel as it settles on release — transition.
             let tracking = d.id == id && d.release.is_none();
-            let trans = if tracking { "none" } else { "transform 180ms ease" };
+            let trans = if tracking {
+                "none"
+            } else {
+                "transform 180ms ease"
+            };
             format!("transform: translateY({dy}px); transition: {trans};")
         }
     };
@@ -1427,7 +1483,9 @@ fn capture_pointer(e: &Event<PointerData>) {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
     if let Some(ev) = e.try_as_web_event()
-        && let Some(target) = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        && let Some(target) = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
     {
         let _ = target.set_pointer_capture(ev.pointer_id());
     }
@@ -1466,7 +1524,11 @@ fn TernaryPad(labels: [String; 3], value: [f32; 3], onchange: EventHandler<[f32;
     // Marker position from the (normalized) weights: p = Σ wᵢ·Vᵢ over the triangle's
     // vertices V₀=(W/2, 0), V₁=(0, H), V₂=(W, H), shifted down by the label band.
     let s: f32 = value.iter().sum();
-    let v = if s > 1e-4 { value.map(|x| x / s) } else { [1.0, 0.0, 0.0] };
+    let v = if s > 1e-4 {
+        value.map(|x| x / s)
+    } else {
+        [1.0, 0.0, 0.0]
+    };
     let mx = v[0] * TRI_W * 0.5 + v[2] * TRI_W;
     let my = (v[1] + v[2]) * TRI_H + TRI_LBL;
 
@@ -1508,7 +1570,11 @@ fn ternary_weights(px: f32, py: f32) -> [f32; 3] {
     let w1 = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / denom;
     let w = [w0, w1, 1.0 - w0 - w1].map(|x| x.max(0.0));
     let s: f32 = w.iter().sum();
-    if s > 0.0 { w.map(|x| x / s) } else { [1.0, 0.0, 0.0] }
+    if s > 0.0 {
+        w.map(|x| x / s)
+    } else {
+        [1.0, 0.0, 0.0]
+    }
 }
 
 // --- command dispatch ---
@@ -1642,4 +1708,3 @@ fn end_interaction(
     }
     panning.set(false);
 }
-

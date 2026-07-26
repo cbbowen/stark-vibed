@@ -5,11 +5,11 @@
 
 mod common;
 
-use common::{engine_or_skip, images_match, paint, PAPER};
+use common::{PAPER, engine_or_skip, images_match, paint};
 use stark_core::command::InputCommand;
 use stark_core::document::ActorId;
-use stark_core::{Engine, RgbaImage};
 use stark_core::geom::Vec2;
+use stark_core::{Engine, RgbaImage};
 
 const RED: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
@@ -49,8 +49,18 @@ fn concurrent_strokes_converge() {
 
     // Concurrent, overlapping edits: same lamport, actor id breaks the tie, so
     // A's stroke orders before B's even though B applies it second.
-    paint(&mut a, RED, 12.0, &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)]);
-    paint(&mut b, GREEN, 12.0, &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)]);
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+    paint(
+        &mut b,
+        GREEN,
+        12.0,
+        &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
+    );
     sync(&mut a, &mut b);
 
     let img_a = snap(&mut a);
@@ -80,9 +90,19 @@ fn shared_undo_skips_peer_actions() {
     a.start_collaboration(ActorId(1));
     b.join_collaboration(&a.document_file(), ActorId(2));
 
-    paint(&mut a, RED, 12.0, &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)]);
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
     // B's canvas before it has seen anything of A: exactly "only B's stroke".
-    paint(&mut b, GREEN, 12.0, &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)]);
+    paint(
+        &mut b,
+        GREEN,
+        12.0,
+        &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
+    );
     let only_b = snap(&mut b);
 
     sync(&mut a, &mut b);
@@ -124,9 +144,19 @@ fn shared_undo_redo_chain() {
     a.start_collaboration(ActorId(1));
 
     let blank = snap(&mut a);
-    paint(&mut a, RED, 12.0, &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)]);
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)],
+    );
     let one = snap(&mut a);
-    paint(&mut a, BLUE, 12.0, &[Vec2::new(40.0, 156.0), Vec2::new(216.0, 156.0)]);
+    paint(
+        &mut a,
+        BLUE,
+        12.0,
+        &[Vec2::new(40.0, 156.0), Vec2::new(216.0, 156.0)],
+    );
     let two = snap(&mut a);
 
     a.process(InputCommand::Undo);
@@ -149,7 +179,12 @@ fn host_can_undo_pre_share_strokes() {
         return;
     };
     let blank = snap(&mut a);
-    paint(&mut a, RED, 12.0, &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)]);
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
 
     a.start_collaboration(ActorId(7));
     assert!(a.observe().can_undo, "pre-share stroke should be undoable");
@@ -169,8 +204,18 @@ fn shared_save_solo_load_roundtrip() {
     };
     a.start_collaboration(ActorId(1));
 
-    paint(&mut a, RED, 12.0, &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)]);
-    paint(&mut a, GREEN, 12.0, &[Vec2::new(40.0, 156.0), Vec2::new(216.0, 156.0)]);
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)],
+    );
+    paint(
+        &mut a,
+        GREEN,
+        12.0,
+        &[Vec2::new(40.0, 156.0), Vec2::new(216.0, 156.0)],
+    );
     a.process(InputCommand::Undo); // green gone; log still contains it + the undo
     let expected = snap(&mut a);
 
@@ -206,14 +251,22 @@ fn merge_is_idempotent() {
     a.start_collaboration(ActorId(1));
     b.join_collaboration(&a.document_file(), ActorId(2));
 
-    paint(&mut a, RED, 12.0, &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)]);
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
     let actions = a.take_outbox();
     for action in &actions {
         assert!(b.merge_remote(action.clone()));
     }
     let img = snap(&mut b);
     for action in &actions {
-        assert!(!b.merge_remote(action.clone()), "duplicate must be rejected");
+        assert!(
+            !b.merge_remote(action.clone()),
+            "duplicate must be rejected"
+        );
     }
     assert!(
         images_match(&snap(&mut b), &img, 0),

@@ -59,7 +59,9 @@ fn generate_mixbox_poly() {
     // Extract the single `vec3 mixbox_eval_polynomial(vec3 c) {{ ... }}` function.
     // It has no nested braces, so the first `\n}` after it is its close.
     let sig = "vec3 mixbox_eval_polynomial(vec3 c)";
-    let start = glsl.find(sig).expect("mixbox_eval_polynomial not found in vendored GLSL");
+    let start = glsl
+        .find(sig)
+        .expect("mixbox_eval_polynomial not found in vendored GLSL");
     let end = glsl[start..]
         .find("\n}")
         .map(|i| start + i + 2)
@@ -85,7 +87,9 @@ fn generate_mixbox_poly() {
     // Write only on change so the file's mtime stays stable (the directory is a
     // `rerun-if-changed` input).
     let path = Path::new("src/shaders/mixbox_poly.wesl");
-    let unchanged = std::fs::read_to_string(path).map(|c| c == out).unwrap_or(false);
+    let unchanged = std::fs::read_to_string(path)
+        .map(|c| c == out)
+        .unwrap_or(false);
     if !unchanged {
         std::fs::write(path, out).expect("write generated mixbox_poly.wesl");
     }

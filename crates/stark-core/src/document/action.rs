@@ -276,12 +276,18 @@ pub struct StrokeRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ActionKind {
     CommitStroke(StrokeRecord),
-    AddLayer { id: LayerId, above: Option<LayerId> },
+    AddLayer {
+        id: LayerId,
+        above: Option<LayerId>,
+    },
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
-    MoveLayer { id: LayerId, above: Option<LayerId> },
+    MoveLayer {
+        id: LayerId,
+        above: Option<LayerId>,
+    },
     /// Undo **as a logged action** (DESIGN.md §5.4, §12.3): a fact peers can see
     /// and order, meaning "derive the document as if `target` were absent".
     /// Redo is an `Undo` of an `Undo`. Emitted only in shared sessions; solo
@@ -344,7 +350,13 @@ impl history::Action for Action {
                         rec,
                         &state.selection,
                     );
-                    state.with_layer_at(idx, Layer { tiles, ..layer.clone() })
+                    state.with_layer_at(
+                        idx,
+                        Layer {
+                            tiles,
+                            ..layer.clone()
+                        },
+                    )
                 }
                 None => state,
             },
@@ -361,15 +373,13 @@ impl history::Action for Action {
             // An op too large to rasterize (see `MAX_SELECTION_TILES`) leaves the
             // selection alone — deterministically, since the bound is a pure
             // function of the op, so peers and replays agree.
-            ActionKind::Select(op) => {
-                match ctx.selection.apply(&ctx.pool, &state.selection, op) {
-                    Some(selection) => state.with_selection(selection),
-                    None => {
-                        tracing::warn!("selection op too large to rasterize; ignored");
-                        state
-                    }
+            ActionKind::Select(op) => match ctx.selection.apply(&ctx.pool, &state.selection, op) {
+                Some(selection) => state.with_selection(selection),
+                None => {
+                    tracing::warn!("selection op too large to rasterize; ignored");
+                    state
                 }
-            }
+            },
             ActionKind::InvertSelection => {
                 let selection = ctx.selection.invert(&ctx.pool, &state.selection);
                 state.with_selection(selection)
@@ -377,4 +387,3 @@ impl history::Action for Action {
         })
     }
 }
-

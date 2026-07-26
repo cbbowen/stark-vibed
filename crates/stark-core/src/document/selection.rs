@@ -29,7 +29,7 @@
 use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
-use crate::geom::{TileCoord, Vec2, TILE_APRON, TILE_SIZE, TILE_TEX};
+use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::gpu::tile::MaskHandle;
 
 /// Largest number of mask tiles one op may rasterize (~64 MB of R8 coverage). An op
@@ -219,11 +219,7 @@ impl Selection {
 
     /// Coverage where there is no mask tile, as the shaders want it.
     pub fn outside(&self) -> f32 {
-        if self.outside {
-            1.0
-        } else {
-            0.0
-        }
+        if self.outside { 1.0 } else { 0.0 }
     }
 
     /// This tile's mask, if the selection has one here.
@@ -246,10 +242,7 @@ impl Selection {
         &self.tiles
     }
 
-    pub(crate) fn from_parts(
-        tiles: HashTrieMap<TileCoord, MaskHandle>,
-        outside: bool,
-    ) -> Self {
+    pub(crate) fn from_parts(tiles: HashTrieMap<TileCoord, MaskHandle>, outside: bool) -> Self {
         Self { tiles, outside }
     }
 
@@ -460,7 +453,14 @@ mod tests {
         let pts = vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];
         let edges = lasso_edges(&pts);
         assert_eq!(edges.len(), 3);
-        assert_eq!(edges[2], [0.0, 1.0, 0.0, 0.0], "last edge returns to the start");
-        assert!(lasso_edges(&pts[..2]).is_empty(), "a segment encloses nothing");
+        assert_eq!(
+            edges[2],
+            [0.0, 1.0, 0.0, 0.0],
+            "last edge returns to the start"
+        );
+        assert!(
+            lasso_edges(&pts[..2]).is_empty(),
+            "a segment encloses nothing"
+        );
     }
 }
