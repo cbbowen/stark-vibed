@@ -356,9 +356,24 @@ impl Engine {
     /// replay where nothing is presented in between. This renders the stroke
     /// exactly once, at commit. Used by the brush editor's test-stroke replay.
     pub fn replay_stroke(&mut self, tool: Tool, samples: &[crate::command::InputSample]) {
+        self.replay_stroke_seeded(tool, samples, self.clock);
+    }
+
+    /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the
+    /// Lamport clock. Replaying the same samples repeatedly advances the clock
+    /// (each replay commits), so the seed — and with it the colour dynamics and
+    /// dither — changes on every replay. A caller re-rendering *one* stroke to
+    /// show the effect of a brush change (the brush editor's preview) wants the
+    /// jitter held fixed, so only the edited parameter moves.
+    pub fn replay_stroke_seeded(
+        &mut self,
+        tool: Tool,
+        samples: &[crate::command::InputSample],
+        seed: u64,
+    ) {
         let mut it = samples.iter();
         let Some(first) = it.next() else { return };
-        self.session.start_stroke(tool, *first, self.clock);
+        self.session.start_stroke(tool, *first, seed);
         for s in it {
             self.session.stroke_to(*s);
         }

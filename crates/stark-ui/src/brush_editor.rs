@@ -40,6 +40,13 @@ const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
 /// alpha (the Opacity slider) still applies.
 const PREVIEW_STROKE_BLUE: [f32; 3] = [0.16, 0.42, 0.86];
 
+/// Fixed jitter seed for the previewed test stroke. Every edit re-strokes, and
+/// a stroke's seed is normally the document clock — which advances with each
+/// replay's commit, re-rolling the colour dynamics and dither each time and
+/// hiding the parameter change behind fresh noise. Pinning it means only the
+/// edited setting moves between renders. Arbitrary value; it just never changes.
+const PREVIEW_STROKE_SEED: u64 = 0x5747_1CED_57A2_4B11;
+
 /// Minimum gap between slider edits taking effect. Each edit dispatches to the
 /// engine, repaints the main canvas, refreshes `obs` (re-rendering this whole
 /// dialog and every other `obs` reader), and replays the test stroke (~a
@@ -474,6 +481,8 @@ fn paint_reference_stroke(r: &mut Renderer) {
 /// skips the per-sample live-preview refresh (O(n²) across a replay), so the
 /// whole re-stroke is one full-stroke render — about a frame's worth of GPU —
 /// and the finished stroke is presented in one go, no progressive redraw.
+/// The replay is seeded with [`PREVIEW_STROKE_SEED`] so the jitter stays put
+/// across edits and only the changed parameter moves.
 /// No-op while the user is drawing on the preview.
 fn restroke(state: AppState, mut preview: Preview) {
     if *preview.drawing.peek() {
@@ -493,7 +502,7 @@ fn restroke(state: AppState, mut preview: Preview) {
         r.process(InputCommand::Undo);
     }
     r.process(InputCommand::SetBrush(brush));
-    r.replay_stroke(Tool::Brush, &samples);
+    r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED);
     r.paint();
     drop(guard);
     preview.committed.set(true);

@@ -49,6 +49,13 @@ impl Renderer {
         self.engine.replay_stroke(tool, samples);
     }
 
+    /// Replay a full stroke with a caller-chosen jitter seed, so repeated
+    /// replays of the same samples keep the same colour dynamics and dither
+    /// (see `Engine::replay_stroke_seeded`).
+    pub fn replay_stroke_seeded(&mut self, tool: Tool, samples: &[InputSample], seed: u64) {
+        self.engine.replay_stroke_seeded(tool, samples, seed);
+    }
+
     pub fn observe(&self) -> ObservableState {
         self.engine.observe()
     }
