@@ -129,7 +129,13 @@ pub fn diff_fraction(a: &RgbaImage, b: &RgbaImage) -> (f64, u8) {
     );
     let mut bad = 0u64;
     let mut worst = 0u8;
-    for (pa, pb) in a.pixels.chunks_exact(4).zip(b.pixels.chunks_exact(4)) {
+    for (pa, pb) in a
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.pixels.as_chunks::<4>().0)
+    {
         let d = pa
             .iter()
             .zip(pb)
@@ -155,7 +161,13 @@ pub fn frac_exceeding(a: &RgbaImage, b: &RgbaImage, tol: u8) -> f64 {
         "image size mismatch"
     );
     let mut bad = 0u64;
-    for (pa, pb) in a.pixels.chunks_exact(4).zip(b.pixels.chunks_exact(4)) {
+    for (pa, pb) in a
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.pixels.as_chunks::<4>().0)
+    {
         let d = pa
             .iter()
             .zip(pb)
@@ -211,8 +223,10 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
     let mut bad = 0u64;
     for (a, b) in img
         .pixels
-        .chunks_exact(4)
-        .zip(golden.pixels.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(golden.pixels.as_chunks::<4>().0)
     {
         let d = a
             .iter()

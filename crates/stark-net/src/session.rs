@@ -117,7 +117,7 @@ impl CollabSession {
         // The first member starts the swarm alone; joiners bootstrap from it.
         let (mesh, events) = Mesh::spawn(bound.transport, mesh_config(topic), []);
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        Ok(Self::finish(
+        Self::finish(
             bound.dialer,
             bound.shutdown,
             topic,
@@ -125,7 +125,7 @@ impl CollabSession {
             events,
             mirror,
             ticket_addr,
-        )?)
+        )
     }
 
     /// Join an existing session from a ticket. Returns the session and the

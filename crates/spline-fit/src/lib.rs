@@ -1,5 +1,13 @@
 #![feature(generic_const_exprs)]
+// `generic_const_exprs` is incomplete by definition; it is used deliberately, for the
+// `{P + 1}` basis-matrix arithmetic, and is one of the two reasons the workspace is
+// pinned to nightly (see rust-toolchain.toml).
+#![allow(incomplete_features)]
 #![allow(type_alias_bounds)]
+// Dimension loops here are over a const-generic `D` and index parallel arrays by
+// coordinate (`point[d]`, `p[d]`). The iterator rewrite clippy wants obscures which
+// axis is which, and there is rarely a single slice to iterate over.
+#![allow(clippy::needless_range_loop)]
 #![cfg_attr(feature = "nightly", feature(lazy_type_alias))]
 
 use nalgebra::{Cholesky, Const, Dim, Dyn, OMatrix, SMatrix, SVector, convert};
@@ -835,7 +843,7 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             incumbent + incumbent * T::default_epsilon().sqrt() + T::default_epsilon().sqrt();
 
         // Each point's suffix-min bounding-box row, formed once and shared by both passes.
-        let rows: Vec<Vec<T>> = points.iter().map(|p| min_lb_row(p)).collect();
+        let rows: Vec<Vec<T>> = points.iter().map(min_lb_row).collect();
 
         // Pass 1: total suffix-min bound per span and each point's global minimum.
         let mut tot = vec![T::zero(); n_spans];

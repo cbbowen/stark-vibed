@@ -94,8 +94,7 @@ fn read_scanline(
 ) -> Result<(), String> {
     // New-style RLE is only used for widths in [8, 0x7fff] and is flagged by a
     // leading 0x02 0x02 with the width in the next two bytes.
-    let new_rle = w >= 8
-        && w < 0x8000
+    let new_rle = (8..0x8000).contains(&w)
         && *pos + 4 <= bytes.len()
         && bytes[*pos] == 2
         && bytes[*pos + 1] == 2
@@ -116,6 +115,9 @@ fn read_scanline(
     *pos += 4; // consume the RLE scanline header
 
     // Four channel planes (R, G, B, E), each run-length encoded across the row.
+    // `ch` indexes the *inner* `[u8; 4]` of `scan[x]`, not `scan` itself, so there is
+    // no slice for clippy's iterator rewrite to walk.
+    #[allow(clippy::needless_range_loop)]
     for ch in 0..4 {
         let mut x = 0usize;
         while x < w {

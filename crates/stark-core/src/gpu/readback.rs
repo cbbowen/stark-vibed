@@ -73,7 +73,9 @@ pub fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> V
 pub fn read_rgba16f(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<f32> {
     let bytes = read_texture_bytes(ctx, texture, size, 8); // 4 × f16
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]])))
         .collect()
 }

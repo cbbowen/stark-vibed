@@ -74,9 +74,9 @@ impl Surface {
         let n = (w * h) as usize;
         let height: Vec<u8> = match info.color_type {
             png::ColorType::Grayscale => buf[..n].to_vec(),
-            png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).map(|p| p[0]).collect(),
-            png::ColorType::Rgb => buf.chunks_exact(3).map(|p| p[0]).collect(),
-            png::ColorType::Rgba => buf.chunks_exact(4).map(|p| p[0]).collect(),
+            png::ColorType::GrayscaleAlpha => buf.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
+            png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().map(|p| p[0]).collect(),
+            png::ColorType::Rgba => buf.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
             other => panic!("surface: unsupported PNG color type {other:?}"),
         };
 

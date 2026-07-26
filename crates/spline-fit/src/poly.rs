@@ -86,9 +86,13 @@ const MAX_DEPTH: u32 = 60;
 ///   that the endpoints bracket ⇒ solve it directly with safeguarded Newton;
 /// * otherwise split at the midpoint and recurse, isolating each root into its own
 ///   subinterval.
+///
 /// Intervals that narrow to `tol` (or hit the depth cap) without isolating a lone sign
 /// change emit a polished midpoint — this covers clustered or even-multiplicity roots
 /// that never separate. Cannot miss a root (every non-discarded interval is subdivided).
+// A root-isolation recursion: the polynomial, its derivative and Bernstein form, the
+// bracket, and the three stopping controls. Bundling them would only rename the noise.
+#[allow(clippy::too_many_arguments)]
 fn isolate<F: RealField + Copy, const N: usize>(
     p: &Poly<F, N>,
     dp: &Poly<F, { N - 1 }>,

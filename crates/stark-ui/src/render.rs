@@ -280,14 +280,20 @@ pub fn canvas_element(id: &str) -> web_sys::HtmlCanvasElement {
         .expect("element is a canvas")
 }
 
-fn canvas_target<'a>(
-    #[allow(unused_variables)] canvas: web_sys::HtmlCanvasElement,
-) -> wgpu::SurfaceTarget<'a> {
+/// stark-ui is a web app (DESIGN.md §11), so the surface is always the page's
+/// canvas. The crate still *compiles* for the host — that is what `cargo test
+/// --workspace` and clippy exercise — but there is no native windowing backend
+/// behind it, and reaching here off the web is a bug rather than a fallback.
+fn canvas_target<'a>(canvas: web_sys::HtmlCanvasElement) -> wgpu::SurfaceTarget<'a> {
     #[cfg(target_arch = "wasm32")]
-    return wgpu::SurfaceTarget::Canvas(canvas);
-
-    #[allow(unreachable_code)]
-    wgpu::SurfaceTarget::Window(todo!("native support"));
+    {
+        wgpu::SurfaceTarget::Canvas(canvas)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = canvas;
+        unimplemented!("stark-ui targets the web; there is no native surface backend")
+    }
 }
 
 /// Asynchronously create the WebGPU device, configure the surface to the

@@ -7,6 +7,13 @@
 //!
 //! Run with `dx serve --web -p stark-ui` in a WebGPU-capable browser.
 
+// `rsx!` lowers every interpolated attribute and text node — `id: "{CANVAS_ID}"`,
+// `"{title}"` — through `format!`, so clippy sees a `format!` with nothing to
+// format and suggests `.to_string()`. The suggestion applies to the expansion,
+// not to anything writable in the source: plain interpolation *is* the idiom
+// here. Suppressed crate-wide because it fires wherever rsx! does.
+#![allow(clippy::useless_format)]
+
 mod brush_editor;
 mod collab;
 mod components;
@@ -57,11 +64,17 @@ const AB: f32 = 0.32;
 /// while dragging `L`). `N·3` is a multiple of 4, so BMP rows need no padding.
 const FIELD_N: usize = 96;
 
+// `TernaryPad` and these three constants are complete and styled (`.ternary*` in
+// stark.css) but **nothing renders the component** — it is wired to no panel. Kept
+// rather than deleted pending a call on whether it is still wanted; see CLEANUP.md.
 /// Ternary pad triangle, on screen (px): width matches the colour field, height makes
 /// it equilateral (`w·√3/2`). Mirrored by `.ternary`/`.ternary-tri` in stark.css.
+#[allow(dead_code)]
 const TRI_W: f32 = 220.0;
+#[allow(dead_code)]
 const TRI_H: f32 = 190.0;
 /// Vertical room above/below the ternary triangle for its vertex labels (px).
+#[allow(dead_code)]
 const TRI_LBL: f32 = 16.0;
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
@@ -1561,6 +1574,7 @@ fn TernaryPad(labels: [String; 3], value: [f32; 3], onchange: EventHandler<[f32;
 /// outside the triangle clamp onto it: negative weights drop to 0 and the rest
 /// renormalize — so dragging past an edge or vertex pins the opposite weights to
 /// exactly 0, which is also how a pure single- or two-axis mix is dialled in.
+#[allow(dead_code)] // see the note on TRI_W: TernaryPad is not wired to any panel
 fn ternary_weights(px: f32, py: f32) -> [f32; 3] {
     let (x0, y0) = (TRI_W * 0.5, 0.0f32);
     let (x1, y1) = (0.0f32, TRI_H);
@@ -1681,7 +1695,7 @@ fn sample(state: AppState, e: &Event<PointerData>) -> InputSample {
         .map(|r| r.view())
         .expect("renderer ready during input");
     InputSample {
-        pos: view.screen_to_canvas(elem_xy(&e)),
+        pos: view.screen_to_canvas(elem_xy(e)),
         pressure: e.pressure(),
         // Pen tilt (degrees from vertical, ±90 per axis) → a canvas-space lean vector. The
         // palette knife's deposit reads its component along the stroke direction (DESIGN

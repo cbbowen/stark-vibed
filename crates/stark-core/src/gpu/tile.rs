@@ -213,7 +213,7 @@ impl TilePool {
         TexHandle(Arc::new(GpuTex {
             tex: Some(tex),
             view,
-            pool: Arc::downgrade(&pool),
+            pool: Arc::downgrade(pool),
             source,
         }))
     }

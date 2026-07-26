@@ -79,7 +79,7 @@ impl DocState {
     /// recomputed from all layers' populated tiles.
     pub fn with_layer_at(&self, index: usize, layer: Layer) -> Self {
         let layers = self.layers.set(index, layer).expect("layer index in range");
-        self.from_layers(layers)
+        self.with_layers(layers)
     }
 
     /// Insert a new empty layer directly above `above` (or on top if `None`).
@@ -101,7 +101,7 @@ impl DocState {
         if at >= self.layers.len() {
             layers = layers.push_back(Layer::new(id));
         }
-        self.from_layers(layers)
+        self.with_layers(layers)
     }
 
     /// Remove the layer with the given id (no-op if absent).
@@ -112,7 +112,7 @@ impl DocState {
                 layers = layers.push_back(l.clone());
             }
         }
-        self.from_layers(layers)
+        self.with_layers(layers)
     }
 
     /// Set the blend mode of a layer (no-op if absent).
@@ -157,7 +157,7 @@ impl DocState {
         if at >= remaining.len() {
             layers = layers.push_back(moved);
         }
-        self.from_layers(layers)
+        self.with_layers(layers)
     }
 
     fn map_layer(&self, id: LayerId, f: impl FnOnce(Layer) -> Layer) -> Self {
@@ -170,7 +170,7 @@ impl DocState {
     /// Rebuild from a new layer stack: bounds are recomputed from every populated
     /// tile, and the selection carries over — it is orthogonal to the layer stack
     /// (a mask applies to whatever is painted through it, §6.8).
-    fn from_layers(&self, layers: Vector<Layer>) -> Self {
+    fn with_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();
         for layer in layers.iter() {
             for coord in layer.tiles.keys() {
