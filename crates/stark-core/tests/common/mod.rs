@@ -24,27 +24,43 @@ pub const BG: wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
 /// paint here?" were vacuously true on bare paper).
 pub const PAPER: wgpu::Color = wgpu::Color { r: 0.97, g: 0.97, b: 0.97, a: 1.0 };
 
-/// Build a headless engine, or `None` if this machine has no usable adapter
-/// (the test should then skip rather than fail).
-pub fn engine_or_skip() -> Option<Engine> {
-    match pollster::block_on(headless_engine(TARGET, SIZE)) {
+/// Set to `1` to allow GPU tests to skip when no adapter is available. **Unset by
+/// default, and deliberately so**: a skipped GPU test still reports `ok`, so a
+/// machine (or a CI runner) with no adapter would take the entire golden / seam /
+/// dynamics / selection suite green having rendered nothing at all. Skipping has
+/// to be asked for.
+const ALLOW_NO_GPU: &str = "STARK_ALLOW_NO_GPU";
+
+/// Set to `1` to run the golden tests but not *compare* their output — see
+/// [`assert_golden`]. For adapters other than the one the goldens were blessed on.
+const SKIP_GOLDEN: &str = "STARK_SKIP_GOLDEN";
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| v == "1")
+}
+
+/// `None` if this machine has no usable adapter *and* [`ALLOW_NO_GPU`] permits the
+/// skip; panics otherwise, so a missing adapter is a failure by default.
+fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
+    match built {
         Ok(e) => Some(with_studio_env(e)),
-        Err(e) => {
-            eprintln!("skipping GPU test: {e}");
+        Err(e) if env_flag(ALLOW_NO_GPU) => {
+            eprintln!("skipping GPU test ({ALLOW_NO_GPU}=1): {e}");
             None
         }
+        Err(e) => panic!("no usable GPU adapter: {e}\nset {ALLOW_NO_GPU}=1 to skip GPU tests"),
     }
+}
+
+/// Build a headless engine, or `None` if this machine has no usable adapter and
+/// skipping is permitted (see [`or_skip`]).
+pub fn engine_or_skip() -> Option<Engine> {
+    or_skip(pollster::block_on(headless_engine(TARGET, SIZE)))
 }
 
 /// A headless engine in a chosen color space (DESIGN.md §6.7).
 pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
-    match pollster::block_on(headless_engine_with(TARGET, SIZE, id)) {
-        Ok(e) => Some(with_studio_env(e)),
-        Err(e) => {
-            eprintln!("skipping GPU test: {e}");
-            None
-        }
-    }
+    or_skip(pollster::block_on(headless_engine_with(TARGET, SIZE, id)))
 }
 
 /// Light the test engine with the real studio HDR (the frontend's default), so
@@ -147,7 +163,17 @@ pub fn images_match(a: &RgbaImage, b: &RgbaImage, tol: u8) -> bool {
 /// If the golden file is absent it is created and the check passes — so
 /// **deleting a golden re-blesses it** on the next run. Goldens are
 /// GPU-dependent; cross-adapter runs may need re-blessing (DESIGN.md §9).
+///
+/// Which is why [`SKIP_GOLDEN`] exists: a committed golden can only match the one
+/// adapter it was blessed on, so a CI runner on a different adapter would fail on
+/// pixels rather than on behaviour. With it set the stroke is still *rendered* —
+/// so shader compilation, validation errors and panics are still caught — only
+/// the pixel comparison is dropped.
 pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
+    if env_flag(SKIP_GOLDEN) {
+        eprintln!("golden {name}: rendered, comparison skipped ({SKIP_GOLDEN}=1)");
+        return;
+    }
     let dir = golden_dir();
     fs::create_dir_all(&dir).expect("create golden dir");
     let path = dir.join(format!("{name}.png"));
