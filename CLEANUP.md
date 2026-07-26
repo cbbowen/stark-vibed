@@ -274,28 +274,38 @@ yet wired.
 Phases 0–3 are done. Phase 4 needs decisions before code. Phase 5 can happen any
 time.
 
-All five phases are done. Three open questions remain, all of them "should this
-code exist" calls rather than cleanup work:
+All five phases are done, and the three open questions are resolved.
 
-1. **Vendored test coverage.** `cargo test --workspace` no longer runs
-   `iroh-webrtc-transport`'s suite, which is what guards the iroh 1.0 port. Run it
-   with `cargo test --manifest-path vendor/iroh-webrtc-transport/Cargo.toml`, or
-   add that to CI.
-2. **`TernaryPad`** — a complete, CSS-styled widget nothing renders.
-3. **The "Tooth" slider** — moves, changes nothing, because the gate behind it is
-   a stub. Finish the gate or drop the control.
+1. **Vendored test coverage — left as is.** `cargo test --workspace` no longer
+   runs `iroh-webrtc-transport`'s suite. Deliberate: the crate was vendored *and*
+   ported to iroh 1.0, so updates should be rare, and running its tests on every
+   workspace build buys little. Run them by hand when the vendored code changes:
 
-## State after Phases 0–3
+       cargo test --manifest-path vendor/iroh-webrtc-transport/Cargo.toml
 
-| Check | Before | After |
+2. **`TernaryPad` — removed.** 88 lines of Rust, 60 of CSS.
+
+3. **The tooth gate — removed, along with everything behind it.** Not just the
+   slider: `BrushParams::tooth`, the `surface_tooth` stub, the `TileXform::surf`
+   uniform field nothing read, and the `group(2)` surface bindings + bind-group
+   layout + `StrokeRenderer::set_surface` that existed only to keep a texture
+   bound for a function that ignored it. Every golden was unchanged, which is what
+   proved it inert. See DESIGN §6.4 for what it would take to bring back.
+
+## Where this landed
+
+| Check | Start | End |
 |---|---|---|
 | `cargo fmt --all --check` | ~309 hunks | clean |
-| `cargo clippy --workspace --all-targets -D warnings` | 31 warnings in `crates/` | clean |
-| `cargo test --workspace` | 200 pass | 149 pass, 0 fail |
+| `cargo clippy --workspace --all-targets -D warnings` | 31 warnings | clean |
+| `cargo doc --workspace` | 15 warnings | clean |
+| `cargo test --workspace` | 200 pass | 150 pass, 0 fail |
 | `cargo check -p stark-ui --target wasm32-unknown-unknown` | (unchecked) | clean |
-| Largest source file | 2,933 lines | 1,376 (`stroke/dynamics.rs`) |
-| `#[allow]` in `crates/` | 10 | 5, each with a stated reason |
-| Workspace members | 5 + 2 vendored | 5 |
+| Largest source file | 2,933 lines | 1,376 |
+| `Engine` fields | 30 | 18 |
 | Nightly features needed | 2 | 1 (`history` only) |
 | CI | pages deploy only | + fmt / clippy / test / wasm |
 
+The test count falls because 52 vendored and 62 spline-fit tests left with the
+code they covered; every stark-* suite still runs, and three tests were added
+(surface history, tile-pool format isolation, and the spline solve).
