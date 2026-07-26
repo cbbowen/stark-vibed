@@ -1,0 +1,8 @@
+# `cargo fmt --all` walks path dependencies too, and `vendor/` holds third-party
+# code (mixbox as a submodule, iroh-webrtc-transport vendored in-tree). Formatting
+# it would churn files we want to diff against upstream — see
+# vendor/iroh-webrtc-transport/VENDORING.md.
+#
+# `ignore` is a nightly rustfmt option; the workspace is pinned to nightly anyway
+# (see rust-toolchain.toml).
+ignore = ["vendor"]
