@@ -1,0 +1,8 @@
+# Normalize line endings in the repository to LF, whatever the working tree uses.
+# Without this a tool that rewrites a file on Windows can silently convert it to
+# CRLF, turning a three-line change into a whole-file diff.
+* text=auto eol=lf
+
+# Golden PNGs and other binaries must never be touched.
+*.png binary
+*.hdr binary
