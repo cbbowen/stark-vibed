@@ -1,0 +1,6 @@
+# Revisions to skip when running `git blame`. Apply with:
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub and most IDEs pick this file up automatically.)
+
+# Apply cargo fmt across the workspace.
+e16fcaff3210d3a4ae5cd90569bab84413a15232
