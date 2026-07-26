@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::Tool;
 use stark_core::engine::headless_engine;
 use stark_core::geom::{Extent2, Vec2};
@@ -40,18 +40,18 @@ fn paint(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
         radius: 12.0,
         ..Default::default()
     };
-    engine.process(InputCommand::SetBrush(brush));
+    engine.process(ViewCommand::SetBrush(brush));
     let mut it = points.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for &p in it {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
     }
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 }
 
 fn identical(a: &RgbaImage, b: &RgbaImage) -> bool {
@@ -171,7 +171,7 @@ async fn two_peers_converge_over_iroh() {
     );
 
     // --- undo across the wire: host undoes its green stroke ---
-    host.process(InputCommand::Undo);
+    host.process(DocCommand::Undo);
     flush_outbox(&mut host, &host_session).await;
     wait_for_actions(&mut peer_events, &mut peer, 1).await;
     assert!(

@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_core::SurfaceId;
 use stark_core::colorspace::ColorSpaceId;
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushShape, OrientationSource, Tool};
 use stark_core::geom::Vec2;
 
@@ -123,17 +123,17 @@ fn golden_bristle_stroke() {
     let mut brush = brush(RED, 70.0);
     brush.shape = BrushShape::Stamp(id);
     brush.drain = 0.0;
-    engine.process(InputCommand::SetBrush(brush));
+    engine.process(ViewCommand::SetBrush(brush));
 
     // A horizontal stroke; the worn-bristle mask should break up its coverage.
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-90.0, 0.0)),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(90.0, 0.0)),
     });
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 
     let img = engine.render_to_image(PAPER);
     assert_golden("bristle_stroke", &img, 6);
@@ -154,7 +154,7 @@ fn golden_pen_orientation_stroke() {
     brush.shape = BrushShape::Stamp(id);
     brush.orientation = OrientationSource::Pen;
     brush.drain = 0.0;
-    engine.process(InputCommand::SetBrush(brush));
+    engine.process(ViewCommand::SetBrush(brush));
 
     // A fixed tilt azimuth (atan2(1, 1) = 45°) on every sample, while the stroke itself
     // bends from rightward to downward — so travel direction and shape orientation diverge.
@@ -165,16 +165,16 @@ fn golden_pen_orientation_stroke() {
         tilt,
         time: 0.0,
     };
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: sample(-80.0, -50.0),
     });
     for &(x, y) in &[(0.0, -50.0), (60.0, -10.0), (60.0, 70.0)] {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: sample(x, y),
         });
     }
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 
     let img = engine.render_to_image(PAPER);
     assert_golden("pen_orientation_stroke", &img, 6);
@@ -196,18 +196,18 @@ fn golden_canvas_surface() {
     ))
     .expect("read surface PNG");
     engine.register_surface(SurfaceId::Linen, linen_png);
-    engine.set_surface(SurfaceId::Linen);
+    engine.process(DocCommand::SetSurface(SurfaceId::Linen));
     let mut brush = brush(RED, 60.0);
     brush.drain = 0.005;
-    engine.process(InputCommand::SetBrush(brush));
-    engine.process(InputCommand::StartStroke {
+    engine.process(ViewCommand::SetBrush(brush));
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-95.0, 0.0)),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(95.0, 0.0)),
     });
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 
     let img = engine.render_to_image(PAPER);
     assert_golden("linen_surface", &img, 6);

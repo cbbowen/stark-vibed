@@ -10,7 +10,7 @@
 mod common;
 
 use common::*;
-use stark_core::InputCommand;
+use stark_core::command::DocCommand;
 use stark_core::geom::Vec2;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -43,8 +43,8 @@ fn undo_redo_roundtrip_is_lossless() {
     paint(&mut engine, RED, 30.0, STROKE_A);
     let before = engine.render_to_image(BG);
 
-    engine.process(InputCommand::Undo);
-    engine.process(InputCommand::Redo);
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
     let after = engine.render_to_image(BG);
 
     assert!(
@@ -63,7 +63,7 @@ fn undo_matches_shorter_history() {
     };
     paint(&mut two, RED, 28.0, STROKE_A);
     paint(&mut two, GREEN, 28.0, STROKE_B);
-    two.process(InputCommand::Undo);
+    two.process(DocCommand::Undo);
     let undone = two.render_to_image(BG);
 
     let Some(mut one) = engine_or_skip() else {

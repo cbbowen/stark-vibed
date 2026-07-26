@@ -132,33 +132,58 @@ The crucial split is **Session vs Document**:
 Two distinct vocabularies, deliberately not merged:
 
 `InputCommand` — *raw, high-frequency user intent*, including ephemeral input
-that never lands in history:
+that never lands in history.
+
+There are **two classes of engine state**, and which one a command touches decides
+almost everything about it — whether it is logged, whether peers see it, whether
+undo reaches it. So the split is in the type, not in a comment:
+
+- **Document state** — historized, replicated, reproduced by replay. Layers, the
+  selection, the canvas surface, and of course strokes.
+- **View state** — per-client, transient, never logged and never sent. Tool, brush,
+  pan/zoom, viewport, lighting. Two people sharing a drawing pan independently.
+
+A gesture is neither, and gets its own kind: it *builds* in view state and commits
+a document action at the end — or nothing at all, if cancelled.
 
 ```rust
 pub enum InputCommand {
-    // --- stroke lifecycle (high frequency) ---
-    StartStroke { tool: ToolId, sample: InputSample },
-    StrokeTo    { sample: InputSample },
-    EndStroke,
-    CancelStroke,
+    Gesture(GestureCommand),
+    Doc(DocCommand),
+    View(ViewCommand),
+}
 
-    // --- history navigation ---
-    Undo,
-    Redo,
+pub enum GestureCommand {          // press-drag-release, for brush *and* selection
+    Start { tool: Tool, sample: InputSample },
+    To    { sample: InputSample },
+    End,                           // the one edge that produces document state
+    Cancel,                        // produces none
+}
 
-    // --- session / view (never historized) ---
-    SetTool(ToolId),
-    SetBrush(BrushParams),
-    Pan { delta: Vec2 },
-    Zoom { center: Vec2, factor: f32 },
-
-    // --- document edits that ARE historized ---
+pub enum DocCommand {              // each becomes an Action
+    Undo, Redo,
     AddLayer { above: Option<LayerId> },
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
+    SetLayerOpacity(LayerId, f32),
+    SetLayerVisible(LayerId, bool),
+    MoveLayer { id: LayerId, above: Option<LayerId> },
+    Select(SelectionOp),
+    InvertSelection,
+    SetSurface(SurfaceId),         // feeds deposition tooth → must replay (§6.4)
+}
 
-    // --- io ---
-    Load(DocumentFile),
+pub enum ViewCommand {             // never logged, never sent
+    SetTool(Tool),
+    SetBrush(BrushParams),
+    Pan { delta: Vec2 },
+    Zoom { anchor: Vec2, factor: f32 },
+    Resize(Extent2),
+    SetSelectionMode(SelectionMode),
+    SetSelectionFeather(f32),
+    SetActiveLayer(LayerId),       // per-client: collaborators paint on their own
+    SetMediaParams(MediaParams),
+    SetEnvironment(EnvironmentId),
 }
 
 pub struct InputSample {       // one pen/mouse sample
@@ -168,6 +193,46 @@ pub struct InputSample {       // one pen/mouse sample
     pub time: f64,             // for velocity & timelapse
 }
 ```
+
+`Engine::process` takes `impl Into<InputCommand>`, so call sites name the class and
+nothing more: `engine.process(ViewCommand::Pan { delta })`.
+
+### Commands vs. requests
+
+Commands are **one-way**: intent goes in, nothing comes back. That is what lets
+them become messages over a channel when the engine moves off the UI thread (§7),
+and it is the property to protect — a command that returns a value cannot be sent.
+
+Reads therefore go through `Engine::observe()`, which projects *both* classes of
+state (see §7). It deliberately includes the view settings a frontend would
+otherwise have to read back off the engine — media params, surface, environment,
+colour space — because a frontend that cannot observe them keeps its own copy, and
+a copy seeded from `Default` goes stale the moment anything else changes them.
+
+What genuinely cannot be a command is a **request**: an operation that must answer.
+
+```rust
+// assets — the frontend fetches bytes the engine cannot reach for itself (§6.6)
+fn import_brush(&self, png: &[u8]) -> Result<AssetId>;
+fn register_surface(&mut self, id: SurfaceId, png: Vec<u8>);
+fn register_environment(&mut self, id: EnvironmentId, hdr: Vec<u8>);
+// persistence (§8)
+fn save_bytes(&self) -> Result<Vec<u8>>;
+fn load_bytes(&mut self, bytes: &[u8]) -> Result<()>;
+// collaboration transport (§12)
+fn merge_remote(&mut self, action: Action) -> bool;
+fn take_outbox(&mut self) -> Vec<Action>;
+```
+
+These stay direct methods on `Engine`. Under the actor they become
+request/response pairs with a reply channel; until then, keeping them *named* as a
+tier is what stops them drifting back into ad-hoc setters. **A new engine method
+that mutates state and returns nothing is a bug — it should be a command.**
+
+One thing is neither: the **colour space**. Channel layouts differ between spaces,
+so changing it cannot preserve a document — every caller asking to "set" it was
+really asking for a new document. It is therefore fixed at document creation
+(`Engine::new_document(color_space, surface)`) and there is no setter (§6.7).
 
 `Action` — *committed, deterministic, serializable document mutations* — the unit
 the timeline stores and replays, and the unit we serialize to disk. Every action
@@ -194,6 +259,7 @@ pub enum ActionKind {
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
     Undo(ActionId),             // undo-as-an-action (see §5.4 / §12)
+    SetSurface(SurfaceId),      // the canvas the paint went onto (§6.4)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -214,12 +280,13 @@ pay it from the first commit.
 The mapping happens in `Session`:
 
 ```
-StartStroke/StrokeTo  → accumulate into an in-flight StrokeRecord,
-                        render incrementally onto CoW preview tiles
-EndStroke             → finalize record, push Action::CommitStroke onto History
-CancelStroke          → discard preview tiles, no Action
-Pan/Zoom/SetTool      → mutate Session only
-Undo/Redo             → History::pop / re-derive version
+Gesture::Start/To   → accumulate into an in-flight StrokeRecord (or SelectionOp),
+                      render incrementally onto CoW preview tiles
+Gesture::End        → finalize, push Action::CommitStroke (or ::Select) onto History
+Gesture::Cancel     → discard preview tiles, no Action
+ViewCommand::*      → mutate Session only; nothing logged, nothing sent
+DocCommand::Undo    → History::pop / re-derive version (or a logged Undo, §5.4)
+DocCommand::*       → commit the corresponding ActionKind
 ```
 
 Because `StrokeRecord` carries the entire sampled path plus a brush seed, a
@@ -801,9 +868,13 @@ shared by the stamp and media passes. It drives two effects:
   *normalized* so a flat surface leaves it unchanged. `surface_strength` is a
   view setting (`MediaParams`), like the lighting — it doesn't touch stored pixels.
 
-The surface is a **document property** (`SurfaceId { Flat, Linen }` in
-`CanvasMeta`, default `Flat`), because deposition depends on it: replay must
-reproduce it. `Flat` is a 1×1 *full-height* texel — `h=1` makes tooth a no-op and
+The surface is **document state** (`SurfaceId { Flat, Linen }`, default `Flat`),
+because deposition depends on it: replay must reproduce it. `CanvasMeta` records
+the surface the log *starts* from; a mid-document switch is a logged
+`ActionKind::SetSurface`, so it undoes, replays and replicates like any other edit
+(§4). The tooth gate is a pass-through stub today, which is what once made it look
+like a view setting — recording it now means wiring the gate up is a rendering
+change, not a history change. `Flat` is a 1×1 *full-height* texel — `h=1` makes tooth a no-op and
 a constant height has zero gradient (no relief), so the flat default is *exactly*
 equivalent to having no surface. That orthogonality is deliberate: most goldens
 use `Flat` to test other features in isolation, and a dedicated golden
@@ -1052,6 +1123,15 @@ so it stays a constant on-screen width at any zoom, stays thin over a feathered
 edge, and needs no bookkeeping to survive union/subtract/intersect.
 
 ## 7. The engine actor (async backend)
+
+> **Status: the target, not the present.** Today `Engine::process` is called
+> synchronously from the frontend's event handler, and `observe()` is *pulled*
+> after each command rather than pushed over a `watch`. Nothing below is wired up
+> yet. It is kept as the design because it is what the command/request split in §4
+> is being maintained for: one-way commands are exactly the things that can become
+> channel messages, and requests are exactly the ones that will need a reply
+> channel. If the actor is ever abandoned, §4's discipline loses its main
+> justification and should be revisited rather than quietly kept.
 
 The engine is an actor owning all mutable state, fed by a command channel —
 matching GOALS' "asynchronous backend that accepts input commands and exposes

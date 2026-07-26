@@ -40,9 +40,10 @@ use panels::lighting::{ENV_FERNDALE, surface_asset};
 use panels::select::{current_mode, current_tool, modifier_mode};
 use platform::capture_pointer;
 use render::{CANVAS_ID, Renderer};
+use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::{SelectionMode, SelectionOp};
 use stark_core::geom::Vec2;
-use stark_core::{ColorSpaceId, EnvironmentId, InputCommand, ObservableState, SurfaceId};
+use stark_core::{ColorSpaceId, EnvironmentId, ObservableState, SurfaceId};
 use state::{AppState, CollabState, dispatch, resize};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
@@ -197,9 +198,9 @@ fn Canvas() -> Element {
                                 && let Some(m) = modifier_mode(e.modifiers())
                             {
                                 mode_restore.set(Some(current_mode(state)));
-                                dispatch(state, InputCommand::SetSelectionMode(m));
+                                dispatch(state, ViewCommand::SetSelectionMode(m));
                             }
-                            dispatch(state, InputCommand::StartStroke { tool, sample: sample(state, &e) });
+                            dispatch(state, GestureCommand::Start { tool, sample: sample(state, &e) });
                             drawing.set(true);
                         }
                     }
@@ -213,9 +214,9 @@ fn Canvas() -> Element {
             },
             onpointermove: move |e| {
                 if drawing() {
-                    dispatch(state, InputCommand::StrokeTo { sample: sample(state, &e) });
+                    dispatch(state, GestureCommand::To { sample: sample(state, &e) });
                 } else if panning() && let Some(l) = last_position() {
-                    dispatch(state, InputCommand::Pan { delta: elem_xy(&e) - l });
+                    dispatch(state, ViewCommand::Pan { delta: elem_xy(&e) - l });
                 }
                 last_position.set(Some(elem_xy(&e)));
             },
@@ -230,7 +231,7 @@ fn Canvas() -> Element {
                 if dy != 0.0 {
                     let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
                     let c = e.element_coordinates();
-                    dispatch(state, InputCommand::Zoom { anchor: Vec2::new(c.x as f32, c.y as f32), factor });
+                    dispatch(state, ViewCommand::Zoom { anchor: Vec2::new(c.x as f32, c.y as f32), factor });
                 }
             },
         }
@@ -279,7 +280,7 @@ fn CommandRail() -> Element {
                             index: 0usize,
                             value: "undo".to_string(),
                             disabled: !can_undo,
-                            on_select: move |_| dispatch(state, InputCommand::Undo),
+                            on_select: move |_| dispatch(state, DocCommand::Undo),
                             span { "Undo" }
                             span { class: "menu-shortcut", "Ctrl+Z" }
                         }
@@ -287,7 +288,7 @@ fn CommandRail() -> Element {
                             index: 1usize,
                             value: "redo".to_string(),
                             disabled: !can_redo,
-                            on_select: move |_| dispatch(state, InputCommand::Redo),
+                            on_select: move |_| dispatch(state, DocCommand::Redo),
                             span { "Redo" }
                             span { class: "menu-shortcut", "Ctrl+Y" }
                         }
@@ -296,7 +297,7 @@ fn CommandRail() -> Element {
                             value: "deselect".to_string(),
                             disabled: !has_selection,
                             on_select: move |_| {
-                                dispatch(state, InputCommand::Select(SelectionOp::select_all()))
+                                dispatch(state, DocCommand::Select(SelectionOp::select_all()))
                             },
                             span { "Deselect" }
                             span { class: "menu-shortcut", "Ctrl+D" }
@@ -305,7 +306,7 @@ fn CommandRail() -> Element {
                             index: 5usize,
                             value: "invert-selection".to_string(),
                             disabled: !has_selection,
-                            on_select: move |_| dispatch(state, InputCommand::InvertSelection),
+                            on_select: move |_| dispatch(state, DocCommand::InvertSelection),
                             span { "Invert selection" }
                             span { class: "menu-shortcut", "Ctrl+Shift+I" }
                         }
@@ -486,8 +487,7 @@ fn new_document(
         }
 
         if let Some(r) = renderer.write().as_mut() {
-            r.set_color_space(color);
-            r.set_surface(surface);
+            r.new_document(color, surface);
             r.paint();
             obs.set(Some(r.observe()));
         }

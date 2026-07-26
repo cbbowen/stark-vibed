@@ -10,7 +10,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, ColorDynamics, NoiseKind, Tool};
 use stark_core::geom::Vec2;
 
@@ -178,20 +178,20 @@ fn jittered_live_preview_matches_commit() {
     };
     let jb = jitter_brush(NoiseKind::Simplex, [2.0, 2.0, 3.0], [0.15, 0.1, 0.1]);
 
-    live.process(InputCommand::SetBrush(jb));
+    live.process(ViewCommand::SetBrush(jb));
     let mut it = S_CURVE.iter();
-    live.process(InputCommand::StartStroke {
+    live.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for &p in it {
-        live.process(InputCommand::StrokeTo {
+        live.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
     }
-    live.process(InputCommand::EndStroke);
+    live.process(GestureCommand::End);
 
-    replayed.process(InputCommand::SetBrush(jb));
+    replayed.process(ViewCommand::SetBrush(jb));
     let samples: Vec<InputSample> = S_CURVE.iter().map(|&p| InputSample::at(p)).collect();
     replayed.replay_stroke(Tool::Brush, &samples);
 

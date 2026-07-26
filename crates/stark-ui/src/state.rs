@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 
 use crate::collab;
 use crate::render::Renderer;
+use stark_core::command::ViewCommand;
 use stark_core::document::BrushParams;
 use stark_core::{InputCommand, ObservableState};
 
@@ -51,7 +52,7 @@ pub struct CollabState {
 
 /// Apply a command, repaint the surface, and refresh the observable snapshot.
 /// In a shared session, whatever the command committed is then broadcast.
-pub fn dispatch(state: AppState, command: InputCommand) {
+pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
     {
@@ -83,6 +84,6 @@ pub fn update_brush(state: AppState, f: impl FnOnce(&mut BrushParams)) {
     let brush = state.obs.read().as_ref().map(|o| o.brush);
     if let Some(mut brush) = brush {
         f(&mut brush);
-        dispatch(state, InputCommand::SetBrush(brush));
+        dispatch(state, ViewCommand::SetBrush(brush));
     }
 }

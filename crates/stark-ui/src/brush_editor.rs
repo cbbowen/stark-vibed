@@ -24,13 +24,14 @@ use dioxus::prelude::*;
 
 use stark_core::document::{BrushParams, BrushShape, NoiseKind, OrientationSource, Tool};
 use stark_core::geom::Vec2;
-use stark_core::{ColorSpaceId, EnvironmentId, InputCommand, InputSample};
+use stark_core::{ColorSpaceId, EnvironmentId, InputSample};
 
 use crate::panels::brush::{set_bristles, set_brush_preset, set_knife, set_orientation, set_shape};
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::render::{self, Renderer};
 use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
+use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
@@ -438,7 +439,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
         tooth: 0.0,
         ..BrushParams::default()
     };
-    r.process(InputCommand::SetBrush(brush));
+    r.process(ViewCommand::SetBrush(brush));
     r.replay_stroke(Tool::Brush, &samples);
 }
 
@@ -465,9 +466,9 @@ fn restroke(state: AppState, mut preview: Preview) {
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
     if *preview.committed.peek() {
-        r.process(InputCommand::Undo);
+        r.process(DocCommand::Undo);
     }
-    r.process(InputCommand::SetBrush(brush));
+    r.process(ViewCommand::SetBrush(brush));
     r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED);
     r.paint();
     drop(guard);
@@ -546,11 +547,11 @@ fn start_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
     if *preview.committed.peek() {
-        r.process(InputCommand::Undo);
+        r.process(DocCommand::Undo);
         preview.committed.set(false);
     }
     let s = preview_sample(r, e);
-    r.process(InputCommand::StartStroke {
+    r.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: s,
     });
@@ -566,7 +567,7 @@ fn move_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
     let s = preview_sample(r, e);
-    r.process(InputCommand::StrokeTo { sample: s });
+    r.process(GestureCommand::To { sample: s });
     r.paint();
     drop(guard);
     preview.rec.write().push(s);
@@ -580,7 +581,7 @@ fn end_preview_stroke(mut preview: Preview) {
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     if let Some(r) = guard.as_mut() {
-        r.process(InputCommand::EndStroke);
+        r.process(GestureCommand::End);
         r.paint();
     }
     drop(guard);
@@ -599,7 +600,7 @@ fn cancel_preview_stroke(state: AppState, mut preview: Preview) {
     }
     let mut renderer = preview.renderer;
     if let Some(r) = renderer.write().as_mut() {
-        r.process(InputCommand::CancelStroke);
+        r.process(GestureCommand::Cancel);
     }
     preview.drawing.set(false);
     restroke(state, preview);

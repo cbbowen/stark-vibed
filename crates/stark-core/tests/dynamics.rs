@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, BrushParams, Tool};
 use stark_core::geom::Vec2;
 
@@ -357,17 +357,17 @@ fn golden_self_smear() {
         },
     );
     // Down through the bar, loop around, and back across its own trail.
-    engine.process(InputCommand::SetBrush(b));
-    engine.process(InputCommand::StartStroke {
+    engine.process(ViewCommand::SetBrush(b));
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-40.0, -70.0)),
     });
     for &(x, y) in &[(-40.0, 60.0), (20.0, 70.0), (40.0, 0.0), (-70.0, 10.0)] {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(Vec2::new(x, y)),
         });
     }
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
     let img = engine.render_to_image(PAPER);
     assert_golden("self_smear", &img, 6);
 }

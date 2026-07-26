@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::layer::{BlendMode, Layer, LayerId};
 use super::selection::SelectionOp;
 use super::state::DocState;
+use crate::gpu::SurfaceId;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
@@ -299,6 +300,15 @@ pub enum ActionKind {
     /// and only ever materializes those. Appended last so postcard decoding of
     /// older files is unaffected.
     Undo(ActionId),
+
+    /// Switch the canvas surface (DESIGN.md §6.4).
+    ///
+    /// Logged rather than kept as a view setting because the surface feeds the
+    /// deposition tooth gate: what a stroke lays down depends on the surface in
+    /// force when it was drawn, so replay must reconstruct it. Appended last so
+    /// postcard decoding of older files is unaffected; documents saved before this
+    /// existed simply never contain one and keep the surface from `CanvasMeta`.
+    SetSurface(SurfaceId),
     /// Edit the selection mask (DESIGN.md §6.8). Historized because a stroke's
     /// pixels depend on the mask in force when it was drawn — replaying the log has
     /// to put the same mask back. Only the **op** travels (a few floats, or a
@@ -386,6 +396,7 @@ impl history::Action for Action {
                 let selection = ctx.selection.invert(&ctx.pool, &state.selection);
                 state.with_selection(selection)
             }
+            ActionKind::SetSurface(id) => state.with_surface(*id),
         })
     }
 }

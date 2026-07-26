@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
-use stark_core::InputCommand;
+use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::{SelectionMode, SelectionOp, Tool};
 
 /// Selection tools (DESIGN.md §6.8): rect / ellipse / lasso, how the next gesture
@@ -51,7 +51,7 @@ pub fn SelectPanel() -> Element {
             for (t, label) in TOOLS {
                 button {
                     class: chip(tool == t),
-                    onclick: move |_| dispatch(state, InputCommand::SetTool(t)),
+                    onclick: move |_| dispatch(state, ViewCommand::SetTool(t)),
                     "{label}"
                 }
             }
@@ -61,24 +61,24 @@ pub fn SelectPanel() -> Element {
                 button {
                     class: chip(mode == m),
                     title: "Hold shift to add, alt to subtract, both to intersect",
-                    onclick: move |_| dispatch(state, InputCommand::SetSelectionMode(m)),
+                    onclick: move |_| dispatch(state, ViewCommand::SetSelectionMode(m)),
                     "{label}"
                 }
             }
         }
         Slider { label: "Feather", min: 0.0, max: 64.0, value: feather,
-            oninput: move |v| dispatch(state, InputCommand::SetSelectionFeather(v)) }
+            oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
         div { class: "tool-row",
             button {
                 class: "chip",
                 disabled: !active,
-                onclick: move |_| dispatch(state, InputCommand::Select(SelectionOp::select_all())),
+                onclick: move |_| dispatch(state, DocCommand::Select(SelectionOp::select_all())),
                 "Deselect"
             }
             button {
                 class: "chip",
                 disabled: !active,
-                onclick: move |_| dispatch(state, InputCommand::InvertSelection),
+                onclick: move |_| dispatch(state, DocCommand::InvertSelection),
                 "Invert"
             }
         }

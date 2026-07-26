@@ -7,10 +7,10 @@
 mod common;
 
 use common::*;
-use stark_core::command::{InputCommand as Cmd, InputSample};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
-use stark_core::{Engine, InputCommand};
+use stark_core::{Engine, SurfaceId};
 
 const BRISTLES: &[u8] = include_bytes!("../../stark-ui/assets/shape/WornBristles.png");
 
@@ -62,7 +62,7 @@ fn undo_after_load_drops_last_stroke() {
     // Load both strokes, then undo the second.
     let mut loaded = engine_or_skip().expect("adapter");
     loaded.load_bytes(&bytes).expect("load");
-    loaded.process(InputCommand::Undo);
+    loaded.process(DocCommand::Undo);
     let undone = loaded.render_to_image(BG);
 
     assert!(
@@ -99,15 +99,15 @@ fn brush_assets_survive_save_load() {
     let id = original.import_brush(BRISTLES).expect("import");
     let mut brush = brush(RED, 60.0);
     brush.shape = BrushShape::Stamp(id);
-    original.process(Cmd::SetBrush(brush));
-    original.process(Cmd::StartStroke {
+    original.process(ViewCommand::SetBrush(brush));
+    original.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),
     });
-    original.process(Cmd::StrokeTo {
+    original.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(70.0, 0.0)),
     });
-    original.process(Cmd::EndStroke);
+    original.process(GestureCommand::End);
     let before = original.render_to_image(BG);
 
     let bytes = original.save_bytes().expect("serialize");
@@ -143,4 +143,52 @@ fn saved_file_is_compact() {
         bytes.len()
     );
     eprintln!("400-sample stroke document: {} bytes", bytes.len());
+}
+
+/// The canvas surface is document state (DESIGN.md §6.4), so a mid-document switch
+/// is a logged action: it survives save/load, and undo takes it back.
+///
+/// `CanvasMeta::surface` records the surface the log *starts* from; the switch
+/// itself rides in the log, which is why loading has to replay to learn the
+/// current one rather than reading it off the header.
+#[test]
+fn a_surface_switch_is_historized() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let start = engine.surface();
+    assert_ne!(start, SurfaceId::Linen, "test needs a surface to switch to");
+
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
+    );
+    engine.process(DocCommand::SetSurface(SurfaceId::Linen));
+    assert_eq!(engine.surface(), SurfaceId::Linen);
+
+    // Undo reaches it, because it is an action like any other.
+    engine.process(DocCommand::Undo);
+    assert_eq!(engine.surface(), start, "undo must revert the surface");
+    engine.process(DocCommand::Redo);
+    assert_eq!(engine.surface(), SurfaceId::Linen);
+
+    // And it round-trips: the header still says the document *started* on `start`.
+    let file = engine.document_file();
+    assert_eq!(
+        file.canvas.surface, start,
+        "CanvasMeta records the initial surface, not the current one"
+    );
+    let bytes = engine.save_bytes().expect("serialize");
+
+    let Some(mut loaded) = engine_or_skip() else {
+        return;
+    };
+    loaded.load_bytes(&bytes).expect("load");
+    assert_eq!(
+        loaded.surface(),
+        SurfaceId::Linen,
+        "replaying the log must land on the switched-to surface"
+    );
 }

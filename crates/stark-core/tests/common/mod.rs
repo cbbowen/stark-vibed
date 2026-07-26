@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use stark_core::colorspace::ColorSpaceId;
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, Tool};
 use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
@@ -86,7 +86,9 @@ fn with_studio_env(mut engine: Engine) -> Engine {
     ))
     .expect("read studio HDR");
     engine.register_environment(stark_core::EnvironmentId::Ferndale, hdr);
-    engine.set_environment(stark_core::EnvironmentId::Ferndale);
+    engine.process(ViewCommand::SetEnvironment(
+        stark_core::EnvironmentId::Ferndale,
+    ));
     engine
 }
 
@@ -100,19 +102,19 @@ pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
 
 /// Paint and commit a stroke through `points` with an explicit brush.
 pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
-    engine.process(InputCommand::SetBrush(b));
+    engine.process(ViewCommand::SetBrush(b));
     let mut it = points.iter();
     let first = *it.next().expect("at least one point");
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(first),
     });
     for &p in it {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
     }
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 }
 
 /// Paint and commit a stroke through the given canvas points with `color`.

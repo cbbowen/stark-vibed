@@ -4,7 +4,8 @@
 use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
-use stark_core::{InputCommand, LayerInfo};
+use stark_core::LayerInfo;
+use stark_core::command::{DocCommand, ViewCommand};
 
 #[component]
 pub fn LayerPanel() -> Element {
@@ -20,7 +21,7 @@ pub fn LayerPanel() -> Element {
         div { class: "layer-header",
             button {
                 class: "layer-add",
-                onclick: move |_| dispatch(state, InputCommand::AddLayer { above: None }),
+                onclick: move |_| dispatch(state, DocCommand::AddLayer { above: None }),
                 "+ Add"
             }
         }
@@ -52,11 +53,11 @@ pub fn LayerRow(info: LayerInfo) -> Element {
                 input {
                     r#type: "checkbox",
                     checked: info.visible,
-                    onchange: move |_| dispatch(state, InputCommand::SetLayerVisible(info.id, !info.visible)),
+                    onchange: move |_| dispatch(state, DocCommand::SetLayerVisible(info.id, !info.visible)),
                 }
                 button {
                     class: "layer-name",
-                    onclick: move |_| dispatch(state, InputCommand::SetActiveLayer(info.id)),
+                    onclick: move |_| dispatch(state, ViewCommand::SetActiveLayer(info.id)),
                     "Layer {info.id.0}"
                 }
             }
@@ -66,7 +67,7 @@ pub fn LayerRow(info: LayerInfo) -> Element {
                 value: "{(info.opacity * 100.0) as i32}",
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() {
-                        dispatch(state, InputCommand::SetLayerOpacity(info.id, v / 100.0));
+                        dispatch(state, DocCommand::SetLayerOpacity(info.id, v / 100.0));
                     }
                 },
             }

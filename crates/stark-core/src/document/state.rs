@@ -10,6 +10,7 @@ use rpds::Vector;
 use super::layer::{BlendMode, Layer, LayerId};
 use super::selection::Selection;
 use crate::geom::TileCoord;
+use crate::gpu::SurfaceId;
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (DESIGN.md §6),
 /// i.e. the explored extent of the infinite canvas.
@@ -45,6 +46,13 @@ pub struct DocState {
     /// a stroke's pixels depend on it, so replay has to be able to reconstruct it —
     /// which is why selection edits are logged actions like any other.
     pub selection: Selection,
+    /// The physical canvas surface (DESIGN.md §6.4). Document state for the same
+    /// reason as the selection: it feeds the deposition tooth gate, so a stroke's
+    /// pixels depend on which surface was in force when it was drawn, and replay
+    /// has to reconstruct that. The gate is a pass-through stub today; recording
+    /// the surface now is what makes wiring it up a rendering change rather than a
+    /// history change.
+    pub surface: SurfaceId,
 }
 
 impl DocState {
@@ -54,6 +62,15 @@ impl DocState {
             layers: Vector::new().push_back(Layer::new(id)),
             bounds: CanvasBounds::default(),
             selection: Selection::everything(),
+            surface: SurfaceId::default(),
+        }
+    }
+
+    /// The same document on a different canvas surface (DESIGN.md §6.4).
+    pub fn with_surface(&self, surface: SurfaceId) -> Self {
+        Self {
+            surface,
+            ..self.clone()
         }
     }
 
@@ -181,6 +198,7 @@ impl DocState {
             layers,
             bounds,
             selection: self.selection.clone(),
+            surface: self.surface,
         }
     }
 }

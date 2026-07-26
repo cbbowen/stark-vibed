@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use stark_core::Engine;
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, Tool};
 use stark_core::geom::Vec2;
 
@@ -68,12 +68,12 @@ fn live_preview_shows_stroke_before_commit() {
         return;
     };
     // Build an in-flight stroke without ending it.
-    engine.process(InputCommand::SetBrush(brush(RED, 40.0)));
-    engine.process(InputCommand::StartStroke {
+    engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-30.0, 0.0)),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 0.0)),
     });
 
@@ -97,7 +97,7 @@ fn a_split_live_preview_matches_the_single_pass_commit() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(InputCommand::SetBrush(brush(RED, 12.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 12.0)));
     let path: Vec<Vec2> = (0..120)
         .map(|i| {
             let t = i as f32 * 0.05;
@@ -105,18 +105,18 @@ fn a_split_live_preview_matches_the_single_pass_commit() {
         })
         .collect();
     let mut it = path.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for &p in it {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
     }
 
     let preview = engine.render_to_image(BG);
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
     let committed = engine.render_to_image(BG);
 
     // Both paths run the same shaders over the same segments; only the number of
@@ -142,23 +142,23 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(InputCommand::SetBrush(brush(RED, 12.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 12.0)));
     let path: Vec<Vec2> = (0..60)
         .map(|i| Vec2::new(i as f32 * 2.0 - 60.0, (i as f32 * 0.1).sin() * 20.0))
         .collect();
     let mut it = path.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for &p in it {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
     }
 
     let preview = engine.render_to_image(BG);
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
     let committed = engine.render_to_image(BG);
     // Mid-stroke the tail is magenta, so the preview differs from what lands — which
     // also rules out the commit having simply kept the preview's pixels.
@@ -187,19 +187,19 @@ fn a_real_captured_stroke_previews_as_it_commits() {
         .iter()
         .map(|&[x, y]| Vec2::new(x, y))
         .collect();
-    engine.process(InputCommand::SetBrush(brush(RED, 16.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 16.0)));
     let mut it = path.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for &p in it {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
     }
     let preview = engine.render_to_image(BG);
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
     let committed = engine.render_to_image(BG);
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
@@ -230,14 +230,14 @@ fn the_incremental_preview_matches_a_fresh_one_throughout() {
         .iter()
         .map(|&[x, y]| Vec2::new(x, y))
         .collect();
-    engine.process(InputCommand::SetBrush(brush(RED, 14.0)));
+    engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
     let mut it = path.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for (i, &p) in it.enumerate() {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
         if i % 40 != 0 {
@@ -246,7 +246,7 @@ fn the_incremental_preview_matches_a_fresh_one_throughout() {
         let incremental = engine.render_to_image(BG);
         // The brush it is already using, so nothing about the stroke changes — but
         // the head is dropped, so this repaint is a single whole-stroke pass.
-        engine.process(InputCommand::SetBrush(brush(RED, 14.0)));
+        engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
         let fresh = engine.render_to_image(BG);
         assert_eq!(
             frac_exceeding(&incremental, &fresh, 8),
@@ -296,7 +296,7 @@ fn a_smear_stroke_previews_as_it_commits() {
     };
     undercoat(&mut engine);
 
-    engine.process(InputCommand::SetBrush(smear_brush(RED, 15.0)));
+    engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
     let path: Vec<Vec2> = (0..140)
         .map(|i| {
             let t = i as f32 * 0.045;
@@ -304,18 +304,18 @@ fn a_smear_stroke_previews_as_it_commits() {
         })
         .collect();
     let mut it = path.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for &p in it {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
     }
 
     let preview = engine.render_to_image(BG);
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
     let committed = engine.render_to_image(BG);
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
@@ -340,18 +340,18 @@ fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
     };
     undercoat(&mut engine);
 
-    engine.process(InputCommand::SetBrush(smear_brush(RED, 15.0)));
+    engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
     let path: Vec<Vec2> = stark_testdata::C_STROKE
         .iter()
         .map(|&[x, y]| Vec2::new(x - 160.0, y - 160.0))
         .collect();
     let mut it = path.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
     for (i, &p) in it.enumerate() {
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
         if i % 30 != 0 {
@@ -360,7 +360,7 @@ fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
         let incremental = engine.render_to_image(BG);
         // The brush it is already using, so nothing about the stroke changes — but
         // the head is dropped, so this repaint runs the whole loop in one pass.
-        engine.process(InputCommand::SetBrush(smear_brush(RED, 15.0)));
+        engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
         let fresh = engine.render_to_image(BG);
         assert_eq!(
             frac_exceeding(&incremental, &fresh, 8),
@@ -388,14 +388,14 @@ fn stroke_commit_undo_redo() {
         "untouched corner should be background blue"
     );
 
-    engine.process(InputCommand::Undo);
+    engine.process(DocCommand::Undo);
     assert!(engine.observe().can_redo);
     assert!(
         is_blue(center(&engine.render_to_image(BG))),
         "after undo, center should be background"
     );
 
-    engine.process(InputCommand::Redo);
+    engine.process(DocCommand::Redo);
     assert!(
         is_red(center(&engine.render_to_image(BG))),
         "after redo, center should be red again"
@@ -454,7 +454,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
         eprintln!("skipping GPU test");
         return (1.0, 1.0);
     };
-    engine.process(InputCommand::SetBrush(b));
+    engine.process(ViewCommand::SetBrush(b));
     let n = 900usize;
     let path: Vec<Vec2> = (0..n)
         .map(|i| {
@@ -463,7 +463,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
         })
         .collect();
     let mut it = path.iter();
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
     });
@@ -471,7 +471,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
     let (mut ne, mut nl) = (0u32, 0u32);
     for (i, &p) in it.enumerate() {
         let at = std::time::Instant::now();
-        engine.process(InputCommand::StrokeTo {
+        engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
         // The readback is what makes this a measurement of the *work*, not just of

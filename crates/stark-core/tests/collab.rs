@@ -6,7 +6,7 @@
 mod common;
 
 use common::{PAPER, engine_or_skip, images_match, paint};
-use stark_core::command::InputCommand;
+use stark_core::command::DocCommand;
 use stark_core::document::ActorId;
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
@@ -109,7 +109,7 @@ fn shared_undo_skips_peer_actions() {
     let both = snap(&mut a);
 
     // A undoes *its* stroke — B's later stroke must survive.
-    a.process(InputCommand::Undo);
+    a.process(DocCommand::Undo);
     sync(&mut a, &mut b);
     let img_a = snap(&mut a);
     let img_b = snap(&mut b);
@@ -120,7 +120,7 @@ fn shared_undo_skips_peer_actions() {
     );
 
     // Redo brings A's stroke back on both peers.
-    a.process(InputCommand::Redo);
+    a.process(DocCommand::Redo);
     sync(&mut a, &mut b);
     let img_a = snap(&mut a);
     let img_b = snap(&mut b);
@@ -159,14 +159,14 @@ fn shared_undo_redo_chain() {
     );
     let two = snap(&mut a);
 
-    a.process(InputCommand::Undo);
+    a.process(DocCommand::Undo);
     assert!(images_match(&snap(&mut a), &one, 0), "first undo");
-    a.process(InputCommand::Undo);
+    a.process(DocCommand::Undo);
     assert!(images_match(&snap(&mut a), &blank, 0), "second undo");
     assert!(!a.observe().can_undo, "nothing left to undo");
-    a.process(InputCommand::Redo);
+    a.process(DocCommand::Redo);
     assert!(images_match(&snap(&mut a), &one, 0), "first redo");
-    a.process(InputCommand::Redo);
+    a.process(DocCommand::Redo);
     assert!(images_match(&snap(&mut a), &two, 0), "second redo");
     assert!(!a.observe().can_redo, "nothing left to redo");
 }
@@ -188,7 +188,7 @@ fn host_can_undo_pre_share_strokes() {
 
     a.start_collaboration(ActorId(7));
     assert!(a.observe().can_undo, "pre-share stroke should be undoable");
-    a.process(InputCommand::Undo);
+    a.process(DocCommand::Undo);
     assert!(
         images_match(&snap(&mut a), &blank, 0),
         "undo should remove the pre-share stroke"
@@ -216,7 +216,7 @@ fn shared_save_solo_load_roundtrip() {
         12.0,
         &[Vec2::new(40.0, 156.0), Vec2::new(216.0, 156.0)],
     );
-    a.process(InputCommand::Undo); // green gone; log still contains it + the undo
+    a.process(DocCommand::Undo); // green gone; log still contains it + the undo
     let expected = snap(&mut a);
 
     let bytes = a.save_bytes().expect("save shared doc");
@@ -227,7 +227,7 @@ fn shared_save_solo_load_roundtrip() {
     );
     // The undone stroke was flattened away; the surviving one is undoable.
     assert!(solo.observe().can_undo);
-    solo.process(InputCommand::Undo);
+    solo.process(DocCommand::Undo);
     let after_undo = snap(&mut solo);
     let blank = {
         // A fresh document renders bare paper.

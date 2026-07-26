@@ -17,7 +17,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{MediaParams, RgbaImage};
@@ -38,7 +38,7 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     // small. Surface relief is turned OFF: the canvas weave is sampled in canvas
     // space, so it intentionally is *not* tile-grid translation invariant and would
     // mask the apron behavior tested here.
-    engine.set_media_params(MediaParams {
+    engine.process(ViewCommand::SetMediaParams(MediaParams {
         height_strength: 2.5,
         specular: 0.3,
         surface_strength: 0.0,
@@ -46,28 +46,28 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
         // not translation invariant — so it must be off for these shift comparisons.
         normal_dither: 0.0,
         ..MediaParams::default()
-    });
+    }));
 
     // Diagonal stroke through the 4-tile corner at `shift` (origin for shift=0).
     // Tooth off for the same reason (it gates deposition by canvas-space weave).
     let mut b = brush(RED, 28.0);
     b.tooth = 0.0;
-    engine.process(InputCommand::SetBrush(b));
-    engine.process(InputCommand::StartStroke {
+    engine.process(ViewCommand::SetBrush(b));
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
     });
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 
     // Center the view on `shift` (Pan: center -= delta/zoom, at zoom 1), then
     // magnify 2× about the viewport center so the canvas point under the center
     // stays put. Result: identical screen mapping for every `shift`.
     let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
-    engine.process(InputCommand::Pan { delta: -shift });
-    engine.process(InputCommand::Zoom {
+    engine.process(ViewCommand::Pan { delta: -shift });
+    engine.process(ViewCommand::Zoom {
         anchor: center_px,
         factor: 2.0,
     });
@@ -107,7 +107,7 @@ fn apron_makes_tiles_seamless_under_zoom() {
 /// and the halo composite must give rewritten tiles real neighbour content.
 fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
-    engine.set_media_params(MediaParams {
+    engine.process(ViewCommand::SetMediaParams(MediaParams {
         height_strength: 2.5,
         specular: 0.3,
         surface_strength: 0.0,
@@ -115,20 +115,20 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         // for these shift comparisons — like the weave.
         normal_dither: 0.0,
         ..MediaParams::default()
-    });
+    }));
 
     // A wide base field along the diagonal, fully containing the smudge's path.
     let mut field = brush(RED, 60.0);
     field.tooth = 0.0;
-    engine.process(InputCommand::SetBrush(field));
-    engine.process(InputCommand::StartStroke {
+    engine.process(ViewCommand::SetBrush(field));
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(60.0, 60.0)),
     });
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 
     // The smudge under test, through the same 4-tile corner.
     let mut smudge = brush(RED, 28.0);
@@ -139,19 +139,19 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         deposit: 0.5,
         ..Default::default()
     };
-    engine.process(InputCommand::SetBrush(smudge));
-    engine.process(InputCommand::StartStroke {
+    engine.process(ViewCommand::SetBrush(smudge));
+    engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
     });
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
 
     let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
-    engine.process(InputCommand::Pan { delta: -shift });
-    engine.process(InputCommand::Zoom {
+    engine.process(ViewCommand::Pan { delta: -shift });
+    engine.process(ViewCommand::Zoom {
         anchor: center_px,
         factor: 2.0,
     });

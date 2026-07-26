@@ -14,7 +14,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{InputCommand, InputSample};
+use stark_core::command::{DocCommand, GestureCommand, InputSample};
 use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{RgbaImage, SelectionMode, SelectionOp, SelectionShape};
@@ -47,7 +47,7 @@ fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
 }
 
 fn select(engine: &mut stark_core::Engine, mode: SelectionMode, shape: SelectionShape) {
-    engine.process(InputCommand::Select(SelectionOp::new(mode, shape, 0.0)));
+    engine.process(DocCommand::Select(SelectionOp::new(mode, shape, 0.0)));
 }
 
 fn rect(min: Vec2, max: Vec2) -> SelectionShape {
@@ -106,7 +106,7 @@ fn deselecting_restores_the_whole_canvas() {
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     assert!(engine.observe().has_selection);
-    engine.process(InputCommand::Select(SelectionOp::select_all()));
+    engine.process(DocCommand::Select(SelectionOp::select_all()));
     assert!(
         !engine.observe().has_selection,
         "selecting everything is indistinguishable from having no selection"
@@ -123,7 +123,7 @@ fn inverting_swaps_which_half_paints() {
         return;
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
-    engine.process(InputCommand::InvertSelection);
+    engine.process(DocCommand::InvertSelection);
     crossing_stroke(&mut engine);
     let img = engine.render_to_image(PAPER);
 
@@ -311,20 +311,20 @@ fn undo_and_redo_step_through_the_selection() {
     crossing_stroke(&mut engine);
     let masked = engine.render_to_image(PAPER);
 
-    engine.process(InputCommand::Undo); // the stroke
+    engine.process(DocCommand::Undo); // the stroke
     assert!(
         engine.observe().has_selection,
         "the selection outlives the stroke"
     );
-    engine.process(InputCommand::Undo); // the selection itself
+    engine.process(DocCommand::Undo); // the selection itself
     assert!(!engine.observe().has_selection);
     assert!(
         images_match(&bare, &engine.render_to_image(PAPER), 1),
         "undoing back past the selection returns the empty canvas"
     );
 
-    engine.process(InputCommand::Redo); // the selection
-    engine.process(InputCommand::Redo); // the stroke
+    engine.process(DocCommand::Redo); // the selection
+    engine.process(DocCommand::Redo); // the stroke
     assert!(engine.observe().has_selection);
     assert!(
         images_match(&masked, &engine.render_to_image(PAPER), 1),
@@ -338,7 +338,7 @@ fn undoing_the_selection_unmasks_later_strokes() {
         return;
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
-    engine.process(InputCommand::Undo);
+    engine.process(DocCommand::Undo);
     // The new stroke starts a fresh branch, on a document with no selection: it is
     // gated by the selection *in force at its point in the log*, which is none.
     crossing_stroke(&mut engine);
@@ -377,19 +377,19 @@ fn a_selection_gesture_commits_the_same_op_it_previewed() {
         return;
     };
     // Drag a rectangular marquee, then paint through it.
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::SelectRect,
         sample: InputSample::at(BOX_MIN),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(-20.0, 0.0)),
     });
-    engine.process(InputCommand::StrokeTo {
+    engine.process(GestureCommand::To {
         sample: InputSample::at(BOX_MAX),
     });
     // Mid-gesture the preview already shows a selection, but nothing is committed.
     assert!(!engine.observe().has_selection, "still just a preview");
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
     assert!(engine.observe().has_selection, "release commits the op");
 
     crossing_stroke(&mut engine);
@@ -403,11 +403,11 @@ fn a_click_with_a_marquee_selects_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(InputCommand::StartStroke {
+    engine.process(GestureCommand::Start {
         tool: Tool::SelectRect,
         sample: InputSample::at(Vec2::ZERO),
     });
-    engine.process(InputCommand::EndStroke);
+    engine.process(GestureCommand::End);
     assert!(
         !engine.observe().has_selection,
         "a zero-area marquee is not a selection"
@@ -458,7 +458,7 @@ fn feathered_edge_fades_the_stroke() {
     // Same geometry, hard vs. heavily feathered edge. Just inside the boundary the
     // feathered mask must be visibly weaker than the hard one.
     let probe = Vec2::new(-4.0, 0.0);
-    engine.process(InputCommand::Select(SelectionOp::new(
+    engine.process(DocCommand::Select(SelectionOp::new(
         SelectionMode::Replace,
         rect(BOX_MIN, BOX_MAX),
         0.0,
@@ -469,7 +469,7 @@ fn feathered_edge_fades_the_stroke() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(InputCommand::Select(SelectionOp::new(
+    engine.process(DocCommand::Select(SelectionOp::new(
         SelectionMode::Replace,
         rect(BOX_MIN, BOX_MAX),
         20.0,
@@ -533,18 +533,18 @@ fn golden_selection_stencil() {
     // shapes, feathered enough that the ramp is several pixels wide on screen.
     const FEATHER: f32 = 6.0;
     let op = |mode, shape| SelectionOp::new(mode, shape, FEATHER);
-    engine.process(InputCommand::Select(op(
+    engine.process(DocCommand::Select(op(
         SelectionMode::Replace,
         rect(Vec2::new(-100.0, -74.0), Vec2::new(6.0, 74.0)),
     )));
-    engine.process(InputCommand::Select(op(
+    engine.process(DocCommand::Select(op(
         SelectionMode::Union,
         SelectionShape::Ellipse {
             center: Vec2::new(46.0, -4.0),
             radii: Vec2::new(58.0, 62.0),
         },
     )));
-    engine.process(InputCommand::Select(op(
+    engine.process(DocCommand::Select(op(
         SelectionMode::Subtract,
         SelectionShape::Lasso(vec![
             Vec2::new(-46.0, -90.0),
@@ -571,7 +571,7 @@ fn golden_selection_smear() {
     // gets its own frame. Stripes go down *first*, unmasked, to give the tool paint to
     // carry; the selection then decides where that paint may be moved.
     paint_stripes(&mut engine);
-    engine.process(InputCommand::Select(SelectionOp::new(
+    engine.process(DocCommand::Select(SelectionOp::new(
         SelectionMode::Replace,
         SelectionShape::Ellipse {
             center: Vec2::ZERO,

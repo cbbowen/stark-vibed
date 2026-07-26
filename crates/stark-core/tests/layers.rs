@@ -4,9 +4,10 @@
 mod common;
 
 use common::*;
+use stark_core::command::DocCommand;
 use stark_core::document::LayerId;
 use stark_core::geom::Vec2;
-use stark_core::{Engine, InputCommand, RgbaImage};
+use stark_core::{Engine, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
@@ -31,7 +32,7 @@ fn green_dominant(c: [u8; 4]) -> bool {
 /// strokes cross the canvas origin (screen center), green on top.
 fn two_layers(engine: &mut Engine) {
     paint(engine, RED, 40.0, H_STROKE);
-    engine.process(InputCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer { above: None });
     // AddLayer makes the new layer active.
     assert_eq!(engine.observe().active_layer, TOP);
     paint(engine, GREEN, 40.0, V_STROKE);
@@ -58,13 +59,13 @@ fn hiding_a_layer_removes_its_contribution() {
     };
     two_layers(&mut engine);
 
-    engine.process(InputCommand::SetLayerVisible(TOP, false));
+    engine.process(DocCommand::SetLayerVisible(TOP, false));
     assert!(
         red_dominant(center(&engine.render_to_image(BG))),
         "hiding the green top layer reveals red beneath"
     );
 
-    engine.process(InputCommand::SetLayerVisible(TOP, true));
+    engine.process(DocCommand::SetLayerVisible(TOP, true));
     assert!(green_dominant(center(&engine.render_to_image(BG))));
 }
 
@@ -75,11 +76,11 @@ fn zero_opacity_layer_is_invisible() {
     };
     two_layers(&mut engine);
 
-    engine.process(InputCommand::SetLayerOpacity(TOP, 0.0));
+    engine.process(DocCommand::SetLayerOpacity(TOP, 0.0));
     assert!(red_dominant(center(&engine.render_to_image(BG))));
 
     // Undo the opacity change → green returns (layer ops are historized).
-    engine.process(InputCommand::Undo);
+    engine.process(DocCommand::Undo);
     assert!(green_dominant(center(&engine.render_to_image(BG))));
 }
 
@@ -91,7 +92,7 @@ fn reordering_changes_which_layer_wins() {
     two_layers(&mut engine);
 
     // Move the root (red) layer above the top (green) layer.
-    engine.process(InputCommand::MoveLayer {
+    engine.process(DocCommand::MoveLayer {
         id: ROOT,
         above: Some(TOP),
     });
@@ -100,7 +101,7 @@ fn reordering_changes_which_layer_wins() {
         "red now sits on top"
     );
 
-    engine.process(InputCommand::Undo);
+    engine.process(DocCommand::Undo);
     assert!(
         green_dominant(center(&engine.render_to_image(BG))),
         "undo restores green on top"
@@ -113,7 +114,7 @@ fn layer_state_survives_save_load() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(InputCommand::SetLayerOpacity(TOP, 0.4));
+    engine.process(DocCommand::SetLayerOpacity(TOP, 0.4));
     let before = engine.render_to_image(BG);
     let bytes = engine.save_bytes().expect("serialize");
 

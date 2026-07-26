@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::Result;
 use crate::assets::{AssetId, AssetStore};
 use crate::colorspace::{ColorSpace, ColorSpaceId};
-use crate::command::InputCommand;
+use crate::command::{DocCommand, GestureCommand, InputCommand, ViewCommand};
 use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
     DocState, Layer, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode, StrokeRecord,
@@ -58,6 +58,24 @@ pub struct ObservableState {
     pub selection_mode: SelectionMode,
     /// Edge softness (canvas px) the next selection gesture will apply.
     pub selection_feather: f32,
+
+    // --- view settings (per-client, never historized) ---------------------
+    //
+    // Projected here for the same reason as `tool` and `brush`: a frontend that
+    // has to read these back off the engine ends up keeping its own copy, and a
+    // copy seeded from `Default` rather than from the engine goes stale the
+    // moment anything else changes them (DESIGN.md §4).
+    /// Media/lighting parameters of the painterly pass (DESIGN.md §6.3).
+    pub media: crate::gpu::MediaParams,
+    /// The HDR lighting environment in use (DESIGN.md §6.3).
+    pub environment: EnvironmentId,
+
+    // --- document properties fixed at creation ----------------------------
+    /// The document's colour space. Immutable for the document's life — changing
+    /// it means starting a new document ([`Engine::new_with_color_space`]).
+    pub color_space: ColorSpaceId,
+    /// The physical canvas surface (DESIGN.md §6.4).
+    pub surface: SurfaceId,
 }
 
 /// Colour the live tail is drawn in under the `debug-unfrozen` feature.
@@ -107,8 +125,15 @@ pub struct Engine {
     /// The physical canvas surface (tooth + relief). Color-space-independent, so
     /// it survives color-space rebuilds (DESIGN.md §6.4).
     surface: Surface,
-    /// Which surface is loaded — a document property, saved in `CanvasMeta`.
+    /// Which surface the GPU-side [`Surface`] was built for. A *cache* of
+    /// `document().surface`, kept in step by [`Engine::apply_document_surface`];
+    /// the document is the source of truth (DESIGN.md §6.4).
     surface_id: SurfaceId,
+    /// The surface the action log starts from, written to `CanvasMeta` and used to
+    /// seed the document. Plays the same role as `CanvasMeta::color_space`: it
+    /// describes the empty document that the log is replayed onto, and is not
+    /// itself a logged change.
+    initial_surface: SurfaceId,
     /// Frontend-provided image bytes for non-`Flat` surfaces, keyed by id. The
     /// engine embeds none; the frontend fetches and registers them at runtime
     /// (DESIGN.md §6.4). Missing bytes fall back to `Flat`.
@@ -193,6 +218,7 @@ impl Engine {
             compositor,
             surface,
             surface_id,
+            initial_surface: surface_id,
             surface_assets: std::collections::HashMap::new(),
             environment,
             environment_id,
@@ -211,23 +237,37 @@ impl Engine {
     }
 
     /// Apply one input command (DESIGN.md §4).
-    pub fn process(&mut self, command: InputCommand) {
+    ///
+    /// One-way by construction: nothing comes back. Reads go through
+    /// [`Engine::observe`]; anything that must answer is a request (see
+    /// [`command`](crate::command)).
+    pub fn process(&mut self, command: impl Into<InputCommand>) {
+        let command = command.into();
         // The frozen head caches pixels composited onto *a particular document* for
         // *a particular stroke*, and neither of those is visible from the head
-        // itself. It is only ever legitimately reused across consecutive
-        // `StrokeTo`s; anything else may have replaced the document under it — a
-        // commit, an undo, a remote merge, a layer switch — or started a different
-        // stroke entirely, and reusing it then composites the live tail onto a stale
-        // canvas. Dropping it on every other command costs one rebuild and rules out
-        // the whole class of staleness rather than enumerating the ways it arises.
-        if !matches!(command, InputCommand::StrokeTo { .. }) {
+        // itself. It is only ever legitimately reused across consecutive gesture
+        // moves; anything else may have replaced the document under it - a commit,
+        // an undo, a remote merge, a layer switch - or started a different stroke
+        // entirely, and reusing it then composites the live tail onto a stale
+        // canvas. Dropping it on every other command costs one rebuild and rules
+        // out the whole class of staleness rather than enumerating the ways it
+        // arises.
+        if !matches!(command, InputCommand::Gesture(GestureCommand::To { .. })) {
             self.frozen_head = None;
         }
         match command {
-            // One gesture lifecycle for both kinds of tool (DESIGN.md §6.8): the
-            // selection tools build an op where the brush builds a stroke, and both
-            // preview through the same `preview` DocState.
-            InputCommand::StartStroke { tool, sample } => {
+            InputCommand::Gesture(c) => self.process_gesture(c),
+            InputCommand::Doc(c) => self.process_doc(c),
+            InputCommand::View(c) => self.process_view(c),
+        }
+    }
+
+    /// The press-drag-release lifecycle. One path for both kinds of tool
+    /// (DESIGN.md §6.8): the selection tools build an op where the brush builds a
+    /// stroke, and both preview through the same `preview` DocState.
+    fn process_gesture(&mut self, command: GestureCommand) {
+        match command {
+            GestureCommand::Start { tool, sample } => {
                 if tool.is_selection() {
                     self.session.start_selection(tool, sample.pos);
                     self.refresh_selection_preview();
@@ -239,7 +279,7 @@ impl Engine {
                     self.refresh_preview();
                 }
             }
-            InputCommand::StrokeTo { sample } => {
+            GestureCommand::To { sample } => {
                 if self.session.is_selecting() {
                     self.session.selection_to(sample.pos);
                     self.refresh_selection_preview();
@@ -251,7 +291,8 @@ impl Engine {
                     self.refresh_preview();
                 }
             }
-            InputCommand::EndStroke => {
+            // The one edge that produces document state.
+            GestureCommand::End => {
                 if self.session.is_selecting() {
                     if let Some(op) = self.session.end_selection() {
                         self.commit(ActionKind::Select(op));
@@ -262,11 +303,18 @@ impl Engine {
                 }
                 self.preview = None;
             }
-            InputCommand::CancelStroke => {
+            GestureCommand::Cancel => {
                 self.session.cancel_stroke();
                 self.preview = None;
             }
-            InputCommand::Undo => {
+        }
+    }
+
+    /// Document-state mutations: every arm here either commits an action or
+    /// navigates the history that holds them.
+    fn process_doc(&mut self, command: DocCommand) {
+        match command {
+            DocCommand::Undo => {
                 self.preview = None;
                 // Shared sessions log undo as an action peers can order
                 // (DESIGN.md §5.4, §12.3); solo falls back to navigation.
@@ -276,8 +324,9 @@ impl Engine {
                     let mut ctx = self.apply_ctx();
                     self.timeline.undo(&mut ctx);
                 }
+                self.apply_document_surface();
             }
-            InputCommand::Redo => {
+            DocCommand::Redo => {
                 self.preview = None;
                 // Redo is an `Undo` of an `Undo` in a shared session.
                 if let Some(target) = self.timeline.redo_as_action() {
@@ -286,46 +335,24 @@ impl Engine {
                     let mut ctx = self.apply_ctx();
                     self.timeline.redo(&mut ctx);
                 }
+                self.apply_document_surface();
             }
-            InputCommand::SetTool(tool) => {
-                // Switching away mid-gesture abandons it rather than committing a
-                // half-dragged marquee.
-                self.session.cancel_stroke();
-                self.preview = None;
-                self.session.tool = tool;
-            }
-            InputCommand::SetSelectionMode(mode) => self.session.selection_mode = mode,
-            InputCommand::SetSelectionFeather(feather) => {
-                self.session.selection_feather = feather.max(0.0)
-            }
-            InputCommand::Select(op) => self.commit(ActionKind::Select(op)),
-            InputCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
-            InputCommand::SetBrush(brush) => {
-                self.session.brush = brush;
-                self.refresh_preview();
-            }
-            InputCommand::Pan { delta } => {
-                // Grab-and-drag: content follows the cursor, so the view center
-                // moves opposite by the drag delta (converted to canvas units).
-                self.session.view.center -= delta / self.session.view.zoom;
-            }
-            InputCommand::Zoom { anchor, factor } => {
-                self.session.view.zoom_about(anchor, factor);
-            }
-            InputCommand::SetActiveLayer(id) => {
-                // Session state, like tool selection — never historized.
-                if self.document().layer_index(id).is_some() {
-                    self.session.active_layer = id;
+            DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
+            DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
+            DocCommand::SetSurface(id) => {
+                if id != self.document().surface {
+                    self.commit(ActionKind::SetSurface(id));
+                    self.apply_document_surface();
                 }
             }
-            InputCommand::AddLayer { above } => {
+            DocCommand::AddLayer { above } => {
                 let id = LayerId(self.next_layer);
                 self.next_layer += 1;
                 self.commit(ActionKind::AddLayer { id, above });
                 // A freshly added layer becomes the active painting target.
                 self.session.active_layer = id;
             }
-            InputCommand::RemoveLayer(id) => {
+            DocCommand::RemoveLayer(id) => {
                 self.commit(ActionKind::RemoveLayer(id));
                 // Keep the active layer valid after removal.
                 if self.session.active_layer == id
@@ -334,18 +361,56 @@ impl Engine {
                     self.session.active_layer = first.id;
                 }
             }
-            InputCommand::SetLayerBlend(id, blend) => {
+            DocCommand::SetLayerBlend(id, blend) => {
                 self.commit(ActionKind::SetLayerBlend(id, blend))
             }
-            InputCommand::SetLayerOpacity(id, opacity) => {
+            DocCommand::SetLayerOpacity(id, opacity) => {
                 self.commit(ActionKind::SetLayerOpacity(id, opacity))
             }
-            InputCommand::SetLayerVisible(id, visible) => {
+            DocCommand::SetLayerVisible(id, visible) => {
                 self.commit(ActionKind::SetLayerVisible(id, visible))
             }
-            InputCommand::MoveLayer { id, above } => {
-                self.commit(ActionKind::MoveLayer { id, above })
+            DocCommand::MoveLayer { id, above } => self.commit(ActionKind::MoveLayer { id, above }),
+        }
+    }
+
+    /// View-state mutations: nothing here is logged, replicated, or reachable by
+    /// undo.
+    fn process_view(&mut self, command: ViewCommand) {
+        match command {
+            ViewCommand::SetTool(tool) => {
+                // Switching away mid-gesture abandons it rather than committing a
+                // half-dragged marquee.
+                self.session.cancel_stroke();
+                self.preview = None;
+                self.session.tool = tool;
             }
+            ViewCommand::SetBrush(brush) => {
+                self.session.brush = brush;
+                self.refresh_preview();
+            }
+            ViewCommand::Pan { delta } => {
+                // Grab-and-drag: content follows the cursor, so the view center
+                // moves opposite by the drag delta (converted to canvas units).
+                self.session.view.center -= delta / self.session.view.zoom;
+            }
+            ViewCommand::Zoom { anchor, factor } => {
+                self.session.view.zoom_about(anchor, factor);
+            }
+            ViewCommand::Resize(viewport) => {
+                self.session.view.viewport = viewport;
+            }
+            ViewCommand::SetSelectionMode(mode) => self.session.selection_mode = mode,
+            ViewCommand::SetSelectionFeather(feather) => {
+                self.session.selection_feather = feather.max(0.0)
+            }
+            ViewCommand::SetActiveLayer(id) => {
+                if self.document().layer_index(id).is_some() {
+                    self.session.active_layer = id;
+                }
+            }
+            ViewCommand::SetMediaParams(params) => self.compositor.set_media(params),
+            ViewCommand::SetEnvironment(id) => self.set_environment(id),
         }
     }
 
@@ -462,7 +527,7 @@ impl Engine {
             .collect();
         let mut file = DocumentFile::new(actions);
         file.canvas.color_space = self.color_space.id();
-        file.canvas.surface = self.surface_id;
+        file.canvas.surface = self.initial_surface;
         file.assets = assets;
         file
     }
@@ -476,14 +541,10 @@ impl Engine {
     /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
     pub fn load_document(&mut self, file: &DocumentFile) {
         self.frozen_head = None;
+        // The surface the log starts from, before `reset_document` seeds with it.
+        // Replayed `SetSurface` actions move it from there (DESIGN.md §6.4).
+        self.initial_surface = file.canvas.surface;
         self.reset_document();
-        // Match the document's surface before replaying — it affects deposition
-        // (DESIGN.md §6.4). Update the id first; the rebuild below picks it up.
-        if file.canvas.surface != self.surface_id {
-            self.surface_id = file.canvas.surface;
-            self.surface = build_surface(&self.gpu, self.surface_id, &self.surface_assets);
-            self.rebuild_gpu_for(self.color_space.id());
-        }
         // Match the document's color space before replaying (DESIGN.md §6.7).
         if file.canvas.color_space != self.color_space.id() {
             self.rebuild_gpu_for(file.canvas.color_space);
@@ -501,6 +562,8 @@ impl Engine {
             self.replay_one(action);
         }
         self.resync_counters(&file.actions);
+        // Whatever the replayed log left the document on.
+        self.apply_document_surface();
     }
 
     /// Decode and load a container produced by [`Engine::save_bytes`].
@@ -555,6 +618,10 @@ impl Engine {
             has_selection: doc.selection.is_active(),
             selection_mode: self.session.selection_mode,
             selection_feather: self.session.selection_feather,
+            media: self.compositor.media(),
+            environment: self.environment_id,
+            color_space: self.color_space.id(),
+            surface: self.surface_id,
         }
     }
 
@@ -573,20 +640,9 @@ impl Engine {
         self.session.view
     }
 
-    /// Resize the viewport (e.g. when the window/canvas changes size). The
-    /// compositor's offscreen targets follow on the next render (DESIGN.md §6.4).
-    pub fn resize(&mut self, viewport: Extent2) {
-        self.session.view.viewport = viewport;
-    }
-
     /// The current media/lighting parameters (DESIGN.md §6.3).
     pub fn media_params(&self) -> crate::gpu::MediaParams {
         self.compositor.media()
-    }
-
-    /// Tune the media/lighting parameters of the painterly pass (DESIGN.md §6.3).
-    pub fn set_media_params(&mut self, params: crate::gpu::MediaParams) {
-        self.compositor.set_media(params);
     }
 
     /// Import a brush-shape image (PNG bytes), returning its content id for use
@@ -689,6 +745,8 @@ impl Engine {
         if merged && self.session.is_stroking() {
             self.refresh_preview();
         }
+        // A peer may have switched the surface (DESIGN.md §6.4).
+        self.apply_document_surface();
         merged
     }
 
@@ -721,17 +779,29 @@ impl Engine {
         self.color_space.id()
     }
 
-    /// Switch color space, clearing the canvas (channel layouts differ, so
-    /// existing tiles can't be reinterpreted). For a fresh document or a UI
-    /// toggle (DESIGN.md §6.7).
-    pub fn set_color_space(&mut self, id: ColorSpaceId) {
+    /// Start a fresh, empty document in `color_space`, on `surface`.
+    ///
+    /// The **only** way to choose a colour space, and deliberately so: the channel
+    /// layouts differ between spaces, so existing tiles cannot be reinterpreted and
+    /// changing it can never preserve a document. Modelling it as a setter hid that
+    /// — every caller was really asking for a new document (DESIGN.md §6.7).
+    ///
+    /// Takes `&mut self` rather than being an associated function because
+    /// frontend-provided *resources* survive: imported brush assets, and the
+    /// registered surface and environment bytes. Those belong to the app, not to
+    /// the document, and re-fetching them on every New would be gratuitous.
+    pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SurfaceId) {
+        self.frozen_head = None;
+        self.initial_surface = surface;
         self.reset_document();
-        self.rebuild_gpu_for(id);
+        self.rebuild_gpu_for(color_space);
+        self.apply_document_surface();
     }
 
-    /// The document's current surface (DESIGN.md §6.4).
+    /// The document's current surface (DESIGN.md §6.4). Change it with
+    /// [`DocCommand::SetSurface`](crate::command::DocCommand::SetSurface).
     pub fn surface(&self) -> SurfaceId {
-        self.surface_id
+        self.document().surface
     }
 
     /// Whether `id` is ready to use — `Flat` always is; an image-backed surface
@@ -750,17 +820,14 @@ impl Engine {
         }
     }
 
-    /// Switch the canvas surface **in place** — the document is preserved
-    /// (DESIGN.md §6.4). The surface is view-time today: the weave shows through the
-    /// media pass (`thickness = height − surface`, relief normals), and the
-    /// deposition tooth gate is a pass-through stub, so existing paint simply
-    /// re-reads against the new weave. Image surfaces fall back to `Flat` until
-    /// their bytes are registered.
+    /// Bring the GPU-side surface in line with the document's, rebuilding it if the
+    /// document moved to a different one — after a commit, an undo, a load, or a
+    /// remote merge. A no-op when unchanged, which is the common case.
     ///
-    /// NOTE: the chosen surface is still saved with the document (`CanvasMeta`,
-    /// §8). If a real tooth gate returns, mid-document switches would make replay
-    /// non-reproducible — the choice would then need to be historized as an action.
-    pub fn set_surface(&mut self, id: SurfaceId) {
+    /// There is deliberately no public `set_surface`: the surface is document state
+    /// (DESIGN.md §6.4), so it changes by logging an action like anything else.
+    fn apply_document_surface(&mut self) {
+        let id = self.document().surface;
         if id == self.surface_id {
             return;
         }
@@ -801,7 +868,10 @@ impl Engine {
     /// Switch the lighting environment. A view setting, so this never touches the
     /// document — it just re-lights the canvas on the next render. Image
     /// environments fall back to the procedural studio until their bytes arrive.
-    pub fn set_environment(&mut self, id: EnvironmentId) {
+    ///
+    /// Private: reached through
+    /// [`ViewCommand::SetEnvironment`](crate::command::ViewCommand::SetEnvironment).
+    fn set_environment(&mut self, id: EnvironmentId) {
         if id == self.environment_id {
             return;
         }
@@ -833,7 +903,9 @@ impl Engine {
     /// leaves any shared session: the caller (UI/transport) tears down the
     /// network side; `join_collaboration` re-enables after its reset.
     fn reset_document(&mut self) {
-        self.timeline = Box::new(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
+        self.timeline = Box::new(LinearTimeline::new(
+            DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface),
+        ));
         self.preview = None;
         self.clock = 0;
         self.next_layer = 1;

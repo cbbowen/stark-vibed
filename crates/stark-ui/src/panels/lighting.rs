@@ -5,9 +5,10 @@ use dioxus::prelude::*;
 
 use crate::panels::color::OklabPicker;
 use crate::render::BG;
-use crate::state::AppState;
+use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
+use stark_core::command::ViewCommand;
 use stark_core::{MediaParams, SurfaceId};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
@@ -26,10 +27,12 @@ pub const SURFACES: &[(SurfaceId, &str)] =
 #[component]
 pub fn LightingPanel() -> Element {
     let state = use_context::<AppState>();
-    // Seeded from the engine defaults; this panel owns the live values (lighting is
-    // a view setting, not part of the observable document state).
-    let media = use_signal(MediaParams::default);
-    let p = media();
+    // Read off the engine's own projection rather than a local copy: a shadow seeded
+    // from `Default` goes stale the moment anything else changes these (DESIGN.md §4).
+    let obs = state.obs.read();
+    let p = obs.as_ref().map(|o| o.media).unwrap_or_default();
+    let surf = obs.as_ref().map(|o| o.surface).unwrap_or_default();
+    drop(obs);
     // The canvas substrate colour (straight sRGB), shown as a swatch that pops out an
     // Oklab picker. Like the sliders, a view setting owned here (`Renderer::set_background`).
     let mut bg = use_signal(|| [BG.r as f32, BG.g as f32, BG.b as f32]);
@@ -41,25 +44,15 @@ pub fn LightingPanel() -> Element {
         c[1] * 100.0,
         c[2] * 100.0
     );
-    // The canvas surface (weave), switchable in place — the document is preserved;
-    // existing paint re-reads against the new bump (DESIGN.md §6.4). Reading the
-    // renderer signal keeps the drop-down in sync after the async switch lands.
-    let surf = state
-        .renderer
-        .read()
-        .as_ref()
-        .map(|r| r.surface())
-        .unwrap_or_default();
-
     rsx! {
         Slider { label: "Exposure", min: 0.1, max: 2.0, value: p.exposure,
-            oninput: move |v| update_media(state, media, move |m| m.exposure = v) }
+            oninput: move |v| update_media(state, move |m| m.exposure = v) }
         Slider { label: "Relief", min: 0.0, max: 0.6, value: p.height_strength,
-            oninput: move |v| update_media(state, media, move |m| m.height_strength = v) }
+            oninput: move |v| update_media(state, move |m| m.height_strength = v) }
         Slider { label: "Weave", min: 0.0, max: 1.5, value: p.surface_strength,
-            oninput: move |v| update_media(state, media, move |m| m.surface_strength = v) }
+            oninput: move |v| update_media(state, move |m| m.surface_strength = v) }
         Slider { label: "Wet gloss", min: 0.0, max: 0.35, value: p.specular,
-            oninput: move |v| update_media(state, media, move |m| m.specular = v) }
+            oninput: move |v| update_media(state, move |m| m.specular = v) }
         div { class: "slider-row",
             div { class: "slider-label", "Canvas" }
             button {
@@ -100,16 +93,17 @@ pub fn LightingPanel() -> Element {
 }
 
 /// Mutate the lighting params in place, push them to the engine, and repaint.
-fn update_media(state: AppState, mut media: Signal<MediaParams>, f: impl FnOnce(&mut MediaParams)) {
-    let mut p = media();
+/// Read the current media params off the observable projection, mutate a copy, and
+/// push it back — the same read-modify-commit shape as `update_brush`.
+fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
+    let mut p = state
+        .obs
+        .read()
+        .as_ref()
+        .map(|o| o.media)
+        .unwrap_or_default();
     f(&mut p);
-    media.set(p);
-    let mut renderer = state.renderer;
-    let mut guard = renderer.write();
-    if let Some(r) = guard.as_mut() {
-        r.set_media_params(p);
-        r.paint();
-    }
+    dispatch(state, ViewCommand::SetMediaParams(p));
 }
 
 /// Set the canvas substrate colour (straight sRGB, a view setting) and repaint.

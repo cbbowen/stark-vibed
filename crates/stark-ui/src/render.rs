@@ -5,6 +5,7 @@
 //! app stores it in a signal, calls [`Renderer::paint`] after each command, and
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
+use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::Tool;
 use stark_core::geom::Extent2;
 use stark_core::{
@@ -39,7 +40,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn process(&mut self, command: InputCommand) {
+    pub fn process(&mut self, command: impl Into<InputCommand>) {
         self.engine.process(command);
     }
 
@@ -69,10 +70,11 @@ impl Renderer {
         self.engine.color_space()
     }
 
-    /// Start a fresh document in `id`'s color space. Clears the canvas, since the
-    /// channel layouts differ between spaces (DESIGN.md §6.7).
-    pub fn set_color_space(&mut self, id: ColorSpaceId) {
-        self.engine.set_color_space(id);
+    /// Start a fresh document in `color_space`, on `surface` (DESIGN.md §6.7).
+    /// The colour space cannot be changed any other way — see
+    /// [`Engine::new_document`].
+    pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SurfaceId) {
+        self.engine.new_document(color_space, surface);
     }
 
     /// The document's current canvas surface (DESIGN.md §6.4).
@@ -80,10 +82,10 @@ impl Renderer {
         self.engine.surface()
     }
 
-    /// Switch the canvas surface in place — the document is preserved; existing
-    /// paint re-reads against the new weave (DESIGN.md §6.4).
+    /// Switch the canvas surface (DESIGN.md §6.4). Document state, so this logs an
+    /// action like any other edit.
     pub fn set_surface(&mut self, id: SurfaceId) {
-        self.engine.set_surface(id);
+        self.engine.process(DocCommand::SetSurface(id));
     }
 
     /// Whether a surface's bytes are loaded (Flat always is).
@@ -108,18 +110,18 @@ impl Renderer {
 
     /// Switch the lighting environment (a view setting — never resets the canvas).
     pub fn set_environment(&mut self, id: EnvironmentId) {
-        self.engine.set_environment(id);
+        self.engine.process(ViewCommand::SetEnvironment(id));
     }
 
     /// Tune the media/lighting parameters (exposure, gloss, relief — §6.3).
     pub fn set_media_params(&mut self, params: MediaParams) {
-        self.engine.set_media_params(params);
+        self.engine.process(ViewCommand::SetMediaParams(params));
     }
 
     /// The current media/lighting parameters (so a second renderer — the brush
     /// editor's preview — can mirror the main canvas's look).
     pub fn media_params(&self) -> MediaParams {
-        self.engine.media_params()
+        self.engine.observe().media
     }
 
     /// The shared GPU handles (cheap `Arc` clones), so a second renderer can be
@@ -227,7 +229,8 @@ impl Renderer {
         self.config.height = height;
         self.surface
             .configure(&self.engine.gpu().device, &self.config);
-        self.engine.resize(Extent2::new(width, height));
+        self.engine
+            .process(ViewCommand::Resize(Extent2::new(width, height)));
     }
 
     /// Render the current canvas straight into the surface texture and present.

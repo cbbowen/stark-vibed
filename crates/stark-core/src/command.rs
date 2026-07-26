@@ -1,15 +1,38 @@
 //! `InputCommand`: raw, high-frequency user intent (DESIGN.md §4).
 //!
 //! Commands are deliberately distinct from [`Action`](crate::document::Action)s.
-//! Many commands are ephemeral (pointer moves mid-stroke, pan/zoom, tool
-//! changes) and never enter history; only committed mutations become actions.
-//! The `Session` (DESIGN.md §3) interprets commands and decides what, if
-//! anything, to commit.
+//! Many commands are ephemeral (pointer moves mid-stroke, pan/zoom, tool changes)
+//! and never enter history; only committed mutations become actions. The `Session`
+//! (DESIGN.md §3) interprets commands and decides what, if anything, to commit.
+//!
+//! # The three kinds
+//!
+//! Which of the engine's two state classes a command touches decides almost
+//! everything about it — whether it is logged, whether peers see it, whether undo
+//! reaches it — so it lives in the type rather than in a comment:
+//!
+//! - [`DocCommand`] mutates **document state**: historized, replicated to peers,
+//!   and reproduced by replay. Every one of these becomes an `Action`.
+//! - [`ViewCommand`] mutates **view state**: per-client, transient, never logged
+//!   and never sent. Two people sharing a drawing pan independently.
+//! - [`GestureCommand`] is the press-drag-release lifecycle, which is neither: it
+//!   *builds* in view state (`Session::in_flight`) and commits a document action
+//!   at the end — or nothing at all, if cancelled.
+//!
+//! # What is deliberately *not* a command
+//!
+//! Commands are one-way: they carry intent in and nothing back, which is what lets
+//! them become messages over a channel when the engine moves off the UI thread
+//! (DESIGN.md §7). Anything that must answer — importing a brush and getting its
+//! id, saving bytes, merging a remote action and learning whether it applied — is
+//! a **request**, and requests stay direct methods on [`Engine`](crate::Engine)
+//! until there is an actor to give them a reply channel. See DESIGN.md §4.
 
 use serde::{Deserialize, Serialize};
 
 use crate::document::{BlendMode, BrushParams, LayerId, SelectionMode, SelectionOp, Tool};
-use crate::geom::Vec2;
+use crate::geom::{Extent2, Vec2};
+use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
 
 /// One pen/mouse sample in canvas space.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,52 +66,37 @@ impl Default for InputSample {
 }
 
 /// Every stateful interaction the backend accepts (GOALS §Inputs, DESIGN.md §4).
+///
+/// Construct the inner enums directly and rely on `Into` — `engine.process(
+/// ViewCommand::Pan { delta }.into())` — rather than spelling both levels out.
 #[derive(Clone, Debug)]
 pub enum InputCommand {
-    // --- gesture lifecycle (high frequency) ---
-    //
-    // Shared by painting and by the selection tools (DESIGN.md §6.8): from the
-    // frontend's side both are press-drag-release, and the `tool` decides which the
-    // session builds — a `StrokeRecord` or a `SelectionOp`.
-    StartStroke {
-        tool: Tool,
-        sample: InputSample,
-    },
-    StrokeTo {
-        sample: InputSample,
-    },
-    EndStroke,
-    CancelStroke,
+    Gesture(GestureCommand),
+    Doc(DocCommand),
+    View(ViewCommand),
+}
 
-    // --- history navigation ---
+/// The press-drag-release lifecycle, shared by painting and by the selection tools
+/// (DESIGN.md §6.8): from the frontend's side both are one gesture, and the `tool`
+/// decides which the session builds — a `StrokeRecord` or a `SelectionOp`.
+///
+/// In flight this is view state. [`GestureCommand::End`] is the only edge that
+/// produces document state, and [`GestureCommand::Cancel`] produces none.
+#[derive(Clone, Debug)]
+pub enum GestureCommand {
+    Start { tool: Tool, sample: InputSample },
+    To { sample: InputSample },
+    End,
+    Cancel,
+}
+
+/// Mutations of **document state**: each becomes an [`Action`](crate::document::Action),
+/// enters the undo history, is replicated to peers, and is reproduced by replay.
+#[derive(Clone, Debug)]
+pub enum DocCommand {
     Undo,
     Redo,
 
-    // --- session / view (never historized) ---
-    SetTool(Tool),
-    SetBrush(BrushParams),
-    /// Pan the view by a screen-pixel drag delta.
-    Pan {
-        delta: Vec2,
-    },
-    /// Zoom by `factor`, keeping the canvas point under `anchor` (a screen-pixel
-    /// position, e.g. the cursor) fixed on screen.
-    Zoom {
-        anchor: Vec2,
-        factor: f32,
-    },
-
-    // --- selection tool settings (session state, never historized — they shape the
-    //     *next* op, and the op itself is what gets logged; DESIGN.md §6.8) ---
-    /// How the next selection gesture combines with the current selection.
-    SetSelectionMode(SelectionMode),
-    /// Edge softness (canvas px) for the next selection gesture.
-    SetSelectionFeather(f32),
-
-    // --- active layer selection (session state, never historized) ---
-    SetActiveLayer(LayerId),
-
-    // --- document edits that ARE historized ---
     AddLayer {
         above: Option<LayerId>,
     },
@@ -101,10 +109,74 @@ pub enum InputCommand {
         above: Option<LayerId>,
     },
 
-    // --- selection edits that ARE historized (DESIGN.md §6.8) ---
-    /// Apply a selection op directly — the menu path (Select All / Deselect), and how
-    /// a frontend with its own geometry can drive the selection without a gesture.
+    /// Apply a selection op directly — the menu path (Select All / Deselect), and
+    /// how a frontend with its own geometry can drive the selection without a
+    /// gesture (DESIGN.md §6.8).
     Select(SelectionOp),
     /// Swap selected for unselected everywhere.
     InvertSelection,
+
+    /// Switch the canvas surface (DESIGN.md §6.4).
+    ///
+    /// Document state, not view state: the surface feeds deposition tooth, so a
+    /// mid-document switch has to be reproducible by replay and visible to peers.
+    /// The tooth gate is a pass-through stub today, which is what let this be a
+    /// bare setter for so long — but the document was already recording the
+    /// surface in `CanvasMeta`, so it was only ever half a view setting.
+    SetSurface(SurfaceId),
+}
+
+/// Mutations of **view state**: per-client, transient, never logged and never sent
+/// to peers. Undo does not reach these, and two people sharing a drawing each have
+/// their own.
+#[derive(Clone, Debug)]
+pub enum ViewCommand {
+    SetTool(Tool),
+    SetBrush(BrushParams),
+    /// Pan the view by a screen-pixel drag delta.
+    Pan {
+        delta: Vec2,
+    },
+    /// Zoom by `factor`, keeping the canvas point under `anchor` (a screen-pixel
+    /// position, e.g. the cursor) fixed on screen.
+    Zoom {
+        anchor: Vec2,
+        factor: f32,
+    },
+    /// The viewport changed size (window/canvas resize).
+    Resize(Extent2),
+
+    /// How the next selection gesture combines with the current selection. Shapes
+    /// the *next* op; the op itself is what gets logged (DESIGN.md §6.8).
+    SetSelectionMode(SelectionMode),
+    /// Edge softness (canvas px) for the next selection gesture.
+    SetSelectionFeather(f32),
+
+    /// Which layer the next stroke goes on. Per-client: collaborators paint on
+    /// whichever layer each has selected.
+    SetActiveLayer(LayerId),
+
+    /// Tune the media/lighting pass (DESIGN.md §6.3). Changes how the canvas
+    /// looks, not what it is.
+    SetMediaParams(MediaParams),
+    /// Switch the HDR lighting environment (DESIGN.md §6.3).
+    SetEnvironment(EnvironmentId),
+}
+
+impl From<GestureCommand> for InputCommand {
+    fn from(c: GestureCommand) -> Self {
+        InputCommand::Gesture(c)
+    }
+}
+
+impl From<DocCommand> for InputCommand {
+    fn from(c: DocCommand) -> Self {
+        InputCommand::Doc(c)
+    }
+}
+
+impl From<ViewCommand> for InputCommand {
+    fn from(c: ViewCommand) -> Self {
+        InputCommand::View(c)
+    }
 }

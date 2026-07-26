@@ -6,10 +6,11 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
+use stark_core::InputSample;
+use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::SelectionMode;
 use stark_core::document::SelectionOp;
 use stark_core::geom::Vec2;
-use stark_core::{InputCommand, InputSample};
 
 pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
     match e.key() {
@@ -27,23 +28,23 @@ pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
     match e.key() {
         Key::Character(c) if c.eq_ignore_ascii_case("z") => {
             let cmd = if m.contains(Modifiers::SHIFT) {
-                InputCommand::Redo
+                DocCommand::Redo
             } else {
-                InputCommand::Undo
+                DocCommand::Undo
             };
             dispatch(state, cmd);
             e.prevent_default();
         }
-        Key::Character(c) if c.eq_ignore_ascii_case("y") => dispatch(state, InputCommand::Redo),
+        Key::Character(c) if c.eq_ignore_ascii_case("y") => dispatch(state, DocCommand::Redo),
         // Selection commands (DESIGN.md §6.8). "Select all" and "Deselect" are the
         // same edit here — a selection covering the whole canvas *is* no selection —
         // so both shortcuts land on the same op.
         Key::Character(c) if c.eq_ignore_ascii_case("a") || c.eq_ignore_ascii_case("d") => {
-            dispatch(state, InputCommand::Select(SelectionOp::select_all()));
+            dispatch(state, DocCommand::Select(SelectionOp::select_all()));
             e.prevent_default();
         }
         Key::Character(c) if c.eq_ignore_ascii_case("i") && m.contains(Modifiers::SHIFT) => {
-            dispatch(state, InputCommand::InvertSelection);
+            dispatch(state, DocCommand::InvertSelection);
             e.prevent_default();
         }
         _ => {}
@@ -94,11 +95,11 @@ pub fn end_interaction(
     mode_restore: &mut Signal<Option<SelectionMode>>,
 ) {
     if drawing() {
-        dispatch(state, InputCommand::EndStroke);
+        dispatch(state, GestureCommand::End);
         drawing.set(false);
     }
     if let Some(base) = mode_restore.take() {
-        dispatch(state, InputCommand::SetSelectionMode(base));
+        dispatch(state, ViewCommand::SetSelectionMode(base));
     }
     panning.set(false);
 }
