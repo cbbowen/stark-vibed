@@ -4,6 +4,15 @@ resolver = "3"
 members = [
     "crates/*",
 ]
+# Both vendored trees are path dependencies, and cargo makes an unexcluded path
+# dependency a workspace *member* — which put third-party code in the blast radius
+# of `cargo fmt --all` and `cargo clippy --workspace` (mixbox alone raises 45
+# warnings we must not "fix"). They still build as dependencies; they are just not
+# ours to lint. See vendor/iroh-webrtc-transport/VENDORING.md.
+exclude = [
+    "vendor/mixbox",
+    "vendor/iroh-webrtc-transport",
+]
 # stark-ui is a wasm/web app (Dioxus web + WebGPU); keep it out of the native
 # default build/test so `cargo build`/`cargo test` stay host-only. Build it with
 # `dx serve --platform web` or `cargo build -p stark-ui --target wasm32-unknown-unknown`.
