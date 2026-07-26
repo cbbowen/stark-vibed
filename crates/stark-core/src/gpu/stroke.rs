@@ -282,6 +282,23 @@ impl Drop for ToolState {
     }
 }
 
+/// Everything a stroke is drawn *against*, as opposed to the stroke itself.
+///
+/// [`StrokeRenderer`] holds only immutable GPU objects — pipelines, layouts, the
+/// prefix-τ cache — so the mutable scene is handed in per call. These four travel
+/// together through every entry point ([`StrokeRenderer::render`],
+/// [`render_range`](StrokeRenderer::render_range), and both paths underneath), so
+/// they are one parameter rather than four repeated at each hop.
+#[derive(Copy, Clone)]
+pub struct StrokeScene<'a> {
+    pub pool: &'a TilePool,
+    pub assets: &'a AssetStore,
+    /// The layer's committed tiles: what the stroke composites over.
+    pub base: &'a HashTrieMap<TileCoord, TilePairHandle>,
+    /// The selection in force, which gates the deposit (DESIGN.md §6.8).
+    pub selection: &'a Selection,
+}
+
 /// What a range render leaves behind for the range that resumes after it.
 pub struct StrokeCarry {
     /// Arc length at the end of the range. Not derivable from the span index — it is
@@ -574,22 +591,11 @@ impl StrokeRenderer {
     /// depth, which for an opaque brush would barely fade at all (DESIGN.md §6.8).
     pub fn render(
         &self,
-        pool: &TilePool,
-        assets: &AssetStore,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        scene: StrokeScene<'_>,
         rec: &StrokeRecord,
-        selection: &Selection,
     ) -> HashTrieMap<TileCoord, TilePairHandle> {
-        self.render_range(
-            pool,
-            assets,
-            base,
-            rec,
-            selection,
-            StrokeSpans::whole(rec),
-            None,
-        )
-        .0
+        self.render_range(scene, rec, StrokeSpans::whole(rec), None)
+            .0
     }
 
     /// Render just `spans` of `rec` over `base`, resuming the brush from `tool` — the
@@ -605,16 +611,10 @@ impl StrokeRenderer {
     /// [`ToolState`] carries the only thing the loop threads between segments that is
     /// not already on the canvas. Adjacent ranges share exactly one flattened point
     /// (`path::flatten_spans`), so their segments tile with no gap and no overlap.
-    // Wide by nature: the renderer holds only immutable GPU objects, so everything a
-    // stroke is drawn *against* — pool, assets, base tiles, selection — is handed in.
-    #[allow(clippy::too_many_arguments)]
     pub fn render_range(
         &self,
-        pool: &TilePool,
-        assets: &AssetStore,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        scene: StrokeScene<'_>,
         rec: &StrokeRecord,
-        selection: &Selection,
         spans: StrokeSpans,
         tool: Option<&ToolState>,
     ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
@@ -625,8 +625,8 @@ impl StrokeRenderer {
         // stamp count) would otherwise answer differently for a short piece than for
         // the stroke it belongs to. See [`dynamics_setup`].
         match dynamics_setup(rec) {
-            Some(tol) => self.render_dynamic(pool, assets, base, rec, selection, spans, tool, tol),
-            None => self.render_swept(pool, assets, base, rec, selection, spans),
+            Some(tol) => self.render_dynamic(scene, rec, spans, tool, tol),
+            None => self.render_swept(scene, rec, spans),
         }
     }
 
@@ -634,13 +634,16 @@ impl StrokeRenderer {
     /// state at all, so a range needs nothing from its predecessor but the arc length.
     fn render_swept(
         &self,
-        pool: &TilePool,
-        assets: &AssetStore,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        scene: StrokeScene<'_>,
         rec: &StrokeRecord,
-        selection: &Selection,
         spans: StrokeSpans,
     ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
+        let StrokeScene {
+            pool,
+            assets,
+            base,
+            selection,
+        } = scene;
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
         let (segments, end_dist) = generate_segments_in(rec, flatten_tolerance(&rec.brush), spans);
@@ -965,18 +968,20 @@ impl StrokeRenderer {
     /// so a live stroke redraws only its tail (see [`ToolState`]). `tol` comes from
     /// [`dynamics_setup`], which has already decided — from the whole record — that
     /// this stroke runs the loop at all.
-    #[allow(clippy::too_many_arguments)]
     fn render_dynamic(
         &self,
-        pool: &TilePool,
-        assets: &AssetStore,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        scene: StrokeScene<'_>,
         rec: &StrokeRecord,
-        selection: &Selection,
         spans: StrokeSpans,
         tool: Option<&ToolState>,
         tol: crate::path::FlattenTolerance,
     ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
+        let StrokeScene {
+            pool,
+            assets,
+            base,
+            selection,
+        } = scene;
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
         // Nothing follows the range that reaches the end of the stroke, so there is no

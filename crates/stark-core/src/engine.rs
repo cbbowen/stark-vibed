@@ -167,15 +167,15 @@ impl Engine {
         let environment_id = EnvironmentId::default();
         let environment = Environment::studio(&gpu);
         let selection = SelectionRenderer::new(&gpu);
-        let (pool, stroke, compositor) = build_gpu(
-            &gpu,
+        let (pool, stroke, compositor) = build_gpu(GpuBuild {
+            gpu: &gpu,
             target_format,
             viewport,
-            &color_space,
-            &surface,
-            &environment,
-            &selection,
-        );
+            cs: &color_space,
+            surface: &surface,
+            environment: &environment,
+            selection: &selection,
+        });
         let assets = AssetStore::new(gpu.clone());
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -814,15 +814,15 @@ impl Engine {
     /// document is already empty (no tiles of the old format are referenced).
     fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
         let cs = id.make();
-        let (pool, stroke, compositor) = build_gpu(
-            &self.gpu,
-            self.target_format,
-            self.session.view.viewport,
-            &cs,
-            &self.surface,
-            &self.environment,
-            &self.selection,
-        );
+        let (pool, stroke, compositor) = build_gpu(GpuBuild {
+            gpu: &self.gpu,
+            target_format: self.target_format,
+            viewport: self.session.view.viewport,
+            cs: &cs,
+            surface: &self.surface,
+            environment: &self.environment,
+            selection: &self.selection,
+        });
         self.color_space = cs;
         self.pool = pool;
         self.stroke = stroke;
@@ -1010,11 +1010,13 @@ impl Engine {
         };
         let layer = base.layer_at(idx).clone();
         let (tiles, carry) = self.stroke.render_range(
-            &self.pool,
-            &self.assets,
-            &layer.tiles,
+            crate::gpu::stroke::StrokeScene {
+                pool: &self.pool,
+                assets: &self.assets,
+                base: &layer.tiles,
+                selection: &base.selection,
+            },
             rec,
-            &base.selection,
             spans,
             tool,
         );
@@ -1057,16 +1059,32 @@ fn build_surface(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_gpu(
-    gpu: &GpuContext,
+/// What the colour-space-dependent GPU subsystems are built from.
+///
+/// Grouped because they are always supplied together: the pool, stroke renderer and
+/// compositor are torn down and rebuilt as a set whenever the colour space changes
+/// (DESIGN.md §6.7), and `surface` / `environment` / `selection` are precisely the
+/// pieces that *survive* that rebuild and have to be handed back in.
+struct GpuBuild<'a> {
+    gpu: &'a GpuContext,
     target_format: wgpu::TextureFormat,
     viewport: Extent2,
-    cs: &Arc<dyn ColorSpace>,
-    surface: &Surface,
-    environment: &Environment,
-    selection: &SelectionRenderer,
-) -> (TilePool, StrokeRenderer, Compositor) {
+    cs: &'a Arc<dyn ColorSpace>,
+    surface: &'a Surface,
+    environment: &'a Environment,
+    selection: &'a SelectionRenderer,
+}
+
+fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor) {
+    let GpuBuild {
+        gpu,
+        target_format,
+        viewport,
+        cs,
+        surface,
+        environment,
+        selection,
+    } = b;
     // Selection masks are pooled and recycled like paint (DESIGN.md §6.8), so their
     // format joins the pool's free lists.
     let pool = TilePool::new(

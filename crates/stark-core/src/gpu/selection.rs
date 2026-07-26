@@ -68,6 +68,20 @@ pub struct SelectionRenderer {
     dummy_edges: wgpu::TextureView,
 }
 
+/// The shape half of a selection rasterize: what to draw, as opposed to where.
+///
+/// `b` and `c` are the shape's two uniform vectors — their meaning depends on the
+/// [`SelectionShape`] being rasterized (rect corners, ellipse centre + radii, lasso
+/// bounds) — and `edges` is the lasso's edge buffer, unused by the analytic shapes.
+struct RasterShape<'a> {
+    /// Coverage outside the rasterized tiles (DESIGN.md §6.8).
+    outside: bool,
+    b: [f32; 4],
+    c: [f32; 4],
+    feather: f32,
+    edges: &'a wgpu::TextureView,
+}
+
 impl SelectionRenderer {
     pub fn new(ctx: &GpuContext) -> Self {
         let device = &ctx.device;
@@ -261,11 +275,13 @@ impl SelectionRenderer {
             prev,
             base,
             &plan.rasterize,
-            plan.outside,
-            b,
-            c,
-            op.feather,
-            &edge_view,
+            RasterShape {
+                outside: plan.outside,
+                b,
+                c,
+                feather: op.feather,
+                edges: &edge_view,
+            },
         ))
     }
 
@@ -280,11 +296,13 @@ impl SelectionRenderer {
             prev,
             HashTrieMap::new(),
             &plan.rasterize,
-            plan.outside,
-            [0.0; 4],
-            [0.0, MODE_INVERT, 0.0, 0.0],
-            0.0,
-            &edges,
+            RasterShape {
+                outside: plan.outside,
+                b: [0.0; 4],
+                c: [0.0, MODE_INVERT, 0.0, 0.0],
+                feather: 0.0,
+                edges: &edges,
+            },
         )
     }
 
@@ -403,19 +421,21 @@ impl SelectionRenderer {
     /// Rasterize `coords` into fresh mask tiles on top of `base`, reading `prev` for
     /// the combine. One draw per tile — they are independent, so this is a single
     /// encoder with no barriers between them.
-    #[allow(clippy::too_many_arguments)]
     fn rasterize(
         &self,
         pool: &TilePool,
         prev: &Selection,
         base: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle>,
         coords: &[TileCoord],
-        outside: bool,
-        b: [f32; 4],
-        c: [f32; 4],
-        feather: f32,
-        edges: &wgpu::TextureView,
+        shape: RasterShape<'_>,
     ) -> Selection {
+        let RasterShape {
+            outside,
+            b,
+            c,
+            feather,
+            edges,
+        } = shape;
         if coords.is_empty() {
             return Selection::from_parts(base, outside);
         }

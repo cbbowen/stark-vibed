@@ -410,16 +410,16 @@ impl Compositor {
         });
 
         let instances = alloc_instances(device, 1);
-        let (comp_color_view, comp_aux_view, media_bg) = make_offscreen(
+        let (comp_color_view, comp_aux_view, media_bg) = make_offscreen(OffscreenDesc {
             device,
             size,
             color_format,
             aux_format,
-            &media_bgl,
-            &media_buf,
-            &surface,
-            &environment,
-        );
+            media_bgl: &media_bgl,
+            media_buf: &media_buf,
+            surface: &surface,
+            environment: &environment,
+        });
 
         Self {
             ctx: ctx.clone(),
@@ -459,43 +459,38 @@ impl Compositor {
         self.media = media;
     }
 
+    /// Rebuild the offscreen composite targets and the media bind group from the
+    /// compositor's current state. Every caller previously spelled out the same eight
+    /// fields and the same three assignments.
+    fn rebuild_offscreen(&mut self) {
+        let (c, a, bg) = make_offscreen(OffscreenDesc {
+            device: &self.ctx.device,
+            size: self.size,
+            color_format: self.color_format,
+            aux_format: self.aux_format,
+            media_bgl: &self.media_bgl,
+            media_buf: &self.media_buf,
+            surface: &self.surface,
+            environment: &self.environment,
+        });
+        self.comp_color_view = c;
+        self.comp_aux_view = a;
+        self.media_bg = bg;
+    }
+
     /// Swap the canvas surface (bump), rebuilding the media bind group so the next
     /// render shades against it (DESIGN.md §6.4). A view-time swap — the composited
     /// tiles are untouched.
     pub fn set_surface(&mut self, surface: Surface) {
         self.surface = surface;
-        let (c, a, bg) = make_offscreen(
-            &self.ctx.device,
-            self.size,
-            self.color_format,
-            self.aux_format,
-            &self.media_bgl,
-            &self.media_buf,
-            &self.surface,
-            &self.environment,
-        );
-        self.comp_color_view = c;
-        self.comp_aux_view = a;
-        self.media_bg = bg;
+        self.rebuild_offscreen();
     }
 
     /// Swap the HDR lighting environment, rebuilding the media bind group so the
     /// next render samples it (DESIGN.md §6.3).
     pub fn set_environment(&mut self, environment: Environment) {
         self.environment = environment;
-        let (c, a, bg) = make_offscreen(
-            &self.ctx.device,
-            self.size,
-            self.color_format,
-            self.aux_format,
-            &self.media_bgl,
-            &self.media_buf,
-            &self.surface,
-            &self.environment,
-        );
-        self.comp_color_view = c;
-        self.comp_aux_view = a;
-        self.media_bg = bg;
+        self.rebuild_offscreen();
     }
 
     /// Composite `tiles`, light the result into `target` under `view`, and outline
@@ -508,23 +503,12 @@ impl Compositor {
         tiles: &[(TileCoord, TilePairHandle, f32)],
         selection: &Selection,
     ) {
-        let device = &self.ctx.device;
         if view.viewport != self.size {
             self.size = view.viewport;
-            let (c, a, bg) = make_offscreen(
-                device,
-                self.size,
-                self.color_format,
-                self.aux_format,
-                &self.media_bgl,
-                &self.media_buf,
-                &self.surface,
-                &self.environment,
-            );
-            self.comp_color_view = c;
-            self.comp_aux_view = a;
-            self.media_bg = bg;
+            self.rebuild_offscreen();
         }
+        // Bound after the resize, which needs `&mut self`.
+        let device = &self.ctx.device;
 
         // View uniform (canvas px -> NDC).
         let (scale, translate) = view.canvas_to_ndc();
@@ -800,18 +784,32 @@ fn alloc_instances(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
     })
 }
 
-/// (Re)create the offscreen composite targets and the media bind group.
-#[allow(clippy::too_many_arguments)]
-fn make_offscreen(
-    device: &wgpu::Device,
+/// The inputs to [`make_offscreen`]. Every field is a `Compositor` field, which is
+/// why [`Compositor::rebuild_offscreen`] exists — only the constructor, which has no
+/// `self` yet, fills one in by hand.
+struct OffscreenDesc<'a> {
+    device: &'a wgpu::Device,
     size: Extent2,
     color_format: wgpu::TextureFormat,
     aux_format: wgpu::TextureFormat,
-    media_bgl: &wgpu::BindGroupLayout,
-    media_buf: &wgpu::Buffer,
-    surface: &Surface,
-    environment: &Environment,
-) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
+    media_bgl: &'a wgpu::BindGroupLayout,
+    media_buf: &'a wgpu::Buffer,
+    surface: &'a Surface,
+    environment: &'a Environment,
+}
+
+/// (Re)create the offscreen composite targets and the media bind group.
+fn make_offscreen(d: OffscreenDesc<'_>) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
+    let OffscreenDesc {
+        device,
+        size,
+        color_format,
+        aux_format,
+        media_bgl,
+        media_buf,
+        surface,
+        environment,
+    } = d;
     let extent = wgpu::Extent3d {
         width: size.width.max(1),
         height: size.height.max(1),

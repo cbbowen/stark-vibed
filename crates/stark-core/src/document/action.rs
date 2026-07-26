@@ -344,11 +344,13 @@ impl history::Action for Action {
                     // stroke (DESIGN.md §6.8) — it is read from the state being
                     // folded over, so replay reproduces it exactly.
                     let tiles = ctx.stroke.render(
-                        &ctx.pool,
-                        &ctx.assets,
-                        &layer.tiles,
+                        crate::gpu::stroke::StrokeScene {
+                            pool: &ctx.pool,
+                            assets: &ctx.assets,
+                            base: &layer.tiles,
+                            selection: &state.selection,
+                        },
                         rec,
-                        &state.selection,
                     );
                     state.with_layer_at(
                         idx,
