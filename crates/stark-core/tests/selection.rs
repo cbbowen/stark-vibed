@@ -1,10 +1,15 @@
 //! Selections: the mask that gates where the brush may paint (DESIGN.md §6.8).
 //!
-//! These assert the properties the feature actually rests on, rather than one blessed
-//! image: paint lands inside and nowhere outside; the boolean modes compose; the
-//! *op*, not the mask, is what history and the save file carry, so undo/redo, replay
-//! and load all reproduce the same pixels; and the mask gates the brush-dynamics path
-//! (the sequential stamp loop) as well as the plain swept deposit.
+//! Most of these assert the properties the feature rests on rather than an image:
+//! paint lands inside and nowhere outside; the boolean modes compose; the *op*, not
+//! the mask, is what history and the save file carry, so undo/redo, replay and load
+//! all reproduce the same pixels; and the mask gates the brush-dynamics path (the
+//! sequential stamp loop) as well as the plain swept deposit.
+//!
+//! The two **goldens** at the end cover what point probes cannot: the actual shape of
+//! the mask across a whole frame — the analytic silhouettes, the width and profile of
+//! the feather ramp, continuity across tile boundaries, and the outline overlay — for
+//! each of the two masking sites in turn (DESIGN.md §9).
 
 mod common;
 
@@ -438,4 +443,110 @@ fn feathered_edge_fades_the_stroke() {
         (redness(&soft, deep) - redness(&hard, deep)).abs() < 20,
         "feather must not change the selection's interior"
     );
+}
+
+// --- goldens (DESIGN.md §9) --------------------------------------------------
+//
+// Point probes can say "paint here, none there"; they cannot say what the mask
+// *looks like*. These two do: the analytic silhouettes and how the three boolean
+// modes compose into one, the width and profile of the feather ramp, that the mask is
+// continuous where it crosses a tile boundary (it is rasterized per tile, so a
+// discontinuity there is a real failure mode — §6.4), and the outline overlay, which
+// nothing else renders. One golden per masking site, since they are separate code.
+
+/// A stripe field covering the whole viewport, in alternating colours — the paint the
+/// selection stencils. Broad and edge-to-edge on purpose: every band crosses the mask
+/// boundary, and the bands run past the viewport so no stroke cap is mistaken for a
+/// mask edge.
+fn paint_stripes(engine: &mut stark_core::Engine) {
+    const TEAL: [f32; 4] = [0.0, 0.55, 0.6, 1.0];
+    for (i, y) in [-75.0f32, -25.0, 25.0, 75.0].into_iter().enumerate() {
+        let color = if i % 2 == 0 { RED } else { TEAL };
+        paint(
+            engine,
+            color,
+            22.0,
+            &[Vec2::new(-140.0, y), Vec2::new(140.0, y)],
+        );
+    }
+}
+
+#[test]
+fn golden_selection_stencil() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // One selection built from all three composing modes and all three analytic
+    // shapes, feathered enough that the ramp is several pixels wide on screen.
+    const FEATHER: f32 = 6.0;
+    let op = |mode, shape| SelectionOp::new(mode, shape, FEATHER);
+    engine.process(InputCommand::Select(op(
+        SelectionMode::Replace,
+        rect(Vec2::new(-100.0, -74.0), Vec2::new(6.0, 74.0)),
+    )));
+    engine.process(InputCommand::Select(op(
+        SelectionMode::Union,
+        SelectionShape::Ellipse {
+            center: Vec2::new(46.0, -4.0),
+            radii: Vec2::new(58.0, 62.0),
+        },
+    )));
+    engine.process(InputCommand::Select(op(
+        SelectionMode::Subtract,
+        SelectionShape::Lasso(vec![
+            Vec2::new(-46.0, -90.0),
+            Vec2::new(22.0, 14.0),
+            Vec2::new(-84.0, 34.0),
+        ]),
+    )));
+
+    // With the mask in force, the stripes come out cut to its silhouette, with the
+    // feather visible as a fade at every crossing — and the outline drawn over it.
+    paint_stripes(&mut engine);
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("selection_stencil", &img, 6);
+}
+
+#[test]
+fn golden_selection_smear() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // The brush-dynamics path masks somewhere else entirely — the stamp loop's
+    // deposit/pickup, against a mask gathered into the stroke's region (§6.8) — so it
+    // gets its own frame. Stripes go down *first*, unmasked, to give the tool paint to
+    // carry; the selection then decides where that paint may be moved.
+    paint_stripes(&mut engine);
+    engine.process(InputCommand::Select(SelectionOp::new(
+        SelectionMode::Replace,
+        SelectionShape::Ellipse {
+            center: Vec2::ZERO,
+            radii: Vec2::new(84.0, 66.0),
+        },
+        5.0,
+    )));
+
+    // A conservative smudge: no paint of its own, so everything that moves was lifted
+    // from the canvas — and none of it may cross the boundary in either direction.
+    let mut smudge = brush([0.0, 0.0, 0.0, 1.0], 26.0);
+    smudge.dynamics = BrushDynamics {
+        add: 0.0,
+        lift: 0.7,
+        deposit: 0.85,
+        ..BrushDynamics::default()
+    };
+    stroke_with(
+        &mut engine,
+        smudge,
+        &[
+            Vec2::new(-120.0, -40.0),
+            Vec2::new(-40.0, 30.0),
+            Vec2::new(40.0, -30.0),
+            Vec2::new(120.0, 40.0),
+        ],
+    );
+
+    let img = engine.render_to_image(PAPER);
+    assert_golden("selection_smear", &img, 6);
 }
