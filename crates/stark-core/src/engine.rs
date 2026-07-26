@@ -19,7 +19,7 @@ use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
     Compositor, Environment, EnvironmentId, GpuContext, SelectionRenderer, StrokeRenderer, Surface,
-    SurfaceId, TilePairHandle, TilePool,
+    StrokeSpans, SurfaceId, TilePairHandle, TilePool,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -60,6 +60,38 @@ pub struct ObservableState {
     pub selection_feather: f32,
 }
 
+/// Colour the live tail is drawn in under the `debug-unfrozen` feature.
+/// Full-opacity magenta: it has to read against paint of any hue, and against the
+/// stroke's own colour in particular.
+#[cfg(feature = "debug-unfrozen")]
+const DEBUG_UNFROZEN_COLOR: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
+
+/// The part of the in-flight stroke that has stopped changing, already composited
+/// onto the committed document.
+///
+/// A live stroke is re-rendered on every pointer move, and rendering it costs
+/// (segments × tiles it covers) — both of which grow with its length, so a long
+/// stroke gets quadratically expensive to keep drawing. But the fitter freezes
+/// control points behind the pointer and never revises them
+/// ([`PathFitter::frozen_spans`](crate::path::PathFitter::frozen_spans)), so the
+/// spans they determine are final: render them once, keep the result, and each move
+/// only has to draw the short live tail over it. Work per move then follows the tail
+/// rather than the stroke.
+struct FrozenHead {
+    /// How many leading spans `state` already has drawn on it.
+    spans: usize,
+    /// Arc length at the end of those spans — where the tail's `dist` resumes.
+    /// Not recoverable from `spans` alone, and the `drain` falloff and colour
+    /// dynamics both read it (see `gpu::stroke::StrokeSpans`).
+    dist: f32,
+    /// The brush state the tail must resume from, for a stroke that runs the
+    /// sequential stamp loop (`lift`/`deposit`/`charge`). `None` for the swept path,
+    /// which carries nothing between segments. See
+    /// [`ToolState`](crate::gpu::stroke::ToolState).
+    tool: Option<crate::gpu::stroke::ToolState>,
+    state: DocState,
+}
+
 pub struct Engine {
     gpu: GpuContext,
     target_format: wgpu::TextureFormat,
@@ -94,6 +126,12 @@ pub struct Engine {
     /// Live preview of the in-flight stroke, composited in place of the
     /// committed state while painting (DESIGN.md §6.2). `None` when idle.
     preview: Option<DocState>,
+    /// The settled head of the in-flight stroke, already rendered (see
+    /// [`FrozenHead`]).
+    frozen_head: Option<FrozenHead>,
+    /// Raw pointer reports of the in-flight stroke, dumped on release under the
+    /// `debug-unfrozen` feature so a misfit stroke can be replayed as a test.
+    debug_samples: Vec<crate::command::InputSample>,
     actor: ActorId,
     clock: u64,
     next_layer: u64,
@@ -162,6 +200,8 @@ impl Engine {
             timeline,
             session,
             preview: None,
+            frozen_head: None,
+            debug_samples: Vec::new(),
             actor: ActorId::SOLO,
             clock: 0,
             next_layer: 1,
@@ -172,6 +212,17 @@ impl Engine {
 
     /// Apply one input command (DESIGN.md §4).
     pub fn process(&mut self, command: InputCommand) {
+        // The frozen head caches pixels composited onto *a particular document* for
+        // *a particular stroke*, and neither of those is visible from the head
+        // itself. It is only ever legitimately reused across consecutive
+        // `StrokeTo`s; anything else may have replaced the document under it — a
+        // commit, an undo, a remote merge, a layer switch — or started a different
+        // stroke entirely, and reusing it then composites the live tail onto a stale
+        // canvas. Dropping it on every other command costs one rebuild and rules out
+        // the whole class of staleness rather than enumerating the ways it arises.
+        if !matches!(command, InputCommand::StrokeTo { .. }) {
+            self.frozen_head = None;
+        }
         match command {
             // One gesture lifecycle for both kinds of tool (DESIGN.md §6.8): the
             // selection tools build an op where the brush builds a stroke, and both
@@ -183,6 +234,8 @@ impl Engine {
                 } else {
                     let seed = self.clock;
                     self.session.start_stroke(tool, sample, seed);
+                    self.debug_samples.clear();
+                    self.debug_samples.push(sample);
                     self.refresh_preview();
                 }
             }
@@ -192,6 +245,9 @@ impl Engine {
                     self.refresh_selection_preview();
                 } else {
                     self.session.stroke_to(sample);
+                    if cfg!(feature = "debug-unfrozen") {
+                        self.debug_samples.push(sample);
+                    }
                     self.refresh_preview();
                 }
             }
@@ -201,6 +257,7 @@ impl Engine {
                         self.commit(ActionKind::Select(op));
                     }
                 } else if let Some(rec) = self.session.end_stroke() {
+                    self.log_debug_samples();
                     self.commit(ActionKind::CommitStroke(rec));
                 }
                 self.preview = None;
@@ -396,6 +453,7 @@ impl Engine {
     /// Replace the document by replaying a loaded file's action log. The full
     /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
     pub fn load_document(&mut self, file: &DocumentFile) {
+        self.frozen_head = None;
         self.reset_document();
         // Match the document's surface before replaying — it affects deposition
         // (DESIGN.md §6.4). Update the id first; the rebuild below picks it up.
@@ -596,6 +654,8 @@ impl Engine {
     /// duplicates are rejected by id. Advances the Lamport clock past the
     /// remote action so future local ids order after everything seen.
     pub fn merge_remote(&mut self, action: Action) -> bool {
+        // Replaces the document the frozen head was composited onto.
+        self.frozen_head = None;
         self.clock = self.clock.max(action.id.lamport + 1);
         if let ActionKind::AddLayer { id, .. } = &action.kind {
             self.next_layer = self.next_layer.max(id.0 + 1);
@@ -807,27 +867,137 @@ impl Engine {
     fn refresh_preview(&mut self) {
         let Some(rec) = self.session.preview_record() else {
             self.preview = None;
+            self.frozen_head = None;
             return;
         };
-        self.preview = Some(self.render_stroke(&rec));
+        let frozen = self.session.frozen_spans();
+        let head = match self.frozen_head.take() {
+            // Advance the head over the spans that have settled since last time.
+            Some(head) if head.spans <= frozen => head,
+            // Nothing yet, or the fit went backwards (a new stroke): start over from
+            // the committed document, with a fresh (uncharged) brush.
+            _ => FrozenHead {
+                spans: 0,
+                dist: 0.0,
+                tool: None,
+                state: self.timeline.current().clone(),
+            },
+        };
+        let head = if frozen > head.spans {
+            self.advance_head(head, &rec, frozen)
+        } else {
+            head
+        };
+
+        let all = crate::path::span_count(rec.path.len());
+        let tail = StrokeSpans {
+            range: head.spans..all,
+            dist: head.dist,
+        };
+        // The diagnostic recolours only what this move actually redrew, so the seam
+        // between tinted and untinted paint *is* the freezing boundary. Build-time
+        // only (the `debug-unfrozen` feature): a shipping build has no code path that
+        // paints the tail in anything but the stroke's own colour.
+        #[cfg(feature = "debug-unfrozen")]
+        let tinted = {
+            let mut r = rec.clone();
+            r.brush.color = DEBUG_UNFROZEN_COLOR;
+            r
+        };
+        #[cfg(feature = "debug-unfrozen")]
+        let tail_rec = &tinted;
+        #[cfg(not(feature = "debug-unfrozen"))]
+        let tail_rec = &rec;
+        // The tail reaches the end of the stroke, so the state it leaves the brush in
+        // is handed to nobody — it is thrown away and rebuilt from the head on the next
+        // move, which is exactly what makes the tail re-renderable.
+        let (preview, _) =
+            self.render_span_range(&head.state, tail_rec, tail, head.tool.as_ref());
+        self.preview = Some(preview);
+        self.frozen_head = Some(head);
     }
 
-    /// Produce the DocState that committing `rec` would yield, without touching
-    /// history. Shared by live preview here and `Action::apply` via the renderer.
-    fn render_stroke(&self, rec: &StrokeRecord) -> DocState {
-        let base = self.timeline.current();
+    /// Dump the finished stroke's raw input as a pasteable Rust literal.
+    ///
+    /// A misfit seen in the app is otherwise unreproducible: the fit depends on the
+    /// exact sequence of pointer reports — their spacing carries the pen's speed,
+    /// which is what the density policy and the freezing both key off — and no
+    /// synthetic curve stands in for a real hand. This turns one into a test case.
+    fn log_debug_samples(&mut self) {
+        if !cfg!(feature = "debug-unfrozen") || self.debug_samples.is_empty() {
+            return;
+        }
+        // Positions *and* the pen channels. Position alone is not the input: pressure
+        // sizes the brush and tilt steers it, both are fitted as their own least-squares
+        // channels, and a capture without them cannot reproduce a fault in either.
+        let mut lit = String::from("&[");
+        for (i, s) in self.debug_samples.iter().enumerate() {
+            if i > 0 {
+                lit.push(',');
+            }
+            lit.push_str(&format!(
+                "[{:.2},{:.2},{:.3},{:.3},{:.3}]",
+                s.pos.x, s.pos.y, s.pressure, s.tilt.x, s.tilt.y
+            ));
+        }
+        lit.push(']');
+        tracing::info!(
+            samples = self.debug_samples.len(),
+            "raw stroke [x,y,pressure,tiltx,tilty]: {lit}"
+        );
+        self.debug_samples.clear();
+    }
+
+    /// Draw spans `head.spans..frozen` onto the frozen head, so the next move need
+    /// not draw them again.
+    fn advance_head(&self, head: FrozenHead, rec: &StrokeRecord, frozen: usize) -> FrozenHead {
+        let spans = StrokeSpans {
+            range: head.spans..frozen,
+            dist: head.dist,
+        };
+        // The renderer reports where it stopped rather than the caller recomputing it:
+        // arc length is accumulated along the *emitted* polyline, and only the renderer
+        // knows the budget it flattened at (a dynamics brush may have coarsened it), so
+        // a second measurement here could hand the tail a distance the head never
+        // reached — which `drain` and the colour-dynamics noise would both show.
+        let (state, carry) = self.render_span_range(&head.state, rec, spans, head.tool.as_ref());
+        FrozenHead {
+            spans: frozen,
+            dist: carry.dist,
+            // `None` from a range means "unchanged", not "reset" — a range with no
+            // geometry runs nothing and leaves the brush as it found it.
+            tool: carry.tool.or(head.tool),
+            state,
+        }
+    }
+
+    /// Render one span range of the in-flight stroke over an arbitrary base, resuming
+    /// the brush from `tool` and reporting what the next range must resume from.
+    ///
+    /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
+    /// the live preview and the `Action::apply` that replaces it draw the same pixels.
+    fn render_span_range(
+        &self,
+        base: &DocState,
+        rec: &StrokeRecord,
+        spans: StrokeSpans,
+        tool: Option<&crate::gpu::stroke::ToolState>,
+    ) -> (DocState, crate::gpu::stroke::StrokeCarry) {
+        let carry_only = |dist| crate::gpu::stroke::StrokeCarry { dist, tool: None };
         let Some(idx) = base.layer_index(rec.layer) else {
-            return base.clone();
+            return (base.clone(), carry_only(spans.dist));
         };
         let layer = base.layer_at(idx).clone();
-        let tiles = self.stroke.render(
+        let (tiles, carry) = self.stroke.render_range(
             &self.pool,
             &self.assets,
             &layer.tiles,
             rec,
             &base.selection,
+            spans,
+            tool,
         );
-        base.with_layer_at(idx, Layer { tiles, ..layer })
+        (base.with_layer_at(idx, Layer { tiles, ..layer }), carry)
     }
 
     /// Rasterize the in-flight selection gesture onto a copy of the committed state,

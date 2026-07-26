@@ -5,11 +5,27 @@ mod common;
 
 use common::*;
 use stark_core::command::{InputCommand, InputSample};
-use stark_core::document::Tool;
+use stark_core::document::{BrushParams, Tool};
 use stark_core::geom::Vec2;
 use stark_core::Engine;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+
+/// A brush that runs the **sequential stamp loop** rather than the swept fast path:
+/// it lifts paint off the canvas onto the tool and lays it back down, so what it
+/// draws at any point depends on everywhere it has already been (DESIGN.md §6.2).
+///
+/// That carried state is the whole reason this path is worth testing separately —
+/// the swept deposit composes freely, so cutting its path anywhere is trivially
+/// safe, while the loop is only cuttable because `gpu::stroke::ToolState` remembers
+/// the reservoir and the pickup cadence across the cut.
+fn smear_brush(color: [f32; 4], radius: f32) -> BrushParams {
+    let mut b = brush(color, radius);
+    b.dynamics.lift = 0.6;
+    b.dynamics.deposit = 0.5;
+    b.dynamics.add = 0.5;
+    b
+}
 
 fn paint_stroke(engine: &mut Engine) {
     paint(
@@ -40,6 +56,12 @@ fn center(img: &stark_core::RgbaImage) -> [u8; 4] {
     img.pixel(img.width / 2, img.height / 2)
 }
 
+// Every test that reads the live preview's *colour* — either directly, or by holding
+// it against what commits — is gated off under `debug-unfrozen`, which repaints the
+// live tail magenta by design (see this crate's `Cargo.toml`). The tint has its own
+// test, gated the other way.
+
+#[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn live_preview_shows_stroke_before_commit() {
     let Some(mut engine) = engine_or_skip() else {
@@ -58,6 +80,296 @@ fn live_preview_shows_stroke_before_commit() {
     assert!(engine.observe().is_stroking);
     let preview = engine.render_to_image(BG);
     assert!(is_red(center(&preview)), "preview should show the stroke");
+}
+
+/// The live preview draws a long stroke in two pieces — a frozen head kept from
+/// earlier moves, plus the live tail over it — while the commit draws the whole
+/// thing in one pass (DESIGN.md §6.2, `engine::FrozenHead`). Those must agree, or
+/// the stroke would visibly change at the moment the pointer is released.
+///
+/// This is the property that makes cutting the path safe at all: the swept deposit
+/// is a definite integral per segment and composes by summing optical depth, so
+/// where the path is cut cannot matter. A stroke long enough to actually freeze
+/// several times is the point — a short one never exercises the seam.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_split_live_preview_matches_the_single_pass_commit() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(InputCommand::SetBrush(brush(RED, 12.0)));
+    let path: Vec<Vec2> = (0..120)
+        .map(|i| {
+            let t = i as f32 * 0.05;
+            Vec2::new(t * 22.0 - 60.0, (t * 1.1).sin() * 30.0)
+        })
+        .collect();
+    let mut it = path.iter();
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    for &p in it {
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
+    }
+
+    let preview = engine.render_to_image(BG);
+    engine.process(InputCommand::EndStroke);
+    let committed = engine.render_to_image(BG);
+
+    // Both paths run the same shaders over the same segments; only the number of
+    // compositing passes differs, so they agree to accumulated float rounding — a
+    // handful of texels at the seam land a level or two apart. What would show if
+    // the split were actually wrong is a *visible* discontinuity, so bound the
+    // magnitude at zero rather than the count: no texel may be off by 8 levels,
+    // however many are off by 2.
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 8),
+        0.0,
+        "split preview visibly differs from the single-pass commit ({:.4}% of px over tol 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}
+
+/// The unfrozen-tail tint is a *view* setting: it must change the live preview and
+/// nothing else, so a stroke drawn under `debug-unfrozen` still commits in its real
+/// colour. The only test here that wants the feature on.
+#[cfg(feature = "debug-unfrozen")]
+#[test]
+fn tinting_the_live_tail_does_not_change_what_commits() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(InputCommand::SetBrush(brush(RED, 12.0)));
+    let path: Vec<Vec2> = (0..60)
+        .map(|i| Vec2::new(i as f32 * 2.0 - 60.0, (i as f32 * 0.1).sin() * 20.0))
+        .collect();
+    let mut it = path.iter();
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    for &p in it {
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
+    }
+
+    let preview = engine.render_to_image(BG);
+    engine.process(InputCommand::EndStroke);
+    let committed = engine.render_to_image(BG);
+    // Mid-stroke the tail is magenta, so the preview differs from what lands — which
+    // also rules out the commit having simply kept the preview's pixels.
+    assert!(
+        !images_match(&preview, &committed, 8),
+        "tint had no visible effect on the preview"
+    );
+    // And what landed is the stroke's own colour: a tint that reached the stroke
+    // *record* would repaint the whole stroke magenta in the single commit pass.
+    assert!(
+        is_red(center(&committed)),
+        "the tint leaked into the committed stroke"
+    );
+}
+
+/// The same seam check as above, but on a stroke captured from the app that
+/// visibly misfits — slow and dense (305 reports over 334px), which is nothing like
+/// the synthetic input the other cases use.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_real_captured_stroke_previews_as_it_commits() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let path: Vec<Vec2> = stark_core::testdata::HAIRPIN_STROKE
+        .iter()
+        .map(|&[x, y]| Vec2::new(x, y))
+        .collect();
+    engine.process(InputCommand::SetBrush(brush(RED, 16.0)));
+    let mut it = path.iter();
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    for &p in it {
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
+    }
+    let preview = engine.render_to_image(BG);
+    engine.process(InputCommand::EndStroke);
+    let committed = engine.render_to_image(BG);
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 8),
+        0.0,
+        "split preview visibly differs from the single-pass commit ({:.4}% of px over tol 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}
+
+/// At **every point during** a stroke, the incrementally-composited preview must
+/// equal the one a from-scratch render would give.
+///
+/// The other seam test only checks the final frame, which is the one moment the
+/// incremental path is most likely to be right. This walks a real captured stroke
+/// and compares at many points along it, because a frozen head that has gone wrong
+/// stays wrong — it is never redrawn — so a fault introduced at sample 200 would be
+/// invisible in a check at the end if later spans happen to cover it.
+///
+/// Re-setting the brush doubles as the control: every command but `StrokeTo` drops
+/// the frozen head, so the very next refresh renders the whole stroke in one pass.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn the_incremental_preview_matches_a_fresh_one_throughout() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let path: Vec<Vec2> = stark_core::testdata::LOOP_STROKE
+        .iter()
+        .map(|&[x, y]| Vec2::new(x, y))
+        .collect();
+    engine.process(InputCommand::SetBrush(brush(RED, 14.0)));
+    let mut it = path.iter();
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    for (i, &p) in it.enumerate() {
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
+        if i % 40 != 0 {
+            continue;
+        }
+        let incremental = engine.render_to_image(BG);
+        // The brush it is already using, so nothing about the stroke changes — but
+        // the head is dropped, so this repaint is a single whole-stroke pass.
+        engine.process(InputCommand::SetBrush(brush(RED, 14.0)));
+        let fresh = engine.render_to_image(BG);
+        assert_eq!(
+            frac_exceeding(&incremental, &fresh, 8),
+            0.0,
+            "at sample {i}: incremental preview differs from a fresh render \
+             ({:.4}% of px over tol 2)",
+            frac_exceeding(&incremental, &fresh, 2) * 100.0,
+        );
+    }
+}
+
+/// Lay down something for a smear brush to pick up: two crossing bands of colour,
+/// committed, so the canvas under the test stroke is not blank. A `lift` brush over
+/// bare canvas carries nothing and would exercise none of the reservoir.
+#[cfg(not(feature = "debug-unfrozen"))] // both its callers are seam tests
+fn undercoat(engine: &mut Engine) {
+    paint(
+        engine,
+        [0.1, 0.9, 0.2, 1.0],
+        26.0,
+        &[Vec2::new(-110.0, -40.0), Vec2::new(110.0, -10.0)],
+    );
+    paint(
+        engine,
+        [0.95, 0.85, 0.1, 1.0],
+        26.0,
+        &[Vec2::new(-90.0, 50.0), Vec2::new(100.0, 20.0)],
+    );
+}
+
+/// The seam check for the **stamp loop**: a `lift`/`deposit` stroke drawn as a frozen
+/// head plus a live tail must land the same pixels as the single pass a commit runs.
+///
+/// This is a much stronger claim than the swept case. The swept deposit is a definite
+/// integral per segment that composes by summing optical depth, so where the path is
+/// cut genuinely cannot matter. The loop is *sequential*: each segment reads the
+/// canvas the previous one left and the tool the previous one loaded, so cutting it is
+/// only sound because [`ToolState`](stark_core::gpu::stroke::ToolState) carries the
+/// reservoir — and the travel since the last pickup — across the cut. Get either wrong
+/// and the tail draws with a tool that has forgotten where it has been: a visible step
+/// in colour at the freeze boundary, trailing back across the stroke.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_smear_stroke_previews_as_it_commits() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    undercoat(&mut engine);
+
+    engine.process(InputCommand::SetBrush(smear_brush(RED, 15.0)));
+    let path: Vec<Vec2> = (0..140)
+        .map(|i| {
+            let t = i as f32 * 0.045;
+            Vec2::new(t * 20.0 - 62.0, (t * 1.3).sin() * 34.0)
+        })
+        .collect();
+    let mut it = path.iter();
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    for &p in it {
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
+    }
+
+    let preview = engine.render_to_image(BG);
+    engine.process(InputCommand::EndStroke);
+    let committed = engine.render_to_image(BG);
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 8),
+        0.0,
+        "split smear preview visibly differs from the single-pass commit \
+         ({:.4}% of px over tol 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}
+
+/// [`the_incremental_preview_matches_a_fresh_one_throughout`] for the stamp loop.
+///
+/// Checking only the last frame is far too weak here: a frozen head is never redrawn,
+/// so a reservoir handed over wrong at sample 60 stays wrong on the canvas forever,
+/// and later spans painting over the top could hide it from a check at the end. What
+/// this walks is every handover.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    undercoat(&mut engine);
+
+    engine.process(InputCommand::SetBrush(smear_brush(RED, 15.0)));
+    let path: Vec<Vec2> = stark_core::testdata::C_STROKE
+        .iter()
+        .map(|&[x, y]| Vec2::new(x - 160.0, y - 160.0))
+        .collect();
+    let mut it = path.iter();
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    for (i, &p) in it.enumerate() {
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
+        if i % 30 != 0 {
+            continue;
+        }
+        let incremental = engine.render_to_image(BG);
+        // The brush it is already using, so nothing about the stroke changes — but
+        // the head is dropped, so this repaint runs the whole loop in one pass.
+        engine.process(InputCommand::SetBrush(smear_brush(RED, 15.0)));
+        let fresh = engine.render_to_image(BG);
+        assert_eq!(
+            frac_exceeding(&incremental, &fresh, 8),
+            0.0,
+            "at sample {i}: incremental smear preview differs from a fresh render \
+             ({:.4}% of px over tol 2)",
+            frac_exceeding(&incremental, &fresh, 2) * 100.0,
+        );
+    }
 }
 
 #[test]
@@ -106,3 +418,85 @@ fn stroke_spans_multiple_tiles_via_cow() {
     );
 }
 
+
+/// Per-move cost must not grow with the length of the stroke — which is the whole
+/// point of the frozen head (DESIGN.md §6.2, `engine::FrozenHead`).
+///
+/// Run for **both** render paths. The stamp loop is the case that matters: before it
+/// carried its reservoir across the freeze boundary it re-rendered the whole stroke
+/// every move, and its cost climbed from 0.8 ms to 13 ms over 1200 samples, with the
+/// composite behind it going 6.7 ms → 131 ms because the readback waits on all that
+/// queued work. A brush people actually paint with is a smear brush, so that was the
+/// responsiveness users felt.
+///
+/// The path is a travelling sine, wide and tall enough to keep growing the tile set
+/// the compositor walks. It replaced a spiral, which was the wrong shape to measure
+/// with: a spiral's spans get steadily longer in arc as the radius opens out, so the
+/// live tail — a fixed number of *control points* — covers more and more distance, and
+/// on the stamp loop (whose cost is per flattened segment) that read as growth even
+/// though the head was never being repainted. Under a sine the tail's geometry is
+/// statistically the same at both ends, so what is left is what the test means to
+/// measure. It still catches the regression it exists for: a stroke re-rendered whole
+/// would climb from ~150 segments a move to several thousand.
+fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
+    let size = stark_core::geom::Extent2 { width: 1280, height: 800 };
+    let Ok(mut engine) = pollster::block_on(stark_core::engine::headless_engine(
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        size,
+    )) else {
+        eprintln!("skipping GPU test");
+        return (1.0, 1.0);
+    };
+    engine.process(InputCommand::SetBrush(b));
+    let n = 900usize;
+    let path: Vec<Vec2> = (0..n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            Vec2::new(t * 1180.0 - 590.0, (t * 34.0).sin() * 300.0)
+        })
+        .collect();
+    let mut it = path.iter();
+    engine.process(InputCommand::StartStroke {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    let (mut early, mut late) = (0.0f64, 0.0f64);
+    let (mut ne, mut nl) = (0u32, 0u32);
+    for (i, &p) in it.enumerate() {
+        let at = std::time::Instant::now();
+        engine.process(InputCommand::StrokeTo {
+            sample: InputSample::at(p),
+        });
+        // The readback is what makes this a measurement of the *work*, not just of
+        // encoding it: `process` only queues, so without waiting here a path that
+        // queued ten times the GPU work would look identical.
+        let _ = engine.render_to_image(BG);
+        let ms = at.elapsed().as_secs_f64() * 1000.0;
+        // Skip the middle: the first stretch also pays for warm-up.
+        if i < n / 4 {
+            early += ms;
+            ne += 1;
+        } else if i > n * 3 / 4 {
+            late += ms;
+            nl += 1;
+        }
+    }
+    (early / ne as f64, late / nl as f64)
+}
+
+#[test]
+fn per_move_cost_does_not_grow_with_stroke_length() {
+    for (what, b) in [
+        ("swept", brush(RED, 14.0)),
+        ("stamp loop", smear_brush(RED, 14.0)),
+    ] {
+        let (early, late) = measure_per_move_growth(b);
+        // Generous, because this is a wall-clock measurement on a shared machine. What
+        // it has to catch is *growth*, and the failure it guards against is severalfold.
+        assert!(
+            late < early * 2.0,
+            "{what}: per-move cost grew with stroke length: \
+             {early:.2} ms early vs {late:.2} ms late"
+        );
+    }
+}

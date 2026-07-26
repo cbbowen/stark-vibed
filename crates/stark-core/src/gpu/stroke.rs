@@ -241,6 +241,56 @@ pub struct StrokeRenderer {
     selection: SelectionRenderer,
 }
 
+/// The stamp loop's carried state at a cut point in a stroke (DESIGN.md §6.2).
+///
+/// The sequential loop threads exactly two things from one segment to the next that
+/// do not already live on the canvas: the **tool reservoir** — what paint the tip is
+/// carrying, and where on the tip it sits — and how far the tip has travelled since
+/// it last exchanged with the canvas. Remember those at a span boundary and the rest
+/// of the stroke can be drawn later, over the already-composited head, for the same
+/// result as one pass. That is what lets a `lift`/`deposit`/`charge` brush get the
+/// same incremental repaint the swept path gets.
+///
+/// The reservoir is brush-*local*, which is why this works at all: it says nothing
+/// about where the stroke is, so the region rectangle may change completely between
+/// the piece that produced this state and the piece that resumes from it.
+pub struct ToolState {
+    /// Reservoir colour: per texel, the latent paint (rgb) and its per-unit opacity.
+    color: wgpu::Texture,
+    /// Reservoir aux: per texel, the carried amount and its wetness.
+    aux: wgpu::Texture,
+    /// Travel (canvas px) since the last reservoir pickup. The tool reloads every
+    /// `spacing · radius` of travel and a pickup can only land *between* segments, so
+    /// a range that resumed this at zero would reload early and lay a visible step.
+    since: f32,
+}
+
+impl Drop for ToolState {
+    fn drop(&mut self) {
+        // Destroyed eagerly for the same reason as `ScopedResources`: one of these is
+        // allocated per pointer move, and waiting on JS GC to free them OOMs the tab.
+        // Safe because WebGPU defers the real free until the submitted work that reads
+        // them retires.
+        self.color.destroy();
+        self.aux.destroy();
+    }
+}
+
+/// What a range render leaves behind for the range that resumes after it.
+pub struct StrokeCarry {
+    /// Arc length at the end of the range. Not derivable from the span index — it is
+    /// measured along the flattened polyline — and both the `drain` falloff and the
+    /// colour-dynamics noise read it, so restarting it at zero would make the middle
+    /// of a stroke look like the start of one.
+    pub dist: f32,
+    /// The brush state to resume with, for a stroke that runs the stamp loop. `None`
+    /// means *nothing changed*: the swept path carries no state at all, a range that
+    /// reaches the end of the stroke has nothing following it to hand off to, and a
+    /// range with no geometry leaves the brush as it found it — so a caller holding
+    /// earlier state should keep it rather than treat this as a reset.
+    pub tool: Option<ToolState>,
+}
+
 /// GPU resources scoped to one `render()` call (currently the instance buffer;
 /// per-stroke region textures register here too as dynamics return). They're sized
 /// per-stroke, so — unlike the fixed-`TILE_TEX` tile pool — they can't be recycled,
@@ -521,22 +571,77 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         selection: &Selection,
     ) -> HashTrieMap<TileCoord, TilePairHandle> {
+        self.render_range(
+            pool,
+            assets,
+            base,
+            rec,
+            selection,
+            StrokeSpans::whole(rec),
+            None,
+        )
+        .0
+    }
+
+    /// Render just `spans` of `rec` over `base`, resuming the brush from `tool` — the
+    /// state the preceding range left it in — and returning what a range picking up
+    /// where this one stops must resume from ([`StrokeCarry`]).
+    ///
+    /// This is what makes a live stroke cost its *tail* rather than its whole length
+    /// (DESIGN.md §6.2). On the swept path it is sound because the deposit is a
+    /// definite integral over each segment and composes by summing optical depth, so
+    /// cutting the path at a span boundary and compositing the two halves in order
+    /// gives the same result as one pass — the same property that lets adaptive
+    /// flattening choose segment lengths freely. On the stamp loop it is sound because
+    /// [`ToolState`] carries the only thing the loop threads between segments that is
+    /// not already on the canvas. Adjacent ranges share exactly one flattened point
+    /// (`path::flatten_spans`), so their segments tile with no gap and no overlap.
+    // Wide by nature: the renderer holds only immutable GPU objects, so everything a
+    // stroke is drawn *against* — pool, assets, base tiles, selection — is handed in.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_range(
+        &self,
+        pool: &TilePool,
+        assets: &AssetStore,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        rec: &StrokeRecord,
+        selection: &Selection,
+        spans: StrokeSpans,
+        tool: Option<&ToolState>,
+    ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
+        // Which path the stroke takes — and how finely it flattens — is decided from
+        // the *whole* record, never from the piece in hand. A live tail and the commit
+        // that eventually replaces it have to make the same choice, or releasing the
+        // pointer would visibly redraw the stroke; and both gates below (region size,
+        // stamp count) would otherwise answer differently for a short piece than for
+        // the stroke it belongs to. See [`dynamics_setup`].
+        match dynamics_setup(rec) {
+            Some(tol) => self.render_dynamic(pool, assets, base, rec, selection, spans, tool, tol),
+            None => self.render_swept(pool, assets, base, rec, selection, spans),
+        }
+    }
+
+    /// [`Self::render_range`] through the plain swept fast path: no carried brush
+    /// state at all, so a range needs nothing from its predecessor but the arc length.
+    fn render_swept(
+        &self,
+        pool: &TilePool,
+        assets: &AssetStore,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        rec: &StrokeRecord,
+        selection: &Selection,
+        spans: StrokeSpans,
+    ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
-
-        // Brushes that manipulate existing paint run the sequential stamp loop
-        // (DESIGN.md §6.2); pure-`add` brushes keep the swept fast path below.
-        // `None` (an oversized stroke region) degrades to the fast path too.
-        let d = rec.brush.dynamics;
-        if (d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0)
-            && let Some(map) = self.render_dynamic(pool, assets, base, rec, channels, selection)
-        {
-            return map;
-        }
-
-        let segments = generate_segments(rec);
+        let (segments, end_dist) =
+            generate_segments_in(rec, flatten_tolerance(&rec.brush), spans);
+        let carry = StrokeCarry {
+            dist: end_dist,
+            tool: None,
+        };
         if segments.is_empty() {
-            return base.clone();
+            return (base.clone(), carry);
         }
 
         // The per-stroke instance buffer registers here and is `destroy()`d when this
@@ -775,7 +880,7 @@ impl StrokeRenderer {
         // after submit reclaims them at once (WebGPU keeps the memory until the
         // in-flight work that uses them completes).
         drop(scoped);
-        new_map
+        (new_map, carry)
     }
 
     /// The round tip's prefix-τ texture for a given `hardness`, cached so live
@@ -833,46 +938,58 @@ impl StrokeRenderer {
         view
     }
 
-    /// Render a paint-manipulating stroke via the **sequential swept-exchange
-    /// loop** (DESIGN.md §6.2): composite the base under the stroke into a 1:1
-    /// region, then walk the stroke *in order* on the GPU — the canvas-side
+    /// Render `spans` of a paint-manipulating stroke via the **sequential
+    /// swept-exchange loop** (DESIGN.md §6.2): composite the base under that piece
+    /// into a 1:1 region, then walk it *in order* on the GPU — the canvas-side
     /// exchange swept per flattened segment through the prefix-τ integral (the
     /// same definite-integral footprint as the plain deposit), the 2-D tool
     /// reservoir updated at `spacing · radius` cadence — and slice the evolved
-    /// region back into fresh CoW tiles. Returns `None` when the stroke's region
-    /// exceeds [`MAX_REGION_DIM`]; the caller degrades to the plain swept deposit.
+    /// region back into fresh CoW tiles.
+    ///
+    /// The loop starts from `tool` rather than from a fresh tip when one is given, and
+    /// hands back the state it ends in whenever a further range remains to be drawn,
+    /// so a live stroke redraws only its tail (see [`ToolState`]). `tol` comes from
+    /// [`dynamics_setup`], which has already decided — from the whole record — that
+    /// this stroke runs the loop at all.
+    #[allow(clippy::too_many_arguments)]
     fn render_dynamic(
         &self,
         pool: &TilePool,
         assets: &AssetStore,
         base: &HashTrieMap<TileCoord, TilePairHandle>,
         rec: &StrokeRecord,
-        channels: [f32; 4],
         selection: &Selection,
-    ) -> Option<HashTrieMap<TileCoord, TilePairHandle>> {
-        // The same flattened segments as the fast path; extremely long strokes
-        // re-flatten coarser so the dispatch count stays bounded. First stretch the
-        // length cap to the spacing that would hit the cap exactly, then relax the
-        // error bounds — each doubling roughly halves the count on a curved stroke.
-        // Bounded, and a pure function of the record, so replay matches.
-        let mut segments = generate_segments(rec);
-        if segments.len() > MAX_STAMPS {
-            let total: f32 = segments.iter().map(|s| s.length).sum();
-            let mut tol = flatten_tolerance(&rec.brush);
-            tol.max_len = tol.max_len.max(total / MAX_STAMPS as f32);
-            for _ in 0..8 {
-                segments = generate_segments_tol(rec, tol);
-                if segments.len() <= MAX_STAMPS {
-                    break;
-                }
-                tol = tol.relaxed(2.0);
-            }
-        }
+        spans: StrokeSpans,
+        tool: Option<&ToolState>,
+        tol: crate::path::FlattenTolerance,
+    ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
+        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
+        let channels = self.color_space.rgb_to_channels(rgb);
+        // Nothing follows the range that reaches the end of the stroke, so there is no
+        // reason to snapshot a reservoir for it — which is the common case, since the
+        // live tail is exactly that range and it re-renders every pointer move.
+        let capture = spans.range.end < crate::path::span_count(rec.path.len());
+        let (segments, end_dist) = generate_segments_in(rec, tol, spans);
+        let since0 = tool.map_or(f32::INFINITY, |t| t.since);
+        // A range with no geometry runs no dispatches, so it leaves the brush exactly
+        // as it found it. Handing back `None` says "unchanged" — the caller keeps the
+        // state it passed in rather than paying for a copy of it.
         if segments.is_empty() {
-            return Some(base.clone());
+            return (
+                base.clone(),
+                StrokeCarry {
+                    dist: end_dist,
+                    tool: None,
+                },
+            );
         }
         let coords = affected_tiles(&segments);
-        let (halo, lo, region_origin, w, h) = region_rect(&coords)?;
+        // The range's region is a subset of the whole stroke's, which `dynamics_setup`
+        // has already bounded, so this cannot be the oversized case — only the empty
+        // one, and `segments` is non-empty.
+        let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
+            return (base.clone(), StrokeCarry { dist: end_dist, tool: None });
+        };
 
         let kit = &self.dynamics;
         let device = &self.ctx.device;
@@ -1052,18 +1169,28 @@ impl StrokeRenderer {
         let dsize = (2.0 * std::f32::consts::SQRT_2 * (rmax + lmax * 0.5 + 1.5)).ceil() as u32;
         let under_color = make_tex(&mut scoped, (dsize, dsize), loop_usage, "stark dynamics under color");
         let under_aux = make_tex(&mut scoped, (dsize, dsize), loop_usage, "stark dynamics under aux");
-        // The first reservoir is initialized by a render clear (the driver does the
-        // f16 encode), hence the extra RENDER_ATTACHMENT.
-        let brush_usage = loop_usage | wgpu::TextureUsages::RENDER_ATTACHMENT;
-        let bres = (BRUSH_RES, BRUSH_RES);
-        let brush_color = [
-            make_tex(&mut scoped, bres, brush_usage, "stark dynamics brush color a"),
-            make_tex(&mut scoped, bres, brush_usage, "stark dynamics brush color b"),
+        // A stroke that starts fresh initializes its first reservoir by a render clear
+        // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
+        // a [`ToolState`] copies into it instead, hence the COPY pair — which also
+        // carries the end state back out.
+        let brush_usage = loop_usage
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST;
+        let brush_tex = |scoped: &mut ScopedResources, label: &'static str| {
+            scoped.texture(device.create_texture(&reservoir_desc(label, brush_usage)))
+        };
+        let brush_color_tex = [
+            brush_tex(&mut scoped, "stark dynamics brush color a"),
+            brush_tex(&mut scoped, "stark dynamics brush color b"),
         ];
-        let brush_aux = [
-            make_tex(&mut scoped, bres, brush_usage, "stark dynamics brush aux a"),
-            make_tex(&mut scoped, bres, brush_usage, "stark dynamics brush aux b"),
+        let brush_aux_tex = [
+            brush_tex(&mut scoped, "stark dynamics brush aux a"),
+            brush_tex(&mut scoped, "stark dynamics brush aux b"),
         ];
+        let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+        let brush_color = [view_of(&brush_color_tex[0]), view_of(&brush_color_tex[1])];
+        let brush_aux = [view_of(&brush_aux_tex[0]), view_of(&brush_aux_tex[1])];
         // The segment's swept reservoir prefix (fp32, so the per-fragment difference
         // keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a
         // single buffer serves: nothing reads last segment's bake.
@@ -1087,7 +1214,20 @@ impl StrokeRenderer {
         };
         let bake_load = make_bake("stark dynamics bake load");
         let bake_latm = make_bake("stark dynamics bake latm");
-        {
+        if let Some(t) = tool {
+            // Resume: the tip arrives at this piece carrying exactly what it carried
+            // when the previous piece stopped.
+            encoder.copy_texture_to_texture(
+                t.color.as_image_copy(),
+                brush_color_tex[0].as_image_copy(),
+                RESERVOIR_EXTENT,
+            );
+            encoder.copy_texture_to_texture(
+                t.aux.as_image_copy(),
+                brush_aux_tex[0].as_image_copy(),
+                RESERVOIR_EXTENT,
+            );
+        } else {
             // Init: latent = the brush's own colour, per-unit opacity = its alpha;
             // the carried amount starts at the pre-`charge` glob (0 = empty tool).
             let d = rec.brush.dynamics;
@@ -1133,7 +1273,8 @@ impl StrokeRenderer {
         // ---- The dispatch plan (segments + interleaved pickups), one 256-byte
         // slot each (dynamic uniform offsets — the standard way to vary a uniform
         // across dispatches within one pass).
-        let plan = dynamics_plan(rec, &segments, region_origin, dsize, channels);
+        let (plan, since_end) =
+            dynamics_plan(rec, &segments, region_origin, dsize, channels, since0);
         const STRIDE: usize = 256;
         const SLOT: usize = 144; // sizeof the `Stamp` uniform (9 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
@@ -1254,6 +1395,11 @@ impl StrokeRenderer {
         // One compute pass; the implicit barriers between dispatches give the
         // sequential semantics, and usage scopes are per-dispatch, so the region
         // may be sampled by one dispatch and storage-written by the next.
+        //
+        // `cur` outlives the pass: it names the reservoir texture holding the tool's
+        // state, so after the last dispatch it names the state this piece ends in —
+        // which is what the next piece has to resume from.
+        let mut cur = 0usize;
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("stark dynamics stamp loop"),
@@ -1267,10 +1413,8 @@ impl StrokeRenderer {
             // every pipeline switch: changing to a pipeline whose group-0 layout
             // differs invalidates the groups above it, and both consumers are
             // reached only across such a switch.
-            // `cur` = the reservoir texture holding the current tool state: each
-            // pickup reads `cur` and writes the other, then flips; the segment
+            // Each pickup reads `cur` and writes the other, then flips; the segment
             // bakes in between read `cur` (the post-pickup state).
-            let mut cur = 0usize;
             for (i, d) in plan.iter().enumerate() {
                 let off = (i * STRIDE) as u32;
                 if d.pickup {
@@ -1302,6 +1446,29 @@ impl StrokeRenderer {
                 }
             }
         }
+
+        // ---- Remember the tool. Copied rather than aliased: the loop's own reservoir
+        // textures are scoped to this call and destroyed at the end of it, and the
+        // range that resumes will write its first pickup straight into whatever it is
+        // handed. 64² rgba16f, so the copy is ~32 KB — nothing beside the region work
+        // it saves the next pointer move.
+        let tool_out = capture.then(|| {
+            let mut copy_out = |src: &wgpu::Texture, label: &'static str| {
+                let usage = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+                let dst = device.create_texture(&reservoir_desc(label, usage));
+                encoder.copy_texture_to_texture(
+                    src.as_image_copy(),
+                    dst.as_image_copy(),
+                    RESERVOIR_EXTENT,
+                );
+                dst
+            };
+            ToolState {
+                color: copy_out(&brush_color_tex[cur], "stark tool state color"),
+                aux: copy_out(&brush_aux_tex[cur], "stark tool state aux"),
+                since: since_end,
+            }
+        });
 
         // ---- Write-back: slice each affected tile's full TILE_TEX block out of
         // the shared region → aprons stay bit-identical to neighbour interiors
@@ -1361,9 +1528,40 @@ impl StrokeRenderer {
         self.ctx.queue.submit([encoder.finish()]);
         // Destroy the per-stroke region/reservoir textures + buffers now (safe:
         // WebGPU defers the real free past the submitted work) — see the
-        // `ScopedResources` docs for why waiting on JS GC OOMs the tab.
+        // `ScopedResources` docs for why waiting on JS GC OOMs the tab. `tool_out` is
+        // deliberately *not* among them: it outlives this call by design.
         drop(scoped);
-        Some(new_map)
+        (
+            new_map,
+            StrokeCarry {
+                dist: end_dist,
+                tool: tool_out,
+            },
+        )
+    }
+}
+
+/// The reservoir textures' shape — [`BRUSH_RES`]² of the tile colour format, which
+/// is what makes a [`ToolState`] copyable into and out of the loop's ping-pong.
+const RESERVOIR_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
+    width: BRUSH_RES,
+    height: BRUSH_RES,
+    depth_or_array_layers: 1,
+};
+
+fn reservoir_desc(
+    label: &'static str,
+    usage: wgpu::TextureUsages,
+) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some(label),
+        size: RESERVOIR_EXTENT,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage,
+        view_formats: &[],
     }
 }
 
@@ -1392,7 +1590,7 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// step — but a segment is swept with *constant* attributes, so any brush quantity
 /// that varies with distance travelled and is applied per segment (rather than
 /// recovered per fragment, as the colour-dynamics arc is) needs a length cap too.
-fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
+pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // `drain` fades flow/height/wet/opacity by `drain · dist`, sampled at the
     // segment midpoint: cap the step it can take across one segment at ~2%.
@@ -1415,21 +1613,55 @@ fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     tol
 }
 
+/// The whole stroke's swept segments at an explicit budget — the swept-exchange
+/// loop re-flattens coarser when a stroke would otherwise exceed [`MAX_STAMPS`].
+fn generate_segments_tol(rec: &StrokeRecord, tol: crate::path::FlattenTolerance) -> Vec<Segment> {
+    generate_segments_in(rec, tol, StrokeSpans::whole(rec)).0
+}
+
+/// Which part of a stroke to build segments for, and the arc length its first
+/// sample carries.
+///
+/// `dist` is not derivable from `range` — it is the arc length accumulated along
+/// everything *before* it — so an incremental caller has to carry it forward. It
+/// matters because the `drain` falloff and the colour-dynamics noise are both
+/// parameterized by distance travelled: restarting it at zero would make the tail
+/// of a stroke look like the head of one.
+#[derive(Clone, Debug)]
+pub struct StrokeSpans {
+    pub range: std::ops::Range<usize>,
+    pub dist: f32,
+}
+
+impl StrokeSpans {
+    /// The whole stroke, from the beginning.
+    pub fn whole(rec: &StrokeRecord) -> Self {
+        StrokeSpans {
+            range: 0..crate::path::span_count(rec.path.len()),
+            dist: 0.0,
+        }
+    }
+}
+
 /// Build swept segments from the fitted control points (DESIGN.md §6.2): flatten
 /// the curve adaptively, then make each polyline edge a segment. The one-way load
 /// reservoir (`drain`) depletes with arc distance; radius follows pressure.
-fn generate_segments(rec: &StrokeRecord) -> Vec<Segment> {
-    generate_segments_tol(rec, flatten_tolerance(&rec.brush))
-}
-
-/// [`generate_segments`] with an explicit budget — the swept-exchange loop
-/// re-flattens coarser when a stroke would otherwise exceed [`MAX_STAMPS`].
-fn generate_segments_tol(rec: &StrokeRecord, tol: crate::path::FlattenTolerance) -> Vec<Segment> {
+///
+/// Returns the range's segments plus the arc length at its end — measured on the
+/// emitted polyline rather than recomputed, so the range that resumes from it starts
+/// on the exact accumulator these segments were built with.
+fn generate_segments_in(
+    rec: &StrokeRecord,
+    tol: crate::path::FlattenTolerance,
+    spans: StrokeSpans,
+) -> (Vec<Segment>, f32) {
     let b = &rec.brush;
-    let pts = crate::path::flatten(&rec.path, tol);
+    let dist0 = spans.dist;
+    let pts = crate::path::flatten_spans(&rec.path, spans.range, dist0, tol);
+    let end_dist = pts.last().map_or(dist0, |p| p.dist);
     let mut segs = Vec::new();
     if pts.is_empty() {
-        return segs;
+        return (segs, end_dist);
     }
 
     // Attributes are constant across a swept segment, so they are taken at its
@@ -1473,7 +1705,7 @@ fn generate_segments_tol(rec: &StrokeRecord, tol: crate::path::FlattenTolerance)
         let r = (b.radius * p.pressure).max(0.5);
         segs.push(make(p.pos, p.pressure, p.tilt, Vec2::new(1.0, 0.0), r * 0.6, 0.0));
     }
-    segs
+    (segs, end_dist)
 }
 
 /// The stroke's colour-dynamics uniform triplet — (frequency + 1/NOISE_TILE_PX,
@@ -1562,13 +1794,20 @@ fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
 /// exposure, so the exchange composes exactly across overlapping segment quads —
 /// the continuous path integral, independent of any spacing. Pure CPU float math
 /// → replay-deterministic.
+///
+/// `since0` is the travel already accumulated toward the next pickup — `INFINITY` at
+/// a stroke start, which forces one immediately, or whatever the preceding range
+/// ended on. Returned alongside the plan so the next range can continue it: the
+/// pickup *cadence* is the one piece of loop state that is neither on the canvas nor
+/// in the reservoir, and restarting it per range would reload the tool at every cut.
 fn dynamics_plan(
     rec: &StrokeRecord,
     segments: &[Segment],
     region_origin: Vec2,
     dsize: u32,
     channels: [f32; 4],
-) -> Vec<LoopDispatch> {
+    since0: f32,
+) -> (Vec<LoopDispatch>, f32) {
     let b = &rec.brush;
     let d = b.dynamics;
     let spacing = b.spacing.clamp(0.05, 2.0);
@@ -1585,7 +1824,7 @@ fn dynamics_plan(
     let (nfreq, namp, noff) = noise_uniform(rec);
 
     let mut plan = Vec::new();
-    let mut since = f32::INFINITY; // travel since the last pickup; ∞ forces the first
+    let mut since = since0;
     for s in segments {
         let step = (spacing * s.radius).max(0.5);
         if since >= step {
@@ -1633,15 +1872,105 @@ fn dynamics_plan(
         });
         since += s.length;
     }
-    plan
+    (plan, since)
 }
 
-/// The haloed, tile-aligned region for a stroke's affected `coords`: those tiles
-/// plus a one-tile ring, so a rewritten tile's apron reads its neighbour's real
-/// interior from the region (the write-back overwrites whole `TILE_TEX` blocks —
-/// §6.4). Returns `(halo tiles, lo origin, region origin, w, h)`, or `None` if
-/// empty or larger than [`MAX_REGION_DIM`].
+/// Whether `rec` runs the sequential stamp loop, and the flattening budget it runs
+/// at — or `None` for the plain swept fast path.
+///
+/// **A pure function of the whole record.** Both gates below could answer differently
+/// for a short piece of a stroke than for the stroke it belongs to, and every render
+/// of every piece has to agree with the commit that eventually replaces it: a live
+/// tail that took the stamp loop while the commit degraded to the swept deposit would
+/// redraw the stroke the moment the pointer came up. So neither gate is allowed to
+/// look at the piece in hand — see [`StrokeRenderer::render_range`].
+fn dynamics_setup(rec: &StrokeRecord) -> Option<crate::path::FlattenTolerance> {
+    let d = rec.brush.dynamics;
+    if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 {
+        return None;
+    }
+    // The same flattened segments as the fast path; extremely long strokes re-flatten
+    // coarser so the dispatch count stays bounded. First stretch the length cap to the
+    // spacing that would hit the cap exactly, then relax the error bounds — each
+    // doubling roughly halves the count on a curved stroke.
+    let mut tol = flatten_tolerance(&rec.brush);
+    let mut segments = generate_segments_tol(rec, tol);
+    if segments.len() > MAX_STAMPS {
+        let total: f32 = segments.iter().map(|s| s.length).sum();
+        tol.max_len = tol.max_len.max(total / MAX_STAMPS as f32);
+        for _ in 0..8 {
+            segments = generate_segments_tol(rec, tol);
+            if segments.len() <= MAX_STAMPS {
+                break;
+            }
+            tol = tol.relaxed(2.0);
+        }
+    }
+    // An oversized stroke degrades to the swept deposit, bounding the transient GPU
+    // memory the loop's 1:1 region costs.
+    let (w, h) = region_dim(&segments)?;
+    (w <= MAX_REGION_DIM && h <= MAX_REGION_DIM).then_some(tol)
+}
+
+/// The size of the region [`region_rect`] would build for `segments`, without
+/// building the tile set.
+///
+/// Same rectangle, reached by bounding box rather than by enumerating tiles: the
+/// whole-stroke gate in [`dynamics_setup`] is re-evaluated on every pointer move, and
+/// `affected_tiles` costs a set insert per tile per segment, which on a long stroke is
+/// the very cost the incremental repaint exists to avoid. `None` if there are no
+/// segments.
+fn region_dim(segments: &[Segment]) -> Option<(u32, u32)> {
+    let tile = TILE_SIZE as f32;
+    let mut lo = Vec2::splat(f32::INFINITY);
+    let mut hi = Vec2::splat(f32::NEG_INFINITY);
+    for s in segments {
+        let end = s.start + s.dir * s.length;
+        let reach = Vec2::splat(s.radius + TILE_APRON as f32);
+        lo = lo.min(s.start.min(end) - reach);
+        hi = hi.max(s.start.max(end) + reach);
+    }
+    if !lo.x.is_finite() {
+        return None;
+    }
+    // The tile block the coverage spans, measured between tile origins.
+    let span = |a: f32, b: f32| ((b / tile).floor() - (a / tile).floor()) * tile;
+    Some((
+        span(lo.x, hi.x) as u32 + TILE_TEX,
+        span(lo.y, hi.y) as u32 + TILE_TEX,
+    ))
+}
+
+/// The region the stamp loop evolves for a stroke piece's affected `coords`: exactly
+/// the tile block they span, grown by one apron on each side so the write-back can
+/// slice whole `TILE_TEX` blocks out of it — plus the *list* of tiles to composite
+/// into it, which is those tiles and the one-tile ring around them (§6.4).
+///
+/// The ring is in the tile list but deliberately **not** in the rectangle. Its whole
+/// job is to give a rewritten tile's apron the neighbour interior it overlaps, and an
+/// apron is [`TILE_APRON`] texels — so extending the rectangle by a whole *tile* on
+/// every side, as it once did, paid for roughly 4× the region to fill a one-texel
+/// band. Ring tiles that fall outside the rectangle simply clip when composited. On a
+/// live tail, which covers a handful of tiles and is redrawn on every pointer move,
+/// that difference is most of the cost of the whole path.
+///
+/// Returns `(tiles to composite, lo origin, region origin, w, h)`, or `None` if empty
+/// or larger than [`MAX_REGION_DIM`].
 fn region_rect(coords: &BTreeSet<TileCoord>) -> Option<(Vec<TileCoord>, Vec2, Vec2, u32, u32)> {
+    let mut lo = Vec2::splat(f32::INFINITY);
+    let mut hi = Vec2::splat(f32::NEG_INFINITY);
+    for c in coords {
+        lo = lo.min(c.origin());
+        hi = hi.max(c.origin());
+    }
+    if !lo.x.is_finite() {
+        return None;
+    }
+    let w = (hi.x - lo.x) as u32 + TILE_TEX;
+    let h = (hi.y - lo.y) as u32 + TILE_TEX;
+    if w > MAX_REGION_DIM || h > MAX_REGION_DIM {
+        return None;
+    }
     let mut halo: BTreeSet<TileCoord> = BTreeSet::new();
     for c in coords {
         for dy in -1..=1 {
@@ -1650,21 +1979,7 @@ fn region_rect(coords: &BTreeSet<TileCoord>) -> Option<(Vec<TileCoord>, Vec2, Ve
             }
         }
     }
-    let mut lo = Vec2::splat(f32::INFINITY);
-    let mut hi = Vec2::splat(f32::NEG_INFINITY);
-    for c in &halo {
-        lo = lo.min(c.origin());
-        hi = hi.max(c.origin());
-    }
-    if !lo.x.is_finite() {
-        return None;
-    }
     let region_origin = lo - Vec2::splat(TILE_APRON as f32);
-    let w = (hi.x - lo.x) as u32 + TILE_TEX;
-    let h = (hi.y - lo.y) as u32 + TILE_TEX;
-    if w > MAX_REGION_DIM || h > MAX_REGION_DIM {
-        return None;
-    }
     Some((halo.into_iter().collect(), lo, region_origin, w, h))
 }
 
@@ -2108,4 +2423,67 @@ fn build_integrate_pipeline(
         cache: None,
     });
     (pipeline, bgl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A segment carrying only what the region measurements read.
+    fn seg(start: Vec2, end: Vec2, radius: f32) -> Segment {
+        let v = end - start;
+        let length = v.length();
+        Segment {
+            start,
+            dir: if length > 0.0 { v / length } else { Vec2::new(1.0, 0.0) },
+            radius,
+            length,
+            flow: 1.0,
+            height: 0.0,
+            wet: 0.0,
+            opacity: 1.0,
+            orient: 0.0,
+            dist: 0.0,
+        }
+    }
+
+    /// [`dynamics_setup`] decides whether a stroke may run the stamp loop by measuring
+    /// its region with [`region_dim`], but the render that follows sizes the actual
+    /// textures from [`region_rect`]. They are two ways of measuring one rectangle —
+    /// bounding box versus enumerated tiles — so they have to agree exactly. If
+    /// `region_dim` ever under-reported, the gate would admit a stroke whose region
+    /// then allocated past [`MAX_REGION_DIM`]; if it over-reported, long strokes would
+    /// silently fall back to the swept deposit early.
+    #[test]
+    fn the_region_gate_measures_the_region_the_render_builds() {
+        let tile = TILE_SIZE as f32;
+        let cases: Vec<(&str, Vec<Segment>)> = vec![
+            ("a dot", vec![seg(Vec2::new(10.0, 10.0), Vec2::new(10.5, 10.0), 4.0)]),
+            (
+                "one tile-aligned span",
+                vec![seg(Vec2::ZERO, Vec2::new(tile, 0.0), 1.0)],
+            ),
+            (
+                "across the origin, into negative tiles",
+                vec![seg(Vec2::new(-300.0, -140.0), Vec2::new(220.0, 90.0), 12.0)],
+            ),
+            (
+                "a fat tip, whose radius reaches past its endpoints",
+                vec![seg(Vec2::new(500.0, 500.0), Vec2::new(505.0, 500.0), 90.0)],
+            ),
+            (
+                "several segments, extremes in different ones",
+                vec![
+                    seg(Vec2::new(0.0, 0.0), Vec2::new(120.0, 30.0), 3.0),
+                    seg(Vec2::new(120.0, 30.0), Vec2::new(-90.0, 400.0), 20.0),
+                    seg(Vec2::new(-90.0, 400.0), Vec2::new(700.0, -60.0), 8.0),
+                ],
+            ),
+        ];
+        for (what, segments) in cases {
+            let want = region_rect(&affected_tiles(&segments)).map(|(_, _, _, w, h)| (w, h));
+            assert_eq!(region_dim(&segments), want, "region size disagrees for {what}");
+        }
+        assert_eq!(region_dim(&[]), None, "no segments is not a region");
+    }
 }

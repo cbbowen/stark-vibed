@@ -19,9 +19,26 @@ png = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
 stark-shaders = { workspace = true }
+spline_fit = { workspace = true }
+nalgebra = { workspace = true }
 # Vendored as a git submodule (CC BY-NC 4.0); see vendor/mixbox/LICENSE. Pure
 # no_std + libm, so it builds for wasm. Backs the Mixbox color space (§6.7).
 mixbox = { path = "../../vendor/mixbox/rust" }
+
+[features]
+# Stroke-fitting debug aids. Build-time only: there is no command and no UI toggle
+# for these, so a build without the feature has no code path that reaches them.
+# Turn it on (`--features debug-unfrozen`) while working on the fit.
+#
+#  * The live tail of an in-flight stroke is tinted magenta — the part the engine
+#    repaints on every pointer move, so the seam is the freezing boundary
+#    (DESIGN.md §6.2). It only ever changes the preview, never what commits.
+#  * Every finished stroke logs its raw input samples as a pasteable Rust
+#    literal, so a stroke that misfits in the app can be turned into a test.
+#
+# The tint makes the live preview differ from the committed stroke by design, so
+# the preview-vs-commit tests are gated off when it is on (`tests/stroke.rs`).
+debug-unfrozen = []
 
 [dev-dependencies]
 pollster = { workspace = true }

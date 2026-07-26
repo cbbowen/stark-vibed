@@ -190,6 +190,53 @@ impl<T: Variable, const D: usize> IncrementalFit<T, D> {
         &self.spline
     }
 
+    /// Pin the curve's start to `value` — see
+    /// [`ClampedCardinalBSpline::set_control_point`] for why a fit needs telling.
+    ///
+    /// The first control point is set and frozen, so it survives every later update. Call
+    /// this once, before the first [`Self::extend`]; freezing is monotone, so it composes
+    /// with whatever freezing policy drives the rest of the fit.
+    ///
+    /// [`ClampedCardinalBSpline::set_control_point`]: crate::ClampedCardinalBSpline::set_control_point
+    pub fn pin_start(&mut self, value: [T; D]) {
+        self.spline.set_control_point(0, value);
+        self.freeze(1);
+    }
+
+    /// Move the curve's *live* end to `value`, leaving it free.
+    ///
+    /// Call after each [`Self::extend`] when the stream's newest point is known to be
+    /// where the curve should currently reach. A least-squares fit does not put it there:
+    /// the last control point is dragged along behind the data, so the curve stops short
+    /// by however far it has not caught up, and every point past its end reads as error
+    /// however good the fit is. Setting it each update keeps the curve reaching the data,
+    /// which makes both the assignment and the reported error mean what they say.
+    ///
+    /// The row is also marked *held* ([`Settled::tail`]), so the next refit solves the
+    /// rest of the polygon **around** it rather than treating it as one more free
+    /// coefficient. Without that the endpoint is only an override: the solve puts every
+    /// other row where it wants and this one is moved afterwards, leaving a step in the
+    /// polygon at the join that the curve swings through — a kink that always appears at
+    /// the end of a stroke, because the end is the only place the override applies.
+    ///
+    /// Unlike [`Self::pin_start`] it is not *frozen*: held rows still move when the
+    /// caller moves them, which is what lets the end keep following the pointer.
+    /// [`Self::pin_end`] is the final form, where it stops.
+    pub fn reach_to(&mut self, value: [T; D]) {
+        let last = self.spline.num_control_points() - 1;
+        self.spline.set_control_point(last, value);
+        self.settled.tail = 1;
+    }
+
+    /// Pin the curve's end to `value`, and freeze the whole polygon behind it.
+    ///
+    /// The counterpart of [`Self::pin_start`] for the end of a stream, called once the
+    /// data has stopped: [`Self::reach_to`] is the same move while it has not.
+    pub fn pin_end(&mut self, value: [T; D]) {
+        self.reach_to(value);
+        self.freeze(usize::MAX);
+    }
+
     /// Every point given to the fit, in order.
     pub fn points(&self) -> &[[T; D]] {
         &self.points
@@ -204,6 +251,24 @@ impl<T: Variable, const D: usize> IncrementalFit<T, D> {
     /// The total squared error over every point, retired ones included.
     pub fn error(&self) -> T {
         self.retired_error + self.live_error
+    }
+
+    /// The squared error over the *live* points only — those the fit can still improve.
+    pub fn live_error(&self) -> T {
+        self.live_error
+    }
+
+    /// The squared error over the *retired* points — those whose fit is final.
+    ///
+    /// This, not [`Self::live_error`], is what to judge the control polygon's density by.
+    /// The live error is dominated by the newest points: the curve ends at its last
+    /// control point, which is still being dragged along behind the incoming data, so
+    /// every point past it reads as error whatever the density is. Retired points have no
+    /// such tail — the curve through them is finished — so their error is the fit's actual
+    /// quality. Watch it as a *difference* between updates to judge the stroke locally
+    /// rather than averaging over everything drawn so far.
+    pub fn retired_error(&self) -> T {
+        self.retired_error
     }
 
     /// How many leading control points are frozen.

@@ -69,13 +69,14 @@ stark/
 │   │   │   │   ├── composite.rs # layer compositing + media lighting → display
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
 │   │   │   ├── geom.rs          # tile coords, view transform, AABB
-│   │   │   ├── path.rs          # streaming stroke fit + adaptive Catmull–Rom flatten (§6.2)
+│   │   │   ├── path.rs          # streaming B-spline stroke fit + adaptive flatten (§6.2)
 │   │   │   └── io.rs            # save/load of the action log
 │   │   └── tests/
 │   │       └── golden/         # scripted command sequences + reference PNGs
 │   ├── stark-shaders/          # WESL sources + build.rs (wesl link/compile)
 │   │   ├── build.rs
 │   │   └── src/shaders/*.wesl
+│   ├── spline-fit/             # incremental least-squares B-spline fit (§6.2)
 │   ├── stark-net/              # iroh transport ↔ Replicated timeline (optional)
 │   └── stark-ui/               # Dioxus 0.7 frontend
 └── DESIGN.md
@@ -200,7 +201,7 @@ pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: ToolId,
     pub brush: BrushParams,       // color in Oklab (§6.5); shape by AssetId (§6.6)
-    pub path: Vec<ControlPoint>,  // cubic-spline control points, fitted (§6.2)
+    pub path: Vec<ControlPoint>,  // cubic B-spline control points, fitted (§6.2)
     pub seed: u64,                // makes any brush jitter reproducible
 }
 ```
@@ -428,16 +429,36 @@ report (transient, never stored), a **`ControlPoint`** is a fitted curve knot
 point *of the curve* — position plus its derivative, with the pen attributes
 interpolated there — produced at render time and consumed by the stamp generator.
 
-A `PathFitter` streams samples into control points: **low-pass smoothing** (a
-distance-windowed average) to shed pointer/pixel-quantization jitter, then
-**simplification** — Ramer–Douglas–Peucker's test applied to a forward window
-rather than to the whole stroke, so the fit is *append-only*. A committed knot is
-never revisited, which bounds live-preview work to the open window instead of the
-stroke so far, and lets a caller treat the settled prefix (`frozen_spans`, which
-lags by the two knots a Catmull–Rom span needs) as already rendered.
+A `PathFitter` streams samples into control points as a **least-squares clamped
+cubic B-spline** (the `spline_fit` crate), grown and refit as they arrive:
 
-Rendering expands those knots through a **centripetal Catmull–Rom spline** — in
-exact cubic Bézier form, so the derivative is closed-form — into a polyline, and
+- **Grow.** The control polygon lengthens with the stroke — one point per
+  `KNOT_SPACING` of arc length, plus more wherever the input's *sagitta* over one
+  such interval exceeds `SAGITTA_TOLERANCE`. Fitting is what smooths, so there is
+  no separate low-pass stage: a polygon far coarser than the jitter averages a
+  pixel-quantized staircase away. The arc-length floor is not redundant with the
+  sagitta test — it is what makes the polygon grow, and so freezing advance, on a
+  stroke the fit is already perfect on.
+- **Refit** every sample, but only over the *live* points and the *free* control
+  points, so the work per sample follows the tail rather than the stroke so far.
+- **Freeze** all but the last few control points. Those are final — nothing drawn
+  later can move them — which is what makes the fit append-only and lets a caller
+  treat the settled prefix (`frozen_spans`) as already rendered.
+
+Both **ends are pinned**: a least-squares fit does not hold them, because a
+stretch of parameter with no sample assigned to it costs nothing, so the curve
+otherwise starts before the stroke and stops short of the pointer. The start is
+set and frozen at the first sample; the live end is moved to the newest sample
+each update (and frozen there on release), which is also what keeps the preview
+under the cursor.
+
+Pen attributes ride along as **passenger channels**: pressure, tilt and time are
+solved against the geometry's own assignment rather than fitted jointly with it,
+so a pressure ramp cannot stretch the parameterization the way a longer path does,
+and no weighting is needed to reconcile pixels with whatever units they are in.
+
+Rendering expands those control points through that same B-spline — converted per
+span to cubic Bézier form, so the derivative is closed-form — into a polyline, and
 subdivides **adaptively**: a piece is split until the straight segment standing in
 for it is within a bounded error in position, in *tangent direction*, and in the
 pen attributes. Sampling therefore follows the curve rather than arc length: a
@@ -448,8 +469,9 @@ one that spikes exactly at a corner. This solves several problems:
 
 - **No stair-step aliasing** — jittery pixel-stepped input (a slow diagonal drawn
   as right/up steps snapped to the device grid) is smoothed and collapses to a
-  clean curve instead of axis-aligned segments. RDP alone handles ~1px steps; the
-  smoothing pass also clears the coarser (≥1.4px) staircases that survive it.
+  clean curve instead of axis-aligned segments. This is the fit doing it, and it
+  is why `SAGITTA_TOLERANCE` has to sit *above* the input's own quantization: set
+  it below and a staircase reads as curvature and gets traced rather than smoothed.
 - **Continuous-looking stamping** — stamps ride a smooth path with smooth
   tangents, so even hard-edged tips read as one stroke rather than a row of
   discrete dabs (an approximation of a path integral over the stroke).
@@ -457,9 +479,8 @@ one that spikes exactly at a corner. This solves several problems:
   samples in the action log (§8).
 
 The per-stamp GPU instance is **unchanged**; only stroke→stamp generation
-differs. Live preview and commit run the *same* fitter — the preview path is the
-committed knots plus one provisional knot at the newest sample, itself within the
-simplification tolerance — so the preview at release equals the committed stroke,
+differs. Live preview and commit run the *same* fitter, driven the same way
+sample by sample, so the preview at release equals the committed stroke,
 preserving the live == committed invariant (§1.3). Fitting and curve evaluation
 are fixed float math, so determinism (and golden/replay/save-load equivalence)
 holds.
@@ -470,6 +491,40 @@ deposit below). Anything a segment applies *per segment* rather than per fragmen
 — the `drain` falloff, the stamp loop's reservoir cadence — also caps segment
 length, which the renderer supplies as a length bound rather than the fitter
 assuming one (`gpu::stroke::flatten_tolerance`).
+
+**Incremental repaint.** Freezing is what keeps a long stroke responsive. Drawing
+a live stroke costs (segments × tiles covered), both of which grow with its
+length, so re-rendering the whole thing on every pointer move gets quadratically
+expensive. Instead the engine keeps a `FrozenHead`: the settled spans, rendered
+once onto the committed document and kept. Each move draws only the live tail over
+that — a few spans, whatever the stroke's length — and the head advances as the
+fitter freezes more (`StrokeRenderer::render_range`, `path::flatten_spans`;
+adjacent ranges share exactly one flattened point, so their segments tile with no
+gap and no overlap).
+
+This is the *same* partition-independence the constraint above demands, spent
+deliberately: the swept deposit is a definite integral per segment that composes
+by summing optical depth, so cutting the path at a span boundary and compositing
+the pieces in order gives what one pass gives.
+
+The stamp loop that dynamic brushes run has no such property — it is *sequential*,
+each segment reading the canvas the previous one left and the tool the previous one
+loaded. It is cuttable anyway, because that carried state is small and entirely
+**brush-local**: the reservoir texture (what paint the tip holds, and where on the
+tip), plus the travel since the last pickup, which sets the reload cadence. A
+`ToolState` remembers both at the freeze boundary and the tail resumes from it. Being
+brush-local is what makes this work at all — the state says nothing about *where* the
+stroke is, so the region rectangle may change completely between the piece that
+saved it and the piece that resumes. The canvas side needs no carrying: it is already
+in the head's tiles.
+
+Two things then have to be decided from the **whole** record rather than from the
+piece in hand, because a live tail and the commit that replaces it must draw the same
+pixels: whether the stroke runs the stamp loop at all (it degrades to the swept
+deposit past `MAX_REGION_DIM`) and how finely it flattens (it coarsens past
+`MAX_STAMPS`). A gate that looked at the piece would answer differently for a short
+tail than for the stroke it belongs to, and the stroke would visibly redraw on
+release. See `gpu::stroke::dynamics_setup`.
 
 **Continuous stamping (swept segments).** Discrete dabs are still visible with
 hard tips. The fix: stamp each short *segment* of the flattened curve as one
@@ -610,10 +665,13 @@ do not exist in this model.
 (fixed segment/pickup plan, fixed shader math), so replay and
 `preview == committed` hold and the log stays compact: only path + params are
 stored, never per-segment data. *Perf* — two footprint-sized dispatches per
-segment plus a reservoir-sized one per pickup, inside one pass; a live stroke
-re-renders per pointer move (incremental live rendering — caching the region and
-reservoir across moves — is a known future optimization, complicated by the
-incremental path re-fit). *Paint never dries* — wetness persists, the whole
+segment plus a reservoir-sized one per pickup, inside one pass. A live stroke
+re-renders only its tail, resuming the reservoir from the frozen head (see
+*Incremental repaint* above), so per-move cost follows the tail rather than the
+stroke. What remains is per-segment dispatch overhead: the tail is a few hundred
+segments and each costs four small serialized dispatches, which dominates a move.
+Batching the independent ones is the next win here. *Paint never dries* — wetness
+persists, the whole
 canvas stays workable; to glaze over "dry" paint the user adds a **new document
 layer**, which composites as if dry, so no drying model is needed.
 

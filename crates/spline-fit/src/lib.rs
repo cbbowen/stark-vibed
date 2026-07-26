@@ -139,6 +139,7 @@ pub struct FitTolerance<T> {
     variable: VariableTolerance<T>,
     rel_metric: T,
     abs_metric: T,
+    smoothing: T,
 }
 
 impl<T: Variable> FitTolerance<T> {
@@ -151,7 +152,37 @@ impl<T: Variable> FitTolerance<T> {
             variable: VariableTolerance::new(abs_variable),
             rel_metric,
             abs_metric,
+            smoothing: T::zero(),
         }
+    }
+
+    /// Penalize curvature in the control polygon, as a fraction of the pull the data
+    /// itself exerts (so it is scale-free, and `0` — the default — is the plain
+    /// least-squares fit).
+    ///
+    /// **What this is for.** The fit minimizes the distance from each *point to the
+    /// curve*, and nothing else. Nothing charges the curve for where it goes when no
+    /// point is looking: a stretch of parameter that no point is assigned to is
+    /// unconstrained, so the curve may take an arbitrary excursion through empty
+    /// space and pay nothing, as long as every point still has some nearby piece of
+    /// curve. The one-sided objective has no opinion about it, and neither does the
+    /// monotone assignment. This shows up wherever the data thins out — a fast pen,
+    /// or a run of points the assignment pools onto one parameter — and in an
+    /// *incremental* fit the excursion is then frozen in and becomes permanent.
+    ///
+    /// The missing term is a regularizer, and the standard one is bending energy:
+    /// `Σ ‖P₍ⱼ₋₁₎ − 2Pⱼ + P₍ⱼ₊₁₎‖²`, the discrete `∫‖C″‖²`. It is quadratic in the
+    /// control points, so it adds straight into the normal equations as another
+    /// symmetric band and costs the solve nothing. A control point with no data is
+    /// then determined — it goes where its neighbours' straight continuation puts it
+    /// — for any positive weight, while one the data does constrain is biased only
+    /// in proportion to this fraction.
+    ///
+    /// It is a genuine trade: bending energy pulls a curved stroke very slightly
+    /// flatter. Keep it small (a few percent) — it only has to beat *nothing*.
+    pub fn with_smoothing(self, smoothing: T) -> Self {
+        assert!(smoothing >= T::zero(), "smoothing must be non-negative");
+        FitTolerance { smoothing, ..self }
     }
 }
 
@@ -162,6 +193,9 @@ impl<T: Variable> Default for FitTolerance<T> {
             variable: VariableTolerance::default(),
             rel_metric: eps,
             abs_metric: eps,
+            // Off: the plain least-squares fit, so a caller gets what it asked for
+            // and nothing it did not. See [`FitTolerance::with_smoothing`].
+            smoothing: T::zero(),
         }
     }
 }
@@ -191,6 +225,17 @@ pub struct Settled<T> {
     /// ordering against them, which is exactly `t >= after` for `after` the last retired
     /// parameter. Leave it non-positive while every point is still in the fit.
     pub after: T,
+    /// Number of **trailing** control points held at their current values, the mirror of
+    /// `control_points` at the other end.
+    ///
+    /// This is how an endpoint becomes a *constraint of the solve* rather than an
+    /// override of it. Setting the last control point after a fit
+    /// ([`ClampedCardinalBSpline::set_control_point`]) leaves every other row where the
+    /// unconstrained solve put it, so the polygon has a step in it at the join and the
+    /// curve swings through it — a kink that always sits at the end of the stroke,
+    /// because that is the only place the override applies. Holding the row here instead
+    /// lets the rest of the polygon solve *around* it.
+    pub tail: usize,
 }
 
 impl<T: Variable> Settled<T> {
@@ -199,6 +244,7 @@ impl<T: Variable> Settled<T> {
         Settled {
             control_points: 0,
             after: T::zero(),
+            tail: 0,
         }
     }
 }
@@ -298,6 +344,33 @@ where
             }
         }
         d[p]
+    }
+
+    /// Overwrite control point `j`, overriding whatever the fit put there.
+    ///
+    /// The use this exists for is **pinning an endpoint**. The clamped end condition makes
+    /// the first and last control points the curve's two ends, but a least-squares fit does
+    /// not pin them to the data: a stretch of parameter with no point assigned to it costs
+    /// nothing, so the curve is free to start before the first point and run on past the
+    /// last. Where the caller knows where the curve must begin or end — a drawn stroke
+    /// starts under the pointer, not near it — setting that control point and freezing it
+    /// ([`Settled::control_points`], [`IncrementalFit::freeze`]) states the constraint, and
+    /// the rest of the fit then solves around it exactly.
+    ///
+    /// This does not refit. Any assignment or error already computed describes the previous
+    /// control points until the next fit runs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j` is out of range.
+    pub fn set_control_point(&mut self, j: usize, value: [T; D]) {
+        assert!(
+            j < self.control_points.nrows(),
+            "control point {j} out of range"
+        );
+        for (d, v) in value.into_iter().enumerate() {
+            self.control_points[(j, d)] = v;
+        }
     }
 
     /// Evaluates the spline at each parameter of `ts`.
@@ -570,7 +643,7 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
     ///
     /// This is the lazy counterpart of [`Self::locally_closest_points`]: walking it from
     /// `after < 0` reproduces that method's full list, but it stops at the *first* minimum
-    /// it finds. Because finding the next critical point ([`poly::first_root_after`]) is
+    /// it finds. Because finding the next critical point (`poly::first_root_after`) is
     /// much cheaper than finding all of them, it is the primitive to reach for whenever
     /// only the next locally-closest point is needed rather than the whole set.
     pub fn next_locally_closest_point(
@@ -893,6 +966,19 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
                 if band_lo <= after {
                     cand.push(after);
                 }
+            }
+        }
+        // Every point must offer the DP at least one state, or the path through it is
+        // unreachable and there is no assignment at all. Two things can empty a set: a
+        // pruned range that lies strictly inside the domain and holds no local minimum
+        // (the range ends only count as minima where they are the true domain ends), and
+        // the floor filtering above. Neither is a pathology — a *straight* curve produces
+        // the first routinely, since a degenerate bounding box gives the pruning nothing
+        // to separate spans by. The band's own lower end is always a feasible stand-in:
+        // in band by construction, and at or above the floor.
+        for (cand, &(band_lo, _)) in candidates.iter_mut().zip(&param_bands) {
+            if cand.is_empty() {
+                cand.push(band_lo);
             }
         }
         let domain = (after.max(T::zero()), convert(n_spans as f64));
@@ -1277,6 +1363,11 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             "cannot freeze {} of {m} control points",
             settled.control_points
         );
+        assert!(
+            settled.tail <= m,
+            "cannot hold {} trailing of {m} control points",
+            settled.tail
+        );
         assert!(!points.is_empty(), "cannot fit a spline to zero points");
         // The assignment a refit starts from is an E-step against the incoming (warm)
         // control points. A full fit instead starts from the uniform assignment of its
@@ -1359,56 +1450,111 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
     /// other part of the fit (the E-step, the acceleration, the tolerances) is oblivious to
     /// the freezing: the extrapolation in particular sees zero movement on those rows and
     /// so leaves them alone by construction.
-    fn m_step(
+    ///
+    /// The payload dimension `E` is independent of the spline's own `D`: the assignment is
+    /// the only thing the M-step reads from the geometry, so the same solve fits any number
+    /// of per-point channels against it. The fitting loop uses `E = D`; [`Self::fit_channels`]
+    /// is the same solve for data that rides the geometry without shaping it.
+    fn m_step<const E: usize>(
         &self,
         ts: &[T],
-        prior: &OMatrix<T, Dyn, Const<D>>,
-        points: &[[T; D]],
+        prior: &OMatrix<T, Dyn, Const<E>>,
+        points: &[[T; E]],
         frozen: usize,
-    ) -> OMatrix<T, Dyn, Const<D>> {
+        tail: usize,
+        smoothing: T,
+    ) -> OMatrix<T, Dyn, Const<E>> {
         // The uniform basis serves every span thanks to the duplicating knot view.
         let basis = self.basis_matrix();
         let order = self.order();
         let m = prior.nrows();
         let n = points.len();
-        if frozen >= m {
-            // Nothing left to solve for.
+        if frozen + tail >= m || n == 0 {
+            // Nothing left to solve for, or nothing to solve against. With no points
+            // the normal equations are all ridge, whose solution is `prior` exactly —
+            // and taking that here also keeps `lambda` (scaled by `n`) off zero, which
+            // it could never escalate away from.
             return prior.clone();
         }
-        let mut btb = OMatrix::<T, Dyn, Dyn>::zeros(m, m);
-        let mut btp = OMatrix::<T, Dyn, Const<D>>::zeros_generic(Dyn(m), Const::<D>);
+        // The normal equations are assembled over a **window**, not the whole polygon.
+        //
+        // Only rows `frozen..m - tail` are solved for, and a cubic B-spline's basis is
+        // local: a point in span `k` touches rows `k - 2 ..= k + 1`, so any point that
+        // reaches a free row touches nothing below `frozen - (order - 1)`. Everything
+        // before that is a frozen row coupled to no free one, contributing zero. An
+        // `m x m` matrix therefore spends nearly all of itself on structural zeros —
+        // 160KB of them at 200 control points, memset four times per sample, which was
+        // most of the cost of a long stroke and the reason the per-update time grew
+        // with the length of the whole thing rather than with the window.
+        let base = frozen.saturating_sub(order - 1);
+        let w = m - base;
+        let mut btb = OMatrix::<T, Dyn, Dyn>::zeros(w, w);
+        let mut btp = OMatrix::<T, Dyn, Const<E>>::zeros_generic(Dyn(w), Const::<E>);
         for (&t, p) in ts.iter().zip(points) {
             let (k, u) = self.span_and_local(t);
-            let w = basis * self.u_powers(u);
+            // Cannot reach a free row, so contributes nothing to what is solved.
+            if self.knot_row(k + order - 1) < frozen {
+                continue;
+            }
+            let wts = basis * self.u_powers(u);
             for a in 0..order {
-                let ra = self.knot_row(k + a);
+                let ra = self.knot_row(k + a) - base;
                 for b in 0..order {
-                    btb[(ra, self.knot_row(k + b))] += w[a] * w[b];
+                    btb[(ra, self.knot_row(k + b) - base)] += wts[a] * wts[b];
                 }
-                for d in 0..D {
-                    btp[(ra, d)] += w[a] * p[d];
+                for d in 0..E {
+                    btp[(ra, d)] += wts[a] * p[d];
+                }
+            }
+        }
+        // Bending energy `Σ ‖P₍ⱼ₋₁₎ − 2Pⱼ + P₍ⱼ₊₁₎‖²`, weighted against the *average*
+        // data pull per control point so the knob means the same thing whatever the
+        // point count and polygon length are. Quadratic in the control points, so it
+        // is just another symmetric band added to the normal matrix — and its target
+        // is zero curvature, so the right-hand side is untouched.
+        //
+        // This is what stops the curve wandering where no point is assigned; see
+        // [`FitTolerance::with_smoothing`]. Note it lands in `btb` *before* the
+        // frozen block is folded into the right-hand side below, so it also couples
+        // the first free control point to the frozen ones — which is what makes the
+        // free tail continue smoothly out of the committed prefix instead of being
+        // free to start off in any direction at all. Only the triples that touch a
+        // solved row are in the window; the rest act on frozen rows alone.
+        if smoothing > T::zero() && m >= 3 {
+            let sw = smoothing * convert::<f64, T>(n as f64 / m as f64);
+            let c = [T::one(), convert::<f64, T>(-2.0), T::one()];
+            for j in (base + 1).max(1)..m - 1 {
+                let idx = [j - 1 - base, j - base, j + 1 - base];
+                for (a, &ca) in c.iter().enumerate() {
+                    for (b, &cb) in c.iter().enumerate() {
+                        btb[(idx[a], idx[b])] += sw * ca * cb;
+                    }
                 }
             }
         }
         // The free block of the system, with the frozen rows' contribution moved to the
         // right-hand side. With `frozen == 0` this is the whole system, unchanged.
-        let free = m - frozen;
+        let free = m - frozen - tail;
         let mut lambda: T = convert::<f64, T>(n as f64) * T::default_epsilon().sqrt();
         for _ in 0..64 {
-            let mut lhs = btb.view((frozen, frozen), (free, free)).into_owned();
-            let mut rhs = btp.rows(frozen, free).into_owned();
-            if frozen > 0 {
-                rhs -= btb.view((frozen, 0), (free, frozen)) * prior.rows(0, frozen);
+            let f0 = frozen - base;
+            let mut lhs = btb.view((f0, f0), (free, free)).into_owned();
+            let mut rhs = btp.rows(f0, free).into_owned();
+            if f0 > 0 {
+                rhs -= btb.view((f0, 0), (free, f0)) * prior.rows(base, f0);
+            }
+            if tail > 0 {
+                rhs -= btb.view((f0, w - tail), (free, tail)) * prior.rows(m - tail, tail);
             }
             for j in 0..free {
                 lhs[(j, j)] += lambda;
-                for d in 0..D {
+                for d in 0..E {
                     rhs[(j, d)] += prior[(frozen + j, d)] * lambda;
                 }
             }
             if let Some(chol) = Cholesky::new(lhs) {
                 let solved = chol.solve(&rhs);
-                if frozen == 0 {
+                if frozen == 0 && tail == 0 {
                     return solved;
                 }
                 let mut out = prior.clone();
@@ -1418,6 +1564,87 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             lambda *= convert::<f64, T>(10.0);
         }
         unreachable!("ridge-regularized normal equations are positive definite")
+    }
+
+    /// Control values for `E` per-point channels that ride along with the geometry —
+    /// pressure, a timestamp, anything measured *at* the points but not part of what the
+    /// curve is fitted to.
+    ///
+    /// Given `values[i]` for the point assigned to `ts[i]`, this returns the control values
+    /// whose B-spline — the same basis, the same knots, the same parameterization as `self`
+    /// — is the least-squares fit of that data. Evaluating it at a parameter therefore reads
+    /// the channel *where the curve is*, so a caller can carry the channels on the control
+    /// points and interpolate them exactly as it interpolates position.
+    ///
+    /// This is deliberately not a fit in `D + E` dimensions. Folding channels into the
+    /// geometry would let them pull on the assignment — a pressure ramp would stretch the
+    /// parameterization the way a longer path does, distorting the curve to buy error in a
+    /// quantity that has no length. Here the geometry decides `ts` alone and the channels
+    /// solve against it, which also means no weight is needed to reconcile pixels with
+    /// whatever units the channels are in.
+    ///
+    /// `frozen` and `prior` work exactly as in the geometric refit ([`Self::refit_monotonic`]):
+    /// the first `frozen` rows of `prior` come back unchanged, so channels stay frozen in
+    /// step with the control points they sit on. Pass `0` and an empty prior for a one-shot
+    /// solve.
+    ///
+    /// `prior` may be **shorter** than the control polygon — the usual case in an
+    /// incremental fit, where the geometry has just grown ([`Self::extend_control_points`])
+    /// and the channels have not. The missing rows are seeded by repeating the last one,
+    /// which only sets where the proximal ridge is centered: those rows are past `frozen`,
+    /// so the solve determines them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `prior` has more rows than there are control points, if `ts` and `values`
+    /// differ in length, or if `frozen` exceeds the control-point count.
+    pub fn fit_channels<const E: usize>(
+        &self,
+        ts: &[T],
+        values: &[[T; E]],
+        frozen: usize,
+        prior: &OMatrix<T, Dyn, Const<E>>,
+    ) -> OMatrix<T, Dyn, Const<E>> {
+        let m = self.control_points.nrows();
+        assert!(
+            prior.nrows() <= m,
+            "channel prior has {} rows for {m} control points",
+            prior.nrows()
+        );
+        assert!(frozen <= m, "cannot freeze {frozen} of {m} channel rows");
+        assert_eq!(
+            ts.len(),
+            values.len(),
+            "every assigned parameter needs a value"
+        );
+        self.fit_channels_smoothed(ts, values, frozen, 0, prior, T::zero())
+    }
+
+    /// [`Self::fit_channels`] with an explicit held tail and curvature penalty — the
+    /// same solve the geometry uses, exposed for a caller that already knows the
+    /// correspondence and so needs no assignment search at all.
+    pub fn fit_channels_smoothed<const E: usize>(
+        &self,
+        ts: &[T],
+        values: &[[T; E]],
+        frozen: usize,
+        tail: usize,
+        prior: &OMatrix<T, Dyn, Const<E>>,
+        smoothing: T,
+    ) -> OMatrix<T, Dyn, Const<E>> {
+        let m = self.control_points.nrows();
+        let have = prior.nrows();
+        let grown = OMatrix::<T, Dyn, Const<E>>::from_fn_generic(Dyn(m), Const::<E>, |j, d| {
+            match (j < have, have) {
+                (true, _) => prior[(j, d)],
+                (false, 0) => T::zero(),
+                (false, h) => prior[(h - 1, d)],
+            }
+        });
+        // Passenger channels are not regularized here: they are one-dimensional and
+        // bounded by the data, and a caller that wants them smoothed can say so by
+        // pre-smoothing its values.
+        self.m_step(ts, &grown, values, frozen, tail, smoothing)
     }
 
     /// One EM E-step: the monotonic assignment and its squared error for the current control
@@ -1462,7 +1689,7 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
 
         // First EM step from the caller's assignment, its proximal prior the incoming
         // (polyline-initialized) control points. Then the initial objective.
-        let mut k0 = spline.m_step(&ts, &spline.control_points, points, settled.control_points);
+        let mut k0 = spline.m_step(&ts, &spline.control_points, points, settled.control_points, settled.tail, tol.smoothing);
         spline.control_points = k0.clone();
         let (mut ts0, mut l0) = spline.e_step(points, tol.into(), settled.after);
         let mut evals = 1usize;
@@ -1478,7 +1705,7 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             prev_l = Some(l0);
 
             // EM step 1: K1 = M(E(K0)); E(K0) is the assignment ts0 we already hold.
-            let k1 = spline.m_step(&ts0, &k0, points, settled.control_points);
+            let k1 = spline.m_step(&ts0, &k0, points, settled.control_points, settled.tail, tol.smoothing);
             spline.control_points = k1.clone();
             let (ts1, l1) = spline.e_step(points, tol.into(), settled.after);
             evals += 1;
@@ -1488,7 +1715,7 @@ impl<T: Variable, const D: usize> CardinalCubicBSpline<T, Const<D>> {
             }
 
             // EM step 2: K2 = M(E(K1)).
-            let k2 = spline.m_step(&ts1, &k1, points, settled.control_points);
+            let k2 = spline.m_step(&ts1, &k1, points, settled.control_points, settled.tail, tol.smoothing);
             spline.control_points = k2.clone();
             let (ts2, l2) = spline.e_step(points, tol.into(), settled.after);
             evals += 1;
@@ -2427,6 +2654,7 @@ mod tests {
         let settled = Settled {
             control_points: frozen,
             after: 0.0,
+            tail: 0,
         };
         let (ts, _) = s.refit_monotonic(settled, tol, &other);
         assert_eq!(ts.len(), other.len());
@@ -2458,6 +2686,7 @@ mod tests {
         let settled = Settled {
             control_points: s.num_control_points(),
             after: 0.0,
+            tail: 0,
         };
         let (refit_ts, refit_err) = s.refit_monotonic(settled, tol, &pts);
         assert_eq!(*s.control_points(), before);
@@ -2482,6 +2711,80 @@ mod tests {
             refit_err <= err + 1e-9,
             "refit err {refit_err} worse than the converged {err}"
         );
+    }
+
+    /// A channel that is an exact cubic-B-spline function of the parameter must come back
+    /// exactly, and evaluating the returned control values with the same basis must
+    /// reproduce it at the assigned parameters.
+    #[test]
+    fn channel_fitting_recovers_an_exact_channel() {
+        let s = wiggle_spline();
+        let m = s.num_control_points();
+        // Ground-truth channel control values, arbitrary but fixed.
+        let truth = OMatrix::<f64, Dyn, Const<1>>::from_fn_generic(Dyn(m), Const::<1>, |j, _| {
+            0.3 + 0.7 * (j as f64 * 1.7).sin()
+        });
+        // Sample that channel spline at a spread of parameters, then re-fit from the samples.
+        let basis = s.basis_matrix();
+        let channel_at = |t: f64| {
+            let (k, u) = s.span_and_local(t);
+            let w = basis * s.u_powers(u);
+            (0..w.len()).map(|a| truth[(s.knot_row(k + a), 0)] * w[a]).sum::<f64>()
+        };
+        let ts: Vec<f64> = (0..60)
+            .map(|i| s.num_spans() as f64 * i as f64 / 59.0)
+            .collect();
+        let values: Vec<[f64; 1]> = ts.iter().map(|&t| [channel_at(t)]).collect();
+
+        let empty = OMatrix::<f64, Dyn, Const<1>>::zeros_generic(Dyn(0), Const::<1>);
+        let got = s.fit_channels(&ts, &values, 0, &empty);
+        assert_eq!(got.nrows(), m);
+        for j in 0..m {
+            assert_close(got[(j, 0)], truth[(j, 0)], 1e-6);
+        }
+    }
+
+    /// With nothing left to fit against — every point retired into the frozen prefix, which
+    /// an incremental fit reaches routinely — the solve is all ridge, and must hand the
+    /// prior straight back rather than divide by a `lambda` that `n = 0` pinned to zero.
+    #[test]
+    fn a_solve_with_no_points_returns_the_prior() {
+        let s = wiggle_spline();
+        let m = s.num_control_points();
+        let prior = OMatrix::<f64, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
+            (j * 2 + d) as f64
+        });
+        let got = s.fit_channels(&[], &[], 0, &prior);
+        assert_eq!(got, prior);
+    }
+
+    /// The channel solve honours a frozen prefix exactly as the geometric one does, and
+    /// accepts a prior shorter than the (since-grown) control polygon.
+    #[test]
+    fn frozen_channel_rows_come_back_untouched() {
+        let s = wiggle_spline();
+        let m = s.num_control_points();
+        let pts = wiggle_samples(40, 0.0, 1.0);
+        let (ts, _) = s.best_ordered_assignment(&pts, VariableTolerance::default());
+        let values: Vec<[f64; 2]> = (0..pts.len())
+            .map(|i| [i as f64 / pts.len() as f64, (i as f64 * 0.3).cos()])
+            .collect();
+
+        // A prior two rows short of the polygon: the tail is seeded, not required.
+        let short = OMatrix::<f64, Dyn, Const<2>>::from_fn_generic(Dyn(m - 2), Const::<2>, |j, d| {
+            (j + d) as f64 * 0.25
+        });
+        let frozen = 3;
+        let got = s.fit_channels(&ts, &values, frozen, &short);
+        assert_eq!(got.nrows(), m);
+        for j in 0..frozen {
+            for d in 0..2 {
+                assert_eq!(got[(j, d)], short[(j, d)], "frozen row {j} moved");
+            }
+        }
+        // And the free rows actually moved off their seed — the solve did something.
+        let moved = (frozen..m).any(|j| (0..2).any(|d| got[(j, d)] != short[(j.min(m - 3), d)]));
+        assert!(moved, "no free channel row was solved for");
     }
 
     #[test]
@@ -2605,7 +2908,8 @@ mod tests {
             Settled {
                 control_points: 9,
                 after: 0.0,
-            },
+            tail: 0,
+        },
             tol,
             &pts,
         );

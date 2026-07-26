@@ -98,6 +98,8 @@ pub mod image;
 pub mod io;
 pub mod noise;
 pub mod path;
+#[doc(hidden)]
+pub mod testdata;
 pub mod session;
 
 pub use assets::{AssetId, AssetStore};

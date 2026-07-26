@@ -14,6 +14,6 @@ pub use composite::{Compositor, MediaParams};
 pub use context::GpuContext;
 pub use environment::{Environment, EnvironmentId};
 pub use selection::SelectionRenderer;
-pub use stroke::StrokeRenderer;
+pub use stroke::{StrokeRenderer, StrokeSpans};
 pub use surface::{Surface, SurfaceId};
 pub use tile::{MaskHandle, TilePairHandle, TilePool};
