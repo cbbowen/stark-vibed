@@ -50,6 +50,24 @@ const ROUND_RES: u32 = 256;
 /// for smeared paint, and small enough that the per-stamp reservoir update is
 /// nearly free.
 const BRUSH_RES: u32 = 64;
+/// Resolution of the per-segment **swept prefix** of the reservoir
+/// (`dynamics.wesl::bake`). Finer than the reservoir along the travel axis, since
+/// it also has to resolve the footprint's optical-depth density it integrates
+/// against; the bake is one thread per row, so this costs almost nothing.
+const BAKE_RES: u32 = 128;
+/// fp32, for the same reason the prefix-τ volume is: every fragment reads it as a
+/// *difference* of two prefix sums (DESIGN.md §6.2).
+const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+/// The optical depth one full pass of an opaque tip lays over a point — the τ
+/// ceiling `assets::build_prefix_tau` clamps to.
+///
+/// Every exchange in the stamp loop is a rate *per unit optical depth*, because
+/// that is the currency the swept integral is denominated in and the only one both
+/// sides can agree on (DESIGN.md §6.2). But τ ≈ 7 for a single pass, so read
+/// literally a `lift` of 0.5 would strip 99% of the canvas in one pass. Dividing
+/// the rates through by this makes an axis mean a fraction **per pass of the tip**
+/// — hardness-independent, and what a 0..1 knob is expected to mean.
+const TAU_PER_PASS: f32 = 6.9;
 /// Largest stroke-region edge (canvas px) the stamp loop composites. Oversized
 /// strokes degrade to the plain swept deposit — rare, and it bounds the transient
 /// GPU memory (DESIGN.md §6.2).
@@ -155,11 +173,19 @@ struct DynamicsKit {
     composite_view_bgl: wgpu::BindGroupLayout,
     composite_tile_bgl: wgpu::BindGroupLayout,
     composite_sampler: wgpu::Sampler,
-    // The three stamp-loop dispatches (one compute shader, three entry points).
+    // The stamp-loop dispatches (one compute shader, four entry points).
     snapshot_pipeline: wgpu::ComputePipeline,
     snapshot_bgl: wgpu::BindGroupLayout,
     pickup_pipeline: wgpu::ComputePipeline,
     pickup_bgl: wgpu::BindGroupLayout,
+    /// Drains the tool by what each segment takes, so its state advances with travel
+    /// rather than in pickup-sized steps (`dynamics.wesl::deplete`). Shares
+    /// `pickup_bgl`.
+    deplete_pipeline: wgpu::ComputePipeline,
+    /// Integrates the reservoir along the segment's travel axis so the deposit can
+    /// read the whole pass instead of one mid-pass sample (`dynamics.wesl::bake`).
+    bake_pipeline: wgpu::ComputePipeline,
+    bake_bgl: wgpu::BindGroupLayout,
     deposit_pipeline: wgpu::ComputePipeline,
     deposit_bgl: wgpu::BindGroupLayout,
     /// The deposit's prefix-τ volume binding (group 1) — the same texture the
@@ -994,6 +1020,29 @@ impl StrokeRenderer {
             make_tex(&mut scoped, bres, brush_usage, "stark dynamics brush aux a"),
             make_tex(&mut scoped, bres, brush_usage, "stark dynamics brush aux b"),
         ];
+        // The segment's swept reservoir prefix (fp32, so the per-fragment difference
+        // keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a
+        // single buffer serves: nothing reads last segment's bake.
+        let mut make_bake = |label: &'static str| {
+            scoped
+                .texture(device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: BAKE_RES,
+                        height: BAKE_RES,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: BAKE_FORMAT,
+                    usage: loop_usage,
+                    view_formats: &[],
+                }))
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let bake_load = make_bake("stark dynamics bake load");
+        let bake_latm = make_bake("stark dynamics bake latm");
         {
             // Init: latent = the brush's own colour, per-unit opacity = its alpha;
             // the carried amount starts at the pre-`charge` glob (0 = empty tool).
@@ -1106,16 +1155,34 @@ impl StrokeRenderer {
                 })
             })
             .collect();
-        let deposit_bgs: Vec<wgpu::BindGroup> = (0..2)
+        // One bake bind group per reservoir phase; the deposit reads only the baked
+        // result, so it no longer needs the ping-pong at all.
+        let bake_bgs: Vec<wgpu::BindGroup> = (0..2)
             .map(|i| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark dynamics bake bg"),
+                    layout: &kit.bake_bgl,
+                    entries: &[
+                        params(),
+                        samp(),
+                        tex(7, &brush_color[i]),
+                        tex(8, &brush_aux[i]),
+                        tex(17, &bake_load),
+                        tex(18, &bake_latm),
+                    ],
+                })
+            })
+            .collect();
+        let deposit_bgs: Vec<wgpu::BindGroup> = (0..1)
+            .map(|_| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark dynamics deposit bg"),
                     layout: &kit.deposit_bgl,
                     entries: &[
                         params(),
                         samp(),
-                        tex(7, &brush_color[i]),
-                        tex(8, &brush_aux[i]),
+                        tex(19, &bake_load),
+                        tex(20, &bake_latm),
                         tex(11, &under_color),
                         tex(12, &under_aux),
                         tex(13, &region_color),
@@ -1148,12 +1215,15 @@ impl StrokeRenderer {
             });
             let du = dsize.div_ceil(8);
             let bu = BRUSH_RES.div_ceil(8);
-            // The prefix-τ (used by `deposit` only) rides at group 1 for the
-            // whole pass; other pipelines' layouts simply don't reach it.
-            cpass.set_bind_group(1, &prefix_bg, &[]);
+            // The bake is one thread per row of its own texture.
+            let ku = BAKE_RES.div_ceil(64);
+            // The prefix-τ rides at group 1 for `bake` and `deposit`. Re-bound after
+            // every pipeline switch: changing to a pipeline whose group-0 layout
+            // differs invalidates the groups above it, and both consumers are
+            // reached only across such a switch.
             // `cur` = the reservoir texture holding the current tool state: each
             // pickup reads `cur` and writes the other, then flips; the segment
-            // deposits in between read `cur` (the post-pickup state).
+            // bakes in between read `cur` (the post-pickup state).
             let mut cur = 0usize;
             for (i, d) in plan.iter().enumerate() {
                 let off = (i * STRIDE) as u32;
@@ -1163,12 +1233,26 @@ impl StrokeRenderer {
                     cpass.dispatch_workgroups(bu, bu, 1);
                     cur = 1 - cur;
                 } else {
+                    // Bake this segment's swept reservoir prefix first — it folds in
+                    // the tip's current orientation as well as the reservoir state,
+                    // so it is per segment, not per pickup.
+                    cpass.set_pipeline(&kit.bake_pipeline);
+                    cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
+                    cpass.set_bind_group(1, &prefix_bg, &[]);
+                    cpass.dispatch_workgroups(ku, 1, 1);
                     cpass.set_pipeline(&kit.snapshot_pipeline);
                     cpass.set_bind_group(0, &snapshot_bg, &[off]);
                     cpass.dispatch_workgroups(du, du, 1);
                     cpass.set_pipeline(&kit.deposit_pipeline);
-                    cpass.set_bind_group(0, &deposit_bgs[cur], &[off]);
+                    cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
+                    cpass.set_bind_group(1, &prefix_bg, &[]);
                     cpass.dispatch_workgroups(du, du, 1);
+                    // Drain the tool by what this segment just took, so the next one
+                    // reads a tool that has actually travelled.
+                    cpass.set_pipeline(&kit.deplete_pipeline);
+                    cpass.set_bind_group(0, &pickup_bgs[cur], &[off]);
+                    cpass.dispatch_workgroups(bu, bu, 1);
+                    cur = 1 - cur;
                 }
             }
         }
@@ -1269,19 +1353,18 @@ fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     if b.drain > 0.0 {
         tol.max_len = tol.max_len.min(0.02 / b.drain);
     }
-    // The stamp loop reads its tool reservoir at the tip's *mid-pass* position over
-    // each region texel — one representative sample for a segment during which the
-    // tip actually sweeps a whole range of reservoir texels across that spot
-    // (`dynamics.wesl::deposit`). That approximation only holds while a segment
-    // advances the tip by about a reservoir texel, so cap it there: the reservoir is
-    // [`BRUSH_RES`] texels across the tip's 2-radius width, and beyond ~1.5 of them
-    // the sampled load visibly jumps from segment to segment and the stroke scallops.
-    // (This also stays under the `spacing · radius` pickup cadence, and bounds the
-    // snapshot scratch, which is sized by the longest segment.)
+    // The stamp loop reloads its reservoir every `spacing · radius` of travel, and
+    // a pickup can only land *between* segments — so a segment longer than that
+    // cadence would silently thin the reloads and change how the tool carries paint.
+    // That is now the binding constraint: the exchange itself is exact at any
+    // length (`dynamics.wesl::bake` integrates the reservoir over the whole pass
+    // rather than sampling it mid-pass), and this also bounds the snapshot scratch,
+    // which is sized by the longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
-        let per_texel = 2.0 / BRUSH_RES as f32;
-        tol.max_len = tol.max_len.min((b.radius * per_texel * 1.5).max(0.5));
+        tol.max_len = tol
+            .max_len
+            .min((b.spacing.clamp(0.05, 2.0) * b.radius).max(0.5));
     }
     tol
 }
@@ -1443,8 +1526,11 @@ fn dynamics_plan(
     let b = &rec.brush;
     let d = b.dynamics;
     let spacing = b.spacing.clamp(0.05, 2.0);
-    // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean).
-    let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0);
+    // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
+    // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
+    // which is what a 0..1 knob should mean, rather than per unit optical depth.
+    let lambda =
+        |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
     let l_lift = lambda(d.lift);
     let l_dep = lambda(d.deposit);
     let half = (dsize / 2) as f32;
@@ -1672,6 +1758,18 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
         },
         count: None,
     };
+    // The baked swept prefix is fp32 — it is differenced per fragment, like the
+    // prefix-τ volume, so f16 would band exactly where the difference is smallest.
+    let stor32 = |binding: u32| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
+            format: BAKE_FORMAT,
+            view_dimension: wgpu::TextureViewDimension::D2,
+        },
+        count: None,
+    };
     let csamp = wgpu::BindGroupLayoutEntry {
         binding: 5,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -1696,13 +1794,26 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
             stor(10),
         ],
     });
-    let deposit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics deposit bgl"),
+    // `bake` integrates the reservoir along the travel axis for one segment; the
+    // deposit then reads the result instead of point-sampling the reservoir.
+    let bake_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark dynamics bake bgl"),
         entries: &[
             params_entry,
             csamp,
             ctex(7, true),
             ctex(8, true),
+            stor32(17),
+            stor32(18),
+        ],
+    });
+    let deposit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark dynamics deposit bgl"),
+        entries: &[
+            params_entry,
+            csamp,
+            ctex(19, false),
+            ctex(20, false),
             ctex(11, false),
             ctex(12, false),
             stor(13),
@@ -1759,6 +1870,16 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
     let snapshot_pipeline =
         cpipe("stark dynamics snapshot", "snapshot", &[Some(&snapshot_bgl)]);
     let pickup_pipeline = cpipe("stark dynamics pickup", "pickup", &[Some(&pickup_bgl)]);
+    // `deplete` touches a subset of what `pickup` binds (no region), so it can share
+    // the layout and its bind groups — unused entries are legal.
+    let deplete_pipeline = cpipe("stark dynamics deplete", "deplete", &[Some(&pickup_bgl)]);
+    // The bake reads the prefix-τ volume too (group 1) — the exposure weights in
+    // its integral are that volume's own differences.
+    let bake_pipeline = cpipe(
+        "stark dynamics bake",
+        "bake",
+        &[Some(&bake_bgl), Some(&prefix_bgl)],
+    );
     let deposit_pipeline = cpipe(
         "stark dynamics deposit",
         "deposit",
@@ -1852,6 +1973,9 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
         snapshot_bgl,
         pickup_pipeline,
         pickup_bgl,
+        deplete_pipeline,
+        bake_pipeline,
+        bake_bgl,
         deposit_pipeline,
         deposit_bgl,
         exchange_sampler,

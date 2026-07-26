@@ -199,8 +199,13 @@ fn charged_tool_lays_a_finite_glob() {
     let img = engine.render_to_image(PAPER);
 
     let start = img.pixel(20, y); // near the stroke start
+    // Bare paper reads ~200 here. The bound was 170 when the exchange axes were a
+    // rate per unit optical depth; they are now per *pass of the tip*
+    // (`TAU_PER_PASS`), so the same charge spreads over a longer run and lays less
+    // of itself at any one point. The property under test — a finite charge that
+    // shows up at the start and runs out — is unchanged.
     assert!(
-        (start[1] as i32) < 170,
+        (start[1] as i32) < 185,
         "the charged glob must lay paint near the stroke start: {start:?}"
     );
     // The glob depletes: the very end of the stroke carries visibly less paint

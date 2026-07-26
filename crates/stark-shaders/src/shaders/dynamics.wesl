@@ -9,9 +9,11 @@
 //     thread per **tool reservoir** texel: sample the (evolving) canvas region
 //     under that part of the tip, lift paint onto the tool, deplete the tool by
 //     the upcoming deposit. Ping-pongs the reservoir.
-//   - per flattened segment: `snapshot` (copy the segment's footprint texels to
-//     an `under` scratch, so the exchange can read-modify-write the region), then
-//     `deposit` — one thread per footprint texel.
+//   - per flattened segment: `bake` (integrate the reservoir along the travel
+//     axis, so the deposit can read what the tip presented over a whole pass
+//     rather than at one point), `snapshot` (copy the segment's footprint texels
+//     to an `under` scratch, so the exchange can read-modify-write the region),
+//     then `deposit` — one thread per footprint texel.
 //
 // **The canvas-side exchange is swept, not stamped** — the same definite-integral
 // formulation as the plain deposit: a texel's *exposure* to the segment is the
@@ -102,6 +104,15 @@ struct Stamp {
 // the brush's own `add` paint exactly like the fast path's stamp (DESIGN §6.2).
 @group(0) @binding(15) var dyn_noise_tex: texture_3d<f32>;
 @group(0) @binding(16) var dyn_noise_samp: sampler;
+// The reservoir's **swept prefix** in the travel frame (written by `bake`, read by
+// `deposit`): running integrals of the carried paint weighted by the footprint's
+// optical-depth density. `load` = (∫h·dτ, ∫m·dτ, ∫wet·dτ, _), `latm` = (∫lat·m·dτ).
+// fp32 because each fragment takes a *difference* of two prefix sums, exactly as
+// the prefix-τ volume does, and for the same cancellation reason.
+@group(0) @binding(17) var bake_load_w: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(18) var bake_latm_w: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(19) var bake_load: texture_2d<f32>;
+@group(0) @binding(20) var bake_latm: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const EPS: f32 = 1e-5;
@@ -131,12 +142,26 @@ const OPACITY_K: f32 = 1.0;
 // carrying stroke ran dry early and showed arcs at the segment spacing. It only
 // shows once the tool is actually carrying paint — the `add` axis was already a
 // bare `e`, correct only because it had no lift to survive.
+//
+// This is the uniform-reservoir case of what `bake` integrates: with `R ≡ 1`, the
+// swept prefix there evaluates to exactly this window. The two are one expression
+// seen from either end — which is why the deposit multiplies them together and
+// nothing else is needed to make a pass composable.
 fn laid_window(e: f32) -> f32 {
     let k = -st.b.z; // the lift rate; 0 when the brush does not lift
     if k < 1e-6 {
         return e;
     }
     return (1.0 - exp(-k * e)) / k;
+}
+
+// The footprint's **optical depth** at brush-local `local` — the currency every
+// transfer in this loop is measured in, on both sides. The canvas side gets it from
+// the prefix-τ volume's differences; the tool side, which has no prefix to
+// difference, converts its own coverage the same way the volume was built
+// (`assets::build_prefix_tau`), clamp included, so the two agree.
+fn tau_at(local: vec2<f32>) -> f32 {
+    return -log(1.0 - min(coverage_at(local), 0.999));
 }
 
 // Footprint coverage at brush-local `local` ∈ [-1,1]² (0 outside — image masks may
@@ -161,6 +186,94 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
         return lat0;
     }
     return (lat0 * w0 + lat1 * w1) / w;
+}
+
+// Bilinear lookup of a baked prefix row at travel-frame `(x, y)`, with the same
+// asymmetric edge semantics as `prefix_at`: 0 before the tip's leading edge, and
+// clamped to the row total after its trailing edge. Hand-rolled on `textureLoad`
+// for the same reasons the prefix-τ lookup is (fp32 is not filterable in core
+// WebGPU, and the travel axis is asymmetric).
+fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec3<f32> {
+    if x <= -1.0 {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let dim = vec2<f32>(textureDimensions(tex));
+    let ux = clamp(x * 0.5 + 0.5, 0.0, 1.0) * dim.x - 0.5;
+    let uy = clamp(y * 0.5 + 0.5, 0.0, 1.0) * dim.y - 0.5;
+    let x0 = floor(ux);
+    let y0 = floor(uy);
+    let fx = ux - x0;
+    let fy = uy - y0;
+    let xi0 = clamp(i32(x0), 0, i32(dim.x) - 1);
+    let xi1 = clamp(i32(x0) + 1, 0, i32(dim.x) - 1);
+    let yi0 = clamp(i32(y0), 0, i32(dim.y) - 1);
+    let yi1 = clamp(i32(y0) + 1, 0, i32(dim.y) - 1);
+    let p00 = textureLoad(tex, vec2<i32>(xi0, yi0), 0).xyz;
+    let p10 = textureLoad(tex, vec2<i32>(xi1, yi0), 0).xyz;
+    let p01 = textureLoad(tex, vec2<i32>(xi0, yi1), 0).xyz;
+    let p11 = textureLoad(tex, vec2<i32>(xi1, yi1), 0).xyz;
+    return mix(mix(p00, p10, fx), mix(p01, p11, fx), fy);
+}
+
+// ---- 0. Bake: the reservoir's swept prefix along the travel axis. ----------------
+//
+// During a segment the tip does not present one texel to a canvas point — it drags
+// a whole *range* of texels across it. A point at travel-frame `(xl, yl)` is served
+// by tool texel `(xl − s, yl)` as the tip advances by `s`, so what it receives is
+//
+//     ∫₀^lr R(xl − s, yl) · τ(xl − s, yl) ds
+//
+// a convolution along travel between the reservoir `R` and the footprint's
+// optical-depth density. Sampling `R` once mid-pass (what this used to do) is a
+// one-tap midpoint rule for that integral: first order, with error growing in
+// segment length, which is why it could only ever be traded against step size.
+//
+// The integral has the same shape as the exposure itself, so it yields to the same
+// trick: **`prefix_at` is this integral with `R ≡ 1`**. Accumulate `R·dτ` along the
+// row and the deposit becomes a difference of two prefix sums — O(1), and exact for
+// any segment length. Baked per segment, so the tip's orientation (the reservoir
+// lives in the shape frame, §6.6) and the reservoir's own evolution are both folded
+// in with no approximation. `dτ` comes from the prefix-τ volume's own differences,
+// so bake and exposure integrate numerically identical footprints.
+@compute @workgroup_size(64)
+fn bake(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dim = textureDimensions(bake_load_w);
+    let row = gid.x;
+    if row >= dim.y {
+        return;
+    }
+    let yl = (f32(row) + 0.5) / f32(dim.y) * 2.0 - 1.0;
+    let theta = st.d.z * TAU;
+    let cs = cos(theta);
+    let sn = sin(theta);
+
+    var acc_load = vec3<f32>(0.0, 0.0, 0.0);
+    var acc_latm = vec3<f32>(0.0, 0.0, 0.0);
+    var prev_e = 0.0; // prefix-τ is 0 at the leading edge
+    for (var i: u32 = 0u; i < dim.x; i = i + 1u) {
+        // This column's share of the exposure, and the tool texel over it. The
+        // reservoir is stored in the shape frame, so rotate out of travel first.
+        let x1 = (f32(i) + 1.0) / f32(dim.x) * 2.0 - 1.0;
+        let e = prefix_at(x1, yl, st.d.z);
+        let de = max(e - prev_e, 0.0);
+        prev_e = e;
+
+        let xc = (f32(i) + 0.5) / f32(dim.x) * 2.0 - 1.0;
+        let sl = vec2<f32>(xc * cs + yl * sn, -xc * sn + yl * cs);
+        let buv = clamp(sl * 0.5 + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+        let b_c = textureSampleLevel(brush_src_color, samp, buv, 0.0);
+        let b_a = textureSampleLevel(brush_src_aux, samp, buv, 0.0);
+
+        // Carried height, optical mass (opacity·height) and wet, each weighted by
+        // the exposure they are presented with; latent rides as a mass weight so a
+        // ratio of the two prefixes recovers it (§6.1).
+        let m = b_c.a * b_a.x;
+        acc_load += vec3<f32>(b_a.x, m, b_a.y) * de;
+        acc_latm += b_c.rgb * (m * de);
+        let t = vec2<i32>(i32(i), i32(row));
+        textureStore(bake_load_w, t, vec4<f32>(acc_load, 0.0));
+        textureStore(bake_latm_w, t, vec4<f32>(acc_latm, 0.0));
+    }
 }
 
 // ---- 1. Snapshot the region under the segment's footprint rect. -----------------
@@ -200,14 +313,12 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
         + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
 
     // This texel's exposure over the interval since the last pickup: its own
-    // footprint weight × the travel (radius units). The same exponential-in-
-    // exposure law as the canvas side, so depletion matches what the segment
-    // deposits lay over the same interval.
-    let e = coverage_at(local) * st.d.w;
+    // optical depth × the travel (radius units). In τ, like the canvas side and
+    // like `deplete` — the canvas gives up `1 − exp(λ_lift·∫τ)`, so a tool that
+    // measured its gain in bare coverage would receive a fraction of what the
+    // canvas lost and quietly destroy paint.
+    let e = tau_at(local) * st.d.w;
     let lift = 1.0 - exp(st.b.z * e);
-    // The tool's own load decays exponentially as it gives paint up — a per-interval
-    // quantity, so unlike the canvas side it never depended on the segment cut.
-    let dep = 1.0 - exp(st.b.w * e);
 
     let rdim = vec2<f32>(textureDimensions(region_color));
     let rc = textureSampleLevel(region_color, samp, world / rdim, 0.0);
@@ -216,14 +327,15 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult
     let b_a = textureLoad(brush_src_aux, t, 0);   // (height, wet, _, _)
 
-    // Deplete the tool by what the upcoming segments deposit (they read this
-    // post-pickup reservoir — see `deposit`)…
-    let keep = 1.0 - dep;
-    var h = b_a.x * keep;
-    var wet = b_a.y * keep;
+    // Only the canvas→tool direction happens here. The tool's own draining is per
+    // *segment* (`deplete`), because it has to advance with travel for the exchange
+    // to be independent of how the path was cut — at pickup cadence, every segment
+    // in an interval would deposit from the same undepleted load.
+    var h = b_a.x;
+    var wet = b_a.y;
     var m = b_c.a * h;
 
-    // …then fold in the paint lifted off the canvas: height moves, colour/opacity
+    // Fold in the paint lifted off the canvas: height moves, colour/opacity
     // ride as optical-mass-weighted blends (§6.1).
     let take_h = ra.x * lift;
     let take_m = rc.a * take_h;
@@ -235,6 +347,34 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, wet, 0.0, 0.0));
+}
+
+// ---- 2b. Deplete: the tool drains as it gives paint up, per segment. ------------
+//
+// The counterpart to what `deposit` lays. Multiplicative in the texel's own
+// exposure to the segment (its footprint weight × the travel), so the tool's state
+// after a run of segments is `exp(λ_dep · Σeᵢ)` — the same wherever the path was
+// cut. Doing this at pickup cadence instead is what left a carrying stroke
+// depositing the same undepleted load once per segment and scalloping between
+// reloads. Latent and per-unit opacity are untouched: the tool holds *less* paint,
+// not different paint (§6.1).
+@compute @workgroup_size(8, 8)
+fn deplete(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let bdim = textureDimensions(brush_src_color);
+    if gid.x >= bdim.x || gid.y >= bdim.y {
+        return;
+    }
+    let t = vec2<i32>(gid.xy);
+    let local = (vec2<f32>(t) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
+    // In optical depth, like every other transfer here: `deposit` integrates the
+    // tool's decay over the canvas-side exposure, which is the prefix-τ integral, so
+    // a tool draining in bare coverage would disagree with it by a factor that grows
+    // with segment length — the very partition dependence this dispatch removes.
+    let keep = exp(st.b.w * tau_at(local) * st.b.y);
+    let b_c = textureLoad(brush_src_color, t, 0);
+    let b_a = textureLoad(brush_src_aux, t, 0);
+    textureStore(brush_dst_color_w, t, b_c);
+    textureStore(brush_dst_aux_w, t, vec4<f32>(b_a.x * keep, b_a.y * keep, 0.0, 0.0));
 }
 
 // ---- 3. Deposit: the swept exchange over one segment. ----------------------------
@@ -267,24 +407,46 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         return; // outside the swept footprint: the region keeps its value
     }
     let lift = 1.0 - exp(st.b.z * e);
-    // Both sources below are rates *per unit exposure* integrated over the segment
-    // through `laid_window`, so the pass composes exactly however the path was cut.
+    // The brush's own `add` is a *constant* source, so it rides the plain window.
     let laid = laid_window(e);
-    let dep = -st.b.w * laid;
+    // The tool's is not: it drains as it gives paint up (`deplete`), while what it
+    // has already laid is itself being lifted. Over the segment that is a pair of
+    // coupled linear ODEs — `dR/de = λ_dep·R`, `dh/de = λ_lift·h + k_dep·R` — whose
+    // solution is the fraction of the *entering* load that ends up on the canvas:
+    //
+    //     k_dep · (exp(λ_dep·e) − exp(λ_lift·e)) / (λ_dep − λ_lift)
+    //
+    // Being the exact solution, it composes over any cut of the path, and it is
+    // bounded by 1 on its own — a segment cannot lay more than the tool brought,
+    // which is what a per-segment rate applied to an undepleted reservoir could.
+    let ld = st.b.w;
+    let ll = st.b.z;
+    let split = ld - ll;
+    var dep = -ld * e * exp(ll * e); // λ_dep → λ_lift limit
+    if abs(split) > 1e-4 {
+        dep = -ld * (exp(ld * e) - exp(ll * e)) / split;
+    }
 
     let uc = textureLoad(under_color, t, 0);
     let ua = textureLoad(under_aux, t, 0);
-    // The tool's carried paint over this spot: the reservoir lives in the *shape*
-    // frame (travel rotated by the orientation), and the tip's mid-pass position
-    // over this texel is `xl − len/2` along the travel.
-    let theta = st.d.z * TAU;
-    let cs = cos(theta);
-    let sn = sin(theta);
-    let xc = clamp(xl - st.b.y * 0.5, -1.0, 1.0);
-    let shape_local = vec2<f32>(xc * cs + yl * sn, -xc * sn + yl * cs);
-    let buv = clamp(shape_local * 0.5 + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-    let b_c = textureSampleLevel(brush_src_color, samp, buv, 0.0);
-    let b_a = textureSampleLevel(brush_src_aux, samp, buv, 0.0);
+    // The tool's carried paint over this spot, as the tip actually presented it:
+    // the swept prefix differenced across the segment (see `bake`) gives the
+    // exposure-weighted integral of the reservoir over the whole pass, so dividing
+    // by the exposure recovers the mean load that pass delivered. Exact for any
+    // segment length — no mid-pass sample, no length-dependent error.
+    // Height, mass and wet are non-negative, so their prefixes are monotonic and a
+    // difference below zero can only be rounding. The *latent* is not: these are
+    // colour-space channels (Oklab a/b are signed — green carries a negative a), so
+    // its prefix is not monotonic and clamping the difference would shear the
+    // chroma off whatever the tool is carrying.
+    let load = max(bake_at(bake_load, xl, yl) - bake_at(bake_load, xl - st.b.y, yl), vec3<f32>(0.0, 0.0, 0.0));
+    let latm = bake_at(bake_latm, xl, yl) - bake_at(bake_latm, xl - st.b.y, yl);
+    let inv_e = 1.0 / e;
+    let tool_h = load.x * inv_e;
+    let tool_m = load.y * inv_e;
+    let tool_wet = load.z * inv_e;
+    let tool_op = tool_m / max(tool_h, EPS);
+    let tool_lat = latm * inv_e / max(tool_m, EPS);
 
     // The lift's removal: height (and wet) leave; the remaining paint's latent and
     // per-unit opacity are unchanged — the source fades because its *thickness*
@@ -308,15 +470,15 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The parcel this segment lays: the tool's deposit + the brush's own `add`
     // paint — the latter linear in exposure, i.e. exactly the plain deposit's
     // path-integral height.
-    let dep_h = b_a.x * dep;
+    let dep_h = tool_h * dep;
     let add_h = st.e.x * laid;
     let par_h = dep_h + add_h;
-    let par_m = b_c.a * dep_h + st.c.w * add_h;
+    let par_m = tool_op * dep_h + st.c.w * add_h;
     var par_lat = own_lat;
     if par_m > EPS {
-        par_lat = (b_c.rgb * (b_c.a * dep_h) + own_lat * (st.c.w * add_h)) / par_m;
+        par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (st.c.w * add_h)) / par_m;
     }
-    let par_wet = b_a.y * dep + st.e.y * laid;
+    let par_wet = tool_wet * dep + st.e.y * laid;
 
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
     h += par_h;
