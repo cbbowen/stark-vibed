@@ -39,7 +39,7 @@ const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
 /// clearly over the red reference stroke beneath it — the preview is about the
 /// brush's *behaviour*, not its colour. Only RGB is forced; the brush's own
 /// alpha (the Opacity slider) still applies.
-const PREVIEW_STROKE_BLUE: [f32; 3] = [0.16, 0.42, 0.86];
+const PREVIEW_STROKE_COLOR: [f32; 3] = [0.852, 0.645, 0.125];
 
 /// Fixed jitter seed for the previewed test stroke. Every edit re-strokes, and
 /// a stroke's seed is normally the document clock — which advances with each
@@ -417,7 +417,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
     let samples: Vec<InputSample> = (0..N)
         .map(|i| {
             let t = i as f32 / (N - 1) as f32;
-            let y = h * -0.25 + t * h * 1.25;
+            let y = h * -0.5 + t * h * 1.5;
             InputSample {
                 pos: view.screen_to_canvas(Vec2::new(x, y)),
                 pressure: 1.0,
@@ -427,7 +427,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
         .collect();
     let brush = BrushParams {
         color: [0.82, 0.15, 0.12, 1.0],
-        radius: 25.0,
+        radius: 75.0,
         hardness: 0.9,
         drain: 0.0,
         tooth: 0.0,
@@ -454,7 +454,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     };
     // Force the test stroke to the fixed preview blue so it reads over the red
     // reference stroke; the brush's own alpha (Opacity) is left untouched.
-    brush.color[..3].copy_from_slice(&PREVIEW_STROKE_BLUE);
+    brush.color[..3].copy_from_slice(&PREVIEW_STROKE_COLOR);
     let samples = preview.samples.peek().clone();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();

@@ -113,18 +113,18 @@ pub struct Session {
 
 fn hard_round_brush_params() -> BrushParams {
     BrushParams {
-        radius: 120.0,
+        radius: 100.0,
         hardness: 0.95,
         dynamics: BrushDynamics {
-            add: 0.5,
-            lift: 0.1,
+            add: 0.4,
+            lift: 0.6,
             deposit: 0.95,
             ..BrushDynamics::default()
         },
         color_dynamics: ColorDynamics {
             noise: NoiseKind::Simplex,
             frequency: [1.0, 1.0, 4.0],
-            amplitude: [0.0, 0.1, 0.1],
+            amplitude: [0.0, 0.1, 0.2],
         },
         ..BrushParams::default()
     }
