@@ -170,9 +170,7 @@ lines: `StrokeScene` removed four parameters from four signatures, and
 `OffscreenDesc` came with a `rebuild_offscreen` method that collapsed three
 eight-argument call sites.
 
-## Phase 4 — Architecture consistency (needs decisions)
-
-**4.1 is DONE** — see the outcome note below it.
+## Phase 4 — Architecture consistency — **DONE**
 
 **4.1 Two parallel input APIs.** DESIGN §4 calls `InputCommand` "the most
 important boundary," but ~18 engine mutations bypass it entirely as direct
@@ -200,6 +198,11 @@ DESIGN §4. §7 now admits the actor is a target, not the present.
 `../stark-ui/assets/environment/ferndale_studio_11_1k.hdr`. DESIGN §2:
 *"stark-ui depends on core, never the reverse."* Move the HDR to a neutral home.
 
+**Done — contained, not removed.** Dioxus's `asset!` rejects any path outside its
+own crate (verified), so the assets cannot move; at 11 MB a second copy is not
+worth it. Four hardcoded paths became zero, behind `stark_testdata::assets`.
+DESIGN §2 now states the caveat instead of implying the invariant is absolute.
+
 **4.3 `Engine` is a 30-field god object** with ~50 public methods. Two clusters
 are already visually obvious in the struct — `(surface, surface_id,
 surface_assets)` and `(environment, environment_id, environment_assets)` are the
@@ -207,8 +210,24 @@ same shape twice: registered bytes + current id + live GPU object. One small
 `Registry<Id, Gpu>` absorbs both. `(actor, clock, outbox, outbox_enabled)` is a
 third.
 
+**Done.** `gpu::Registry<R: Resource>` absorbed the surface and environment
+clusters; 4.4 folded the four action subsystems into the stored `ApplyCtx`.
+Engine went from 30 fields to 18. The collaboration cluster is still loose —
+worth doing if that area is touched again, not on its own.
+
+It also caught a real bug: `join_collaboration` kept the pre-4.1 surface handling
+that `load_document` had shed, so joining a session whose log switched surfaces
+started on the wrong one.
+
 **4.4** TODO.md's *"`Engine::apply_ctx` does a lot of cloning"* — it clones four
 subsystems on every undo/redo/commit. Worth a borrow-based `ApplyCtx<'_>`.
+
+**Done, but not borrow-based.** `history::Action::Context` is an owned associated
+type, so there is nothing to hand a borrow of — the fix is to *store* the context
+rather than rebuild it. Two TODO.md entries cleared: this one, and "avoid calling
+`build_gpu` to change environment", which fell out of the surface becoming
+document state (both offending call sites were rebuilding the whole GPU stack
+because a surface differed).
 
 ## Phase 5 — Documentation rot
 
