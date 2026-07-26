@@ -114,13 +114,22 @@ pub struct Engine {
     gpu: GpuContext,
     target_format: wgpu::TextureFormat,
     color_space: Arc<dyn ColorSpace>,
-    pool: TilePool,
-    stroke: StrokeRenderer,
-    assets: AssetStore,
-    /// Selection-mask rasterization (DESIGN.md §6.8). Colour-space independent (a
-    /// mask is one coverage channel whatever the paint is), so unlike the pool and
-    /// the stroke renderer it survives a colour-space rebuild.
-    selection: SelectionRenderer,
+    /// The GPU subsystems an action needs in order to apply itself — the tile
+    /// pool, the stroke renderer, the asset store and the selection rasterizer —
+    /// held as the `history::Action::Context` (DESIGN.md §5).
+    ///
+    /// Stored rather than built per call. `history`'s `Context` is an owned
+    /// associated type, so there is nothing to hand it a borrow of; this used to be
+    /// rebuilt by cloning all four on *every* commit, undo, redo and remote merge —
+    /// tens of `Arc` bumps plus a `HashMap` allocation each time, for a value that
+    /// only changes when the colour space is rebuilt.
+    ///
+    /// They live only here: the engine reaches them through `self.apply` too, so
+    /// there is one copy rather than the engine's plus the context's.
+    /// `selection` is colour-space independent (a mask is one coverage channel
+    /// whatever the paint is), so unlike the pool and the stroke renderer it
+    /// survives a rebuild.
+    apply: ApplyCtx,
     compositor: Compositor,
     /// The physical canvas surface (tooth + relief) and the bytes registered for
     /// it. Colour-space-independent, so it survives colour-space rebuilds. Which
@@ -201,10 +210,12 @@ impl Engine {
             gpu,
             target_format,
             color_space,
-            pool,
-            stroke,
-            assets,
-            selection,
+            apply: ApplyCtx {
+                pool,
+                stroke,
+                assets,
+                selection,
+            },
             compositor,
             initial_surface: surface.id(),
             surface,
@@ -307,8 +318,7 @@ impl Engine {
                 if let Some(target) = self.timeline.undo_as_action() {
                     self.commit(ActionKind::Undo(target));
                 } else {
-                    let mut ctx = self.apply_ctx();
-                    self.timeline.undo(&mut ctx);
+                    self.timeline.undo(&mut self.apply);
                 }
                 self.apply_document_surface();
             }
@@ -318,8 +328,7 @@ impl Engine {
                 if let Some(target) = self.timeline.redo_as_action() {
                     self.commit(ActionKind::Undo(target));
                 } else {
-                    let mut ctx = self.apply_ctx();
-                    self.timeline.redo(&mut ctx);
+                    self.timeline.redo(&mut self.apply);
                 }
                 self.apply_document_surface();
             }
@@ -506,6 +515,7 @@ impl Engine {
             }
         }
         let assets = self
+            .apply
             .assets
             .all_bytes()
             .into_iter()
@@ -537,7 +547,7 @@ impl Engine {
         }
         // Brush assets must be available before replaying strokes that use them.
         for (_, bytes) in &file.assets {
-            if let Err(e) = self.assets.insert_bytes(bytes) {
+            if let Err(e) = self.apply.assets.insert_bytes(bytes) {
                 eprintln!("skipping unreadable brush asset: {e}");
             }
         }
@@ -569,7 +579,7 @@ impl Engine {
     ) {
         self.reset_document();
         for (_, bytes) in &file.assets {
-            let _ = self.assets.insert_bytes(bytes);
+            let _ = self.apply.assets.insert_bytes(bytes);
         }
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
@@ -634,7 +644,7 @@ impl Engine {
     /// Import a brush-shape image (PNG bytes), returning its content id for use
     /// in `BrushParams::shape = BrushShape::Stamp(id)` (DESIGN.md §6.6).
     pub fn import_brush(&self, png_bytes: &[u8]) -> Result<AssetId> {
-        self.assets.import(png_bytes)
+        self.apply.assets.import(png_bytes)
     }
 
     // --- collaboration (DESIGN.md §12) -----------------------------------
@@ -667,9 +677,9 @@ impl Engine {
                 a.id.actor = actor;
             }
         }
-        let mut ctx = self.apply_ctx();
+        let ctx = &mut self.apply;
         let initial = DocState::with_layer(ROOT_LAYER);
-        self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, &mut ctx));
+        self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.actor = actor;
         self.outbox_enabled = true;
         self.preview = None;
@@ -687,17 +697,17 @@ impl Engine {
             self.rebuild_gpu_for(file.canvas.color_space);
         }
         for (_, bytes) in &file.assets {
-            if let Err(e) = self.assets.insert_bytes(bytes) {
+            if let Err(e) = self.apply.assets.insert_bytes(bytes) {
                 tracing::warn!("skipping unreadable brush asset: {e}");
             }
         }
-        let mut ctx = self.apply_ctx();
+        let ctx = &mut self.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
         self.timeline = Box::new(ReplicatedTimeline::from_log(
             actor,
             initial,
             file.actions.clone(),
-            &mut ctx,
+            ctx,
         ));
         self.resync_counters(&file.actions);
         self.actor = actor;
@@ -724,8 +734,8 @@ impl Engine {
         if let ActionKind::AddLayer { id, .. } = &action.kind {
             self.next_layer = self.next_layer.max(id.0 + 1);
         }
-        let mut ctx = self.apply_ctx();
-        let merged = self.timeline.merge(action, &mut ctx);
+        let ctx = &mut self.apply;
+        let merged = self.timeline.merge(action, ctx);
         // The live preview is rendered over the committed state; re-base it if
         // a remote stroke landed mid-gesture.
         if merged && self.session.is_stroking() {
@@ -745,7 +755,7 @@ impl Engine {
     /// transport session's asset mirror so peers can fetch any brush a future
     /// stroke references (DESIGN.md §12.4).
     pub fn all_asset_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
-        self.assets.all_bytes()
+        self.apply.assets.all_bytes()
     }
 
     fn commit(&mut self, kind: ActionKind) {
@@ -753,8 +763,8 @@ impl Engine {
             id: self.next_action_id(),
             kind,
         };
-        let mut ctx = self.apply_ctx();
-        self.timeline.push(action.clone(), &mut ctx);
+        let ctx = &mut self.apply;
+        self.timeline.push(action.clone(), ctx);
         if self.outbox_enabled {
             self.outbox.push(action);
         }
@@ -821,7 +831,7 @@ impl Engine {
     /// tooth gate and the media pass) — no pipeline or pool rebuild, no document
     /// reset.
     fn apply_surface(&mut self) {
-        self.stroke.set_surface(self.surface.current());
+        self.apply.stroke.set_surface(self.surface.current());
         self.compositor.set_surface(self.surface.current().clone());
     }
 
@@ -873,11 +883,11 @@ impl Engine {
             cs: &cs,
             surface: self.surface.current(),
             environment: self.environment.current(),
-            selection: &self.selection,
+            selection: &self.apply.selection,
         });
         self.color_space = cs;
-        self.pool = pool;
-        self.stroke = stroke;
+        self.apply.pool = pool;
+        self.apply.stroke = stroke;
         self.compositor = compositor;
     }
 
@@ -900,8 +910,8 @@ impl Engine {
 
     /// Commit one already-built action onto the timeline (replays its GPU work).
     fn replay_one(&mut self, action: Action) {
-        let mut ctx = self.apply_ctx();
-        self.timeline.push(action, &mut ctx);
+        let ctx = &mut self.apply;
+        self.timeline.push(action, ctx);
     }
 
     /// After loading, advance the id counters past everything in the log so new
@@ -926,15 +936,6 @@ impl Engine {
         };
         self.clock += 1;
         id
-    }
-
-    fn apply_ctx(&self) -> ApplyCtx {
-        ApplyCtx {
-            pool: self.pool.clone(),
-            stroke: self.stroke.clone(),
-            assets: self.assets.clone(),
-            selection: self.selection.clone(),
-        }
     }
 
     /// Re-render the in-flight stroke onto a CoW copy of the committed state.
@@ -1063,10 +1064,10 @@ impl Engine {
             return (base.clone(), carry_only(spans.dist));
         };
         let layer = base.layer_at(idx).clone();
-        let (tiles, carry) = self.stroke.render_range(
+        let (tiles, carry) = self.apply.stroke.render_range(
             crate::gpu::stroke::StrokeScene {
-                pool: &self.pool,
-                assets: &self.assets,
+                pool: &self.apply.pool,
+                assets: &self.apply.assets,
                 base: &layer.tiles,
                 selection: &base.selection,
             },
@@ -1087,8 +1088,9 @@ impl Engine {
         };
         let base = self.timeline.current();
         self.preview = self
+            .apply
             .selection
-            .apply(&self.pool, &base.selection, &op)
+            .apply(&self.apply.pool, &base.selection, &op)
             .map(|selection| base.with_selection(selection));
     }
 }
