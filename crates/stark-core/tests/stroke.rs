@@ -183,7 +183,7 @@ fn a_real_captured_stroke_previews_as_it_commits() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let path: Vec<Vec2> = stark_core::testdata::HAIRPIN_STROKE
+    let path: Vec<Vec2> = stark_testdata::HAIRPIN_STROKE
         .iter()
         .map(|&[x, y]| Vec2::new(x, y))
         .collect();
@@ -226,7 +226,7 @@ fn the_incremental_preview_matches_a_fresh_one_throughout() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let path: Vec<Vec2> = stark_core::testdata::LOOP_STROKE
+    let path: Vec<Vec2> = stark_testdata::LOOP_STROKE
         .iter()
         .map(|&[x, y]| Vec2::new(x, y))
         .collect();
@@ -341,7 +341,7 @@ fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
     undercoat(&mut engine);
 
     engine.process(InputCommand::SetBrush(smear_brush(RED, 15.0)));
-    let path: Vec<Vec2> = stark_core::testdata::C_STROKE
+    let path: Vec<Vec2> = stark_testdata::C_STROKE
         .iter()
         .map(|&[x, y]| Vec2::new(x - 160.0, y - 160.0))
         .collect();

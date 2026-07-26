@@ -6040,6 +6040,7 @@ dependencies = [
  "rpds",
  "serde",
  "stark-shaders",
+ "stark-testdata",
  "thiserror 2.0.18",
  "tracing",
  "wgpu",
@@ -6070,6 +6071,10 @@ version = "0.0.0"
 dependencies = [
  "wesl",
 ]
+
+[[package]]
+name = "stark-testdata"
+version = "0.0.0"
 
 [[package]]
 name = "stark-ui"

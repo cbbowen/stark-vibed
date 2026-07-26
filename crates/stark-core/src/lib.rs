@@ -100,8 +100,6 @@ pub mod noise;
 pub mod path;
 pub mod session;
 pub mod spline;
-#[doc(hidden)]
-pub mod testdata;
 
 pub use assets::{AssetId, AssetStore};
 pub use colorspace::{ColorSpace, ColorSpaceId};

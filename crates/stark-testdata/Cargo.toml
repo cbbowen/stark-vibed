@@ -1,0 +1,12 @@
+# Recorded pointer input for stark-core's fitter tests. A separate crate so 57 KB
+# of stroke literals stay out of the engine's public API and out of the wasm the
+# browser downloads — they are a dev-dependency of stark-core, not part of it.
+[package]
+name = "stark-testdata"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Recorded pen input, captured from the app, for Stark's stroke-fitting tests."
+
+[dependencies]

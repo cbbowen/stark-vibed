@@ -3,8 +3,15 @@
 //! Synthetic curves are smooth and evenly sampled in ways real pen input is not,
 //! and the fitter's behaviour turns on exactly those details: the spacing of
 //! reports carries the pen's speed, which the density policy and the freezing both
-//! key off. These are captured from the app (the `debug-unfrozen` feature logs a
-//! finished stroke's raw samples).
+//! key off. These are captured from the app (stark-core's `debug-unfrozen` feature
+//! logs a finished stroke's raw samples as a pasteable Rust literal).
+//!
+//! A crate of its own rather than a module of stark-core: as `pub mod testdata` it
+//! was part of the engine's public API and compiled into every build, including the
+//! wasm the browser downloads. Here it is a dev-dependency, so it reaches the tests
+//! and nothing else.
+//!
+//! Each stroke is a sequence of `[x, y]` canvas positions, exactly as reported.
 
 /// A stroke the fitter visibly misfits, captured 2026-07-26: 305 reports over
 /// 334px of arc, a median step of about 1px, so slow and dense rather than fast.

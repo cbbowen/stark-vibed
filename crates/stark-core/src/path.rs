@@ -1085,9 +1085,9 @@ mod tests {
     #[test]
     fn a_live_stroke_keeps_a_fixed_solvable_window() {
         for (name, src) in [
-            ("spiral", crate::testdata::SPIRAL_STROKE),
-            ("big-C", crate::testdata::BIG_C_STROKE),
-            ("fast", crate::testdata::FAST_STROKE),
+            ("spiral", stark_testdata::SPIRAL_STROKE),
+            ("big-C", stark_testdata::BIG_C_STROKE),
+            ("fast", stark_testdata::FAST_STROKE),
         ] {
             let pts: Vec<InputSample> = src.iter().map(|&[x, y]| sample(x, y)).collect();
             let mut f = PathFitter::new();
