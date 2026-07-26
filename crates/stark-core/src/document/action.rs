@@ -8,7 +8,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::layer::{BlendMode, Layer, LayerId};
+use super::selection::SelectionOp;
 use super::state::DocState;
+use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
 
@@ -32,11 +34,32 @@ pub struct ActionId {
     pub actor: ActorId,
 }
 
-/// The painting tool that produced a stroke. A single brush for now; tools
-/// become an open registry later (DESIGN.md §10).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The tool a gesture drives. Tools become an open registry later (DESIGN.md §10).
+///
+/// Only [`Brush`](Self::Brush) ever reaches a [`StrokeRecord`]: the selection tools
+/// produce a [`SelectionOp`] instead of a stroke (DESIGN.md §6.8). They share the
+/// enum — and so the pointer-gesture plumbing — because from the frontend's point of
+/// view they are the same interaction: press, drag, release.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tool {
+    #[default]
     Brush,
+    /// Rectangular marquee.
+    SelectRect,
+    /// Elliptical marquee.
+    SelectEllipse,
+    /// Freehand lasso.
+    SelectLasso,
+}
+
+impl Tool {
+    /// Whether this tool edits the selection rather than the paint.
+    pub fn is_selection(self) -> bool {
+        matches!(
+            self,
+            Tool::SelectRect | Tool::SelectEllipse | Tool::SelectLasso
+        )
+    }
 }
 
 /// The brush tip shape (DESIGN.md §6.6).
@@ -309,6 +332,14 @@ pub enum ActionKind {
     /// and only ever materializes those. Appended last so postcard decoding of
     /// older files is unaffected.
     Undo(ActionId),
+    /// Edit the selection mask (DESIGN.md §6.8). Historized because a stroke's
+    /// pixels depend on the mask in force when it was drawn — replaying the log has
+    /// to put the same mask back. Only the **op** travels (a few floats, or a
+    /// decimated polyline); every peer rasterizes it identically from the same
+    /// shader, so the log stays compact and convergence is unaffected.
+    Select(SelectionOp),
+    /// Swap selected for unselected everywhere (DESIGN.md §6.8).
+    InvertSelection,
 }
 
 /// A committed document mutation with its identity.
@@ -326,6 +357,7 @@ pub struct ApplyCtx {
     pub pool: TilePool,
     pub stroke: StrokeRenderer,
     pub assets: crate::assets::AssetStore,
+    pub selection: SelectionRenderer,
 }
 
 impl history::Action for Action {
@@ -341,7 +373,16 @@ impl history::Action for Action {
             ActionKind::CommitStroke(rec) => match state.layer_index(rec.layer) {
                 Some(idx) => {
                     let layer = state.layer_at(idx);
-                    let tiles = ctx.stroke.render(&ctx.pool, &ctx.assets, &layer.tiles, rec);
+                    // The selection in force *at this point in the log* gates the
+                    // stroke (DESIGN.md §6.8) — it is read from the state being
+                    // folded over, so replay reproduces it exactly.
+                    let tiles = ctx.stroke.render(
+                        &ctx.pool,
+                        &ctx.assets,
+                        &layer.tiles,
+                        rec,
+                        &state.selection,
+                    );
                     state.with_layer_at(idx, Layer { tiles, ..layer.clone() })
                 }
                 None => state,
@@ -356,6 +397,22 @@ impl history::Action for Action {
             // `Undo` should never be materialized through `apply`. Identity, so
             // a stray one is harmless rather than wrong.
             ActionKind::Undo(_) => state,
+            // An op too large to rasterize (see `MAX_SELECTION_TILES`) leaves the
+            // selection alone — deterministically, since the bound is a pure
+            // function of the op, so peers and replays agree.
+            ActionKind::Select(op) => {
+                match ctx.selection.apply(&ctx.pool, &state.selection, op) {
+                    Some(selection) => state.with_selection(selection),
+                    None => {
+                        tracing::warn!("selection op too large to rasterize; ignored");
+                        state
+                    }
+                }
+            }
+            ActionKind::InvertSelection => {
+                let selection = ctx.selection.invert(&ctx.pool, &state.selection);
+                state.with_selection(selection)
+            }
         })
     }
 }

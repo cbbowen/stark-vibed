@@ -8,6 +8,7 @@
 use rpds::Vector;
 
 use super::layer::{BlendMode, Layer, LayerId};
+use super::selection::Selection;
 use crate::geom::TileCoord;
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (DESIGN.md §6),
@@ -34,19 +35,33 @@ impl CanvasBounds {
     }
 }
 
-/// The full document: an ordered stack of layers and the explored bounds.
+/// The full document: an ordered stack of layers, the explored bounds, and the
+/// selection mask that gates where tools may act.
 #[derive(Clone)]
 pub struct DocState {
     pub layers: Vector<Layer>,
     pub bounds: CanvasBounds,
+    /// The active selection (DESIGN.md §6.8). Document state, not session state:
+    /// a stroke's pixels depend on it, so replay has to be able to reconstruct it —
+    /// which is why selection edits are logged actions like any other.
+    pub selection: Selection,
 }
 
 impl DocState {
-    /// An empty document with a single starting layer.
+    /// An empty document with a single starting layer and nothing masked.
     pub fn with_layer(id: LayerId) -> Self {
         Self {
             layers: Vector::new().push_back(Layer::new(id)),
             bounds: CanvasBounds::default(),
+            selection: Selection::everything(),
+        }
+    }
+
+    /// The same document with a different selection (DESIGN.md §6.8).
+    pub fn with_selection(&self, selection: Selection) -> Self {
+        Self {
+            selection,
+            ..self.clone()
         }
     }
 
@@ -67,7 +82,7 @@ impl DocState {
             .layers
             .set(index, layer)
             .expect("layer index in range");
-        Self::from_layers(layers)
+        self.from_layers(layers)
     }
 
     /// Insert a new empty layer directly above `above` (or on top if `None`).
@@ -87,7 +102,7 @@ impl DocState {
         if at >= self.layers.len() {
             layers = layers.push_back(Layer::new(id));
         }
-        Self::from_layers(layers)
+        self.from_layers(layers)
     }
 
     /// Remove the layer with the given id (no-op if absent).
@@ -98,7 +113,7 @@ impl DocState {
                 layers = layers.push_back(l.clone());
             }
         }
-        Self::from_layers(layers)
+        self.from_layers(layers)
     }
 
     /// Set the blend mode of a layer (no-op if absent).
@@ -143,7 +158,7 @@ impl DocState {
         if at >= remaining.len() {
             layers = layers.push_back(moved);
         }
-        Self::from_layers(layers)
+        self.from_layers(layers)
     }
 
     fn map_layer(&self, id: LayerId, f: impl FnOnce(Layer) -> Layer) -> Self {
@@ -153,13 +168,20 @@ impl DocState {
         }
     }
 
-    fn from_layers(layers: Vector<Layer>) -> Self {
+    /// Rebuild from a new layer stack: bounds are recomputed from every populated
+    /// tile, and the selection carries over — it is orthogonal to the layer stack
+    /// (a mask applies to whatever is painted through it, §6.8).
+    fn from_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();
         for layer in layers.iter() {
             for coord in layer.tiles.keys() {
                 bounds.include(*coord);
             }
         }
-        Self { layers, bounds }
+        Self {
+            layers,
+            bounds,
+            selection: self.selection.clone(),
+        }
     }
 }

@@ -35,6 +35,12 @@ fn main() {
     compiler.build_artifact(&"package::dynamics".parse().unwrap(), "dynamics");
     compiler.build_artifact(&"package::slice".parse().unwrap(), "slice");
 
+    // Selections: mask rasterization, the stamp loop's region gather, and the
+    // on-screen outline — DESIGN §6.8.
+    compiler.build_artifact(&"package::selection".parse().unwrap(), "selection");
+    compiler.build_artifact(&"package::mask_region".parse().unwrap(), "mask_region");
+    compiler.build_artifact(&"package::overlay".parse().unwrap(), "overlay");
+
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
 }

@@ -2,6 +2,7 @@
 
 pub mod action;
 pub mod layer;
+pub mod selection;
 pub mod state;
 pub mod timeline;
 
@@ -10,5 +11,6 @@ pub use action::{
     ColorDynamics, NoiseKind, OrientationSource, StrokeRecord, Tool,
 };
 pub use layer::{BlendMode, Layer, LayerId};
+pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DocState};
 pub use timeline::{effective_actions, LinearTimeline, ReplicatedTimeline, Timeline};

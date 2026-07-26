@@ -899,6 +899,86 @@ from the vendored GLSL (`stark-shaders/build.rs` transpiles `mixbox_eval_polynom
 into a WESL module), so the trained coefficients stay sourced from the licensed
 submodule rather than copied into this repo.
 
+### 6.8 Selections — a soft mask, not a shape
+
+A selection restricts where tools may act. The obvious implementation — remember
+the rectangle, clip to it — is the one that does not survive contact with the
+rest of this design: it cannot express a lasso combined with a rectangle minus an
+ellipse, it has no answer for a feathered edge, and it has nothing to say about
+the "select by colour" and painted quick-mask producers that will follow. So a
+selection here is **not a shape**. It is a *coverage field* — the same sparse tile
+map the paint lives in, one `R8Unorm` channel, `TILE_TEX` per tile, aprons and all
+(§6.4).
+
+**Representation** (`document/selection.rs`). A `Selection` is a persistent map of
+mask tiles plus a single flag: whether canvas *outside* those tiles is selected.
+That flag is what makes the infinite canvas work. "No selection" is `outside =
+true` with no tiles — free — and so is its inverse, which is why `Invert` is a
+constant-cost operation on an unbounded canvas rather than an impossible one. Only
+0 and 1 can ever reach it: every combine rule maps `{0,1}²` into `{0,1}`, and the
+one shape with non-zero coverage at infinity is `All`.
+
+**Producers and the algebra.** A `SelectionOp` is a shape (`All` / `Rect` /
+`Ellipse` / `Lasso`), a mode, and a feather width. Modes are the soft-set
+operations, so they degrade to ordinary booleans on hard edges and stay meaningful
+on feathered ones:
+
+| Mode | Per-texel |
+|---|---|
+| `Replace` | `s` |
+| `Union` | `max(p, s)` |
+| `Subtract` | `p · (1 − s)` |
+| `Intersect` | `p · s` |
+
+Rasterization (`selection.wesl`) evaluates the shape **analytically at canvas
+position** and takes coverage from a signed distance, so antialiasing and feather
+are one knob: the 0.5-contour is the boundary, and the ramp around it spans
+`feather` canvas px (floored at one, which *is* the antialiased hard edge). Being
+a pure function of canvas position, a tile's apron rasterizes identically to its
+neighbour's interior — the §6.4 seam invariant, for free — and the mask can be
+resampled at any zoom without ever having been stored at one. The lasso is a
+polygon: even-odd crossing for the sign, nearest-edge distance for the magnitude,
+with the edge list uploaded as an `N×1` texture (a decimated polyline — the shader
+costs one segment test per texel per vertex).
+
+**Where it applies to the brush.** At the *end* of each stroke path, never by
+clipping the footprint:
+
+- The swept fast path masks in the **integrate** pass: `out = mix(base, merged,
+  m)` (`integrate.wesl`).
+- The brush-dynamics stamp loop masks in **deposit**, lerping its whole
+  read-modify-write back toward the pre-segment snapshot, and scales **pickup**'s
+  lift by the same coverage (`dynamics.wesl`) — so paint outside the selection is
+  neither taken nor laid, and the two sides of the transfer still balance
+  (§6.1 conservation).
+
+Masking the *result* rather than the stroke's coverage is the whole point. A
+half-covered mask texel must read as half of the finished paint; scaling optical
+depth by 0.5 instead would barely fade an opaque brush at all, and a feathered
+selection would have a hard edge.
+
+Consumers never branch on whether a mask exists: where the selection has no tile,
+a **1×1 texture holding the constant** is bound instead and every read clamps to
+the bound texture's own extent. An unmasked document therefore costs one extra
+texture fetch and nothing else — which is why the goldens are unchanged.
+
+**Why it lives in `DocState`, and what the log carries.** A stroke's pixels depend
+on the mask in force when it was drawn, so replay must be able to reconstruct it:
+the selection is document state and edits are logged actions (`Select`,
+`InvertSelection`). What travels is the **op**, not the mask — a few floats or a
+decimated polyline — and every peer rasterizes it identically from the same
+shader. The log stays compact, §12's convergence argument is untouched, and undo
+steps through selection changes like anything else. An op that would need more
+than `MAX_SELECTION_TILES` masks is rejected (deterministically, so peers agree)
+rather than clipped; `All` already expresses "everything" at zero cost.
+
+**Feedback.** A third compositor pass outlines the selection over the lit image
+(`overlay.wesl`), one instanced quad per mask tile. The contour is recovered from
+the mask itself rather than from the shape that produced it — `(m − 0.5) / |∇m|`
+with the gradient taken at one canvas pixel, converted to screen px by the zoom —
+so it stays a constant on-screen width at any zoom, stays thin over a feathered
+edge, and needs no bookkeeping to survive union/subtract/intersect.
+
 ## 7. The engine actor (async backend)
 
 The engine is an actor owning all mutable state, fed by a command channel —
@@ -1007,7 +1087,8 @@ assert_golden!("oil_blend_01", png, tolerance);
 | A new blend mode | `BlendMode` enum + compositor shader branch |
 | A new media/lighting model | the media pass shader in `gpu/composite.rs` |
 | A different frontend (native, CLI exporter) | new consumer of `Engine`; core untouched |
-| Selections, masks, transforms, text | new `ActionKind`s + optionally new channels; the action-log model already supports them |
+| Another selection producer (by colour, painted quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; the mask representation, ops, history and masking sites are unchanged (§6.8) |
+| Transforms, text | new `ActionKind`s + optionally new channels; the action-log model already supports them |
 | A wider-gamut / spectral color pipeline | `color.rs` + `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
 | Multi-user collaboration | swap `LinearTimeline` → `ReplicatedTimeline`; add `stark-net` (iroh) transport; engine/GPU untouched (§12) |
 

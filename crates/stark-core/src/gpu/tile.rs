@@ -35,6 +35,12 @@ const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
 /// integrate to read, without disturbing the compact persistent layout (DESIGN §6.2).
 pub const SCRATCH_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// The format of a **selection mask** tile (DESIGN.md §6.8): one unsigned-normalized
+/// coverage channel. Same `TILE_TEX` geometry (apron included) as a paint tile, so a
+/// mask texel is 1:1 with the tile texel it gates and the mask is pooled and recycled
+/// exactly like paint.
+pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AllocSource {
     #[default]
@@ -43,6 +49,7 @@ pub enum AllocSource {
     IntegrateDestination,
     StrokeScratch,
     DynamicsWriteback,
+    SelectionMask,
 }
 
 /// One pooled GPU texture (`TILE_TEX` square). `Option` only so [`Drop`] can move it
@@ -107,6 +114,21 @@ impl TilePairHandle {
     }
 }
 
+/// A handle to one pooled **selection mask** tile (DESIGN.md §6.8). Cloning is an
+/// `Arc` bump, so a `Selection` snapshot is as cheap as a `DocState` one — and the
+/// texture returns to the pool when the last history version referencing it drops.
+#[derive(Clone)]
+pub struct MaskHandle(TexHandle);
+
+impl MaskHandle {
+    pub fn view(&self) -> &wgpu::TextureView {
+        self.0.view()
+    }
+    pub fn texture(&self) -> &wgpu::Texture {
+        self.0.texture()
+    }
+}
+
 #[derive(Default)]
 struct PoolInner {
     /// Recycled textures, one free list per format.
@@ -161,6 +183,13 @@ impl TilePool {
     /// [`SCRATCH_AUX_FORMAT`] aux (an extra channel the deposit/integrate use internally).
     pub fn acquire_scratch(&self, source: AllocSource) -> TilePairHandle {
         self.tile(SCRATCH_AUX_FORMAT, source)
+    }
+
+    /// Acquire a selection mask tile ([`MASK_FORMAT`], DESIGN.md §6.8). Contents are
+    /// undefined until rasterized; the selection renderer always writes the whole
+    /// target, aprons included.
+    pub fn acquire_mask(&self, source: AllocSource) -> MaskHandle {
+        MaskHandle(self.acquire_tex(MASK_FORMAT, source))
     }
 
     // TODO: Remove this once the two callers above have been removed.

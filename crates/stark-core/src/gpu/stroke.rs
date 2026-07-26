@@ -28,6 +28,7 @@ use wgpu::util::DeviceExt;
 
 use crate::assets::{build_coverage_r8, build_prefix_tau, AssetStore};
 use crate::colorspace::ColorSpace;
+use crate::document::selection::Selection;
 use crate::document::{
     BrushParams, BrushShape, ColorDynamics, NoiseKind, OrientationSource, StrokeRecord,
 };
@@ -36,6 +37,7 @@ use crate::geom::{
     TileCoord, Vec2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_APRON, TILE_SIZE, TILE_TEX,
 };
 use crate::gpu::context::GpuContext;
+use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
 
@@ -232,6 +234,11 @@ pub struct StrokeRenderer {
     // Brush dynamics: the sequential stamp loop (DESIGN.md §6.2), used when the
     // brush manipulates existing paint (`load` / `deposit` / `charge`).
     dynamics: DynamicsKit,
+
+    /// Selection masks (DESIGN.md §6.8): the per-tile mask bound into the integrate
+    /// pass, and the region gather the stamp loop reads. Colour-space independent, so
+    /// it is handed in rather than rebuilt with the rest of this renderer.
+    selection: SelectionRenderer,
 }
 
 /// GPU resources scoped to one `render()` call (currently the instance buffer;
@@ -282,7 +289,12 @@ impl Drop for ScopedResources {
 }
 
 impl StrokeRenderer {
-    pub fn new(ctx: &GpuContext, color_space: Arc<dyn ColorSpace>, surface: Surface) -> Self {
+    pub fn new(
+        ctx: &GpuContext,
+        color_space: Arc<dyn ColorSpace>,
+        surface: Surface,
+        selection: SelectionRenderer,
+    ) -> Self {
         let device = &ctx.device;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -467,6 +479,7 @@ impl StrokeRenderer {
             integrate_pipeline,
             integrate_bgl,
             dynamics,
+            selection,
         }
     }
 
@@ -491,13 +504,22 @@ impl StrokeRenderer {
         });
     }
 
-    /// Render `rec` over `base`, returning a copy-on-write tile map.
+    /// Render `rec` over `base`, gated by `selection`, returning a copy-on-write tile
+    /// map.
+    ///
+    /// The selection is applied at the *end* of each path — the integrate pass's
+    /// merge on the fast path, the deposit's write-back in the stamp loop — rather
+    /// than by clipping the footprint. That keeps one rule for both paths (a texel
+    /// receives the mask's fraction of whatever the stroke did there) and is what
+    /// makes a feathered selection fade a stroke out instead of scaling its optical
+    /// depth, which for an opaque brush would barely fade at all (DESIGN.md §6.8).
     pub fn render(
         &self,
         pool: &TilePool,
         assets: &AssetStore,
         base: &HashTrieMap<TileCoord, TilePairHandle>,
         rec: &StrokeRecord,
+        selection: &Selection,
     ) -> HashTrieMap<TileCoord, TilePairHandle> {
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
@@ -507,7 +529,7 @@ impl StrokeRenderer {
         // `None` (an oversized stroke region) degrades to the fast path too.
         let d = rec.brush.dynamics;
         if (d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0)
-            && let Some(map) = self.render_dynamic(pool, assets, base, rec, channels)
+            && let Some(map) = self.render_dynamic(pool, assets, base, rec, channels, selection)
         {
             return map;
         }
@@ -684,9 +706,12 @@ impl StrokeRenderer {
                 pass.draw(0..4, 0..instances.len() as u32);
             }
 
-            // Integrate the scratch slab over the base into a fresh CoW tile.
+            // Integrate the scratch slab over the base into a fresh CoW tile, gated
+            // by this tile's selection coverage — its own mask if it has one, or the
+            // 1×1 constant standing in for the rest of the canvas (§6.8).
             let dst = pool.acquire(AllocSource::IntegrateDestination);
             let base_tile = base.get(coord).unwrap_or(&empty);
+            let mask_view = self.selection.mask_for(selection, *coord);
             let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark integrate bg"),
                 layout: &self.integrate_bgl,
@@ -706,6 +731,10 @@ impl StrokeRenderer {
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: wgpu::BindingResource::TextureView(scratch.aux_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&mask_view),
                     },
                 ],
             });
@@ -819,6 +848,7 @@ impl StrokeRenderer {
         base: &HashTrieMap<TileCoord, TilePairHandle>,
         rec: &StrokeRecord,
         channels: [f32; 4],
+        selection: &Selection,
     ) -> Option<HashTrieMap<TileCoord, TilePairHandle>> {
         // The same flattened segments as the fast path; extremely long strokes
         // re-flatten coarser so the dispatch count stays bounded. First stretch the
@@ -997,6 +1027,20 @@ impl StrokeRenderer {
             }
         }
 
+        // ---- The selection over this region (DESIGN.md §6.8), gathered from the same
+        // halo tiles the paint came from, so it is 1:1 with the colour/aux regions.
+        // An unrestricted selection binds the 1×1 constant instead — the loop's masked
+        // reads then return 1 everywhere and the stroke behaves exactly as before.
+        let sel_mask = if selection.is_universal() {
+            self.selection.constant(1.0).clone()
+        } else {
+            let (tex, view) =
+                self.selection
+                    .region_mask(&mut encoder, selection, &halo, region_origin, w, h);
+            scoped.texture(tex);
+            view
+        };
+
         // ---- Tool reservoir (ping-pong) + footprint snapshot textures. The
         // snapshot rect must cover a segment quad's AABB at any rotation: half
         // extents (radius + len/2 + margin, radius + margin), bounded by √2 × the
@@ -1151,6 +1195,7 @@ impl StrokeRenderer {
                         tex(8, &brush_aux[i]),
                         tex(9, &brush_color[1 - i]),
                         tex(10, &brush_aux[1 - i]),
+                        tex(21, &sel_mask),
                     ],
                 })
             })
@@ -1192,6 +1237,7 @@ impl StrokeRenderer {
                             binding: 16,
                             resource: wgpu::BindingResource::Sampler(&self.noise_sampler),
                         },
+                        tex(21, &sel_mask),
                     ],
                 })
             })
@@ -1792,6 +1838,9 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
             ctex(8, false),
             stor(9),
             stor(10),
+            // The selection mask over the region (§6.8) — sampled bilinearly here,
+            // since a reservoir texel sits over an arbitrary sub-pixel spot.
+            ctex(21, true),
         ],
     });
     // `bake` integrates the reservoir along the travel axis for one segment; the
@@ -1835,6 +1884,9 @@ fn build_dynamics_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Dy
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            // The selection mask over the region (§6.8) — read 1:1 with the region
+            // here, so `textureLoad` suffices.
+            ctex(21, false),
         ],
     });
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
@@ -2015,6 +2067,7 @@ fn build_integrate_pipeline(
             load_tex(1), // base aux
             load_tex(2), // scratch color
             load_tex(3), // scratch aux
+            load_tex(4), // selection mask (§6.8) — this tile's, or a 1×1 constant
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

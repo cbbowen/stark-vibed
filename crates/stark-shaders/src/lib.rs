@@ -41,3 +41,21 @@ pub fn dynamics() -> &'static str {
 pub fn slice() -> &'static str {
     include_wesl!("slice")
 }
+
+/// WGSL selection-mask rasterization: one op's shape combined into a mask tile —
+/// DESIGN §6.8.
+pub fn selection() -> &'static str {
+    include_wesl!("selection")
+}
+
+/// WGSL selection mask → stroke region gather, for the brush-dynamics loop —
+/// DESIGN §6.8/§6.2.
+pub fn mask_region() -> &'static str {
+    include_wesl!("mask_region")
+}
+
+/// WGSL selection outline ("marching ants") drawn over the finished image —
+/// DESIGN §6.8.
+pub fn overlay() -> &'static str {
+    include_wesl!("overlay")
+}

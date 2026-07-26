@@ -113,6 +113,12 @@ struct Stamp {
 @group(0) @binding(18) var bake_latm_w: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(19) var bake_load: texture_2d<f32>;
 @group(0) @binding(20) var bake_latm: texture_2d<f32>;
+// The selection's coverage over the region (DESIGN.md §6.8), 1:1 with it — or a 1×1
+// texture holding a constant when there is nothing to mask. Both the vertical fluxes
+// are gated by it: `pickup` scales what it lifts, `deposit` lerps its whole
+// read-modify-write back towards the untouched region, so paint outside the selection
+// is neither taken nor laid and the two sides of the transfer still balance.
+@group(0) @binding(21) var sel_mask: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const EPS: f32 = 1e-5;
@@ -318,9 +324,16 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
     // measured its gain in bare coverage would receive a fraction of what the
     // canvas lost and quietly destroy paint.
     let e = tau_at(local) * st.d.w;
-    let lift = 1.0 - exp(st.b.z * e);
 
     let rdim = vec2<f32>(textureDimensions(region_color));
+    // Outside the selection the canvas gives nothing up (§6.8) — the matching
+    // reduction on the canvas side is the deposit's own mask lerp, so height stays
+    // conserved. Bilinear like the region taps below: this texel is over an arbitrary
+    // sub-pixel spot, and a 1×1 constant mask reads the same at every uv.
+    let lift = (1.0 - exp(st.b.z * e))
+        * textureSampleLevel(sel_mask, samp, world / rdim, 0.0).r;
+
+
     let rc = textureSampleLevel(region_color, samp, world / rdim, 0.0);
     let ra = textureSampleLevel(region_aux, samp, world / rdim, 0.0);
 
@@ -406,6 +419,13 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     if e <= 0.0 {
         return; // outside the swept footprint: the region keeps its value
     }
+    // The selection's coverage here (§6.8). Fully deselected texels are exactly the
+    // "keeps its value" case, so they cost nothing.
+    let mdim = vec2<i32>(textureDimensions(sel_mask));
+    let sel = textureLoad(sel_mask, min(rt, mdim - vec2<i32>(1, 1)), 0).r;
+    if sel <= 0.0 {
+        return;
+    }
     let lift = 1.0 - exp(st.b.z * e);
     // The brush's own `add` is a *constant* source, so it rides the plain window.
     let laid = laid_window(e);
@@ -486,6 +506,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     m += par_m;
     let op = m / max(h, EPS);
 
-    textureStore(region_color_w, rt, vec4<f32>(lat * op, op));
-    textureStore(region_aux_w, rt, vec4<f32>(h, wet, 0.0, 0.0));
+    // Lerp the whole exchange back towards the snapshot by the selection coverage: at
+    // the mask's feathered edge the texel receives that fraction of everything this
+    // segment did — the lift as well as the deposit — which is exactly the fraction
+    // `pickup` scaled its own side of the transfer by.
+    textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
+    textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, wet, 0.0, 0.0), sel));
 }

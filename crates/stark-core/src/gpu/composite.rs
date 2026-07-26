@@ -15,6 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
+use crate::document::selection::Selection;
 use crate::geom::{
     Extent2, TileCoord, ViewTransform, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE,
 };
@@ -23,12 +24,12 @@ use crate::gpu::environment::Environment;
 use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::tile::TilePairHandle;
 
-/// Mirrors `View` in `composite.wesl` (32 bytes).
+/// Mirrors `View` in `composite.wesl` and `overlay.wesl` (32 bytes).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct ViewUniform {
     st: [f32; 4],   // scale.xy, translate.xy
-    misc: [f32; 4], // tile_size, unused
+    misc: [f32; 4], // tile_size, interior uv scale, interior uv bias, zoom
 }
 
 /// Per-tile instance: canvas-space origin + the layer's opacity.
@@ -97,6 +98,14 @@ pub struct Compositor {
     tile_bgl: wgpu::BindGroupLayout,
     instances: wgpu::Buffer,
     instance_cap: usize,
+
+    // Pass C: the selection outline, drawn over the lit result (DESIGN.md §6.8).
+    // One instanced quad per mask tile, in the same canvas→NDC frame as pass A.
+    overlay_pipeline: wgpu::RenderPipeline,
+    overlay_view_bg: wgpu::BindGroup,
+    overlay_tile_bgl: wgpu::BindGroupLayout,
+    overlay_instances: wgpu::Buffer,
+    overlay_cap: usize,
 
     // Pass B: media/lighting → final target.
     media_pipeline: wgpu::RenderPipeline,
@@ -242,6 +251,94 @@ impl Compositor {
             ],
         });
 
+        // ---- Pass C: selection outline (DESIGN.md §6.8) ----
+        //
+        // Its own view bind group rather than pass A's: the fragment stage needs the
+        // uniform too (it converts a canvas-space distance to screen px with the
+        // zoom), and pass A declares it vertex-only.
+        let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stark selection overlay"),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::overlay().into()),
+        });
+        let overlay_view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark overlay view bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let overlay_tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark overlay tile bgl"),
+            entries: &[tex_entry(0)],
+        });
+        let overlay_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("stark overlay layout"),
+            bind_group_layouts: &[Some(&overlay_view_bgl), Some(&overlay_tile_bgl)],
+            immediate_size: 0,
+        });
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark overlay pipeline"),
+            layout: Some(&overlay_layout),
+            vertex: wgpu::VertexState {
+                module: &overlay_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Instance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32],
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &overlay_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    // The outline is drawn *over* the finished image, so it is the one
+                    // pass that blends in straight (non-premultiplied) alpha.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let overlay_view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark overlay view bg"),
+            layout: &overlay_view_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: view_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
         // ---- Pass B: media ----
         let media_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark media"),
@@ -328,6 +425,11 @@ impl Compositor {
             tile_bgl,
             instances,
             instance_cap: 1,
+            overlay_pipeline,
+            overlay_view_bg,
+            overlay_tile_bgl,
+            overlay_instances: alloc_instances(device, 1),
+            overlay_cap: 1,
             media_pipeline,
             media_buf,
             media_bgl,
@@ -392,13 +494,15 @@ impl Compositor {
         self.media_bg = bg;
     }
 
-    /// Composite `tiles` and render the lit result into `target` under `view`.
+    /// Composite `tiles`, light the result into `target` under `view`, and outline
+    /// `selection` over it (DESIGN.md §6.8 — nothing is drawn when it is universal).
     pub fn render(
         &mut self,
         target: &wgpu::TextureView,
         view: ViewTransform,
         bg_channels: [f32; 4],
         tiles: &[(TileCoord, TilePairHandle, f32)],
+        selection: &Selection,
     ) {
         let device = &self.ctx.device;
         if view.viewport != self.size {
@@ -425,7 +529,9 @@ impl Compositor {
             0,
             bytemuck::bytes_of(&ViewUniform {
                 st: [scale.x, scale.y, translate.x, translate.y],
-                misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
+                // `zoom` rides in `.w` for the outline pass, which measures its width
+                // in screen px from a canvas-space distance (§6.8).
+                misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, view.zoom],
             }),
         );
 
@@ -549,6 +655,69 @@ impl Compositor {
             pass.set_pipeline(&self.media_pipeline);
             pass.set_bind_group(0, &self.media_bg, &[]);
             pass.draw(0..3, 0..1);
+        }
+
+        // Pass C: the selection outline, over the lit image.
+        let mask_tiles: Vec<(TileCoord, wgpu::BindGroup)> = if selection.is_universal() {
+            Vec::new()
+        } else {
+            selection
+                .tiles()
+                .map(|(coord, handle)| {
+                    (
+                        *coord,
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("stark overlay tile bg"),
+                            layout: &self.overlay_tile_bgl,
+                            entries: &[wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(handle.view()),
+                            }],
+                        }),
+                    )
+                })
+                .collect()
+        };
+        if !mask_tiles.is_empty() {
+            let origins: Vec<Instance> = mask_tiles
+                .iter()
+                .map(|(c, _)| Instance {
+                    origin: c.origin().to_array(),
+                    opacity: 1.0,
+                })
+                .collect();
+            if origins.len() > self.overlay_cap {
+                self.overlay_instances = alloc_instances(device, origins.len());
+                self.overlay_cap = origins.len();
+            }
+            self.ctx
+                .queue
+                .write_buffer(&self.overlay_instances, 0, bytemuck::cast_slice(&origins));
+
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark selection overlay pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.overlay_pipeline);
+            pass.set_bind_group(0, &self.overlay_view_bg, &[]);
+            pass.set_vertex_buffer(0, self.overlay_instances.slice(..));
+            for (i, (_, bg)) in mask_tiles.iter().enumerate() {
+                let idx = i as u32;
+                pass.set_bind_group(1, bg, &[]);
+                pass.draw(0..4, idx..idx + 1);
+            }
         }
 
         self.ctx.queue.submit([encoder.finish()]);

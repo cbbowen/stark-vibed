@@ -12,13 +12,14 @@ use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::InputCommand;
 use crate::document::{
     effective_actions, Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape,
-    CanvasBounds, DocState, Layer, LayerId, LinearTimeline, ReplicatedTimeline, StrokeRecord,
-    Timeline, Tool,
+    CanvasBounds, DocState, Layer, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode,
+    StrokeRecord, Timeline, Tool,
 };
 use crate::geom::{Extent2, ViewTransform};
+use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
-    Compositor, Environment, EnvironmentId, GpuContext, StrokeRenderer, Surface, SurfaceId,
-    TilePairHandle, TilePool,
+    Compositor, Environment, EnvironmentId, GpuContext, SelectionRenderer, StrokeRenderer, Surface,
+    SurfaceId, TilePairHandle, TilePool,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -50,6 +51,13 @@ pub struct ObservableState {
     pub active_layer: LayerId,
     /// Layers bottom-to-top.
     pub layers: Vec<LayerInfo>,
+    /// Whether a selection is masking the canvas (DESIGN.md §6.8) — drives the
+    /// "Deselect"/"Invert" affordances and the selection indicator.
+    pub has_selection: bool,
+    /// How the next selection gesture will combine with the current selection.
+    pub selection_mode: SelectionMode,
+    /// Edge softness (canvas px) the next selection gesture will apply.
+    pub selection_feather: f32,
 }
 
 pub struct Engine {
@@ -59,6 +67,10 @@ pub struct Engine {
     pool: TilePool,
     stroke: StrokeRenderer,
     assets: AssetStore,
+    /// Selection-mask rasterization (DESIGN.md §6.8). Colour-space independent (a
+    /// mask is one coverage channel whatever the paint is), so unlike the pool and
+    /// the stroke renderer it survives a colour-space rebuild.
+    selection: SelectionRenderer,
     compositor: Compositor,
     /// The physical canvas surface (tooth + relief). Color-space-independent, so
     /// it survives color-space rebuilds (DESIGN.md §6.4).
@@ -116,8 +128,16 @@ impl Engine {
         // registered later by the frontend (DESIGN.md §6.3).
         let environment_id = EnvironmentId::default();
         let environment = Environment::studio(&gpu);
-        let (pool, stroke, compositor) =
-            build_gpu(&gpu, target_format, viewport, &color_space, &surface, &environment);
+        let selection = SelectionRenderer::new(&gpu);
+        let (pool, stroke, compositor) = build_gpu(
+            &gpu,
+            target_format,
+            viewport,
+            &color_space,
+            &surface,
+            &environment,
+            &selection,
+        );
         let assets = AssetStore::new(gpu.clone());
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -131,6 +151,7 @@ impl Engine {
             pool,
             stroke,
             assets,
+            selection,
             compositor,
             surface,
             surface_id,
@@ -152,17 +173,34 @@ impl Engine {
     /// Apply one input command (DESIGN.md §4).
     pub fn process(&mut self, command: InputCommand) {
         match command {
+            // One gesture lifecycle for both kinds of tool (DESIGN.md §6.8): the
+            // selection tools build an op where the brush builds a stroke, and both
+            // preview through the same `preview` DocState.
             InputCommand::StartStroke { tool, sample } => {
-                let seed = self.clock;
-                self.session.start_stroke(tool, sample, seed);
-                self.refresh_preview();
+                if tool.is_selection() {
+                    self.session.start_selection(tool, sample.pos);
+                    self.refresh_selection_preview();
+                } else {
+                    let seed = self.clock;
+                    self.session.start_stroke(tool, sample, seed);
+                    self.refresh_preview();
+                }
             }
             InputCommand::StrokeTo { sample } => {
-                self.session.stroke_to(sample);
-                self.refresh_preview();
+                if self.session.is_selecting() {
+                    self.session.selection_to(sample.pos);
+                    self.refresh_selection_preview();
+                } else {
+                    self.session.stroke_to(sample);
+                    self.refresh_preview();
+                }
             }
             InputCommand::EndStroke => {
-                if let Some(rec) = self.session.end_stroke() {
+                if self.session.is_selecting() {
+                    if let Some(op) = self.session.end_selection() {
+                        self.commit(ActionKind::Select(op));
+                    }
+                } else if let Some(rec) = self.session.end_stroke() {
                     self.commit(ActionKind::CommitStroke(rec));
                 }
                 self.preview = None;
@@ -192,7 +230,19 @@ impl Engine {
                     self.timeline.redo(&mut ctx);
                 }
             }
-            InputCommand::SetTool(tool) => self.session.tool = tool,
+            InputCommand::SetTool(tool) => {
+                // Switching away mid-gesture abandons it rather than committing a
+                // half-dragged marquee.
+                self.session.cancel_stroke();
+                self.preview = None;
+                self.session.tool = tool;
+            }
+            InputCommand::SetSelectionMode(mode) => self.session.selection_mode = mode,
+            InputCommand::SetSelectionFeather(feather) => {
+                self.session.selection_feather = feather.max(0.0)
+            }
+            InputCommand::Select(op) => self.commit(ActionKind::Select(op)),
+            InputCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
             InputCommand::SetBrush(brush) => {
                 self.session.brush = brush;
                 self.refresh_preview();
@@ -283,7 +333,9 @@ impl Engine {
         let bg_channels = self.color_space.rgb_to_channels([background.r as f32, background.g as f32, background.b as f32]);
 
         let view = self.session.view;
-        self.compositor.render(target, view, bg_channels, &tiles);
+        let selection = doc.selection.clone();
+        self.compositor
+            .render(target, view, bg_channels, &tiles, &selection);
     }
 
     /// Render the current canvas to a CPU-side image at the viewport size
@@ -420,6 +472,9 @@ impl Engine {
             bounds: doc.bounds,
             active_layer: self.session.active_layer,
             layers,
+            has_selection: doc.selection.is_active(),
+            selection_mode: self.session.selection_mode,
+            selection_feather: self.session.selection_feather,
         }
     }
 
@@ -684,6 +739,7 @@ impl Engine {
             &cs,
             &self.surface,
             &self.environment,
+            &self.selection,
         );
         self.color_space = cs;
         self.pool = pool;
@@ -741,6 +797,7 @@ impl Engine {
             pool: self.pool.clone(),
             stroke: self.stroke.clone(),
             assets: self.assets.clone(),
+            selection: self.selection.clone(),
         }
     }
 
@@ -763,8 +820,29 @@ impl Engine {
             return base.clone();
         };
         let layer = base.layer_at(idx).clone();
-        let tiles = self.stroke.render(&self.pool, &self.assets, &layer.tiles, rec);
+        let tiles = self.stroke.render(
+            &self.pool,
+            &self.assets,
+            &layer.tiles,
+            rec,
+            &base.selection,
+        );
         base.with_layer_at(idx, Layer { tiles, ..layer })
+    }
+
+    /// Rasterize the in-flight selection gesture onto a copy of the committed state,
+    /// so the outline follows the drag. Uses the same op the commit will (§6.8), so
+    /// what is previewed is what lands.
+    fn refresh_selection_preview(&mut self) {
+        let Some(op) = self.session.preview_selection() else {
+            self.preview = None;
+            return;
+        };
+        let base = self.timeline.current();
+        self.preview = self
+            .selection
+            .apply(&self.pool, &base.selection, &op)
+            .map(|selection| base.with_selection(selection));
     }
 }
 
@@ -788,6 +866,7 @@ fn build_surface(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_gpu(
     gpu: &GpuContext,
     target_format: wgpu::TextureFormat,
@@ -795,9 +874,15 @@ fn build_gpu(
     cs: &Arc<dyn ColorSpace>,
     surface: &Surface,
     environment: &Environment,
+    selection: &SelectionRenderer,
 ) -> (TilePool, StrokeRenderer, Compositor) {
-    let pool = TilePool::new(gpu.clone(), [cs.color_format(), cs.aux_format()]);
-    let stroke = StrokeRenderer::new(gpu, cs.clone(), surface.clone());
+    // Selection masks are pooled and recycled like paint (DESIGN.md §6.8), so their
+    // format joins the pool's free lists.
+    let pool = TilePool::new(
+        gpu.clone(),
+        [cs.color_format(), cs.aux_format(), MASK_FORMAT],
+    );
+    let stroke = StrokeRenderer::new(gpu, cs.clone(), surface.clone(), selection.clone());
     let compositor = Compositor::new(
         gpu,
         target_format,

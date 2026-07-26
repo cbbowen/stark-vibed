@@ -229,6 +229,18 @@
   background: #3a6ea5;
 }
 
+.chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Rows of chips in the Select panel (tool, combine mode, whole-selection commands). */
+.tool-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
 /* --- ternary (barycentric) pad: triangle + vertex labels + marker --- */
 .ternary {
   position: relative;

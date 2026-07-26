@@ -19,6 +19,11 @@
 @group(0) @binding(1) var base_aux: texture_2d<f32>;
 @group(0) @binding(2) var scratch_color: texture_2d<f32>;
 @group(0) @binding(3) var scratch_aux: texture_2d<f32>;
+// The selection's coverage over this tile (DESIGN.md §6.8): 1 where the brush may
+// paint, 0 where it may not, feathered in between. Either this tile's own mask —
+// 1:1 with the destination, apron included — or a 1×1 texture holding the constant
+// coverage outside the mask's tile set; the clamped load below reads both.
+@group(0) @binding(4) var selection: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -41,10 +46,21 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // see stamp_oklab.wesl's fs_main for the channel-by-channel story.
     let s_a = textureLoad(scratch_aux, c, 0);
 
-    var out: FsOut;
     // Colour: lay the stroke slab over the base (premultiplied "over").
-    out.color = s_c + base_c * (1.0 - s_c.a);
+    let merged_c = s_c + base_c * (1.0 - s_c.a);
     // Height/wet accumulate: height is the amount of paint (§6.1).
-    out.aux = vec4<f32>(base_a.x + s_a.x, base_a.y + s_a.y, 0.0, 0.0);
+    let merged_a = vec4<f32>(base_a.x + s_a.x, base_a.y + s_a.y, 0.0, 0.0);
+
+    // Gate by the selection: the tile keeps its base value where the mask is 0 and
+    // takes the stroke where it is 1 (§6.8). A *lerp of the result*, not a scaling of
+    // the stroke's coverage — a half-covered mask texel must read as half of the
+    // finished paint, which for an opaque brush is nothing like half its optical
+    // depth. That makes the mask's own antialiasing/feather the stroke's edge.
+    let sdim = vec2<i32>(textureDimensions(selection));
+    let m = textureLoad(selection, min(c, sdim - vec2<i32>(1, 1)), 0).r;
+
+    var out: FsOut;
+    out.color = mix(base_c, merged_c, m);
+    out.aux = mix(vec4<f32>(base_a.x, base_a.y, 0.0, 0.0), merged_a, m);
     return out;
 }

@@ -72,6 +72,17 @@
 //!   [`Engine::merge_remote`], [`Engine::take_outbox`]. The `stark-net` crate
 //!   carries it over iroh (a broadcast mesh + snapshot/asset ALPN); convergence is
 //!   asserted pixel-identical in `tests/collab.rs` and `stark-net/tests/sync.rs`.
+//! - [x] Selections (DESIGN §6.8) — [`document::Selection`] is a *soft mask*: a
+//!   sparse map of `R8` coverage tiles plus a flag for the coverage outside them
+//!   (so "no selection" and its inverse are both free on an infinite canvas).
+//!   [`document::SelectionOp`]s (rect / ellipse / lasso / all, combined by
+//!   replace / union / subtract / intersect, with feather) rasterize analytically
+//!   from canvas position, so edges antialias and feather with one knob and tile
+//!   aprons stay seam-exact. The brush is gated at the *end* of both stroke paths
+//!   — the integrate merge, and the stamp loop's deposit/pickup — so a feathered
+//!   selection fades a stroke instead of thinning its optical depth. Edits are
+//!   logged actions carrying the op (not the mask), so undo, replay and
+//!   collaboration all work unchanged; a compositor overlay draws the outline.
 //! - [ ] Step 11: brush file upload.
 
 pub mod assets;
@@ -92,6 +103,7 @@ pub mod session;
 pub use assets::{AssetId, AssetStore};
 pub use colorspace::{ColorSpace, ColorSpaceId};
 pub use command::{InputCommand, InputSample};
+pub use document::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use engine::{Engine, LayerInfo, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TileCoord, Vec2, ViewTransform, TILE_SIZE};

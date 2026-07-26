@@ -25,7 +25,7 @@ use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use render::{Renderer, BG, CANVAS_ID};
 use stark_core::document::{
-    BrushDynamics, BrushParams, BrushShape, OrientationSource, Tool,
+    BrushDynamics, BrushParams, BrushShape, OrientationSource, SelectionMode, SelectionOp, Tool,
 };
 use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 use stark_core::geom::Vec2;
@@ -89,19 +89,27 @@ fn main() {
 enum PanelId {
     Color,
     Brush,
+    Select,
     Lighting,
     Layers,
 }
 
 impl PanelId {
     /// Every panel, in the default top-to-bottom order.
-    const ALL: [PanelId; 4] = [PanelId::Color, PanelId::Brush, PanelId::Lighting, PanelId::Layers];
+    const ALL: [PanelId; 5] = [
+        PanelId::Color,
+        PanelId::Brush,
+        PanelId::Select,
+        PanelId::Lighting,
+        PanelId::Layers,
+    ];
 
     /// The panel's title-bar label.
     fn title(self) -> &'static str {
         match self {
             PanelId::Color => "Color",
             PanelId::Brush => "Brush",
+            PanelId::Select => "Select",
             PanelId::Lighting => "Lighting",
             PanelId::Layers => "Layers",
         }
@@ -346,6 +354,9 @@ fn Canvas() -> Element {
     let mut drawing = use_signal(|| false);
     let mut panning = use_signal(|| false);
     let mut last_position = use_signal(|| None::<Vec2>);
+    // The panel's selection mode, stashed while a gesture's modifier keys override it
+    // (DESIGN.md §6.8) and restored when the gesture ends.
+    let mut mode_restore = use_signal(|| None::<SelectionMode>);
 
     rsx! {
         canvas {
@@ -367,7 +378,16 @@ fn Canvas() -> Element {
                         if (state.space_down)() {
                             panning.set(true);
                         } else {
-                            dispatch(state, InputCommand::StartStroke { tool: Tool::Brush, sample: sample(state, &e) });
+                            // Painting and selecting are the same gesture from here —
+                            // the tool decides what the engine builds (DESIGN.md §6.8).
+                            let tool = current_tool(state);
+                            if tool.is_selection()
+                                && let Some(m) = modifier_mode(e.modifiers())
+                            {
+                                mode_restore.set(Some(current_mode(state)));
+                                dispatch(state, InputCommand::SetSelectionMode(m));
+                            }
+                            dispatch(state, InputCommand::StartStroke { tool, sample: sample(state, &e) });
                             drawing.set(true);
                         }
                     }
@@ -387,9 +407,9 @@ fn Canvas() -> Element {
                 }
                 last_position.set(Some(elem_xy(&e)));
             },
-            onpointerup: move |_| end_interaction(state, &mut drawing, &mut panning),
+            onpointerup: move |_| end_interaction(state, &mut drawing, &mut panning, &mut mode_restore),
             onpointercancel: move |_| {
-                end_interaction(state, &mut drawing, &mut panning);
+                end_interaction(state, &mut drawing, &mut panning, &mut mode_restore);
                 last_position.set(None);
             },
             onwheel: move |e| {
@@ -661,6 +681,102 @@ fn set_bristles(state: AppState) {
     set_shape(state, BrushShape::Stamp(id), 0.08);
 }
 
+/// The floating Select panel (DESIGN.md §6.8): which selection tool is active, how
+/// the next gesture combines with the selection in force, how soft its edge is, and
+/// the two whole-selection commands.
+///
+/// The mode chips set a *default*; holding shift / alt while starting a drag
+/// overrides it for that gesture (see [`modifier_mode`]), which is how this is
+/// reached in practice once the tool is in hand.
+#[component]
+fn SelectPanel() -> Element {
+    let state = use_context::<AppState>();
+    let obs = state.obs.read();
+    let (tool, mode, feather, active) = obs
+        .as_ref()
+        .map(|o| (o.tool, o.selection_mode, o.selection_feather, o.has_selection))
+        .unwrap_or((Tool::Brush, SelectionMode::Replace, 0.0, false));
+    drop(obs);
+
+    let chip = |on: bool| if on { "chip active" } else { "chip" };
+    const TOOLS: [(Tool, &str); 4] = [
+        (Tool::Brush, "Paint"),
+        (Tool::SelectRect, "Rect"),
+        (Tool::SelectEllipse, "Ellipse"),
+        (Tool::SelectLasso, "Lasso"),
+    ];
+    const MODES: [(SelectionMode, &str); 4] = [
+        (SelectionMode::Replace, "New"),
+        (SelectionMode::Union, "Add"),
+        (SelectionMode::Subtract, "Sub"),
+        (SelectionMode::Intersect, "\u{2229}"),
+    ];
+
+    rsx! {
+        div { class: "tool-row",
+            for (t, label) in TOOLS {
+                button {
+                    class: chip(tool == t),
+                    onclick: move |_| dispatch(state, InputCommand::SetTool(t)),
+                    "{label}"
+                }
+            }
+        }
+        div { class: "tool-row",
+            for (m, label) in MODES {
+                button {
+                    class: chip(mode == m),
+                    title: "Hold shift to add, alt to subtract, both to intersect",
+                    onclick: move |_| dispatch(state, InputCommand::SetSelectionMode(m)),
+                    "{label}"
+                }
+            }
+        }
+        Slider { label: "Feather", min: 0.0, max: 64.0, value: feather,
+            oninput: move |v| dispatch(state, InputCommand::SetSelectionFeather(v)) }
+        div { class: "tool-row",
+            button {
+                class: "chip",
+                disabled: !active,
+                onclick: move |_| dispatch(state, InputCommand::Select(SelectionOp::select_all())),
+                "Deselect"
+            }
+            button {
+                class: "chip",
+                disabled: !active,
+                onclick: move |_| dispatch(state, InputCommand::InvertSelection),
+                "Invert"
+            }
+        }
+    }
+}
+
+/// The selection mode a gesture's modifier keys ask for, or `None` to keep the
+/// panel's default. Mirrors the conventional marquee modifiers.
+fn modifier_mode(m: Modifiers) -> Option<SelectionMode> {
+    match (m.contains(Modifiers::SHIFT), m.contains(Modifiers::ALT)) {
+        (true, true) => Some(SelectionMode::Intersect),
+        (true, false) => Some(SelectionMode::Union),
+        (false, true) => Some(SelectionMode::Subtract),
+        (false, false) => None,
+    }
+}
+
+/// The tool the next canvas gesture will use.
+fn current_tool(state: AppState) -> Tool {
+    state.obs.peek().as_ref().map_or(Tool::Brush, |o| o.tool)
+}
+
+/// The selection mode the panel currently has set (the base a gesture's modifiers
+/// override).
+fn current_mode(state: AppState) -> SelectionMode {
+    state
+        .obs
+        .peek()
+        .as_ref()
+        .map_or(SelectionMode::Replace, |o| o.selection_mode)
+}
+
 #[component]
 fn LayerPanel() -> Element {
     let state = use_context::<AppState>();
@@ -881,12 +997,12 @@ fn CommandRail() -> Element {
     let mut show_new_doc = use_signal(|| false);
     let mut show_session = use_signal(|| false);
     let live = (state.collab_phase)() == collab::CollabPhase::Shared;
-    let (can_undo, can_redo) = state
+    let (can_undo, can_redo, has_selection) = state
         .obs
         .read()
         .as_ref()
-        .map(|o| (o.can_undo, o.can_redo))
-        .unwrap_or((false, false));
+        .map(|o| (o.can_undo, o.can_redo, o.has_selection))
+        .unwrap_or((false, false, false));
     let hidden = (layout.hidden)();
 
     rsx! {
@@ -923,6 +1039,24 @@ fn CommandRail() -> Element {
                             on_select: move |_| dispatch(state, InputCommand::Redo),
                             span { "Redo" }
                             span { class: "menu-shortcut", "Ctrl+Y" }
+                        }
+                        MenubarItem {
+                            index: 4usize,
+                            value: "deselect".to_string(),
+                            disabled: !has_selection,
+                            on_select: move |_| {
+                                dispatch(state, InputCommand::Select(SelectionOp::select_all()))
+                            },
+                            span { "Deselect" }
+                            span { class: "menu-shortcut", "Ctrl+D" }
+                        }
+                        MenubarItem {
+                            index: 5usize,
+                            value: "invert-selection".to_string(),
+                            disabled: !has_selection,
+                            on_select: move |_| dispatch(state, InputCommand::InvertSelection),
+                            span { "Invert selection" }
+                            span { class: "menu-shortcut", "Ctrl+Shift+I" }
                         }
                     }
                 }
@@ -1112,6 +1246,7 @@ fn PanelStack() -> Element {
                         match id {
                             PanelId::Color => rsx! { ColorPanel {} },
                             PanelId::Brush => rsx! { BrushPanel {} },
+                            PanelId::Select => rsx! { SelectPanel {} },
                             PanelId::Lighting => rsx! { LightingPanel {} },
                             PanelId::Layers => rsx! { LayerPanel {} },
                         }
@@ -1449,6 +1584,17 @@ fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
             e.prevent_default();
         }
         Key::Character(c) if c.eq_ignore_ascii_case("y") => dispatch(state, InputCommand::Redo),
+        // Selection commands (DESIGN.md §6.8). "Select all" and "Deselect" are the
+        // same edit here — a selection covering the whole canvas *is* no selection —
+        // so both shortcuts land on the same op.
+        Key::Character(c) if c.eq_ignore_ascii_case("a") || c.eq_ignore_ascii_case("d") => {
+            dispatch(state, InputCommand::Select(SelectionOp::select_all()));
+            e.prevent_default();
+        }
+        Key::Character(c) if c.eq_ignore_ascii_case("i") && m.contains(Modifiers::SHIFT) => {
+            dispatch(state, InputCommand::InvertSelection);
+            e.prevent_default();
+        }
         _ => {}
     }
 }
@@ -1488,15 +1634,20 @@ fn sample(state: AppState, e: &Event<PointerData>) -> InputSample {
     }
 }
 
-/// End any in-progress stroke or pan.
+/// End any in-progress stroke, selection gesture, or pan, and put back the selection
+/// mode a modifier key overrode for the gesture (DESIGN.md §6.8).
 fn end_interaction(
     state: AppState,
     drawing: &mut Signal<bool>,
     panning: &mut Signal<bool>,
+    mode_restore: &mut Signal<Option<SelectionMode>>,
 ) {
     if drawing() {
         dispatch(state, InputCommand::EndStroke);
         drawing.set(false);
+    }
+    if let Some(base) = mode_restore.take() {
+        dispatch(state, InputCommand::SetSelectionMode(base));
     }
     panning.set(false);
 }

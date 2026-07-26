@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{BlendMode, BrushParams, LayerId, Tool};
+use crate::document::{BlendMode, BrushParams, LayerId, SelectionMode, SelectionOp, Tool};
 use crate::geom::Vec2;
 
 /// One pen/mouse sample in canvas space.
@@ -45,7 +45,11 @@ impl Default for InputSample {
 /// Every stateful interaction the backend accepts (GOALS §Inputs, DESIGN.md §4).
 #[derive(Clone, Debug)]
 pub enum InputCommand {
-    // --- stroke lifecycle (high frequency) ---
+    // --- gesture lifecycle (high frequency) ---
+    //
+    // Shared by painting and by the selection tools (DESIGN.md §6.8): from the
+    // frontend's side both are press-drag-release, and the `tool` decides which the
+    // session builds — a `StrokeRecord` or a `SelectionOp`.
     StartStroke { tool: Tool, sample: InputSample },
     StrokeTo { sample: InputSample },
     EndStroke,
@@ -64,6 +68,13 @@ pub enum InputCommand {
     /// position, e.g. the cursor) fixed on screen.
     Zoom { anchor: Vec2, factor: f32 },
 
+    // --- selection tool settings (session state, never historized — they shape the
+    //     *next* op, and the op itself is what gets logged; DESIGN.md §6.8) ---
+    /// How the next selection gesture combines with the current selection.
+    SetSelectionMode(SelectionMode),
+    /// Edge softness (canvas px) for the next selection gesture.
+    SetSelectionFeather(f32),
+
     // --- active layer selection (session state, never historized) ---
     SetActiveLayer(LayerId),
 
@@ -74,4 +85,11 @@ pub enum InputCommand {
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
     MoveLayer { id: LayerId, above: Option<LayerId> },
+
+    // --- selection edits that ARE historized (DESIGN.md §6.8) ---
+    /// Apply a selection op directly — the menu path (Select All / Deselect), and how
+    /// a frontend with its own geometry can drive the selection without a gesture.
+    Select(SelectionOp),
+    /// Swap selected for unselected everywhere.
+    InvertSelection,
 }
