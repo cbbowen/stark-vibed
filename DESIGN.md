@@ -70,13 +70,13 @@ stark/
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
 │   │   │   ├── geom.rs          # tile coords, view transform, AABB
 │   │   │   ├── path.rs          # streaming B-spline stroke fit + adaptive flatten (§6.2)
+│   │   │   ├── spline.rs        # clamped cardinal cubic B-spline + least-squares solve
 │   │   │   └── io.rs            # save/load of the action log
 │   │   └── tests/
 │   │       └── golden/         # scripted command sequences + reference PNGs
 │   ├── stark-shaders/          # WESL sources + build.rs (wesl link/compile)
 │   │   ├── build.rs
 │   │   └── src/shaders/*.wesl
-│   ├── spline-fit/             # incremental least-squares B-spline fit (§6.2)
 │   ├── stark-net/              # iroh transport ↔ Replicated timeline (optional)
 │   └── stark-ui/               # Dioxus 0.7 frontend
 └── DESIGN.md
@@ -430,7 +430,7 @@ point *of the curve* — position plus its derivative, with the pen attributes
 interpolated there — produced at render time and consumed by the stamp generator.
 
 A `PathFitter` streams samples into control points as a **least-squares clamped
-cubic B-spline** (the `spline_fit` crate), grown and refit as they arrive:
+cubic B-spline** (`spline.rs`), grown and refit as they arrive:
 
 - **Grow.** The control polygon lengthens with the stroke — one point per
   `KNOT_SPACING` of arc length, plus more wherever the input's *sagitta* over one

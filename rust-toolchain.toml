@@ -1,7 +1,7 @@
-# Nightly is required twice over: the `history` dependency uses
-# #![feature(associated_type_defaults)], and `spline-fit` uses
-# #![feature(generic_const_exprs)] for its `{P + 1}` basis-matrix arithmetic.
-# See CLEANUP.md §2.1 — retiring the latter would leave only `history`.
+# Nightly is required by one dependency: `history` uses
+# #![feature(associated_type_defaults)]. Nothing in this workspace needs it —
+# `generic_const_exprs` went with the spline-fit crate (CLEANUP.md §2) — so if
+# `history` ever lands on stable, so does Stark.
 [toolchain]
 channel = "nightly"
 targets = ["wasm32-unknown-unknown"]

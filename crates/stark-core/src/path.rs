@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::InputSample;
 use crate::geom::Vec2;
+use crate::spline::CubicBSpline;
 
 /// Control points solved for at the live end of the stroke. Everything behind them
 /// is frozen; the pinned endpoint sits inside the window on top of these.
@@ -81,7 +82,7 @@ pub const KNOT_COST: f32 = 0.06;
 pub const KNOT_SPACING: f32 = 64.0;
 
 /// Curvature penalty on the control polygon, as a fraction of the data's own pull
-/// (`spline_fit::FitTolerance::with_smoothing`).
+/// (see [`CubicBSpline::fit_channels`]).
 ///
 /// Least squares charges the curve for being far from a *point*, never for where it
 /// goes when no point is near — so a stretch the data does not constrain is free to
@@ -466,9 +467,8 @@ impl PathFitter {
         set_row(&mut attr, 0, first.channels);
         set_row(&mut attr, m - 1, last.channels);
 
-        let spline: spline_fit::ClampedCardinalBSpline<f32, Const<2>, Const<3>> =
-            spline_fit::ClampedCardinalBSpline::from_control_points(Const::<3>, geom.clone())
-                .expect("at least two control points");
+        let spline: CubicBSpline<2> =
+            CubicBSpline::from_control_points(geom.clone()).expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc.max(1e-6);
         let profile = arc_profile(&spline, &self.settled_profile);
@@ -499,13 +499,13 @@ impl PathFitter {
         // never overtake its neighbours — the reordering that makes a searched
         // correspondence dangerous is ruled out by construction.
         let ts: Vec<f32> = live.iter().map(|s| param(s.arc)).collect();
-        let geom = spline.fit_channels_smoothed(&ts, &pos, frozen, 1, &geom, self.smoothing);
+        let geom = spline.fit_channels(&ts, &pos, frozen, 1, &geom, self.smoothing);
 
         // The pen channels ride the same knots at the same parameters, so they are
         // the same solve with a different payload — unsmoothed, since a pressure ramp
         // is not a shape and has no curvature to penalize.
         let vals: Vec<[f32; CHANNELS]> = live.iter().map(|s| s.channels).collect();
-        let attr = spline.fit_channels_smoothed(&ts, &vals, frozen, 0, &attr, 0.0);
+        let attr = spline.fit_channels(&ts, &vals, frozen, 0, &attr, 0.0);
         Fit {
             geom,
             attr,
@@ -525,9 +525,8 @@ impl PathFitter {
     /// total grows with the window, so a fixed price would mean something different
     /// at every length.
     fn mean_error(&self, fit: &Fit, lo: usize) -> f32 {
-        let spline =
-            spline_fit::ClampedCardinalBSpline::from_control_points(Const::<3>, fit.geom.clone())
-                .expect("at least two control points");
+        let spline = CubicBSpline::from_control_points(fit.geom.clone())
+            .expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc.max(1e-6);
         let live = &self.pts[lo.min(self.pts.len() - 1)..];
@@ -633,10 +632,7 @@ const ARC_SAMPLES_PER_SPAN: usize = 4;
 /// earlier update: those spans' control points are held, so their geometry — and so
 /// their length — cannot change, and re-walking them every update is the last piece
 /// of per-update work that scaled with the whole stroke rather than the window.
-fn arc_profile(
-    curve: &spline_fit::CardinalCubicBSpline<f32, Const<2>>,
-    settled: &[f32],
-) -> Vec<f32> {
+fn arc_profile(curve: &CubicBSpline<2>, settled: &[f32]) -> Vec<f32> {
     let spans = curve.num_spans();
     let n = spans * ARC_SAMPLES_PER_SPAN;
     let keep = settled.len().saturating_sub(1).min(n);
@@ -716,7 +712,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 /// How many cubic spans the curve through `control_points` has.
 ///
 /// The clamped end condition is expressed by *repeating* each end control point
-/// `degree` times in the conceptual control sequence (`spline_fit`'s knot view),
+/// `degree` times in the conceptual control sequence (the clamped knot view, [`crate::spline`]),
 /// which pins the curve to them. Those repeats are spans too, so `m` control
 /// points give `m + 1` spans rather than the `m - 1` an interpolating spline would
 /// — the two extra sit at the ends, each covering the sixth of the first (last)
@@ -903,7 +899,7 @@ impl Span {
 /// ```
 ///
 /// The clamp at the two ends is not a special case here but a consequence of the
-/// control sequence `spline_fit` fits against, in which each end control point
+/// control sequence [`CubicBSpline`] fits against, in which each end control point
 /// appears `degree` times ([`knot_row`]). Repeating `Q0` collapses `b0`, `b1` and
 /// `b2` onto it, which is exactly what pins the curve to the first control point
 /// and starts it heading down the first leg.
@@ -927,7 +923,7 @@ fn span(knots: &[ControlPoint], k: usize) -> Span {
 }
 
 /// The control point backing index `i` of the conceptual clamped sequence, in which
-/// the first and last each appear `degree` (= 3) times. This is `spline_fit`'s knot
+/// the first and last each appear `degree` (= 3) times. This is [`crate::spline`]'s knot
 /// view, reproduced here so a stored path can be evaluated without a fitter.
 fn knot_row(i: usize, m: usize) -> usize {
     i.saturating_sub(2).min(m - 1)
@@ -975,14 +971,13 @@ mod tests {
     }
 
     /// The load-bearing link between the two halves of this module: the span form
-    /// used to *render* a stored path must be the same curve `spline_fit` **fitted**.
+    /// used to *render* a stored path must be the same curve [`CubicBSpline`] **fitted**.
     /// If these ever diverge, a stroke would be fitted to one curve and drawn as
     /// another — silently, since both are smooth and pass through roughly the same
     /// place.
     #[test]
     fn span_form_matches_the_fitted_spline() {
         use nalgebra::{Const, Dyn, OMatrix};
-        use spline_fit::{CardinalCubicBSpline, ClampedCardinalBSpline};
 
         for m in 2..9usize {
             let ctrl: Vec<Vec2> = (0..m)
@@ -997,8 +992,7 @@ mod tests {
                 OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
                     if d == 0 { ctrl[j].x } else { ctrl[j].y }
                 });
-            let reference: CardinalCubicBSpline<f32, Const<2>> =
-                ClampedCardinalBSpline::from_control_points(Const::<3>, rows).unwrap();
+            let reference: CubicBSpline<2> = CubicBSpline::from_control_points(rows).unwrap();
 
             assert_eq!(
                 span_count(m),

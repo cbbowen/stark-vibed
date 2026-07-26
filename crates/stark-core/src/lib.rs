@@ -99,6 +99,7 @@ pub mod io;
 pub mod noise;
 pub mod path;
 pub mod session;
+pub mod spline;
 #[doc(hidden)]
 pub mod testdata;
 
