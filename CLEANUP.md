@@ -58,7 +58,8 @@ Three things the initial survey missed, all now handled or flagged:
   and `vendor/iroh-webrtc-transport`, and `clippy --workspace` raised 50 warnings
   in code that is not ours to fix. Both are now in `[workspace] exclude`. They
   still build; their own test suites no longer run under `cargo test
-  --workspace` (hence 202 tests, not 256). Run them with
+  --workspace` (which is why the workspace total drops from 200 to 148 across
+  Phases 1–2: −52 vendored, −62 spline-fit, +10 ported spline tests). Run them with
   `cargo test --manifest-path vendor/iroh-webrtc-transport/Cargo.toml` if that
   coverage is wanted back — **open question**, since the iroh 1.0 port is
   precisely what those tests guard.
@@ -70,7 +71,7 @@ Three things the initial survey missed, all now handled or flagged:
   and nothing renders it. Marked `dead_code` with a pointer here rather than
   deleted. **Open question:** wire it up or remove it (including the CSS)?
 
-## Phase 2 — The big one: spline-fit is ~55% unreachable
+## Phase 2 — spline-fit was ~55% unreachable — **DONE**
 
 This is the highest-leverage finding. `path.rs` is spline-fit's **only** consumer,
 and it calls exactly four things: `from_control_points`, `num_spans`, `evaluate`,
@@ -93,30 +94,28 @@ never touching the E-step. So unreachable from the sole consumer:
 [`PathFitter`](crates/stark-core/src/path.rs#L249-L585) hand-rolls its own
 grow/solve/freeze/adopt loop — the exact job `IncrementalFit` exists to do.
 
-Two ways out, and it's a genuine fork:
-
-- **(a) Adopt** — rebuild `PathFitter` on `IncrementalFit`. Keeps the library
-  whole, deletes the duplicated loop. But the fit is *heavily* tuned (the
-  `KNOT_COST` measurement table, the `arc_profile` reparameterization, the
-  solve/score consistency argument in `mean_error`) — behavior moves, goldens
-  re-bless.
-- **(b) Prune** — delete the unreachable half, shrink spline-fit to the primitive
-  actually used. Zero behavior change.
-
-**Recommendation: (b).**
+**Resolution: pruned, and then some.** The ~600 lines actually used are now
+[spline.rs](crates/stark-core/src/spline.rs) in stark-core, monomorphized to `f32`
+and to cubic, and the crate is deleted. **4,150 lines became 430.**
 [path.rs:492-500](crates/stark-core/src/path.rs#L492-L500) documents a deliberate
 move *away* from searched correspondence — "the reordering that makes a searched
-correspondence dangerous is ruled out by construction." `IncrementalFit` and the
-assignment search are an abandoned approach, not a target. Git keeps them if
-wanted.
+correspondence dangerous is ruled out by construction" — so `IncrementalFit` and
+the assignment search were an approach the fitter had already abandoned, not a
+target to adopt.
 
-**2.1 Nightly.** [spline-fit/src/lib.rs:1](crates/spline-fit/src/lib.rs#L1) is an
-*unconditional* `#![feature(generic_const_exprs)]` (an incomplete feature), which
-— along with `history`'s `associated_type_defaults` — is why the whole workspace
-is pinned to nightly. It's needed only for `{P + 1}` arithmetic, and `Const<3>` is
-the sole instantiation. Monomorphizing to cubic removes one of the two nightly
-blockers. Also: `rust-version = "1.85"` in the workspace manifest is simply false
-today.
+Numerically identical by construction: path.rs already instantiated the fit at
+`f32`, and the two places the old code narrowed from `f64` (`1/q` in the basis
+recurrence, and the smoothing weight) still do. Goldens unaffected.
+
+62 crate tests became 10 focused ones; the ~50 dropped covered deleted machinery.
+One ported test needed its bound loosened from `1e-6` to 1%: it used to run in
+`f64`, and the proximal ridge `n · √ε` is ~2300x stronger in `f32`. That was
+always true of the engine's own solve — only the test was ever in `f64`.
+
+**2.1 Nightly — half resolved.** `generic_const_exprs` went with the crate (the
+`{P + 1}` basis arithmetic was its only use), so `history`'s
+`associated_type_defaults` is now the **sole** reason the workspace is on nightly.
+Still outstanding: `rust-version = "1.85"` in the workspace manifest is false.
 
 ## Phase 3 — Module surgery (behavior-preserving)
 
@@ -204,22 +203,24 @@ yet wired.
 
 ## Sequencing
 
-Phase 0 → 1 are low-risk and unblock everything. Phase 2 is the biggest single
-win and is **independent** of 3 and 4, so it can run in parallel. Phase 3 items
-are independent of each other; 3.3 is the riskiest and should go last within that
-phase. Phase 4 needs decisions before code. Phase 5 can happen any time.
+Phases 0–2 are done. Phase 3 items are independent of each other; 3.3 is the
+riskiest and should go last within that phase. Phase 4 needs decisions before
+code. Phase 5 can happen any time.
 
-Open questions: **Phase 2, prune or adopt?** (recommendation: prune),
-**Phase 4.1** — is the direct-method tier intentional, or should it collapse into
-`InputCommand`? — plus the two raised by Phases 0–1: whether to restore the
-vendored crates' test coverage, and whether `TernaryPad` lives or dies.
+Open questions: **Phase 4.1** — is the direct-method tier intentional, or should it
+collapse into `InputCommand`? — plus the two raised by Phases 0–1: whether to
+restore the vendored crates' test coverage, and whether `TernaryPad` lives or dies.
 
-## State after Phases 0–1
+## State after Phases 0–2
 
 | Check | Before | After |
 |---|---|---|
 | `cargo fmt --all --check` | ~309 hunks | clean |
 | `cargo clippy --workspace --all-targets -D warnings` | 31 warnings in `crates/` | clean |
-| `cargo test --workspace` | 256 pass (incl. 54 vendored) | 202 pass, 0 fail |
+| `cargo test --workspace` | 200 pass | 148 pass, 0 fail |
 | `cargo check -p stark-ui --target wasm32-unknown-unknown` | (unchecked) | clean |
+| Rust in `crates/` | 26,951 lines | 24,126 lines (net of +768 from reformatting) |
+| Workspace members | 5 + 2 vendored | 4 |
+| Nightly features needed | 2 | 1 (`history` only) |
 | CI | pages deploy only | + fmt / clippy / test / wasm |
+
