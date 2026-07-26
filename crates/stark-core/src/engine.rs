@@ -19,8 +19,8 @@ use crate::document::{
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
-    Compositor, Environment, EnvironmentId, GpuContext, SelectionRenderer, StrokeRenderer,
-    StrokeSpans, Surface, SurfaceId, TilePairHandle, TilePool,
+    Compositor, Environment, EnvironmentId, GpuContext, Registry, SelectionRenderer,
+    StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePairHandle, TilePool,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -122,30 +122,21 @@ pub struct Engine {
     /// the stroke renderer it survives a colour-space rebuild.
     selection: SelectionRenderer,
     compositor: Compositor,
-    /// The physical canvas surface (tooth + relief). Color-space-independent, so
-    /// it survives color-space rebuilds (DESIGN.md §6.4).
-    surface: Surface,
-    /// Which surface the GPU-side [`Surface`] was built for. A *cache* of
-    /// `document().surface`, kept in step by [`Engine::apply_document_surface`];
-    /// the document is the source of truth (DESIGN.md §6.4).
-    surface_id: SurfaceId,
+    /// The physical canvas surface (tooth + relief) and the bytes registered for
+    /// it. Colour-space-independent, so it survives colour-space rebuilds. Which
+    /// surface is in use is a *cache* of `document().surface`, kept in step by
+    /// [`Engine::apply_document_surface`] — the document is the source of truth
+    /// (DESIGN.md §6.4).
+    surface: Registry<SurfaceId>,
     /// The surface the action log starts from, written to `CanvasMeta` and used to
     /// seed the document. Plays the same role as `CanvasMeta::color_space`: it
     /// describes the empty document that the log is replayed onto, and is not
     /// itself a logged change.
     initial_surface: SurfaceId,
-    /// Frontend-provided image bytes for non-`Flat` surfaces, keyed by id. The
-    /// engine embeds none; the frontend fetches and registers them at runtime
-    /// (DESIGN.md §6.4). Missing bytes fall back to `Flat`.
-    surface_assets: std::collections::HashMap<SurfaceId, Vec<u8>>,
-    /// The HDR lighting environment (image-based lighting). A *view* setting — not
-    /// historized, color-space-independent — so it survives rebuilds and switching
-    /// it never touches the document (DESIGN.md §6.3).
-    environment: Environment,
-    environment_id: EnvironmentId,
-    /// Frontend-provided HDR bytes for non-procedural environments, keyed by id
-    /// (the engine embeds none; the frontend fetches them at runtime).
-    environment_assets: std::collections::HashMap<EnvironmentId, Vec<u8>>,
+    /// The HDR lighting environment (image-based lighting) and its registered
+    /// bytes. A *view* setting — not historized, colour-space-independent — so it
+    /// survives rebuilds and switching it never touches the document (§6.3).
+    environment: Registry<EnvironmentId>,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
     /// Live preview of the in-flight stroke, composited in place of the
@@ -185,20 +176,19 @@ impl Engine {
         let color_space = color_space.make();
         // Fresh documents start on the procedural flat surface; image-backed
         // surfaces are registered later by the frontend (DESIGN.md §6.4).
-        let surface_id = SurfaceId::default();
-        let surface = Surface::flat(&gpu);
+        let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural studio environment; image HDRs are
         // registered later by the frontend (DESIGN.md §6.3).
-        let environment_id = EnvironmentId::default();
-        let environment = Environment::studio(&gpu);
+        let _environment_id = EnvironmentId::default();
+        let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
         let (pool, stroke, compositor) = build_gpu(GpuBuild {
             gpu: &gpu,
             target_format,
             viewport,
             cs: &color_space,
-            surface: &surface,
-            environment: &environment,
+            surface: surface.current(),
+            environment: environment.current(),
             selection: &selection,
         });
         let assets = AssetStore::new(gpu.clone());
@@ -216,13 +206,9 @@ impl Engine {
             assets,
             selection,
             compositor,
+            initial_surface: surface.id(),
             surface,
-            surface_id,
-            initial_surface: surface_id,
-            surface_assets: std::collections::HashMap::new(),
             environment,
-            environment_id,
-            environment_assets: std::collections::HashMap::new(),
             timeline,
             session,
             preview: None,
@@ -619,9 +605,9 @@ impl Engine {
             selection_mode: self.session.selection_mode,
             selection_feather: self.session.selection_feather,
             media: self.compositor.media(),
-            environment: self.environment_id,
+            environment: self.environment.id(),
             color_space: self.color_space.id(),
-            surface: self.surface_id,
+            surface: self.document().surface,
         }
     }
 
@@ -693,12 +679,10 @@ impl Engine {
     /// session's **full** log — including `Undo` actions, which the replicated
     /// timeline resolves — and author future actions as `actor`.
     pub fn join_collaboration(&mut self, file: &DocumentFile, actor: ActorId) {
+        // The surface the shared log starts from; replayed `SetSurface` actions
+        // move it from there, exactly as in `load_document` (DESIGN.md §6.4).
+        self.initial_surface = file.canvas.surface;
         self.reset_document();
-        if file.canvas.surface != self.surface_id {
-            self.surface_id = file.canvas.surface;
-            self.surface = build_surface(&self.gpu, self.surface_id, &self.surface_assets);
-            self.rebuild_gpu_for(self.color_space.id());
-        }
         if file.canvas.color_space != self.color_space.id() {
             self.rebuild_gpu_for(file.canvas.color_space);
         }
@@ -708,7 +692,7 @@ impl Engine {
             }
         }
         let mut ctx = self.apply_ctx();
-        let initial = DocState::with_layer(ROOT_LAYER);
+        let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
         self.timeline = Box::new(ReplicatedTimeline::from_log(
             actor,
             initial,
@@ -718,6 +702,8 @@ impl Engine {
         self.resync_counters(&file.actions);
         self.actor = actor;
         self.outbox_enabled = true;
+        // Whatever the replayed log left the document on.
+        self.apply_document_surface();
     }
 
     /// Leave a shared session: stop queueing broadcasts. The replicated
@@ -807,15 +793,13 @@ impl Engine {
     /// Whether `id` is ready to use — `Flat` always is; an image-backed surface
     /// is ready once its bytes have been [`register_surface`](Self::register_surface)ed.
     pub fn surface_loaded(&self, id: SurfaceId) -> bool {
-        id == SurfaceId::Flat || self.surface_assets.contains_key(&id)
+        self.surface.is_loaded(id)
     }
 
     /// Provide (frontend-fetched) image bytes for a surface. If it's the one in
     /// use, the surface is rebuilt so the bytes take effect immediately.
     pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
-        self.surface_assets.insert(id, png_bytes);
-        if id == self.surface_id {
-            self.surface = build_surface(&self.gpu, id, &self.surface_assets);
+        if self.surface.register(&self.gpu, id, png_bytes) {
             self.apply_surface();
         }
     }
@@ -828,40 +812,35 @@ impl Engine {
     /// (DESIGN.md §6.4), so it changes by logging an action like anything else.
     fn apply_document_surface(&mut self) {
         let id = self.document().surface;
-        if id == self.surface_id {
-            return;
+        if self.surface.set(&self.gpu, id) {
+            self.apply_surface();
         }
-        self.surface_id = id;
-        self.surface = build_surface(&self.gpu, id, &self.surface_assets);
-        self.apply_surface();
     }
 
     /// Rebind the current surface in the subsystems that sample it (the sweep's
     /// tooth gate and the media pass) — no pipeline or pool rebuild, no document
     /// reset.
     fn apply_surface(&mut self) {
-        self.stroke.set_surface(&self.surface);
-        self.compositor.set_surface(self.surface.clone());
+        self.stroke.set_surface(self.surface.current());
+        self.compositor.set_surface(self.surface.current().clone());
     }
 
     /// The current lighting environment (DESIGN.md §6.3).
     pub fn environment(&self) -> EnvironmentId {
-        self.environment_id
+        self.environment.id()
     }
 
     /// Whether `id` is ready — `Studio` always is; an HDR environment is ready once
     /// its bytes have been [`register_environment`](Self::register_environment)ed.
     pub fn environment_loaded(&self, id: EnvironmentId) -> bool {
-        id == EnvironmentId::Studio || self.environment_assets.contains_key(&id)
+        self.environment.is_loaded(id)
     }
 
     /// Provide (frontend-fetched) HDR bytes for an environment. If it's the one in
     /// use, it's rebuilt so the bytes take effect immediately.
     pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
-        self.environment_assets.insert(id, hdr_bytes);
-        if id == self.environment_id {
-            self.environment = build_environment(&self.gpu, id, &self.environment_assets);
-            self.compositor.set_environment(self.environment.clone());
+        if self.environment.register(&self.gpu, id, hdr_bytes) {
+            self.apply_environment();
         }
     }
 
@@ -872,12 +851,15 @@ impl Engine {
     /// Private: reached through
     /// [`ViewCommand::SetEnvironment`](crate::command::ViewCommand::SetEnvironment).
     fn set_environment(&mut self, id: EnvironmentId) {
-        if id == self.environment_id {
-            return;
+        if self.environment.set(&self.gpu, id) {
+            self.apply_environment();
         }
-        self.environment_id = id;
-        self.environment = build_environment(&self.gpu, id, &self.environment_assets);
-        self.compositor.set_environment(self.environment.clone());
+    }
+
+    /// Rebind the current environment in the media pass.
+    fn apply_environment(&mut self) {
+        self.compositor
+            .set_environment(self.environment.current().clone());
     }
 
     /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
@@ -889,8 +871,8 @@ impl Engine {
             target_format: self.target_format,
             viewport: self.session.view.viewport,
             cs: &cs,
-            surface: &self.surface,
-            environment: &self.environment,
+            surface: self.surface.current(),
+            environment: self.environment.current(),
             selection: &self.selection,
         });
         self.color_space = cs;
@@ -1112,25 +1094,6 @@ impl Engine {
 }
 
 /// Build the GPU subsystems whose layout/shaders depend on the color space.
-/// Build the surface texture for `id` from the registry: `Flat` is procedural;
-/// image surfaces use their registered bytes, falling back to `Flat` if absent.
-fn build_surface(
-    gpu: &GpuContext,
-    id: SurfaceId,
-    assets: &std::collections::HashMap<SurfaceId, Vec<u8>>,
-) -> Surface {
-    match id {
-        SurfaceId::Flat => Surface::flat(gpu),
-        other => match assets.get(&other) {
-            Some(bytes) => Surface::load(gpu, bytes),
-            None => {
-                tracing::warn!("surface {other:?} has no registered bytes; using flat");
-                Surface::flat(gpu)
-            }
-        },
-    }
-}
-
 /// What the colour-space-dependent GPU subsystems are built from.
 ///
 /// Grouped because they are always supplied together: the pool, stroke renderer and
@@ -1173,25 +1136,6 @@ fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor) {
         environment.clone(),
     );
     (pool, stroke, compositor)
-}
-
-/// Build the environment for `id`: `Studio` is procedural; image environments use
-/// their registered HDR bytes, falling back to the procedural studio if absent.
-fn build_environment(
-    gpu: &GpuContext,
-    id: EnvironmentId,
-    assets: &std::collections::HashMap<EnvironmentId, Vec<u8>>,
-) -> Environment {
-    match id {
-        EnvironmentId::Studio => Environment::studio(gpu),
-        other => match assets.get(&other) {
-            Some(bytes) => Environment::load(gpu, bytes),
-            None => {
-                tracing::warn!("environment {other:?} has no registered bytes; using studio");
-                Environment::studio(gpu)
-            }
-        },
-    }
 }
 
 /// Convenience for tests/tools: build an engine on a headless device.

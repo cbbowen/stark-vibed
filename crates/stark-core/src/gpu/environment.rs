@@ -373,6 +373,23 @@ fn f32_to_f16(x: f32) -> u16 {
     ((exp as u16) << 10 | half_mant) + round
 }
 
+impl crate::gpu::registry::Resource for EnvironmentId {
+    type Gpu = Environment;
+
+    /// `Studio` is procedural — a soft overhead key over ambient fill — so the
+    /// canvas is lit before any HDR arrives (DESIGN.md §6.3).
+    fn is_builtin(self) -> bool {
+        self == EnvironmentId::Studio
+    }
+
+    fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Environment {
+        match bytes {
+            Some(bytes) if !self.is_builtin() => Environment::load(gpu, bytes),
+            _ => Environment::studio(gpu),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

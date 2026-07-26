@@ -160,3 +160,21 @@ fn downsample_to_limit(src: Vec<u8>, w: u32, h: u32, limit: u32) -> (Vec<u8>, u3
     }
     (out, nw, nh)
 }
+
+impl crate::gpu::registry::Resource for SurfaceId {
+    type Gpu = Surface;
+
+    /// `Flat` is a 1x1 full-height texel: tooth becomes a no-op and a constant
+    /// height has zero gradient, so it is exactly equivalent to having no surface
+    /// (DESIGN.md §6.4).
+    fn is_builtin(self) -> bool {
+        self == SurfaceId::Flat
+    }
+
+    fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Surface {
+        match bytes {
+            Some(bytes) if !self.is_builtin() => Surface::load(gpu, bytes),
+            _ => Surface::flat(gpu),
+        }
+    }
+}
