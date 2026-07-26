@@ -651,7 +651,7 @@ impl StrokeRenderer {
         // (§6.4), and the wide region aux narrows to the persistent (height, wet).
         let mut new_map = base.clone();
         for coord in &coords {
-            let dst = pool.acquire(AllocSource::DynamicsWriteback);
+            let dst = self.acquire_tile(pool, AllocSource::DynamicsWriteback);
             let off = coord.origin() - lo;
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark dynamics slice params"),

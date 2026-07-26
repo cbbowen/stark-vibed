@@ -155,7 +155,7 @@ impl StrokeRenderer {
             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
             store: wgpu::StoreOp::Store,
         };
-        let empty = pool.acquire(AllocSource::IntegrateEmptyBase);
+        let empty = self.acquire_tile(pool, AllocSource::IntegrateEmptyBase);
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark integrate empty clear"),
             color_attachments: &[
@@ -214,7 +214,7 @@ impl StrokeRenderer {
             // Footprint → cleared scratch tile: within-stroke accumulation (the color
             // target over-blends opacity-premultiplied colour, the aux accumulates
             // height/wet/coverage additively). The scratch aux is the wide format.
-            let scratch = pool.acquire_scratch(AllocSource::StrokeScratch);
+            let scratch = self.acquire_scratch(pool, AllocSource::StrokeScratch);
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
@@ -249,7 +249,7 @@ impl StrokeRenderer {
             // Integrate the scratch slab over the base into a fresh CoW tile, gated
             // by this tile's selection coverage — its own mask if it has one, or the
             // 1×1 constant standing in for the rest of the canvas (§6.8).
-            let dst = pool.acquire(AllocSource::IntegrateDestination);
+            let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
             let base_tile = base.get(coord).unwrap_or(&empty);
             let mask_view = self.selection.mask_for(selection, *coord);
             let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {

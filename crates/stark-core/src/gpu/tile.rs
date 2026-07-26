@@ -76,33 +76,42 @@ impl Drop for GpuTex {
     }
 }
 
-/// A handle to one pooled texture; cloning is an `Arc` bump.
+/// A handle to one pooled texture; cloning is an `Arc` bump, and the texture returns
+/// to its format's free list when the last handle drops.
+///
+/// This is the unit the pool deals in. Pairing two of them into a tile is the
+/// *caller's* job, because which two formats make a tile is the colour space's
+/// business (DESIGN.md §6.7) and the pool has no view of that.
 #[derive(Clone)]
-struct TexHandle(Arc<GpuTex>);
+pub struct TexHandle(Arc<GpuTex>);
 
 impl TexHandle {
-    fn texture(&self) -> &wgpu::Texture {
+    pub fn texture(&self) -> &wgpu::Texture {
         self.0.tex.as_ref().expect("texture present until drop")
     }
-    fn view(&self) -> &wgpu::TextureView {
+    pub fn view(&self) -> &wgpu::TextureView {
         &self.0.view
     }
 }
 
-// TODO: Remove this. Callers should just get two handles.
-/// A tile's two channels (`color` + `aux`), each a pooled texture.
+/// A tile's two channels (`color` + `aux`), each a separately pooled texture.
 struct TilePair {
     color: TexHandle,
     aux: TexHandle,
 }
 
-// TODO: Remove this. Callers should just get two handles.
 /// A handle to a tile. Cloning is cheap (Arc bumps), which is what makes persistent
 /// `DocState` snapshots cheap (DESIGN.md §5.1).
+///
+/// Built from two [`TexHandle`]s rather than acquired from the pool: see
+/// [`TexHandle`] for why the pool does not know what a tile is.
 #[derive(Clone)]
 pub struct TilePairHandle(Arc<TilePair>);
 
 impl TilePairHandle {
+    pub fn new(color: TexHandle, aux: TexHandle) -> Self {
+        TilePairHandle(Arc::new(TilePair { color, aux }))
+    }
     pub fn color(&self) -> &wgpu::Texture {
         self.0.color.texture()
     }
@@ -168,20 +177,6 @@ impl TilePool {
         Self { ctx, format_pools }
     }
 
-    // TODO: Replace this with `acquire_tex` calls.
-    /// Acquire a persistent tile (color-space `color` + `aux` formats), reusing
-    /// recycled textures when available. Contents are undefined until painted or cleared.
-    pub fn acquire(&self, source: AllocSource) -> TilePairHandle {
-        self.tile(wgpu::TextureFormat::Rg16Float, source)
-    }
-
-    // TODO: Replace this with `acquire_tex` calls.
-    /// Acquire a brush-dynamics *scratch* tile: the same colour channel, but a wider
-    /// [`SCRATCH_AUX_FORMAT`] aux (an extra channel the deposit/integrate use internally).
-    pub fn acquire_scratch(&self, source: AllocSource) -> TilePairHandle {
-        self.tile(SCRATCH_AUX_FORMAT, source)
-    }
-
     /// Acquire a selection mask tile ([`MASK_FORMAT`], DESIGN.md §6.8). Contents are
     /// undefined until rasterized; the selection renderer always writes the whole
     /// target, aprons included.
@@ -189,15 +184,13 @@ impl TilePool {
         MaskHandle(self.acquire_tex(MASK_FORMAT, source))
     }
 
-    // TODO: Remove this once the two callers above have been removed.
-    fn tile(&self, aux_format: wgpu::TextureFormat, source: AllocSource) -> TilePairHandle {
-        let color = self.acquire_tex(wgpu::TextureFormat::Rgba16Float, source);
-        let aux = self.acquire_tex(aux_format, source);
-        TilePairHandle(Arc::new(TilePair { color, aux }))
-    }
-
     /// Acquire one pooled texture of `format`, reusing a recycled one when available.
-    fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
+    /// Contents are undefined until painted or cleared.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `format` was not among those the pool was built with.
+    pub fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
         let pool = self.format_pools.get(&format).expect("unsupported format");
         let tex = {
             let mut pool = pool.lock().expect("tile pool poisoned");

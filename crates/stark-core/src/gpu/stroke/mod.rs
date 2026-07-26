@@ -32,7 +32,7 @@ use crate::geom::TileCoord;
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::surface::Surface;
-use crate::gpu::tile::{SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
 
 mod dynamics;
 mod segments;
@@ -506,6 +506,30 @@ impl StrokeRenderer {
             Some(tol) => self.render_dynamic(scene, rec, spans, tool, tol),
             None => self.render_swept(scene, rec, spans),
         }
+    }
+
+    /// Acquire a persistent tile: the colour space's `color` + `aux` formats, paired.
+    ///
+    /// The pool hands out textures, not tiles (see [`TexHandle`](crate::gpu::tile::TexHandle)).
+    /// Pairing them here is what keeps the two formats coming from the colour space
+    /// actually in use rather than from a constant — the pool previously hardcoded
+    /// `Rg16Float` for aux, which happened to match every colour space but would have
+    /// panicked on the first one that chose otherwise (DESIGN.md §6.7).
+    fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
+        TilePairHandle::new(
+            pool.acquire_tex(self.color_space.color_format(), source),
+            pool.acquire_tex(self.color_space.aux_format(), source),
+        )
+    }
+
+    /// Acquire a brush-dynamics *scratch* tile: the same colour channel, but a wider
+    /// [`SCRATCH_AUX_FORMAT`] aux (an extra channel the deposit/integrate use
+    /// internally, DESIGN.md §6.2).
+    fn acquire_scratch(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
+        TilePairHandle::new(
+            pool.acquire_tex(self.color_space.color_format(), source),
+            pool.acquire_tex(SCRATCH_AUX_FORMAT, source),
+        )
     }
 
     /// The brush's swept-footprint prefix-τ texture: an image brush's from the asset
