@@ -24,7 +24,7 @@ use stark_net::{
     actor_from_endpoint_id,
 };
 
-use crate::AppState;
+use crate::state::AppState;
 
 /// The UI's view of the collaboration state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -41,7 +41,7 @@ pub enum CollabPhase {
 /// (bounded) for relay readiness so the ticket is dialable, then flips the
 /// engine into shared mode and stores the ticket for the dialog.
 pub fn share(state: AppState) {
-    if (state.collab_phase)() != CollabPhase::Solo {
+    if (state.collab.phase)() != CollabPhase::Solo {
         return;
     }
     set_phase(state, CollabPhase::Connecting);
@@ -85,7 +85,7 @@ pub fn share(state: AppState) {
 
 /// Join a session from a pasted ticket. Replaces the current document.
 pub fn join(state: AppState, ticket_text: String) {
-    if (state.collab_phase)() != CollabPhase::Solo {
+    if (state.collab.phase)() != CollabPhase::Solo {
         return;
     }
     let ticket: SessionTicket = match ticket_text.parse() {
@@ -129,11 +129,11 @@ pub fn join(state: AppState, ticket_text: String) {
 /// current canvas (the shared log stays loaded; the engine just stops queueing
 /// broadcasts).
 pub fn leave(state: AppState) {
-    let mut session_sig = state.collab_session;
+    let mut session_sig = state.collab.session;
     let Some(session) = session_sig.write().take() else {
         return;
     };
-    let mut pump = state.collab_pump;
+    let mut pump = state.collab.pump;
     if let Some(task) = pump.write().take() {
         task.cancel();
     }
@@ -143,7 +143,7 @@ pub fn leave(state: AppState) {
             r.end_collaboration();
         }
     }
-    let mut ticket = state.collab_ticket;
+    let mut ticket = state.collab.ticket;
     ticket.set(None);
     set_url_ticket(None);
     set_phase(state, CollabPhase::Solo);
@@ -167,7 +167,8 @@ pub fn flush_outbox(state: AppState) {
         return;
     }
     let Some(tx): Option<Broadcaster> = state
-        .collab_session
+        .collab
+        .session
         .read()
         .as_ref()
         .map(|s| s.broadcaster())
@@ -189,11 +190,11 @@ fn install(state: AppState, mut session: CollabSession) {
     // The page URL *is* the invitation: anyone opening it joins this session
     // (via this peer — every member is a valid entry point).
     set_url_ticket(Some(&ticket_text));
-    let mut ticket = state.collab_ticket;
+    let mut ticket = state.collab.ticket;
     ticket.set(Some(ticket_text));
 
     let mut events = session.take_events().expect("fresh session events");
-    let mut session_sig = state.collab_session;
+    let mut session_sig = state.collab.session;
     session_sig.set(Some(session));
     set_phase(state, CollabPhase::Shared);
 
@@ -222,23 +223,23 @@ fn install(state: AppState, mut session: CollabSession) {
         }
         tracing::info!("collab event stream ended");
     });
-    let mut pump = state.collab_pump;
+    let mut pump = state.collab.pump;
     if let Some(old) = pump.write().replace(task) {
         old.cancel();
     }
 }
 
 fn set_phase(state: AppState, phase: CollabPhase) {
-    let mut p = state.collab_phase;
+    let mut p = state.collab.phase;
     p.set(phase);
     if phase != CollabPhase::Solo {
-        let mut err = state.collab_error;
+        let mut err = state.collab.error;
         err.set(None);
     }
 }
 
 fn fail(state: AppState, message: String) {
-    let mut err = state.collab_error;
+    let mut err = state.collab.error;
     err.set(Some(message));
     set_phase(state, CollabPhase::Solo);
 }
@@ -288,9 +289,9 @@ fn set_url_ticket(ticket: Option<&str>) {
 #[component]
 pub fn SessionModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
-    let phase = (state.collab_phase)();
-    let ticket = (state.collab_ticket)();
-    let error = (state.collab_error)();
+    let phase = (state.collab.phase)();
+    let ticket = (state.collab.ticket)();
+    let error = (state.collab.error)();
     let mut join_text = use_signal(String::new);
 
     rsx! {

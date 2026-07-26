@@ -26,11 +26,11 @@ use stark_core::document::{BrushParams, BrushShape, NoiseKind, OrientationSource
 use stark_core::geom::Vec2;
 use stark_core::{ColorSpaceId, EnvironmentId, InputCommand, InputSample};
 
+use crate::panels::brush::{set_bristles, set_brush_preset, set_knife, set_orientation, set_shape};
+use crate::platform::{capture_pointer, sleep_ms};
 use crate::render::{self, Renderer};
-use crate::{
-    AppState, Slider, capture_pointer, set_bristles, set_brush_preset, set_knife, set_orientation,
-    set_shape, sleep_ms, update_brush,
-};
+use crate::state::{AppState, update_brush};
+use crate::widgets::Slider;
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
@@ -350,10 +350,12 @@ async fn init_preview(state: AppState, mut preview: Preview) {
 
     // The asset bytes were all fetched at app startup, so these hit the browser
     // cache; content-addressed ids make the imports line up with the main engine.
-    if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(crate::BRISTLE_BRUSH).await {
+    if let Ok(bytes) =
+        dioxus::asset_resolver::read_asset_bytes(crate::panels::brush::BRISTLE_BRUSH).await
+    {
         r.load_bristle(&bytes);
     }
-    if let Some(asset) = crate::surface_asset(surface_id)
+    if let Some(asset) = crate::panels::lighting::surface_asset(surface_id)
         && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
     {
         r.register_surface(surface_id, bytes);
