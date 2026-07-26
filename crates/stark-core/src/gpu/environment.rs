@@ -379,11 +379,7 @@ mod tests {
 
     #[test]
     fn decodes_bundled_studio_hdr() {
-        let bytes = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../stark-ui/assets/environment/ferndale_studio_11_1k.hdr"
-        ))
-        .expect("read studio HDR");
+        let bytes = stark_testdata::assets::studio_hdr();
         let (pixels, w, h) = decode_hdr(&bytes).expect("decode HDR");
         assert_eq!((w, h), (1024, 512));
         assert_eq!(pixels.len(), (w * h) as usize);

@@ -90,6 +90,15 @@ iroh to it (§12) and can be pulled in by the frontend or omitted entirely.
 the engine crate and can be reused by tools. `stark-ui` depends on core, never
 the reverse.
 
+One caveat, stated rather than hidden: the large image assets (the studio HDR,
+the linen weave, the bristle brush — 11 MB together) live in
+`crates/stark-ui/assets/`, because Dioxus's `asset!` macro rejects any path
+outside its own crate. stark-core's *tests* want those same bytes, so they read
+them from there. That is a path pointing the wrong way, and it is confined to one
+module — `stark_testdata::assets` — which is the only thing that breaks if the
+frontend reorganizes. No code or Cargo dependency crosses that way; a second copy
+of 11 MB was the alternative.
+
 ## 3. Layered architecture
 
 ```

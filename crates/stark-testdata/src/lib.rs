@@ -2389,3 +2389,45 @@ pub const FAST_STROKE: &[[f32; 2]] = &[
     [1607.05, 1067.11],
     [1608.20, 1067.11],
 ];
+
+/// The app's shipped image assets, for tests that need the *real* bytes rather
+/// than a synthetic stand-in — the studio HDR the goldens are lit by, the bristle
+/// brush, the linen weave.
+///
+/// These live in `crates/stark-ui/assets/` and are read from there. That is a
+/// crate boundary pointing the wrong way (DESIGN.md §2 has stark-ui depending on
+/// core, never the reverse) and it is deliberate, for one reason: Dioxus's
+/// `asset!` macro refuses any path outside its own crate, so the frontend cannot
+/// reference them anywhere else — and at 11 MB they are not worth a second copy.
+///
+/// So the coupling is *contained* rather than removed: it exists once, here, in
+/// the crate whose whole job is test fixtures, instead of being spelled out at
+/// every call site. If the frontend reorganizes its assets, this module is the
+/// only thing that breaks.
+pub mod assets {
+    use std::path::PathBuf;
+
+    fn dir() -> PathBuf {
+        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../stark-ui/assets"))
+    }
+
+    fn read(rel: &str) -> Vec<u8> {
+        let path = dir().join(rel);
+        std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    }
+
+    /// The studio HDR environment the app lights the canvas with (DESIGN.md §6.3).
+    pub fn studio_hdr() -> Vec<u8> {
+        read("environment/ferndale_studio_11_1k.hdr")
+    }
+
+    /// The built-in bristle brush shape (DESIGN.md §6.6).
+    pub fn bristles() -> Vec<u8> {
+        read("shape/WornBristles.png")
+    }
+
+    /// The built-in linen canvas weave (DESIGN.md §6.4).
+    pub fn linen() -> Vec<u8> {
+        read("surface/Linen.png")
+    }
+}

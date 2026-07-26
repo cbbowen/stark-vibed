@@ -12,8 +12,6 @@ use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, SurfaceId};
 
-const BRISTLES: &[u8] = include_bytes!("../../stark-ui/assets/shape/WornBristles.png");
-
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
 
@@ -96,7 +94,9 @@ fn brush_assets_survive_save_load() {
         return;
     };
     // Paint with an image brush shape (the asset lives only in this engine).
-    let id = original.import_brush(BRISTLES).expect("import");
+    let id = original
+        .import_brush(&stark_testdata::assets::bristles())
+        .expect("import");
     let mut brush = brush(RED, 60.0);
     brush.shape = BrushShape::Stamp(id);
     original.process(ViewCommand::SetBrush(brush));

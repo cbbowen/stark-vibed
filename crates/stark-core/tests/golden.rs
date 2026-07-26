@@ -14,7 +14,6 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 /// The example brush shape, embedded so the test is self-contained.
-const BRISTLES: &[u8] = include_bytes!("../../stark-ui/assets/shape/WornBristles.png");
 
 #[test]
 fn golden_single_stroke() {
@@ -118,7 +117,9 @@ fn golden_bristle_stroke() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let id = engine.import_brush(BRISTLES).expect("import brush shape");
+    let id = engine
+        .import_brush(&stark_testdata::assets::bristles())
+        .expect("import brush shape");
 
     let mut brush = brush(RED, 70.0);
     brush.shape = BrushShape::Stamp(id);
@@ -144,7 +145,9 @@ fn golden_pen_orientation_stroke() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let id = engine.import_brush(BRISTLES).expect("import brush shape");
+    let id = engine
+        .import_brush(&stark_testdata::assets::bristles())
+        .expect("import brush shape");
 
     // The anisotropic bristle mask in `Pen` orientation: the footprint is pinned to the
     // pen's tilt azimuth (here a constant 45° in canvas space) instead of tracking the
@@ -190,11 +193,7 @@ fn golden_canvas_surface() {
     // shows the woven relief under raking light. The other goldens stay on the flat
     // default so they test orthogonally. The surface bytes are read from disk and
     // registered (the engine embeds none — the frontend provides them at runtime).
-    let linen_png = std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../stark-ui/assets/surface/Linen.png"
-    ))
-    .expect("read surface PNG");
+    let linen_png = stark_testdata::assets::linen();
     engine.register_surface(SurfaceId::Linen, linen_png);
     engine.process(DocCommand::SetSurface(SurfaceId::Linen));
     let mut brush = brush(RED, 60.0);

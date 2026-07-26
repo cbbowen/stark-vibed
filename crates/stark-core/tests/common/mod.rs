@@ -80,11 +80,7 @@ pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
 /// goldens exercise the same image-based lighting the app uses rather than the
 /// procedural fallback (DESIGN.md §6.3).
 fn with_studio_env(mut engine: Engine) -> Engine {
-    let hdr = std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../stark-ui/assets/environment/ferndale_studio_11_1k.hdr"
-    ))
-    .expect("read studio HDR");
+    let hdr = stark_testdata::assets::studio_hdr();
     engine.register_environment(stark_core::EnvironmentId::Ferndale, hdr);
     engine.process(ViewCommand::SetEnvironment(
         stark_core::EnvironmentId::Ferndale,
