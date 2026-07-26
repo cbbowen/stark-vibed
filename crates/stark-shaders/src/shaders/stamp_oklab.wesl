@@ -28,7 +28,7 @@
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
 //             (height, wet)) — (height, wet, footprint coverage, unused)
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, surface_tooth, brush_color};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, brush_color};
 
 @vertex
 fn vs_main(
@@ -46,7 +46,7 @@ fn fs_main(in: VsOut) -> FsOut {
     // The segment's swept optical depth — the footprint's geometric coverage
     // integrated along the travel. Everything below is built from this.
     let tau = swept_depth(in);
-    let cov = surface_tooth(in.amount, 1.0 - exp(-tau), in.clip.xy);
+    let cov = 1.0 - exp(-tau);
     // Per-unit opacity enters as an *absorption rate* rather than a factor, so the
     // colour target's over-blend multiplies out to exactly `exp(−op · Στ)` — the
     // stroke's coverage is the same whether the path was cut into one segment or a

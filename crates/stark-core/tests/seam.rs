@@ -50,8 +50,7 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
 
     // Diagonal stroke through the 4-tile corner at `shift` (origin for shift=0).
     // Tooth off for the same reason (it gates deposition by canvas-space weave).
-    let mut b = brush(RED, 28.0);
-    b.tooth = 0.0;
+    let b = brush(RED, 28.0);
     engine.process(ViewCommand::SetBrush(b));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
@@ -118,8 +117,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     }));
 
     // A wide base field along the diagonal, fully containing the smudge's path.
-    let mut field = brush(RED, 60.0);
-    field.tooth = 0.0;
+    let field = brush(RED, 60.0);
     engine.process(ViewCommand::SetBrush(field));
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
@@ -132,7 +130,6 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
 
     // The smudge under test, through the same 4-tile corner.
     let mut smudge = brush(RED, 28.0);
-    smudge.tooth = 0.0;
     smudge.dynamics = BrushDynamics {
         add: 0.0,
         lift: 0.6,

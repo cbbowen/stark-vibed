@@ -118,11 +118,11 @@ pub enum DocCommand {
 
     /// Switch the canvas surface (DESIGN.md §6.4).
     ///
-    /// Document state, not view state: the surface feeds deposition tooth, so a
-    /// mid-document switch has to be reproducible by replay and visible to peers.
-    /// The tooth gate is a pass-through stub today, which is what let this be a
-    /// bare setter for so long — but the document was already recording the
-    /// surface in `CanvasMeta`, so it was only ever half a view setting.
+    /// Document state, not view state: which canvas a piece was painted on is part
+    /// of what the document *is* — it is saved, and reopening on a different weave
+    /// would be a different painting. It will also gate deposition again if the
+    /// tooth idea returns (§6.4); logging it now means that would be a rendering
+    /// change rather than a history one.
     SetSurface(SurfaceId),
 }
 

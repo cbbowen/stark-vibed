@@ -46,12 +46,12 @@ pub struct DocState {
     /// a stroke's pixels depend on it, so replay has to be able to reconstruct it —
     /// which is why selection edits are logged actions like any other.
     pub selection: Selection,
-    /// The physical canvas surface (DESIGN.md §6.4). Document state for the same
-    /// reason as the selection: it feeds the deposition tooth gate, so a stroke's
-    /// pixels depend on which surface was in force when it was drawn, and replay
-    /// has to reconstruct that. The gate is a pass-through stub today; recording
-    /// the surface now is what makes wiring it up a rendering change rather than a
-    /// history change.
+    /// The physical canvas surface (DESIGN.md §6.4). Document state: which canvas
+    /// a piece was painted on is part of what the document *is*, it is saved, and
+    /// reopening on a different weave would be a different painting. Today it is
+    /// read only by the media pass (§6.3), so a switch changes no stored pixel —
+    /// but it is logged like any other edit, which is what would let a future
+    /// deposition gate read it without becoming a history change.
     pub surface: SurfaceId,
 }
 

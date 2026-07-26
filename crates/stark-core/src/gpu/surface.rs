@@ -1,5 +1,5 @@
 //! The physical canvas **surface** — a tileable height/bump map that affects both
-//! paint deposition (tooth: dry strokes catch on the weave) and media shading
+//! media shading
 //! (the relief catches light), DESIGN.md §6.4.
 //!
 //! It is a single global, color-space-independent texture sampled in *canvas*
@@ -17,7 +17,7 @@ use crate::gpu::context::{GpuContext, MAX_TEXTURE_DIM_2D};
 pub const SURFACE_TILE_PX: f32 = 1024.0;
 
 /// Which physical surface a document is painted on. Saved in `CanvasMeta` (§8)
-/// because the surface affects *deposition* (tooth), so replay needs it to be
+/// because which canvas a piece was painted on is part of the document, so it is
 /// reproducible. The set is open — future custom/uploaded surfaces slot in here.
 ///
 /// Non-`Flat` surfaces need image bytes, which the *frontend* fetches at runtime
@@ -25,7 +25,7 @@ pub const SURFACE_TILE_PX: f32 = 1024.0;
 /// engine embeds nothing (DESIGN.md §6.4, §Inputs).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum SurfaceId {
-    /// Perfectly smooth: full height everywhere, so tooth is a no-op and the
+    /// Perfectly smooth: full height everywhere, so the
     /// constant height has zero gradient (no relief). Paint behaves exactly as if
     /// there were no surface — the orthogonal default.
     #[default]
@@ -41,7 +41,7 @@ pub struct Surface {
     pub sampler: wgpu::Sampler,
     /// 1.0 if this is a real (image) surface with weave to interact with, 0.0 for
     /// the procedural `Flat`. Lets effects keyed on surface relief (e.g. the knife's
-    /// tooth-gated scrape, §6.2) be a no-op on `Flat`, whose height is a constant 0.
+    /// scrape, §6.2) be a no-op on `Flat`, whose height is a constant 0.
     pub relief: f32,
 }
 
@@ -164,7 +164,7 @@ fn downsample_to_limit(src: Vec<u8>, w: u32, h: u32, limit: u32) -> (Vec<u8>, u3
 impl crate::gpu::registry::Resource for SurfaceId {
     type Gpu = Surface;
 
-    /// `Flat` is a 1x1 full-height texel: tooth becomes a no-op and a constant
+    /// `Flat` is a 1x1 full-height texel: a constant
     /// height has zero gradient, so it is exactly equivalent to having no surface
     /// (DESIGN.md §6.4).
     fn is_builtin(self) -> bool {

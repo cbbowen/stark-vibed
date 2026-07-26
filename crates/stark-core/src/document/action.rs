@@ -226,18 +226,6 @@ pub struct BrushParams {
     /// documents saved before this field load as the everyday `add`-only brush.
     #[serde(default)]
     pub dynamics: BrushDynamics,
-    /// Canvas **tooth** in `[0, 1]`: how strongly the surface bump (DESIGN.md §6.4)
-    /// gates deposition — dry/light strokes catch on the weave's peaks and skip
-    /// its valleys, fading as coverage builds.
-    ///
-    /// **Currently inert**: `surface_tooth` in `stamp_common.wesl` is a
-    /// pass-through stub, so nothing reads this yet (DESIGN.md §6.4). Historized
-    /// regardless, because it will change *stored* pixels once the gate lands and
-    /// replay has to reproduce it — recording it now keeps that a rendering change
-    /// rather than a history one. `#[serde(default)]` (0 = no tooth) preserves the
-    /// look of documents saved before it existed.
-    #[serde(default)]
-    pub tooth: f32,
     /// Colour dynamics (colour jitter) — how the applied colour varies across the
     /// brush and along the stroke (DESIGN.md §6.2). Historized (it changes stored
     /// pixels); the default (amplitude 0) is the historical constant colour.
@@ -255,7 +243,6 @@ impl Default for BrushParams {
             shape: BrushShape::default(),
             orientation: OrientationSource::default(),
             dynamics: BrushDynamics::default(),
-            tooth: 0.5,
             color_dynamics: ColorDynamics::default(),
         }
     }
@@ -309,8 +296,8 @@ pub enum ActionKind {
     /// Switch the canvas surface (DESIGN.md §6.4).
     ///
     /// Logged rather than kept as a view setting because the surface feeds the
-    /// deposition tooth gate: what a stroke lays down depends on the surface in
-    /// force when it was drawn, so replay must reconstruct it. Appended last so
+    /// document: which canvas a piece was painted on is part of what it is, and
+    /// replay has to reconstruct it. Appended last so
     /// postcard decoding of older files is unaffected; documents saved before this
     /// existed simply never contain one and keep the surface from `CanvasMeta`.
     SetSurface(SurfaceId),

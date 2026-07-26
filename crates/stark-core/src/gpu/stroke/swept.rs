@@ -11,7 +11,6 @@ use wgpu::util::DeviceExt;
 
 use crate::document::StrokeRecord;
 use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
-use crate::gpu::surface::SURFACE_TILE_PX;
 use crate::gpu::tile::{AllocSource, TilePairHandle};
 
 use super::segments::{SegmentInstance, affected_tiles, generate_segments_in, noise_uniform};
@@ -29,7 +28,6 @@ use super::{
 struct TileXform {
     params: [f32; 4],     // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
     color: [f32; 4],      // brush channels (.xyz), _
-    surf: [f32; 4],       // inv surface-tile (canvas px → bump uv), tooth, _, _
     noise_freq: [f32; 4], // colour-dynamics frequency (x, y, arc), 1/NOISE_TILE_PX
     noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
     noise_off: [f32; 4],  // per-stroke noise lookup translation, _
@@ -192,7 +190,6 @@ impl StrokeRenderer {
                     0.0,
                 ],
                 color: channels,
-                surf: [1.0 / SURFACE_TILE_PX, rec.brush.tooth, 0.0, 0.0],
                 noise_freq: nfreq,
                 noise_amp: namp,
                 noise_off: noff,
@@ -240,8 +237,7 @@ impl StrokeRenderer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
-                pass.set_bind_group(2, &self.surface_bg, &[]);
-                pass.set_bind_group(3, &noise_bg, &[]);
+                pass.set_bind_group(2, &noise_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
                 pass.draw(0..4, 0..instances.len() as u32);
             }

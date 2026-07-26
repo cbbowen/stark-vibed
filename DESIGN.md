@@ -78,7 +78,7 @@ stark/
 │   │   │   │   │   └── dynamics.rs # the sequential swept-exchange loop
 │   │   │   │   ├── composite.rs # compositing + the media/lighting pass (§6.3)
 │   │   │   │   ├── environment.rs # HDR environment maps for IBL (§6.3)
-│   │   │   │   ├── surface.rs   # canvas surface: tooth + relief (§6.4)
+│   │   │   │   ├── surface.rs   # canvas surface: the weave's relief (§6.4)
 │   │   │   │   ├── selection.rs # selection-mask rasterization (§6.8)
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
 │   │   │   ├── geom.rs         # tile coords, view transform, AABB
@@ -214,7 +214,7 @@ pub enum DocCommand {              // each becomes an Action
     MoveLayer { id: LayerId, above: Option<LayerId> },
     Select(SelectionOp),
     InvertSelection,
-    SetSurface(SurfaceId),         // feeds deposition tooth → must replay (§6.4)
+    SetSurface(SurfaceId),         // which canvas the piece is painted on (§6.4)
 }
 
 pub enum ViewCommand {             // never logged, never sent
@@ -938,40 +938,40 @@ invariance the apron restores is locked by a regression test (`tests/seam.rs`):
 a stroke across the 4-tile corner must render identically to the same stroke
 shifted half a tile into one tile's interior.
 
-**The canvas surface (tooth & relief).** Paint sits on a physical surface — a
+**The canvas surface.** Paint sits on a physical surface — a
 tileable height/bump map (`gpu/surface.rs`), an `R8Unorm` texture sampled in
 *canvas* space (so the weave is fixed to the canvas and pans/zooms with it),
 shared by the stamp and media passes. It drives two effects:
 
-- **Deposition tooth (stamp pass) — NOT IMPLEMENTED.** The intent: gate deposited
-  coverage by the surface height at each fragment's canvas position,
-  `cov ·= 1 − tooth·(1−h)·(1−cov)`, so light/dry strokes catch on the weave's peaks
-  and skip its valleys, the effect fading as coverage builds (valleys fill).
-  `surface_tooth` in `stamp_common.wesl` is a **pass-through stub** that returns
-  `coverage` unchanged, and no shader reads the canvas surface at stamp or
-  integrate time — the `group(2)` surface bindings are placeholders. So the weave
-  currently shows *only* through the media pass (§6.3), never through what a stroke
-  lays down.
+- **Deposition tooth — removed, may return.** The idea was to gate deposited
+  coverage by the surface height at each fragment, `cov ·= 1 − tooth·(1−h)·(1−cov)`,
+  so light strokes catch on the weave's peaks and skip its valleys. It was never
+  implemented: `surface_tooth` was a pass-through stub, no stamp shader ever read
+  the surface, and the `BrushParams::tooth` field steering it reached a slider that
+  moved and changed nothing. All of it — the field, the stub, the stamp-time
+  surface bindings — has been deleted rather than left as scaffolding for an idea
+  with no implementation behind it. Every golden was unchanged by the removal,
+  which is the proof it was inert.
 
-  `tooth` is nonetheless a **`BrushParams` field**, historized, because when the
-  gate lands it will change *stored* pixels and replay has to reproduce it. Same
-  reasoning as the surface itself being document state (§4): recording it before
-  it bites makes wiring the gate up a rendering change rather than a history one.
-  Until then the Brush editor's "Tooth" slider moves and does nothing.
+  If it returns it needs a design first (the formula above is a guess, not a
+  model), and `BrushParams` would carry a strength again. The surface is already
+  document state (§4), so that would be a rendering change, not a history one.
+
 - **Surface relief (media pass).** The relief feeds the normal everywhere
   (`height_at` = impasto + `surface_strength·(h−½)`), so the weave catches light
   across the whole viewport — including the bare substrate, whose shading is
   *normalized* so a flat surface leaves it unchanged. `surface_strength` is a
   view setting (`MediaParams`), like the lighting — it doesn't touch stored pixels.
 
-The surface is **document state** (`SurfaceId { Flat, Linen }`, default `Flat`),
-because deposition depends on it: replay must reproduce it. `CanvasMeta` records
-the surface the log *starts* from; a mid-document switch is a logged
-`ActionKind::SetSurface`, so it undoes, replays and replicates like any other edit
-(§4). The tooth gate is a pass-through stub today, which is what once made it look
-like a view setting — recording it now means wiring the gate up is a rendering
-change, not a history change. `Flat` is a 1×1 *full-height* texel — `h=1` makes tooth a no-op and
-a constant height has zero gradient (no relief), so the flat default is *exactly*
+The surface is **document state** (`SurfaceId { Flat, Linen }`, default `Flat`):
+which canvas a piece was painted on is part of what the document *is*, it is
+saved, and reopening on a different weave would be a different painting.
+`CanvasMeta` records the surface the log *starts* from; a mid-document switch is a
+logged `ActionKind::SetSurface`, so it undoes, replays and replicates like any
+other edit (§4). Today only the media pass reads it, so a switch changes no stored
+pixel — logging it anyway is what would let a future deposition gate read it
+without that becoming a history change. `Flat` is a 1×1 *full-height* texel — a
+constant height has zero gradient (no relief), so the flat default is *exactly*
 equivalent to having no surface. That orthogonality is deliberate: most goldens
 use `Flat` to test other features in isolation, and a dedicated golden
 (`linen_surface`) exercises the weave. The set is open for future
@@ -1530,7 +1530,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 | 8c | Tile aprons (§6.4) | done — killed the lighting seams the media pass amplified |
 | 9 | Pluggable colour spaces (§6.7) | done — Oklab + Mixbox |
 | 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
-| — | Surface bump maps (§6.4) | partial — relief is wired; the **deposition tooth gate is a stub** (see §6.4) |
+| — | Surface bump maps (§6.4) | done — relief only; the deposition tooth idea was removed unimplemented (§6.4) |
 | 11 | Brush file upload | **not started** |
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
@@ -1613,8 +1613,9 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 13. **Mutable medium — subtractive & wet diffusion (§6.2):** the read-modify-write
    *write-back* path (footprint→scratch → combine → CoW tile), validated by a
    medium-`Dry` equivalence test (Phase 0); then `BrushDynamics::Knife` —
-   subtractive palette-knife scraping with conservative reservoir carry, edge
-   ridges, and tooth-revealed canvas (Phase 1); then `BrushDynamics::Wet` —
+   subtractive palette-knife scraping with conservative reservoir carry and edge
+   ridges (Phase 1) — "tooth-revealed canvas" would first need the deposition gate,
+   which was removed unimplemented (§6.4); then `BrushDynamics::Wet` —
    region-based wet-on-wet diffusion + an optional `Settle` action (Phase 2).
    Single-buffer, always-wet; glazing is left to document layers. Extend the seam
    test to the write-back path; golden per phase.

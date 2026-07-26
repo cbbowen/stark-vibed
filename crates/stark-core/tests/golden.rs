@@ -189,7 +189,7 @@ fn golden_canvas_surface() {
         return;
     };
     // Paint on the linen canvas surface (DESIGN.md §6.4): a light, partial-coverage
-    // stroke catches on the weave's peaks (dry-brush tooth), while the bare paper
+    // stroke sits on the weave, and the bare paper
     // shows the woven relief under raking light. The other goldens stay on the flat
     // default so they test orthogonally. The surface bytes are read from disk and
     // registered (the engine embeds none — the frontend provides them at runtime).

@@ -15,8 +15,6 @@ struct TileXform {
     // across the stroke — per-segment variation (pressure, drain) rides the instance
     // attributes, and colour dynamics (below) jitter it per fragment.
     color: vec4<f32>,
-    // surf.x = inv surface-tile (canvas px → bump uv); surf.y = tooth; .zw unused.
-    surf: vec4<f32>,
     // Colour dynamics (DESIGN.md §6.2): noise frequency per lookup axis
     // (canvas x, canvas y, arc) in .xyz with 1/NOISE_TILE_PX pre-folded into .w.
     noise_freq: vec4<f32>,
@@ -32,16 +30,11 @@ struct TileXform {
 // rotation-invariant and have a single slice; image stamps carry up to
 // MAX_ORIENTATION_LAYERS. A 2D array (not a 3D texture) so the mask keeps its full size.
 @group(1) @binding(0) var prefix_tex: texture_2d_array<f32>;
-// The canvas surface (tileable bump/height), sampled in canvas space so the
-// weave gates deposition consistently regardless of which tile a fragment lands
-// in (DESIGN.md §6.4).
-@group(2) @binding(0) var surface_tex: texture_2d<f32>;
-@group(2) @binding(1) var surface_samp: sampler;
 // The colour-dynamics noise field (DESIGN.md §6.2): a tileable 3-D volume
 // (three signed channels) sampled at (canvas.x, canvas.y, arc) with a repeat
 // sampler. A 1×1×1 zero volume is bound when the brush's jitter is off.
-@group(3) @binding(0) var noise_tex: texture_3d<f32>;
-@group(3) @binding(1) var noise_samp: sampler;
+@group(2) @binding(0) var noise_tex: texture_3d<f32>;
+@group(2) @binding(1) var noise_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -185,18 +178,4 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
 fn swept_depth(in: VsOut) -> f32 {
     let depth = prefix_at(in.local.x, in.local.y, in.orient) - prefix_at(in.local.x - in.lr, in.local.y, in.orient);
     return max(depth, 0.0);
-}
-
-// Gate `coverage` by the canvas tooth at the fragment's canvas position (DESIGN.md
-// §6.4): paint adheres to the weave's peaks and skips its valleys when light, and
-// the effect fades as coverage builds (valleys fill). `frag_xy` is the fragment's
-// framebuffer pixel; the tile texture is 1:1 with canvas, so canvas = tex_origin +
-// frag_xy.
-fn surface_tooth(height: f32, coverage: f32, frag_xy: vec2<f32>) -> f32 {
-    // TODO: Find a more natural and physically-accurate way to implement this.
-    // While this is a pass-through stub, NO shader reads the canvas surface at
-    // stamp/integrate time — the group(2) `surface_tex`/`surface_samp` bindings above
-    // are placeholders for this TODO, and the weave currently shows only through the
-    // media pass's `thickness = height − surface` and relief normals (DESIGN §6.3/§6.4).
-    return coverage;
 }

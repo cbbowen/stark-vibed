@@ -131,7 +131,7 @@ pub struct Engine {
     /// survives a rebuild.
     apply: ApplyCtx,
     compositor: Compositor,
-    /// The physical canvas surface (tooth + relief) and the bytes registered for
+    /// The physical canvas surface (relief) and the bytes registered for
     /// it. Colour-space-independent, so it survives colour-space rebuilds. Which
     /// surface is in use is a *cache* of `document().surface`, kept in step by
     /// [`Engine::apply_document_surface`] — the document is the source of truth
@@ -827,11 +827,9 @@ impl Engine {
         }
     }
 
-    /// Rebind the current surface in the subsystems that sample it (the sweep's
-    /// tooth gate and the media pass) — no pipeline or pool rebuild, no document
-    /// reset.
+    /// Rebind the current surface in the media pass — the only thing that samples
+    /// it. No pipeline or pool rebuild, no document reset.
     fn apply_surface(&mut self) {
-        self.apply.stroke.set_surface(self.surface.current());
         self.compositor.set_surface(self.surface.current().clone());
     }
 
@@ -1128,7 +1126,7 @@ fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor) {
         gpu.clone(),
         [cs.color_format(), cs.aux_format(), MASK_FORMAT],
     );
-    let stroke = StrokeRenderer::new(gpu, cs.clone(), surface.clone(), selection.clone());
+    let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone());
     let compositor = Compositor::new(
         gpu,
         target_format,

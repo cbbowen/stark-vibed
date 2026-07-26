@@ -31,7 +31,6 @@ use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind, StrokeR
 use crate::geom::TileCoord;
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::surface::Surface;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
 
 mod dynamics;
@@ -97,17 +96,12 @@ pub struct StrokeRenderer {
     /// Cached round-tip prefix-τ, keyed by `hardness.to_bits()`.
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
     /// Colour dynamics (DESIGN.md §6.2): the sweep's noise bind group layout
-    /// (group 3), the shared wrap/linear sampler, the 1×1×1 zero volume bound
+    /// (group 2), the shared wrap/linear sampler, the 1×1×1 zero volume bound
     /// when a brush's jitter is off, and the lazily-baked per-kind fields.
     noise_bgl: wgpu::BindGroupLayout,
     noise_sampler: wgpu::Sampler,
     dummy_noise: wgpu::TextureView,
     noise_cache: Arc<Mutex<Vec<(NoiseKind, wgpu::TextureView)>>>,
-    /// Canvas surface (group 2 of the sweep pipeline): bump + sampler for the tooth
-    /// gate — currently a pass-through stub (`surface_tooth` TODO in stamp_common.wesl);
-    /// no stamp/integrate shader reads the surface today, the weave shows through the
-    /// media pass instead.
-    surface_bg: wgpu::BindGroup,
 
     // Stroke integrate (DESIGN.md §6.2/§6.1): a fullscreen pass reads the base tile +
     // the stroke's footprint scratch and writes `new = f(base, scratch)` into a fresh
@@ -243,7 +237,6 @@ impl StrokeRenderer {
     pub fn new(
         ctx: &GpuContext,
         color_space: Arc<dyn ColorSpace>,
-        surface: Surface,
         selection: SelectionRenderer,
     ) -> Self {
         let device = &ctx.device;
@@ -283,44 +276,7 @@ impl StrokeRenderer {
             }],
         });
 
-        // Group 2: the canvas surface (bump + sampler) for deposition tooth.
-        let surface_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark sweep surface bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let surface_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark sweep surface bg"),
-            layout: &surface_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&surface.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&surface.sampler),
-                },
-            ],
-        });
-
-        // Group 3: the colour-dynamics noise field (a tileable 3-D volume) + its
+        // Group 2: the colour-dynamics noise field (a tileable 3-D volume) + its
         // repeat sampler (DESIGN.md §6.2).
         let noise_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark sweep noise bgl"),
@@ -357,12 +313,7 @@ impl StrokeRenderer {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stark sweep layout"),
-            bind_group_layouts: &[
-                Some(&uniform_bgl),
-                Some(&prefix_bgl),
-                Some(&surface_bgl),
-                Some(&noise_bgl),
-            ],
+            bind_group_layouts: &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&noise_bgl)],
             immediate_size: 0,
         });
 
@@ -426,36 +377,11 @@ impl StrokeRenderer {
             noise_sampler,
             dummy_noise,
             noise_cache: Arc::new(Mutex::new(Vec::new())),
-            surface_bg,
             integrate_pipeline,
             integrate_bgl,
             dynamics,
             selection,
         }
-    }
-
-    /// Swap the canvas surface bound to the sweep's tooth gate (group 2), without
-    /// touching pipelines or pools. The gate is currently a pass-through stub
-    /// (`surface_tooth` TODO), but keeping the binding current means tooth reads the
-    /// right weave the moment it returns (DESIGN.md §6.4).
-    pub fn set_surface(&mut self, surface: &Surface) {
-        self.surface_bg = self
-            .ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark sweep surface bg"),
-                layout: &self.pipeline.get_bind_group_layout(2),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&surface.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&surface.sampler),
-                    },
-                ],
-            });
     }
 
     /// Render `rec` over `base`, gated by `selection`, returning a copy-on-write tile

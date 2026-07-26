@@ -79,12 +79,11 @@ pub fn set_brush_preset(state: AppState) {
 
 /// The palette knife (DESIGN.md §6.2): no own paint (`add = 0`), a finite pre-`charge`
 /// it carries, and it scrapes what it rides over (`lift`) back down as it goes
-/// (`deposit`). A hard edge + tooth so it reads as a blade riding the weave.
+/// (`deposit`). A hard edge so it reads as a blade riding the weave.
 pub fn set_knife(state: AppState) {
     update_brush(state, |b| {
         b.shape = BrushShape::Round;
         b.hardness = 0.9;
-        b.tooth = 0.7;
         b.dynamics = BrushDynamics {
             add: 0.0,
             lift: 1.0,

@@ -108,7 +108,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     let paint_open = use_signal(|| true);
     let color_open = use_signal(|| false);
     let pickup_open = use_signal(|| false);
-    let surface_open = use_signal(|| false);
+    let _surface_open = use_signal(|| false);
     // Per-section "Show more" for the rarely-touched knobs.
     let pickup_more = use_signal(|| false);
 
@@ -277,18 +277,6 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         }
                     }
 
-                    // NOTE: inert. `surface_tooth` in stamp_common.wesl is a
-                    // pass-through stub, so this slider changes a historized value
-                    // that nothing reads (DESIGN.md §6.4). It contradicts this
-                    // module's own rule — a knob that moves but changes nothing is
-                    // worse than no knob — and is kept only so the value is
-                    // reachable when the gate lands. Remove it or finish the gate.
-                    Section {
-                        title: "Surface", desc: "How the canvas weave gates dry strokes (not yet wired).",
-                        open: surface_open,
-                        Slider { label: "Tooth", min: 0.0, max: 1.0, value: brush.tooth,
-                            oninput: move |v| edit(state, preview, move |b| b.tooth = v) }
-                    }
                 }
             }
         }
@@ -419,7 +407,7 @@ fn default_stroke(r: &Renderer) -> Vec<InputSample> {
 /// stroke: a simple, hard-edged, opaque **red vertical** line down the middle,
 /// committed once at init so the user can see how the brush being edited
 /// interacts with paint already on the canvas (smudge, drag, bleed, …). Plain
-/// `add` paint, no dynamics, no tooth, no drain — a clean, unchanging target.
+/// `add` paint, no dynamics, no drain — a clean, unchanging target.
 fn paint_reference_stroke(r: &mut Renderer) {
     let (w, h) = r.size();
     let (w, h) = (w as f32, h as f32);
@@ -442,7 +430,6 @@ fn paint_reference_stroke(r: &mut Renderer) {
         radius: 75.0,
         hardness: 0.9,
         drain: 0.0,
-        tooth: 0.0,
         ..BrushParams::default()
     };
     r.process(ViewCommand::SetBrush(brush));
