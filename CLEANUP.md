@@ -117,7 +117,7 @@ always true of the engine's own solve — only the test was ever in `f64`.
 `associated_type_defaults` is now the **sole** reason the workspace is on nightly.
 Still outstanding: `rust-version = "1.85"` in the workspace manifest is false.
 
-## Phase 3 — Module surgery (behavior-preserving)
+## Phase 3 — Module surgery (behavior-preserving) — **DONE**
 
 **3.1 `testdata` is shipped in the library.**
 [testdata/mod.rs](crates/stark-core/src/testdata/mod.rs) is 2,384 lines / 57 KB of
@@ -125,6 +125,9 @@ recorded stroke literals, declared `pub mod` in
 [lib.rs:102](crates/stark-core/src/lib.rs#L102) — public API, compiled into every
 build including the wasm the browser downloads. Consumers are `tests/stroke.rs`
 and one unit test in path.rs. Move it to a `stark-testdata` dev-only crate.
+
+**Done.** Now unreachable from a non-test build by the dependency graph rather
+than by hoping the linker strips it.
 
 **3.2 `stark-ui/src/main.rs` (1,645 lines)** holds eight unrelated concerns. The
 seams are already there: `panels/` (color + Oklab picker + BMP/base64 encoder,
@@ -134,6 +137,8 @@ brush, select, layer, lighting), `layout.rs` (`PanelLayout`, `DragState`,
 Also collapse the four loose `collab_*` signals in `AppState` into one
 `CollabState`.
 
+**Done.** 1,724 lines -> 499, split exactly as above; `CollabState` grouped.
+
 **3.3 `gpu/tile.rs` — cash the author's own TODOs.** Four of them
 ([lines 89, 96, 174, 181, 195](crates/stark-core/src/gpu/tile.rs#L89)) all say the
 same thing: retire `TilePair`/`TilePairHandle`/`acquire`/`acquire_scratch` in
@@ -141,14 +146,29 @@ favor of `acquire_tex` handles. This ripples into `DocState` and `stroke.rs`, so
 it's the biggest of the three — but it's a design the author already committed to
 in writing.
 
+**Done**, and it turned up a latent bug: `acquire` hardcoded `Rg16Float` for the
+aux channel while the pool was built from `cs.aux_format()`. Harmless today (every
+colour space returns that), a panic the moment one didn't. The pairing now reads
+the formats off the colour space in use.
+
 **3.4 `gpu/stroke.rs` (2,493 lines).** `render_dynamic` is a single ~600-line
 function, and it re-does `render_swept`'s prefix-tau bind group, noise bind group,
 and segment-instance construction. Extract those three, then split
 `render_dynamic` into setup / segment loop / writeback. A `stroke/` directory
 (`segments.rs`, `dynamics.rs`, `swept.rs`) falls out naturally.
 
+**Done** — the directory split landed as described. The shared setup was smaller
+than expected: only the prefix-tau *resolution* is common (now
+`StrokeRenderer::prefix_view`). The bind groups around it are genuinely
+different, because the two paths hang the texture off different layouts.
+
 **3.5** Five `#[allow(clippy::too_many_arguments)]` sites (engine.rs:1054,
 composite.rs:781, selection.rs:406, stroke.rs:607 and :959) → parameter structs.
+
+**Done** — `StrokeScene`, `RasterShape`, `GpuBuild`, `OffscreenDesc`. Net fewer
+lines: `StrokeScene` removed four parameters from four signatures, and
+`OffscreenDesc` came with a `rebuild_offscreen` method that collapsed three
+eight-argument call sites.
 
 ## Phase 4 — Architecture consistency (needs decisions)
 
@@ -201,26 +221,35 @@ yet wired.
 
 ---
 
+### Found while doing Phase 3
+
+- **Tooling rewrote four files from LF to CRLF**, turning small changes into
+  whole-file diffs. Caught before it reached more than two commits; those were
+  rebuilt clean and `.gitattributes` now pins `text=auto eol=lf`. The pre-existing
+  CRLF in the four root `.md` files is left alone.
+- **`tests/tile_pool.rs` had the same silent-skip hole** Phase 0 fixed in the engine
+  harness. Now closed the same way.
+
 ## Sequencing
 
-Phases 0–2 are done. Phase 3 items are independent of each other; 3.3 is the
-riskiest and should go last within that phase. Phase 4 needs decisions before
-code. Phase 5 can happen any time.
+Phases 0–3 are done. Phase 4 needs decisions before code. Phase 5 can happen any
+time.
 
 Open questions: **Phase 4.1** — is the direct-method tier intentional, or should it
 collapse into `InputCommand`? — plus the two raised by Phases 0–1: whether to
 restore the vendored crates' test coverage, and whether `TernaryPad` lives or dies.
 
-## State after Phases 0–2
+## State after Phases 0–3
 
 | Check | Before | After |
 |---|---|---|
 | `cargo fmt --all --check` | ~309 hunks | clean |
 | `cargo clippy --workspace --all-targets -D warnings` | 31 warnings in `crates/` | clean |
-| `cargo test --workspace` | 200 pass | 148 pass, 0 fail |
+| `cargo test --workspace` | 200 pass | 149 pass, 0 fail |
 | `cargo check -p stark-ui --target wasm32-unknown-unknown` | (unchecked) | clean |
-| Rust in `crates/` | 26,951 lines | 24,126 lines (net of +768 from reformatting) |
-| Workspace members | 5 + 2 vendored | 4 |
+| Largest source file | 2,933 lines | 1,376 (`stroke/dynamics.rs`) |
+| `#[allow]` in `crates/` | 10 | 5, each with a stated reason |
+| Workspace members | 5 + 2 vendored | 5 |
 | Nightly features needed | 2 | 1 (`history` only) |
 | CI | pages deploy only | + fmt / clippy / test / wasm |
 
