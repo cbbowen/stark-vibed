@@ -229,7 +229,13 @@ rather than rebuild it. Two TODO.md entries cleared: this one, and "avoid callin
 document state (both offending call sites were rebuilding the whole GPU stack
 because a surface differed).
 
-## Phase 5 — Documentation rot
+## Phase 5 — Documentation rot — **DONE**
+
+**Done.** Every `§n.m` cited from code now resolves, `cargo doc --workspace` is
+clean (15 warnings fixed), and three claims that were false are stated as absent:
+no damage tracking, no view-AABB cull, and the deposition tooth gate is a stub —
+which also meant correcting a Brush-editor slider and a user-facing string that
+promised it worked.
 
 **5.1 DESIGN.md §6.3 does not exist.** It's cited **5x inside DESIGN.md itself**
 and repeatedly across engine.rs, main.rs and the test harness as the
@@ -268,9 +274,16 @@ yet wired.
 Phases 0–3 are done. Phase 4 needs decisions before code. Phase 5 can happen any
 time.
 
-Open questions: **Phase 4.1** — is the direct-method tier intentional, or should it
-collapse into `InputCommand`? — plus the two raised by Phases 0–1: whether to
-restore the vendored crates' test coverage, and whether `TernaryPad` lives or dies.
+All five phases are done. Three open questions remain, all of them "should this
+code exist" calls rather than cleanup work:
+
+1. **Vendored test coverage.** `cargo test --workspace` no longer runs
+   `iroh-webrtc-transport`'s suite, which is what guards the iroh 1.0 port. Run it
+   with `cargo test --manifest-path vendor/iroh-webrtc-transport/Cargo.toml`, or
+   add that to CI.
+2. **`TernaryPad`** — a complete, CSS-styled widget nothing renders.
+3. **The "Tooth" slider** — moves, changes nothing, because the gate behind it is
+   a stub. Finish the gate or drop the control.
 
 ## State after Phases 0–3
 
