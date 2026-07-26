@@ -172,6 +172,8 @@ eight-argument call sites.
 
 ## Phase 4 — Architecture consistency (needs decisions)
 
+**4.1 is DONE** — see the outcome note below it.
+
 **4.1 Two parallel input APIs.** DESIGN §4 calls `InputCommand` "the most
 important boundary," but ~18 engine mutations bypass it entirely as direct
 `pub fn`s — `set_color_space`, `set_surface`, `set_environment`,
@@ -180,6 +182,18 @@ hooks, `resize`, the replay family. `set_surface` is the sharp case: it mutates
 `surface_id`, which is **saved in `CanvasMeta`**, from outside the logged path.
 Either fold these into `InputCommand` or document a deliberate second
 "configuration" tier in DESIGN §4.
+
+**Done, and the framing was wrong.** The bypass was a symptom of two things:
+`ObservableState` did not project the view settings kept as bare Engine fields
+(so lighting.rs shadowed `MediaParams` from `Default`), and `InputCommand` mixed
+document and view state so the distinction lived in comments. Now:
+`DocCommand` / `ViewCommand` / `GestureCommand` put the state class in the type;
+`observe()` projects media / surface / environment / colour space; `resize`,
+`set_media_params` and `set_environment` became `ViewCommand`s. The surface moved
+to document state (`ActionKind::SetSurface`) and the colour space became
+`Engine::new_document(..)`. What is left outside the command path is a *named*
+request tier — the operations that must answer — with the rule written down in
+DESIGN §4. §7 now admits the actor is a target, not the present.
 
 **4.2 Reverse dependency.**
 [common/mod.rs:56](crates/stark-core/tests/common/mod.rs#L56) reads
