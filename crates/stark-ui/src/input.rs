@@ -1,4 +1,5 @@
-//! Pointer and keyboard input: turning DOM events into [`InputCommand`]s
+//! Pointer and keyboard input: turning DOM events into
+//! [`InputCommand`](stark_core::InputCommand)s
 //! (DESIGN.md §4).
 
 use dioxus::html::geometry::ElementPoint;

@@ -62,7 +62,7 @@ pub struct MediaParams {
     pub height_strength: f32,
     /// Overall exposure applied to the lit result before the sRGB encode.
     pub exposure: f32,
-    /// Wet glossiness in [0,1]: how smooth (low-roughness) fully-wet paint becomes,
+    /// Wet glossiness in `[0,1]`: how smooth (low-roughness) fully-wet paint becomes,
     /// driving the Cook–Torrance specular. 0 = stays matte even when wet; 1 = near
     /// mirror-smooth. Dry paint and bare canvas are always rough → matte.
     pub specular: f32,

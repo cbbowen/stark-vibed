@@ -60,7 +60,7 @@ const FREE_CONTROL_POINTS: usize = 3;
 /// single number decides both how detailed the curve is and how promptly the stroke
 /// settles behind the pointer.
 /// Measured on the six recorded strokes, worst *live* error and control-point
-/// count, once the parameterization was corrected (see [`arc_profile`]):
+/// count, once the parameterization was corrected (see `arc_profile`):
 ///
 /// | price | C        | hairpin  | loop     | spiral   | big-C    | fast     |
 /// |-------|----------|----------|----------|----------|----------|----------|
@@ -220,7 +220,7 @@ const MAX_SUBDIVISION_DEPTH: u32 = 10;
 /// Streams [`InputSample`]s into [`ControlPoint`]s, append-only.
 ///
 /// The fit is a **least-squares clamped cubic B-spline** solved over a *fixed-size
-/// window* at the live end: exactly [`FREE_CONTROL_POINTS`] of them are solved for,
+/// window* at the live end: exactly `FREE_CONTROL_POINTS` of them are solved for,
 /// everything behind is frozen, and the polygon grows only when the data proves it
 /// needs to. There is no assignment search — a sample's place on the curve is
 /// declared from how far along the stroke it sits — so the solve is one small linear
@@ -259,7 +259,7 @@ pub struct PathFitter {
     attr: ChannelCtrl,
     /// Arc length through the accepted samples (canvas px).
     arc: f32,
-    /// Arc profile of the frozen spans, reused across updates (see [`arc_profile`]).
+    /// Arc profile of the frozen spans, reused across updates (see `arc_profile`).
     settled_profile: Vec<f32>,
     /// Arc at which the polygon last gained a control point.
     grown_at: f32,
@@ -386,7 +386,7 @@ impl PathFitter {
 
     /// The path fitted so far.
     ///
-    /// The trailing [`FREE_CONTROL_POINTS`] may still move; everything before them
+    /// The trailing `FREE_CONTROL_POINTS` may still move; everything before them
     /// is final. After [`finish`](Self::finish) the whole path is.
     pub fn path(&self) -> Vec<ControlPoint> {
         if self.geom.nrows() == 0 {
@@ -616,7 +616,7 @@ fn set_row<const E: usize>(rows: &mut OMatrix<f32, Dyn, Const<E>>, j: usize, v: 
     }
 }
 
-/// Samples per span used to measure a curve's own arc length (see [`arc_profile`]).
+/// Samples per span used to measure a curve's own arc length (see `arc_profile`).
 const ARC_SAMPLES_PER_SPAN: usize = 4;
 
 /// Cumulative arc length along `curve`, sampled evenly in *parameter*.
@@ -1074,7 +1074,7 @@ mod tests {
         }
     }
 
-    /// While a stroke is live, exactly [`FREE_CONTROL_POINTS`] of the polygon are
+    /// While a stroke is live, exactly `FREE_CONTROL_POINTS` of the polygon are
     /// still solvable — never zero, and never the whole thing.
     ///
     /// Both halves matter. Freezing that outruns the pointer leaves nothing able to

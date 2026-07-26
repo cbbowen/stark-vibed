@@ -46,7 +46,8 @@ pub struct CollabState {
     /// The last share/join failure, surfaced in the dialog.
     pub error: Signal<Option<String>>,
     /// The incoming-event pump for `session`. Its lifetime is tied to the
-    /// session's: [`collab::install`] replaces it, [`collab::leave`] cancels it.
+    /// session's: `collab::install` replaces it, [`crate::collab::leave`]
+    /// cancels it.
     pub pump: Signal<Option<Task>>,
 }
 

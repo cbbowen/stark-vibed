@@ -226,11 +226,16 @@ pub struct BrushParams {
     /// documents saved before this field load as the everyday `add`-only brush.
     #[serde(default)]
     pub dynamics: BrushDynamics,
-    /// Canvas **tooth** in [0, 1]: how strongly the surface bump (DESIGN.md §6.4)
+    /// Canvas **tooth** in `[0, 1]`: how strongly the surface bump (DESIGN.md §6.4)
     /// gates deposition — dry/light strokes catch on the weave's peaks and skip
-    /// its valleys, fading as coverage builds. Historized (it changes stored
-    /// pixels) so replay stays deterministic; `#[serde(default)]` (0 = no tooth)
-    /// preserves the look of documents saved before it existed.
+    /// its valleys, fading as coverage builds.
+    ///
+    /// **Currently inert**: `surface_tooth` in `stamp_common.wesl` is a
+    /// pass-through stub, so nothing reads this yet (DESIGN.md §6.4). Historized
+    /// regardless, because it will change *stored* pixels once the gate lands and
+    /// replay has to reproduce it — recording it now keeps that a rendering change
+    /// rather than a history one. `#[serde(default)]` (0 = no tooth) preserves the
+    /// look of documents saved before it existed.
     #[serde(default)]
     pub tooth: f32,
     /// Colour dynamics (colour jitter) — how the applied colour varies across the
@@ -294,7 +299,7 @@ pub enum ActionKind {
     /// Redo is an `Undo` of an `Undo`. Emitted only in shared sessions; solo
     /// undo stays pure timeline navigation and never logs one.
     ///
-    /// Deliberately **not interpreted by [`Action::apply`]** — undo needs the
+    /// Deliberately **not interpreted by [`Action`]'s `apply`** — undo needs the
     /// whole log, not just the prior state, so the timeline layer resolves
     /// which actions are *effective* (see [`super::timeline::effective_actions`])
     /// and only ever materializes those. Appended last so postcard decoding of

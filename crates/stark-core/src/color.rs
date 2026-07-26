@@ -9,7 +9,7 @@
 //!
 //! Oklab transform after Björn Ottosson.
 
-/// sRGB transfer function: gamma-encoded component in [0,1] → linear.
+/// sRGB transfer function: gamma-encoded component in `[0,1]` → linear.
 pub fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
         c / 12.92
@@ -63,7 +63,7 @@ pub fn oklab_to_linear_srgb(lab: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// Straight sRGB RGBA in [0,1] → Oklab `[L,a,b]` + unchanged alpha.
+/// Straight sRGB RGBA in `[0,1]` → Oklab `[L,a,b]` + unchanged alpha.
 pub fn srgb_to_oklab(rgba: [f32; 4]) -> [f32; 4] {
     let lin = [
         srgb_to_linear(rgba[0]),
@@ -74,7 +74,7 @@ pub fn srgb_to_oklab(rgba: [f32; 4]) -> [f32; 4] {
     [lab[0], lab[1], lab[2], rgba[3]]
 }
 
-/// Oklab `[L,a,b]` + alpha → straight sRGB RGBA in [0,1].
+/// Oklab `[L,a,b]` + alpha → straight sRGB RGBA in `[0,1]`.
 pub fn oklab_to_srgb(laba: [f32; 4]) -> [f32; 4] {
     let lin = oklab_to_linear_srgb([laba[0], laba[1], laba[2]]);
     [

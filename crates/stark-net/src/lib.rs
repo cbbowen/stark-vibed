@@ -4,7 +4,7 @@
 //! `stark-core` owns the merge semantics (the `ReplicatedTimeline` CRDT over
 //! the action log); this crate owns the wire and nothing else:
 //!
-//! - **Identity**: an iroh [`EndpointId`](iroh::EndpointId) (a public key) maps
+//! - **Identity**: an iroh [`iroh::EndpointId`] (a public key) maps
 //!   to the engine's [`ActorId`](stark_core::document::ActorId) via
 //!   [`actor_from_endpoint_id`].
 //! - **Live edits**: each committed [`Action`](stark_core::document::Action) is

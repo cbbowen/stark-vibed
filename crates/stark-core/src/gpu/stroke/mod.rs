@@ -13,7 +13,7 @@
 //! That is the plain **add** fast path: footprint → cleared scratch tile →
 //! integrate over the base into a fresh CoW tile. A brush that also moves paint
 //! already on the canvas (`lift` / `deposit` / `charge`, DESIGN §6.2) instead runs
-//! the sequential swept-exchange loop in `dynamics.wesl`; [`dynamics_setup`]
+//! the sequential swept-exchange loop in `dynamics.wesl`; `dynamics_setup`
 //! decides which path a record takes.
 //!
 //! The renderer is parameterized by a [`ColorSpace`] (formats, blends, channel
@@ -501,7 +501,7 @@ impl StrokeRenderer {
         // that eventually replaces it have to make the same choice, or releasing the
         // pointer would visibly redraw the stroke; and both gates below (region size,
         // stamp count) would otherwise answer differently for a short piece than for
-        // the stroke it belongs to. See [`dynamics_setup`].
+        // the stroke it belongs to. See `dynamics_setup`.
         match dynamics_setup(rec) {
             Some(tol) => self.render_dynamic(scene, rec, spans, tool, tol),
             None => self.render_swept(scene, rec, spans),

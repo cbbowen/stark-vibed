@@ -795,7 +795,7 @@ impl Engine {
     }
 
     /// The document's current surface (DESIGN.md §6.4). Change it with
-    /// [`DocCommand::SetSurface`](crate::command::DocCommand::SetSurface).
+    /// [`crate::command::DocCommand::SetSurface`].
     pub fn surface(&self) -> SurfaceId {
         self.document().surface
     }
@@ -859,7 +859,7 @@ impl Engine {
     /// environments fall back to the procedural studio until their bytes arrive.
     ///
     /// Private: reached through
-    /// [`ViewCommand::SetEnvironment`](crate::command::ViewCommand::SetEnvironment).
+    /// [`crate::command::ViewCommand::SetEnvironment`].
     fn set_environment(&mut self, id: EnvironmentId) {
         if self.environment.set(&self.gpu, id) {
             self.apply_environment();

@@ -45,40 +45,75 @@ without rework.
 
 ```
 stark/
-├── Cargo.toml                  # workspace
+├── Cargo.toml                  # workspace (vendor/ excluded — see below)
 ├── crates/
 │   ├── stark-core/             # the engine — no UI, no windowing
 │   │   ├── src/
 │   │   │   ├── lib.rs
-│   │   │   ├── engine.rs       # the actor: owns everything, runs the loop
-│   │   │   ├── command.rs      # InputCommand (raw user intent)
-│   │   │   ├── session.rs      # ephemeral state: tool, view, in-flight stroke
+│   │   │   ├── engine.rs       # owns everything; process(InputCommand) (§4, §7)
+│   │   │   ├── command.rs      # Gesture/Doc/View commands (§4)
+│   │   │   ├── session.rs      # view state: tool, brush, view, in-flight gesture
+│   │   │   ├── error.rs        # EngineError + Result
 │   │   │   ├── document/       # versioned state (the history)
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── action.rs    # Action + ActionId (replayable mutations)
-│   │   │   │   ├── state.rs     # DocState: persistent layer/tile map
+│   │   │   │   ├── state.rs     # DocState: layers, selection, surface
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
+│   │   │   │   ├── selection.rs # Selection soft mask + ops (§6.8)
 │   │   │   │   └── layer.rs
-│   │   │   ├── color.rs         # Oklab working space, conversions, mixing
-│   │   │   ├── assets.rs        # content-addressed brush/image asset store (§6.6)
+│   │   │   ├── color.rs        # Oklab working space, conversions, mixing (§6.5)
+│   │   │   ├── colorspace.rs   # ColorSpace trait; Oklab + Mixbox impls (§6.7)
+│   │   │   ├── assets.rs       # content-addressed brush/image asset store (§6.6)
+│   │   │   ├── noise.rs        # tileable 3-D noise volumes for colour dynamics (§6.2)
+│   │   │   ├── image.rs        # RgbaImage (readback / export)
 │   │   │   ├── gpu/
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── context.rs   # device/queue wrapper, capabilities
-│   │   │   │   ├── tile.rs      # TilePool, CoW tile handles, channel set
-│   │   │   │   ├── stroke.rs    # the brush engine / stroke rasterizer
-│   │   │   │   ├── composite.rs # layer compositing + media lighting → display
+│   │   │   │   ├── tile.rs      # TilePool, CoW tile handles, channel set (§6.1)
+│   │   │   │   ├── registry.rs  # frontend-provided resources: bytes + live object
+│   │   │   │   ├── stroke/      # the brush engine / stroke rasterizer (§6.2)
+│   │   │   │   │   ├── mod.rs      # StrokeRenderer, entry points, tip caches
+│   │   │   │   │   ├── segments.rs # path → swept segments; region measurements
+│   │   │   │   │   ├── swept.rs    # the plain swept fast path
+│   │   │   │   │   └── dynamics.rs # the sequential swept-exchange loop
+│   │   │   │   ├── composite.rs # compositing + the media/lighting pass (§6.3)
+│   │   │   │   ├── environment.rs # HDR environment maps for IBL (§6.3)
+│   │   │   │   ├── surface.rs   # canvas surface: tooth + relief (§6.4)
+│   │   │   │   ├── selection.rs # selection-mask rasterization (§6.8)
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
-│   │   │   ├── geom.rs          # tile coords, view transform, AABB
-│   │   │   ├── path.rs          # streaming B-spline stroke fit + adaptive flatten (§6.2)
-│   │   │   ├── spline.rs        # clamped cardinal cubic B-spline + least-squares solve
-│   │   │   └── io.rs            # save/load of the action log
+│   │   │   ├── geom.rs         # tile coords, view transform, AABB
+│   │   │   ├── path.rs         # streaming B-spline stroke fit + adaptive flatten (§6.2)
+│   │   │   ├── spline.rs       # clamped cardinal cubic B-spline + least-squares solve
+│   │   │   └── io.rs           # save/load of the action log (§8)
 │   │   └── tests/
-│   │       └── golden/         # scripted command sequences + reference PNGs
+│   │       └── golden/         # scripted command sequences + reference PNGs (§9)
 │   ├── stark-shaders/          # WESL sources + build.rs (wesl link/compile)
 │   │   ├── build.rs
 │   │   └── src/shaders/*.wesl
-│   ├── stark-net/              # iroh transport ↔ Replicated timeline (optional)
-│   └── stark-ui/               # Dioxus 0.7 frontend
+│   ├── stark-testdata/         # recorded pen input + asset paths; dev-only (§9)
+│   ├── stark-net/              # iroh transport ↔ Replicated timeline (§12)
+│   │   └── src/
+│   │       ├── session.rs      # CollabSession: the frontend-facing API
+│   │       ├── mesh/           # the live broadcast wire
+│   │       ├── transport/      # iroh, and the vendored WebRTC facade
+│   │       ├── mirror.rs       # CPU copy of the log, to serve joiners
+│   │       └── ticket.rs       # shareable session tickets
+│   └── stark-ui/               # Dioxus 0.7 frontend (§11)
+│       ├── assets/             # shipped images + stylesheet (fetched at runtime)
+│       └── src/
+│           ├── main.rs         # app root, canvas, command rail
+│           ├── state.rs        # AppState + the dispatch seam
+│           ├── render.rs       # WebGPU surface + Engine wrapper
+│           ├── input.rs        # DOM events → InputCommand
+│           ├── layout.rs       # floating panel chrome + drag
+│           ├── panels/         # one module per tool panel
+│           ├── widgets.rs      # shared small controls
+│           ├── platform.rs     # the two browser-only helpers
+│           ├── brush_editor.rs # the brush dialog + its preview engine
+│           └── collab.rs       # session lifecycle glue
+├── vendor/                     # third-party, excluded from the workspace
+│   ├── mixbox/                 # pigment mixing (submodule, CC BY-NC)
+│   └── iroh-webrtc-transport/  # browser WebRTC facade for iroh (§12.4)
 └── DESIGN.md
 ```
 
@@ -392,7 +427,8 @@ Cloning `DocState` clones `rpds`'s persistent collections — internally just bu
 few `Arc`s (GOALS §dependencies). This is what makes the `history` crate's
 snapshot retention affordable: each retained version holds *references* to shared
 GPU tiles, not copies. `rpds`'s structural sharing also gives us cheap *diffing*
-between two `DocState`s, which the compositor uses for damage tracking (§6.3) and
+between two `DocState`s, which is what damage tracking would key off if it
+existed (§6.3) and
 the collaboration layer uses to merge concurrent edits tile-by-tile (§12).
 
 ### 5.2 Copy-on-write at tile granularity ties memory to history
@@ -788,15 +824,55 @@ paths share the field and parameters, so a brush looks the same whichever path
 renders it. Amplitude 0 (the default) binds a 1×1×1 zero volume and early-outs —
 bit-identical to the constant-colour deposit (all prior goldens unchanged).
 
-`Compositor` blends layers bottom-to-top per dirty tile **in Oklab**, then a
-**media pass** turns the height/wet channels into the painterly result: it derives surface
-normals from `height`, applies directional lighting so impasto ridges catch the
-light, and modulates pigment with thickness/wetness. This media model is a
-single shader stage we can iterate on (Kubelka–Munk pigment mixing, granulation,
-varnish gloss) without touching the document or tile machinery.
+### 6.3 Compositing and the media pass
 
-Only **dirty tiles** are recomposited; a per-version damage set (the tiles whose
-`Arc` differs from the previously presented version) bounds the work.
+Three passes turn tiles into pixels. The first two are the substance; the third
+is chrome.
+
+**A — composite.** Every visible tile of every visible layer is drawn, bottom to
+top, into two viewport-sized offscreen targets: colour (premultiplied "over", in
+the working colour space) and the `(height, wet)` aux (additive). Layer opacity
+rides on the instance. Normal-blend layers compose correctly under premultiplied
+over; richer blend modes need per-layer isolation and are a follow-up.
+
+**B — media / lighting.** One fullscreen pass turns those two buffers into the
+painterly result, and it is where the "old masters" look lives:
+
+- **Normals from height.** The gradient of the height field — impasto thickness
+  plus the canvas weave scaled by `surface_strength` — tilted by
+  `height_strength`, so ridges catch the light. `normal_dither` adds
+  canvas-anchored noise before the gradient to break up banding.
+- **Image-based lighting.** The scene is lit by an [`Environment`](§6.3): an HDR
+  decoded to a linear-RGB equirectangular texture with a full mip chain. Diffuse
+  irradiance samples a very blurred mip in the *normal* direction; wet specular
+  samples a gloss-selected mip in the *view-reflection* direction, so wet paint
+  picks up the environment's highlights. Exposure is divided by the
+  environment's mean luminance, so any environment — procedural or a 1600 × 800
+  HDR — is normalized to a neutral level and a flat surface reads roughly its
+  own albedo.
+- **Wet gloss.** `specular` sets how smooth fully-wet paint becomes, driving a
+  Cook–Torrance term. Dry paint and bare canvas stay rough, so matte.
+- **Present.** The working channels are converted to the surface's display space
+  (e.g. sRGB) and composited over the substrate colour. This is the *only* place
+  gamma-encoded colour exists.
+
+**C — selection outline.** One instanced quad per mask tile, drawn over the lit
+result in the same canvas→NDC frame as pass A (§6.8).
+
+`MediaParams` (`height_strength`, `exposure`, `specular`, `surface_strength`,
+`normal_dither`) is a **view setting** — per-client, never historized, changed by
+`ViewCommand::SetMediaParams` (§4). So is the choice of environment: switching it
+re-lights the canvas and touches no stored pixel. Neither is in the save file.
+
+The whole media model is a single shader stage, which is the point: Kubelka–Munk
+pigment mixing, granulation, varnish gloss can be iterated on without touching the
+document or tile machinery.
+
+> **Not yet: damage tracking.** Every populated tile of every visible layer is
+> composited on every frame — there is no per-version damage set and no
+> view-AABB cull, so off-screen tiles are drawn and clipped by the rasterizer
+> rather than skipped. Fine at current canvas sizes; the obvious first
+> optimization when it stops being.
 
 ### 6.4 Presentation (pan/zoom to a surface)
 
@@ -815,8 +891,9 @@ pub struct ViewTransform {  // session-owned; pan/zoom never historized
 }
 ```
 
-The `Compositor` (§6.3) walks the tiles intersecting the view AABB, composites
-them into a viewport-sized offscreen under the transform, and the media pass blits
+The `Compositor` (§6.3) composites the visible tiles into a viewport-sized
+offscreen under the transform — all of them, not just those intersecting the view
+AABB (§6.3) — and the media pass blits
 the result into `target` — converting **the working channels → the surface's
 display space** (e.g. sRGB) in that final pass, the only place gamma-encoded color
 exists. (An earlier standalone `Presenter` did a plain color blit; it was retired
@@ -866,11 +943,21 @@ tileable height/bump map (`gpu/surface.rs`), an `R8Unorm` texture sampled in
 *canvas* space (so the weave is fixed to the canvas and pans/zooms with it),
 shared by the stamp and media passes. It drives two effects:
 
-- **Deposition tooth (stamp pass).** The deposited coverage is gated by the
-  surface height at each fragment's canvas position: `cov ·= 1 − tooth·(1−h)·(1−cov)`.
-  Light/dry strokes catch on the weave's peaks and skip its valleys; the effect
-  fades as coverage builds (valleys fill). `tooth` is a **`BrushParams` field** —
-  it changes *stored* pixels, so it's historized for deterministic replay.
+- **Deposition tooth (stamp pass) — NOT IMPLEMENTED.** The intent: gate deposited
+  coverage by the surface height at each fragment's canvas position,
+  `cov ·= 1 − tooth·(1−h)·(1−cov)`, so light/dry strokes catch on the weave's peaks
+  and skip its valleys, the effect fading as coverage builds (valleys fill).
+  `surface_tooth` in `stamp_common.wesl` is a **pass-through stub** that returns
+  `coverage` unchanged, and no shader reads the canvas surface at stamp or
+  integrate time — the `group(2)` surface bindings are placeholders. So the weave
+  currently shows *only* through the media pass (§6.3), never through what a stroke
+  lays down.
+
+  `tooth` is nonetheless a **`BrushParams` field**, historized, because when the
+  gate lands it will change *stored* pixels and replay has to reproduce it. Same
+  reasoning as the surface itself being document state (§4): recording it before
+  it bites makes wiring the gate up a rendering change rather than a history one.
+  Until then the Brush editor's "Tooth" slider moves and does nothing.
 - **Surface relief (media pass).** The relief feeds the normal everywhere
   (`height_at` = impasto + `surface_strength·(h−½)`), so the weave catches light
   across the whole viewport — including the bare substrate, whose shading is
@@ -1236,6 +1323,19 @@ assert_golden!("oil_blend_01", png, tolerance);
 - **Replay equivalence test:** paint a stroke, snapshot; undo then redo;
   serialize → load → snapshot. All three must match — this guards the
   "one rendering path" invariant from §1.3.
+- **A missing GPU is a failure, not a skip.** Every GPU test needs an adapter,
+  and a skipped test still reports `ok` — so a machine without one would take
+  the whole golden / seam / dynamics / selection suite green having rendered
+  nothing. Skipping has to be asked for: `STARK_ALLOW_NO_GPU=1`.
+- **Goldens are adapter-specific.** A committed PNG can only match the adapter it
+  was blessed on, so CI (on software Vulkan) sets `STARK_SKIP_GOLDEN=1`: the
+  strokes still render — shader compilation, wgpu validation and panics are all
+  still caught — and only the pixel comparison is dropped. Deleting a golden
+  re-blesses it on the next run.
+- **Recorded input** lives in the dev-only `stark-testdata` crate: real pen
+  reports captured from the app, because synthetic curves are smooth and evenly
+  sampled in ways real input is not, and the fitter's behaviour turns on exactly
+  those details.
 
 ## 10. Extensibility map
 
@@ -1264,9 +1364,11 @@ surface is a dedicated `wgpu::Surface` bound to the page `<canvas>` via **WebGPU
 which the engine draws into directly. DOM chrome (color palette, brush size,
 undo/redo, layer panel) surrounds it.
 
-- UI components dispatch `InputCommand`s; pointer events on the canvas become
-  `StartStroke`/`StrokeTo`/`EndStroke`, with element coordinates mapped to canvas
-  space via `ViewTransform::screen_to_canvas`.
+- UI components dispatch `InputCommand`s through one seam, `state::dispatch`,
+  which applies, repaints, refreshes `ObservableState`, and broadcasts whatever
+  was committed — so no call site has to remember that sequence. Pointer events
+  on the canvas become `GestureCommand::Start`/`To`/`End`, with element
+  coordinates mapped to canvas space via `ViewTransform::screen_to_canvas`.
 - Components render from `ObservableState` (held in a Dioxus signal) so toggles
   like undo-availability stay reactive — **no pixel data crosses this boundary.**
 - The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each
@@ -1274,6 +1376,12 @@ undo/redo, layer panel) surrounds it.
   (`get_current_texture` → `engine.render(view)` → `present`) — no readback, no
   encode. The frontend supplies the GPU handles via `GpuContext::from_parts`
   (GOALS §Inputs); core needs no change to compile to wasm.
+
+The crate is laid out by concern rather than as one file: `state` (the shared
+signals and the dispatch seam), `input` (DOM → commands), `layout` (the floating
+panel chrome and its drag), `panels/` (one module per tool panel), `widgets`,
+`platform` (the two browser-only helpers), plus `render`, `brush_editor` and
+`collab`. See §2.
 
 Because the engine is frontend-agnostic, this layer stays thin. (An earlier
 interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame
@@ -1402,6 +1510,30 @@ resnapshots), and offline-merge UX are out of scope for this first cut. None of
 them perturb the convergence model above; they layer on top of it.
 
 ## 13. Suggested build order
+
+Status lives here and nowhere else. It used to be duplicated as a checklist in
+`stark-core/src/lib.rs`, at a different granularity, and the two had drifted.
+
+| # | Step | Status |
+|---|---|---|
+| 1 | GPU + tiles skeleton | done |
+| 2 | Stroke MVP (command/action split, CoW tiles) | done |
+| 3 | History + golden harness | done |
+| 4 | Multi-channel + media pass | done |
+| 5 | Save/load + timelapse | done |
+| 6a | Layers | done |
+| 6b | Dioxus UI | done |
+| 6c | Navigation (pan/zoom) | done — tile LOD descoped, see below |
+| 7 | Brush shapes & assets (§6.6) | done |
+| 8 | Cubic stroke interpolation (§6.2) | done — revised to a streaming, append-only fit with adaptive flattening |
+| 8b | Continuous swept-segment stamping (§6.2) | done — one quad per segment, coverage integrated through a prefix-τ texture |
+| 8c | Tile aprons (§6.4) | done — killed the lighting seams the media pass amplified |
+| 9 | Pluggable colour spaces (§6.7) | done — Oklab + Mixbox |
+| 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
+| — | Surface bump maps (§6.4) | partial — relief is wired; the **deposition tooth gate is a stub** (see §6.4) |
+| 11 | Brush file upload | **not started** |
+| 12 | Collaboration (§12) | done |
+| — | Selections (§6.8) | done |
 
 1. **GPU + tiles skeleton:** `GpuContext`, the recycling `TilePool`, and a tile
    blitted to a target under a `ViewTransform`. Proves infinite-canvas pan/zoom

@@ -14,7 +14,7 @@
 //! task to the calling component's scope, and these calls originate in modal
 //! button handlers — closing the modal must not cancel session work. The
 //! incoming pump outlives even its entry point, so its handle is kept in
-//! [`AppState::collab_pump`] and cancelled when the session it serves is
+//! `AppState`'s `collab.pump` and cancelled when the session it serves is
 //! replaced ([`install`]) or torn down ([`leave`]).
 
 use dioxus::dioxus_core::spawn_forever;

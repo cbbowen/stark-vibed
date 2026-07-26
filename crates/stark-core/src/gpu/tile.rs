@@ -3,7 +3,7 @@
 //! A tile's channels are independent GPU textures, each held through a
 //! [`TexHandle`] (`Arc`); when the last handle drops, the texture returns to the
 //! [`TilePool`]'s free list for its format — so history retention drives GPU memory
-//! reclamation with no manual GC. A [`TileHandle`] bundles a tile's `color` + `aux`
+//! reclamation with no manual GC. A [`TilePairHandle`] bundles a tile's `color` + `aux`
 //! textures; cloning one is two `Arc` bumps, which is what makes persistent
 //! `DocState` snapshots cheap.
 //!

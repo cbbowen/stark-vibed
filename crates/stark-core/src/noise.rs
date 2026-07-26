@@ -1,6 +1,6 @@
 //! Tileable 3-D noise fields for colour dynamics (DESIGN.md §6.2).
 //!
-//! Each [`NoiseKind`](crate::document::NoiseKind) is baked **once, on the CPU,
+//! Each [`crate::document::NoiseKind`] is baked **once, on the CPU,
 //! with fixed constants** into a small `Rgba8Snorm` 3-D texture (three
 //! independent signed channels; alpha unused) and sampled in the stamp shaders
 //! with a repeat sampler. Baking on the CPU keeps the field bit-identical across

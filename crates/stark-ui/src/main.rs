@@ -417,7 +417,7 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 
                 div { class: "modal-section-label", "SURFACE" }
                 {scard(SurfaceId::Flat, "Smooth", "A perfectly smooth surface — paint lies flat, no canvas texture.")}
-                {scard(SurfaceId::Linen, "Canvas", "Linen weave: dry strokes catch on the tooth and the weave catches the light.")}
+                {scard(SurfaceId::Linen, "Canvas", "Linen weave: the canvas texture catches the light.")}
 
                 div { class: "modal-actions",
                     button {

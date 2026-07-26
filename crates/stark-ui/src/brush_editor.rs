@@ -277,8 +277,14 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         }
                     }
 
+                    // NOTE: inert. `surface_tooth` in stamp_common.wesl is a
+                    // pass-through stub, so this slider changes a historized value
+                    // that nothing reads (DESIGN.md §6.4). It contradicts this
+                    // module's own rule — a knob that moves but changes nothing is
+                    // worse than no knob — and is kept only so the value is
+                    // reachable when the gate lands. Remove it or finish the gate.
                     Section {
-                        title: "Surface", desc: "How the canvas weave gates dry strokes.",
+                        title: "Surface", desc: "How the canvas weave gates dry strokes (not yet wired).",
                         open: surface_open,
                         Slider { label: "Tooth", min: 0.0, max: 1.0, value: brush.tooth,
                             oninput: move |v| edit(state, preview, move |b| b.tooth = v) }

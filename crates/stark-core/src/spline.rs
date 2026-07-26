@@ -6,7 +6,7 @@
 //!
 //! - **Clamped**: the first and last control points are repeated `DEGREE` times, so
 //!   the curve starts and ends *on* them. The repeats are simulated by an index view
-//!   ([`CubicBSpline::knot_row`]) rather than stored.
+//!   (`CubicBSpline::knot_row`) rather than stored.
 //! - **Cardinal**: the interior knots are equally spaced, so the curve is
 //!   parameterized over `[0, num_spans()]` with span `k` covering `[k, k + 1]`, and a
 //!   single basis matrix serves every span.
@@ -165,7 +165,7 @@ impl<const D: usize> CubicBSpline<D> {
     ///
     /// The first `frozen` rows and the last `tail` rows of `prior` come back
     /// unchanged; only the window between them is solved for. `smoothing` charges the
-    /// control polygon for curvature (see [`Self::m_step`]).
+    /// control polygon for curvature (see `Self::m_step`).
     ///
     /// `prior` may be **shorter** than the control polygon — the usual case for an
     /// incremental caller whose geometry has just grown and whose channels have not.

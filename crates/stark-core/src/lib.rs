@@ -1,89 +1,38 @@
 //! Stark engine core — the frontend-agnostic GPU painting backend (DESIGN.md).
 //!
-//! Build progress (DESIGN.md §13 build order):
-//! - [x] Step 1: GPU + tiles skeleton — [`GpuContext`] and the recycling
-//!   [`TilePool`], the foundation everything else renders on.
-//! - [x] Step 2: stroke MVP — the command/action split ([`InputCommand`] vs
-//!   [`document::Action`]), color stamping with copy-on-write tiles, and the
-//!   `history`-backed [`document::LinearTimeline`] driving undo/redo via
-//!   [`Engine`].
-//! - [x] Step 3: history + golden harness — [`Engine::render_to_image`] for
-//!   readback/export, golden-image tests, and determinism / undo-redo /
-//!   replay-equivalence tests guarding the action-log invariant.
-//! - [x] Step 4: multi-channel + media pass — Oklab color ([`color`]), tiles
-//!   carry color + `(height, wet)` aux, the brush deposits all channels with a
-//!   load reservoir, and a [`gpu::Compositor`] composites then lights the
-//!   impasto (normal-from-height + wet gloss) into display sRGB.
-//! - [x] Step 5: save/load + timelapse — the [`io::DocumentFile`] action-log
-//!   format (postcard + deflate), [`Engine::save_bytes`]/[`Engine::load_bytes`]
-//!   with undo-after-load, and [`Engine::replay_timelapse`].
-//! - [x] Step 6a: layers — active-layer selection (session), per-layer
-//!   opacity/visibility/blend + reorder (historized actions), and opacity-aware
-//!   compositing. [`ObservableState`] exposes the layer stack.
-//! - [x] Step 6b: Dioxus UI — the `stark-ui` Dioxus **web** app drives the
-//!   engine via [`InputCommand`]/[`ObservableState`] and paints through a
-//!   **WebGPU surface** bound to the canvas (no readback). Backend runs in WASM.
-//! - [x] Step 6c: navigation — pan (middle-drag) and cursor-anchored zoom
-//!   (wheel) via [`ViewTransform::zoom_about`]; window-fit canvas + resize.
-//!   (Tile LOD descoped to a future nice-to-have — DESIGN §13.)
-//! - [x] Step 7: brush shapes & assets — content-addressed [`assets::AssetStore`]
-//!   coverage masks, [`document::BrushShape`] (`Round`/`Stamp`), path-following
-//!   rotated stamps, [`Engine::import_brush`], and referenced assets bundled
-//!   into the save file as compact grayscale PNGs (DESIGN §6.6, §8).
-//! - [x] Step 8: cubic stroke interpolation (DESIGN §6.2) — [`path`] streams raw
-//!   samples into spline control points ([`path::PathFitter`], append-only) and
-//!   flattens a centripetal Catmull–Rom curve *adaptively* — bounded error in
-//!   position, tangent, and pen attributes instead of a fixed arc-length step, so
-//!   segment count follows how much the stroke bends, not how far it runs. Kills
-//!   stair-stepping, shrinks the log.
-//! - [x] Step 8b: continuous swept-segment stamping (DESIGN §6.2) — each segment
-//!   is one quad whose coverage is the brush swept along it via a precomputed
-//!   prefix-τ texture (`τ=−ln(1−α)`); over-blend sums depth exactly. Removes the
-//!   discrete-dab artifact with hard tips.
-//! - [x] Step 8c: tile aprons (DESIGN §6.4) — tiles carry a `TILE_APRON` halo
-//!   (`TILE_TEX` textures) rendered, not copied, so the compositor's bilinear
-//!   filter reads across tile boundaries instead of clamping. Kills the lighting
-//!   seams the media pass amplified under zoom/sub-pixel pan (`tests/seam.rs`).
-//! - [x] Step 9: pluggable color spaces (DESIGN §6.7) — [`colorspace::ColorSpace`]
-//!   trait, [`colorspace::OkLabColorSpace`] (migrated, no behavior change), and
-//!   [`colorspace::MixboxColorSpace`]: realistic pigment mixing via Mixbox (the
-//!   latent mixes linearly, so the premultiplied-"over" deposit *is* the mix; the
-//!   media pass evaluates Mixbox's polynomial). Engine selects via
-//!   [`Engine::new_with_color_space`]/[`Engine::set_color_space`].
-//! - [x] Step 10: wet mixing & brush dynamics (DESIGN §6.2) — [`document::BrushDynamics`]
-//!   (`Dry` default / `Mixer`). A `Mixer` brush smears paint already on the canvas:
-//!   a GPU compute pass composites the base under the stroke and runs a serial
-//!   reservoir scan — one per lateral band across the tip — that writes a
-//!   per-segment × per-band reservoir texture the deposit samples, so each side of
-//!   the brush carries the color it rolled over. No CPU readback, so it works on
-//!   WebGPU. Dry strokes are unchanged. UI exposes a Dry/Mixer toggle + sliders.
-//! - [x] Surface bump maps (DESIGN §6.4) — a tileable canvas height map
-//!   ([`gpu::Surface`], [`gpu::SurfaceId`]) drives deposition **tooth**
-//!   (`BrushParams::tooth`, historized) and media **relief** (`MediaParams::surface_strength`).
-//!   `Flat` (default) is a no-op; `Linen` is the built-in weave. Saved in `CanvasMeta`.
-//!   The engine embeds no image bytes — the frontend fetches them at runtime and
-//!   provides them via [`Engine::register_surface`] (DESIGN §6.6).
-//! - [x] Step 12: collaboration (DESIGN §12) — [`document::ReplicatedTimeline`]:
-//!   the shared log as a replicated-log CRDT (total order = `ActionId`,
-//!   deterministic replay ⇒ strong eventual consistency), with
-//!   `ActionKind::Undo` resolved into an *effective sequence* at the timeline
-//!   layer and the `history` cache rewound/replayed on out-of-order merges.
-//!   Engine hooks: [`Engine::start_collaboration`], [`Engine::join_collaboration`],
-//!   [`Engine::merge_remote`], [`Engine::take_outbox`]. The `stark-net` crate
-//!   carries it over iroh (a broadcast mesh + snapshot/asset ALPN); convergence is
-//!   asserted pixel-identical in `tests/collab.rs` and `stark-net/tests/sync.rs`.
-//! - [x] Selections (DESIGN §6.8) — [`document::Selection`] is a *soft mask*: a
-//!   sparse map of `R8` coverage tiles plus a flag for the coverage outside them
-//!   (so "no selection" and its inverse are both free on an infinite canvas).
-//!   [`document::SelectionOp`]s (rect / ellipse / lasso / all, combined by
-//!   replace / union / subtract / intersect, with feather) rasterize analytically
-//!   from canvas position, so edges antialias and feather with one knob and tile
-//!   aprons stay seam-exact. The brush is gated at the *end* of both stroke paths
-//!   — the integrate merge, and the stamp loop's deposit/pickup — so a feathered
-//!   selection fades a stroke instead of thinning its optical depth. Edits are
-//!   logged actions carrying the op (not the mask), so undo, replay and
-//!   collaboration all work unchanged; a compositor overlay draws the outline.
-//! - [ ] Step 11: brush file upload.
+//! # Where to start
+//!
+//! [`Engine`] owns everything and is the only entry point. Two things go in and
+//! one comes out:
+//!
+//! - [`InputCommand`] — user intent, one-way (DESIGN.md §4). It splits by which
+//!   class of state it touches: [`command::DocCommand`] mutates the document
+//!   (historized, replicated, replayed), [`command::ViewCommand`] mutates view
+//!   state (per-client, transient), and [`command::GestureCommand`] is the
+//!   press-drag-release lifecycle that builds in view state and commits a
+//!   document action at the end.
+//! - **Requests** — the operations that must answer, and so cannot be commands:
+//!   [`Engine::import_brush`], [`Engine::save_bytes`], [`Engine::merge_remote`],
+//!   and friends. They stay direct methods (DESIGN.md §4).
+//! - [`ObservableState`] — the cheap UI-facing projection, read back after each
+//!   command.
+//!
+//! # The layers underneath
+//!
+//! - [`document`] — the versioned document: [`document::Action`]s, the
+//!   [`document::Timeline`] that orders them (linear solo, replicated when
+//!   shared), and [`document::DocState`], a persistent map of copy-on-write
+//!   tiles (§5).
+//! - [`session`] — view state: tool, brush, view transform, the in-flight
+//!   gesture (§3).
+//! - [`gpu`] — the tile pool, the stroke renderer, compositing and the media
+//!   pass (§6).
+//! - [`path`] / [`spline`] — pointer samples fitted to a cubic B-spline, then
+//!   flattened adaptively into the segments the brush sweeps along (§6.2).
+//! - [`io`] — the save format, which *is* the action log (§8).
+//!
+//! Build status lives in DESIGN.md §13, not here: it used to be duplicated as a
+//! checklist in this comment, and the two drifted.
 
 pub mod assets;
 pub mod color;
