@@ -46,15 +46,18 @@ struct TileXform {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) local: vec2<f32>, // brush-local (x in radius units from start, y in [-1,1])
-    @location(1) misc: vec4<f32>,  // length/radius, flow, height(thickness rate), wet
-    @location(2) op: f32, // brush opacity at this segment (drives the opacity channel)
+    @location(1) lr: f32, // segment length in radius units (the sweep's travel)
+    // Paint height laid per unit swept optical depth — the brush's `add` source, faded
+    // by its remaining load. The one amount knob (DESIGN.md §6.1, §6.2).
+    @location(2) amount: f32,
+    @location(3) op: f32, // brush opacity at this segment (drives the opacity channel)
     // Shape orientation in turns ∈ [0,1): the relative angle between the shape's native
     // axis and the travel direction, picking the prefix-τ orientation slice (§6.6).
-    @location(3) orient: f32,
+    @location(4) orient: f32,
     // Arc length of the segment's start from the stroke start (.x, canvas px) and the
     // segment radius (.y) — together they recover the fragment's own arc length for the
     // colour-dynamics lookup.
-    @location(4) sinfo: vec2<f32>,
+    @location(5) sinfo: vec2<f32>,
 }
 
 struct FsOut {
@@ -69,8 +72,7 @@ fn sweep_vertex(
     vi: u32,
     start: vec2<f32>,
     dir: vec2<f32>,   // unit tangent
-    geom: vec4<f32>,  // radius, length, flow, _
-    aux: vec4<f32>,   // height(thickness rate), wet, opacity, _
+    geom: vec4<f32>,  // radius, length, amount (height per unit τ), opacity
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at segment start, _, _
 ) -> VsOut {
     let radius = geom.x;
@@ -87,8 +89,9 @@ fn sweep_vertex(
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.local = vec2<f32>(cx, cy);
-    out.misc = vec4<f32>(lr, geom.z, aux.x, aux.y);
-    out.op = aux.z;
+    out.lr = lr;
+    out.amount = geom.z;
+    out.op = geom.w;
     out.orient = extra.x;
     out.sinfo = vec2<f32>(extra.y, radius);
     return out;
@@ -108,7 +111,7 @@ fn brush_color(in: VsOut) -> vec3<f32> {
     // TODO: Using a local parameterization, we no longer need 3D noise. 
     // let canvas = xf.params.xy + in.clip.xy;
     let canvas = vec2(0.0, in.local.y);
-    let arc = in.sinfo.x + clamp(in.local.x, 0.0, in.misc.x) * in.sinfo.y;
+    let arc = in.sinfo.x + clamp(in.local.x, 0.0, in.lr) * in.sinfo.y;
     let jitter = color_jitter(
         noise_tex, noise_samp, canvas, arc,
         xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xyz,
@@ -180,7 +183,7 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
 // slice. Sums exactly across a stroke's overlapping segment quads (under "over" for τ, or
 // additively for amounts), reconstructing the continuous path integral.
 fn swept_depth(in: VsOut) -> f32 {
-    let depth = prefix_at(in.local.x, in.local.y, in.orient) - prefix_at(in.local.x - in.misc.x, in.local.y, in.orient);
+    let depth = prefix_at(in.local.x, in.local.y, in.orient) - prefix_at(in.local.x - in.lr, in.local.y, in.orient);
     return max(depth, 0.0);
 }
 

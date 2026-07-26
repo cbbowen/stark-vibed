@@ -10,10 +10,11 @@
 //! depths *exactly* — reconstructing the continuous stroke with no banding, no
 //! scratch buffer, and no second pass.
 //!
-//! This is the plain **add** path: footprint → cleared scratch tile → integrate
-//! over the base into a fresh CoW tile. Brush dynamics (smear, drag, bleed —
-//! DESIGN §6.2) are being rebuilt on a sequential stamp loop and will layer on
-//! top of this core.
+//! That is the plain **add** fast path: footprint → cleared scratch tile →
+//! integrate over the base into a fresh CoW tile. A brush that also moves paint
+//! already on the canvas (`lift` / `deposit` / `charge`, DESIGN §6.2) instead runs
+//! the sequential swept-exchange loop in `dynamics.wesl`; [`dynamics_setup`]
+//! decides which path a record takes.
 //!
 //! The renderer is parameterized by a [`ColorSpace`] (formats, blends, channel
 //! mapping, shader). It holds only immutable GPU objects plus `Arc`-backed
@@ -41,9 +42,6 @@ use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::surface::{Surface, SURFACE_TILE_PX};
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
 
-/// Global tuning so a default brush (`flow = 1`) reads as a solid stroke;
-/// `flow` is an optical-depth-per-length rate (DESIGN.md §6.2).
-const SWEEP_FLOW_SCALE: f32 = 1.0;
 /// Resolution of the generated round-tip prefix texture.
 const ROUND_RES: u32 = 256;
 
@@ -74,14 +72,21 @@ const TAU_PER_PASS: f32 = 6.9;
 /// strokes degrade to the plain swept deposit — rare, and it bounds the transient
 /// GPU memory (DESIGN.md §6.2).
 const MAX_REGION_DIM: u32 = 2048;
-/// Hard cap on stamps per stroke: beyond it the spacing stretches, trading
-/// per-radius fidelity on extremely long strokes for bounded cost.
+/// Hard cap on stamps per stroke: beyond it the segment length cap stretches,
+/// trading per-radius fidelity on extremely long strokes for bounded cost.
 const MAX_STAMPS: usize = 4096;
-/// Gain on the `add` axis in the stamp loop, tuned so `add = 1` at default
-/// spacing lays roughly the brush's `height` per pass of the tip. The swept fast
-/// path needs no counterpart: it lays height directly as the brush's rate times
-/// the swept optical depth (`stamp_oklab.wesl`), with no correction factor.
+/// Gain on the `add` axis in the stamp loop, tuned so `add = 1` lays roughly a
+/// full-thickness deposit per pass of the tip. The swept fast path needs no
+/// counterpart: it lays height directly as the brush's rate times the swept
+/// optical depth (`stamp_oklab.wesl`), with no correction factor.
 const ADD_GAIN: f32 = 2.0;
+/// How far the tool reservoir travels between `pickup`s, as a fraction of the
+/// brush radius (DESIGN.md §6.2). A property of the exchange loop, not of the tip:
+/// the reload cadence sets how finely the reservoir tracks the evolving canvas, and
+/// nothing about a shape's coverage mask should change it. It also caps the
+/// flattened segment length on the dynamics path, since a pickup can only land
+/// *between* segments (see [`flatten_tolerance`]).
+const RESERVOIR_CADENCE: f32 = 0.25;
 
 /// One swept segment of the stroke.
 #[derive(Copy, Clone)]
@@ -90,11 +95,13 @@ struct Segment {
     dir: Vec2,
     radius: f32,
     length: f32,
-    flow: f32,
-    height: f32,
-    wet: f32,
+    /// Paint **height** laid per unit swept optical depth: the brush's `add` source
+    /// faded by the remaining load (`drain`). The single amount knob — the amount of
+    /// paint and its per-unit opacity are independent (DESIGN.md §6.1), which is why
+    /// `opacity` below is not derived from it.
+    amount: f32,
     /// Paint opacity laid by this segment (the brush's opacity × remaining load).
-    /// Drives the color/opacity channel; thickness (`height`) is independent
+    /// Drives the color/opacity channel; the amount laid is independent
     /// (DESIGN.md §6.1, normalized representation).
     opacity: f32,
     /// Shape orientation for this segment as a fraction of a full turn ∈ [0, 1): the
@@ -112,8 +119,7 @@ struct Segment {
 struct SegmentInstance {
     start: [f32; 2],
     dir: [f32; 2],   // unit tangent
-    geom: [f32; 4],  // radius, length, flow, _
-    aux: [f32; 4],   // height (thickness rate), wet, opacity, _
+    geom: [f32; 4],  // radius, length, amount (height per unit τ), opacity
     extra: [f32; 4], // orientation (turns ∈ [0,1)), arc length at segment start, _, _
 }
 
@@ -476,7 +482,7 @@ impl StrokeRenderer {
                     array_stride: std::mem::size_of::<SegmentInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4
                     ],
                 })],
             },
@@ -694,8 +700,7 @@ impl StrokeRenderer {
             .map(|s| SegmentInstance {
                 start: s.start.to_array(),
                 dir: s.dir.to_array(),
-                geom: [s.radius, s.length, s.flow, 0.0],
-                aux: [s.height, s.wet, s.opacity, 0.0],
+                geom: [s.radius, s.length, s.amount, s.opacity],
                 extra: [s.orient, s.dist, 0.0, 0.0],
             })
             .collect();
@@ -1254,8 +1259,11 @@ impl StrokeRenderer {
                         depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
+                                // Carried height = the pre-`charge` glob; carried wet
+                                // is 0 (the brush has no wetness knob, so the tool
+                                // never picks up or lays gloss of its own).
                                 r: d.charge as f64,
-                                g: (d.charge * rec.brush.wetness) as f64,
+                                g: 0.0,
                                 b: 0.0,
                                 a: 0.0,
                             }),
@@ -1592,23 +1600,21 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// recovered per fragment, as the colour-dynamics arc is) needs a length cap too.
 pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
-    // `drain` fades flow/height/wet/opacity by `drain · dist`, sampled at the
+    // `drain` fades the laid amount/opacity by `drain · dist`, sampled at the
     // segment midpoint: cap the step it can take across one segment at ~2%.
     if b.drain > 0.0 {
         tol.max_len = tol.max_len.min(0.02 / b.drain);
     }
-    // The stamp loop reloads its reservoir every `spacing · radius` of travel, and
-    // a pickup can only land *between* segments — so a segment longer than that
-    // cadence would silently thin the reloads and change how the tool carries paint.
-    // That is now the binding constraint: the exchange itself is exact at any
-    // length (`dynamics.wesl::bake` integrates the reservoir over the whole pass
+    // The stamp loop reloads its reservoir every [`RESERVOIR_CADENCE`] radii of
+    // travel, and a pickup can only land *between* segments — so a segment longer
+    // than that cadence would silently thin the reloads and change how the tool
+    // carries paint. That is the binding constraint: the exchange itself is exact at
+    // any length (`dynamics.wesl::bake` integrates the reservoir over the whole pass
     // rather than sampling it mid-pass), and this also bounds the snapshot scratch,
     // which is sized by the longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
-        tol.max_len = tol
-            .max_len
-            .min((b.spacing.clamp(0.05, 2.0) * b.radius).max(0.5));
+        tol.max_len = tol.max_len.min((RESERVOIR_CADENCE * b.radius).max(0.5));
     }
     tol
 }
@@ -1676,11 +1682,9 @@ fn generate_segments_in(
             dir,
             radius: (b.radius * pressure).max(0.5),
             length: len,
-            // `flow` drives only the footprint build-up; the brush's opacity
-            // (color[3]) rides the separate opacity channel (DESIGN.md §6.1).
-            flow: b.flow * drain * SWEEP_FLOW_SCALE,
-            height: b.height * drain,
-            wet: b.wetness * drain,
+            // The `add` source is the one amount knob; the brush's opacity (color[3])
+            // rides the separate opacity channel (DESIGN.md §6.1).
+            amount: b.dynamics.add * drain,
             opacity: b.color[3] * drain,
             orient: orientation_turns(b.orientation, dir, tilt),
             dist,
@@ -1810,7 +1814,6 @@ fn dynamics_plan(
 ) -> (Vec<LoopDispatch>, f32) {
     let b = &rec.brush;
     let d = b.dynamics;
-    let spacing = b.spacing.clamp(0.05, 2.0);
     // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
     // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
     // which is what a 0..1 knob should mean, rather than per unit optical depth.
@@ -1826,7 +1829,7 @@ fn dynamics_plan(
     let mut plan = Vec::new();
     let mut since = since0;
     for s in segments {
-        let step = (spacing * s.radius).max(0.5);
+        let step = (RESERVOIR_CADENCE * s.radius).max(0.5);
         if since >= step {
             // Reservoir update: the tool exchanges for the travel just covered
             // (the first pickup uses one nominal step — a fresh tip arriving).
@@ -1862,7 +1865,10 @@ fn dynamics_plan(
                 s.radius, s.length / s.radius, l_lift, l_dep,
                 channels[0], channels[1], channels[2], s.opacity,
                 (mid.x - half).floor(), (mid.y - half).floor(), s.orient, 1.0,
-                s.height * d.add * ADD_GAIN, s.wet * d.add * ADD_GAIN, 0.0, 0.0,
+                // e: the `add` source rate — height per unit exposure. The wet rate
+                // (.y) is 0: paint carries no wetness now that the brush has no
+                // wetness knob, so nothing ever adds to the gloss channel.
+                s.amount * ADD_GAIN, 0.0, 0.0, 0.0,
                 // f–i: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
                 nfreq[0], nfreq[1], nfreq[2], nfreq[3],
                 namp[0], namp[1], namp[2], s.dist,
@@ -2438,9 +2444,7 @@ mod tests {
             dir: if length > 0.0 { v / length } else { Vec2::new(1.0, 0.0) },
             radius,
             length,
-            flow: 1.0,
-            height: 0.0,
-            wet: 0.0,
+            amount: 0.0,
             opacity: 1.0,
             orient: 0.0,
             dist: 0.0,

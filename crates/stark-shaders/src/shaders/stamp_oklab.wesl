@@ -36,18 +36,17 @@ fn vs_main(
     @location(0) start: vec2<f32>,
     @location(1) dir: vec2<f32>,
     @location(2) geom: vec4<f32>,
-    @location(3) aux: vec4<f32>,
-    @location(4) extra: vec4<f32>,
+    @location(3) extra: vec4<f32>,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, aux, extra);
+    return sweep_vertex(vi, start, dir, geom, extra);
 }
 
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
-    // The segment's swept optical depth, scaled by the brush's flow (an
-    // optical-depth-per-length rate). Everything below is built from this.
-    let tau = in.misc.y * swept_depth(in);
-    let cov = surface_tooth(in.misc.z, 1.0 - exp(-tau), in.clip.xy);
+    // The segment's swept optical depth — the footprint's geometric coverage
+    // integrated along the travel. Everything below is built from this.
+    let tau = swept_depth(in);
+    let cov = surface_tooth(in.amount, 1.0 - exp(-tau), in.clip.xy);
     // Per-unit opacity enters as an *absorption rate* rather than a factor, so the
     // colour target's over-blend multiplies out to exactly `exp(−op · Στ)` — the
     // stroke's coverage is the same whether the path was cut into one segment or a
@@ -64,12 +63,14 @@ fn fs_main(in: VsOut) -> FsOut {
     //   .x = laid height — linear in τ, so the additive target sums to the true path
     //        integral of the footprint and a second pass builds impasto in full
     //        (a saturating form would flatten out instead);
-    //   .y = laid wet, carried at the same rate so wet/height stays the brush's
-    //        wetness;
+    //   .y = laid wet — always 0. The brush has no wetness knob, so nothing sources
+    //        the gloss channel; the channel itself stays in the tile layout and in
+    //        the media pass's roughness term (media_common.wesl), which is why this
+    //        writes an explicit zero rather than the channel being removed.
     //   .z = footprint coverage (read by nothing today; kept for the write-back);
     //   .w = unused.
     // Height is the amount of paint; the colour alpha is per-unit opacity only and
     // never represents amount (§6.1).
-    out.aux = vec4<f32>(in.misc.z * tau, in.misc.w * tau, cov, 0.0);
+    out.aux = vec4<f32>(in.amount * tau, 0.0, cov, 0.0);
     return out;
 }

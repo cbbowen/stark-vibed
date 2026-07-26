@@ -99,7 +99,6 @@ fn brush_assets_survive_save_load() {
     let id = original.import_brush(BRISTLES).expect("import");
     let mut brush = brush(RED, 60.0);
     brush.shape = BrushShape::Stamp(id);
-    brush.spacing = 0.08;
     original.process(Cmd::SetBrush(brush));
     original.process(Cmd::StartStroke {
         tool: Tool::Brush,

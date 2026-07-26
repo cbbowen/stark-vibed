@@ -14,9 +14,10 @@
 //! stay responsive and the finished stroke appears in one go.
 //!
 //! Settings are grouped into collapsible sections by what they affect, with
-//! rarely-used knobs behind a per-section "Show more" and modulation sliders
-//! (pressure→load, tilt→deposit) indented under — and only shown alongside — the
-//! axis they modulate.
+//! rarely-used knobs behind a per-section "Show more". Every slider here drives a
+//! parameter the engine actually reads — a knob that moves but changes nothing is
+//! worse than no knob, and a knob the engine reads but that hides behind "Show
+//! more" (as `drain` did) may as well not exist.
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
@@ -106,11 +107,8 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     let paint_open = use_signal(|| true);
     let color_open = use_signal(|| false);
     let pickup_open = use_signal(|| false);
-    let flow_open = use_signal(|| false);
     let surface_open = use_signal(|| false);
     // Per-section "Show more" for the rarely-touched knobs.
-    let tip_more = use_signal(|| false);
-    let paint_more = use_signal(|| false);
     let pickup_more = use_signal(|| false);
 
     let brush = state
@@ -190,7 +188,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         open: tip_open,
                         div { class: "brush-shapes",
                             button { class: chip(is_round),
-                                onclick: move |_| { set_shape(state, BrushShape::Round, 0.25); restroke(state, preview); },
+                                onclick: move |_| { set_shape(state, BrushShape::Round); restroke(state, preview); },
                                 "Round" }
                             button { class: chip(!is_round),
                                 onclick: move |_| { set_bristles(state); restroke(state, preview); },
@@ -215,31 +213,23 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             Slider { label: "Hardness", min: 0.0, max: 0.95, value: brush.hardness,
                                 oninput: move |v| edit(state, preview, move |b| b.hardness = v) }
                         }
-                        More { open: tip_more,
-                            Slider { label: "Spacing", min: 0.02, max: 1.0, value: brush.spacing,
-                                oninput: move |v| edit(state, preview, move |b| b.spacing = v) }
-                        }
                     }
 
                     Section {
-                        title: "Paint", desc: "The brush's own paint: how much goes down and what it's like.",
+                        title: "Paint", desc: "The brush's own paint: how much goes down and how far it lasts.",
                         open: paint_open,
-                        // `add` is the only source term of the six-axis tool (§6.2).
-                        Slider { label: "Amount", min: 0.0, max: 1.0, value: d.add,
+                        // `add` is the tool's only source term (§6.2) and its only amount
+                        // knob: the paint height laid per unit swept optical depth.
+                        Slider { label: "Amount", min: 0.0, max: 1.5, value: d.add,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.add = v) }
+                        // Per-unit opacity, independent of the amount laid (§6.1).
                         Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
                             oninput: move |v| edit(state, preview, move |b| b.color[3] = v) }
-                        Slider { label: "Rate", min: 0.05, max: 1.0, value: brush.flow,
-                            oninput: move |v| edit(state, preview, move |b| b.flow = v) }
-                        More { open: paint_more,
-                            Slider { label: "Thickness", min: 0.0, max: 1.5, value: brush.height,
-                                oninput: move |v| edit(state, preview, move |b| b.height = v) }
-                            Slider { label: "Wetness", min: 0.0, max: 1.0, value: brush.wetness,
-                                oninput: move |v| edit(state, preview, move |b| b.wetness = v) }
-                            // Reservoir depletion per px travelled — the stroke runs dry.
-                            Slider { label: "Drain", min: 0.0, max: 0.01, value: brush.drain,
-                                oninput: move |v| edit(state, preview, move |b| b.drain = v) }
-                        }
+                        // Depletion per px travelled — the stroke runs dry. 0 is what a
+                        // pen or a digital brush wants; not behind "Show more", because
+                        // it is the only knob that decides whether a tool runs out.
+                        Slider { label: "Drain", min: 0.0, max: 0.01, value: brush.drain,
+                            oninput: move |v| edit(state, preview, move |b| b.drain = v) }
                     }
 
                     Section {
@@ -275,41 +265,15 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     Section {
                         title: "Pickup", desc: "Canvas paint moving on and off the tool — smudge, knife, eraser.",
                         open: pickup_open,
-                        // Each axis and how the pen modulates it live together: the
-                        // modulation slider sits indented under its axis, and only
-                        // appears while that axis is active (it has no effect at 0).
                         Slider { label: "Lift", min: 0.0, max: 1.0, value: d.lift,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.lift = v) }
-                        if d.lift > 0.005 {
-                            div { class: "be-sub",
-                                Slider { label: "Pressure \u{2192} Lift", min: 0.0, max: 1.0, value: d.load_pressure,
-                                    oninput: move |v| edit(state, preview, move |b| b.dynamics.load_pressure = v) }
-                            }
-                        }
                         Slider { label: "Deposit", min: 0.0, max: 1.0, value: d.deposit,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.deposit = v) }
-                        if d.deposit > 0.005 {
-                            div { class: "be-sub",
-                                Slider { label: "Tilt \u{2192} Deposit", min: 0.0, max: 1.0, value: d.deposit_tilt,
-                                    oninput: move |v| edit(state, preview, move |b| b.dynamics.deposit_tilt = v) }
-                            }
-                        }
                         More { open: pickup_more,
                             // The finite glob pre-loaded on the tool (palette knife, §6.2).
                             Slider { label: "Charge", min: 0.0, max: 2.0, value: d.charge,
                                 oninput: move |v| edit(state, preview, move |b| b.dynamics.charge = v) }
                         }
-                    }
-
-                    Section {
-                        title: "Wet flow", desc: "Paint already on the canvas moving under the stroke.",
-                        open: flow_open,
-                        Slider { label: "Drag", min: 0.0, max: 1.0, value: d.drag,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.drag = v) }
-                        Slider { label: "Bleed", min: 0.0, max: 1.0, value: d.bleed,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.bleed = v) }
-                        Slider { label: "Ridge", min: 0.0, max: 1.0, value: d.ridge,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.ridge = v) }
                     }
 
                     Section {
@@ -464,10 +428,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
     let brush = BrushParams {
         color: [0.82, 0.15, 0.12, 1.0],
         radius: 25.0,
-        spacing: 0.08,
         hardness: 0.9,
-        height: 0.4,
-        wetness: 0.0,
         drain: 0.0,
         tooth: 0.0,
         ..BrushParams::default()

@@ -91,29 +91,28 @@ pub enum OrientationSource {
 /// How a brush interacts with paint already on the canvas (DESIGN.md §6.2). One
 /// **unified tool**, not a mode switch: every axis is a flux on the single conserved
 /// quantity — paint **height** (the amount; DESIGN §6.1) — and the axes compose freely.
-/// `add` is the only *source* (the brush's own paint); the rest move paint that is
-/// already on the canvas, so with `add = 0` the tool conserves height (it only moves
-/// paint around). The everyday dry brush is just `add = 1` with the rest 0 (the default).
+/// [`add`](Self::add) is the only *source* (the brush's own paint); the rest move paint
+/// that is already on the canvas, so with `add = 0` the tool conserves height (it only
+/// moves paint around). The everyday brush is just `add` with the rest 0 (the default).
 ///
-/// Two axes are **vertical** flux between the canvas and a transient per-stroke *tool*
-/// reservoir — Lagrangian, giving crisp long-range *directed* transport:
-/// - [`load`](Self::load)    — lift canvas paint up onto the tool,
+/// The two remaining axes are **vertical** flux between the canvas and a transient
+/// per-stroke *tool* reservoir — Lagrangian, giving crisp long-range *directed*
+/// transport:
+/// - [`lift`](Self::lift)       — lift canvas paint up onto the tool,
 /// - [`deposit`](Self::deposit) — lay tool paint back down.
 ///
-/// Three are **horizontal** flux across the canvas — Eulerian, giving local
-/// omnidirectional flow over a composited stroke region:
-/// - [`drag`](Self::drag)  — advect paint along the brush's motion (conservative
-///   finite-volume; the velocity is injected from the stroke and de-rippled),
-/// - [`bleed`](Self::bleed) — isotropic wet-on-wet diffusion / leveling,
-/// - [`ridge`](Self::ridge) — pile displaced paint into impasto lips at the edges.
-///
-/// `load`-only is an eraser; `load`+`deposit` (`add = 0`) a conservative smudge;
-/// `add`-only ordinary paint; `drag`/`bleed` a rake / alla-prima blender. All flow runs
-/// with fixed iteration counts, so replay stays deterministic (DESIGN §6.2).
+/// `lift`-only is an eraser; `lift`+`deposit` (`add = 0`) a conservative smudge;
+/// `add`-only ordinary paint. All flow runs with fixed iteration counts, so replay
+/// stays deterministic (DESIGN §6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushDynamics {
-    /// The brush's own paint laid directly, in [0, 1]: 0 = lays none (pure manipulation of
-    /// existing paint), 1 = a full deposit (ordinary painting). The only source term.
+    /// The brush's own paint laid directly: the paint **height** deposited per unit of
+    /// swept optical depth (DESIGN.md §6.1), and the tool's only source term. 0 = lays
+    /// none (pure manipulation of existing paint), 1 = a heavy full-thickness deposit.
+    ///
+    /// A *rate*, not a quantity — this source never runs out on its own. For a stroke
+    /// that runs dry as it travels see [`BrushParams::drain`]; for a finite carried
+    /// glob that depletes as it is laid see [`charge`](Self::charge).
     pub add: f32,
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
     /// in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Vertical flux canvas → tool.
@@ -124,51 +123,23 @@ pub struct BrushDynamics {
     /// immediately. Vertical flux tool → canvas.
     #[serde(default)]
     pub deposit: f32,
-    /// Strength of **drag** (advection of paint along the stroke's motion), in [0, 1]:
-    /// 0 = none, 1 = maximum. Horizontal flux; scales the injected velocity.
-    #[serde(default)]
-    pub drag: f32,
-    /// Strength of **bleed** (isotropic wet-on-wet diffusion), in [0, 1]: 0 = none, 1 =
-    /// maximum. Horizontal flux; scales the per-stroke Gaussian radius.
-    #[serde(default)]
-    pub bleed: f32,
-    /// How strongly displaced paint **piles into ridges** at the footprint edges, in
-    /// [0, 1] — the impasto lip (DESIGN.md §6.2). A conservative lateral redistribution.
-    #[serde(default)]
-    pub ridge: f32,
     /// Initial paint **pre-loaded onto the tool** reservoir before the stroke starts, as a
     /// height (the "load a glob on the palette knife" param). 0 = the tool starts empty (the
     /// historical behaviour). It depletes as the tool [`deposit`](Self::deposit)s and refills
-    /// as it [`load`](Self::load)s — a finite carried amount, unlike the inexhaustible
+    /// as it [`lift`](Self::lift)s — a finite carried amount, unlike the inexhaustible
     /// [`add`](Self::add) source (DESIGN.md §6.2).
     #[serde(default)]
     pub charge: f32,
-    /// How strongly **pen pressure** modulates the scrape ([`load`](Self::load)), in [0, 1]:
-    /// 0 = `load` is constant across the stroke (the historical behaviour), 1 = `load` scales
-    /// fully with per-sample pressure (a palette knife scrapes more the harder you press).
-    #[serde(default)]
-    pub load_pressure: f32,
-    /// How strongly **pen tilt toward the direction of motion** modulates the
-    /// [`deposit`](Self::deposit), in [0, 1]: 0 = `deposit` is constant (the historical
-    /// behaviour, and the fallback with no pen tilt), 1 = `deposit` scales fully with the
-    /// forward lean (tilting the knife into the stroke lays more paint down).
-    #[serde(default)]
-    pub deposit_tilt: f32,
 }
 
 impl Default for BrushDynamics {
     /// The everyday brush: lay the brush's own paint, manipulate nothing.
     fn default() -> Self {
         Self {
-            add: 1.0,
+            add: 0.6,
             lift: 0.0,
             deposit: 0.0,
-            drag: 0.0,
-            bleed: 0.0,
-            ridge: 0.0,
             charge: 0.0,
-            load_pressure: 0.0,
-            deposit_tilt: 0.0,
         }
     }
 }
@@ -234,18 +205,12 @@ pub struct BrushParams {
     pub color: [f32; 4],
     /// Stamp radius in canvas pixels at full pressure.
     pub radius: f32,
-    /// Spacing between stamps as a fraction of `radius`.
-    pub spacing: f32,
     /// Edge softness in [0, 1): 0 = very soft, ~1 = hard edge.
     pub hardness: f32,
-    /// Per-stamp coverage in [0, 1].
-    pub flow: f32,
-    /// Impasto: paint thickness deposited per unit coverage (height channel).
-    pub height: f32,
-    /// Wetness deposited per unit coverage (wet channel) — drives gloss (§6.3).
-    pub wetness: f32,
     /// Reservoir depletion per canvas pixel travelled: the stroke thins as paint
-    /// runs out (DESIGN.md §6.2). 0 = inexhaustible.
+    /// runs out (DESIGN.md §6.2). 0 = inexhaustible — which is what a pen, a
+    /// charcoal stick, or an ordinary digital brush wants; a physical loaded
+    /// brush wants a small positive value.
     pub drain: f32,
     /// Brush tip shape (DESIGN.md §6.6).
     pub shape: BrushShape,
@@ -255,9 +220,9 @@ pub struct BrushParams {
     /// carried `follow_path`, now ignored on load) come in as `FollowStroke`.
     #[serde(default)]
     pub orientation: OrientationSource,
-    /// How the brush manipulates paint already on the canvas (DESIGN.md §6.2) — the
-    /// unified six-axis tool. `#[serde(default)]` so documents saved before this field
-    /// load as the everyday `add = 1` brush.
+    /// How much of its own paint the brush lays, and how it manipulates paint already
+    /// on the canvas (DESIGN.md §6.2) — the unified tool. `#[serde(default)]` so
+    /// documents saved before this field load as the everyday `add`-only brush.
     #[serde(default)]
     pub dynamics: BrushDynamics,
     /// Canvas **tooth** in [0, 1]: how strongly the surface bump (DESIGN.md §6.4)
@@ -279,11 +244,7 @@ impl Default for BrushParams {
         Self {
             color: [0.0, 0.0, 0.0, 1.0],
             radius: 16.0,
-            spacing: 0.25,
             hardness: 0.5,
-            flow: 1.0,
-            height: 0.6,
-            wetness: 0.7,
             drain: 0.0015,
             shape: BrushShape::default(),
             orientation: OrientationSource::default(),

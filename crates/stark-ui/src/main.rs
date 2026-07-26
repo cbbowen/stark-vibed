@@ -582,7 +582,7 @@ fn base64(data: &[u8]) -> String {
 }
 
 /// The floating Brush panel: the everyday quick controls (shape, size, opacity,
-/// rate). Everything else — the full grouped parameter set with a live test
+/// amount). Everything else — the full grouped parameter set with a live test
 /// stroke — lives in the brush editor dialog ("Edit brush…").
 #[component]
 fn BrushPanel() -> Element {
@@ -601,7 +601,7 @@ fn BrushPanel() -> Element {
         div { class: "brush-shapes",
             button {
                 class: chip(is_round),
-                onclick: move |_| set_shape(state, BrushShape::Round, 0.25),
+                onclick: move |_| set_shape(state, BrushShape::Round),
                 "Round"
             }
             button {
@@ -614,8 +614,8 @@ fn BrushPanel() -> Element {
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
         Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
             oninput: move |v| update_brush(state, move |b| b.color[3] = v) }
-        Slider { label: "Rate", min: 0.05, max: 1.0, value: brush.flow,
-            oninput: move |v| update_brush(state, move |b| b.flow = v) }
+        Slider { label: "Amount", min: 0.0, max: 1.5, value: brush.dynamics.add,
+            oninput: move |v| update_brush(state, move |b| b.dynamics.add = v) }
         button {
             class: "be-open",
             onclick: move |_| {
@@ -628,11 +628,8 @@ fn BrushPanel() -> Element {
 }
 
 /// Switch to a shape, also setting a sensible default spacing for it.
-fn set_shape(state: AppState, shape: BrushShape, spacing: f32) {
-    update_brush(state, move |b| {
-        b.shape = shape;
-        b.spacing = spacing;
-    });
+fn set_shape(state: AppState, shape: BrushShape) {
+    update_brush(state, move |b| b.shape = shape);
 }
 
 /// Set what orients the brush shape as it sweeps (DESIGN.md §6.6).
@@ -650,10 +647,9 @@ fn set_brush_preset(state: AppState) {
     set_dyn(state, |d| *d = BrushDynamics::default());
 }
 
-/// The palette knife (DESIGN.md §6.2): no own paint (`add = 0`), a finite pre-`charge` it
-/// carries, pen pressure fully drives the scrape (`load` + `load_pressure`), and pen tilt
-/// toward the motion fully drives the `deposit` (`deposit_tilt`). A hard edge + tooth so it
-/// reads as a blade riding the weave.
+/// The palette knife (DESIGN.md §6.2): no own paint (`add = 0`), a finite pre-`charge`
+/// it carries, and it scrapes what it rides over (`lift`) back down as it goes
+/// (`deposit`). A hard edge + tooth so it reads as a blade riding the weave.
 fn set_knife(state: AppState) {
     update_brush(state, |b| {
         b.shape = BrushShape::Round;
@@ -664,11 +660,6 @@ fn set_knife(state: AppState) {
             lift: 1.0,
             deposit: 0.6,
             charge: 0.5,
-            load_pressure: 1.0,
-            deposit_tilt: 1.0,
-            drag: 0.0,
-            bleed: 0.0,
-            ridge: 0.0,
         };
     });
 }
@@ -678,7 +669,7 @@ fn set_knife(state: AppState) {
 fn set_bristles(state: AppState) {
     let id = state.renderer.read().as_ref().and_then(|r| r.bristle());
     let Some(id) = id else { return };
-    set_shape(state, BrushShape::Stamp(id), 0.08);
+    set_shape(state, BrushShape::Stamp(id));
 }
 
 /// The floating Select panel (DESIGN.md §6.8): which selection tool is active, how

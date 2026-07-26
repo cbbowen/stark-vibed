@@ -536,7 +536,7 @@ So:
 - Precompute, per brush, the **prefix integral of `τ` along the travel axis**
   (the tangent the brush is rotated to). A length-`d` segment's swept depth at a
   point is then `prefix(u) − prefix(u−d)` for that row — an O(1) lookup.
-- A segment quad outputs `α_seg = 1 − exp(−flow · sweptDepth)`. Because the
+- A segment quad outputs `α_seg = 1 − exp(−opacity · sweptDepth)`. Because the
   existing premultiplied-"over" blend across overlapping segment quads combines
   as `1 − ∏(1−α) = 1 − exp(−Σ τ)`, it sums the depths **exactly** — no
   double-counting at joints, no scratch buffer, no second pass. The whole
@@ -612,7 +612,7 @@ continuous, dab-free footprint. All on the GPU with no readback
      math, is what bounds segment length for a dynamics brush: about one
      reservoir texel of travel (`gpu::stroke::flatten_tolerance`). Integrating
      the reservoir along the pass would lift the cap.
-   - At `spacing · radius` cadence, **pickup** — one thread per **tool
+   - At `RESERVOIR_CADENCE · radius` cadence, **pickup** — one thread per **tool
      reservoir** texel. The reservoir is a real 2-D texture in brush-local
      coordinates (`BRUSH_RES`², ping-ponged), so each part of the tip carries
      what *it* rolled through. Each texel samples the evolving region under its
@@ -648,18 +648,31 @@ do not exist in this model.
 
 *The axes* (`BrushDynamics` on `BrushParams` — a flat record in the action log):
 
-- `add` — lay the brush's own paint; the only inexhaustible **source**. A
-  pure-`add` brush takes the swept fast path above, untouched by the loop.
+- `add` — lay the brush's own paint; the only inexhaustible **source**, and the
+  tool's single *amount* knob: the paint height laid per unit swept optical depth.
+  A pure-`add` brush takes the swept fast path above, untouched by the loop.
 - `lift` — vertical flux canvas → tool (an eraser when alone).
 - `deposit` — vertical flux tool → canvas (`lift`+`deposit` with `add = 0` is a
   true mass-conserving smudge).
 - `charge` — a finite glob pre-loaded onto the tool (the palette-knife scoop);
   it depletes as the tool deposits and refills as it lifts.
-- `drag`, `bleed`, `ridge`, `load_pressure`, `deposit_tilt` — **currently
-  inert**, awaiting reintroduction as refinements *of the loop*: a forward
-  deposit offset for the bow-wave drag, a footprint-local blur for bleed, edge
-  displacement for ridge, and per-segment pressure/tilt modulation of the rates
-  (the loop already carries per-dispatch state, so each is a local change).
+
+That is the whole set. Earlier drafts also listed `drag`, `bleed`, `ridge`,
+`load_pressure` and `deposit_tilt` as inert placeholders awaiting reintroduction
+as refinements *of the loop*; they were **removed** rather than carried, because a
+serialized field and a UI slider that move but change nothing cost more in
+confusion than they save in future typing. Each remains a local change to
+reintroduce when it is actually built (the loop already carries per-dispatch
+state): a forward deposit offset for the bow-wave drag, a footprint-local blur for
+bleed, edge displacement for ridge, per-segment pressure/tilt modulation of the
+rates. Likewise `BrushParams` no longer carries `spacing`, `flow`, `height` or
+`wetness`: with swept-segment rendering there are no dabs for `spacing` to space
+(the reservoir reload cadence is now the fixed `RESERVOIR_CADENCE`), and `flow`
+and `height` were redundant multipliers on the one amount `add` already sets —
+`flow` doubly so, since it also carried the `drain` factor into `τ` and so applied
+the run-dry falloff *twice*. `wetness` was the only source of the gloss channel,
+so paint is now uniformly matte; the `(height, wet)` aux layout and the media
+pass's roughness term are unchanged and simply read a constant 0.
 
 *Determinism* — a stroke is a pure function of `base` + the `StrokeRecord`
 (fixed segment/pickup plan, fixed shader math), so replay and
@@ -873,8 +886,9 @@ the save file (§8). Selecting a brush is session state, like color (`SetBrush`)
 not a historized edit.
 
 **Stamp rendering.** `stamp.wesl` gains a per-instance rotation (cos/sin) and
-samples the bound mask at the footprint's uv: `coverage = mask · flow`, with the
-mask also modulating height. `Round` is realized as a built-in generated mask
+samples the bound mask at the footprint's uv, so the mask's coverage is what the
+swept optical depth integrates and therefore modulates both opacity and the height
+`add` lays. `Round` is realized as a built-in generated mask
 under a reserved id, so the shader always samples a texture — one code path.
 Determinism holds throughout: fixed sampler, seeded jitter, content-addressed
 mask.
@@ -1354,11 +1368,12 @@ them perturb the convergence model above; they layer on top of it.
    compute dispatches exchanging height between the evolving region and a 2-D
    tool reservoir, the canvas side swept through the prefix-τ definite integral
    (rates exponential in exposure, so they compose exactly — dab-free) → whole-
-   block region write-back. `add`/`lift`/`deposit`/`charge` are live;
-   `drag`/`bleed`/`ridge`/`load_pressure`/`deposit_tilt` await reintroduction as
-   loop refinements. Goldens `smudge_drag`/`self_smear` plus the conservation/
-   eraser/charge/determinism suite (`tests/dynamics.rs`) and the write-back seam
-   regression (`tests/seam.rs`).
+   block region write-back. `add`/`lift`/`deposit`/`charge` are the whole axis set
+   and all four are live; the never-implemented `drag`/`bleed`/`ridge`/
+   `load_pressure`/`deposit_tilt` placeholders were removed (§6.2) and will be
+   added back as they are built. Goldens `smudge_drag`/`self_smear` plus the
+   conservation/eraser/charge/determinism suite (`tests/dynamics.rs`) and the
+   write-back seam regression (`tests/seam.rs`).
 11. **Brush file upload:** a `<input type="file">` in the brush panel that reads
    image bytes and calls `Engine::import_brush`, so users can bring arbitrary
    brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
@@ -1383,9 +1398,11 @@ them perturb the convergence model above; they layer on top of it.
    Single-buffer, always-wet; glazing is left to document layers. Extend the seam
    test to the write-back path; golden per phase.
    *Since unified (§6.2):* the Dry/Knife/Wet enum variants collapsed into **one
-   six-axis tool** (`add`/`load`/`deposit`/`drag`/`bleed`/`ridge`), every axis a flux on
-   the single conserved quantity (paint `height`) — the integrate is one unified branch,
-   the drag is conservative finite-volume advection, and the ridge a zero-mean doublet.
+   tool** (`add`/`lift`/`deposit`/`charge`), every axis a flux on the single conserved
+   quantity (paint `height`) — the integrate is one unified branch. The horizontal-flux
+   axes sketched here (drag as conservative finite-volume advection, ridge as a
+   zero-mean doublet) are still the intended design when they are built; they are no
+   longer carried as inert fields in the meantime (§6.2).
 
 Each step is independently testable through `stark-core` before any UI exists,
 which is exactly the leverage the frontend/backend split was meant to provide.

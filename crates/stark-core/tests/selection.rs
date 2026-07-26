@@ -205,7 +205,6 @@ fn selection_gates_the_brush_dynamics_path() {
         lift: 0.3,
         deposit: 0.8,
         charge: 0.5,
-        ..BrushDynamics::default()
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     stroke_with(

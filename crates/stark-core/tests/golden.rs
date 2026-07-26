@@ -107,7 +107,6 @@ fn golden_bristle_stroke() {
 
     let mut brush = brush(RED, 70.0);
     brush.shape = BrushShape::Stamp(id);
-    brush.spacing = 0.06; // dense so the bristle texture reads as a continuous stroke
     brush.drain = 0.0;
     engine.process(InputCommand::SetBrush(brush));
 
@@ -139,7 +138,6 @@ fn golden_pen_orientation_stroke() {
     let mut brush = brush(RED, 60.0);
     brush.shape = BrushShape::Stamp(id);
     brush.orientation = OrientationSource::Pen;
-    brush.spacing = 0.06;
     brush.drain = 0.0;
     engine.process(InputCommand::SetBrush(brush));
 
@@ -183,7 +181,7 @@ fn golden_canvas_surface() {
     engine.register_surface(SurfaceId::Linen, linen_png);
     engine.set_surface(SurfaceId::Linen);
     let mut brush = brush(RED, 60.0);
-    brush.flow = 0.22; // light, so the tooth reads
+    brush.drain = 0.005;
     engine.process(InputCommand::SetBrush(brush));
     engine.process(InputCommand::StartStroke {
         tool: Tool::Brush,
