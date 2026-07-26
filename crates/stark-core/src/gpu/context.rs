@@ -4,7 +4,7 @@
 //! [`GpuContext::from_parts`] is that path; [`GpuContext::headless`] is a
 //! convenience for tests and tools that need an offscreen device (DESIGN.md §9).
 
-use crate::error::{EngineError, Result};
+use crate::error::Result;
 
 /// Max surface texture edge. `Limits::downlevel_defaults()` (and WebGL2) cap 2D
 /// textures at 2048, so larger sources are box-downsampled by an integer factor
@@ -69,12 +69,5 @@ impl GpuContext {
             })
             .await?;
         Ok(Self::from_parts(instance, adapter, device, queue))
-    }
-
-    /// Map a [`NoAdapter`](EngineError::NoAdapter)-style absence into an error.
-    /// (Reserved for future surface-bound construction.)
-    #[allow(dead_code)]
-    pub(crate) fn require<T>(value: Option<T>) -> Result<T> {
-        value.ok_or(EngineError::NoAdapter)
     }
 }

@@ -50,7 +50,7 @@ tracing = "0.1"
 # stark-shaders is consumed by stark-core.
 stark-shaders = { path = "crates/stark-shaders" }
 # Incremental least-squares B-spline fitting, behind `path::PathFitter` (§6.2).
-spline_fit = { path = "crates/spline-fit" }
+spline-fit = { path = "crates/spline-fit" }
 nalgebra = "0.35"
 
 

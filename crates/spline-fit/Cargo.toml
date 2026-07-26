@@ -1,11 +1,13 @@
 [package]
-name = "spline_fit"
+name = "spline-fit"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Least-squares cubic B-spline fitting, behind stark-core's path::PathFitter (DESIGN.md §6.2)."
 
 [dependencies]
-approx = "0.5"
-nalgebra = "0.35"
+nalgebra = { workspace = true }
 thiserror = { workspace = true }
 num-traits = "0.2"
 
@@ -13,6 +15,8 @@ num-traits = "0.2"
 criterion = "0.8"
 
 [features]
+# Gates `#![feature(lazy_type_alias)]`. Note this does *not* gate nightly as a
+# whole: `generic_const_exprs` is enabled unconditionally in lib.rs.
 nightly = []
 
 [[bench]]
