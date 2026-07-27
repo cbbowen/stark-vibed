@@ -4,9 +4,10 @@
 use dioxus::prelude::*;
 
 use crate::panels::frame::AddFrameButton;
+use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch};
 use stark_core::LayerInfo;
-use stark_core::command::{DocCommand, ViewCommand};
+use stark_core::command::{DocCommand, PeerCommand};
 
 #[component]
 pub fn LayerPanel() -> Element {
@@ -113,9 +114,32 @@ pub fn LayerRow(info: LayerInfo) -> Element {
                 } else {
                     "Paint on this layer"
                 },
-                onclick: move |_| dispatch(state, ViewCommand::SetActiveLayer(info.id)),
-                if matte { "\u{25F1} Frame" } else { "Layer {info.id.0}" }
+                onclick: move |_| dispatch(state, PeerCommand::SetActiveLayer(info.id)),
+                if matte { "\u{25F1} Frame" } else { "Layer {info.id.ordinal()}" }
+            }
+            // Who else is working here (PEER_DESIGN.md §4). The selected layer is
+            // per-client, so this is the only place that answers "am I about to
+            // paint over what someone else is doing?" before it happens.
+            for peer in peers_on(state, info.id) {
+                div {
+                    class: "peer-chip",
+                    style: "background:{peer.css_color()}",
+                    title: "{peer.name} is working on this layer",
+                    "{peer.initials()}"
+                }
             }
         }
     }
+}
+
+/// The collaborators whose selected layer is `id`.
+fn peers_on(state: AppState, id: stark_core::LayerId) -> Vec<PeerInfo> {
+    state
+        .collab
+        .peers
+        .read()
+        .iter()
+        .filter(|p| p.active_layer == id)
+        .cloned()
+        .collect()
 }

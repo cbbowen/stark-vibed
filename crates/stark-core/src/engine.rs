@@ -5,25 +5,27 @@
 //! actor loop and reactive `ObservableState` channel (DESIGN.md §7) wrap this
 //! same core in a later step.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::{EngineError, Result};
 use crate::assets::{AssetId, AssetStore};
 use crate::colorspace::{ColorSpace, ColorSpaceId};
-use crate::command::{DocCommand, GestureCommand, InputCommand, ViewCommand};
+use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, ViewCommand};
 use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
     DocState, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode,
     StrokeRecord, Timeline, Tool, effective_actions,
 };
-use crate::geom::{Extent2, ViewTransform};
+use crate::geom::{Extent2, TileCoord, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
     CompositeItem, Compositor, Environment, EnvironmentId, GpuContext, MatteDraw, Registry,
-    SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
+    SelectionOutline, SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
+use crate::peer::{LiveGesture, Peer, PeerFrame, Peers};
+use crate::{EngineError, Result};
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
@@ -201,6 +203,19 @@ struct FrozenHead {
     /// [`ToolState`](crate::gpu::stroke::ToolState).
     tool: Option<crate::gpu::stroke::ToolState>,
     state: DocState,
+    /// Which gesture this is the head of — its author's ordinal. A head is only ever
+    /// legitimately reused across consecutive moves of the *same* gesture, and the
+    /// span count alone cannot tell a new stroke from a continued one when the new
+    /// one has already grown past where the old was frozen.
+    gesture: u64,
+    /// The base this head was composited onto ([`Engine::doc_epoch`]). Anything that
+    /// replaces the base — a commit, an undo, a remote merge, a load — bumps the
+    /// epoch, and a head from an earlier one is discarded rather than drawn over a
+    /// canvas that no longer exists.
+    epoch: u64,
+    /// Every tile the head has rewritten so far, so the fold knows what to overlay
+    /// (PEER_DESIGN.md §6). Accumulated because a head grows across many advances.
+    dirty: BTreeSet<TileCoord>,
 }
 
 pub struct Engine {
@@ -241,12 +256,28 @@ pub struct Engine {
     environment: Registry<EnvironmentId>,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
-    /// Live preview of the in-flight stroke, composited in place of the
-    /// committed state while painting (DESIGN.md §6.2). `None` when idle.
-    preview: Option<DocState>,
-    /// The settled head of the in-flight stroke, already rendered (see
-    /// [`FrozenHead`]).
-    frozen_head: Option<FrozenHead>,
+    /// Everyone else in the session (PEER_DESIGN.md §4). Empty when solo.
+    peers: Peers,
+    /// The frame-handle drag in flight (FRAME_DESIGN.md §7): a whole document that
+    /// stands in for the committed one, because moving a matte is not a tile edit.
+    /// `None` when no handle is held.
+    matte_preview: Option<DocState>,
+    /// The **presented** document: the committed state (or `matte_preview`) with
+    /// every in-flight gesture — this client's and every peer's — drawn over it
+    /// (PEER_DESIGN.md §6). `None` when nobody is mid-gesture.
+    live: Option<DocState>,
+    /// The settled head of each in-flight stroke, keyed by its author (see
+    /// [`FrozenHead`]). Every head is rooted at the *committed* document rather than
+    /// at the previous peer's preview: chaining would be marginally more faithful
+    /// for two strokes overlapping in the same instant, and would invalidate peer
+    /// *k*'s cache on every move by peers before it — collapsing the incremental
+    /// repaint exactly when two people are painting at once.
+    heads: BTreeMap<ActorId, FrozenHead>,
+    /// Bumped whenever the document the previews are composited onto changes. A
+    /// [`FrozenHead`] stamped with an older epoch is stale and discarded — which
+    /// rules out the whole class of "drawn over a canvas that has since moved"
+    /// rather than enumerating the ways it arises.
+    doc_epoch: u64,
     /// Raw pointer reports of the in-flight stroke, dumped on release under the
     /// `debug-unfrozen` feature so a misfit stroke can be replayed as a test.
     debug_samples: Vec<crate::command::InputSample>,
@@ -315,8 +346,11 @@ impl Engine {
             environment,
             timeline,
             session,
-            preview: None,
-            frozen_head: None,
+            peers: Peers::new(),
+            matte_preview: None,
+            live: None,
+            heads: BTreeMap::new(),
+            doc_epoch: 0,
             debug_samples: Vec::new(),
             actor: ActorId::SOLO,
             clock: 0,
@@ -332,23 +366,11 @@ impl Engine {
     /// [`Engine::observe`]; anything that must answer is a request (see
     /// [`command`](crate::command)).
     pub fn process(&mut self, command: impl Into<InputCommand>) {
-        let command = command.into();
-        // The frozen head caches pixels composited onto *a particular document* for
-        // *a particular stroke*, and neither of those is visible from the head
-        // itself. It is only ever legitimately reused across consecutive gesture
-        // moves; anything else may have replaced the document under it - a commit,
-        // an undo, a remote merge, a layer switch - or started a different stroke
-        // entirely, and reusing it then composites the live tail onto a stale
-        // canvas. Dropping it on every other command costs one rebuild and rules
-        // out the whole class of staleness rather than enumerating the ways it
-        // arises.
-        if !matches!(command, InputCommand::Gesture(GestureCommand::To { .. })) {
-            self.frozen_head = None;
-        }
-        match command {
+        match command.into() {
             InputCommand::Gesture(c) => self.process_gesture(c),
             InputCommand::Doc(c) => self.process_doc(c),
             InputCommand::View(c) => self.process_view(c),
+            InputCommand::Peer(c) => self.process_peer(c),
         }
     }
 
@@ -366,26 +388,24 @@ impl Engine {
                     // A marquee or lasso fits no curve, so it has no use for the
                     // tolerance; its own decimation is a mask-cost knob (§6.8).
                     self.session.start_selection(tool, sample.pos);
-                    self.refresh_selection_preview();
                 } else {
                     let seed = self.clock;
                     self.session.start_stroke(tool, sample, seed, tolerance);
                     self.debug_samples.clear();
                     self.debug_samples.push(sample);
-                    self.refresh_preview();
                 }
+                self.refresh_live();
             }
             GestureCommand::To { sample } => {
                 if self.session.is_selecting() {
                     self.session.selection_to(sample.pos);
-                    self.refresh_selection_preview();
                 } else {
                     self.session.stroke_to(sample);
                     if cfg!(feature = "debug-unfrozen") {
                         self.debug_samples.push(sample);
                     }
-                    self.refresh_preview();
                 }
+                self.refresh_live();
             }
             // The one edge that produces document state.
             GestureCommand::End => {
@@ -397,37 +417,69 @@ impl Engine {
                     self.log_debug_samples();
                     self.commit(ActionKind::CommitStroke(rec));
                 }
-                self.preview = None;
+                self.refresh_live();
             }
             GestureCommand::Cancel => {
                 self.session.cancel_stroke();
-                self.preview = None;
+                self.refresh_live();
             }
+        }
+    }
+
+    /// Per-client state that is published rather than logged (PEER_DESIGN.md §7).
+    /// Nothing here enters the history or the save file; it rides the presence
+    /// channel so collaborators can see where this client is working.
+    fn process_peer(&mut self, command: PeerCommand) {
+        match command {
+            // Any existing layer, including a matte. `active_layer` is *the
+            // selected layer*, not "a paint target" — a frame is selected the same
+            // way a paint layer is, which is what lets the frontend have one
+            // selection concept instead of two (FRAME_DESIGN.md §7). A stroke aimed
+            // at a matte then simply draws nothing, refused identically by `apply`
+            // and by the preview path.
+            PeerCommand::SetActiveLayer(id) => {
+                if self.document().layer_index(id).is_some() {
+                    self.session.active_layer = id;
+                }
+            }
+            PeerCommand::SetCursor(pos) => self.session.cursor = pos,
+            PeerCommand::SetName(name) => self.session.name = name,
         }
     }
 
     /// Document-state mutations: every arm here either commits an action or
     /// navigates the history that holds them.
     fn process_doc(&mut self, command: DocCommand) {
+        self.process_doc_inner(command);
+        // Every arm changes the document the in-flight previews are drawn over, so
+        // the fold is rebuilt once, here, rather than at each of a dozen call sites.
+        // Cheap when nothing is in flight (there is nothing to fold) and correct when
+        // a peer is mid-stroke while this client edits.
+        self.refresh_live();
+    }
+
+    fn process_doc_inner(&mut self, command: DocCommand) {
         match command {
             DocCommand::Undo => {
-                self.preview = None;
+                self.matte_preview = None;
                 // Shared sessions log undo as an action peers can order
                 // (DESIGN.md §5.4, §12.3); solo falls back to navigation.
                 if let Some(target) = self.timeline.undo_as_action() {
                     self.commit(ActionKind::Undo(target));
                 } else {
                     self.timeline.undo(&mut self.apply);
+                    self.doc_epoch += 1;
                 }
                 self.apply_document_surface();
             }
             DocCommand::Redo => {
-                self.preview = None;
+                self.matte_preview = None;
                 // Redo is an `Undo` of an `Undo` in a shared session.
                 if let Some(target) = self.timeline.redo_as_action() {
                     self.commit(ActionKind::Undo(target));
                 } else {
                     self.timeline.redo(&mut self.apply);
+                    self.doc_epoch += 1;
                 }
                 self.apply_document_surface();
             }
@@ -440,8 +492,7 @@ impl Engine {
                 }
             }
             DocCommand::AddLayer { above } => {
-                let id = LayerId(self.next_layer);
-                self.next_layer += 1;
+                let id = self.mint_layer();
                 self.commit(ActionKind::AddLayer { id, above });
                 // A freshly added layer becomes the active painting target.
                 self.session.active_layer = id;
@@ -451,8 +502,7 @@ impl Engine {
                 region,
                 color,
             } => {
-                let id = LayerId(self.next_layer);
-                self.next_layer += 1;
+                let id = self.mint_layer();
                 self.commit(ActionKind::AddMatte {
                     id,
                     above,
@@ -468,7 +518,7 @@ impl Engine {
                 // The committed rect supersedes whatever the drag was previewing;
                 // leaving the preview up would pin the canvas to the last dragged
                 // value and shadow every later edit.
-                self.preview = None;
+                self.matte_preview = None;
                 self.commit(ActionKind::SetMatteRect(id, min, max));
             }
             DocCommand::SetMatteColor(id, color) => {
@@ -477,20 +527,7 @@ impl Engine {
             DocCommand::SetBackground(rgb) => self.commit(ActionKind::SetBackground(rgb)),
             DocCommand::RemoveLayer(id) => {
                 self.commit(ActionKind::RemoveLayer(id));
-                // Keep the active layer valid after removal, preferring a paintable
-                // one: a matte may legitimately be selected, but someone who just
-                // deleted the layer they were painting on wants to keep painting,
-                // not to land on the frame.
-                if self.session.active_layer == id
-                    && let Some(first) = self
-                        .document()
-                        .layers
-                        .iter()
-                        .find(|l| l.is_paintable())
-                        .or_else(|| self.document().layers.iter().next())
-                {
-                    self.session.active_layer = first.id;
-                }
+                self.repoint_active_layer();
             }
             DocCommand::SetLayerBlend(id, blend) => {
                 self.commit(ActionKind::SetLayerBlend(id, blend))
@@ -513,12 +550,12 @@ impl Engine {
                 // Switching away mid-gesture abandons it rather than committing a
                 // half-dragged marquee.
                 self.session.cancel_stroke();
-                self.preview = None;
                 self.session.tool = tool;
+                self.refresh_live();
             }
             ViewCommand::SetBrush(brush) => {
                 self.session.brush = brush;
-                self.refresh_preview();
+                self.refresh_live();
             }
             ViewCommand::Pan { delta } => {
                 // Grab-and-drag: content follows the cursor, so the view center
@@ -535,25 +572,13 @@ impl Engine {
             ViewCommand::SetSelectionFeather(feather) => {
                 self.session.selection_feather = feather.max(0.0)
             }
-            // Any existing layer, including a matte. `active_layer` is *the
-            // selected layer*, not "a paint target" — a frame is selected the same
-            // way a paint layer is, which is what lets the frontend have one
-            // selection concept instead of two (FRAME_DESIGN.md §7). A stroke aimed
-            // at a matte then simply draws nothing, refused identically by `apply`
-            // and by the preview path.
-            ViewCommand::SetActiveLayer(id) => {
-                if self.document().layer_index(id).is_some() {
-                    self.session.active_layer = id;
-                }
-            }
-            // Reuses the same `preview` slot the in-flight stroke uses (§6.2): a
-            // frame drag and a stroke are both pointer gestures, so they cannot
-            // overlap, and the compositor already prefers `preview` over the
-            // committed document.
             ViewCommand::PreviewMatteRect(drag) => {
-                self.preview = drag.map(|(id, min, max)| {
-                    self.timeline.current().set_matte_rect(id, min, max)
-                });
+                self.matte_preview =
+                    drag.map(|(id, min, max)| self.timeline.current().set_matte_rect(id, min, max));
+                // The previews are composited onto this, so moving it invalidates
+                // every cached head exactly as a commit would.
+                self.doc_epoch += 1;
+                self.refresh_live();
             }
             ViewCommand::SetMediaParams(params) => self.compositor.set_media(params),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
@@ -594,7 +619,7 @@ impl Engine {
         if let Some(rec) = self.session.end_stroke() {
             self.commit(ActionKind::CommitStroke(rec));
         }
-        self.preview = None;
+        self.refresh_live();
     }
 
     /// Render the current canvas (preview if stroking, else committed) into
@@ -628,10 +653,7 @@ impl Engine {
         background: Background,
         chrome: Chrome,
     ) {
-        let doc = self
-            .preview
-            .as_ref()
-            .unwrap_or_else(|| self.timeline.current());
+        let doc = self.presented();
 
         // Walk the stack bottom-to-top, skipping hidden layers and tagging each
         // item with its layer opacity. Normal-blend layers compose correctly
@@ -678,16 +700,26 @@ impl Engine {
         // (FRAME_DESIGN.md §6). Keyed on `chrome`, deliberately *not* on the
         // background — a substrate export is still an export, and tying the two
         // together silently leaked the outline into every opaque PNG.
-        let selection = match chrome {
-            Chrome::Shown => doc.selection.clone(),
-            Chrome::Hidden => crate::document::Selection::everything(),
+        //
+        // Own the masks (a handful of `Arc` bumps) so the borrow of `doc` — and with
+        // it of `self` — ends before the compositor is borrowed mutably below.
+        let outlines: Vec<(crate::document::Selection, Option<[f32; 3]>)> = match chrome {
+            Chrome::Hidden => Vec::new(),
+            Chrome::Shown => self.visible_selections(),
         };
+        let outlines: Vec<SelectionOutline<'_>> = outlines
+            .iter()
+            .map(|(selection, tint)| SelectionOutline {
+                selection,
+                tint: *tint,
+            })
+            .collect();
         self.compositor.render(
             target,
             view,
             bg_channels,
             &items,
-            &selection,
+            &outlines,
             background == Background::Transparent,
         );
     }
@@ -700,11 +732,8 @@ impl Engine {
     /// [`export`](Self::export), which awaits the map.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_to_image(&mut self) -> RgbaImage {
-        let (target, size) = self.render_offscreen(
-            self.session.view,
-            Background::Substrate,
-            Chrome::Shown,
-        );
+        let (target, size) =
+            self.render_offscreen(self.session.view, Background::Substrate, Chrome::Shown);
         let pixels = crate::gpu::readback::read_rgba8_blocking(&self.gpu, &target, size);
         RgbaImage::from_target_bytes(size.width, size.height, pixels, self.target_format)
     }
@@ -846,8 +875,8 @@ impl Engine {
             );
         }
         let v = self.session.view;
-        let half =
-            crate::geom::Vec2::new(v.viewport.width as f32, v.viewport.height as f32) * (0.5 / v.zoom);
+        let half = crate::geom::Vec2::new(v.viewport.width as f32, v.viewport.height as f32)
+            * (0.5 / v.zoom);
         (v.center - half, v.center + half)
     }
 
@@ -885,7 +914,6 @@ impl Engine {
     /// Replace the document by replaying a loaded file's action log. The full
     /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
     pub fn load_document(&mut self, file: &DocumentFile) {
-        self.frozen_head = None;
         // The surface the log starts from, before `reset_document` seeds with it.
         // Replayed `SetSurface` actions move it from there (DESIGN.md §6.4).
         self.initial_surface = file.canvas.surface;
@@ -948,8 +976,8 @@ impl Engine {
         // a marquee drag would otherwise flash the selection bar in and out before
         // anything is selected — and that is asserted by
         // `a_selection_gesture_commits_the_same_op_it_previewed`. A stroke preview
-        // changes no presentation property, so this is a no-op while painting.
-        let shown = self.preview.as_ref().unwrap_or(doc);
+        // changes no presentation property, so it is not consulted here at all.
+        let shown = self.matte_preview.as_ref().unwrap_or(doc);
         let layers = shown
             .layers
             .iter()
@@ -981,7 +1009,7 @@ impl Engine {
             bounds: doc.bounds,
             active_layer: self.session.active_layer,
             layers,
-            has_selection: doc.selection.is_active(),
+            has_selection: doc.has_selection(self.actor),
             selection_mode: self.session.selection_mode,
             selection_feather: self.session.selection_feather,
             media: self.compositor.media(),
@@ -1052,8 +1080,14 @@ impl Engine {
         let initial = DocState::with_layer(ROOT_LAYER);
         self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.actor = actor;
+        self.session.name = crate::peer::default_name(actor);
         self.outbox_enabled = true;
-        self.preview = None;
+        self.matte_preview = None;
+        self.doc_epoch += 1;
+        // New actor, new layer-id space: this client's counter restarts, and the
+        // pre-share layers keep the `SOLO` ids they were minted with.
+        self.next_layer = 1;
+        self.refresh_live();
     }
 
     /// Join a shared session (the peer side): replace the document with the
@@ -1080,37 +1114,58 @@ impl Engine {
             file.actions.clone(),
             ctx,
         ));
-        self.resync_counters(&file.actions);
         self.actor = actor;
+        self.session.name = crate::peer::default_name(actor);
+        self.resync_counters(&file.actions);
         self.outbox_enabled = true;
         // Whatever the replayed log left the document on.
         self.apply_document_surface();
+        self.doc_epoch += 1;
+        self.refresh_live();
     }
 
-    /// Leave a shared session: stop queueing broadcasts. The replicated
-    /// timeline (and the shared log) stays — editing continues solo on the
-    /// same canvas, and a later [`Self::start_collaboration`] re-shares it.
+    /// Leave a shared session: stop queueing broadcasts and forget everyone who was
+    /// in it. The replicated timeline (and the shared log) stays — editing continues
+    /// solo on the same canvas, and a later [`Self::start_collaboration`] re-shares
+    /// it.
+    ///
+    /// The peers' *selections* stay in the document, because replay still needs them
+    /// to reproduce their strokes; they simply stop being drawn, since the roster is
+    /// what decides that (PEER_DESIGN.md §3).
     pub fn end_collaboration(&mut self) {
         self.outbox.clear();
         self.outbox_enabled = false;
+        self.peers.clear();
+        self.refresh_live();
     }
 
     /// Integrate an action authored by a peer (DESIGN.md §12.1). Idempotent —
     /// duplicates are rejected by id. Advances the Lamport clock past the
     /// remote action so future local ids order after everything seen.
     pub fn merge_remote(&mut self, action: Action) -> bool {
-        // Replaces the document the frozen head was composited onto.
-        self.frozen_head = None;
         self.clock = self.clock.max(action.id.lamport + 1);
-        if let ActionKind::AddLayer { id, .. } = &action.kind {
-            self.next_layer = self.next_layer.max(id.0 + 1);
-        }
+        let author = action.id.actor;
+        let removed = match &action.kind {
+            ActionKind::RemoveLayer(id) => Some(*id),
+            _ => None,
+        };
         let ctx = &mut self.apply;
         let merged = self.timeline.merge(action, ctx);
-        // The live preview is rendered over the committed state; re-base it if
-        // a remote stroke landed mid-gesture.
-        if merged && self.session.is_stroking() {
-            self.refresh_preview();
+        if merged {
+            // Replaces the document every frozen head was composited onto.
+            self.doc_epoch += 1;
+            // A gesture is a thing that becomes an action, so the action's arrival is
+            // the end-of-gesture signal — no id to correlate, and no window in which
+            // both the live copy and the committed one are drawn.
+            self.peers.clear_gesture(author);
+            if removed.is_some_and(|id| self.session.active_layer == id) {
+                // A peer deleting the layer this client is painting on used to leave
+                // it pointed at a layer that no longer exists, after which every
+                // stroke was silently refused by `apply` with nothing on screen to
+                // explain it (PEER_DESIGN.md §9).
+                self.repoint_active_layer();
+            }
+            self.refresh_live();
         }
         // A peer may have switched the surface (DESIGN.md §6.4).
         self.apply_document_surface();
@@ -1120,6 +1175,85 @@ impl Engine {
     /// Drain locally-committed actions awaiting broadcast (empty when solo).
     pub fn take_outbox(&mut self) -> Vec<Action> {
         std::mem::take(&mut self.outbox)
+    }
+
+    // --- presence (PEER_DESIGN.md §4) -------------------------------------
+    //
+    // Symmetric with the action hooks above, and deliberately a separate channel:
+    // nothing in the action log ever references presence, which is what lets the
+    // transport drop, coalesce or delay these frames without touching convergence.
+
+    /// Whether [`take_presence`](Self::take_presence) would do anything at `now` —
+    /// a `&self` test a pump can run without borrowing the engine mutably.
+    ///
+    /// This is what keeps an idle shared session free. The pump has to wake on a
+    /// fixed cadence (that is what makes the latch coalesce, §5.1, and it is the
+    /// engine's only clock), but *waking* need not mean working: a tick where
+    /// nothing has moved and no peer is due to expire should cost this comparison
+    /// and nothing else — no mutable borrow, no roster rebuild, and above all no
+    /// write to the signal the engine lives in, which would mark it dirty and
+    /// re-render every component that reads it.
+    ///
+    /// Conservative in the same direction as [`Session::publish_due`]: it may say
+    /// yes where the drain then finds nothing, never the reverse.
+    pub fn presence_due(&self, now: f64) -> bool {
+        self.peers.expiry_due(now) || (self.outbox_enabled && self.session.publish_due(now))
+    }
+
+    /// A counter that changes whenever the peer roster does, so a frontend can tell
+    /// that its projection is stale without rebuilding it (PEER_DESIGN.md §4).
+    pub fn peers_revision(&self) -> u64 {
+        self.peers.revision()
+    }
+
+    /// This client's presence, if anything a peer would care about has changed since
+    /// the last call (PEER_DESIGN.md §5.1). Also expires peers that have gone quiet,
+    /// since this is called on the frontend's publish cadence — the only clock
+    /// `stark-core` has, because it deliberately owns none.
+    ///
+    /// Returns `None` when solo: presence with nobody to read it is pure cost.
+    pub fn take_presence(&mut self, now: f64) -> Option<PeerFrame> {
+        if self.peers.tick(now) {
+            self.refresh_live();
+        }
+        if !self.outbox_enabled {
+            return None;
+        }
+        self.session.publish(now)
+    }
+
+    /// The farewell frame, so peers drop this client at once instead of waiting out
+    /// [`PEER_TIMEOUT`](crate::peer::PEER_TIMEOUT). Send it before tearing the
+    /// transport down.
+    pub fn leaving_presence(&mut self) -> PeerFrame {
+        self.session.publish_leaving()
+    }
+
+    /// Integrate presence published by `actor`, whose identity comes from the
+    /// transport's authenticated origin and never from the frame body — a peer can
+    /// publish its own presence and nobody else's (PEER_DESIGN.md §7).
+    pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
+        if actor == self.actor {
+            // Our own frame, echoed back by a flood transport. The local session is
+            // the authority on this client; taking it back off the wire would fight
+            // with it.
+            return false;
+        }
+        let merged = self.peers.merge(actor, frame, now);
+        if merged {
+            self.refresh_live();
+        }
+        merged
+    }
+
+    /// Everyone else in the session, in ascending [`ActorId`] order (empty solo).
+    pub fn peers(&self) -> impl Iterator<Item = &Peer> {
+        self.peers.iter()
+    }
+
+    /// This client's display name, as peers see it.
+    pub fn name(&self) -> &str {
+        &self.session.name
     }
 
     /// Every imported brush asset (id + canonical PNG bytes) — used to seed a
@@ -1136,8 +1270,40 @@ impl Engine {
         };
         let ctx = &mut self.apply;
         self.timeline.push(action.clone(), ctx);
+        // The committed document is what every in-flight preview is drawn over, so
+        // every cached head built against the old one is now stale.
+        self.doc_epoch += 1;
         if self.outbox_enabled {
             self.outbox.push(action);
+        }
+    }
+
+    /// Mint the next layer id for this client (PEER_DESIGN.md §9).
+    fn mint_layer(&mut self) -> LayerId {
+        let id = LayerId::mint(self.actor, self.next_layer);
+        self.next_layer += 1;
+        id
+    }
+
+    /// Point the active layer at something that exists, preferring a paintable one:
+    /// a matte may legitimately be selected, but someone who just lost the layer they
+    /// were painting on wants to keep painting, not to land on the frame.
+    fn repoint_active_layer(&mut self) {
+        if self
+            .document()
+            .layer_index(self.session.active_layer)
+            .is_some()
+        {
+            return;
+        }
+        if let Some(first) = self
+            .document()
+            .layers
+            .iter()
+            .find(|l| l.is_paintable())
+            .or_else(|| self.document().layers.iter().next())
+        {
+            self.session.active_layer = first.id;
         }
     }
 
@@ -1158,7 +1324,6 @@ impl Engine {
     /// registered surface and environment bytes. Those belong to the app, not to
     /// the document, and re-fetching them on every New would be gratuitous.
     pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SurfaceId) {
-        self.frozen_head = None;
         self.initial_surface = surface;
         self.reset_document();
         self.rebuild_gpu_for(color_space);
@@ -1267,7 +1432,11 @@ impl Engine {
         self.timeline = Box::new(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface),
         ));
-        self.preview = None;
+        self.matte_preview = None;
+        self.live = None;
+        self.heads.clear();
+        self.peers.clear();
+        self.doc_epoch += 1;
         self.clock = 0;
         self.next_layer = 1;
         self.session.cancel_stroke();
@@ -1287,15 +1456,22 @@ impl Engine {
     /// edits get fresh, monotonic ids.
     fn resync_counters(&mut self, actions: &[Action]) {
         let mut max_lamport = None;
-        let mut max_layer = 0u64;
+        // Only *this* client's layer ids matter: the id space is partitioned by
+        // author (PEER_DESIGN.md §9), so resuming past someone else's counter would
+        // skip ids for no reason and, worse, hide the fact that they cannot collide.
+        let mut max_ordinal = 0u64;
         for a in actions {
             max_lamport = Some(max_lamport.map_or(a.id.lamport, |m: u64| m.max(a.id.lamport)));
-            if let ActionKind::AddLayer { id, .. } = &a.kind {
-                max_layer = max_layer.max(id.0);
+            let id = match &a.kind {
+                ActionKind::AddLayer { id, .. } | ActionKind::AddMatte { id, .. } => Some(*id),
+                _ => None,
+            };
+            if let Some(id) = id.filter(|id| id.minted_by(self.actor)) {
+                max_ordinal = max_ordinal.max(id.ordinal());
             }
         }
         self.clock = max_lamport.map_or(0, |m| m + 1);
-        self.next_layer = max_layer + 1;
+        self.next_layer = max_ordinal + 1;
     }
 
     fn next_action_id(&mut self) -> ActionId {
@@ -1307,33 +1483,155 @@ impl Engine {
         id
     }
 
-    /// Re-render the in-flight stroke onto a CoW copy of the committed state.
-    /// Uses the exact stroke path that a commit/replay would (DESIGN.md §6.2),
-    /// so live and committed pixels match.
-    fn refresh_preview(&mut self) {
-        let Some(rec) = self.session.preview_record() else {
-            self.preview = None;
-            self.frozen_head = None;
+    /// The document as it should be *shown*: the committed state, or the frame drag
+    /// standing in for it, with every in-flight gesture drawn over the top.
+    fn presented(&self) -> &DocState {
+        self.live
+            .as_ref()
+            .or(self.matte_preview.as_ref())
+            .unwrap_or_else(|| self.timeline.current())
+    }
+
+    /// The selection masks to outline, and whose each is (PEER_DESIGN.md §3).
+    ///
+    /// `DocState` holds a selection for every actor that ever made one, because
+    /// replay needs them all; only the actors actually *here* are drawn. The log
+    /// decides what exists, presence decides what is shown.
+    fn visible_selections(&self) -> Vec<(crate::document::Selection, Option<[f32; 3]>)> {
+        let doc = self.presented();
+        let mut out = Vec::new();
+        let mine = doc.selection_of(self.actor);
+        if mine.is_active() {
+            out.push((mine, None));
+        }
+        for peer in self.peers.iter() {
+            let theirs = doc.selection_of(peer.actor);
+            if theirs.is_active() {
+                out.push((theirs, Some(peer.color)));
+            }
+        }
+        out
+    }
+
+    /// Rebuild [`Self::live`]: the committed document (or the frame drag standing in
+    /// for it) with every in-flight gesture composited over it, this client's and
+    /// every peer's, in ascending [`ActorId`] order (PEER_DESIGN.md §6).
+    ///
+    /// The order is fixed and derivable, so every client folds the same picture. Each
+    /// stroke is rendered against the *committed* base and then overlaid tile-wise,
+    /// rather than chained peer-over-peer: chaining would invalidate one peer's
+    /// cached head on every move of the peers before it, which is precisely when two
+    /// people are painting at once and the cache matters most. Where two live strokes
+    /// touch the same tile in the same instant, the higher `ActorId` wins it — and a
+    /// preview of concurrent strokes is provisional in any case, because the true
+    /// result depends on the total order, which is not known until both commit.
+    fn refresh_live(&mut self) {
+        let gestures = self.live_gestures();
+        if gestures.is_empty() {
+            self.live = None;
+            self.heads.clear();
             return;
-        };
-        let frozen = self.session.frozen_spans();
-        let head = match self.frozen_head.take() {
-            // Advance the head over the spans that have settled since last time.
-            Some(head) if head.spans <= frozen => head,
-            // Nothing yet, or the fit went backwards (a new stroke): start over from
-            // the committed document, with a fresh (uncharged) brush.
-            _ => FrozenHead {
-                spans: 0,
-                dist: 0.0,
-                tool: None,
-                state: self.timeline.current().clone(),
-            },
-        };
-        let head = if frozen > head.spans {
-            self.advance_head(head, &rec, frozen)
-        } else {
-            head
-        };
+        }
+        let base = self
+            .matte_preview
+            .clone()
+            .unwrap_or_else(|| self.timeline.current().clone());
+        let mut out = base.clone();
+        let mut heads = std::mem::take(&mut self.heads);
+        for (actor, gesture, ordinal, frozen) in gestures {
+            match gesture {
+                LiveGesture::Selection(op) => {
+                    // A marquee previews as the mask it will commit — the very same
+                    // call `Select` makes (§6.8), so what is previewed is what lands.
+                    let prev = base.selection_of(actor);
+                    if let Some(selection) =
+                        self.apply.selection.apply(&self.apply.pool, &prev, &op)
+                    {
+                        out = out.with_selection(actor, selection);
+                    }
+                    heads.remove(&actor);
+                }
+                LiveGesture::Stroke(rec) => {
+                    let head = heads.remove(&actor).filter(|h| {
+                        h.epoch == self.doc_epoch && h.gesture == ordinal && h.spans <= frozen
+                    });
+                    let (head, tail_state) =
+                        self.render_live_stroke(actor, &base, &rec, frozen, head, ordinal);
+                    out = overlay_tiles(&out, rec.layer, &tail_state, &head.dirty);
+                    heads.insert(actor, head);
+                }
+            }
+        }
+        self.heads = heads;
+        self.live = Some(out);
+    }
+
+    /// Every gesture in flight, as `(author, gesture, ordinal, frozen spans)`, in
+    /// ascending [`ActorId`] order.
+    ///
+    /// The local client's is *derived* from the session's fitter rather than kept in
+    /// the roster: copying it there would make two sources of truth for the one thing
+    /// the `preview == committed` invariant rests on. Merging the two here is what
+    /// gives the uniform ordering without the duplication (PEER_DESIGN.md §4.1).
+    fn live_gestures(&self) -> Vec<(ActorId, LiveGesture, u64, usize)> {
+        let mut out: Vec<(ActorId, LiveGesture, u64, usize)> = Vec::new();
+        if let Some(rec) = self.session.preview_record() {
+            out.push((
+                self.actor,
+                LiveGesture::Stroke(rec),
+                self.session.gesture_ordinal(),
+                self.session.frozen_spans(),
+            ));
+        } else if let Some(op) = self.session.preview_selection() {
+            out.push((
+                self.actor,
+                LiveGesture::Selection(op),
+                self.session.gesture_ordinal(),
+                0,
+            ));
+        }
+        for peer in self.peers.iter() {
+            if let Some(gesture) = peer.gesture.clone() {
+                out.push((
+                    peer.actor,
+                    gesture,
+                    peer.gesture_id().unwrap_or(0),
+                    peer.live_frozen_spans(),
+                ));
+            }
+        }
+        out.sort_by_key(|(actor, ..)| *actor);
+        out
+    }
+
+    /// Advance one stroke's frozen head and render its live tail, returning the head
+    /// to keep and the state the tail left behind.
+    ///
+    /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
+    /// the live preview and the `Action::apply` that replaces it draw the same pixels.
+    fn render_live_stroke(
+        &self,
+        author: ActorId,
+        base: &DocState,
+        rec: &StrokeRecord,
+        frozen: usize,
+        head: Option<FrozenHead>,
+        ordinal: u64,
+    ) -> (FrozenHead, DocState) {
+        // Nothing cached, or the fit went backwards (a new stroke): start over from
+        // the committed document, with a fresh (uncharged) brush.
+        let mut head = head.unwrap_or_else(|| FrozenHead {
+            spans: 0,
+            dist: 0.0,
+            tool: None,
+            state: base.clone(),
+            gesture: ordinal,
+            epoch: self.doc_epoch,
+            dirty: BTreeSet::new(),
+        });
+        if frozen > head.spans {
+            head = self.advance_head(author, head, rec, frozen);
+        }
 
         let all = crate::path::span_count(rec.path.len());
         let tail = StrokeSpans {
@@ -1353,13 +1651,15 @@ impl Engine {
         #[cfg(feature = "debug-unfrozen")]
         let tail_rec = &tinted;
         #[cfg(not(feature = "debug-unfrozen"))]
-        let tail_rec = &rec;
+        let tail_rec = rec;
         // The tail reaches the end of the stroke, so the state it leaves the brush in
         // is handed to nobody — it is thrown away and rebuilt from the head on the next
-        // move, which is exactly what makes the tail re-renderable.
-        let (preview, _) = self.render_span_range(&head.state, tail_rec, tail, head.tool.as_ref());
-        self.preview = Some(preview);
-        self.frozen_head = Some(head);
+        // move, which is exactly what makes the tail re-renderable. Its dirty tiles,
+        // though, are part of what the fold has to overlay, so they join the head's.
+        let (state, carry) =
+            self.render_span_range(author, &head.state, tail_rec, tail, head.tool.as_ref());
+        head.dirty.extend(carry.dirty);
+        (head, state)
     }
 
     /// Dump the finished stroke's raw input as a pasteable Rust literal.
@@ -1395,7 +1695,13 @@ impl Engine {
 
     /// Draw spans `head.spans..frozen` onto the frozen head, so the next move need
     /// not draw them again.
-    fn advance_head(&self, head: FrozenHead, rec: &StrokeRecord, frozen: usize) -> FrozenHead {
+    fn advance_head(
+        &self,
+        author: ActorId,
+        head: FrozenHead,
+        rec: &StrokeRecord,
+        frozen: usize,
+    ) -> FrozenHead {
         let spans = StrokeSpans {
             range: head.spans..frozen,
             dist: head.dist,
@@ -1405,7 +1711,10 @@ impl Engine {
         // knows the budget it flattened at (a dynamics brush may have coarsened it), so
         // a second measurement here could hand the tail a distance the head never
         // reached — which `drain` and the colour-dynamics noise would both show.
-        let (state, carry) = self.render_span_range(&head.state, rec, spans, head.tool.as_ref());
+        let (state, carry) =
+            self.render_span_range(author, &head.state, rec, spans, head.tool.as_ref());
+        let mut dirty = head.dirty;
+        dirty.extend(carry.dirty);
         FrozenHead {
             spans: frozen,
             dist: carry.dist,
@@ -1413,6 +1722,9 @@ impl Engine {
             // geometry runs nothing and leaves the brush as it found it.
             tool: carry.tool.or(head.tool),
             state,
+            gesture: head.gesture,
+            epoch: head.epoch,
+            dirty,
         }
     }
 
@@ -1423,12 +1735,17 @@ impl Engine {
     /// the live preview and the `Action::apply` that replaces it draw the same pixels.
     fn render_span_range(
         &self,
+        author: ActorId,
         base: &DocState,
         rec: &StrokeRecord,
         spans: StrokeSpans,
         tool: Option<&crate::gpu::stroke::ToolState>,
     ) -> (DocState, crate::gpu::stroke::StrokeCarry) {
-        let carry_only = |dist| crate::gpu::stroke::StrokeCarry { dist, tool: None };
+        let carry_only = |dist| crate::gpu::stroke::StrokeCarry {
+            dist,
+            tool: None,
+            dirty: Vec::new(),
+        };
         // A matte has no tile map, so it previews as nothing — matching the commit,
         // which refuses the stroke outright (FRAME_DESIGN.md §7). Preview and
         // commit agreeing is the §1.3 invariant, so the two refusals must line up.
@@ -1438,12 +1755,16 @@ impl Engine {
         else {
             return (base.clone(), carry_only(spans.dist));
         };
+        // The **author's** mask, exactly as the commit will read it — which is what
+        // lets one client's live stroke be reproduced faithfully on another's screen
+        // while their selections differ (PEER_DESIGN.md §3).
+        let selection = base.selection_of(author);
         let (tiles, carry) = self.apply.stroke.render_range(
             crate::gpu::stroke::StrokeScene {
                 pool: &self.apply.pool,
                 assets: &self.apply.assets,
                 base: tiles_base,
-                selection: &base.selection,
+                selection: &selection,
             },
             rec,
             spans,
@@ -1452,22 +1773,41 @@ impl Engine {
         let layer = base.layer_at(idx).with_tiles(tiles);
         (base.with_layer_at(idx, layer), carry)
     }
+}
 
-    /// Rasterize the in-flight selection gesture onto a copy of the committed state,
-    /// so the outline follows the drag. Uses the same op the commit will (§6.8), so
-    /// what is previewed is what lands.
-    fn refresh_selection_preview(&mut self) {
-        let Some(op) = self.session.preview_selection() else {
-            self.preview = None;
-            return;
-        };
-        let base = self.timeline.current();
-        self.preview = self
-            .apply
-            .selection
-            .apply(&self.apply.pool, &base.selection, &op)
-            .map(|selection| base.with_selection(selection));
+/// Copy `dirty`'s tiles from `src`'s `layer` into `out` — the overlay step of the
+/// preview fold (PEER_DESIGN.md §6).
+///
+/// Only the named tiles move, which is what keeps two peers painting on one layer
+/// from erasing each other's work back to the committed state: each contributes
+/// exactly the tiles its own stroke touched.
+fn overlay_tiles(
+    out: &DocState,
+    layer: LayerId,
+    src: &DocState,
+    dirty: &BTreeSet<TileCoord>,
+) -> DocState {
+    if dirty.is_empty() {
+        return out.clone();
     }
+    let (Some(idx), Some(src_tiles)) = (
+        out.layer_index(layer),
+        src.layer_index(layer).and_then(|i| src.layer_at(i).tiles()),
+    ) else {
+        return out.clone();
+    };
+    let Some(tiles) = out.layer_at(idx).tiles() else {
+        return out.clone();
+    };
+    let mut tiles = tiles.clone();
+    for coord in dirty {
+        match src_tiles.get(coord) {
+            Some(handle) => tiles = tiles.insert(*coord, handle.clone()),
+            None => tiles = tiles.remove(coord),
+        }
+    }
+    let layer = out.layer_at(idx).with_tiles(tiles);
+    out.with_layer_at(idx, layer)
 }
 
 /// Build the GPU subsystems whose layout/shaders depend on the color space.

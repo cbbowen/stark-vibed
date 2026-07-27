@@ -9,7 +9,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, PeerCommand};
 use stark_core::document::{MatteRegion, SelectionOp, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
@@ -66,8 +66,16 @@ fn exports_the_frame_rect_without_its_own_matte() {
     paint(&mut engine, RED, 30.0, WIDE);
     let frame = add_frame(&mut engine);
 
-    let img = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("export"));
-    assert_eq!((img.width, img.height), (120, 80), "1x = one px per canvas px");
+    let img = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .expect("export"),
+    );
+    assert_eq!(
+        (img.width, img.height),
+        (120, 80),
+        "1x = one px per canvas px"
+    );
     for (i, c) in corners(&img).iter().enumerate() {
         assert!(
             !is_dark(*c),
@@ -87,15 +95,26 @@ fn scale_changes_resolution_not_framing() {
     paint(&mut engine, RED, 30.0, WIDE);
     let frame = add_frame(&mut engine);
 
-    let one = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("1x"));
-    let two = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(2.0), Background::Substrate).expect("2x"));
+    let one = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .expect("1x"),
+    );
+    let two = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(2.0), Background::Substrate)
+            .expect("2x"),
+    );
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
 
     // Same framing: the four corners and the centre agree between the two, which
     // they could not if 2× had zoomed in on a sub-rect instead of resolving finer.
     let near = |a: [u8; 4], b: [u8; 4]| (0..3).all(|c| (a[c] as i32 - b[c] as i32).abs() <= 12);
     for (a, b) in corners(&one).iter().zip(corners(&two).iter()) {
-        assert!(near(*a, *b), "corner differs between 1x and 2x: {a:?} vs {b:?}");
+        assert!(
+            near(*a, *b),
+            "corner differs between 1x and 2x: {a:?} vs {b:?}"
+        );
     }
     assert!(near(
         one.pixel(one.width / 2, one.height / 2),
@@ -103,7 +122,11 @@ fn scale_changes_resolution_not_framing() {
     ));
 
     // An explicit width is the same thing said the other way round.
-    let by_width = pollster::block_on(engine.export(Some(frame), ExportScale::Width(240), Background::Substrate).expect("by width"));
+    let by_width = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Width(240), Background::Substrate)
+            .expect("by width"),
+    );
     assert_eq!((by_width.width, by_width.height), (240, 160));
 }
 
@@ -117,17 +140,40 @@ fn transparent_export_cuts_out_the_paint() {
         return;
     };
     // A short stroke through the middle, leaving the frame's edges bare.
-    paint(&mut engine, RED, 24.0, &[Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0)]);
+    paint(
+        &mut engine,
+        RED,
+        24.0,
+        &[Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0)],
+    );
     let frame = add_frame(&mut engine);
 
-    let cut = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Transparent).expect("transparent"));
-    let opaque = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("substrate"));
+    let cut = pollster::block_on(
+        engine
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Transparent,
+            )
+            .expect("transparent"),
+    );
+    let opaque = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .expect("substrate"),
+    );
 
     for (i, c) in corners(&cut).iter().enumerate() {
-        assert_eq!(c[3], 0, "corner {i} of a cut-out should be fully transparent");
+        assert_eq!(
+            c[3], 0,
+            "corner {i} of a cut-out should be fully transparent"
+        );
     }
     let mid = cut.pixel(cut.width / 2, cut.height / 2);
-    assert!(mid[3] > 200, "painted texels should stay opaque, got {mid:?}");
+    assert!(
+        mid[3] > 200,
+        "painted texels should stay opaque, got {mid:?}"
+    );
     assert!(red_dominant(mid), "and keep their own colour, got {mid:?}");
 
     // The substrate export is opaque everywhere — the two really are different
@@ -143,11 +189,19 @@ fn export_uses_the_documents_ground() {
         return;
     };
     let frame = add_frame(&mut engine);
-    let paper = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("paper"));
+    let paper = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .expect("paper"),
+    );
     assert!(!is_dark(paper.pixel(4, 4)), "default ground is near-white");
 
     engine.process(DocCommand::SetBackground([0.02, 0.02, 0.03]));
-    let ink = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("ink"));
+    let ink = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .expect("ink"),
+    );
     assert!(
         is_dark(ink.pixel(4, 4)),
         "a dark ground should reach the export, got {:?}",
@@ -157,8 +211,12 @@ fn export_uses_the_documents_ground() {
     // And it undoes like any other edit.
     engine.process(DocCommand::Undo);
     assert!(!is_dark(
-        pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("undone"))
-            .pixel(4, 4)
+        pollster::block_on(
+            engine
+                .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+                .expect("undone")
+        )
+        .pixel(4, 4)
     ));
 }
 
@@ -170,7 +228,11 @@ fn export_omits_the_selection_outline() {
         return;
     };
     let frame = add_frame(&mut engine);
-    let clean = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("clean"));
+    let clean = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .expect("clean"),
+    );
 
     // A marquee well inside the frame, so its outline would land in the export.
     engine.process(GestureCommand::Start {
@@ -182,9 +244,16 @@ fn export_omits_the_selection_outline() {
         sample: InputSample::at(Vec2::new(30.0, 20.0)),
     });
     engine.process(GestureCommand::End);
-    assert!(engine.observe().has_selection, "the marquee should have taken");
+    assert!(
+        engine.observe().has_selection,
+        "the marquee should have taken"
+    );
 
-    let selected = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(1.0), Background::Substrate).expect("with selection"));
+    let selected = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .expect("with selection"),
+    );
     assert!(
         images_match(&clean, &selected, 2),
         "the selection outline leaked into the export"
@@ -203,7 +272,11 @@ fn export_without_a_frame_falls_back() {
         return;
     };
     // Nothing painted: the viewport is the only thing left to mean.
-    let empty = pollster::block_on(engine.export(None, ExportScale::Factor(1.0), Background::Substrate).expect("empty"));
+    let empty = pollster::block_on(
+        engine
+            .export(None, ExportScale::Factor(1.0), Background::Substrate)
+            .expect("empty"),
+    );
     assert_eq!((empty.width, empty.height), (SIZE.width, SIZE.height));
 
     // Painted: the populated tiles' bounds, which are tile-aligned and so at least
@@ -281,12 +354,20 @@ fn export_is_rgba_whatever_the_target_format_is() {
         add_frame(engine);
     }
     let a = pollster::block_on(
-        rgba.export(Some(LayerId(1)), ExportScale::Factor(1.0), Background::Substrate)
-            .expect("rgba export"),
+        rgba.export(
+            Some(LayerId(1)),
+            ExportScale::Factor(1.0),
+            Background::Substrate,
+        )
+        .expect("rgba export"),
     );
     let b = pollster::block_on(
-        bgra.export(Some(LayerId(1)), ExportScale::Factor(1.0), Background::Substrate)
-            .expect("bgra export"),
+        bgra.export(
+            Some(LayerId(1)),
+            ExportScale::Factor(1.0),
+            Background::Substrate,
+        )
+        .expect("bgra export"),
     );
 
     assert_eq!((a.width, a.height), (b.width, b.height));
@@ -322,11 +403,15 @@ fn export_plan_reports_the_size_it_will_produce() {
     assert_eq!((plan.size.width, plan.size.height), (240, 160));
     assert_eq!(plan.zoom, 2.0);
 
-    let img = pollster::block_on(engine.export(Some(frame), ExportScale::Factor(2.0), Background::Substrate).expect("export"));
+    let img = pollster::block_on(
+        engine
+            .export(Some(frame), ExportScale::Factor(2.0), Background::Substrate)
+            .expect("export"),
+    );
     assert_eq!(
         (img.width, img.height),
         (plan.size.width, plan.size.height),
         "the plan must describe what export actually produces"
     );
-    let _ = ViewCommand::SetActiveLayer(frame);
+    let _ = PeerCommand::SetActiveLayer(frame);
 }

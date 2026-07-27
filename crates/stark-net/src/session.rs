@@ -21,6 +21,7 @@ use std::time::Duration;
 use iroh::{EndpointAddr, EndpointId, SecretKey};
 use n0_future::task;
 use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
+use stark_core::peer::PeerFrame;
 use stark_core::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
@@ -68,6 +69,12 @@ pub enum RemoteEvent {
     /// A committed remote action — feed to
     /// [`Engine::merge_remote`](stark_core::Engine::merge_remote).
     Action(Action),
+    /// A peer's presence — feed to
+    /// [`Engine::merge_presence`](stark_core::Engine::merge_presence)
+    /// (PEER_DESIGN.md §4). Unlike an action this may be dropped freely: nothing in
+    /// the log refers to it, so losing one costs a frame of someone else's cursor
+    /// and nothing else.
+    Presence { actor: ActorId, frame: PeerFrame },
 }
 
 /// Connectivity configuration for a session.
@@ -270,6 +277,21 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Publish this client's presence (PEER_DESIGN.md §4).
+    ///
+    /// Deliberately *not* mirrored: presence is not part of the document, so it is
+    /// never served to a joiner and never reaches a file. And deliberately
+    /// best-effort — a frame that cannot be sent is dropped rather than retried,
+    /// because the next one supersedes it anyway.
+    pub async fn publish(&self, frame: PeerFrame) -> Result<()> {
+        let bytes = postcard::to_allocvec(&Wire::Presence(frame))?;
+        self.mesh
+            .broadcast(bytes)
+            .await
+            .map_err(|e| crate::NetError::Other(e.to_string()))?;
+        Ok(())
+    }
+
     /// See [`CollabSession::add_asset`].
     pub fn add_asset(&self, id: AssetId, bytes: Vec<u8>) {
         self.mirror
@@ -320,7 +342,9 @@ async fn recv_loop(
             } => (origin, from, payload),
             MeshEvent::Lagged { origin } => {
                 // Dropped messages: peers converge again on the next snapshot
-                // fetch; flag it loudly for now (DESIGN.md §12.5).
+                // fetch; flag it loudly for now (DESIGN.md §12.5). A lagged
+                // *presence* stream needs no recovery at all — the author re-sends
+                // its whole gesture on the next resync frame (PEER_DESIGN.md §5).
                 tracing::warn!(%origin, "mesh lagged; some remote actions may be missing");
                 continue;
             }
@@ -341,7 +365,26 @@ async fn recv_loop(
                 continue;
             }
         };
-        let Wire::Action(action) = wire;
+        let action = match wire {
+            Wire::Action(action) => action,
+            // Presence bypasses the mirror entirely: it is not part of the document,
+            // so it is never served to a joiner and never reaches a file. The author
+            // is the mesh's `origin`, never anything in the payload — a peer can
+            // publish its own presence and nobody else's (PEER_DESIGN.md §7).
+            Wire::Presence(frame) => {
+                let Some(id) = crate::transport::to_endpoint_id(origin) else {
+                    continue;
+                };
+                let event = RemoteEvent::Presence {
+                    actor: actor_from_endpoint_id(id),
+                    frame,
+                };
+                if tx.send(event).is_err() {
+                    return;
+                }
+                continue;
+            }
+        };
 
         // Resolve the stroke's brush image before surfacing the action so the
         // engine can render it faithfully (a miss degrades to the round tip

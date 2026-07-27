@@ -433,8 +433,15 @@ mod tests {
         let (px, w, h) = neutral_equirect();
         assert_eq!(px.len(), (w * h) as usize);
         for c in &px {
-            assert!(c[0] > 0.0 && c[0].is_finite(), "non-positive radiance {c:?}");
-            assert_eq!([c[0], c[0]], [c[1], c[2]], "neutral must be grey, got {c:?}");
+            assert!(
+                c[0] > 0.0 && c[0].is_finite(),
+                "non-positive radiance {c:?}"
+            );
+            assert_eq!(
+                [c[0], c[0]],
+                [c[1], c[2]],
+                "neutral must be grey, got {c:?}"
+            );
         }
         // Still lit from somewhere: a uniform dome would flatten all relief away.
         let lum = |c: &[f32; 3]| c[0];

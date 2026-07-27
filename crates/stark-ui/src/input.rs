@@ -62,13 +62,16 @@ pub fn handle_keyup(mut state: AppState, e: &Event<KeyboardData>) {
     }
 }
 
-fn view_of(state: AppState) -> ViewTransform {
-    state
-        .renderer
-        .read()
-        .as_ref()
-        .map(|r| r.view())
-        .expect("renderer ready during input")
+/// The engine's current view, or `None` before WebGPU init has finished.
+///
+/// Fallible rather than `expect`ing, because the canvas element is in the DOM and
+/// taking pointer events from the first frame while [`render::init`](crate::render)
+/// is still awaiting its adapter — so "a pointer event with no engine behind it" is
+/// an ordinary early state, not a bug. Everything that needs canvas coordinates
+/// therefore returns `None` too, and its callers do nothing until there is an engine
+/// to do it to.
+fn view_of(state: AppState) -> Option<ViewTransform> {
+    state.renderer.read().as_ref().map(|r| r.view())
 }
 
 /// Pointer position within an element, in CSS pixels.
@@ -106,15 +109,17 @@ pub fn input_tolerance_in(view: ViewTransform, e: &Event<PointerData>) -> f32 {
     input_resolution(e) / view.zoom
 }
 
-/// [`input_tolerance_in`] against the main canvas's view.
-pub fn input_tolerance(state: AppState, e: &Event<PointerData>) -> f32 {
-    input_tolerance_in(view_of(state), e)
+/// [`input_tolerance_in`] against the main canvas's view; `None` before the engine
+/// exists.
+pub fn input_tolerance(state: AppState, e: &Event<PointerData>) -> Option<f32> {
+    Some(input_tolerance_in(view_of(state)?, e))
 }
 
-/// Map an element-relative pointer position to a canvas-space input sample.
-pub fn sample(state: AppState, e: &Event<PointerData>) -> InputSample {
-    let view = view_of(state);
-    InputSample {
+/// Map an element-relative pointer position to a canvas-space input sample; `None`
+/// before the engine exists, since there is no view to map through yet.
+pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
+    let view = view_of(state)?;
+    Some(InputSample {
         pos: view.screen_to_canvas(elem_xy(e)),
         pressure: e.pressure(),
         // Pen tilt (degrees from vertical, ±90 per axis) → a canvas-space lean vector. The
@@ -122,7 +127,7 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> InputSample {
         // §6.2); a mouse reports (0, 0), so the deposit falls back to its constant rate.
         tilt: Vec2::new(e.tilt_x() as f32, e.tilt_y() as f32) / 90.0,
         ..Default::default()
-    }
+    })
 }
 
 /// End any in-progress stroke, selection gesture, or pan, and put back the selection

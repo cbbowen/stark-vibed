@@ -125,10 +125,13 @@ impl StrokeRenderer {
                 StrokeCarry {
                     dist: end_dist,
                     tool: None,
+                    dirty: Vec::new(),
                 },
             );
         }
 
+        // The union over the pieces below, which each enumerate their own subset.
+        let dirty: Vec<TileCoord> = affected_tiles(&segments).into_iter().collect();
         let mut run = DynamicsRun::new(self, scene, rec, tool);
         let mut map = scene.base.clone();
         for piece in chunk_segments(&segments) {
@@ -141,6 +144,7 @@ impl StrokeRenderer {
             StrokeCarry {
                 dist: end_dist,
                 tool: tool_out,
+                dirty,
             },
         )
     }

@@ -28,7 +28,7 @@ mod widgets;
 
 use std::collections::{HashMap, HashSet};
 
-use dioxus::dioxus_core::{Task, spawn_forever};
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
@@ -41,12 +41,12 @@ use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_mode, current_tool, modifier_mode};
 use panels::{FrameBar, FrameOverlay, SelectionBar};
 use platform::capture_pointer;
-use render::{CANVAS_ID, Renderer};
-use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
+use render::CANVAS_ID;
+use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use stark_core::document::{SelectionMode, SelectionOp};
 use stark_core::geom::Vec2;
-use stark_core::{ColorSpaceId, ObservableState, SurfaceId};
-use state::{AppState, CollabState, dispatch, resize};
+use stark_core::{ColorSpaceId, SurfaceId};
+use state::{AppState, dispatch, dispatch_quiet, resize};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -65,26 +65,10 @@ fn main() {
 }
 
 fn app() -> Element {
-    let renderer = use_signal(|| None::<Renderer>);
-    let obs = use_signal(|| None::<ObservableState>);
-    let space_down = use_signal(|| false);
-    let canvas_active = use_signal(|| false);
-    let brush_editor_open = use_signal(|| false);
-    let collab = CollabState {
-        session: use_signal(|| None::<stark_net::CollabSession>),
-        ticket: use_signal(|| None::<String>),
-        phase: use_signal(collab::CollabPhase::default),
-        error: use_signal(|| None::<String>),
-        pump: use_signal(|| None::<Task>),
-    };
-    let state = AppState {
-        renderer,
-        obs,
-        space_down,
-        canvas_active,
-        brush_editor_open,
-        collab,
-    };
+    // Root-owned, because the collaboration pumps and the renderer's async init are
+    // detached tasks living in `ScopeId::ROOT` — see `state::root_signal`.
+    let state = AppState::new();
+    let (renderer, obs) = (state.renderer, state.obs);
     use_context_provider(|| state);
 
     // Floating-panel layout: order + which are open. Provided so the panel chrome and
@@ -153,6 +137,10 @@ fn app() -> Element {
             // painting inside the frame is unaffected.
             FrameOverlay {}
 
+            // Collaborators' pointers, over the canvas and under the chrome
+            // (PEER_DESIGN.md §4). Empty and free when solo.
+            PeerCursors {}
+
             // Left command rail: rarely-used document commands, tucked away.
             CommandRail {}
 
@@ -204,11 +192,11 @@ fn Canvas() -> Element {
     // becomes "not-allowed", so the canvas explains itself before the user draws a
     // stroke that would go nowhere. Panning still works, so the pan cursor wins
     // while space is held.
-    let paintable = state
-        .obs
-        .read()
-        .as_ref()
-        .is_some_and(|o| o.layers.iter().any(|l| l.id == o.active_layer && l.is_paintable()));
+    let paintable = state.obs.read().as_ref().is_some_and(|o| {
+        o.layers
+            .iter()
+            .any(|l| l.id == o.active_layer && l.is_paintable())
+    });
     let canvas_class = if paintable || (state.space_down)() {
         "paint-canvas"
     } else {
@@ -235,7 +223,13 @@ fn Canvas() -> Element {
                         canvas_active.set(true);
                         if (state.space_down)() {
                             panning.set(true);
-                        } else {
+                        // A press before WebGPU init has finished has no canvas
+                        // space to land in, so it starts no gesture (and `drawing`
+                        // stays false, which is what keeps the moves after it inert
+                        // too).
+                        } else if let Some(sample) = sample(state, &e)
+                            && let Some(tolerance) = input_tolerance(state, &e)
+                        {
                             // Painting and selecting are the same gesture from here —
                             // the tool decides what the engine builds (DESIGN.md §6.8).
                             let tool = current_tool(state);
@@ -247,10 +241,10 @@ fn Canvas() -> Element {
                             }
                             dispatch(state, GestureCommand::Start {
                                 tool,
-                                sample: sample(state, &e),
+                                sample,
                                 // What this device and this zoom level actually
                                 // resolve to, which is what the fit prices against.
-                                tolerance: input_tolerance(state, &e),
+                                tolerance,
                             });
                             drawing.set(true);
                         }
@@ -265,13 +259,26 @@ fn Canvas() -> Element {
                 }
             },
             onpointermove: move |e| {
-                if drawing() {
-                    dispatch(state, GestureCommand::To { sample: sample(state, &e) });
-                } else if panning() && let Some(l) = last_position() {
-                    dispatch(state, ViewCommand::Pan { delta: elem_xy(&e) - l });
+                // The canvas takes pointer events from the first frame, while the
+                // engine is still being built asynchronously — so there may be no
+                // view to map through yet, and a move with nowhere to land simply
+                // does nothing.
+                if let Some(s) = sample(state, &e) {
+                    if drawing() {
+                        dispatch(state, GestureCommand::To { sample: s });
+                    } else if panning() && let Some(l) = last_position() {
+                        dispatch(state, ViewCommand::Pan { delta: elem_xy(&e) - l });
+                    }
+                    // Where collaborators see this client's pointer (PEER_DESIGN.md
+                    // §4). Quiet: it changes nothing *this* client renders — the
+                    // browser draws our own cursor — so repainting the canvas at
+                    // pointer rate to show ourselves nothing would be pure waste.
+                    // The presence pump reads it off the engine on its own cadence.
+                    dispatch_quiet(state, PeerCommand::SetCursor(Some(s.pos)));
                 }
                 last_position.set(Some(elem_xy(&e)));
             },
+            onpointerleave: move |_| dispatch_quiet(state, PeerCommand::SetCursor(None)),
             onpointerup: move |_| end_interaction(state, &mut drawing, &mut panning, &mut mode_restore),
             onpointercancel: move |_| {
                 end_interaction(state, &mut drawing, &mut panning, &mut mode_restore);
@@ -286,6 +293,48 @@ fn Canvas() -> Element {
                     dispatch(state, ViewCommand::Zoom { anchor: Vec2::new(c.x as f32, c.y as f32), factor });
                 }
             },
+        }
+    }
+}
+
+/// Collaborators' pointers, drawn in each peer's own colour (PEER_DESIGN.md §4).
+///
+/// DOM rather than a compositor pass, on purpose: a cursor is chrome, not artwork —
+/// it must never reach an export, and a label beside it is a `<div>` the browser
+/// already knows how to lay out. The positions are canvas-space, so they follow the
+/// painting under pan and zoom exactly as the paint does.
+#[component]
+fn PeerCursors() -> Element {
+    let state = use_context::<AppState>();
+    let peers = (state.collab.peers)();
+    if peers.is_empty() {
+        return rsx! {};
+    }
+    // Read the view once per render rather than per peer, and `peek` rather than
+    // `read`: this component is driven by `peers`, and subscribing to the renderer
+    // as well would re-render it on every engine write — every stroke sample, every
+    // pan — to redraw cursors that had not moved.
+    let Some(view) = state.renderer.peek().as_ref().map(|r| r.view()) else {
+        return rsx! {};
+    };
+    rsx! {
+        div { class: "peer-cursors",
+            for peer in peers {
+                if let Some(canvas) = peer.cursor {
+                    {
+                        let p = view.canvas_to_screen(canvas);
+                        rsx! {
+                            div {
+                                key: "{peer.actor.0}",
+                                class: "peer-cursor",
+                                style: "left:{p.x}px; top:{p.y}px; --peer:{peer.css_color()}",
+                                div { class: "peer-cursor-dot" }
+                                div { class: "peer-cursor-name", "{peer.name}" }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

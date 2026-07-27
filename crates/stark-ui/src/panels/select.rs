@@ -91,11 +91,7 @@ pub fn SelectionBar() -> Element {
     let state = use_context::<AppState>();
     // The committed selection, not the in-flight preview — so the bar does not flicker
     // in and out under a drag that has not been released yet.
-    let active = state
-        .obs
-        .read()
-        .as_ref()
-        .is_some_and(|o| o.has_selection);
+    let active = state.obs.read().as_ref().is_some_and(|o| o.has_selection);
 
     rsx! {
         if active {

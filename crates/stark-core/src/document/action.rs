@@ -370,19 +370,23 @@ impl history::Action for Action {
             // Refusing here (not only in the frontend) is what keeps replay and
             // peers agreeing about a log that contains such a stroke.
             ActionKind::CommitStroke(rec) => {
-                match state.layer_index(rec.layer).and_then(|idx| {
-                    state.layer_at(idx).tiles().map(|base| (idx, base))
-                }) {
+                match state
+                    .layer_index(rec.layer)
+                    .and_then(|idx| state.layer_at(idx).tiles().map(|base| (idx, base)))
+                {
                     Some((idx, base)) => {
-                        // The selection in force *at this point in the log* gates
-                        // the stroke (DESIGN.md §6.8) — it is read from the state
-                        // being folded over, so replay reproduces it exactly.
+                        // The **author's** selection, as it stood at this point in
+                        // the log, gates the stroke (DESIGN.md §6.8,
+                        // PEER_DESIGN.md §3). Read from the state being folded over,
+                        // so replay reproduces it exactly; keyed by the author, so a
+                        // collaborator's lasso never clips this stroke.
+                        let selection = state.selection_of(self.id.actor);
                         let tiles = ctx.stroke.render(
                             crate::gpu::stroke::StrokeScene {
                                 pool: &ctx.pool,
                                 assets: &ctx.assets,
                                 base,
-                                selection: &state.selection,
+                                selection: &selection,
                             },
                             rec,
                         );
@@ -407,19 +411,27 @@ impl history::Action for Action {
             // `Undo` should never be materialized through `apply`. Identity, so
             // a stray one is harmless rather than wrong.
             ActionKind::Undo(_) => state,
+            // The author's own selection, and only ever the author's: the key is
+            // taken from `self.id.actor`, never from the payload, so an action
+            // cannot address anyone else's mask (PEER_DESIGN.md §3).
+            //
             // An op too large to rasterize (see `MAX_SELECTION_TILES`) leaves the
             // selection alone — deterministically, since the bound is a pure
             // function of the op, so peers and replays agree.
-            ActionKind::Select(op) => match ctx.selection.apply(&ctx.pool, &state.selection, op) {
-                Some(selection) => state.with_selection(selection),
-                None => {
-                    tracing::warn!("selection op too large to rasterize; ignored");
-                    state
+            ActionKind::Select(op) => {
+                let prev = state.selection_of(self.id.actor);
+                match ctx.selection.apply(&ctx.pool, &prev, op) {
+                    Some(selection) => state.with_selection(self.id.actor, selection),
+                    None => {
+                        tracing::warn!("selection op too large to rasterize; ignored");
+                        state
+                    }
                 }
-            },
+            }
             ActionKind::InvertSelection => {
-                let selection = ctx.selection.invert(&ctx.pool, &state.selection);
-                state.with_selection(selection)
+                let prev = state.selection_of(self.id.actor);
+                let selection = ctx.selection.invert(&ctx.pool, &prev);
+                state.with_selection(self.id.actor, selection)
             }
             ActionKind::SetSurface(id) => state.with_surface(*id),
             ActionKind::AddMatte {

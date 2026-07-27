@@ -40,6 +40,27 @@ struct Instance {
     opacity: f32,
 }
 
+/// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
+/// its contour. `tint.a == 0` selects the local actor's black/white marching ants;
+/// anything else draws a flat line in `tint.rgb` at that alpha — which is how
+/// another collaborator's selection is distinguished from your own
+/// (PEER_DESIGN.md §3).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct OverlayInstance {
+    origin: [f32; 2],
+    tint: [f32; 4],
+}
+
+/// One selection to outline, and whose it is (PEER_DESIGN.md §3).
+#[derive(Copy, Clone)]
+pub struct SelectionOutline<'a> {
+    pub selection: &'a Selection,
+    /// `None` for the local actor — the marching ants. `Some(rgb)` for a peer's,
+    /// drawn as a flat line in their colour so the two never read as the same thing.
+    pub tint: Option<[f32; 3]>,
+}
+
 /// Per-matte instance, mirroring `matte.wesl`'s vertex attributes.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -401,9 +422,9 @@ impl Compositor {
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Instance>() as u64,
+                    array_stride: std::mem::size_of::<OverlayInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
                 })],
             },
             primitive: wgpu::PrimitiveState {
@@ -541,7 +562,7 @@ impl Compositor {
             overlay_pipeline,
             overlay_view_bg,
             overlay_tile_bgl,
-            overlay_instances: alloc_instances(device, 1),
+            overlay_instances: alloc_overlay(device, 1),
             overlay_cap: 1,
             media_pipeline,
             media_buf,
@@ -603,14 +624,15 @@ impl Compositor {
     }
 
     /// Composite `tiles`, light the result into `target` under `view`, and outline
-    /// `selection` over it (DESIGN.md §6.8 — nothing is drawn when it is universal).
+    /// each of `outlines` over it (DESIGN.md §6.8 — a universal selection draws
+    /// nothing, so an unmasked document costs one skipped iteration).
     pub fn render(
         &mut self,
         target: &wgpu::TextureView,
         view: ViewTransform,
         bg_channels: [f32; 4],
         items: &[CompositeItem],
-        selection: &Selection,
+        outlines: &[SelectionOutline<'_>],
         transparent: bool,
     ) {
         if view.viewport != self.size {
@@ -828,42 +850,45 @@ impl Compositor {
             pass.draw(0..3, 0..1);
         }
 
-        // Pass C: the selection outline, over the lit image.
-        let mask_tiles: Vec<(TileCoord, wgpu::BindGroup)> = if selection.is_universal() {
-            Vec::new()
-        } else {
-            selection
-                .tiles()
-                .map(|(coord, handle)| {
-                    (
-                        *coord,
-                        device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("stark overlay tile bg"),
-                            layout: &self.overlay_tile_bgl,
-                            entries: &[wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(handle.view()),
-                            }],
-                        }),
-                    )
-                })
-                .collect()
-        };
-        if !mask_tiles.is_empty() {
-            let origins: Vec<Instance> = mask_tiles
-                .iter()
-                .map(|(c, _)| Instance {
-                    origin: c.origin().to_array(),
-                    opacity: 1.0,
-                })
-                .collect();
-            if origins.len() > self.overlay_cap {
-                self.overlay_instances = alloc_instances(device, origins.len());
-                self.overlay_cap = origins.len();
+        // Pass C: the selection outlines, over the lit image — the local actor's and
+        // every present peer's, one instanced quad per mask tile of each
+        // (PEER_DESIGN.md §3). Flattened into one instance stream so N collaborators
+        // still cost one pass.
+        let mut overlay_instances: Vec<OverlayInstance> = Vec::new();
+        let mut mask_tiles: Vec<wgpu::BindGroup> = Vec::new();
+        for outline in outlines {
+            if outline.selection.is_universal() {
+                continue;
             }
-            self.ctx
-                .queue
-                .write_buffer(&self.overlay_instances, 0, bytemuck::cast_slice(&origins));
+            let tint = match outline.tint {
+                Some([r, g, b]) => [r, g, b, PEER_OUTLINE_ALPHA],
+                None => [0.0; 4],
+            };
+            for (coord, handle) in outline.selection.tiles() {
+                overlay_instances.push(OverlayInstance {
+                    origin: coord.origin().to_array(),
+                    tint,
+                });
+                mask_tiles.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark overlay tile bg"),
+                    layout: &self.overlay_tile_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(handle.view()),
+                    }],
+                }));
+            }
+        }
+        if !mask_tiles.is_empty() {
+            if overlay_instances.len() > self.overlay_cap {
+                self.overlay_instances = alloc_overlay(device, overlay_instances.len());
+                self.overlay_cap = overlay_instances.len();
+            }
+            self.ctx.queue.write_buffer(
+                &self.overlay_instances,
+                0,
+                bytemuck::cast_slice(&overlay_instances),
+            );
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection overlay pass"),
@@ -884,7 +909,7 @@ impl Compositor {
             pass.set_pipeline(&self.overlay_pipeline);
             pass.set_bind_group(0, &self.overlay_view_bg, &[]);
             pass.set_vertex_buffer(0, self.overlay_instances.slice(..));
-            for (i, (_, bg)) in mask_tiles.iter().enumerate() {
+            for (i, bg) in mask_tiles.iter().enumerate() {
                 let idx = i as u32;
                 pass.set_bind_group(1, bg, &[]);
                 pass.draw(0..4, idx..idx + 1);
@@ -935,6 +960,25 @@ fn clear_attachment(
             store: wgpu::StoreOp::Store,
         },
     }
+}
+
+/// How strongly another actor's selection outline reads against the artwork. Well
+/// below the local one, which is a full-strength dashed line: yours is a thing you
+/// act through, theirs is a thing you need only be aware of.
+const PEER_OUTLINE_ALPHA: f32 = 0.55;
+
+fn alloc_overlay(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("stark overlay instances"),
+        contents: bytemuck::cast_slice(&vec![
+            OverlayInstance {
+                origin: [0.0; 2],
+                tint: [0.0; 4],
+            };
+            count.max(1)
+        ]),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    })
 }
 
 fn alloc_instances(device: &wgpu::Device, count: usize) -> wgpu::Buffer {

@@ -34,7 +34,7 @@ async fn next_action(events: &mut UnboundedReceiver<RemoteEvent>) -> Action {
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
             Ok(Some(RemoteEvent::Action(action))) => return action,
-            Ok(Some(RemoteEvent::Asset { .. })) => continue,
+            Ok(Some(RemoteEvent::Asset { .. } | RemoteEvent::Presence { .. })) => continue,
             Ok(None) => panic!("event stream ended"),
             Err(_) => panic!("timed out waiting for a remote action"),
         }

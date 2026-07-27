@@ -14,10 +14,15 @@
 //! - [`DocCommand`] mutates **document state**: historized, replicated to peers,
 //!   and reproduced by replay. Every one of these becomes an `Action`.
 //! - [`ViewCommand`] mutates **view state**: per-client, transient, never logged
-//!   and never sent. Two people sharing a drawing pan independently.
+//!   *and never sent*. Two people sharing a drawing pan independently.
+//! - [`PeerCommand`] mutates **presence**: per-client and never logged, like view
+//!   state, but *published* — every collaborator reads it and only its owner writes
+//!   it (PEER_DESIGN.md §7). The private/published line is in the type for the same
+//!   reason the logged/unlogged one is: it decides who sees the change.
 //! - [`GestureCommand`] is the press-drag-release lifecycle, which is neither: it
 //!   *builds* in view state (`Session::in_flight`) and commits a document action
-//!   at the end — or nothing at all, if cancelled.
+//!   at the end — or nothing at all, if cancelled. In a shared session the building
+//!   is published too, so peers watch the stroke as it is drawn.
 //!
 //! # What is deliberately *not* a command
 //!
@@ -76,6 +81,7 @@ pub enum InputCommand {
     Gesture(GestureCommand),
     Doc(DocCommand),
     View(ViewCommand),
+    Peer(PeerCommand),
 }
 
 /// The press-drag-release lifecycle, shared by painting and by the selection tools
@@ -192,16 +198,6 @@ pub enum ViewCommand {
     /// Edge softness (canvas px) for the next selection gesture.
     SetSelectionFeather(f32),
 
-    /// The selected layer — where the next stroke goes, if that layer can take
-    /// one. Per-client: collaborators paint on whichever layer each has selected.
-    ///
-    /// A **matte** may be selected like any other layer (FRAME_DESIGN.md §7). It
-    /// has no tile map, so a stroke aimed at one draws nothing — refused
-    /// identically by `apply` and by the preview path, so the frontend needs no
-    /// rule of its own. Selection is therefore one concept rather than "the paint
-    /// target" plus a separate frame-focus the engine cannot see.
-    SetActiveLayer(LayerId),
-
     /// Show a matte at `min..max` **without logging it** — the in-flight half of a
     /// frame-handle drag (FRAME_DESIGN.md §7). `None` drops the preview.
     ///
@@ -220,6 +216,38 @@ pub enum ViewCommand {
     SetEnvironment(EnvironmentId),
 }
 
+/// Mutations of **presence**: per-client and never logged — undo does not reach
+/// these and they are not in the save file — but *published*, so every collaborator
+/// sees them (PEER_DESIGN.md §4, §7).
+///
+/// What separates these from [`ViewCommand`] is only who reads the result. What
+/// separates them from [`DocCommand`] is that replay does not need them to reproduce
+/// a pixel: the selected layer is already closed over by
+/// [`StrokeRecord::layer`](crate::document::StrokeRecord), a cursor paints nothing,
+/// and a name is not part of the artwork.
+#[derive(Clone, Debug)]
+pub enum PeerCommand {
+    /// The selected layer — where the next stroke goes, if that layer can take
+    /// one. Per-client: collaborators paint on whichever layer each has selected,
+    /// and each can see where the others are working.
+    ///
+    /// A **matte** may be selected like any other layer (FRAME_DESIGN.md §7). It
+    /// has no tile map, so a stroke aimed at one draws nothing — refused
+    /// identically by `apply` and by the preview path, so the frontend needs no
+    /// rule of its own. Selection is therefore one concept rather than "the paint
+    /// target" plus a separate frame-focus the engine cannot see.
+    SetActiveLayer(LayerId),
+
+    /// Where this client's pointer is, in canvas space; `None` when it leaves the
+    /// canvas. Cheap at pointer rate: it writes a field, and the publish latch
+    /// coalesces to one frame per tick (PEER_DESIGN.md §5.1).
+    SetCursor(Option<Vec2>),
+
+    /// This client's display name. Empty falls back to a short id-derived one, so
+    /// two unnamed peers are still distinguishable.
+    SetName(String),
+}
+
 impl From<GestureCommand> for InputCommand {
     fn from(c: GestureCommand) -> Self {
         InputCommand::Gesture(c)
@@ -235,5 +263,11 @@ impl From<DocCommand> for InputCommand {
 impl From<ViewCommand> for InputCommand {
     fn from(c: ViewCommand) -> Self {
         InputCommand::View(c)
+    }
+}
+
+impl From<PeerCommand> for InputCommand {
+    fn from(c: PeerCommand) -> Self {
+        InputCommand::Peer(c)
     }
 }

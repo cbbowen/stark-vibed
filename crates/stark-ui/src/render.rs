@@ -26,6 +26,46 @@ pub struct Renderer {
     bristle: Option<stark_core::AssetId>,
 }
 
+/// A collaborator, as the chrome draws them (PEER_DESIGN.md §4).
+///
+/// Deliberately not the engine's [`Peer`](stark_core::Peer): that carries the
+/// in-flight gesture, which is a whole stroke path and is the *canvas's* business,
+/// not the DOM's. What the chrome needs is who is here, where they are, and where
+/// they are working.
+///
+/// Kept out of [`ObservableState`](stark_core::ObservableState) for a related
+/// reason: `obs` drives the entire component tree and is refreshed after every
+/// command, while this changes thirty times a second whenever anybody moves.
+#[derive(Clone, PartialEq, Debug)]
+pub struct PeerInfo {
+    pub actor: stark_core::document::ActorId,
+    pub name: String,
+    pub color: [f32; 3],
+    pub active_layer: stark_core::LayerId,
+    pub cursor: Option<stark_core::Vec2>,
+}
+
+impl PeerInfo {
+    /// The peer's colour as a CSS `rgb(...)`, for chips and cursors.
+    pub fn css_color(&self) -> String {
+        let [r, g, b] = self
+            .color
+            .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+        format!("rgb({r},{g},{b})")
+    }
+
+    /// A one- or two-character badge: the name's initials, so a chip reads as a
+    /// person rather than as a coloured dot.
+    pub fn initials(&self) -> String {
+        self.name
+            .split_whitespace()
+            .filter_map(|w| w.chars().next())
+            .take(2)
+            .collect::<String>()
+            .to_uppercase()
+    }
+}
+
 impl Renderer {
     pub fn process(&mut self, command: impl Into<InputCommand>) {
         self.engine.process(command);
@@ -200,6 +240,53 @@ impl Renderer {
     /// Drain locally-committed actions awaiting broadcast.
     pub fn take_outbox(&mut self) -> Vec<stark_core::document::Action> {
         self.engine.take_outbox()
+    }
+
+    /// Whether [`take_presence`](Self::take_presence) would do anything — a `&self`
+    /// test, so an idle tick of the presence pump takes no mutable borrow.
+    pub fn presence_due(&self, now: f64) -> bool {
+        self.engine.presence_due(now)
+    }
+
+    /// A counter that changes whenever the peer roster does.
+    pub fn peers_revision(&self) -> u64 {
+        self.engine.peers_revision()
+    }
+
+    /// Drain this client's presence latch, and expire peers gone quiet
+    /// (PEER_DESIGN.md §5.1). `None` when there is nothing new to say.
+    pub fn take_presence(&mut self, now: f64) -> Option<stark_core::PeerFrame> {
+        self.engine.take_presence(now)
+    }
+
+    /// The farewell frame, so peers drop this client at once on leave.
+    pub fn leaving_presence(&mut self) -> stark_core::PeerFrame {
+        self.engine.leaving_presence()
+    }
+
+    /// Integrate a peer's presence; returns whether anything changed (and so
+    /// whether the canvas needs repainting).
+    pub fn merge_presence(
+        &mut self,
+        actor: stark_core::document::ActorId,
+        frame: stark_core::PeerFrame,
+        now: f64,
+    ) -> bool {
+        self.engine.merge_presence(actor, frame, now)
+    }
+
+    /// Everyone else in the session, for the peer chrome (PEER_DESIGN.md §4).
+    pub fn peers(&self) -> Vec<PeerInfo> {
+        self.engine
+            .peers()
+            .map(|p| PeerInfo {
+                actor: p.actor,
+                name: p.name.clone(),
+                color: p.color,
+                active_layer: p.active_layer,
+                cursor: p.cursor,
+            })
+            .collect()
     }
 
     /// Import a remote peer's brush image so its strokes render faithfully.

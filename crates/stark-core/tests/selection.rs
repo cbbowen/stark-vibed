@@ -499,8 +499,14 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
     engine.process(GestureCommand::End);
 
     let img = engine.render_to_image();
-    assert!(engine.observe().has_selection, "the selection is still in force");
-    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)), "the gesture painted");
+    assert!(
+        engine.observe().has_selection,
+        "the selection is still in force"
+    );
+    assert!(
+        is_painted(&img, Vec2::new(-20.0, 0.0)),
+        "the gesture painted"
+    );
     assert!(
         !is_painted(&img, Vec2::new(20.0, 0.0)),
         "and was gated by the selection it followed"

@@ -27,10 +27,16 @@ const DASH: f32 = 8.0;
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    // Flat: one value for the whole instance, not interpolated across the quad.
+    @location(1) @interpolate(flat) tint: vec4<f32>,
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32, @location(0) origin: vec2<f32>) -> VsOut {
+fn vs_main(
+    @builtin(vertex_index) vi: u32,
+    @location(0) origin: vec2<f32>,
+    @location(1) tint: vec4<f32>,
+) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let canvas_pos = origin + corner * view.misc.x;
     var out: VsOut;
@@ -39,6 +45,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, @location(0) origin: vec2<f32>) -> Vs
     // a colour tile — so the taps below reach into the apron (the neighbour's real
     // coverage) at the tile edge rather than clamping.
     out.uv = corner * view.misc.y + view.misc.z;
+    out.tint = tint;
     return out;
 }
 
@@ -64,8 +71,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if alpha <= 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
-    // Alternating black/white along the screen diagonal: legible over paint of any
-    // value, which a single-colour outline is not.
+    // A peer's selection (tint.a > 0) is a flat line in that peer's colour, so it
+    // reads as "someone else's region" at a glance and never as your own
+    // (PEER_DESIGN.md §3).
+    if in.tint.a > 0.0 {
+        return vec4<f32>(in.tint.rgb, alpha * in.tint.a);
+    }
+    // Your own: alternating black/white along the screen diagonal — legible over
+    // paint of any value, which a single-colour outline is not.
     let dash = step(0.5, fract((in.clip.x + in.clip.y) / DASH));
     return vec4<f32>(vec3<f32>(dash), alpha);
 }

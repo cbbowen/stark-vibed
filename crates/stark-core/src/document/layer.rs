@@ -6,12 +6,63 @@
 use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
+use super::action::ActorId;
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::tile::TilePairHandle;
 
 /// Stable identifier for a layer within a document.
+///
+/// Ids are **minted from the author**, not from a shared counter — see
+/// [`LayerId::mint`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LayerId(pub u64);
+
+impl LayerId {
+    /// Mint the id for `actor`'s `n`th layer (PEER_DESIGN.md §9).
+    ///
+    /// Two peers adding a layer at the same moment must not mint the same id. A
+    /// counter resynced from the log does exactly that — both peers see `n` layers,
+    /// both mint `n + 1`, and the log ends up holding two different layers under one
+    /// id, which `layer_index` resolves to whichever comes first. That is a genuine
+    /// convergence failure, so the id space is partitioned by author instead: a
+    /// mixed 32-bit fold of the actor in the high half, the per-actor counter in the
+    /// low.
+    ///
+    /// [`ActorId::SOLO`] maps to high half 0, so a document that was never shared
+    /// keeps the small, readable ids it always had — including the root layer's
+    /// `LayerId(0)`, which every peer must agree on because it predates any actor.
+    pub fn mint(actor: ActorId, n: u64) -> Self {
+        let hi = if actor == ActorId::SOLO {
+            0
+        } else {
+            // Never 0: that is SOLO's space, and colliding with it would clash with
+            // the layers a document had before it was ever shared.
+            mix32(actor.0).max(1)
+        };
+        LayerId((u64::from(hi) << 32) | (n & 0xFFFF_FFFF))
+    }
+
+    /// The per-actor counter this id was minted from — the inverse of the low half
+    /// of [`mint`](Self::mint).
+    pub fn ordinal(self) -> u64 {
+        self.0 & 0xFFFF_FFFF
+    }
+
+    /// Whether this id was minted by `actor`, so the engine can resume that actor's
+    /// counter from a log without also resuming everyone else's.
+    pub fn minted_by(self, actor: ActorId) -> bool {
+        self.0 >> 32 == Self::mint(actor, 0).0 >> 32
+    }
+}
+
+/// splitmix64's finalizer, folded to 32 bits: decorrelates the bits an
+/// endpoint-derived [`ActorId`] takes verbatim from a public key.
+fn mix32(x: u64) -> u32 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    ((z ^ (z >> 31)) >> 32) as u32
+}
 
 /// How a layer combines with the layers below it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +133,10 @@ pub enum LayerContent {
     /// aux target at all, and why its blend there is `over` rather than additive.
     ///
     /// [`BrushParams::color`]: crate::document::BrushParams::color
-    Matte { region: MatteRegion, color: [f32; 3] },
+    Matte {
+        region: MatteRegion,
+        color: [f32; 3],
+    },
 }
 
 /// A single layer: its content plus its presentation properties.

@@ -485,11 +485,36 @@ impl PathFitter {
     /// the hook for incremental repaint (DESIGN.md §6.2) — render
     /// `0..frozen_spans()` once and re-render only the short tail after it.
     pub fn frozen_spans(&self) -> usize {
-        let all = span_count(self.geom.nrows());
         if self.finished {
-            all
+            span_count(self.geom.nrows())
         } else {
-            self.frozen().saturating_sub(1).min(all)
+            frozen_spans_for(self.frozen(), self.geom.nrows())
+        }
+    }
+
+    /// How many leading control points of [`path`](Self::path) are final — the
+    /// public face of [`frozen`](Self::frozen).
+    ///
+    /// This is what lets a live gesture be published incrementally
+    /// (PEER_DESIGN.md §5): a frozen control point never moves again, so a peer that
+    /// has been told about it never has to be told again, and the wire cost of a
+    /// stroke follows its tail rather than its length.
+    pub fn frozen_points(&self) -> usize {
+        let n = self.path_len();
+        if self.finished {
+            n
+        } else {
+            self.frozen().min(n)
+        }
+    }
+
+    /// How many control points [`path`](Self::path) would return, without building
+    /// it.
+    fn path_len(&self) -> usize {
+        if self.geom.nrows() == 0 {
+            usize::from(!self.pts.is_empty())
+        } else {
+            self.geom.nrows()
         }
     }
 
@@ -783,6 +808,18 @@ pub fn span_count(control_points: usize) -> usize {
         0 | 1 => 0,
         m => m + 1,
     }
+}
+
+/// How many spans `frozen` frozen control points settle, out of a path of `total`.
+///
+/// A span reads at most two control points past its own index, so span `k` is final
+/// once control points `0..=k+1` are — hence `frozen - 1`. Split out from
+/// [`PathFitter::frozen_spans`] because a *received* stroke has the same question to
+/// answer without the fitter that produced it: a peer knows which of its control
+/// points are settled (everything the sender has stopped resending, PEER_DESIGN.md
+/// §5) and needs the same incremental repaint from them.
+pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
+    frozen.saturating_sub(1).min(span_count(total))
 }
 
 /// Expand `knots` into a polyline, subdividing only where the error budget

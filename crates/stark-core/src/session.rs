@@ -14,6 +14,7 @@ use crate::document::{
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
+use crate::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a
@@ -101,6 +102,18 @@ impl SelectionDrag {
     }
 }
 
+/// What this session last put on the wire, for change detection (see
+/// [`Session::publish`]). Compared rather than dirty-flagged: a comparison cannot be
+/// forgotten at a call site, and these are four cheap fields.
+#[derive(Clone, PartialEq)]
+struct Published {
+    active_layer: LayerId,
+    cursor: Option<Vec2>,
+    name: String,
+    /// Ordinal of the gesture in flight, or `None` for none.
+    gesture: Option<u64>,
+}
+
 pub struct Session {
     pub view: ViewTransform,
     pub tool: Tool,
@@ -110,8 +123,34 @@ pub struct Session {
     pub selection_mode: SelectionMode,
     /// Edge softness (canvas px) applied by the next selection gesture.
     pub selection_feather: f32,
+
+    // --- the published half (PEER_DESIGN.md §4.1) -------------------------
+    //
+    // Everything above this line is *private* view state — pan/zoom, brush, the
+    // selection mode. Everything below it, plus `active_layer` and the in-flight
+    // gesture, is what [`Session::publish`] projects for other clients. The split is
+    // recorded by what that method returns rather than described in a comment, which
+    // is the same discipline DESIGN §4 applies to the command classes.
+    /// This client's display name; empty until the user sets one, in which case
+    /// peers fall back to [`crate::peer::default_name`].
+    pub name: String,
+    /// Hover position in canvas space; `None` when the pointer is off the canvas.
+    pub cursor: Option<Vec2>,
+
     in_flight: Option<StrokeBuilder>,
     selecting: Option<SelectionDrag>,
+    /// Bumped on every gesture start, so a peer can tell a restart from a
+    /// continuation without a clock.
+    gesture_ordinal: u64,
+
+    // Publish bookkeeping — the latch, not a queue (PEER_DESIGN.md §5.1).
+    published: Option<Published>,
+    pub_seq: u64,
+    pub_at: f64,
+    pub_resync_at: f64,
+    /// Control points of the current gesture the wire has already carried. Only
+    /// *frozen* ones count: the provisional tail is resent because it can still move.
+    pub_sent: usize,
 }
 
 fn hard_round_brush_params() -> BrushParams {
@@ -142,13 +181,163 @@ impl Session {
             active_layer,
             selection_mode: SelectionMode::default(),
             selection_feather: 0.0,
+            name: String::new(),
+            cursor: None,
             in_flight: None,
             selecting: None,
+            gesture_ordinal: 0,
+            published: None,
+            pub_seq: 0,
+            pub_at: f64::NEG_INFINITY,
+            pub_resync_at: f64::NEG_INFINITY,
+            pub_sent: 0,
+        }
+    }
+
+    /// The publishable half of this session, if anything a peer would care about has
+    /// changed since the last call — otherwise `None` (PEER_DESIGN.md §5.1).
+    ///
+    /// This is a **latch, not a queue**: it reports the *current* state, and the
+    /// path delta is computed here, at drain time, against what has actually been
+    /// sent. A pen reporting at 240 Hz against a 30 Hz publish tick therefore
+    /// coalesces losslessly — eight moves produce one frame carrying all eight
+    /// control points — which is exactly why presence is allowed to be lossy where
+    /// the action log is not.
+    ///
+    /// A frame goes out when something changed, when a gesture is in flight (its
+    /// path just grew), or every [`HEARTBEAT`] regardless, so a silent peer still
+    /// proves it is here.
+    pub fn publish(&mut self, now: f64) -> Option<PeerFrame> {
+        // Every `GESTURE_RESYNC`, re-send the gesture's invariant head and its whole
+        // path. That repairs any receiver that missed a delta and primes any client
+        // that arrived mid-stroke — without either of them having to ask, which is
+        // what keeps the wire one-way and the sender stateless about its audience.
+        let resync = now - self.pub_resync_at >= GESTURE_RESYNC;
+        let gesture = self.gesture_frame(resync);
+
+        let state = Published {
+            active_layer: self.active_layer,
+            cursor: self.cursor,
+            name: self.name.clone(),
+            gesture: gesture.as_ref().map(GestureFrame::id),
+        };
+        let changed = self.published.as_ref() != Some(&state)
+            // A live gesture's path grows every move, so its frame always differs
+            // even when the ordinal has not.
+            || gesture.is_some();
+        if !changed && now - self.pub_at < HEARTBEAT {
+            return None;
+        }
+
+        // The name only rides a frame when it changed, or on a resync — a peer that
+        // already knows it does not need it thirty times a second.
+        let name = (self.published.as_ref().is_none_or(|p| p.name != self.name) || resync)
+            .then(|| self.name.clone())
+            .filter(|n| !n.is_empty());
+
+        if resync && gesture.is_some() {
+            self.pub_resync_at = now;
+        }
+        self.pub_at = now;
+        self.pub_seq += 1;
+        self.published = Some(state);
+        Some(PeerFrame {
+            seq: self.pub_seq,
+            name,
+            active_layer: self.active_layer,
+            cursor: self.cursor,
+            gesture,
+            leaving: false,
+        })
+    }
+
+    /// Whether [`publish`](Self::publish) could produce a frame.
+    ///
+    /// Deliberately **conservative**: it may say yes where `publish` then returns
+    /// `None`, but it must never say no where `publish` would have produced a frame,
+    /// because a pump that trusts it would then drop that frame on the floor. So it
+    /// tests the cheap fields directly and treats "a gesture exists" as "something
+    /// changed" without building the gesture frame to find out.
+    ///
+    /// It exists so an idle session costs nothing: without it the pump has to take a
+    /// mutable borrow of the engine thirty times a second to discover there was
+    /// nothing to send.
+    pub fn publish_due(&self, now: f64) -> bool {
+        now - self.pub_at >= HEARTBEAT
+            || self.in_flight.is_some()
+            || self.selecting.is_some()
+            || self.published.as_ref().is_none_or(|p| {
+                p.active_layer != self.active_layer
+                    || p.cursor != self.cursor
+                    || p.name != self.name
+                    // A gesture that just ended: the frame clearing it is the one
+                    // that stops peers drawing a stroke nobody is making any more.
+                    || p.gesture.is_some()
+            })
+    }
+
+    /// The farewell frame: one publish that removes this client from every peer's
+    /// roster at once, rather than making them wait out [`PEER_TIMEOUT`](crate::peer::PEER_TIMEOUT).
+    pub fn publish_leaving(&mut self) -> PeerFrame {
+        self.pub_seq += 1;
+        PeerFrame {
+            seq: self.pub_seq,
+            name: None,
+            active_layer: self.active_layer,
+            cursor: None,
+            gesture: None,
+            leaving: true,
+        }
+    }
+
+    /// The in-flight gesture as a wire frame, advancing the sent-path watermark.
+    fn gesture_frame(&mut self, resync: bool) -> Option<GestureFrame> {
+        let ordinal = self.gesture_ordinal;
+        if let Some(b) = self.in_flight.as_ref() {
+            let path = b.fitter.path();
+            // Only frozen points are settled, so only they may be counted as sent:
+            // the provisional tail is resent every frame because it can still move
+            // (DESIGN §6.2). This is the same partition the renderer's `FrozenHead`
+            // uses, spent on the wire instead of on the GPU.
+            let frozen = b.fitter.frozen_points().min(path.len());
+            let fresh = resync || self.published.as_ref().and_then(|p| p.gesture) != Some(ordinal);
+            let from = if fresh {
+                0
+            } else {
+                self.pub_sent.min(path.len())
+            };
+            let head = fresh.then_some(StrokeHead {
+                layer: b.layer,
+                tool: b.tool,
+                brush: b.brush,
+                seed: b.seed,
+            });
+            let points = path[from..].to_vec();
+            self.pub_sent = frozen;
+            Some(GestureFrame::Stroke {
+                id: ordinal,
+                head,
+                from: from as u32,
+                points,
+            })
+        } else {
+            // A marquee or lasso goes whole: it is already decimated, and unlike a
+            // stroke its tail is not append-only — the closing edge follows the
+            // cursor, so there is no frozen prefix to exploit.
+            self.pub_sent = 0;
+            self.preview_selection()
+                .map(|op| GestureFrame::Selection { id: ordinal, op })
         }
     }
 
     pub fn is_stroking(&self) -> bool {
         self.in_flight.is_some()
+    }
+
+    /// The ordinal of the gesture in flight — bumped on every start, so a cached
+    /// render of one stroke is never mistaken for a render of the next.
+    pub fn gesture_ordinal(&self) -> u64 {
+        self.gesture_ordinal
     }
 
     /// Whether a selection gesture is being dragged out (DESIGN.md §6.8).
@@ -161,6 +350,7 @@ impl Session {
     pub fn start_selection(&mut self, tool: Tool, pos: Vec2) {
         self.tool = tool;
         self.in_flight = None;
+        self.gesture_ordinal += 1;
         self.selecting = Some(SelectionDrag {
             tool,
             mode: self.selection_mode,
@@ -213,6 +403,7 @@ impl Session {
     pub fn start_stroke(&mut self, tool: Tool, sample: InputSample, seed: u64, tolerance: f32) {
         self.tool = tool;
         self.selecting = None;
+        self.gesture_ordinal += 1;
         let mut fitter = PathFitter::with_tolerance(tolerance);
         fitter.push(sample);
         self.in_flight = Some(StrokeBuilder {

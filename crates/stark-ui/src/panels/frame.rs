@@ -22,7 +22,7 @@ use dioxus::prelude::*;
 
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
-use stark_core::command::{DocCommand, ViewCommand};
+use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::MatteRegion;
 use stark_core::geom::Vec2;
 use stark_core::{LayerInfo, MatteInfo};
@@ -79,13 +79,15 @@ pub fn selected_frame(state: AppState) -> Option<(LayerInfo, MatteInfo)> {
 /// Stop composing: select the topmost paint layer instead. Used by the frame bar's
 /// "Done", since a frame is only "deselected" by selecting something else.
 pub fn done_composing(state: AppState) {
-    let next = state
-        .obs
-        .read()
-        .as_ref()
-        .and_then(|o| o.layers.iter().rev().find(|l| l.is_paintable()).map(|l| l.id));
+    let next = state.obs.read().as_ref().and_then(|o| {
+        o.layers
+            .iter()
+            .rev()
+            .find(|l| l.is_paintable())
+            .map(|l| l.id)
+    });
     if let Some(id) = next {
-        dispatch(state, ViewCommand::SetActiveLayer(id));
+        dispatch(state, PeerCommand::SetActiveLayer(id));
     }
 }
 
@@ -156,7 +158,7 @@ pub fn AddFrameButton() -> Element {
                     .as_ref()
                     .and_then(|o| o.layers.iter().rev().find(|l| l.matte.is_some()).map(|l| l.id));
                 if let Some(id) = new_id {
-                    dispatch(state, ViewCommand::SetActiveLayer(id));
+                    dispatch(state, PeerCommand::SetActiveLayer(id));
                 }
             },
             "+ Frame"
@@ -275,7 +277,11 @@ fn parse_hex(s: &str) -> Option<[f32; 3]> {
     if s.len() != 6 {
         return None;
     }
-    let c = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok().map(|v| v as f32 / 255.0);
+    let c = |i: usize| {
+        u8::from_str_radix(&s[i..i + 2], 16)
+            .ok()
+            .map(|v| v as f32 / 255.0)
+    };
     Some([c(0)?, c(2)?, c(4)?])
 }
 

@@ -19,18 +19,27 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use stark_core::AssetId;
 use stark_core::document::Action;
+use stark_core::peer::PeerFrame;
 
 use crate::mirror::Mirror;
 
 /// The catch-up / asset-fetch protocol.
 pub const ALPN: &[u8] = b"stark/collab/0";
 
-/// A mesh broadcast. Postcard-encoded; the enum leaves room for presence
-/// (cursors, in-flight strokes — session state, never historized) later.
+/// A mesh broadcast. Postcard-encoded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Wire {
     /// A freshly committed action for the shared log.
     Action(Action),
+    /// One client's presence: cursor, selected layer, the gesture it is drawing
+    /// (PEER_DESIGN.md §4). **Never mirrored and never snapshotted** — it is not
+    /// part of the document, and nothing in the log refers to it, which is the whole
+    /// reason it may be dropped, coalesced or delayed without affecting convergence.
+    ///
+    /// The author is not in the payload: the receiver takes it from the mesh's
+    /// `origin`, so a peer can publish its own presence and nobody else's
+    /// (PEER_DESIGN.md §7).
+    Presence(PeerFrame),
 }
 
 /// A request over the collab ALPN (one per bi-stream; the response is the

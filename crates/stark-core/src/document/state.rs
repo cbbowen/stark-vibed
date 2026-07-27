@@ -5,8 +5,9 @@
 //! The heavy GPU memory lives behind `TileHandle`s shared across versions, and
 //! is reclaimed when the last version referencing a tile drops (DESIGN.md §5.2).
 
-use rpds::Vector;
+use rpds::{HashTrieMap, Vector};
 
+use super::action::ActorId;
 use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 use super::selection::Selection;
 use crate::geom::{TileCoord, Vec2};
@@ -37,15 +38,25 @@ impl CanvasBounds {
 }
 
 /// The full document: an ordered stack of layers, the explored bounds, and the
-/// selection mask that gates where tools may act.
+/// selection masks that gate where tools may act.
 #[derive(Clone)]
 pub struct DocState {
     pub layers: Vector<Layer>,
     pub bounds: CanvasBounds,
-    /// The active selection (DESIGN.md §6.8). Document state, not session state:
-    /// a stroke's pixels depend on it, so replay has to be able to reconstruct it —
-    /// which is why selection edits are logged actions like any other.
-    pub selection: Selection,
+    /// The active selection **of each actor** (DESIGN.md §6.8, PEER_DESIGN.md §3).
+    ///
+    /// Document state, not session state: a stroke's pixels depend on the mask it
+    /// was drawn through, so replay has to be able to reconstruct it — which is why
+    /// selection edits are logged actions like any other. But *whose* mask is the
+    /// author's, not the document's: one collaborator's lasso must not clip
+    /// another's brush. So the mask is owned per actor, keyed by the very
+    /// [`ActorId`] that orders the log, which is what makes "only its owner may
+    /// change it" structural rather than a rule a call site could forget — the key
+    /// comes from `Action::id.actor` and there is no way to write anyone else's.
+    ///
+    /// An absent entry is the unrestricted selection, so an actor who never selects
+    /// costs nothing and a solo document has at most one entry.
+    selections: HashTrieMap<ActorId, Selection>,
     /// The physical canvas surface (DESIGN.md §6.4). Document state: which canvas
     /// a piece was painted on is part of what the document *is*, it is saved, and
     /// reopening on a different weave would be a different painting. Today it is
@@ -78,7 +89,7 @@ impl DocState {
         Self {
             layers: Vector::new().push_back(Layer::new(id)),
             bounds: CanvasBounds::default(),
-            selection: Selection::everything(),
+            selections: HashTrieMap::new(),
             surface: SurfaceId::default(),
             background: DEFAULT_BACKGROUND,
         }
@@ -100,10 +111,45 @@ impl DocState {
         }
     }
 
-    /// The same document with a different selection (DESIGN.md §6.8).
-    pub fn with_selection(&self, selection: Selection) -> Self {
+    /// `actor`'s selection mask (DESIGN.md §6.8, PEER_DESIGN.md §3). An actor with
+    /// no entry has selected nothing, which *is* the unrestricted selection.
+    ///
+    /// Returned by value because that is what the callers want and it costs a
+    /// persistent-map clone — a handful of `Arc` bumps, the same price as cloning
+    /// the `DocState` it came out of.
+    pub fn selection_of(&self, actor: ActorId) -> Selection {
+        self.selections
+            .get(&actor)
+            .cloned()
+            .unwrap_or_else(Selection::everything)
+    }
+
+    /// Whether `actor` has a selection in force — the cheap test, with no clone.
+    pub fn has_selection(&self, actor: ActorId) -> bool {
+        self.selections
+            .get(&actor)
+            .is_some_and(Selection::is_active)
+    }
+
+    /// Every actor with a selection in force, in no particular order. Universal
+    /// selections are never stored, so nothing here is empty.
+    pub fn selections(&self) -> impl Iterator<Item = (ActorId, &Selection)> {
+        self.selections.iter().map(|(a, s)| (*a, s))
+    }
+
+    /// The same document with `actor`'s selection replaced (DESIGN.md §6.8).
+    ///
+    /// A universal selection is *removed* rather than stored, so "no selection" has
+    /// exactly one representation: `selections()` never yields an empty mask, and an
+    /// actor who deselects stops costing anything again.
+    pub fn with_selection(&self, actor: ActorId, selection: Selection) -> Self {
+        let selections = if selection.is_universal() {
+            self.selections.remove(&actor)
+        } else {
+            self.selections.insert(actor, selection)
+        };
         Self {
-            selection,
+            selections,
             ..self.clone()
         }
     }
@@ -257,7 +303,7 @@ impl DocState {
     }
 
     /// Rebuild from a new layer stack: bounds are recomputed from every populated
-    /// tile, and the selection carries over — it is orthogonal to the layer stack
+    /// tile, and the selections carry over — they are orthogonal to the layer stack
     /// (a mask applies to whatever is painted through it, §6.8).
     ///
     /// Bounds are **paint-only**: a matte covers the infinite plane, so counting
@@ -266,13 +312,17 @@ impl DocState {
     /// for a matte, so this falls out rather than needing a branch.
     fn with_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();
-        for coord in layers.iter().filter_map(Layer::tiles).flat_map(|t| t.keys()) {
+        for coord in layers
+            .iter()
+            .filter_map(Layer::tiles)
+            .flat_map(|t| t.keys())
+        {
             bounds.include(*coord);
         }
         Self {
             layers,
             bounds,
-            selection: self.selection.clone(),
+            selections: self.selections.clone(),
             surface: self.surface,
             background: self.background,
         }

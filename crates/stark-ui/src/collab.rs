@@ -26,6 +26,11 @@ use stark_net::{
 
 use crate::state::AppState;
 
+/// How often this client publishes its presence, in ms. Fast enough that another
+/// painter's stroke grows smoothly, slow enough that a 240 Hz pen does not put 240
+/// frames a second on a flood mesh.
+const PRESENCE_TICK_MS: i32 = 33;
+
 /// The UI's view of the collaboration state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum CollabPhase {
@@ -137,17 +142,32 @@ pub fn leave(state: AppState) {
     if let Some(task) = pump.write().take() {
         task.cancel();
     }
-    {
-        let mut renderer = state.renderer;
-        if let Some(r) = renderer.write().as_mut() {
-            r.end_collaboration();
-        }
+    let mut presence = state.collab.presence;
+    if let Some(task) = presence.write().take() {
+        task.cancel();
     }
+    let mut peers = state.collab.peers;
+    peers.set(Vec::new());
+    // Say goodbye before the transport goes: peers drop this client at once rather
+    // than waiting out the presence timeout with a stale cursor on their canvas.
+    let farewell = {
+        let mut renderer = state.renderer;
+        let mut guard = renderer.write();
+        guard.as_mut().map(|r| {
+            let frame = r.leaving_presence();
+            r.end_collaboration();
+            r.paint();
+            frame
+        })
+    };
     let mut ticket = state.collab.ticket;
     ticket.set(None);
     set_url_ticket(None);
     set_phase(state, CollabPhase::Solo);
     spawn_forever(async move {
+        if let Some(frame) = farewell {
+            let _ = session.broadcaster().publish(frame).await;
+        }
         session.shutdown().await;
     });
 }
@@ -215,6 +235,17 @@ fn install(state: AppState, mut session: CollabSession) {
                         r.paint();
                         Some(r.observe())
                     }
+                    // A peer moved, switched layer, or drew another stretch of a
+                    // live stroke (PEER_DESIGN.md §4). Repaint — that is the whole
+                    // point of it — but leave `obs` alone: presence changes nothing
+                    // the chrome renders from, and refreshing it on every remote
+                    // pointer move would re-run the whole component tree.
+                    RemoteEvent::Presence { actor, frame } => {
+                        if r.merge_presence(actor, frame, now_seconds()) {
+                            r.paint();
+                        }
+                        None
+                    }
                 }
             };
             if snapshot.is_some() {
@@ -227,6 +258,96 @@ fn install(state: AppState, mut session: CollabSession) {
     if let Some(old) = pump.write().replace(task) {
         old.cancel();
     }
+    start_presence_pump(state);
+}
+
+/// Publish this client's presence on a fixed cadence for as long as the session
+/// lives (PEER_DESIGN.md §5.1).
+///
+/// A *pull* loop rather than a push from `dispatch`: presence is a latch, so what
+/// matters is its current value, and pulling on a fixed tick is what turns a 240 Hz
+/// pen into a 30 Hz stream without dropping anything (the path delta is computed
+/// against what was actually sent). It also gives the engine the clock it has none of
+/// — the same tick expires peers who have gone quiet.
+///
+/// **Waking is not working.** The loop wakes on a fixed cadence but does nothing at
+/// all on a tick where nothing has moved: `presence_due` and the roster revision are
+/// both `&self`, read through `peek` — so an idle session costs two comparisons, with
+/// no mutable borrow of the engine, no roster allocation, and no signal write. The
+/// last of those matters most: `Signal::write` marks its subscribers dirty whether or
+/// not the value changed, so taking one every tick would re-render every component
+/// that reads the renderer, thirty times a second, for the entire life of a session
+/// in which nobody was doing anything.
+fn start_presence_pump(state: AppState) {
+    let mut presence = state.collab.presence;
+    let task = spawn_forever(async move {
+        let mut sent_revision = 0;
+        loop {
+            crate::platform::sleep_ms(PRESENCE_TICK_MS).await;
+            let Some(tx): Option<Broadcaster> = state
+                .collab
+                .session
+                .read()
+                .as_ref()
+                .map(|s| s.broadcaster())
+            else {
+                // The session is gone; so is the reason for this loop.
+                return;
+            };
+            let now = now_seconds();
+            // `peek`, not `read`: this runs outside any component, and subscribing a
+            // background task to a signal is meaningless anyway.
+            let work = state
+                .renderer
+                .peek()
+                .as_ref()
+                .map(|r| (r.presence_due(now), r.peers_revision() != sent_revision));
+            let Some((due, roster_stale)) = work else {
+                continue;
+            };
+            if !due && !roster_stale {
+                continue;
+            }
+
+            let (frame, roster) = {
+                let mut renderer = state.renderer;
+                let mut guard = renderer.write();
+                match guard.as_mut() {
+                    Some(r) => {
+                        let frame = due.then(|| r.take_presence(now)).flatten();
+                        // Re-read the revision *after* the drain, which may itself
+                        // have expired a peer — and compare against what was last
+                        // handed to the signal, so a change made here is not skipped
+                        // by the watermark advancing past it.
+                        let revision = r.peers_revision();
+                        let stale = revision != sent_revision;
+                        sent_revision = revision;
+                        (frame, stale.then(|| r.peers()))
+                    }
+                    None => continue,
+                }
+            };
+            if let Some(roster) = roster {
+                let mut peers = state.collab.peers;
+                peers.set(roster);
+            }
+            if let Some(frame) = frame
+                && let Err(e) = tx.publish(frame).await
+            {
+                // Best effort by design: the next frame supersedes this one, and
+                // nothing in the log depends on it.
+                tracing::debug!("presence publish failed: {e}");
+            }
+        }
+    });
+    if let Some(old) = presence.write().replace(task) {
+        old.cancel();
+    }
+}
+
+/// Seconds since the epoch — the clock `stark-core` deliberately does not own.
+fn now_seconds() -> f64 {
+    js_sys::Date::now() / 1000.0
 }
 
 fn set_phase(state: AppState, phase: CollabPhase) {

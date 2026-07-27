@@ -873,3 +873,64 @@
   font-size: 12px;
   line-height: 1.4;
 }
+
+/* --- collaborators (PEER_DESIGN.md §4) --- */
+
+/* A peer's initials on the layer row they are working on. Their colour is the
+   whole point, so the chip is the colour and the text just has to survive on
+   top of it — a dark ink reads over every hue the id hash can produce, which a
+   light one does not. */
+.peer-chip {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #16161a;
+  box-shadow: 0 0 0 1px #00000040;
+}
+
+/* The cursor layer sits over the canvas and under every panel. It must never
+   swallow a pointer event: painting through where someone else's cursor happens
+   to be is not a thing the user should have to think about. */
+.peer-cursors {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.peer-cursor {
+  position: absolute;
+  transform: translate(-3px, -3px);
+  /* Long enough to look tracked rather than teleported, short enough that the
+     cursor still reads as "where they are" and not "where they were". The
+     publish tick is 33 ms, so this is a little over two frames of smoothing. */
+  transition: left 80ms linear, top 80ms linear;
+}
+
+.peer-cursor-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50% 50% 50% 0;
+  background: var(--peer);
+  box-shadow: 0 1px 3px #00000066;
+}
+
+.peer-cursor-name {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--peer);
+  color: #16161a;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}

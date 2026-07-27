@@ -53,11 +53,12 @@ stark/
 │   │   │   ├── engine.rs       # owns everything; process(InputCommand) (§4, §7)
 │   │   │   ├── command.rs      # Gesture/Doc/View commands (§4)
 │   │   │   ├── session.rs      # view state: tool, brush, view, in-flight gesture
+│   │   │   ├── peer.rs         # presence: the roster + wire frames (PEER_DESIGN §4)
 │   │   │   ├── error.rs        # EngineError + Result
 │   │   │   ├── document/       # versioned state (the history)
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── action.rs    # Action + ActionId (replayable mutations)
-│   │   │   │   ├── state.rs     # DocState: layers, selection, surface
+│   │   │   │   ├── state.rs     # DocState: layers, per-actor selections, surface
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
 │   │   │   │   ├── selection.rs # Selection soft mask + ops (§6.8)
 │   │   │   │   └── layer.rs
@@ -178,23 +179,32 @@ Two distinct vocabularies, deliberately not merged:
 `InputCommand` — *raw, high-frequency user intent*, including ephemeral input
 that never lands in history.
 
-There are **two classes of engine state**, and which one a command touches decides
+There are **three classes of engine state**, and which one a command touches decides
 almost everything about it — whether it is logged, whether peers see it, whether
 undo reaches it. So the split is in the type, not in a comment:
 
 - **Document state** — historized, replicated, reproduced by replay. Layers, the
-  selection, the canvas surface, and of course strokes.
-- **View state** — per-client, transient, never logged and never sent. Tool, brush,
+  canvas surface, and of course strokes. The selection is document state too, but
+  **owned**: one mask per actor, so a collaborator's lasso never clips your brush
+  ([PEER_DESIGN.md](PEER_DESIGN.md) §3).
+- **View state** — per-client, transient, never logged *and never sent*. Tool, brush,
   pan/zoom, viewport, lighting. Two people sharing a drawing pan independently.
+- **Presence** — per-client and never logged, like view state, but **published**:
+  every collaborator reads it and only its owner writes it. The selected layer, the
+  cursor, the gesture in flight (PEER_DESIGN.md §4). What puts something here rather
+  than in the document is the rule this section already runs on — *does replay need
+  it to reproduce pixels?* — and for all of these the answer is no.
 
-A gesture is neither, and gets its own kind: it *builds* in view state and commits
-a document action at the end — or nothing at all, if cancelled.
+A gesture is none of them, and gets its own kind: it *builds* in per-client state and
+commits a document action at the end — or nothing at all, if cancelled. In a shared
+session the building is published too, so peers watch a stroke as it is drawn.
 
 ```rust
 pub enum InputCommand {
     Gesture(GestureCommand),
     Doc(DocCommand),
     View(ViewCommand),
+    Peer(PeerCommand),
 }
 
 pub enum GestureCommand {          // press-drag-release, for brush *and* selection
@@ -225,9 +235,14 @@ pub enum ViewCommand {             // never logged, never sent
     Resize(Extent2),
     SetSelectionMode(SelectionMode),
     SetSelectionFeather(f32),
-    SetActiveLayer(LayerId),       // per-client: collaborators paint on their own
     SetMediaParams(MediaParams),
     SetEnvironment(EnvironmentId),
+}
+
+pub enum PeerCommand {             // never logged, but published (PEER_DESIGN §7)
+    SetActiveLayer(LayerId),       // collaborators paint on their own, and can see it
+    SetCursor(Option<Vec2>),
+    SetName(String),
 }
 
 pub struct InputSample {       // one pen/mouse sample
@@ -1239,9 +1254,15 @@ texture fetch and nothing else — which is why the goldens are unchanged.
 **Why it lives in `DocState`, and what the log carries.** A stroke's pixels depend
 on the mask in force when it was drawn, so replay must be able to reconstruct it:
 the selection is document state and edits are logged actions (`Select`,
-`InvertSelection`). What travels is the **op**, not the mask — a few floats or a
-decimated polyline — and every peer rasterizes it identically from the same
-shader. The log stays compact, §12's convergence argument is untouched, and undo
+`InvertSelection`). It is **owned** document state, though — `DocState.selections`
+holds one mask per `ActorId`, and `Action::apply` reads the key off `self.id.actor`,
+never off the payload. That is what stops one collaborator's lasso clipping another's
+brush, and it makes "only its owner may change it" structural rather than a rule a
+call site could forget: there is no way to address anyone else's mask
+([PEER_DESIGN.md](PEER_DESIGN.md) §3). A document that was never shared has a single
+entry under `ActorId::SOLO` and behaves exactly as before. What travels is the **op**,
+not the mask — a few floats or a decimated polyline — and every peer rasterizes it
+identically from the same shader. The log stays compact, §12's convergence argument is untouched, and undo
 steps through selection changes like anything else. An op that would need more
 than `MAX_SELECTION_TILES` masks is rejected (deterministically, so peers agree)
 rather than clipped; `All` already expresses "everything" at zero cost.
@@ -1311,6 +1332,12 @@ impl Engine {
 `can_undo`, `can_redo`, `active_tool`, `brush`, `view`, `doc_bounds`,
 `is_stroking`. Published over a `watch`/signal channel so Dioxus re-renders
 reactively without polling pixels.
+
+The **peer roster** is deliberately *not* in it, even though it is UI-facing
+([PEER_DESIGN.md](PEER_DESIGN.md) §4): `ObservableState` is refreshed after every
+command and drives the whole component tree, while presence changes thirty times a
+second whenever anybody moves. It is read through `Engine::peers()` into a signal of
+its own, so a remote cursor moving re-renders a cursor and not an application.
 
 The engine is runtime-agnostic: it uses channels and `async fn run`, so it drops
 into tokio (desktop) or wasm-bindgen-futures (web). GPU buffer readback (used by
@@ -1557,20 +1584,25 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   (`…#stark…`, via `replaceState`; cleared on leave), and opening a link with
   one auto-joins on load — the fragment never leaves the browser, so no server
   sees the ticket.
-- **Presence (cursors, selections, names):** still future — ephemeral, broadcast
-  over gossip but **never historized** — it's session state, the same category
-  as pan/zoom (§3). Other users' live, in-progress strokes would render onto
-  preview tiles exactly like the local in-flight stroke, and only become
-  `Action`s when their author commits. (Today a peer's stroke appears when
-  committed.)
+- **Presence (cursors, selected layer, names, live strokes):** **implemented** —
+  see [PEER_DESIGN.md](PEER_DESIGN.md). Ephemeral, broadcast as `Wire::Presence`
+  but **never historized, never mirrored and never snapshotted**: nothing in the
+  action log refers to it, which is exactly what lets it be dropped, coalesced or
+  delayed without touching convergence. Other users' in-progress strokes render
+  through the same entry point as the local one and only become `Action`s when
+  their author commits. The *selection* is the one piece of per-client state that
+  did **not** go here — a stroke's pixels depend on the mask it was drawn through,
+  so replay needs it, and it lives in `DocState` keyed by `ActorId` instead
+  (PEER_DESIGN.md §3).
 
 ### 12.5 What we deliberately defer
 
-Authentication/permissions (anyone with a ticket can write), presence (§12.4),
-large-session scaling (gossip fan-out, log compaction/GC of fully-superseded
-tiles), recovery from gossip loss (a lagged receiver warns; a re-join
-resnapshots), and offline-merge UX are out of scope for this first cut. None of
-them perturb the convergence model above; they layer on top of it.
+Authentication/permissions (anyone with a ticket can write), large-session scaling
+(gossip fan-out, log compaction/GC of fully-superseded tiles), recovery from gossip
+loss (a lagged receiver warns; a re-join resnapshots), and offline-merge UX are out
+of scope for this first cut. None of them perturb the convergence model above; they
+layer on top of it. Presence used to be on this list and is now built
+([PEER_DESIGN.md](PEER_DESIGN.md)); what that document defers in turn is its §13.
 
 ## 13. Suggested build order
 
@@ -1597,6 +1629,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 | 11 | Brush file upload | **not started** |
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
+| 13 | Per-client state: owned selections + presence ([PEER_DESIGN.md](PEER_DESIGN.md)) | done — its own build order is PEER_DESIGN §14 |
 
 1. **GPU + tiles skeleton:** `GpuContext`, the recycling `TilePool`, and a tile
    blitted to a target under a `ViewTransform`. Proves infinite-canvas pan/zoom
@@ -1672,8 +1705,22 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
    (`stark-core/tests/collab.rs`) and two engines over real loopback iroh
    endpoints (`stark-net/tests/sync.rs`) must render bit-identical canvases.
    UI: "Shared drawing" dialog (share / join-by-ticket / leave) with two pumps
-   in `stark-ui/src/collab.rs`. Presence/permissions remain future (§12.5).
-13. **Mutable medium — subtractive & wet diffusion (§6.2):** the read-modify-write
+   in `stark-ui/src/collab.rs`. Permissions remain future (§12.5); presence became
+   step 13.
+13. **Per-client state ([PEER_DESIGN.md](PEER_DESIGN.md)):** the third class —
+   owned by one client, read by all. Two mechanisms, split by whether replay needs
+   the state: the **selection** moves into `DocState` keyed by `ActorId`, so a
+   collaborator's mask stops clipping your brush and every peer still reproduces
+   your strokes through *your* mask; the selected layer, cursor and in-flight
+   gesture become **presence**, a roster outside the timeline fed by a lossy
+   `Wire::Presence` channel that never touches the mirror, the snapshot or the
+   file. Live strokes ride the fitter's frozen prefix as deltas with a ~1 Hz
+   resync, and every client folds them over the committed document in `ActorId`
+   order. Also fixes two latent defects: concurrent `AddLayer` minting the same
+   `LayerId` (a real convergence failure), and a remote `RemoveLayer` stranding the
+   active layer. Tests: `stark-core/tests/peer_state.rs`,
+   `stark-net/tests/presence.rs`.
+14. **Mutable medium — subtractive & wet diffusion (§6.2):** the read-modify-write
    *write-back* path (footprint→scratch → combine → CoW tile), validated by a
    medium-`Dry` equivalence test (Phase 0); then `BrushDynamics::Knife` —
    subtractive palette-knife scraping with conservative reservoir carry and edge

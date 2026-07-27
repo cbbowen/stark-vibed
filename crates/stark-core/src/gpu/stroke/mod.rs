@@ -189,6 +189,14 @@ pub struct StrokeCarry {
     /// range with no geometry leaves the brush as it found it — so a caller holding
     /// earlier state should keep it rather than treat this as a reset.
     pub tool: Option<ToolState>,
+    /// The tiles this range rewrote — everything in the returned map that differs
+    /// from `scene.base`.
+    ///
+    /// The renderer already enumerates these to decide what to draw
+    /// ([`affected_tiles`](segments::affected_tiles)), and reporting them is what
+    /// lets several in-flight strokes be composited over one committed document
+    /// without diffing whole tile maps (PEER_DESIGN.md §6).
+    pub dirty: Vec<TileCoord>,
 }
 
 /// GPU resources scoped to one `render()` call (currently the instance buffer;

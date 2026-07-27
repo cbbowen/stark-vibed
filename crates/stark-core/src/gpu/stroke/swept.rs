@@ -68,12 +68,15 @@ impl StrokeRenderer {
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
         let (segments, end_dist) = generate_segments_in(rec, flatten_tolerance(&rec.brush), spans);
-        let carry = StrokeCarry {
-            dist: end_dist,
-            tool: None,
-        };
         if segments.is_empty() {
-            return (base.clone(), carry);
+            return (
+                base.clone(),
+                StrokeCarry {
+                    dist: end_dist,
+                    tool: None,
+                    dirty: Vec::new(),
+                },
+            );
         }
 
         // The per-stroke instance buffer registers here and is `destroy()`d when this
@@ -141,6 +144,11 @@ impl StrokeRenderer {
             .write_buffer(&instance_buf, 0, instance_bytes);
 
         let coords = affected_tiles(&segments);
+        let carry = StrokeCarry {
+            dist: end_dist,
+            tool: None,
+            dirty: coords.iter().copied().collect(),
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark stroke commit"),
         });

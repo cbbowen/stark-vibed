@@ -11,7 +11,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{DocCommand, ViewCommand};
+use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{LayerId, MatteRegion};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
@@ -239,7 +239,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
         "adding a frame should not move the selection on its own"
     );
     // ...but selecting one is allowed, and reported back.
-    engine.process(ViewCommand::SetActiveLayer(matte_id));
+    engine.process(PeerCommand::SetActiveLayer(matte_id));
     assert_eq!(
         engine.observe().active_layer,
         matte_id,
@@ -258,7 +258,12 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
 
     // Painting on it does nothing at all — no panic, no silent landing elsewhere.
     let before = engine.render_to_image();
-    paint(&mut engine, RED, 30.0, &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)]);
+    paint(
+        &mut engine,
+        RED,
+        30.0,
+        &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)],
+    );
     let after = engine.render_to_image();
     assert!(
         images_match(&before, &after, 1),
@@ -266,8 +271,13 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     );
 
     // Selecting a paint layer again resumes painting, so nothing is stuck.
-    engine.process(ViewCommand::SetActiveLayer(LayerId(0)));
-    paint(&mut engine, RED, 30.0, &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)]);
+    engine.process(PeerCommand::SetActiveLayer(LayerId(0)));
+    paint(
+        &mut engine,
+        RED,
+        30.0,
+        &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)],
+    );
     assert!(
         !images_match(&before, &engine.render_to_image(), 1),
         "selecting a paint layer again must resume painting"

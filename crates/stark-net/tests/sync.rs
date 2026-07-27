@@ -65,6 +65,9 @@ fn drain_events(events: &mut UnboundedReceiver<RemoteEvent>, engine: &mut Engine
                 engine.merge_remote(action);
                 applied += 1;
             }
+            RemoteEvent::Presence { actor, frame } => {
+                engine.merge_presence(actor, frame, 0.0);
+            }
         }
     }
     applied
@@ -139,10 +142,7 @@ async fn two_peers_converge_over_iroh() {
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // The pre-share stroke arrived via the snapshot.
-    assert!(identical(
-        &host.render_to_image(),
-        &peer.render_to_image()
-    ));
+    assert!(identical(&host.render_to_image(), &peer.render_to_image()));
 
     // --- concurrent edits, crossing on the canvas ---
     paint(

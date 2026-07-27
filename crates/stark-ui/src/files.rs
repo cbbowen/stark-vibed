@@ -28,7 +28,11 @@ pub fn save_document(state: AppState) {
     let bytes = state.renderer.read().as_ref().map(|r| r.save_bytes());
     match bytes {
         Some(Ok(bytes)) => {
-            if let Err(e) = download_bytes(&bytes, &format!("painting.{DOC_EXT}"), "application/octet-stream") {
+            if let Err(e) = download_bytes(
+                &bytes,
+                &format!("painting.{DOC_EXT}"),
+                "application/octet-stream",
+            ) {
                 tracing::error!("save failed: {e}");
             }
         }
@@ -64,7 +68,12 @@ pub fn open_document(state: AppState) {
 
 /// Scale presets for the export dialog. A multiplier is the honest unit here: the
 /// frame's canvas size is the piece, and everything else is a resampling of it.
-const SCALES: [(&str, f32); 4] = [("1\u{00D7}", 1.0), ("2\u{00D7}", 2.0), ("3\u{00D7}", 3.0), ("4\u{00D7}", 4.0)];
+const SCALES: [(&str, f32); 4] = [
+    ("1\u{00D7}", 1.0),
+    ("2\u{00D7}", 2.0),
+    ("3\u{00D7}", 3.0),
+    ("4\u{00D7}", 4.0),
+];
 
 /// The export dialog: pick a resolution and a ground, see the pixel size you will
 /// get, and write the PNG.
@@ -83,11 +92,13 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     // Prefer whatever is selected, else the topmost frame, else nothing (which
     // falls back to the painted bounds, FRAME_DESIGN.md §6).
     let frame: Option<LayerId> = selected_frame(state).map(|(l, _)| l.id).or_else(|| {
-        state
-            .obs
-            .read()
-            .as_ref()
-            .and_then(|o| o.layers.iter().rev().find(|l| l.matte.is_some()).map(|l| l.id))
+        state.obs.read().as_ref().and_then(|o| {
+            o.layers
+                .iter()
+                .rev()
+                .find(|l| l.matte.is_some())
+                .map(|l| l.id)
+        })
     });
 
     // What we are about to produce, reported by the engine rather than recomputed
@@ -99,7 +110,10 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
         .map(|r| r.export_plan(frame, ExportScale::Factor(scale())));
 
     let (size_label, plan_error) = match &plan {
-        Some(Ok(p)) => (format!("{} \u{00D7} {} px", p.size.width, p.size.height), None),
+        Some(Ok(p)) => (
+            format!("{} \u{00D7} {} px", p.size.width, p.size.height),
+            None,
+        ),
         Some(Err(e)) => ("\u{2014}".to_string(), Some(e.to_string())),
         None => ("\u{2014}".to_string(), None),
     };

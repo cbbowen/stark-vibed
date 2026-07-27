@@ -24,7 +24,12 @@
 //!   shared), and [`document::DocState`], a persistent map of copy-on-write
 //!   tiles (§5).
 //! - [`session`] — view state: tool, brush, view transform, the in-flight
-//!   gesture (§3).
+//!   gesture (§3), plus the half of it that is published to collaborators.
+//! - [`peer`] — presence: per-client state every client reads and only its owner
+//!   writes, held outside the timeline because replay does not need it
+//!   (PEER_DESIGN.md §4). The one piece of per-client state that *is* needed by
+//!   replay — the selection — lives in [`document::DocState`] keyed by
+//!   [`document::ActorId`] instead (PEER_DESIGN.md §3).
 //! - [`gpu`] — the tile pool, the stroke renderer, compositing and the media
 //!   pass (§6).
 //! - [`path`] / [`spline`] — pointer samples fitted to a cubic B-spline, then
@@ -47,6 +52,7 @@ pub mod image;
 pub mod io;
 pub mod noise;
 pub mod path;
+pub mod peer;
 pub mod session;
 pub mod spline;
 
@@ -65,3 +71,4 @@ pub use gpu::{
 };
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};
+pub use peer::{LiveGesture, Peer, PeerFrame, Peers};
