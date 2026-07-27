@@ -115,7 +115,12 @@ pub fn LightingPanel() -> Element {
             div { class: "color-popout",
                 OklabPicker {
                     init: c,
-                    onchange: move |rgb: [f32; 3]| update_background(state, rgb),
+                    // Previewed while the pointer is down, committed once on release:
+                    // the substrate colour is document state, so one drag has to cost
+                    // one undo step (and one replicated action) rather than one per
+                    // pointer sample — the same bargain the frame drag makes.
+                    onchange: move |rgb: [f32; 3]| preview_background(state, rgb),
+                    oncommit: move |rgb: [f32; 3]| update_background(state, rgb),
                 }
             }
         }
@@ -136,9 +141,16 @@ fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
     dispatch(state, ViewCommand::SetMediaParams(p));
 }
 
-/// Set the canvas substrate colour (straight sRGB). A logged document edit now,
-/// not a view setting: the ground a piece was painted on is part of what it is,
-/// and it is saved with it (FRAME_DESIGN.md §5).
+/// Show a substrate colour without logging it — every sample of a picker drag
+/// (FRAME_DESIGN.md §5). The engine renders it and reports it back through
+/// `observe`, so the canvas and the swatch both track the pointer.
+fn preview_background(state: AppState, rgb: [f32; 3]) {
+    dispatch(state, ViewCommand::PreviewBackground(Some(rgb)));
+}
+
+/// Commit the canvas substrate colour (straight sRGB) — once, when the pick ends.
+/// A logged document edit, not a view setting: the ground a piece was painted on is
+/// part of what it is, and it is saved with it (FRAME_DESIGN.md §5).
 fn update_background(state: AppState, rgb: [f32; 3]) {
     dispatch(state, DocCommand::SetBackground(rgb));
 }

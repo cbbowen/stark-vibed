@@ -214,6 +214,16 @@ pub enum ViewCommand {
     /// so a drag costs one undo step rather than one per pointer move.
     PreviewMatteRect(Option<(LayerId, Vec2, Vec2)>),
 
+    /// Show a substrate colour **without logging it** — the in-flight half of a
+    /// canvas-colour drag (FRAME_DESIGN.md §5). `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewMatteRect`](Self::PreviewMatteRect), for the
+    /// same reason: a colour picker reports a value per pointer *move*, so
+    /// committing each one would spend an undo step — and, in a shared session, a
+    /// replicated log entry — on every sample of a single drag. The frontend knows
+    /// where the drag ends and commits one [`DocCommand::SetBackground`] there.
+    PreviewBackground(Option<[f32; 3]>),
+
     /// Tune the media/lighting pass (DESIGN.md §6.3). Changes how the canvas
     /// looks, not what it is.
     SetMediaParams(MediaParams),

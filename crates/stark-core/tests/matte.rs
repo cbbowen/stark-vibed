@@ -7,6 +7,11 @@
 //! derives visibility from height, not composited alpha), and that an opaque one
 //! *erases* the relief beneath it rather than letting underlying impasto emboss
 //! ghost ridges through it (§4.2).
+//!
+//! The two `previews_without_logging` tests are here together rather than split by
+//! subject: the frame drag and the substrate-colour drag are one mechanism — an
+//! unlogged stand-in document while the pointer is down, one action on release —
+//! and they are worth reading side by side.
 
 mod common;
 
@@ -340,6 +345,63 @@ fn dragging_a_frame_previews_without_logging() {
     assert!(
         images_match(&framed, &back, 2),
         "one undo should take back the whole drag"
+    );
+}
+
+/// A canvas-colour drag previews live but logs once (FRAME_DESIGN.md §5) — the
+/// substrate's half of the bargain the test above makes for the frame, and here
+/// beside it because both ride the same preview slot. A colour picker reports a
+/// value per pointer move, so without this a single drag would bury the history
+/// under a hundred one-shade-apart edits.
+#[test]
+fn dragging_the_canvas_colour_previews_without_logging() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let blank = engine.render_to_image();
+    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    let painted = engine.render_to_image();
+    let ground = engine.observe().background;
+
+    // Three "pointer moves" of a drag towards a dark ground.
+    for v in [0.5f32, 0.3, 0.1] {
+        engine.process(ViewCommand::PreviewBackground(Some([v, v, v])));
+    }
+    let dragging = engine.render_to_image();
+    assert!(
+        !images_match(&painted, &dragging, 4),
+        "the preview should recolour the canvas on screen"
+    );
+    // `observe` reports the previewed colour, so the panel's swatch agrees with the
+    // canvas it controls instead of trailing a commit behind it.
+    assert_eq!(engine.observe().background, [0.1, 0.1, 0.1]);
+
+    // Undoing now must take back the *stroke*, not a drag step, and drop the
+    // preview with it — landing on the untouched document, because nothing about
+    // the drag has been logged.
+    engine.process(DocCommand::Undo);
+    assert!(
+        images_match(&blank, &engine.render_to_image(), 2),
+        "undo during a drag should take back the stroke and drop the preview"
+    );
+    engine.process(DocCommand::Redo);
+
+    // Releasing commits exactly one action, and drops the preview.
+    engine.process(DocCommand::SetBackground([0.1, 0.1, 0.1]));
+    let committed = engine.render_to_image();
+    assert!(
+        images_match(&dragging, &committed, 2),
+        "the committed colour should match what the drag previewed"
+    );
+    engine.process(DocCommand::Undo);
+    assert_eq!(
+        engine.observe().background,
+        ground,
+        "one undo should take back the whole drag"
+    );
+    assert!(
+        images_match(&painted, &engine.render_to_image(), 2),
+        "and restore the image it started from"
     );
 }
 

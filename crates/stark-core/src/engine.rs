@@ -270,11 +270,17 @@ pub struct Engine {
     /// to hand in its own. `max` because a clock that steps backwards must not
     /// un-expire a peer, whatever the frontend hands in.
     now: f64,
-    /// The frame-handle drag in flight (FRAME_DESIGN.md §7): a whole document that
-    /// stands in for the committed one, because moving a matte is not a tile edit.
-    /// `None` when no handle is held.
-    matte_preview: Option<DocState>,
-    /// The **presented** document: the committed state (or `matte_preview`) with
+    /// The unlogged document edit in flight: a whole document that stands in for
+    /// the committed one, because what these edits change — a matte's rect
+    /// (FRAME_DESIGN.md §7), the substrate colour (§5) — is document state rather
+    /// than a tile edit, so there is nothing to draw *over* the document the way a
+    /// stroke preview does. One slot, not one per kind: only one such drag can be
+    /// in flight at a time (they all belong to a single held pointer), and the
+    /// stand-in is built from the committed state each time, so a second kind
+    /// starting mid-drag supersedes the first rather than compounding with it.
+    /// `None` when nothing is being dragged.
+    doc_preview: Option<DocState>,
+    /// The **presented** document: the committed state (or `doc_preview`) with
     /// every in-flight gesture — this client's and every peer's — drawn over it
     /// (PEER_DESIGN.md §6). `None` when nobody is mid-gesture.
     live: Option<DocState>,
@@ -360,7 +366,7 @@ impl Engine {
             session,
             peers: Peers::new(),
             now: 0.0,
-            matte_preview: None,
+            doc_preview: None,
             live: None,
             heads: BTreeMap::new(),
             doc_epoch: 0,
@@ -474,7 +480,7 @@ impl Engine {
     fn process_doc_inner(&mut self, command: DocCommand) {
         match command {
             DocCommand::Undo => {
-                self.matte_preview = None;
+                self.doc_preview = None;
                 // Shared sessions log undo as an action peers can order
                 // (DESIGN.md §5.4, §12.3); solo falls back to navigation.
                 if let Some(target) = self.timeline.undo_as_action() {
@@ -486,7 +492,7 @@ impl Engine {
                 self.apply_document_surface();
             }
             DocCommand::Redo => {
-                self.matte_preview = None;
+                self.doc_preview = None;
                 // Redo is an `Undo` of an `Undo` in a shared session.
                 if let Some(target) = self.timeline.redo_as_action() {
                     self.commit(ActionKind::Undo(target));
@@ -531,13 +537,18 @@ impl Engine {
                 // The committed rect supersedes whatever the drag was previewing;
                 // leaving the preview up would pin the canvas to the last dragged
                 // value and shadow every later edit.
-                self.matte_preview = None;
+                self.doc_preview = None;
                 self.commit(ActionKind::SetMatteRect(id, min, max));
             }
             DocCommand::SetMatteColor(id, color) => {
                 self.commit(ActionKind::SetMatteColor(id, color))
             }
-            DocCommand::SetBackground(rgb) => self.commit(ActionKind::SetBackground(rgb)),
+            DocCommand::SetBackground(rgb) => {
+                // The committed colour supersedes whatever the drag was previewing,
+                // for the same reason `SetMatteRect` drops it above.
+                self.doc_preview = None;
+                self.commit(ActionKind::SetBackground(rgb));
+            }
             DocCommand::RemoveLayer(id) => {
                 self.commit(ActionKind::RemoveLayer(id));
                 self.repoint_active_layer();
@@ -587,12 +598,13 @@ impl Engine {
             }
             ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
             ViewCommand::PreviewMatteRect(drag) => {
-                self.matte_preview =
+                let preview =
                     drag.map(|(id, min, max)| self.timeline.current().set_matte_rect(id, min, max));
-                // The previews are composited onto this, so moving it invalidates
-                // every cached head exactly as a commit would.
-                self.doc_epoch += 1;
-                self.refresh_live();
+                self.set_doc_preview(preview);
+            }
+            ViewCommand::PreviewBackground(rgb) => {
+                let preview = rgb.map(|rgb| self.timeline.current().with_background(rgb));
+                self.set_doc_preview(preview);
             }
             ViewCommand::SetMediaParams(params) => self.compositor.set_media(params),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
@@ -982,16 +994,19 @@ impl Engine {
     /// A snapshot of UI-facing state (DESIGN.md §7).
     pub fn observe(&self) -> ObservableState {
         let doc = self.timeline.current();
-        // Layers alone are read from the *previewed* document when one is in
-        // flight, so the frame's handles track a drag (which lives in the preview,
-        // FRAME_DESIGN.md §7) instead of lagging on the committed rect.
+        // The layers and the substrate colour are read from the *previewed*
+        // document when one is in flight, so the frame's handles track a drag and
+        // the colour swatch tracks the picker (both live in the preview,
+        // FRAME_DESIGN.md §7, §5) instead of lagging on the committed value — which
+        // for the colour would leave the panel disagreeing with the canvas it
+        // controls, since rendering reads `presented`.
         //
-        // Deliberately only the layers. `has_selection` must stay committed-only —
+        // Deliberately only those two. `has_selection` must stay committed-only —
         // a marquee drag would otherwise flash the selection bar in and out before
         // anything is selected — and that is asserted by
         // `a_selection_gesture_commits_the_same_op_it_previewed`. A stroke preview
         // changes no presentation property, so it is not consulted here at all.
-        let shown = self.matte_preview.as_ref().unwrap_or(doc);
+        let shown = self.doc_preview.as_ref().unwrap_or(doc);
         let layers = shown
             .layers
             .iter()
@@ -1030,8 +1045,8 @@ impl Engine {
             media: self.compositor.media(),
             environment: self.environment.id(),
             color_space: self.color_space.id(),
-            surface: self.document().surface,
-            background: self.document().background,
+            surface: doc.surface,
+            background: shown.background,
         }
     }
 
@@ -1099,7 +1114,7 @@ impl Engine {
         self.actor = actor;
         self.session.adopt_identity(identity);
         self.outbox_enabled = true;
-        self.matte_preview = None;
+        self.doc_preview = None;
         self.doc_epoch += 1;
         // New actor, new layer-id space: this client's counter restarts, and the
         // pre-share layers keep the `SOLO` ids they were minted with.
@@ -1465,7 +1480,7 @@ impl Engine {
         self.timeline = Box::new(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface),
         ));
-        self.matte_preview = None;
+        self.doc_preview = None;
         self.live = None;
         self.heads.clear();
         self.peers.clear();
@@ -1516,12 +1531,23 @@ impl Engine {
         id
     }
 
-    /// The document as it should be *shown*: the committed state, or the frame drag
-    /// standing in for it, with every in-flight gesture drawn over the top.
+    /// Install (or, with `None`, drop) the stand-in document for an unlogged edit
+    /// in flight — the shared tail of every `Preview*` command.
+    fn set_doc_preview(&mut self, preview: Option<DocState>) {
+        self.doc_preview = preview;
+        // The gesture previews are composited onto this, so moving it invalidates
+        // every cached head exactly as a commit would.
+        self.doc_epoch += 1;
+        self.refresh_live();
+    }
+
+    /// The document as it should be *shown*: the committed state, or the unlogged
+    /// edit in flight standing in for it, with every in-flight gesture drawn over
+    /// the top.
     fn presented(&self) -> &DocState {
         self.live
             .as_ref()
-            .or(self.matte_preview.as_ref())
+            .or(self.doc_preview.as_ref())
             .unwrap_or_else(|| self.timeline.current())
     }
 
@@ -1570,7 +1596,7 @@ impl Engine {
             return;
         }
         let base = self
-            .matte_preview
+            .doc_preview
             .clone()
             .unwrap_or_else(|| self.timeline.current().clone());
         let mut out = base.clone();

@@ -45,8 +45,18 @@ const FIELD_N: usize = 96;
 /// `onchange` as straight sRGB, gamut-clamped. Signals are `Copy`, so they can be handed
 /// to several event closures and the free helpers below. Used by the Color panel (brush
 /// colour) and the Lighting panel's canvas-colour pop-out.
+///
+/// `oncommit` fires once when the pointer is released, with the final colour. The
+/// two exist separately because a drag reports a colour per pointer *move* while
+/// being one edit: a caller feeding history hangs the unlogged preview off
+/// `onchange` and the single commit off `oncommit`. Omitting it is right for a
+/// caller whose colour is not historized at all — the brush's, which is view state.
 #[component]
-pub fn OklabPicker(init: [f32; 3], onchange: EventHandler<[f32; 3]>) -> Element {
+pub fn OklabPicker(
+    init: [f32; 3],
+    onchange: EventHandler<[f32; 3]>,
+    #[props(default)] oncommit: Option<EventHandler<[f32; 3]>>,
+) -> Element {
     let lab = srgb_to_oklab([init[0], init[1], init[2], 1.0]);
     let l = use_signal(|| lab[0]);
     let a = use_signal(|| lab[1]);
@@ -78,8 +88,8 @@ pub fn OklabPicker(init: [f32; 3], onchange: EventHandler<[f32; 3]>) -> Element 
                 // even outside the field (picks clamp to the gamut box).
                 onpointerdown: move |e| { capture_pointer(&e); picking_ab.set(true); pick_ab(onchange, a, b, l, &e); },
                 onpointermove: move |e| { if picking_ab() { pick_ab(onchange, a, b, l, &e); } },
-                onpointerup: move |_| picking_ab.set(false),
-                onpointercancel: move |_| picking_ab.set(false),
+                onpointerup: move |_| end_pick(oncommit, picking_ab, l, a, b),
+                onpointercancel: move |_| end_pick(oncommit, picking_ab, l, a, b),
                 div { class: "ab-marker", style: "left:{ax}px; top:{by}px;" }
             }
             div {
@@ -87,23 +97,47 @@ pub fn OklabPicker(init: [f32; 3], onchange: EventHandler<[f32; 3]>) -> Element 
                 style: "background: {l_grad};",
                 onpointerdown: move |e| { capture_pointer(&e); picking_l.set(true); pick_l(onchange, l, a, b, &e); },
                 onpointermove: move |e| { if picking_l() { pick_l(onchange, l, a, b, &e); } },
-                onpointerup: move |_| picking_l.set(false),
-                onpointercancel: move |_| picking_l.set(false),
+                onpointerup: move |_| end_pick(oncommit, picking_l, l, a, b),
+                onpointercancel: move |_| end_pick(oncommit, picking_l, l, a, b),
                 div { class: "l-marker", style: "top:{ly}px;" }
             }
         }
     }
 }
 
-/// Report the current Oklab `(L, a, b)` through `onchange` as straight sRGB.
+/// Report the current Oklab `(L, a, b)` through `handler` as straight sRGB.
 /// Out-of-gamut points clamp to sRGB.
-fn apply_color(onchange: EventHandler<[f32; 3]>, l: Signal<f32>, a: Signal<f32>, b: Signal<f32>) {
+fn apply_color(handler: EventHandler<[f32; 3]>, l: Signal<f32>, a: Signal<f32>, b: Signal<f32>) {
     let rgba = oklab_to_srgb([l(), a(), b(), 1.0]);
-    onchange.call([
+    handler.call([
         rgba[0].clamp(0.0, 1.0),
         rgba[1].clamp(0.0, 1.0),
         rgba[2].clamp(0.0, 1.0),
     ]);
+}
+
+/// End a drag on `picking`, reporting the settled colour through `oncommit` once —
+/// the caller's cue to turn a run of `onchange` previews into one committed edit.
+/// A no-op when no drag was in progress, so a stray release commits nothing.
+///
+/// Shared by `onpointerup` and `onpointercancel`: a cancelled colour pick still
+/// commits, unlike a cancelled geometry drag, because every instant of it is a
+/// colour the user chose and is already looking at — and because discarding it
+/// would strand the caller's preview with no commit to supersede it.
+fn end_pick(
+    oncommit: Option<EventHandler<[f32; 3]>>,
+    mut picking: Signal<bool>,
+    l: Signal<f32>,
+    a: Signal<f32>,
+    b: Signal<f32>,
+) {
+    if !picking() {
+        return;
+    }
+    picking.set(false);
+    if let Some(oncommit) = oncommit {
+        apply_color(oncommit, l, a, b);
+    }
 }
 
 /// Set `a`/`b` from a pointer position over the field (warm/+b at top), then apply.
