@@ -330,6 +330,11 @@ pub enum ActionKind {
     SetMatteRect(LayerId, Vec2, Vec2),
     /// Recolour a matte (straight sRGB).
     SetMatteColor(LayerId, [f32; 3]),
+    /// Set the canvas substrate colour — the ground the paint sits on, straight
+    /// sRGB (FRAME_DESIGN.md §5). Logged because the ground a piece was painted on
+    /// is part of what it is; it was previously a view setting, so the paper colour
+    /// of a painting was not saved at all.
+    SetBackground([f32; 3]),
 }
 
 /// A committed document mutation with its identity.
@@ -425,6 +430,7 @@ impl history::Action for Action {
             } => state.insert_matte(*id, *above, *region, *color),
             ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
             ActionKind::SetMatteColor(id, color) => state.set_matte_color(*id, *color),
+            ActionKind::SetBackground(rgb) => state.with_background(*rgb),
         })
     }
 }

@@ -6030,6 +6030,7 @@ dependencies = [
  "blake3",
  "bytemuck",
  "flate2",
+ "futures-channel",
  "glam 0.33.2",
  "history",
  "mixbox",

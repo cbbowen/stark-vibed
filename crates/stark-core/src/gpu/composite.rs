@@ -611,6 +611,7 @@ impl Compositor {
         bg_channels: [f32; 4],
         items: &[CompositeItem],
         selection: &Selection,
+        transparent: bool,
     ) {
         if view.viewport != self.size {
             self.size = view.viewport;
@@ -669,7 +670,9 @@ impl Compositor {
                 ],
                 surf_b: [
                     self.media.surface_strength,
-                    0.0,
+                    // Transparent export: the media pass skips the substrate and
+                    // carries the paint's visible alpha out (FRAME_DESIGN.md §6).
+                    if transparent { 1.0 } else { 0.0 },
                     0.0,
                     0.0,
                 ],
@@ -804,7 +807,14 @@ impl Compositor {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        // The media pass covers every texel, so the clear only
+                        // matters for what alpha an untouched texel would keep —
+                        // transparent, on an export that wants a cut-out.
+                        load: wgpu::LoadOp::Clear(if transparent {
+                            wgpu::Color::TRANSPARENT
+                        } else {
+                            wgpu::Color::BLACK
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

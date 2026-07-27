@@ -35,6 +35,9 @@ bytemuck = { version = "1", features = ["derive"] }
 rpds = "1"
 thiserror = "2"
 pollster = "1"
+# Oneshot for the async GPU readback (readback.rs). Already in the tree via wgpu;
+# `default-features = false` keeps it to the channel itself.
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
 wesl = "0.4"
 history = { git = "https://github.com/cbbowen/history" }
 png = "0.18"

@@ -13,7 +13,7 @@ struct Media {
     bg: vec4<f32>,     // background (substrate) in latent color space
     shade: vec4<f32>,  // exposure, diffuse_lod, wet_gloss, max_lod
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
-    surf_b: vec4<f32>, // surface_strength, _, _, _
+    surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _
 }
 
 @group(0) @binding(0) var<uniform> m: Media;
@@ -75,6 +75,25 @@ fn height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
 
 fn background_color() -> vec4<f32> {
     return m.bg;
+}
+
+// Whether this is a transparent export: the substrate is skipped entirely and the
+// paint's own visible alpha becomes the image's alpha (FRAME_DESIGN.md §6). A real
+// branch rather than an alpha tweak — compositing over the substrate and *then*
+// setting alpha would leave every bare-canvas texel carrying substrate colour at
+// zero alpha, which fringes the moment the PNG is composited over anything else.
+fn is_transparent() -> bool {
+    return m.surf_b.y > 0.5;
+}
+
+// The substrate a fragment composites over, and the alpha it ends up with. On a
+// transparent export the paint keeps its own colour (no substrate mixed in) and
+// carries `vis` out as alpha; otherwise it is opaque over the substrate.
+fn over_substrate(paint: vec3<f32>, vis: f32) -> vec4<f32> {
+    if is_transparent() {
+        return vec4<f32>(paint, vis);
+    }
+    return vec4<f32>(background_color().rgb * (1.0 - vis) + paint * vis, 1.0);
 }
 
 // Surface normal from the height gradient (impasto relief). The gradient is taken
@@ -169,7 +188,7 @@ fn tonemap(x: vec3<f32>) -> vec3<f32> {
 // normal direction, plus a wet specular reflection that sharpens with `wet` so
 // impasto ridges glint with the studio lights. `base` is already the composited
 // paint-over-substrate color (the over happened in the caller's latent space).
-fn finish(base: vec3<f32>, wet: f32, p: vec2f, dim: vec2<i32>) -> vec4<f32> {
+fn finish(base: vec3<f32>, wet: f32, alpha: f32, p: vec2f, dim: vec2<i32>) -> vec4<f32> {
     let n = surface_normal(p, dim);
     let exposure = m.shade.x;
     let diffuse_lod = m.shade.y;
@@ -200,5 +219,7 @@ fn finish(base: vec3<f32>, wet: f32, p: vec2f, dim: vec2<i32>) -> vec4<f32> {
     let specular = prefiltered * (f0 * brdf.x + brdf.y);
 
     let lit = (diffuse + specular) * exposure;
-    return vec4<f32>(linear_to_srgb(commerce_tonemap(lit)), 1.0);
+    // Straight (un-premultiplied) alpha: PNG stores straight, and the colour here is
+    // the paint's own, not paint-times-coverage.
+    return vec4<f32>(linear_to_srgb(commerce_tonemap(lit)), alpha);
 }

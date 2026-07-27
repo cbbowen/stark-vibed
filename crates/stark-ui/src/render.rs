@@ -14,16 +14,6 @@ use stark_core::{
 };
 use wasm_bindgen::JsCast;
 
-/// Default paper-white background, as straight sRGB (the engine's
-/// `rgb_to_channels` linearizes it). Kept neutral (not warm) — the studio
-/// environment light already tints the scene warm, and a neutral substrate keeps
-/// paint colours legible against it. The live value is [`Renderer::set_background`].
-pub const BG: wgpu::Color = wgpu::Color {
-    r: 0.97,
-    g: 0.97,
-    b: 0.97,
-    a: 1.0,
-};
 pub const CANVAS_ID: &str = "stark-canvas";
 
 /// Owns the canvas surface and the painting engine.
@@ -34,9 +24,6 @@ pub struct Renderer {
     engine: Engine,
     /// The built-in bristle brush, imported once its bytes are fetched (§6.6).
     bristle: Option<stark_core::AssetId>,
-    /// Canvas substrate colour (straight sRGB), a view setting like the lighting —
-    /// it feeds the media pass's `background_color()`, not the document (§6.3).
-    background: wgpu::Color,
 }
 
 impl Renderer {
@@ -135,24 +122,37 @@ impl Renderer {
         (self.config.width, self.config.height)
     }
 
-    /// The current canvas substrate colour, as straight sRGB components.
-    pub fn background(&self) -> [f32; 3] {
-        [
-            self.background.r as f32,
-            self.background.g as f32,
-            self.background.b as f32,
-        ]
+    /// Serialize the document — the action log, not the pixels (DESIGN.md §8).
+    pub fn save_bytes(&self) -> stark_core::Result<Vec<u8>> {
+        self.engine.save_bytes()
     }
 
-    /// Set the canvas substrate colour (straight sRGB). A view setting — it does not
-    /// touch the document, only how bare canvas renders (§6.3).
-    pub fn set_background(&mut self, rgb: [f32; 3]) {
-        self.background = wgpu::Color {
-            r: rgb[0] as f64,
-            g: rgb[1] as f64,
-            b: rgb[2] as f64,
-            a: 1.0,
-        };
+    /// Replace the document by replaying a saved log (DESIGN.md §8).
+    pub fn load_bytes(&mut self, bytes: &[u8]) -> stark_core::Result<()> {
+        self.engine.load_bytes(bytes)
+    }
+
+    /// What exporting would produce, without producing it (FRAME_DESIGN.md §6).
+    pub fn export_plan(
+        &self,
+        frame: Option<stark_core::LayerId>,
+        scale: stark_core::ExportScale,
+    ) -> stark_core::Result<stark_core::ExportPlan> {
+        self.engine.export_plan(frame, scale)
+    }
+
+    /// Render a frame and return a future for its readback (FRAME_DESIGN.md §6).
+    ///
+    /// The future does **not** borrow the renderer, which is the whole point: the
+    /// caller can drop its write guard before awaiting, so the UI is free to
+    /// re-render (and read the renderer) while the GPU→CPU copy is in flight.
+    pub fn export(
+        &mut self,
+        frame: Option<stark_core::LayerId>,
+        scale: stark_core::ExportScale,
+        background: stark_core::Background,
+    ) -> stark_core::Result<impl std::future::Future<Output = stark_core::RgbaImage> + use<>> {
+        self.engine.export(frame, scale, background)
     }
 
     /// The built-in bristle brush's asset id, once its bytes have been imported.
@@ -244,7 +244,7 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.engine.render(&view, self.background);
+        self.engine.render(&view);
         self.engine.gpu().queue.present(frame);
     }
 }
@@ -398,6 +398,5 @@ async fn finish_init(
         config,
         engine,
         bristle: None,
-        background: BG,
     }
 }

@@ -36,3 +36,104 @@ pub fn capture_pointer(e: &Event<PointerData>) {
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub fn capture_pointer(_e: &Event<PointerData>) {}
+
+/// Hand `bytes` to the browser as a file download named `filename`.
+///
+/// A Blob behind an object URL, clicked through a synthetic `<a download>` — the
+/// only way to write a file from a page without a server. The object URL is
+/// revoked immediately after the click: the download has already taken a
+/// reference to the blob by then, and leaving it alive pins the whole buffer (a
+/// full-resolution PNG) for the life of the document.
+#[cfg(target_arch = "wasm32")]
+pub fn download_bytes(bytes: &[u8], filename: &str, mime: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+
+    // `Uint8Array::from` copies into the JS heap, which the Blob then owns — the
+    // borrow here does not have to outlive the call.
+    let array = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::of1(&array.buffer());
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+        .map_err(|_| "could not build the blob".to_string())?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "could not create an object URL".to_string())?;
+
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or("no document")?;
+    let anchor = document
+        .create_element("a")
+        .ok()
+        .and_then(|e| e.dyn_into::<web_sys::HtmlAnchorElement>().ok())
+        .ok_or("could not create the download link")?;
+    anchor.set_href(&url);
+    anchor.set_download(filename);
+    anchor.click();
+    let _ = web_sys::Url::revoke_object_url(&url);
+    Ok(())
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn download_bytes(_bytes: &[u8], _filename: &str, _mime: &str) -> Result<(), String> {
+    Ok(())
+}
+
+/// Ask the user for a file and hand its bytes to `on_bytes`.
+///
+/// A hidden `<input type=file>` clicked programmatically: a page cannot open a
+/// file picker any other way, and the click must happen inside the user gesture
+/// that asked for it, so this is called straight from the menu handler rather
+/// than from a task.
+///
+/// The closures are `forget`ten rather than dropped — the input and its reader
+/// outlive this call by design (the user may sit in the picker for a minute), and
+/// dropping the `Closure` would invalidate the JS callback before it fires.
+#[cfg(target_arch = "wasm32")]
+pub fn pick_file(accept: &str, on_bytes: impl Fn(Vec<u8>) + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(input) = document
+        .create_element("input")
+        .ok()
+        .and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok())
+    else {
+        return;
+    };
+    input.set_type("file");
+    input.set_accept(accept);
+
+    // The handler outlives this call and is re-entered per selected file, so it is
+    // shared rather than moved: `Fn` is not `Clone`, and the inner (per-file)
+    // closure needs its own handle.
+    let on_bytes = std::rc::Rc::new(on_bytes);
+    let input_for_change = input.clone();
+    let on_change = Closure::<dyn FnMut()>::new(move || {
+        let Some(file) = input_for_change.files().and_then(|f| f.get(0)) else {
+            return;
+        };
+        let Ok(reader) = web_sys::FileReader::new() else {
+            return;
+        };
+        let reader_for_load = reader.clone();
+        let on_bytes = on_bytes.clone();
+        let on_load = Closure::<dyn FnMut()>::new(move || {
+            if let Ok(buffer) = reader_for_load.result()
+                && let Some(buffer) = buffer.dyn_ref::<js_sys::ArrayBuffer>()
+            {
+                on_bytes(js_sys::Uint8Array::new(buffer).to_vec());
+            }
+        });
+        reader.set_onload(Some(on_load.as_ref().unchecked_ref()));
+        on_load.forget();
+        let _ = reader.read_as_array_buffer(&file);
+    });
+    input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    on_change.forget();
+    input.click();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pick_file(_accept: &str, _on_bytes: impl Fn(Vec<u8>) + 'static) {}

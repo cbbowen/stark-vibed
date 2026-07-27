@@ -5,7 +5,7 @@
 // that alpha, convert Oklab → linear sRGB, and hand off to the shared lighting tail.
 
 import package::color::{oklab_to_linear_srgb};
-import package::media_common::{comp_color, comp_aux, fullscreen_clip, background_color, paint_vis_at, finish};
+import package::media_common::{comp_color, comp_aux, fullscreen_clip, over_substrate, paint_vis_at, finish};
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -20,8 +20,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let cc = textureLoad(comp_color, p, 0);    // (Oklab · opacity, opacity)
     let vis = paint_vis_at(p, dim);            // translucent-slab visible alpha
     let lab = cc.rgb / max(cc.a, 1e-4);        // un-premultiply opacity → latent Oklab
-    let latent = background_color().rgb * (1.0 - vis) + lab * vis;
+    let over = over_substrate(lab, vis);       // substrate, or a transparent cut-out
     let wet = clamp(textureLoad(comp_aux, p, 0).y, 0.0, 1.0) * vis;
 
-    return finish(oklab_to_linear_srgb(latent), wet, frag.xy, dim);
+    return finish(oklab_to_linear_srgb(over.rgb), wet, over.a, frag.xy, dim);
 }

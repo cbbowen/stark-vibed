@@ -29,6 +29,9 @@ pub enum EngineError {
     #[error("asset decode failed: {0}")]
     Asset(String),
 
+    #[error("cannot export: {0}")]
+    Export(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

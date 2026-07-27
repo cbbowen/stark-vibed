@@ -65,7 +65,7 @@ fn center(img: &stark_core::RgbaImage) -> [u8; 4] {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn live_preview_shows_stroke_before_commit() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     // Build an in-flight stroke without ending it.
@@ -80,7 +80,7 @@ fn live_preview_shows_stroke_before_commit() {
     });
 
     assert!(engine.observe().is_stroking);
-    let preview = engine.render_to_image(BG);
+    let preview = engine.render_to_image();
     assert!(is_red(center(&preview)), "preview should show the stroke");
 }
 
@@ -96,7 +96,7 @@ fn live_preview_shows_stroke_before_commit() {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn a_split_live_preview_matches_the_single_pass_commit() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     engine.process(ViewCommand::SetBrush(brush(RED, 12.0)));
@@ -118,9 +118,9 @@ fn a_split_live_preview_matches_the_single_pass_commit() {
         });
     }
 
-    let preview = engine.render_to_image(BG);
+    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
-    let committed = engine.render_to_image(BG);
+    let committed = engine.render_to_image();
 
     // Both paths run the same shaders over the same segments; only the number of
     // compositing passes differs, so they agree to accumulated float rounding — a
@@ -142,7 +142,7 @@ fn a_split_live_preview_matches_the_single_pass_commit() {
 #[cfg(feature = "debug-unfrozen")]
 #[test]
 fn tinting_the_live_tail_does_not_change_what_commits() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     engine.process(ViewCommand::SetBrush(brush(RED, 12.0)));
@@ -161,9 +161,9 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
         });
     }
 
-    let preview = engine.render_to_image(BG);
+    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
-    let committed = engine.render_to_image(BG);
+    let committed = engine.render_to_image();
     // Mid-stroke the tail is magenta, so the preview differs from what lands — which
     // also rules out the commit having simply kept the preview's pixels.
     assert!(
@@ -184,7 +184,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn a_real_captured_stroke_previews_as_it_commits() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     let path: Vec<Vec2> = stark_testdata::HAIRPIN_STROKE
@@ -203,9 +203,9 @@ fn a_real_captured_stroke_previews_as_it_commits() {
             sample: InputSample::at(p),
         });
     }
-    let preview = engine.render_to_image(BG);
+    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
-    let committed = engine.render_to_image(BG);
+    let committed = engine.render_to_image();
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
         0.0,
@@ -228,7 +228,7 @@ fn a_real_captured_stroke_previews_as_it_commits() {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn the_incremental_preview_matches_a_fresh_one_throughout() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     let path: Vec<Vec2> = stark_testdata::LOOP_STROKE
@@ -249,11 +249,11 @@ fn the_incremental_preview_matches_a_fresh_one_throughout() {
         if i % 40 != 0 {
             continue;
         }
-        let incremental = engine.render_to_image(BG);
+        let incremental = engine.render_to_image();
         // The brush it is already using, so nothing about the stroke changes — but
         // the head is dropped, so this repaint is a single whole-stroke pass.
         engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
-        let fresh = engine.render_to_image(BG);
+        let fresh = engine.render_to_image();
         assert_eq!(
             frac_exceeding(&incremental, &fresh, 8),
             0.0,
@@ -297,7 +297,7 @@ fn undercoat(engine: &mut Engine) {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn a_smear_stroke_previews_as_it_commits() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     undercoat(&mut engine);
@@ -321,9 +321,9 @@ fn a_smear_stroke_previews_as_it_commits() {
         });
     }
 
-    let preview = engine.render_to_image(BG);
+    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
-    let committed = engine.render_to_image(BG);
+    let committed = engine.render_to_image();
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
         0.0,
@@ -342,7 +342,7 @@ fn a_smear_stroke_previews_as_it_commits() {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     undercoat(&mut engine);
@@ -365,11 +365,11 @@ fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
         if i % 30 != 0 {
             continue;
         }
-        let incremental = engine.render_to_image(BG);
+        let incremental = engine.render_to_image();
         // The brush it is already using, so nothing about the stroke changes — but
         // the head is dropped, so this repaint runs the whole loop in one pass.
         engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
-        let fresh = engine.render_to_image(BG);
+        let fresh = engine.render_to_image();
         assert_eq!(
             frac_exceeding(&incremental, &fresh, 8),
             0.0,
@@ -407,7 +407,7 @@ fn long_band(engine: &mut Engine, points: &[Vec2]) {
 /// bounding box has to be oversized, not the part under test.
 #[test]
 fn a_stroke_too_wide_for_one_region_still_moves_paint() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     let across = [
@@ -417,7 +417,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
     ];
     long_band(&mut engine, &across);
     assert!(
-        !is_blue(center(&engine.render_to_image(BG))),
+        !is_blue(center(&engine.render_to_image())),
         "the undercoat did not land, so there is nothing to scrape"
     );
 
@@ -427,7 +427,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
     scrape.dynamics.lift = 1.0;
     stroke_with(&mut engine, scrape, &across);
     assert!(
-        is_blue(center(&engine.render_to_image(BG))),
+        is_blue(center(&engine.render_to_image())),
         "a stroke too wide for one region left the paint under it untouched"
     );
 }
@@ -446,7 +446,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
 fn an_oversized_smear_stroke_previews_as_it_commits() {
     // Wide enough to see a piece boundary: the first piece fills its region around
     // `x = -2000 + MAX_REGION_DIM`, which lands just right of centre.
-    let Some(mut engine) = engine_or_skip_sized(stark_core::geom::Extent2 {
+    let Some(mut engine) = engine_or_skip_sized_blue(stark_core::geom::Extent2 {
         width: 1280,
         height: 256,
     }) else {
@@ -473,9 +473,9 @@ fn an_oversized_smear_stroke_previews_as_it_commits() {
         });
     }
 
-    let preview = engine.render_to_image(BG);
+    let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
-    let committed = engine.render_to_image(BG);
+    let committed = engine.render_to_image();
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
         0.0,
@@ -487,14 +487,14 @@ fn an_oversized_smear_stroke_previews_as_it_commits() {
 
 #[test]
 fn stroke_commit_undo_redo() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     paint_stroke(&mut engine);
     assert!(!engine.observe().is_stroking);
     assert!(engine.observe().can_undo);
 
-    let committed = engine.render_to_image(BG);
+    let committed = engine.render_to_image();
     assert!(is_red(center(&committed)), "committed center should be red");
     assert!(
         is_blue(committed.pixel(10, 10)),
@@ -504,20 +504,20 @@ fn stroke_commit_undo_redo() {
     engine.process(DocCommand::Undo);
     assert!(engine.observe().can_redo);
     assert!(
-        is_blue(center(&engine.render_to_image(BG))),
+        is_blue(center(&engine.render_to_image())),
         "after undo, center should be background"
     );
 
     engine.process(DocCommand::Redo);
     assert!(
-        is_red(center(&engine.render_to_image(BG))),
+        is_red(center(&engine.render_to_image())),
         "after redo, center should be red again"
     );
 }
 
 #[test]
 fn stroke_spans_multiple_tiles_via_cow() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     paint_stroke(&mut engine);
@@ -591,7 +591,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
         // The readback is what makes this a measurement of the *work*, not just of
         // encoding it: `process` only queues, so without waiting here a path that
         // queued ten times the GPU work would look identical.
-        let _ = engine.render_to_image(BG);
+        let _ = engine.render_to_image();
         let ms = at.elapsed().as_secs_f64() * 1000.0;
         // Skip the middle: the first stretch also pays for warm-up.
         if i < n / 4 {

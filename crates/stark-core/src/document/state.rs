@@ -53,7 +53,24 @@ pub struct DocState {
     /// but it is logged like any other edit, which is what would let a future
     /// deposition gate read it without becoming a history change.
     pub surface: SurfaceId,
+    /// The canvas substrate colour — the ground the paint sits on — as straight
+    /// sRGB (FRAME_DESIGN.md §5).
+    ///
+    /// Document state on the same argument §6.4 makes for the weave: which ground
+    /// a piece was painted on is part of what it *is*, and it must be saved. It
+    /// was previously a view setting the frontend owned, which meant the paper
+    /// colour of a painting was simply not stored anywhere.
+    ///
+    /// Distinct from a matte layer, which is a slab of opaque *paint*: the
+    /// substrate sits under everything, is lit, and the canvas weave shows through
+    /// it (the media pass composites paint over it, DESIGN.md §6.3).
+    pub background: [f32; 3],
 }
+
+/// The default substrate: a neutral near-white paper. Neutral on purpose — the
+/// studio HDR lights the scene warm, and a warm paper on top of that reads
+/// noticeably red.
+pub const DEFAULT_BACKGROUND: [f32; 3] = [0.97, 0.97, 0.97];
 
 impl DocState {
     /// An empty document with a single starting layer and nothing masked.
@@ -63,6 +80,7 @@ impl DocState {
             bounds: CanvasBounds::default(),
             selection: Selection::everything(),
             surface: SurfaceId::default(),
+            background: DEFAULT_BACKGROUND,
         }
     }
 
@@ -70,6 +88,14 @@ impl DocState {
     pub fn with_surface(&self, surface: SurfaceId) -> Self {
         Self {
             surface,
+            ..self.clone()
+        }
+    }
+
+    /// The same document on a different substrate colour (FRAME_DESIGN.md §5).
+    pub fn with_background(&self, background: [f32; 3]) -> Self {
+        Self {
+            background,
             ..self.clone()
         }
     }
@@ -248,6 +274,7 @@ impl DocState {
             bounds,
             selection: self.selection.clone(),
             surface: self.surface,
+            background: self.background,
         }
     }
 }

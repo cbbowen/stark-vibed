@@ -77,7 +77,7 @@ fn selection_clips_the_brush() {
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     assert!(
         is_painted(&img, Vec2::new(-20.0, 0.0)),
@@ -95,7 +95,7 @@ fn no_selection_paints_everywhere() {
         return;
     };
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert!(is_painted(&img, Vec2::new(-20.0, 0.0)));
     assert!(is_painted(&img, Vec2::new(20.0, 0.0)));
 }
@@ -114,7 +114,7 @@ fn deselecting_restores_the_whole_canvas() {
     );
 
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert!(is_painted(&img, Vec2::new(20.0, 0.0)));
 }
 
@@ -126,7 +126,7 @@ fn inverting_swaps_which_half_paints() {
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     engine.process(DocCommand::InvertSelection);
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     assert!(
         !is_painted(&img, Vec2::new(-20.0, 0.0)),
@@ -156,7 +156,7 @@ fn union_extends_and_subtract_cuts() {
         rect(Vec2::new(-25.0, -40.0), Vec2::new(-15.0, 40.0)),
     );
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     assert!(
         is_painted(&img, Vec2::new(-8.0, 0.0)),
@@ -185,7 +185,7 @@ fn intersect_keeps_only_the_overlap() {
         rect(Vec2::new(-20.0, -40.0), Vec2::new(30.0, 40.0)),
     );
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     assert!(is_painted(&img, Vec2::new(-10.0, 0.0)), "in both");
     assert!(
@@ -211,7 +211,7 @@ fn lasso_masks_its_interior() {
     ]);
     select(&mut engine, SelectionMode::Replace, tri);
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     // Probed within the stroke's body, not out at its cap, so this measures the mask
     // rather than the brush's falloff.
@@ -249,7 +249,7 @@ fn selection_gates_the_brush_dynamics_path() {
             Vec2::new(30.0, 0.0),
         ],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     assert!(
         is_painted(&img, Vec2::new(-20.0, 0.0)),
@@ -294,7 +294,7 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
             Vec2::new(-30.0, 0.0),
         ],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     assert!(
         !is_painted(&img, Vec2::new(-25.0, 0.0)),
@@ -307,10 +307,10 @@ fn undo_and_redo_step_through_the_selection() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let bare = engine.render_to_image(PAPER);
+    let bare = engine.render_to_image();
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     crossing_stroke(&mut engine);
-    let masked = engine.render_to_image(PAPER);
+    let masked = engine.render_to_image();
 
     engine.process(DocCommand::Undo); // the stroke
     assert!(
@@ -320,7 +320,7 @@ fn undo_and_redo_step_through_the_selection() {
     engine.process(DocCommand::Undo); // the selection itself
     assert!(!engine.observe().has_selection);
     assert!(
-        images_match(&bare, &engine.render_to_image(PAPER), 1),
+        images_match(&bare, &engine.render_to_image(), 1),
         "undoing back past the selection returns the empty canvas"
     );
 
@@ -328,7 +328,7 @@ fn undo_and_redo_step_through_the_selection() {
     engine.process(DocCommand::Redo); // the stroke
     assert!(engine.observe().has_selection);
     assert!(
-        images_match(&masked, &engine.render_to_image(PAPER), 1),
+        images_match(&masked, &engine.render_to_image(), 1),
         "redoing through a selection must reproduce the same pixels"
     );
 }
@@ -343,7 +343,7 @@ fn undoing_the_selection_unmasks_later_strokes() {
     // The new stroke starts a fresh branch, on a document with no selection: it is
     // gated by the selection *in force at its point in the log*, which is none.
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert!(is_painted(&img, Vec2::new(20.0, 0.0)));
 }
 
@@ -354,14 +354,14 @@ fn selection_survives_save_and_load() {
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     crossing_stroke(&mut engine);
-    let before = engine.render_to_image(PAPER);
+    let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("save");
 
     let Some(mut loaded) = engine_or_skip() else {
         return;
     };
     loaded.load_bytes(&bytes).expect("load");
-    let after = loaded.render_to_image(PAPER);
+    let after = loaded.render_to_image();
     assert!(
         images_match(&before, &after, 2),
         "the log carries the selection *op*, so a reload replays the same mask"
@@ -395,7 +395,7 @@ fn a_selection_gesture_commits_the_same_op_it_previewed() {
     assert!(engine.observe().has_selection, "release commits the op");
 
     crossing_stroke(&mut engine);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert!(is_painted(&img, Vec2::new(-20.0, 0.0)));
     assert!(!is_painted(&img, Vec2::new(20.0, 0.0)));
 }
@@ -498,7 +498,7 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
     });
     engine.process(GestureCommand::End);
 
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert!(engine.observe().has_selection, "the selection is still in force");
     assert!(is_painted(&img, Vec2::new(-20.0, 0.0)), "the gesture painted");
     assert!(
@@ -515,9 +515,9 @@ fn the_outline_is_drawn_on_the_boundary_only() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let bare = engine.render_to_image(PAPER);
+    let bare = engine.render_to_image();
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
-    let outlined = engine.render_to_image(PAPER);
+    let outlined = engine.render_to_image();
 
     assert!(
         !images_match(&bare, &outlined, 8),
@@ -557,7 +557,7 @@ fn feathered_edge_fades_the_stroke() {
         0.0,
     )));
     crossing_stroke(&mut engine);
-    let hard = engine.render_to_image(PAPER);
+    let hard = engine.render_to_image();
 
     let Some(mut engine) = engine_or_skip() else {
         return;
@@ -568,7 +568,7 @@ fn feathered_edge_fades_the_stroke() {
         20.0,
     )));
     crossing_stroke(&mut engine);
-    let soft = engine.render_to_image(PAPER);
+    let soft = engine.render_to_image();
 
     let redness = |img: &RgbaImage, p: Vec2| {
         let (x, y) = screen_of(p);
@@ -650,7 +650,7 @@ fn golden_selection_stencil() {
     // feather visible as a fade at every crossing — and the outline drawn over it.
     paint_stripes(&mut engine);
 
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("selection_stencil", &img, 6);
 }
 
@@ -693,6 +693,6 @@ fn golden_selection_smear() {
         ],
     );
 
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("selection_smear", &img, 6);
 }

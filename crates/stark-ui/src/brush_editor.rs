@@ -337,7 +337,7 @@ async fn init_preview(state: AppState, mut preview: Preview) {
             r.surface(),
             r.environment(),
             r.media_params(),
-            r.background(),
+            r.observe().background,
         )
     }) else {
         return;
@@ -365,7 +365,7 @@ async fn init_preview(state: AppState, mut preview: Preview) {
         r.set_environment(env_id);
     }
     r.set_media_params(media);
-    r.set_background(bg);
+    r.process(DocCommand::SetBackground(bg));
 
     // Lay the fixed red reference stroke: committed once, beneath the
     // replayable test stroke, so the user can preview how the brush interacts

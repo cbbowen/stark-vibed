@@ -151,6 +151,10 @@ pub enum DocCommand {
     SetMatteRect(LayerId, Vec2, Vec2),
     /// Recolour a matte (straight sRGB).
     SetMatteColor(LayerId, [f32; 3]),
+    /// Set the canvas substrate colour — the ground under everything, straight
+    /// sRGB (FRAME_DESIGN.md §5). A document property, not a view setting: it is
+    /// what the piece was painted on, and it is saved.
+    SetBackground([f32; 3]),
 
     /// Switch the canvas surface (DESIGN.md §6.4).
     ///

@@ -78,6 +78,41 @@ pub fn engine_or_skip_sized(size: Extent2) -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine(TARGET, size)))
 }
 
+/// A headless engine on the **blue** ground ([`BG`]) rather than the default
+/// paper.
+///
+/// The substrate is document state (FRAME_DESIGN.md §5), so choosing it is a
+/// logged edit like any other — which is exactly how a user would do it. Blue is
+/// deliberate for these tests: they ask "is there paint here?" by channel
+/// dominance, and a near-white paper lit by the studio HDR already reads
+/// red-dominant enough to make such a check vacuous.
+pub fn engine_or_skip_blue() -> Option<Engine> {
+    engine_or_skip().map(on_blue)
+}
+
+/// [`engine_or_skip_sized`] on the blue ground.
+pub fn engine_or_skip_sized_blue(size: Extent2) -> Option<Engine> {
+    engine_or_skip_sized(size).map(on_blue)
+}
+
+fn on_blue(mut engine: Engine) -> Engine {
+    engine.process(stark_core::command::DocCommand::SetBackground([
+        BG.r as f32,
+        BG.g as f32,
+        BG.b as f32,
+    ]));
+    engine
+}
+
+/// A headless engine rendering to a chosen target format.
+///
+/// Exists because everything else here uses [`TARGET`] (`Rgba8Unorm`) while a real
+/// browser surface is usually `Bgra8Unorm` — a difference no single-format test
+/// can see, and one that silently swapped red and blue in exported PNGs.
+pub fn engine_or_skip_in_format(format: wgpu::TextureFormat) -> Option<Engine> {
+    or_skip(pollster::block_on(headless_engine(format, SIZE)))
+}
+
 /// A headless engine in a chosen color space (DESIGN.md §6.7).
 pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine_with(TARGET, SIZE, id)))

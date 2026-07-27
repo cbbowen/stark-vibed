@@ -18,6 +18,7 @@ flate2 = { workspace = true }
 png = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
+futures-channel = { workspace = true }
 stark-shaders = { workspace = true }
 nalgebra = { workspace = true }
 # Vendored as a git submodule (CC BY-NC 4.0); see vendor/mixbox/LICENSE. Pure

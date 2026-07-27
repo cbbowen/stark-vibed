@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{PAPER, engine_or_skip, images_match, paint};
+use common::{engine_or_skip, images_match, paint};
 use stark_core::command::DocCommand;
 use stark_core::document::ActorId;
 use stark_core::geom::Vec2;
@@ -16,7 +16,7 @@ const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
 const BLUE: [f32; 4] = [0.1, 0.2, 0.9, 1.0];
 
 fn snap(e: &mut Engine) -> RgbaImage {
-    e.render_to_image(PAPER)
+    e.render_to_image()
 }
 
 /// Pump every pending local action from `from` into `into`.

@@ -53,7 +53,7 @@ pub enum LayerContent {
     /// Painted tiles — only populated ones exist (the infinite canvas).
     Paint(HashTrieMap<TileCoord, TilePairHandle>),
     /// A procedural region filled with a flat colour (DESIGN.md §6.3).
-    Matte { region: MatteRegion, color: [f32; 4] },
+    Matte { region: MatteRegion, color: [f32; 3] },
 }
 
 pub enum MatteRegion {
@@ -200,6 +200,14 @@ antialiasing width is therefore computed in the vertex stage and passed as a fla
 varying — it is constant across the quad, so this is exact, and it avoids
 coupling the matte to the overlay pass's separate `VERTEX_FRAGMENT` layout.
 
+### Save is not export
+
+Two files leave this app and they are not the same object. **Save** writes the
+action log: replayable, still editable, undo history intact on reopening — the
+thing that must never be lossy. **Export** writes a picture: one frame, flattened
+and lit, from which nothing can be recovered. They are named apart in the menu
+because an artist who "exports" thinking they saved has lost the painting.
+
 ## 5. What a matte is *not*: the substrate
 
 A matte is a slab of opaque paint. The **substrate** — the colour of the canvas
@@ -232,21 +240,81 @@ frame's rect and the right thing happens by construction:
 - a matte whose visibility is off still defines the rect, because geometry and
   presentation are separate properties of the same layer.
 
-The plumbing is one real change: `Engine::render` currently reads
-`self.session.view` ([engine.rs:457](crates/stark-core/src/engine.rs#L457))
-rather than taking a `ViewTransform`, and `render_to_image` exports the
-*viewport* — so today's "export" is a screenshot. Restoring DESIGN §6.4's
-documented signature (`render(target, view)`) makes export "render at
-`frame.rect × scale`, centred on the frame, at `zoom = scale`."
+The plumbing was one real change: `Engine::render` read `self.session.view`
+rather than taking a `ViewTransform`, and `render_to_image` exported the
+*viewport* — so "export" was a screenshot. Export now renders through an explicit
+view: centred on the frame, at `zoom = scale`, into a target sized `frame.rect ×
+scale`.
+
+**Export is `async`, and had to be.** Reading pixels back off the GPU is the one
+inherently asynchronous GPU operation (DESIGN.md §7 says so), and it is the one
+place native and web genuinely diverge:
+
+- Natively `Device::poll(Wait)` blocks until the queue drains, so the map callback
+  has already fired when it returns.
+- On WebGPU there is **no blocking poll**. `mapAsync` returns a promise that
+  settles only when the browser's event loop runs, so `poll` is a no-op and
+  `getMappedRange` on the next line fails with `OperationError`.
+
+The first cut shipped the blocking shape and export died in the browser exactly
+there. The *second* cut made `export` an `async fn`, which died differently and
+more interestingly: an `async fn` holds `&mut self` for the whole readback, and a
+frontend takes that borrow from a shared cell — so the engine stayed locked across
+an await during which the UI re-rendered, read the renderer, and panicked with
+`AlreadyBorrowedMut`.
+
+So `export` is **not** an `async fn`. It renders synchronously and returns a
+*future for the readback alone*, owning a cloned `GpuContext` (cheap — wgpu
+handles are reference-counted) and the target texture, borrowing the engine not at
+all. The caller drops its guard before awaiting:
+
+```rust
+let readback = { engine.write().export(frame, scale, bg)? }; // borrow ends here
+let image = readback.await;
+```
+
+That is the shape any `!Send` engine behind a shared cell wants for an async GPU
+operation, and it makes the discipline structural rather than a comment asking to
+be believed. `gpu::readback` is now async, with the *only* target-specific line being
+how the callback gets driven: native blocks on `Wait` before awaiting (a
+non-blocking `Poll` deadlocks — the executor parks the sole thread and nothing
+polls again), while web relies on the await itself yielding. The blocking
+`read_rgba8_blocking` remains for the golden tests, which are native by
+construction, and is **`cfg`-compiled out on wasm** so the same mistake cannot be
+reintroduced by calling it from the frontend. `render_to_image` and
+`replay_timelapse` are native-only for the same reason.
+
+That view-taking entry point is **private**. The screen has no reason to render
+through anything but the session's own view, and a public knob with no caller is
+the kind of thing this codebase deletes; `export` is the only consumer. The public
+surface is `render`, `render_to_image`, `export` and `export_plan`.
+
+**A readback returns the target's bytes in the *target's own* channel order**, and
+`RgbaImage` is RGBA by definition, so a BGRA target has to be swizzled. Every test
+here renders to `Rgba8Unorm`; a browser surface is typically `Bgra8Unorm`. The
+first working export therefore came out with red and blue swapped — salmon paper
+as pale blue, orange paint as blue — while green, black and white were untouched,
+because all three are fixed points of an R↔B swap. That is what made a byte-order
+bug read as a colour-space bug.
+
+`RgbaImage::from_target_bytes` normalizes it, and
+`export_is_rgba_whatever_the_target_format_is` paints the same thing on an RGBA and
+a BGRA engine and demands identical bytes — the check no single-format test could
+make, which is precisely why the class of bug survived nine passing export tests.
 
 Three decisions that go with it:
 
 - **Scale** is a property of the output, not the artwork. The frame stores a
   canvas-space rect only; the export offers 1× / 2× / explicit pixel dimensions.
 - **Transparent background** skips the media pass's substrate composite — a real
-  branch, not merely an alpha — and is offered alongside the substrate colour.
+  branch, not merely an alpha. Compositing over the substrate and *then* zeroing
+  alpha would leave every bare-canvas texel carrying substrate colour at zero
+  alpha, which fringes the moment the PNG is composited over anything else.
 - **The overlay pass is suppressed.** Selection outlines and composition guides
-  are chrome and never reach a file.
+  are chrome and never reach a file. Keyed on *exporting*, deliberately not on the
+  background: the first cut tied chrome suppression to `Transparent`, which
+  silently leaked the selection outline into every opaque PNG.
+  `export_omits_the_selection_outline` is the regression.
 
 Export is safe at any scale because the relief is already zoom-normalized:
 `strength = m.light.w / m.surf_a.z`
@@ -397,9 +465,11 @@ column with the selection bar; the on-canvas grips with live preview and
 single-action commit. **Not yet:** snapping, composition guides, review mode,
 fit-to-frame, frame-from-selection.
 
-**P2 — export.** `Engine::render` takes an explicit `ViewTransform`;
-`export(layer, scale)`; `DocState.background` + `SetBackground`; PNG download and
-save/open wired in `stark-ui`.
+**P2 — export. ✅ Done.** `export(frame, scale, background)` and `export_plan`
+rendering through an explicit view; `RgbaImage::to_png`; `DocState.background` +
+`SetBackground` (the substrate is document state now, §5); `Background::Transparent`
+as a real branch in the media pass; the Open / Save / Export image menu items, the
+export dialog, and the browser file plumbing in `stark-ui`.
 
 **P4 — the general region.** `MatteRegion` becomes the `SelectionOp` algebra:
 comic gutters, lasso mattes, `All` slabs, frame-from-selection.

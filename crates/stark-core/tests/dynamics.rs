@@ -44,7 +44,7 @@ fn conservative_smear_preserves_uniform_field() {
         return;
     };
     assert!(
-        !is_red(center(&engine.render_to_image(PAPER))),
+        !is_red(center(&engine.render_to_image())),
         "lit bare paper reads as red — is_red can't discriminate paint here"
     );
     paint(
@@ -53,7 +53,7 @@ fn conservative_smear_preserves_uniform_field() {
         80.0,
         &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
     );
-    let before = engine.render_to_image(PAPER);
+    let before = engine.render_to_image();
 
     let b = dyn_brush(
         RED,
@@ -70,7 +70,7 @@ fn conservative_smear_preserves_uniform_field() {
         b,
         &[Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0)],
     );
-    let after = engine.render_to_image(PAPER);
+    let after = engine.render_to_image();
 
     assert!(
         is_red(center(&after)),
@@ -102,7 +102,7 @@ fn smear_carries_paint_onto_bare_canvas() {
         40.0,
         &[Vec2::new(-90.0, 0.0), Vec2::new(-50.0, 0.0)],
     );
-    let run_before = engine.render_to_image(PAPER).pixel(run_x, y);
+    let run_before = engine.render_to_image().pixel(run_x, y);
     assert!(
         run_before[1] > 170,
         "the runway should start bare paper: {run_before:?}"
@@ -128,7 +128,7 @@ fn smear_carries_paint_onto_bare_canvas() {
             Vec2::new(90.0, 0.0),
         ],
     );
-    let run_after = engine.render_to_image(PAPER).pixel(run_x, y);
+    let run_after = engine.render_to_image().pixel(run_x, y);
 
     assert!(
         (run_after[1] as i32) < run_before[1] as i32 - 15,
@@ -159,7 +159,7 @@ fn eraser_thins_without_retint() {
         40.0,
         &[Vec2::new(30.0, 0.0), Vec2::new(90.0, 0.0)],
     );
-    let before = engine.render_to_image(PAPER).pixel(green_x, y);
+    let before = engine.render_to_image().pixel(green_x, y);
     assert!(is_green(before), "the bar should start green: {before:?}");
 
     // Drag from inside the red patch across the green bar: the tool holds red
@@ -179,7 +179,7 @@ fn eraser_thins_without_retint() {
         b,
         &[Vec2::new(-80.0, 0.0), Vec2::new(90.0, 0.0)],
     );
-    let after = engine.render_to_image(PAPER).pixel(green_x, y);
+    let after = engine.render_to_image().pixel(green_x, y);
 
     assert!(
         !is_red(after),
@@ -194,7 +194,7 @@ fn smear_over_empty_canvas_adds_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let blank = engine.render_to_image(PAPER);
+    let blank = engine.render_to_image();
     let b = dyn_brush(
         RED,
         24.0,
@@ -210,7 +210,7 @@ fn smear_over_empty_canvas_adds_nothing() {
         b,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
-    let after = engine.render_to_image(PAPER);
+    let after = engine.render_to_image();
     assert!(
         images_match(&blank, &after, 2),
         "a pure smear over empty canvas must add no paint or height"
@@ -241,7 +241,7 @@ fn charged_tool_lays_a_finite_glob() {
         b,
         &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     let start = img.pixel(20, y); // near the stroke start
     // Bare paper reads ~200 here. The bound was 170 when the exchange axes were a
@@ -289,7 +289,7 @@ fn dynamics_stroke_is_deterministic() {
             b,
             &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
         );
-        Some(engine.render_to_image(PAPER))
+        Some(engine.render_to_image())
     };
     let (Some(a), Some(b)) = (render(), render()) else {
         return;
@@ -329,7 +329,7 @@ fn golden_smudge_drag() {
         b,
         &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("smudge_drag", &img, 6);
 }
 
@@ -370,7 +370,7 @@ fn golden_self_smear() {
         });
     }
     engine.process(GestureCommand::End);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("self_smear", &img, 6);
 }
 
@@ -408,7 +408,7 @@ fn dynamics_stroke_reads_as_one_continuous_mark() {
         b,
         &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     // Walk the centre row across the stroke's body and track the red channel. A
     // continuous stroke fades monotonically; each reversal is a band edge.
@@ -471,7 +471,7 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
         smear,
         &[Vec2::new(-100.0, 0.0), Vec2::new(115.0, 0.0)],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
 
     // Green rises monotonically as the carried paint thins out; each reversal past
     // the noise floor is a band edge.

@@ -4,11 +4,10 @@
 use dioxus::prelude::*;
 
 use crate::panels::color::OklabPicker;
-use crate::render::BG;
 use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
-use stark_core::command::ViewCommand;
+use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::{MediaParams, SurfaceId};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
@@ -32,12 +31,16 @@ pub fn LightingPanel() -> Element {
     let obs = state.obs.read();
     let p = obs.as_ref().map(|o| o.media).unwrap_or_default();
     let surf = obs.as_ref().map(|o| o.surface).unwrap_or_default();
-    drop(obs);
     // The canvas substrate colour (straight sRGB), shown as a swatch that pops out an
-    // Oklab picker. Like the sliders, a view setting owned here (`Renderer::set_background`).
-    let mut bg = use_signal(|| [BG.r as f32, BG.g as f32, BG.b as f32]);
+    // Oklab picker. Read from the engine's projection rather than a local signal:
+    // it is document state now (FRAME_DESIGN.md §5), so a copy here would go stale
+    // the moment an undo or a document load moved it (DESIGN.md §4).
+    let c = obs
+        .as_ref()
+        .map(|o| o.background)
+        .unwrap_or(stark_core::document::DEFAULT_BACKGROUND);
+    drop(obs);
     let mut show_bg_picker = use_signal(|| false);
-    let c = bg();
     let swatch = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",
         c[0] * 100.0,
@@ -81,11 +84,8 @@ pub fn LightingPanel() -> Element {
         if show_bg_picker() {
             div { class: "color-popout",
                 OklabPicker {
-                    init: bg(),
-                    onchange: move |rgb: [f32; 3]| {
-                        bg.set(rgb);
-                        update_background(state, rgb);
-                    },
+                    init: c,
+                    onchange: move |rgb: [f32; 3]| update_background(state, rgb),
                 }
             }
         }
@@ -106,14 +106,11 @@ fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
     dispatch(state, ViewCommand::SetMediaParams(p));
 }
 
-/// Set the canvas substrate colour (straight sRGB, a view setting) and repaint.
+/// Set the canvas substrate colour (straight sRGB). A logged document edit now,
+/// not a view setting: the ground a piece was painted on is part of what it is,
+/// and it is saved with it (FRAME_DESIGN.md §5).
 fn update_background(state: AppState, rgb: [f32; 3]) {
-    let mut renderer = state.renderer;
-    let mut guard = renderer.write();
-    if let Some(r) = guard.as_mut() {
-        r.set_background(rgb);
-        r.paint();
-    }
+    dispatch(state, DocCommand::SetBackground(rgb));
 }
 
 /// The bundled asset behind an image-backed surface (`None` for procedural ones,

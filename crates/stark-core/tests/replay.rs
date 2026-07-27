@@ -21,14 +21,14 @@ const STROKE_B: &[Vec2] = &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)];
 
 #[test]
 fn rendering_is_deterministic() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let (Some(mut a), Some(mut b)) = (engine_or_skip_blue(), engine_or_skip_blue()) else {
         return;
     };
     paint(&mut a, RED, 30.0, STROKE_A);
     paint(&mut b, RED, 30.0, STROKE_A);
 
-    let ia = a.render_to_image(BG);
-    let ib = b.render_to_image(BG);
+    let ia = a.render_to_image();
+    let ib = b.render_to_image();
     assert!(
         images_match(&ia, &ib, 0),
         "two identical scripts must render bit-equal images"
@@ -37,15 +37,15 @@ fn rendering_is_deterministic() {
 
 #[test]
 fn undo_redo_roundtrip_is_lossless() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     paint(&mut engine, RED, 30.0, STROKE_A);
-    let before = engine.render_to_image(BG);
+    let before = engine.render_to_image();
 
     engine.process(DocCommand::Undo);
     engine.process(DocCommand::Redo);
-    let after = engine.render_to_image(BG);
+    let after = engine.render_to_image();
 
     assert!(
         images_match(&before, &after, 0),
@@ -58,19 +58,19 @@ fn undo_matches_shorter_history() {
     // Two committed strokes, then undo the second. Popping the second action
     // forces `history` to replay stroke A from a cached checkpoint, re-rendering
     // it on the GPU — the result must equal a timeline that only ever had A.
-    let Some(mut two) = engine_or_skip() else {
+    let Some(mut two) = engine_or_skip_blue() else {
         return;
     };
     paint(&mut two, RED, 28.0, STROKE_A);
     paint(&mut two, GREEN, 28.0, STROKE_B);
     two.process(DocCommand::Undo);
-    let undone = two.render_to_image(BG);
+    let undone = two.render_to_image();
 
-    let Some(mut one) = engine_or_skip() else {
+    let Some(mut one) = engine_or_skip_blue() else {
         return;
     };
     paint(&mut one, RED, 28.0, STROKE_A);
-    let only_a = one.render_to_image(BG);
+    let only_a = one.render_to_image();
 
     assert!(
         images_match(&undone, &only_a, 0),

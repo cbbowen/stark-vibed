@@ -17,6 +17,7 @@
 mod brush_editor;
 mod collab;
 mod components;
+mod files;
 mod input;
 mod layout;
 mod panels;
@@ -296,6 +297,7 @@ fn CommandRail() -> Element {
     let layout = use_context::<PanelLayout>();
     let mut show_new_doc = use_signal(|| false);
     let mut show_session = use_signal(|| false);
+    let mut show_export = use_signal(|| false);
     let live = (state.collab.phase)() == collab::CollabPhase::Shared;
     let (can_undo, can_redo, has_selection) = state
         .obs
@@ -320,6 +322,24 @@ fn CommandRail() -> Element {
                         }
                         MenubarItem {
                             index: 3usize,
+                            value: "open-document".to_string(),
+                            on_select: move |_| files::open_document(state),
+                            span { "Open\u{2026}" }
+                        }
+                        MenubarItem {
+                            index: 4usize,
+                            value: "save-document".to_string(),
+                            on_select: move |_| files::save_document(state),
+                            span { "Save" }
+                        }
+                        MenubarItem {
+                            index: 5usize,
+                            value: "export-image".to_string(),
+                            on_select: move |_| show_export.set(true),
+                            span { "Export image\u{2026}" }
+                        }
+                        MenubarItem {
+                            index: 6usize,
                             value: "shared-drawing".to_string(),
                             on_select: move |_| show_session.set(true),
                             span { if live { "Shared drawing \u{25CF}" } else { "Shared drawing…" } }
@@ -341,7 +361,7 @@ fn CommandRail() -> Element {
                             span { class: "menu-shortcut", "Ctrl+Y" }
                         }
                         MenubarItem {
-                            index: 4usize,
+                            index: 7usize,
                             value: "deselect".to_string(),
                             disabled: !has_selection,
                             on_select: move |_| {
@@ -351,7 +371,7 @@ fn CommandRail() -> Element {
                             span { class: "menu-shortcut", "Ctrl+D" }
                         }
                         MenubarItem {
-                            index: 5usize,
+                            index: 8usize,
                             value: "invert-selection".to_string(),
                             disabled: !has_selection,
                             on_select: move |_| dispatch(state, DocCommand::InvertSelection),
@@ -388,6 +408,9 @@ fn CommandRail() -> Element {
         }
         if show_session() {
             collab::SessionModal { on_close: move |_| show_session.set(false) }
+        }
+        if show_export() {
+            files::ExportModal { on_close: move |_| show_export.set(false) }
         }
     }
 }

@@ -31,7 +31,7 @@ fn golden_single_stroke() {
             Vec2::new(30.0, 0.0),
         ],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("single_stroke", &img, 6);
 }
 
@@ -52,7 +52,7 @@ fn golden_two_strokes_cross() {
         24.0,
         &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("two_strokes_cross", &img, 6);
 }
 
@@ -86,7 +86,7 @@ fn golden_mixbox_mix() {
         &[Vec2::new(-100.0, 55.0), Vec2::new(100.0, 55.0)],
     );
 
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("mixbox_mix", &img, 6);
 }
 
@@ -109,7 +109,7 @@ fn golden_curved_stroke() {
             Vec2::new(90.0, 40.0),
         ],
     );
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("curved_stroke", &img, 6);
 }
 
@@ -138,7 +138,7 @@ fn golden_bristle_stroke() {
     });
     engine.process(GestureCommand::End);
 
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("bristle_stroke", &img, 6);
 }
 
@@ -182,7 +182,7 @@ fn golden_pen_orientation_stroke() {
     }
     engine.process(GestureCommand::End);
 
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("pen_orientation_stroke", &img, 6);
 }
 
@@ -212,6 +212,6 @@ fn golden_canvas_surface() {
     });
     engine.process(GestureCommand::End);
 
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("linen_surface", &img, 6);
 }

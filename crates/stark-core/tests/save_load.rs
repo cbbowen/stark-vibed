@@ -26,16 +26,16 @@ fn paint_two(engine: &mut Engine) {
 
 #[test]
 fn save_load_roundtrip_is_lossless() {
-    let Some(mut original) = engine_or_skip() else {
+    let Some(mut original) = engine_or_skip_blue() else {
         return;
     };
     paint_two(&mut original);
-    let before = original.render_to_image(BG);
+    let before = original.render_to_image();
     let bytes = original.save_bytes().expect("serialize");
 
-    let mut loaded = engine_or_skip().expect("adapter available (original built)");
+    let mut loaded = engine_or_skip_blue().expect("adapter available (original built)");
     loaded.load_bytes(&bytes).expect("deserialize + replay");
-    let after = loaded.render_to_image(BG);
+    let after = loaded.render_to_image();
 
     assert!(
         images_match(&before, &after, 0),
@@ -47,22 +47,22 @@ fn save_load_roundtrip_is_lossless() {
 
 #[test]
 fn undo_after_load_drops_last_stroke() {
-    let Some(mut original) = engine_or_skip() else {
+    let Some(mut original) = engine_or_skip_blue() else {
         return;
     };
     paint_two(&mut original);
     let bytes = original.save_bytes().expect("serialize");
 
     // Reference: a document that only ever had stroke A.
-    let mut just_a = engine_or_skip().expect("adapter");
+    let mut just_a = engine_or_skip_blue().expect("adapter");
     paint(&mut just_a, RED, 30.0, STROKE_A);
-    let only_a = just_a.render_to_image(BG);
+    let only_a = just_a.render_to_image();
 
     // Load both strokes, then undo the second.
-    let mut loaded = engine_or_skip().expect("adapter");
+    let mut loaded = engine_or_skip_blue().expect("adapter");
     loaded.load_bytes(&bytes).expect("load");
     loaded.process(DocCommand::Undo);
-    let undone = loaded.render_to_image(BG);
+    let undone = loaded.render_to_image();
 
     assert!(
         images_match(&undone, &only_a, 0),
@@ -72,15 +72,15 @@ fn undo_after_load_drops_last_stroke() {
 
 #[test]
 fn timelapse_yields_one_frame_per_action() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     paint_two(&mut engine);
     let file = engine.document_file();
-    let final_image = engine.render_to_image(BG);
+    let final_image = engine.render_to_image();
 
     let mut frames = Vec::new();
-    engine.replay_timelapse(&file, BG, |frame| frames.push(frame));
+    engine.replay_timelapse(&file, |frame| frames.push(frame));
 
     assert_eq!(frames.len(), file.actions.len(), "one frame per action");
     assert!(
@@ -91,7 +91,7 @@ fn timelapse_yields_one_frame_per_action() {
 
 #[test]
 fn brush_assets_survive_save_load() {
-    let Some(mut original) = engine_or_skip() else {
+    let Some(mut original) = engine_or_skip_blue() else {
         return;
     };
     // Paint with an image brush shape (the asset lives only in this engine).
@@ -110,15 +110,15 @@ fn brush_assets_survive_save_load() {
         sample: InputSample::at(Vec2::new(70.0, 0.0)),
     });
     original.process(GestureCommand::End);
-    let before = original.render_to_image(BG);
+    let before = original.render_to_image();
 
     let bytes = original.save_bytes().expect("serialize");
 
     // A fresh engine that never imported the brush must still reproduce it,
     // because the asset is bundled in the file.
-    let mut loaded = engine_or_skip().expect("adapter");
+    let mut loaded = engine_or_skip_blue().expect("adapter");
     loaded.load_bytes(&bytes).expect("load");
-    let after = loaded.render_to_image(BG);
+    let after = loaded.render_to_image();
 
     assert!(
         images_match(&before, &after, 0),
@@ -128,7 +128,7 @@ fn brush_assets_survive_save_load() {
 
 #[test]
 fn saved_file_is_compact() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     // A long, many-sample stroke — the kind that could bloat a file.
@@ -155,7 +155,7 @@ fn saved_file_is_compact() {
 /// current one rather than reading it off the header.
 #[test]
 fn a_surface_switch_is_historized() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     let start = engine.surface();
@@ -184,7 +184,7 @@ fn a_surface_switch_is_historized() {
     );
     let bytes = engine.save_bytes().expect("serialize");
 
-    let Some(mut loaded) = engine_or_skip() else {
+    let Some(mut loaded) = engine_or_skip_blue() else {
         return;
     };
     loaded.load_bytes(&bytes).expect("load");

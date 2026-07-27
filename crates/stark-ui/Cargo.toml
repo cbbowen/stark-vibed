@@ -30,6 +30,19 @@ web-sys = { version = "0.3", features = [
     # replaceState to reflect/clear it without adding history entries.
     "Location",
     "History",
+    # Save / open / export (platform.rs): a download is a Blob behind an object
+    # URL on a synthetic <a download>; opening is a hidden <input type=file>
+    # whose bytes come back through FileReader.
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+    "HtmlAnchorElement",
+    "HtmlInputElement",
+    "File",
+    "FileList",
+    "FileReader",
+    "ProgressEvent",
+    "EventTarget",
 ] }
 console_error_panic_hook = "0.1"
 # Routes `tracing` events to the browser console (set as the global subscriber).

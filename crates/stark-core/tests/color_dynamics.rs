@@ -47,7 +47,7 @@ fn golden_color_jitter_simplex() {
     // few colour "clouds" across the stroke.
     let b = jitter_brush(NoiseKind::Simplex, [50.0, 50.0, 0.0], [0.18, 0.14, 0.14]);
     stroke_with(&mut engine, b, &S_CURVE);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("color_jitter_simplex", &img, 6);
 }
 
@@ -59,7 +59,7 @@ fn golden_color_jitter_white() {
     // High-frequency white noise: fine speckled grain in lightness + chroma.
     let b = jitter_brush(NoiseKind::White, [6.0, 6.0, 6.0], [0.15, 0.10, 0.10]);
     stroke_with(&mut engine, b, &S_CURVE);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("color_jitter_white", &img, 6);
 }
 
@@ -72,7 +72,7 @@ fn golden_color_jitter_along_stroke() {
     };
     let b = jitter_brush(NoiseKind::Simplex, [0.0, 0.0, 4.0], [0.16, 0.16, 0.16]);
     stroke_with(&mut engine, b, &S_CURVE);
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert_golden("color_jitter_along_stroke", &img, 6);
 }
 
@@ -94,7 +94,7 @@ fn zero_amplitude_is_bit_identical_to_off() {
     };
     stroke_with(&mut b, jb, &S_CURVE);
 
-    let (ia, ib) = (a.render_to_image(PAPER), b.render_to_image(PAPER));
+    let (ia, ib) = (a.render_to_image(), b.render_to_image());
     assert!(
         images_match(&ia, &ib, 0),
         "amplitude-0 dynamics changed the deposit"
@@ -115,9 +115,9 @@ fn jitter_is_deterministic_and_effective() {
     stroke_with(&mut b, jb, &S_CURVE);
     paint(&mut plain, TEAL, 42.0, &S_CURVE);
 
-    let (ia, ib) = (a.render_to_image(PAPER), b.render_to_image(PAPER));
+    let (ia, ib) = (a.render_to_image(), b.render_to_image());
     assert!(images_match(&ia, &ib, 0), "jitter not deterministic");
-    let ip = plain.render_to_image(PAPER);
+    let ip = plain.render_to_image();
     assert!(
         frac_exceeding(&ia, &ip, 10) > 0.01,
         "jitter had no visible effect"
@@ -135,7 +135,7 @@ fn jitter_survives_save_load() {
     stroke_with(&mut a, jb, &S_CURVE);
     let bytes = a.save_bytes().expect("save");
     b.load_bytes(&bytes).expect("load");
-    let (ia, ib) = (a.render_to_image(PAPER), b.render_to_image(PAPER));
+    let (ia, ib) = (a.render_to_image(), b.render_to_image());
     assert!(
         images_match(&ia, &ib, 0),
         "jittered stroke not replay-lossless"
@@ -161,9 +161,9 @@ fn jitter_applies_in_dynamics_loop() {
     pb.color_dynamics = ColorDynamics::default();
     stroke_with(&mut plain, pb, &S_CURVE);
 
-    let (ia, ib) = (a.render_to_image(PAPER), b.render_to_image(PAPER));
+    let (ia, ib) = (a.render_to_image(), b.render_to_image());
     assert!(images_match(&ia, &ib, 0), "loop jitter not deterministic");
-    let ip = plain.render_to_image(PAPER);
+    let ip = plain.render_to_image();
     assert!(
         frac_exceeding(&ia, &ip, 10) > 0.01,
         "loop jitter had no visible effect"
@@ -197,6 +197,6 @@ fn jittered_live_preview_matches_commit() {
     let samples: Vec<InputSample> = S_CURVE.iter().map(|&p| InputSample::at(p)).collect();
     replayed.replay_stroke(Tool::Brush, &samples);
 
-    let (il, ir) = (live.render_to_image(PAPER), replayed.render_to_image(PAPER));
+    let (il, ir) = (live.render_to_image(), replayed.render_to_image());
     assert!(images_match(&il, &ir, 0), "live jitter != committed jitter");
 }

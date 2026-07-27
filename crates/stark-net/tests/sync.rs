@@ -18,13 +18,6 @@ const SIZE: Extent2 = Extent2 {
     height: 256,
 };
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const PAPER: wgpu::Color = wgpu::Color {
-    r: 0.97,
-    g: 0.97,
-    b: 0.97,
-    a: 1.0,
-};
-
 fn engine_or_skip() -> Option<Engine> {
     match pollster::block_on(headless_engine(TARGET, SIZE)) {
         Ok(e) => Some(e),
@@ -147,8 +140,8 @@ async fn two_peers_converge_over_iroh() {
 
     // The pre-share stroke arrived via the snapshot.
     assert!(identical(
-        &host.render_to_image(PAPER),
-        &peer.render_to_image(PAPER)
+        &host.render_to_image(),
+        &peer.render_to_image()
     ));
 
     // --- concurrent edits, crossing on the canvas ---
@@ -168,7 +161,7 @@ async fn two_peers_converge_over_iroh() {
     wait_for_actions(&mut host_events, &mut host, 1).await;
     wait_for_actions(&mut peer_events, &mut peer, 1).await;
     assert!(
-        identical(&host.render_to_image(PAPER), &peer.render_to_image(PAPER)),
+        identical(&host.render_to_image(), &peer.render_to_image()),
         "peers diverged after concurrent strokes over iroh"
     );
 
@@ -177,7 +170,7 @@ async fn two_peers_converge_over_iroh() {
     flush_outbox(&mut host, &host_session).await;
     wait_for_actions(&mut peer_events, &mut peer, 1).await;
     assert!(
-        identical(&host.render_to_image(PAPER), &peer.render_to_image(PAPER)),
+        identical(&host.render_to_image(), &peer.render_to_image()),
         "peers diverged after undo over iroh"
     );
 

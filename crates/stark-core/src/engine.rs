@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::Result;
+use crate::{EngineError, Result};
 use crate::assets::{AssetId, AssetStore};
 use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::{DocCommand, GestureCommand, InputCommand, ViewCommand};
@@ -27,6 +27,58 @@ use crate::io::DocumentFile;
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
+
+/// What sits under the paint when rendering (FRAME_DESIGN.md §6).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Background {
+    /// The document's substrate colour, lit and textured by the canvas weave —
+    /// what the screen shows.
+    #[default]
+    Substrate,
+    /// Nothing: the paint's own visible alpha becomes the image's alpha, for a
+    /// cut-out PNG. A real branch in the media pass rather than an alpha tweak —
+    /// the substrate composite is skipped entirely, so bare canvas is genuinely
+    /// absent rather than white-and-invisible.
+    Transparent,
+}
+
+/// Whether on-canvas affordances (the selection outline) are drawn. Screen: yes.
+/// Export: never — chrome is a thing to draw *with*, not a thing to ship
+/// (FRAME_DESIGN.md §6).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Chrome {
+    Shown,
+    Hidden,
+}
+
+/// How large an exported image is, relative to the frame's canvas-space size
+/// (FRAME_DESIGN.md §6). Resolution is a property of the *output*, not of the
+/// artwork, which is why the frame stores only a canvas-space rect.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ExportScale {
+    /// A multiple of the frame's canvas size — 1× is one canvas px per image px.
+    Factor(f32),
+    /// An exact width in image px; the height follows the frame's aspect.
+    Width(u32),
+}
+
+/// What an export will produce, before producing it — so a dialog can show the
+/// pixel size the user is about to get.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ExportPlan {
+    /// The canvas-space rect being exported.
+    pub min: crate::geom::Vec2,
+    pub max: crate::geom::Vec2,
+    /// Output size in image px.
+    pub size: Extent2,
+    /// Image px per canvas px.
+    pub zoom: f32,
+}
+
+/// Largest exported edge, in px. Guards against a stray zero-ish frame or a huge
+/// scale asking for a texture the device will refuse — reported as an error rather
+/// than surfacing as a wgpu validation panic.
+const MAX_EXPORT_DIM: u32 = 8192;
 
 /// A layer's presentation properties, for the UI's layer panel (DESIGN.md §11).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,6 +165,10 @@ pub struct ObservableState {
     pub color_space: ColorSpaceId,
     /// The physical canvas surface (DESIGN.md §6.4).
     pub surface: SurfaceId,
+    /// The canvas substrate colour, straight sRGB (FRAME_DESIGN.md §5). Document
+    /// state, not a view setting — projected here so the frontend shows what the
+    /// document says rather than a copy of its own that goes stale.
+    pub background: [f32; 3],
 }
 
 /// Colour the live tail is drawn in under the `debug-unfrozen` feature.
@@ -418,6 +474,7 @@ impl Engine {
             DocCommand::SetMatteColor(id, color) => {
                 self.commit(ActionKind::SetMatteColor(id, color))
             }
+            DocCommand::SetBackground(rgb) => self.commit(ActionKind::SetBackground(rgb)),
             DocCommand::RemoveLayer(id) => {
                 self.commit(ActionKind::RemoveLayer(id));
                 // Keep the active layer valid after removal, preferring a paintable
@@ -541,8 +598,36 @@ impl Engine {
     }
 
     /// Render the current canvas (preview if stroking, else committed) into
-    /// `target`, clearing to `background` first (DESIGN.md §6.4).
-    pub fn render(&mut self, target: &wgpu::TextureView, background: wgpu::Color) {
+    /// `target`, through the session's own pan/zoom (DESIGN.md §6.4).
+    pub fn render(&mut self, target: &wgpu::TextureView) {
+        self.render_view(
+            target,
+            self.session.view,
+            Background::Substrate,
+            Chrome::Shown,
+        );
+    }
+
+    /// Render through an **explicit** view rather than the session's, choosing what
+    /// sits under the paint and whether on-canvas chrome is drawn (DESIGN.md §6.4,
+    /// FRAME_DESIGN.md §6).
+    ///
+    /// This is the seam export needs: exporting a frame is rendering at
+    /// `frame.rect × scale`, centred on the frame, at `zoom = scale` — the same
+    /// path the screen takes, so what is written is what was seen. `render` reading
+    /// `session.view` instead of taking one is exactly what made "export" a
+    /// screenshot of the viewport.
+    ///
+    /// Private: the screen has no reason to render through anything but the
+    /// session's own view, and a public knob with no caller is the kind of thing
+    /// this codebase deletes. `export` is the consumer.
+    fn render_view(
+        &mut self,
+        target: &wgpu::TextureView,
+        view: ViewTransform,
+        background: Background,
+        chrome: Chrome,
+    ) {
         let doc = self
             .preview
             .as_ref()
@@ -585,23 +670,55 @@ impl Engine {
             }
         }
 
-        let bg_channels = self.color_space.rgb_to_channels([
-            background.r as f32,
-            background.g as f32,
-            background.b as f32,
-        ]);
-
-        let view = self.session.view;
-        let selection = doc.selection.clone();
-        self.compositor
-            .render(target, view, bg_channels, &items, &selection);
+        // The substrate is document state now (FRAME_DESIGN.md §5), so the ground a
+        // piece was painted on travels with it instead of living in whichever
+        // frontend happened to render it.
+        let bg_channels = self.color_space.rgb_to_channels(doc.background);
+        // Chrome never reaches a file: an exported image gets no selection outline
+        // (FRAME_DESIGN.md §6). Keyed on `chrome`, deliberately *not* on the
+        // background — a substrate export is still an export, and tying the two
+        // together silently leaked the outline into every opaque PNG.
+        let selection = match chrome {
+            Chrome::Shown => doc.selection.clone(),
+            Chrome::Hidden => crate::document::Selection::everything(),
+        };
+        self.compositor.render(
+            target,
+            view,
+            bg_channels,
+            &items,
+            &selection,
+            background == Background::Transparent,
+        );
     }
 
     /// Render the current canvas to a CPU-side image at the viewport size
-    /// (DESIGN.md §9). The backbone of golden tests and export. The target uses
-    /// the engine's configured format, so it matches on-screen rendering.
-    pub fn render_to_image(&mut self, background: wgpu::Color) -> RgbaImage {
-        let size = self.session.view.viewport;
+    /// (DESIGN.md §9). The backbone of golden tests. The target uses the engine's
+    /// configured format, so it matches on-screen rendering.
+    /// Blocking, and therefore **native-only**: WebGPU has no blocking poll, so
+    /// this shape cannot work on the web (see `gpu::readback`). The frontend uses
+    /// [`export`](Self::export), which awaits the map.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_to_image(&mut self) -> RgbaImage {
+        let (target, size) = self.render_offscreen(
+            self.session.view,
+            Background::Substrate,
+            Chrome::Shown,
+        );
+        let pixels = crate::gpu::readback::read_rgba8_blocking(&self.gpu, &target, size);
+        RgbaImage::from_target_bytes(size.width, size.height, pixels, self.target_format)
+    }
+
+    /// Render through an explicit view into an offscreen texture, ready to be read
+    /// back. Split out so the blocking and async readbacks share every step but
+    /// the wait.
+    fn render_offscreen(
+        &mut self,
+        view: ViewTransform,
+        background: Background,
+        chrome: Chrome,
+    ) -> (wgpu::Texture, Extent2) {
+        let size = view.viewport;
         let target = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("stark export target"),
             size: wgpu::Extent3d {
@@ -616,10 +733,122 @@ impl Engine {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        self.render(&view, background);
-        let pixels = crate::gpu::readback::read_rgba8(&self.gpu, &target, size);
-        RgbaImage::new(size.width, size.height, pixels)
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_view(&target_view, view, background, chrome);
+        (target, size)
+    }
+
+    /// What exporting `frame` at `scale` would produce, without producing it —
+    /// so a dialog can show the pixel size before committing to the render.
+    ///
+    /// `frame` names a **matte layer** whose rect is the piece (FRAME_DESIGN.md
+    /// §6). With no frame it falls back to the painted bounds, and on an empty
+    /// canvas to the current viewport, so export always has *something* to mean.
+    pub fn export_plan(&self, frame: Option<LayerId>, scale: ExportScale) -> Result<ExportPlan> {
+        let (min, max) = self.export_rect(frame);
+        let (w, h) = (max.x - min.x, max.y - min.y);
+        if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
+            return Err(EngineError::Export(format!(
+                "frame is too small to export ({w:.0} × {h:.0} canvas px)"
+            )));
+        }
+        let zoom = match scale {
+            ExportScale::Factor(f) => f,
+            ExportScale::Width(px) => px as f32 / w,
+        };
+        if !(zoom.is_finite() && zoom > 0.0) {
+            return Err(EngineError::Export("export scale must be positive".into()));
+        }
+        // Round rather than truncate, so a 1× export of a 100.5-px frame is 101
+        // rather than silently dropping most of a pixel off two edges.
+        let size = Extent2::new(
+            (w * zoom).round().max(1.0) as u32,
+            (h * zoom).round().max(1.0) as u32,
+        );
+        if size.width > MAX_EXPORT_DIM || size.height > MAX_EXPORT_DIM {
+            return Err(EngineError::Export(format!(
+                "export is {} × {} px; the limit is {MAX_EXPORT_DIM}",
+                size.width, size.height
+            )));
+        }
+        Ok(ExportPlan {
+            min,
+            max,
+            size,
+            zoom,
+        })
+    }
+
+    /// Render a frame to a CPU-side image (FRAME_DESIGN.md §6).
+    ///
+    /// This is the same path the screen takes — every visible layer composited
+    /// through the media pass — just with the view centred on the frame at
+    /// `zoom = scale`. Nothing is special-cased: a frame matte covers only
+    /// *outside* its rect, which is clipped away here, so it contributes nothing
+    /// to its own export, while a ground matte is inside and contributes exactly
+    /// what it should.
+    /// Renders immediately and returns a future for the **readback**, which is the
+    /// only asynchronous part (DESIGN.md §7 — on WebGPU `mapAsync` settles only
+    /// when the browser's event loop runs, so there is no way to block on it).
+    ///
+    /// Deliberately *not* an `async fn`. An `async fn` would hold `&mut self` for
+    /// the whole readback, and a frontend must take that borrow from a shared cell
+    /// — so the engine would stay locked across an await during which the UI
+    /// re-renders and tries to read it, panicking with `AlreadyBorrowedMut`. This
+    /// shape ends the borrow when `export` returns: the returned future owns a
+    /// cloned [`GpuContext`] (cheap — the handles are reference-counted) and the
+    /// target texture, and touches the engine not at all.
+    ///
+    /// ```ignore
+    /// let readback = { engine.write().export(frame, scale, bg)? }; // borrow ends
+    /// let image = readback.await;
+    /// ```
+    pub fn export(
+        &mut self,
+        frame: Option<LayerId>,
+        scale: ExportScale,
+        background: Background,
+    ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
+        let plan = self.export_plan(frame, scale)?;
+        let view = ViewTransform {
+            center: (plan.min + plan.max) * 0.5,
+            zoom: plan.zoom,
+            viewport: plan.size,
+        };
+        // No chrome: a selection outline or any other on-canvas affordance is a
+        // thing to draw *with*, never a thing to ship.
+        let (target, size) = self.render_offscreen(view, background, Chrome::Hidden);
+        let gpu = self.gpu.clone();
+        // Captured, not read through `self`: the future deliberately does not
+        // borrow the engine.
+        let format = self.target_format;
+        Ok(async move {
+            let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await;
+            RgbaImage::from_target_bytes(size.width, size.height, pixels, format)
+        })
+    }
+
+    /// The canvas-space rect an export covers: the named frame, else the painted
+    /// bounds, else the viewport.
+    fn export_rect(&self, frame: Option<LayerId>) -> (crate::geom::Vec2, crate::geom::Vec2) {
+        let doc = self.timeline.current();
+        if let Some(id) = frame
+            && let Some(idx) = doc.layer_index(id)
+            && let Some(region) = doc.layer_at(idx).matte_region()
+        {
+            return region.rect();
+        }
+        if let Some((min, max)) = doc.bounds.tile_range() {
+            let t = crate::geom::TILE_SIZE as f32;
+            return (
+                crate::geom::Vec2::new(min.x as f32 * t, min.y as f32 * t),
+                crate::geom::Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
+            );
+        }
+        let v = self.session.view;
+        let half =
+            crate::geom::Vec2::new(v.viewport.width as f32, v.viewport.height as f32) * (0.5 / v.zoom);
+        (v.center - half, v.center + half)
     }
 
     /// Snapshot the document as a saveable [`DocumentFile`] (DESIGN.md §8),
@@ -691,19 +920,19 @@ impl Engine {
 
     /// Replay a document, invoking `on_frame` with the rendered image after each
     /// action — a timelapse (DESIGN.md §8). Ends with the document fully loaded.
-    pub fn replay_timelapse(
-        &mut self,
-        file: &DocumentFile,
-        background: wgpu::Color,
-        mut on_frame: impl FnMut(RgbaImage),
-    ) {
+    ///
+    /// Native-only, because it reads each frame back with the blocking path. Making
+    /// it web-capable means awaiting the readback per frame — a change to this
+    /// signature, not to the replay.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn replay_timelapse(&mut self, file: &DocumentFile, mut on_frame: impl FnMut(RgbaImage)) {
         self.reset_document();
         for (_, bytes) in &file.assets {
             let _ = self.apply.assets.insert_bytes(bytes);
         }
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
-            on_frame(self.render_to_image(background));
+            on_frame(self.render_to_image());
         }
         self.resync_counters(&file.actions);
     }
@@ -759,6 +988,7 @@ impl Engine {
             environment: self.environment.id(),
             color_space: self.color_space.id(),
             surface: self.document().surface,
+            background: self.document().background,
         }
     }
 

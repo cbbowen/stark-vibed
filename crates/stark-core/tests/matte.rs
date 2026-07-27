@@ -63,7 +63,7 @@ fn frame_covers_outside_and_spares_inside() {
         return;
     };
     paint(&mut engine, RED, 30.0, WIDE_STROKE);
-    let before = engine.render_to_image(PAPER);
+    let before = engine.render_to_image();
     assert!(red_dominant(center(&before)), "stroke should cross centre");
     assert!(
         red_dominant(outside(&before)),
@@ -71,7 +71,7 @@ fn frame_covers_outside_and_spares_inside() {
     );
 
     add_frame(&mut engine);
-    let after = engine.render_to_image(PAPER);
+    let after = engine.render_to_image();
     assert!(
         is_dark(outside(&after)),
         "outside the frame should be covered by the matte, got {:?}",
@@ -102,13 +102,13 @@ fn opaque_matte_erases_relief_beneath() {
     // A fat, heavy stroke right through the region the matte will cover.
     paint(&mut engine, RED, 45.0, WIDE_STROKE);
     add_frame(&mut engine);
-    let over_paint = engine.render_to_image(PAPER);
+    let over_paint = engine.render_to_image();
 
     let Some(mut bare) = engine_or_skip() else {
         return;
     };
     add_frame(&mut bare);
-    let over_nothing = bare.render_to_image(PAPER);
+    let over_nothing = bare.render_to_image();
 
     // Compare only the matte-covered band, well clear of the frame's lit edge
     // (a genuine height cliff, present in both images but sensitive to sampling).
@@ -146,10 +146,10 @@ fn matte_honors_layer_opacity_and_visibility() {
         .last()
         .expect("matte layer present")
         .id;
-    let opaque = engine.render_to_image(PAPER);
+    let opaque = engine.render_to_image();
 
     engine.process(DocCommand::SetLayerVisible(matte_id, false));
-    let hidden = engine.render_to_image(PAPER);
+    let hidden = engine.render_to_image();
     assert!(
         red_dominant(outside(&hidden)),
         "a hidden matte should cover nothing"
@@ -157,7 +157,7 @@ fn matte_honors_layer_opacity_and_visibility() {
 
     engine.process(DocCommand::SetLayerVisible(matte_id, true));
     engine.process(DocCommand::SetLayerOpacity(matte_id, 0.5));
-    let half = engine.render_to_image(PAPER);
+    let half = engine.render_to_image();
     let (o, hf, hd) = (outside(&opaque), outside(&half), outside(&hidden));
     // Compared on total brightness, not per channel: against a red stroke the
     // blue channel is already floored at both ends, so it has no range to be
@@ -188,7 +188,7 @@ fn matte_below_paint_does_not_cover_it() {
         id: LayerId(0),
         above: Some(matte_id),
     });
-    let img = engine.render_to_image(PAPER);
+    let img = engine.render_to_image();
     assert!(
         red_dominant(outside(&img)),
         "paint above a matte must not be covered by it, got {:?}",
@@ -257,9 +257,9 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     );
 
     // Painting on it does nothing at all — no panic, no silent landing elsewhere.
-    let before = engine.render_to_image(PAPER);
+    let before = engine.render_to_image();
     paint(&mut engine, RED, 30.0, &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)]);
-    let after = engine.render_to_image(PAPER);
+    let after = engine.render_to_image();
     assert!(
         images_match(&before, &after, 1),
         "a stroke on a matte must change nothing"
@@ -269,7 +269,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     engine.process(ViewCommand::SetActiveLayer(LayerId(0)));
     paint(&mut engine, RED, 30.0, &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)]);
     assert!(
-        !images_match(&before, &engine.render_to_image(PAPER), 1),
+        !images_match(&before, &engine.render_to_image(), 1),
         "selecting a paint layer again must resume painting"
     );
 }
@@ -284,7 +284,7 @@ fn dragging_a_frame_previews_without_logging() {
     paint(&mut engine, RED, 30.0, WIDE_STROKE);
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
-    let framed = engine.render_to_image(PAPER);
+    let framed = engine.render_to_image();
 
     // Three "pointer moves" of a drag that shrinks the hole.
     for w in [45.0f32, 40.0, 35.0] {
@@ -294,7 +294,7 @@ fn dragging_a_frame_previews_without_logging() {
             Vec2::new(w, w),
         ))));
     }
-    let dragging = engine.render_to_image(PAPER);
+    let dragging = engine.render_to_image();
     assert!(
         !images_match(&framed, &dragging, 4),
         "the preview should move the frame on screen"
@@ -307,7 +307,7 @@ fn dragging_a_frame_previews_without_logging() {
     // Undoing now must take back the *frame*, not a drag step — nothing about the
     // drag has been logged yet.
     engine.process(DocCommand::Undo);
-    let undone = engine.render_to_image(PAPER);
+    let undone = engine.render_to_image();
     assert!(
         red_dominant(outside(&undone)),
         "undo during a drag should remove the frame, so nothing was logged by it"
@@ -320,13 +320,13 @@ fn dragging_a_frame_previews_without_logging() {
         Vec2::new(-35.0, -35.0),
         Vec2::new(35.0, 35.0),
     ));
-    let committed = engine.render_to_image(PAPER);
+    let committed = engine.render_to_image();
     assert!(
         images_match(&dragging, &committed, 2),
         "the committed rect should match what the drag previewed"
     );
     engine.process(DocCommand::Undo);
-    let back = engine.render_to_image(PAPER);
+    let back = engine.render_to_image();
     assert!(
         images_match(&framed, &back, 2),
         "one undo should take back the whole drag"
@@ -340,18 +340,18 @@ fn matte_undoes() {
         return;
     };
     paint(&mut engine, RED, 30.0, WIDE_STROKE);
-    let before = engine.render_to_image(PAPER);
+    let before = engine.render_to_image();
 
     add_frame(&mut engine);
-    assert!(is_dark(outside(&engine.render_to_image(PAPER))));
+    assert!(is_dark(outside(&engine.render_to_image())));
 
     engine.process(DocCommand::Undo);
-    let undone = engine.render_to_image(PAPER);
+    let undone = engine.render_to_image();
     assert!(
         images_match(&before, &undone, 2),
         "undoing a matte should restore the un-framed image"
     );
 
     engine.process(DocCommand::Redo);
-    assert!(is_dark(outside(&engine.render_to_image(PAPER))));
+    assert!(is_dark(outside(&engine.render_to_image())));
 }

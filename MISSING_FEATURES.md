@@ -39,9 +39,8 @@ a rendering feature rather than a working one.
 
 It is a **request**, not a command (it must answer), so it belongs in §4's
 request tier next to `save_bytes`. One decision to make deliberately: it should
-sample the **composited, lit** result by default rather than raw layer channels —
-what the artist sees is what they mean — with sample-layer and sample-radius as
-options.
+sample the raw layer channels, not the **composited, lit** result — with
+sample-layer(s) and sample-radius as options.
 
 ### 0.3 Transform
 

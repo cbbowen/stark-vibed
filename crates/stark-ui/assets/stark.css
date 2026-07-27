@@ -852,3 +852,24 @@
   padding: 4px 6px;
   font-size: 12px;
 }
+
+/* --- export dialog (FRAME_DESIGN.md §6) --- */
+
+/* The pixel size you are about to get. Large and tabular because it is the one
+   number the dialog exists to tell you. */
+.export-size {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: #eee;
+  margin: 8px 0 4px;
+}
+
+.export-error {
+  margin-top: 10px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: #4a2323;
+  color: #ffd9d9;
+  font-size: 12px;
+  line-height: 1.4;
+}

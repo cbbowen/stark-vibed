@@ -29,7 +29,7 @@ const RED: [f32; 4] = [0.85, 0.15, 0.1, 1.0];
 /// at 2× zoom centered on `shift` so the on-screen result is independent of
 /// `shift` — except for how the stroke lands on the tile grid.
 fn render_shifted(shift: Vec2) -> RgbaImage {
-    let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
+    let mut engine = engine_or_skip_blue().expect("engine (caller checked adapter)");
 
     // Exaggerate the impasto relief so any clamped-normal seam is unmistakable. The
     // image-based-lighting specular reflection is *very* normal-sensitive (a sharp
@@ -70,12 +70,12 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
         factor: 2.0,
     });
 
-    engine.render_to_image(BG)
+    engine.render_to_image()
 }
 
 #[test]
 fn apron_makes_tiles_seamless_under_zoom() {
-    if engine_or_skip().is_none() {
+    if engine_or_skip_blue().is_none() {
         return; // no usable GPU adapter
     }
 
@@ -104,7 +104,7 @@ fn apron_makes_tiles_seamless_under_zoom() {
 /// from the shared region must keep aprons bit-identical to neighbour interiors,
 /// and the halo composite must give rewritten tiles real neighbour content.
 fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
-    let mut engine = engine_or_skip().expect("engine (caller checked adapter)");
+    let mut engine = engine_or_skip_blue().expect("engine (caller checked adapter)");
     engine.process(ViewCommand::SetMediaParams(MediaParams {
         height_strength: 2.5,
         specular: 0.3,
@@ -150,12 +150,12 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         anchor: center_px,
         factor: 2.0,
     });
-    engine.render_to_image(BG)
+    engine.render_to_image()
 }
 
 #[test]
 fn apron_makes_dynamics_writeback_seamless_under_zoom() {
-    if engine_or_skip().is_none() {
+    if engine_or_skip_blue().is_none() {
         return; // no usable GPU adapter
     }
 

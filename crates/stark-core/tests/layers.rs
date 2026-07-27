@@ -40,7 +40,7 @@ fn two_layers(engine: &mut Engine) {
 
 #[test]
 fn active_layer_directs_paint_and_stacks_on_top() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     two_layers(&mut engine);
@@ -49,44 +49,44 @@ fn active_layer_directs_paint_and_stacks_on_top() {
     assert_eq!(obs.layers.len(), 2, "root + added layer");
 
     // Green was painted on the top layer, so it wins at the center.
-    assert!(green_dominant(center(&engine.render_to_image(BG))));
+    assert!(green_dominant(center(&engine.render_to_image())));
 }
 
 #[test]
 fn hiding_a_layer_removes_its_contribution() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     two_layers(&mut engine);
 
     engine.process(DocCommand::SetLayerVisible(TOP, false));
     assert!(
-        red_dominant(center(&engine.render_to_image(BG))),
+        red_dominant(center(&engine.render_to_image())),
         "hiding the green top layer reveals red beneath"
     );
 
     engine.process(DocCommand::SetLayerVisible(TOP, true));
-    assert!(green_dominant(center(&engine.render_to_image(BG))));
+    assert!(green_dominant(center(&engine.render_to_image())));
 }
 
 #[test]
 fn zero_opacity_layer_is_invisible() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     two_layers(&mut engine);
 
     engine.process(DocCommand::SetLayerOpacity(TOP, 0.0));
-    assert!(red_dominant(center(&engine.render_to_image(BG))));
+    assert!(red_dominant(center(&engine.render_to_image())));
 
     // Undo the opacity change → green returns (layer ops are historized).
     engine.process(DocCommand::Undo);
-    assert!(green_dominant(center(&engine.render_to_image(BG))));
+    assert!(green_dominant(center(&engine.render_to_image())));
 }
 
 #[test]
 fn reordering_changes_which_layer_wins() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     two_layers(&mut engine);
@@ -97,30 +97,30 @@ fn reordering_changes_which_layer_wins() {
         above: Some(TOP),
     });
     assert!(
-        red_dominant(center(&engine.render_to_image(BG))),
+        red_dominant(center(&engine.render_to_image())),
         "red now sits on top"
     );
 
     engine.process(DocCommand::Undo);
     assert!(
-        green_dominant(center(&engine.render_to_image(BG))),
+        green_dominant(center(&engine.render_to_image())),
         "undo restores green on top"
     );
 }
 
 #[test]
 fn layer_state_survives_save_load() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     two_layers(&mut engine);
     engine.process(DocCommand::SetLayerOpacity(TOP, 0.4));
-    let before = engine.render_to_image(BG);
+    let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
 
-    let mut loaded = engine_or_skip().expect("adapter");
+    let mut loaded = engine_or_skip_blue().expect("adapter");
     loaded.load_bytes(&bytes).expect("load");
-    let after = loaded.render_to_image(BG);
+    let after = loaded.render_to_image();
 
     assert!(
         images_match(&before, &after, 0),
