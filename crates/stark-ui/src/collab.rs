@@ -19,9 +19,9 @@
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
+use stark_core::peer::Identity;
 use stark_net::{
-    Broadcaster, CollabSession, NetOptions, RemoteEvent, SecretKey, SessionTicket,
-    actor_from_endpoint_id,
+    Broadcaster, CollabSession, NetOptions, RemoteEvent, SessionTicket, actor_from_endpoint_id,
 };
 
 use crate::state::AppState;
@@ -52,10 +52,12 @@ pub fn share(state: AppState) {
     set_phase(state, CollabPhase::Connecting);
     spawn_forever(async move {
         // The actor id derives from the endpoint identity, and the shared log
-        // must carry it before the snapshot is served — so generate the key
-        // first, convert the engine, then bind the session around it.
-        let secret = SecretKey::generate();
-        let actor = actor_from_endpoint_id(secret.public());
+        // must carry it before the snapshot is served — so settle the key first,
+        // convert the engine, then bind the session around it. The key is this
+        // browser's persisted one, so sharing the same document twice is the same
+        // author twice (`crate::identity`).
+        let id = crate::identity::get();
+        let actor = actor_from_endpoint_id(id.secret.public());
         let (doc, assets) = {
             let mut renderer = state.renderer;
             let mut guard = renderer.write();
@@ -63,12 +65,12 @@ pub fn share(state: AppState) {
                 set_phase(state, CollabPhase::Solo);
                 return;
             };
-            r.start_collaboration(actor);
+            r.start_collaboration(Identity::new(actor, id.boot));
             (r.document_file(), r.all_asset_bytes())
         };
 
         let opts = NetOptions {
-            secret: Some(secret),
+            secret: Some(id.secret),
             ..Default::default()
         };
         match CollabSession::host(doc, opts).await {
@@ -102,7 +104,13 @@ pub fn join(state: AppState, ticket_text: String) {
     };
     set_phase(state, CollabPhase::Connecting);
     spawn_forever(async move {
-        match CollabSession::join(&ticket, NetOptions::default()).await {
+        // Same persisted key as hosting uses: joining is not a different person.
+        let id = crate::identity::get();
+        let opts = NetOptions {
+            secret: Some(id.secret),
+            ..Default::default()
+        };
+        match CollabSession::join(&ticket, opts).await {
             Ok((session, file)) => {
                 let assets = {
                     let mut renderer = state.renderer;
@@ -112,7 +120,7 @@ pub fn join(state: AppState, ticket_text: String) {
                         set_phase(state, CollabPhase::Solo);
                         return;
                     };
-                    r.join_collaboration(&file, session.actor_id());
+                    r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot));
                     r.paint();
                     obs.set(Some(r.observe()));
                     r.all_asset_bytes()
@@ -433,6 +441,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
     let ticket = (state.collab.ticket)();
     let error = (state.collab.error)();
     let mut join_text = use_signal(String::new);
+    let mut identity_reset = use_signal(|| false);
 
     rsx! {
         div {
@@ -466,6 +475,19 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                             placeholder: "Paste a ticket (stark…)",
                             value: "{join_text}",
                             oninput: move |e| join_text.set(e.value()),
+                        }
+                        div { class: "modal-section-label", "THIS BROWSER" }
+                        div { class: "modal-subtitle",
+                            "Collaborators recognise you by a key kept in this browser, so your strokes stay yours — and stay undoable — when you reload. Starting over gives you a new one, and everything you have already drawn in a shared canvas stays where it is."
+                        }
+                        button {
+                            class: "btn btn-secondary",
+                            disabled: identity_reset(),
+                            onclick: move |_| {
+                                crate::identity::reset();
+                                identity_reset.set(true);
+                            },
+                            if identity_reset() { "New identity on next reload" } else { "Start over as someone new" }
                         }
                         div { class: "modal-actions",
                             button {

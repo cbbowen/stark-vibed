@@ -380,6 +380,7 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
     engine.start_collaboration(ActorId(1));
 
     let frame = PeerFrame {
+        boot: 0,
         seq: 1,
         name: Some("Ada".into()),
         active_layer: LayerId(0),
@@ -438,6 +439,7 @@ fn peer_selection_outlines_are_opt_in() {
     a.merge_presence(
         ActorId(2),
         PeerFrame {
+            boot: 0,
             seq: 1,
             name: None,
             active_layer: LayerId(0),
@@ -558,6 +560,7 @@ fn presence_never_reaches_the_save_file() {
 
     // A peer's whole presence: cursor, layer, a live stroke.
     let frame = PeerFrame {
+        boot: 0,
         seq: 1,
         name: None,
         active_layer: LayerId(0),

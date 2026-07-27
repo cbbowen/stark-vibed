@@ -53,6 +53,39 @@ pub const GESTURE_TIMEOUT: f64 = 2.0;
 /// that arrived mid-stroke (PEER_DESIGN.md §5).
 pub const GESTURE_RESYNC: f64 = 1.0;
 
+/// Who this client is on the wire.
+///
+/// `actor` is meant to be **durable**: derived from a key the frontend persists, so
+/// the same person reloading is the same author. That matters beyond presence —
+/// undo targets *your* actions, and `DocState` keeps a selection per actor forever
+/// because replay needs it, so minting a fresh id per session orphaned your own
+/// history and left a dead entry in the log for every session anyone ever opened.
+///
+/// `boot` distinguishes *runs* of that identity, and is what makes durability safe:
+/// [`PeerFrame::seq`] restarts at zero every process, so a peer that reloads within
+/// [`PEER_TIMEOUT`] would otherwise have every frame rejected as stale until it
+/// out-numbered its previous run. It need only increase, not mean anything.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Identity {
+    pub actor: ActorId,
+    pub boot: u64,
+}
+
+impl Identity {
+    pub fn new(actor: ActorId, boot: u64) -> Self {
+        Self { actor, boot }
+    }
+}
+
+impl From<ActorId> for Identity {
+    /// An identity with no run counter — correct for a client whose key is freshly
+    /// generated, since a brand-new [`ActorId`] has no previous run to be confused
+    /// with, and for tests.
+    fn from(actor: ActorId) -> Self {
+        Self { actor, boot: 0 }
+    }
+}
+
 /// What a peer is doing right now — the preview of the action it will become.
 ///
 /// [`Stroke`](Self::Stroke) carries a [`StrokeRecord`]: literally the type the
@@ -116,8 +149,12 @@ impl GestureFrame {
 /// its [`ActionId`](crate::document::ActionId) (PEER_DESIGN.md §7).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerFrame {
-    /// Monotonic per actor. A frame that does not advance it is stale — a duplicate
-    /// or an overtaken one — and is dropped.
+    /// Which run of this client published the frame ([`Identity::boot`]). Ordered
+    /// *before* `seq`, which restarts at zero when a client does.
+    #[serde(default)]
+    pub boot: u64,
+    /// Monotonic within a run. A frame that does not advance `(boot, seq)` is stale —
+    /// a duplicate or an overtaken one — and is dropped.
     pub seq: u64,
     /// Sent on change and on resync frames; `None` means "unchanged".
     pub name: Option<String>,
@@ -140,6 +177,8 @@ pub struct Peer {
     pub color: [f32; 3],
     pub active_layer: LayerId,
     pub cursor: Option<Vec2>,
+    /// The run of this peer we are listening to; see [`Identity::boot`].
+    boot: u64,
     seq: u64,
     /// The receiving half of the gesture protocol. Its counterpart,
     /// [`GestureTx`](crate::presence::GestureTx), lives beside it in
@@ -158,6 +197,7 @@ impl Peer {
             color: peer_color(actor),
             active_layer,
             cursor: None,
+            boot: 0,
             seq: 0,
             rx: GestureRx::default(),
             last_seen: now,
@@ -330,13 +370,27 @@ impl Peers {
         }
         match self.map.get_mut(&actor) {
             // Stale or duplicate: presence is a snapshot, so an overtaken frame
-            // carries nothing a newer one has not already said.
-            Some(peer) if frame.seq <= peer.seq => PresenceChange::NONE,
+            // carries nothing a newer one has not already said. Ordered on
+            // `(boot, seq)`, because `seq` alone cannot tell a client that restarted
+            // from one whose frames arrived late.
+            Some(peer) if (frame.boot, frame.seq) <= (peer.boot, peer.seq) => {
+                PresenceChange::NONE
+            }
+            Some(peer) if frame.boot > peer.boot => {
+                // A new run of a client we already know — it reloaded. Its `seq` and
+                // its gesture ordinals both restart at zero, so nothing from the
+                // previous run may be carried over or compared against.
+                peer.rx.clear();
+                peer.boot = frame.boot;
+                peer.apply(frame, now);
+                PresenceChange::CANVAS
+            }
             Some(peer) => PresenceChange::roster(peer.apply(frame, now)),
             None => {
                 // An arrival changes which actors' selections may be outlined, so the
                 // fold is stale whatever else the frame carries.
                 let mut peer = Peer::new(actor, frame.active_layer, now);
+                peer.boot = frame.boot;
                 peer.apply(frame, now);
                 self.map.insert(actor, peer);
                 PresenceChange::CANVAS
@@ -472,6 +526,7 @@ mod tests {
 
     fn frame(seq: u64, gesture: Option<GestureFrame>) -> PeerFrame {
         PeerFrame {
+            boot: 0,
             seq,
             name: None,
             active_layer: LayerId(0),
@@ -506,6 +561,49 @@ mod tests {
             "seq went backwards"
         );
         assert!(peers.merge(a, frame(6, None), 2.0).roster);
+    }
+
+    /// A client that reloads keeps its `ActorId` — that is what persisting the key
+    /// buys — but restarts `seq` at zero. Ordered on `seq` alone, every frame of the
+    /// new run is an "overtaken duplicate" until it out-numbers the old one, which
+    /// for a long session is minutes of silence from someone who is right there.
+    #[test]
+    fn a_reloaded_peer_is_not_mistaken_for_a_stale_one() {
+        let mut peers = Peers::new();
+        let a = ActorId(1);
+        let stroke = |id, n| {
+            Some(GestureFrame::Stroke {
+                id,
+                head: Some(head()),
+                from: 0,
+                points: pts(n),
+            })
+        };
+
+        let mut old = frame(50, stroke(7, 4));
+        old.boot = 3;
+        assert!(peers.merge(a, old, 0.0).roster);
+        assert_eq!(
+            peers.get(a).expect("peer").live_stroke().expect("live").path.len(),
+            4
+        );
+
+        // The same person, reloaded: `seq` back to 1, and the gesture ordinals it
+        // hands out start over too — so the run counter has to lead the comparison.
+        let mut fresh = frame(1, stroke(7, 2));
+        fresh.boot = 4;
+        assert!(peers.merge(a, fresh, 0.1).canvas, "a new run must be heard");
+        assert_eq!(
+            peers.get(a).expect("peer").live_stroke().expect("live").path.len(),
+            2,
+            "and must not inherit the previous run's path, ordinal collision or not"
+        );
+
+        // A straggler from the old run is still stale, which is the property the
+        // `seq` check existed for and must survive the change.
+        let mut straggler = frame(51, None);
+        straggler.boot = 3;
+        assert!(!peers.merge(a, straggler, 0.2).roster);
     }
 
     /// A cursor is chrome drawn over the artwork, not part of it. Saying so is what

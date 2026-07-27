@@ -24,7 +24,7 @@ use crate::gpu::{
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
-use crate::peer::{LiveGesture, Peer, PeerFrame, Peers};
+use crate::peer::{Identity, LiveGesture, Peer, PeerFrame, Peers};
 use crate::{EngineError, Result};
 
 /// The starting layer present in every new document.
@@ -1070,10 +1070,12 @@ impl Engine {
     /// log. Solo-authored actions ([`ActorId::SOLO`]) are rewritten to `actor`
     /// — done once, before any peer has seen them — so the sharer can still
     /// undo their pre-share strokes (undo targets *my* actions, §12.3).
-    pub fn start_collaboration(&mut self, actor: ActorId) {
+    pub fn start_collaboration(&mut self, identity: impl Into<Identity>) {
         if self.is_shared() {
             return;
         }
+        let identity = identity.into();
+        let actor = identity.actor;
         let mut log = self.timeline.clone_actions();
         for a in &mut log {
             if a.id.actor == ActorId::SOLO {
@@ -1084,7 +1086,7 @@ impl Engine {
         let initial = DocState::with_layer(ROOT_LAYER);
         self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.actor = actor;
-        self.session.adopt_default_name(actor);
+        self.session.adopt_identity(identity);
         self.outbox_enabled = true;
         self.matte_preview = None;
         self.doc_epoch += 1;
@@ -1097,7 +1099,9 @@ impl Engine {
     /// Join a shared session (the peer side): replace the document with the
     /// session's **full** log — including `Undo` actions, which the replicated
     /// timeline resolves — and author future actions as `actor`.
-    pub fn join_collaboration(&mut self, file: &DocumentFile, actor: ActorId) {
+    pub fn join_collaboration(&mut self, file: &DocumentFile, identity: impl Into<Identity>) {
+        let identity = identity.into();
+        let actor = identity.actor;
         // The surface the shared log starts from; replayed `SetSurface` actions
         // move it from there, exactly as in `load_document` (DESIGN.md §6.4).
         self.initial_surface = file.canvas.surface;
@@ -1119,7 +1123,7 @@ impl Engine {
             ctx,
         ));
         self.actor = actor;
-        self.session.adopt_default_name(actor);
+        self.session.adopt_identity(identity);
         self.resync_counters(&file.actions);
         self.outbox_enabled = true;
         // Whatever the replayed log left the document on.

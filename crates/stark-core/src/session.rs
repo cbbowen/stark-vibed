@@ -8,12 +8,12 @@
 
 use crate::command::InputSample;
 use crate::document::{
-    ActorId, BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, SelectionMode,
+    BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, SelectionMode,
     SelectionOp, SelectionShape, StrokeRecord, Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
-use crate::peer::{HEARTBEAT, PeerFrame, StrokeHead, default_name};
+use crate::peer::{HEARTBEAT, Identity, PeerFrame, StrokeHead, default_name};
 use crate::presence::{GestureSource, GestureTx};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
@@ -167,6 +167,9 @@ pub struct Session {
 
     // Publish bookkeeping — the latch, not a queue (PEER_DESIGN.md §5.1).
     published: Option<Published>,
+    /// Which run of this client is publishing; see [`Identity::boot`]. Rides every
+    /// frame so a peer can order this run's frames against the previous one's.
+    boot: u64,
     pub_seq: u64,
     pub_at: f64,
     /// The sending half of the gesture protocol — the watermarks recording what the
@@ -211,6 +214,7 @@ impl Session {
             selecting: None,
             gesture_ordinal: 0,
             published: None,
+            boot: 0,
             pub_seq: 0,
             pub_at: f64::NEG_INFINITY,
             tx: GestureTx::new(),
@@ -235,14 +239,16 @@ impl Session {
         self.name.push_str(name);
     }
 
-    /// Take `actor`'s id-derived name as the default, unless the user has chosen one.
+    /// Adopt the identity a session has given this client.
     ///
-    /// Called when a session mints this client a new actor id. It used to assign
-    /// unconditionally, which meant pressing *Share* replaced a name someone had
-    /// typed with a hex id.
-    pub fn adopt_default_name(&mut self, actor: ActorId) {
+    /// Records the run counter every published frame carries, and takes the
+    /// id-derived name as a default — unless the user has chosen one. That used to
+    /// assign unconditionally, which meant pressing *Share* replaced a name someone
+    /// had typed with a hex id.
+    pub fn adopt_identity(&mut self, identity: Identity) {
+        self.boot = identity.boot;
         if !self.name_chosen {
-            self.name = default_name(actor);
+            self.name = default_name(identity.actor);
         }
     }
 
@@ -299,6 +305,7 @@ impl Session {
         self.pub_seq += 1;
         self.published = Some(state);
         Some(PeerFrame {
+            boot: self.boot,
             seq: self.pub_seq,
             name,
             active_layer: self.active_layer,
@@ -338,6 +345,7 @@ impl Session {
     pub fn publish_leaving(&mut self) -> PeerFrame {
         self.pub_seq += 1;
         PeerFrame {
+            boot: self.boot,
             seq: self.pub_seq,
             name: None,
             active_layer: self.active_layer,

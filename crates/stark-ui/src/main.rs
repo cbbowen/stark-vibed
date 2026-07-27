@@ -18,6 +18,7 @@ mod brush_editor;
 mod collab;
 mod components;
 mod files;
+mod identity;
 mod input;
 mod layout;
 mod panels;

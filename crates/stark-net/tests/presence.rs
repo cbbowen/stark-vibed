@@ -23,6 +23,7 @@ fn ticket_of(session: &CollabSession) -> SessionTicket {
 
 fn frame(seq: u64, name: &str) -> PeerFrame {
     PeerFrame {
+        boot: 0,
         seq,
         name: Some(name.to_string()),
         active_layer: LayerId(0),

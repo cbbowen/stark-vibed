@@ -208,18 +208,18 @@ impl Renderer {
     // --- collaboration (DESIGN.md §12) — thin engine delegates for the
     // session glue in `collab.rs`. ---
 
-    /// Convert the current document into a shared one, authored as `actor`.
-    pub fn start_collaboration(&mut self, actor: stark_core::document::ActorId) {
-        self.engine.start_collaboration(actor);
+    /// Convert the current document into a shared one, authored as `identity`.
+    pub fn start_collaboration(&mut self, identity: impl Into<stark_core::peer::Identity>) {
+        self.engine.start_collaboration(identity);
     }
 
     /// Replace the document with a joined session's log.
     pub fn join_collaboration(
         &mut self,
         file: &stark_core::DocumentFile,
-        actor: stark_core::document::ActorId,
+        identity: impl Into<stark_core::peer::Identity>,
     ) {
-        self.engine.join_collaboration(file, actor);
+        self.engine.join_collaboration(file, identity);
     }
 
     /// Leave a shared session (keep the canvas, stop broadcasting).
