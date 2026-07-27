@@ -185,10 +185,21 @@ pub struct Environment {
     pub sampler: wgpu::Sampler,
     /// Mip levels, so the media shader can pick the diffuse (very blurred) LOD.
     pub mip_count: u32,
-    /// Mean luminance of the environment. The media pass divides exposure by this
-    /// so any environment (procedural or HDR) is normalized to a neutral level —
-    /// a flat surface reads ~its albedo regardless of how bright the HDR is.
-    pub mean_luminance: f32,
+    /// Which mip the media pass reads for diffuse irradiance. Computed here, beside
+    /// [`Self::flat_irradiance`], because the two must agree: the normalization is
+    /// only exact if the CPU samples the level the shader will.
+    pub diffuse_lod: u32,
+    /// The irradiance a **flat** canvas receives — the diffuse mip sampled in the one
+    /// direction an untilted normal faces (dead ahead, the equirect's centre), which
+    /// is exactly what `finish` in `media_common.wesl` looks up when the relief is
+    /// flat. The media pass divides exposure by this, so `exposure = 1` means "a flat
+    /// canvas reads its own albedo" in *any* environment, procedural or HDR.
+    ///
+    /// This replaced the whole-image mean luminance, which only approximated it: the
+    /// mean over equirect texels over-weights the poles and includes light no
+    /// front-facing canvas ever sees, leaving a flat patch ~13% dark under the
+    /// procedural environment.
+    pub flat_irradiance: f32,
 }
 
 impl Environment {
@@ -210,15 +221,8 @@ impl Environment {
     /// Upload a linear-RGB equirect image as a mipped `Rgba16Float` texture, the
     /// mip chain box-downsampled on the CPU (it is built once per environment).
     fn from_equirect(ctx: &GpuContext, base: &[[f32; 3]], w: u32, h: u32) -> Self {
-        // Mean luminance (Rec.709) for exposure normalization; guard against 0.
-        let mean_luminance = (base
-            .iter()
-            .map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2])
-            .sum::<f32>()
-            / base.len() as f32)
-            .max(1e-3);
-
         let mip_count = 32 - (w.max(h)).leading_zeros(); // floor(log2(max))+1
+        let diffuse_lod = diffuse_lod(mip_count);
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("stark environment"),
             size: wgpu::Extent3d {
@@ -234,9 +238,15 @@ impl Environment {
             view_formats: &[],
         });
 
+        // Build the chain, capturing the diffuse level on the way past: the exposure
+        // normalization has to read the same texels the shader will.
         let (mut level, mut lw, mut lh) = (base.to_vec(), w, h);
+        let mut flat_irradiance = 1.0f32;
         for mip in 0..mip_count {
             write_mip(ctx, &texture, mip, &level, lw, lh);
+            if mip == diffuse_lod {
+                flat_irradiance = luminance(sample_center(&level, lw, lh)).max(1e-3);
+            }
             if mip + 1 < mip_count {
                 let (next, nw, nh) = downsample(&level, lw, lh);
                 level = next;
@@ -261,9 +271,51 @@ impl Environment {
             view,
             sampler,
             mip_count,
-            mean_luminance,
+            diffuse_lod,
+            flat_irradiance,
         }
     }
+}
+
+/// Which mip stands in for diffuse irradiance: blurred enough to pass for a cosine
+/// convolution, but not the 1×1 average — some directionality has to survive or
+/// relief stops reading at all.
+fn diffuse_lod(mip_count: u32) -> u32 {
+    mip_count.saturating_sub(3)
+}
+
+/// Rec.709 luminance.
+fn luminance(c: [f32; 3]) -> f32 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/// Bilinearly sample a mip level at its centre, `uv = (0.5, 0.5)` — the equirect
+/// direction a flat, front-facing canvas looks in. Mirrors the GPU sampler: half-texel
+/// offsets, `Repeat` across longitude, `ClampToEdge` across latitude.
+fn sample_center(px: &[[f32; 3]], w: u32, h: u32) -> [f32; 3] {
+    let (fw, fh) = (w as f32, h as f32);
+    let (x, y) = (0.5 * fw - 0.5, 0.5 * fh - 0.5);
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let at = |ix: i32, iy: i32| -> [f32; 3] {
+        let u = ix.rem_euclid(w as i32) as u32; // longitude wraps
+        let v = iy.clamp(0, h as i32 - 1) as u32; // latitude clamps
+        px[(v * w + u) as usize]
+    };
+    let (x0, y0) = (x0 as i32, y0 as i32);
+    let mut out = [0.0f32; 3];
+    for (dx, dy, weight) in [
+        (0, 0, (1.0 - fx) * (1.0 - fy)),
+        (1, 0, fx * (1.0 - fy)),
+        (0, 1, (1.0 - fx) * fy),
+        (1, 1, fx * fy),
+    ] {
+        let c = at(x0 + dx, y0 + dy);
+        for i in 0..3 {
+            out[i] += weight * c[i];
+        }
+    }
+    out
 }
 
 /// Generate the `Neutral` reference environment as a linear-RGB equirect image,

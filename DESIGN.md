@@ -893,14 +893,39 @@ painterly result, and it is where the "old masters" look lives:
   decoded to a linear-RGB equirectangular texture with a full mip chain. Diffuse
   irradiance samples a very blurred mip in the *normal* direction; wet specular
   samples a gloss-selected mip in the *view-reflection* direction, so wet paint
-  picks up the environment's highlights. Exposure is divided by the
-  environment's mean luminance, so any environment — procedural or a 1600 × 800
-  HDR — is normalized to a neutral level and a flat surface reads roughly its
-  own albedo. Two ship: `Neutral`, generated procedurally (an achromatic dome
-  under a soft overhead key — relief still reads, nothing is tinted), and
-  `Ferndale`, the bundled studio HDR. They differ only in the equirect image
-  handed to the same prefilter, so there is one lighting path, not two: a
-  reference light you can switch to, and a room you paint in.
+  picks up the environment's highlights. Two environments ship: `Neutral`,
+  generated procedurally (an achromatic dome under a soft overhead key — relief
+  still reads, nothing is tinted), and `Ferndale`, the bundled studio HDR. They
+  differ only in the equirect image handed to the same prefilter, so there is one
+  lighting path, not two: a reference light you can switch to, and a room you
+  paint in.
+
+**The reference invariant.** Under `Neutral`, with `height_strength = 0` and
+`exposure = 1`, the media pass is an identity — paint comes back out its own
+colour, within about two bytes. That is what makes the neutral environment worth
+having: it is the light you switch to in order to *judge* a colour rather than
+enjoy it. Three things have to hold for it, and each is a constraint on the model
+rather than a correction bolted onto the end:
+
+- **Exposure is divided by the irradiance a flat canvas actually receives** — the
+  diffuse mip sampled dead ahead, computed on the CPU from the same mip chain the
+  shader reads. The whole-image mean luminance it replaced only approximated that:
+  averaging equirect texels over-weights the poles and counts light no
+  front-facing canvas ever sees, which left flat paint ~13% dark.
+- **The diffuse keeps `1 - spec_energy`, not `1 - fresnel`.** The split-sum's
+  `env_brdf` already integrates Fresnel, so subtracting a second Schlick term from
+  the diffuse was double-counting it and losing ~2.4% of every colour.
+- **The tonemap is a reference curve, not a look.** Khronos "PBR Neutral", with
+  its black point set to the sheen this fragment's BRDF actually contributed
+  instead of an assumed F0 = 0.04, and its highlight knee at 1.0 instead of 0.8 so
+  nothing representable is reshaped on the way to the display. Only what genuinely
+  overflows gets rolled off.
+
+Exactness in `[0,1]` and a filmic shoulder are not both available: a curve that is
+the identity up to 1 has nowhere to bend. The shoulder is what was given up, and
+`exposure` is what buys the headroom back — which is why its default sits at 0.65
+rather than the 0.8 that suited a curve compressing everything above 0.76.
+`tests/reference.rs` pins the invariant.
 - **Wet gloss.** `specular` sets how smooth fully-wet paint becomes, driving a
   Cook–Torrance term. Dry paint and bare canvas stay rough, so matte.
 - **Present.** The working channels are converted to the surface's display space

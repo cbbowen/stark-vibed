@@ -243,21 +243,26 @@ fn charged_tool_lays_a_finite_glob() {
     );
     let img = engine.render_to_image();
 
+    // Bare paper, read off this very image instead of hardcoded. The old bound was an
+    // absolute "reads ~200", which recorded what the tonemap happened to do the day it
+    // was written and had to be re-derived every time the lighting model moved — most
+    // recently when the media pass became a reference (DESIGN.md §6.3) and bare paper
+    // brightened by forty levels. What this test is *about* is the difference: red
+    // paint pulls the paper's green down where the glob landed, and pulls it down less
+    // once the charge has run out. That survives any exposure or tonemap.
+    let paper = img.pixel(20, 20); // well above the stroke, never touched
+    let green_loss = |px: [u8; 4]| paper[1] as i32 - px[1] as i32;
+
     let start = img.pixel(20, y); // near the stroke start
-    // Bare paper reads ~200 here. The bound was 170 when the exchange axes were a
-    // rate per unit optical depth; they are now per *pass of the tip*
-    // (`TAU_PER_PASS`), so the same charge spreads over a longer run and lays less
-    // of itself at any one point. The property under test — a finite charge that
-    // shows up at the start and runs out — is unchanged.
     assert!(
-        (start[1] as i32) < 185,
-        "the charged glob must lay paint near the stroke start: {start:?}"
+        green_loss(start) > 15,
+        "the charged glob must lay paint near the stroke start: {start:?} on paper {paper:?}"
     );
     // The glob depletes: the very end of the stroke carries visibly less paint
-    // than the start (compare green-channel loss vs bare paper).
+    // than the start.
     let end = img.pixel(SIZE.width - 20, y);
     assert!(
-        end[1] > start[1],
+        green_loss(end) < green_loss(start),
         "the finite charge must deplete along the stroke: start {start:?} vs end {end:?}"
     );
 }

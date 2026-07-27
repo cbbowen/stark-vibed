@@ -11,7 +11,7 @@ import package::noise::{noise_2_to_4};
 struct Media {
     light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: vec4<f32>,     // background (substrate) in latent color space
-    shade: vec4<f32>,  // exposure, diffuse_lod, wet_gloss, max_lod
+    shade: vec4<f32>,  // exposure, diffuse_lod, wet_gloss, _
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _
 }
@@ -130,13 +130,6 @@ fn sample_env(dir: vec3<f32>, lod: f32) -> vec3<f32> {
     return textureSampleLevel(env, env_samp, equirect_uv(dir), lod).rgb;
 }
 
-// Fresnel–Schlick with a roughness floor (Lagarde): the reflectance rises from F0
-// at normal incidence to ~1 at grazing, but a rough surface can't reflect a sharp
-// grazing rim, so the ceiling is clamped down by roughness.
-fn fresnel_schlick_roughness(cos_theta: f32, f0: f32, roughness: f32) -> f32 {
-    return f0 + (max(1.0 - roughness, f0) - f0) * pow(1.0 - cos_theta, 5.0);
-}
-
 // Analytic environment BRDF (Karis/Lazarov split-sum fit): the (scale, bias) to
 // apply to F0 for prefiltered specular IBL, folding the Smith geometric term and
 // the Fresnel integral into a closed form so no precomputed LUT is needed.
@@ -148,18 +141,31 @@ fn env_brdf_approx(n_dot_v: f32, roughness: f32) -> vec2<f32> {
     return vec2<f32>(a004 * -1.04 + r.z, a004 * 1.04 + r.w);
 }
 
-// Khronos "PBR Neutral" tonemap: compresses HDR into [0,1] while preserving hue,
-// desaturating only the brightest highlights — gentler than ACES on saturated
-// colors. WGSL has no `if`-expression and parameters are immutable, so the work is
-// done on a local `var`.
-fn commerce_tonemap(color: vec3<f32>) -> vec3<f32> {
-    const start_compression = 0.8 - 0.04;
+// Khronos "PBR Neutral" tonemap, re-tuned so the pass is a *reference* rather than a
+// look: it compresses HDR into [0,1] preserving hue, desaturating only the brightest
+// highlights. Two things differ from the stock Khronos curve, both so that a colour
+// already inside display range survives unchanged (DESIGN.md §6.3):
+//
+//   · `black_point` is the sheen the BRDF actually added at this fragment, passed in
+//     rather than assumed to be F0 = 0.04. Khronos hardcodes 0.04 because their
+//     pipeline's specular floor *is* F0; ours is the split-sum's `f0·brdf.x + brdf.y`,
+//     roughly 0.016 for dry paint, and subtracting 0.04 of it crushed every midtone.
+//   · The highlight knee sits at 1.0 instead of 0.8, so nothing representable is
+//     reshaped on its way to the display. Only what genuinely overflows — the
+//     environment's lights glinting off wet impasto — is rolled off.
+//
+// WGSL has no `if`-expression and parameters are immutable, so the work is done on a
+// local `var`.
+fn commerce_tonemap(color: vec3<f32>, black_point: f32) -> vec3<f32> {
     const desaturation = 0.15;
+    // In the shifted space the knee moves down with the offset, exactly as Khronos's
+    // `0.8 - 0.04` does — theirs is this same expression with both constants fixed.
+    let start_compression = 1.0 - black_point;
 
     var c = color;
-    let x = min(c.r, min(c.g, c.b));
-    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
-    c = c - offset;
+    // Lift the sheen off the darkest channel, so paint over a black substrate reads
+    // black. Clamped to `x` so no channel is driven negative.
+    c = c - min(min(c.r, min(c.g, c.b)), black_point);
 
     let peak = max(c.r, max(c.g, c.b));
     if peak < start_compression {
@@ -174,15 +180,6 @@ fn commerce_tonemap(color: vec3<f32>) -> vec3<f32> {
     return mix(c, vec3<f32>(new_peak), g);
 }
 
-// ACES filmic tonemap (Narkowicz fit): compress HDR scene-linear radiance into the
-// displayable [0,1] range with a filmic toe/shoulder, so the environment's bright
-// lights roll off gracefully instead of clipping to flat white. Applied before the
-// sRGB encode (DESIGN.md §6.3).
-fn tonemap(x: vec3<f32>) -> vec3<f32> {
-    let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
 // Light the un-lit linear `base` color by image-based lighting from the HDR
 // environment (DESIGN.md §6.3): diffuse irradiance sampled (blurred) in the relief
 // normal direction, plus a wet specular reflection that sharpens with `wet` so
@@ -193,7 +190,6 @@ fn finish(base: vec3<f32>, wet: f32, alpha: f32, p: vec2f, dim: vec2<i32>) -> ve
     let exposure = m.shade.x;
     let diffuse_lod = m.shade.y;
     let wet_gloss = m.shade.z; // how smooth/glossy wet paint becomes, 0..1
-    let max_lod = m.shade.w;   // highest mip (roughness = 1 samples here)
 
     // Orthographic view V = (0,0,1), so N·V is just the normal's z.
     let n_dot_v = clamp(n.z, 1e-4, 1.0);
@@ -206,20 +202,35 @@ fn finish(base: vec3<f32>, wet: f32, alpha: f32, p: vec2f, dim: vec2<i32>) -> ve
     //  · diffuse — hemispherical irradiance (heavily-blurred env) in the normal dir;
     //  · specular — the env prefiltered in the reflection direction, at a mip chosen
     //    by roughness, weighted by the analytic env-BRDF (Smith G + Fresnel integral).
-    // Energy is conserved: the diffuse keeps only what the specular Fresnel doesn't.
+    // Energy is conserved: the diffuse keeps only what the specular doesn't.
+    //
+    // Both ends of the roughness ramp land on `diffuse_lod`, not on the 1×1 top of the
+    // chain: a fully rough lobe *is* the hemispherical average, so it has to read the
+    // same blur the diffuse does. Sampling a blurrier level than the diffuse made the
+    // dielectric floor brighter than the sheen `finish` subtracts back off, which
+    // showed up as black paint that would not go black.
     let irradiance = sample_env(env_dir(n), diffuse_lod);
     let refl = 2.0 * n.z * n - vec3<f32>(0.0, 0.0, 1.0);
-    let prefiltered = sample_env(env_dir(refl), roughness * max_lod);
+    let prefiltered = sample_env(env_dir(refl), roughness * diffuse_lod);
 
     let brdf = env_brdf_approx(n_dot_v, roughness);
-    let ks = fresnel_schlick_roughness(n_dot_v, f0, roughness);
-    let kd = 1.0 - ks;
+    // How much energy the specular lobe actually carries off. The diffuse keeps the
+    // rest — `1 - spec_energy`, not `1 - fresnel`: the split-sum's `brdf` already
+    // integrates Fresnel, so taking a second Schlick term out of the diffuse was
+    // double-counting it and quietly losing ~2.4% of every colour.
+    let spec_energy = f0 * brdf.x + brdf.y;
+    let kd = 1.0 - spec_energy;
 
     let diffuse = kd * base * irradiance;
-    let specular = prefiltered * (f0 * brdf.x + brdf.y);
+    let specular = prefiltered * spec_energy;
 
     let lit = (diffuse + specular) * exposure;
+    // The sheen to lift back off: what the specular contributes where the reflection
+    // sees nothing brighter than the ambient the diffuse already sampled. A glint
+    // reflecting an actual light sits far above this, so gloss survives the subtraction
+    // — only the uniform dielectric floor over the whole canvas comes off.
+    let sheen = spec_energy * dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722)) * exposure;
     // Straight (un-premultiplied) alpha: PNG stores straight, and the colour here is
     // the paint's own, not paint-times-coverage.
-    return vec4<f32>(linear_to_srgb(commerce_tonemap(lit)), alpha);
+    return vec4<f32>(linear_to_srgb(commerce_tonemap(lit, sheen)), alpha);
 }

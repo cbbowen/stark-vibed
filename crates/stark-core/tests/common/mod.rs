@@ -55,16 +55,30 @@ fn env_flag(name: &str) -> bool {
 }
 
 /// `None` if this machine has no usable adapter *and* [`ALLOW_NO_GPU`] permits the
-/// skip; panics otherwise, so a missing adapter is a failure by default.
-fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
+/// skip; panics otherwise, so a missing adapter is a failure by default. The engine
+/// comes back on whatever environment it booted with — the procedural `Neutral`.
+fn or_skip_unlit(built: stark_core::Result<Engine>) -> Option<Engine> {
     match built {
-        Ok(e) => Some(with_studio_env(e)),
+        Ok(e) => Some(e),
         Err(e) if env_flag(ALLOW_NO_GPU) => {
             eprintln!("skipping GPU test ({ALLOW_NO_GPU}=1): {e}");
             None
         }
         Err(e) => panic!("no usable GPU adapter: {e}\nset {ALLOW_NO_GPU}=1 to skip GPU tests"),
     }
+}
+
+/// [`or_skip_unlit`] plus the studio HDR, which is what nearly every test wants.
+fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
+    or_skip_unlit(built).map(with_studio_env)
+}
+
+/// A headless engine left on the procedural `Neutral` environment — the reference
+/// light (DESIGN.md §6.3) — instead of the studio HDR every other helper installs.
+/// For the reference-identity tests, which ask what the media pass does when the
+/// lighting is deliberately doing as little as it can.
+pub fn engine_or_skip_neutral() -> Option<Engine> {
+    or_skip_unlit(pollster::block_on(headless_engine(TARGET, SIZE)))
 }
 
 /// Build a headless engine, or `None` if this machine has no usable adapter and

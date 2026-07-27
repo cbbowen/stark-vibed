@@ -105,7 +105,7 @@ pub enum CompositeItem {
 struct MediaUniform {
     light: [f32; 4], // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: [f32; 4],    // background (substrate) in latent channels (xyz), unused w
-    shade: [f32; 4], // exposure, diffuse_lod, wet_gloss, max_lod
+    shade: [f32; 4], // exposure, diffuse_lod, wet_gloss, _
     // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
     surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: [f32; 4], // surface_strength, _, _, _
@@ -119,7 +119,10 @@ struct MediaUniform {
 pub struct MediaParams {
     /// Relief slope: how strongly the height field tilts normals (impasto/weave).
     pub height_strength: f32,
-    /// Overall exposure applied to the lit result before the sRGB encode.
+    /// Overall exposure applied to the lit result before the sRGB encode. `1.0` is the
+    /// reference point — a flat patch of paint comes back its own colour (DESIGN.md
+    /// §6.3) — so the default sits below it to leave the environment's highlights
+    /// somewhere to go.
     pub exposure: f32,
     /// Wet glossiness in `[0,1]`: how smooth (low-roughness) fully-wet paint becomes,
     /// driving the Cook–Torrance specular. 0 = stays matte even when wet; 1 = near
@@ -133,7 +136,13 @@ impl Default for MediaParams {
     fn default() -> Self {
         Self {
             height_strength: 0.15,
-            exposure: 0.8,
+            // Retuned with the tonemap. 0.8 was calibrated against a curve that
+            // compressed everything above 0.76, so it could be pushed hot and let the
+            // shoulder catch what overflowed. The reference curve catches nothing
+            // below 1.0, so the same 0.8 drove saturated paint under a warm HDR
+            // straight into the clip. 0.65 lands bare canvas at the brightness 0.8
+            // used to, with the headroom back.
+            exposure: 0.65,
             specular: 0.20,
             surface_strength: 0.6,
         }
@@ -667,14 +676,16 @@ impl Compositor {
             - crate::geom::Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
                 * (0.5 * inv_zoom);
 
-        // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance.
-        // The Cook–Torrance specular picks its own mip from roughness, spanning the
-        // whole chain (roughness 0 → mip 0 sharp; roughness 1 → `max_lod` blurred).
-        let diffuse_lod = (self.environment.mip_count as f32 - 3.0).max(0.0);
-        let max_lod = (self.environment.mip_count as f32 - 1.0).max(0.0);
-        // Normalize by the environment's mean luminance so exposure means the same
-        // thing for any environment (a flat surface reads ~its albedo).
-        let exposure = self.media.exposure / self.environment.mean_luminance;
+        // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
+        // level is the environment's own, so the CPU-side normalization below is
+        // reading exactly the texels the shader will. The Cook–Torrance specular picks
+        // its own mip from roughness, spanning the whole chain (roughness 0 → mip 0
+        // sharp; roughness 1 → the diffuse level, the hemispherical average).
+        let diffuse_lod = self.environment.diffuse_lod as f32;
+        // Normalize by the irradiance a *flat* canvas receives, so `exposure = 1` means
+        // the same thing in every environment: an unrelieved patch of paint comes back
+        // out its own colour (DESIGN.md §6.3).
+        let exposure = self.media.exposure / self.environment.flat_irradiance;
 
         // Media uniform.
         self.ctx.queue.write_buffer(
@@ -683,7 +694,7 @@ impl Compositor {
             bytemuck::bytes_of(&MediaUniform {
                 light: [0.0, 0.0, 0.0, self.media.height_strength],
                 bg: bg_channels,
-                shade: [exposure, diffuse_lod, self.media.specular, max_lod],
+                shade: [exposure, diffuse_lod, self.media.specular, 0.0],
                 surf_a: [
                     canvas_origin.x,
                     canvas_origin.y,

@@ -206,6 +206,15 @@ fn a_real_captured_stroke_previews_as_it_commits() {
     let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
     let committed = engine.render_to_image();
+    {
+        let (frac, worst) = diff_fraction(&preview, &committed);
+        eprintln!("PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
+            frac*100.0,
+            frac_exceeding(&preview,&committed,2)*100.0,
+            frac_exceeding(&preview,&committed,4)*100.0,
+            frac_exceeding(&preview,&committed,8)*100.0,
+            frac_exceeding(&preview,&committed,12)*100.0);
+    }
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
         0.0,
@@ -324,12 +333,33 @@ fn a_smear_stroke_previews_as_it_commits() {
     let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
     let committed = engine.render_to_image();
+    {
+        let (frac, worst) = diff_fraction(&preview, &committed);
+        eprintln!("PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
+            frac*100.0,
+            frac_exceeding(&preview,&committed,2)*100.0,
+            frac_exceeding(&preview,&committed,4)*100.0,
+            frac_exceeding(&preview,&committed,8)*100.0,
+            frac_exceeding(&preview,&committed,12)*100.0);
+    }
+    // Not zero-difference: the loop's freeze boundary leaves a small residue either
+    // way (~1.6% of pixels differ by a level or two even when this passes). The bound
+    // is on how *visible* that residue is allowed to be.
+    //
+    // It was 8 when the media pass was a look: the old tonemap subtracted a flat 0.04
+    // and compressed everything above 0.76, which squashed the residue along with the
+    // rest of the image. Now that the pass is a reference (DESIGN.md §6.3) it squashes
+    // nothing, and the *same* buffer discrepancy displays about three times larger —
+    // worst pixel 3 before, 9 after. The residue in the composited buffers is
+    // unchanged; only its amplification on the way to the screen is. Hence 12: the old
+    // bound carried through the new display scale, not a loosened claim.
+    const SEAM_TOL: u8 = 12;
     assert_eq!(
-        frac_exceeding(&preview, &committed, 8),
+        frac_exceeding(&preview, &committed, SEAM_TOL),
         0.0,
         "split smear preview visibly differs from the single-pass commit \
-         ({:.4}% of px over tol 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
+         ({:.4}% of px over tol {SEAM_TOL})",
+        frac_exceeding(&preview, &committed, SEAM_TOL) * 100.0,
     );
 }
 
@@ -476,6 +506,15 @@ fn an_oversized_smear_stroke_previews_as_it_commits() {
     let preview = engine.render_to_image();
     engine.process(GestureCommand::End);
     let committed = engine.render_to_image();
+    {
+        let (frac, worst) = diff_fraction(&preview, &committed);
+        eprintln!("PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
+            frac*100.0,
+            frac_exceeding(&preview,&committed,2)*100.0,
+            frac_exceeding(&preview,&committed,4)*100.0,
+            frac_exceeding(&preview,&committed,8)*100.0,
+            frac_exceeding(&preview,&committed,12)*100.0);
+    }
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
         0.0,
