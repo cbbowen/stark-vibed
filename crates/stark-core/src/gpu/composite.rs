@@ -49,7 +49,7 @@ struct MediaUniform {
     shade: [f32; 4], // exposure, diffuse_lod, wet_gloss, max_lod
     // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
     surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
-    surf_b: [f32; 4], // surface_strength, normal_dither, _, _
+    surf_b: [f32; 4], // surface_strength, _, _, _
 }
 
 /// Lighting parameters for the media pass (DESIGN.md §6.3). The painting is lit by
@@ -68,12 +68,6 @@ pub struct MediaParams {
     pub specular: f32,
     /// How strongly the canvas surface relief shows (its weave amplitude).
     pub surface_strength: f32,
-    /// Normal-dither amplitude in [0, 1]: canvas-anchored noise added to the relief
-    /// heights before the normal gradient, breaking up banding in the lit result.
-    /// Like the weave, the noise is seeded by canvas position, so it is *not*
-    /// translation invariant — the seam tests set it to 0 (as they do
-    /// `surface_strength`).
-    pub normal_dither: f32,
 }
 
 impl Default for MediaParams {
@@ -83,7 +77,6 @@ impl Default for MediaParams {
             exposure: 0.8,
             specular: 0.20,
             surface_strength: 0.6,
-            normal_dither: 1.0,
         }
     }
 }
@@ -560,7 +553,7 @@ impl Compositor {
                 ],
                 surf_b: [
                     self.media.surface_strength,
-                    self.media.normal_dither,
+                    0.0,
                     0.0,
                     0.0,
                 ],

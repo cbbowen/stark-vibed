@@ -864,8 +864,7 @@ painterly result, and it is where the "old masters" look lives:
 
 - **Normals from height.** The gradient of the height field — impasto thickness
   plus the canvas weave scaled by `surface_strength` — tilted by
-  `height_strength`, so ridges catch the light. `normal_dither` adds
-  canvas-anchored noise before the gradient to break up banding.
+  `height_strength`, so ridges catch the light.
 - **Image-based lighting.** The scene is lit by an [`Environment`](§6.3): an HDR
   decoded to a linear-RGB equirectangular texture with a full mip chain. Diffuse
   irradiance samples a very blurred mip in the *normal* direction; wet specular
@@ -883,8 +882,7 @@ painterly result, and it is where the "old masters" look lives:
 **C — selection outline.** One instanced quad per mask tile, drawn over the lit
 result in the same canvas→NDC frame as pass A (§6.8).
 
-`MediaParams` (`height_strength`, `exposure`, `specular`, `surface_strength`,
-`normal_dither`) is a **view setting** — per-client, never historized, changed by
+`MediaParams` (`height_strength`, `exposure`, `specular`, `surface_strength`) is a **view setting** — per-client, never historized, changed by
 `ViewCommand::SetMediaParams` (§4). So is the choice of environment: switching it
 re-lights the canvas and touches no stored pixel. Neither is in the save file.
 
