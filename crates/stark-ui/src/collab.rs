@@ -236,10 +236,14 @@ fn install(state: AppState, mut session: CollabSession) {
                         Some(r.observe())
                     }
                     // A peer moved, switched layer, or drew another stretch of a
-                    // live stroke (PEER_DESIGN.md §4). Repaint — that is the whole
-                    // point of it — but leave `obs` alone: presence changes nothing
-                    // the chrome renders from, and refreshing it on every remote
-                    // pointer move would re-run the whole component tree.
+                    // live stroke (PEER_DESIGN.md §4). Repaint only when the frame
+                    // reached the *canvas*, which `merge_presence` is what decides:
+                    // a cursor and a name are DOM chrome drawn from the roster, which
+                    // the presence pump pushes on its own cadence, so a remote
+                    // pointer move owes no compositor pass at all. And leave `obs`
+                    // alone regardless: presence changes nothing the chrome renders
+                    // from, and refreshing it at pointer rate would re-run the whole
+                    // component tree.
                     RemoteEvent::Presence { actor, frame } => {
                         if r.merge_presence(actor, frame, now_seconds()) {
                             r.paint();
@@ -345,9 +349,24 @@ fn start_presence_pump(state: AppState) {
     }
 }
 
-/// Seconds since the epoch — the clock `stark-core` deliberately does not own.
+/// Seconds on a **monotonic** clock — the clock `stark-core` deliberately does not
+/// own.
+///
+/// `performance.now()` rather than `Date.now()`, because every use of this is a
+/// *duration*: `PEER_TIMEOUT`, `HEARTBEAT`, `GESTURE_TIMEOUT`, `GESTURE_RESYNC`.
+/// Nothing compares it across clients, and nothing needs an epoch. A wall clock
+/// stepping — an NTP correction, a user changing the system time — broke those
+/// durations in both directions: backwards, `now - pub_at` went negative, the
+/// heartbeat stopped coming due and every peer dropped this client after six seconds
+/// of apparent silence; forwards, the whole roster expired in a single tick.
+///
+/// `performance.now()` is missing only in environments with no `performance` at all,
+/// where `Date.now()` is the best available answer.
 fn now_seconds() -> f64 {
-    js_sys::Date::now() / 1000.0
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map_or_else(js_sys::Date::now, |p| p.now())
+        / 1000.0
 }
 
 fn set_phase(state: AppState, phase: CollabPhase) {

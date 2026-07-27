@@ -7,14 +7,13 @@
 //! finished [`StrokeRecord`] to commit.
 
 use crate::command::InputSample;
-use crate::document::selection::decimate;
 use crate::document::{
-    BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, SelectionMode, SelectionOp,
-    SelectionShape, StrokeRecord, Tool,
+    ActorId, BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, SelectionMode,
+    SelectionOp, SelectionShape, StrokeRecord, Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
-use crate::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead};
+use crate::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead, default_name};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a
@@ -86,11 +85,17 @@ impl SelectionDrag {
             Tool::SelectLasso => {
                 // Close the loop with the newest sample: the shape has to reach the
                 // cursor mid-gesture, exactly as a stroke preview does.
+                //
+                // No second decimation pass: `push` already enforces `LASSO_MIN_STEP`
+                // between consecutive kept points as they arrive, and the one point
+                // that could fail that test — the trailing `current` — is one
+                // `decimate` would put straight back under its keep-the-last-sample
+                // rule. Running it here was an O(n) scan and an allocation, per
+                // preview frame *and* per publish tick, that could not change a thing.
                 let mut points = self.points.clone();
                 if points.last().is_none_or(|q| *q != self.current) {
                     points.push(self.current);
                 }
-                let points = decimate(&points, LASSO_MIN_STEP);
                 if points.len() < 3 {
                     return None;
                 }
@@ -139,9 +144,15 @@ pub struct Session {
     // gesture, is what [`Session::publish`] projects for other clients. The split is
     // recorded by what that method returns rather than described in a comment, which
     // is the same discipline DESIGN §4 applies to the command classes.
-    /// This client's display name; empty until the user sets one, in which case
-    /// peers fall back to [`crate::peer::default_name`].
-    pub name: String,
+    /// This client's display name; empty until it is set, in which case peers fall
+    /// back to [`default_name`]. Private because it has an invariant `name_chosen`
+    /// carries — see [`Session::set_name`].
+    name: String,
+    /// Whether [`name`](Self::name) is one the *user* chose rather than the
+    /// id-derived default. Sharing or joining a document mints this client a new
+    /// actor id and wants to refresh that default, but must not overwrite a name
+    /// somebody typed.
+    name_chosen: bool,
     /// Hover position in canvas space; `None` when the pointer is off the canvas.
     pub cursor: Option<Vec2>,
 
@@ -191,6 +202,7 @@ impl Session {
             selection_feather: 0.0,
             show_peer_selections: false,
             name: String::new(),
+            name_chosen: false,
             cursor: None,
             in_flight: None,
             selecting: None,
@@ -200,6 +212,35 @@ impl Session {
             pub_at: f64::NEG_INFINITY,
             pub_resync_at: f64::NEG_INFINITY,
             pub_sent: 0,
+        }
+    }
+
+    /// This client's display name, as peers see it. Empty when none has been set, in
+    /// which case peers show [`default_name`] instead.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Set the display name the user chose. **Sticky**: hosting or joining a session
+    /// mints this client a new actor id, and
+    /// [`adopt_default_name`](Self::adopt_default_name) will not overwrite a name set
+    /// here. Setting it empty gives the choice back, and peers resume showing the
+    /// id-derived default.
+    pub fn set_name(&mut self, name: String) {
+        let name = name.trim();
+        self.name_chosen = !name.is_empty();
+        self.name.clear();
+        self.name.push_str(name);
+    }
+
+    /// Take `actor`'s id-derived name as the default, unless the user has chosen one.
+    ///
+    /// Called when a session mints this client a new actor id. It used to assign
+    /// unconditionally, which meant pressing *Share* replaced a name someone had
+    /// typed with a hex id.
+    pub fn adopt_default_name(&mut self, actor: ActorId) {
+        if !self.name_chosen {
+            self.name = default_name(actor);
         }
     }
 
@@ -244,7 +285,13 @@ impl Session {
             .then(|| self.name.clone())
             .filter(|n| !n.is_empty());
 
-        if resync && gesture.is_some() {
+        // Stamped for *any* frame that went out carrying resync, not just one with a
+        // gesture on it. Gated on a gesture, the watermark sat at `NEG_INFINITY` for
+        // as long as nobody was drawing, so `resync` was permanently true whenever
+        // idle — which is not a cadence, and quietly became the name's cadence too
+        // (above). A gesture starting while the flag is down still sends its head on
+        // its first frame: `gesture_frame` tests `fresh`, not `resync`.
+        if resync {
             self.pub_resync_at = now;
         }
         self.pub_at = now;

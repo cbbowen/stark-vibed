@@ -141,9 +141,15 @@ pub struct Peer {
     pub cursor: Option<Vec2>,
     pub gesture: Option<LiveGesture>,
     seq: u64,
+    /// The ordinal of the gesture in flight, tracked separately from both `gesture`
+    /// and `stroke` because neither is present in every state one can be in: a
+    /// selection leaves no `stroke`, and a stroke whose head has not arrived leaves
+    /// no `gesture`. It is the only thing that reliably distinguishes *this* gesture
+    /// from the one before it.
+    gesture_id: Option<u64>,
     /// The gesture currently being reassembled, and the path so far. Kept apart from
-    /// `gesture` because a gesture with a gap in its path is *dropped from view*
-    /// while still being tracked, awaiting the next resync frame.
+    /// `gesture` because a stroke that has lost frames stops *growing* while still
+    /// being tracked, awaiting the next resync frame.
     stroke: Option<StrokeAssembly>,
     last_seen: f64,
     gesture_seen: f64,
@@ -170,6 +176,7 @@ impl Peer {
             cursor: None,
             gesture: None,
             seq: 0,
+            gesture_id: None,
             stroke: None,
             last_seen: now,
             gesture_seen: now,
@@ -195,7 +202,7 @@ impl Peer {
     /// The per-actor ordinal of the gesture in flight — what tells a cached render
     /// of this peer's stroke apart from a render of the one before it.
     pub fn gesture_id(&self) -> Option<u64> {
-        self.stroke.as_ref().map(|s| s.id)
+        self.gesture_id
     }
 
     /// How many spans of [`live_stroke`](Self::live_stroke) are settled, so the
@@ -206,7 +213,11 @@ impl Peer {
             .map_or(0, |s| crate::path::frozen_spans_for(s.frozen, s.path.len()))
     }
 
-    fn apply(&mut self, frame: PeerFrame, now: f64) {
+    /// Integrate a frame. Returns whether the **canvas** changed, which is a much
+    /// narrower question than whether the frame changed anything: a cursor is chrome
+    /// and a selected layer is a fact about the peer, so neither belongs to the
+    /// composited picture. Only the live gesture does (PEER_DESIGN.md §6).
+    fn apply(&mut self, frame: PeerFrame, now: f64) -> bool {
         self.seq = frame.seq;
         self.last_seen = now;
         if let Some(name) = frame.name {
@@ -215,25 +226,41 @@ impl Peer {
         self.active_layer = frame.active_layer;
         self.cursor = frame.cursor;
         match frame.gesture {
-            None => self.end_gesture(),
+            None => {
+                let was_drawing = self.gesture.is_some();
+                self.end_gesture();
+                was_drawing
+            }
             Some(frame) => {
                 self.gesture_seen = now;
-                self.apply_gesture(frame);
+                self.apply_gesture(frame)
             }
         }
     }
 
-    fn apply_gesture(&mut self, frame: GestureFrame) {
-        // A new ordinal is a different gesture: drop whatever was being assembled
-        // rather than splicing two strokes together.
-        if self.stroke.as_ref().is_some_and(|s| s.id != frame.id()) {
-            self.stroke = None;
-            self.gesture = None;
+    /// Integrate one gesture frame. Returns whether what is *drawn* for this peer
+    /// changed.
+    fn apply_gesture(&mut self, frame: GestureFrame) -> bool {
+        // A new ordinal is a different gesture: drop whatever was being drawn or
+        // assembled rather than splicing two of them together.
+        //
+        // Keyed on the ordinal itself rather than on the stroke assembly, because a
+        // *selection* leaves no assembly. Keyed on the assembly, a stroke delta whose
+        // head had been lost found nothing to clear, took the early return below, and
+        // left the peer's last marquee sitting on the canvas — held there, since
+        // `apply` refreshes `gesture_seen` for every gesture frame, by the very frames
+        // that should have replaced it.
+        let mut changed = false;
+        if self.gesture_id != Some(frame.id()) {
+            changed = self.gesture.is_some();
+            self.end_gesture();
         }
+        self.gesture_id = Some(frame.id());
         match frame {
             GestureFrame::Selection { op, .. } => {
                 self.stroke = None;
                 self.gesture = Some(LiveGesture::Selection(op));
+                true
             }
             GestureFrame::Stroke {
                 id,
@@ -254,17 +281,21 @@ impl Peer {
                     });
                 }
                 let Some(assembly) = self.stroke.as_mut() else {
-                    // A delta for a gesture whose head we never saw. Nothing to do
-                    // but wait for the next resync frame (PEER_DESIGN.md §5).
-                    return;
+                    // A delta for a gesture whose head we never saw. Nothing to draw
+                    // until the next resync frame (PEER_DESIGN.md §5) — and nothing of
+                    // the *previous* gesture either, which the ordinal check above has
+                    // already seen to.
+                    return changed;
                 };
                 if from > assembly.path.len() {
-                    // A gap: frames were lost. Losing a live preview is cosmetic —
-                    // the committed action always follows and is authoritative — so
-                    // drop what is shown and let the resync frame repair it, rather
-                    // than rendering a path with a hole in it.
-                    self.gesture = None;
-                    return;
+                    // A gap: frames were lost. Splicing these points on at the wrong
+                    // index would put a hole in the path, so they are dropped — but
+                    // what we already hold is a true *prefix* of the stroke, every
+                    // control point of it sent by the author for this gesture. So it
+                    // stays on the canvas and simply stops growing, rather than
+                    // blinking out for up to a `GESTURE_RESYNC`. Short is provisional,
+                    // which a live preview always is; absent is a flicker.
+                    return changed;
                 }
                 assembly.path.truncate(from);
                 assembly.path.extend(points);
@@ -278,6 +309,7 @@ impl Peer {
                     path: assembly.path.clone(),
                     seed: assembly.head.seed,
                 }));
+                true
             }
         }
     }
@@ -285,6 +317,49 @@ impl Peer {
     fn end_gesture(&mut self) {
         self.gesture = None;
         self.stroke = None;
+        self.gesture_id = None;
+    }
+}
+
+/// What integrating presence actually moved.
+///
+/// Presence arrives at pointer rate, but very little of it reaches the *canvas*: a
+/// cursor is DOM chrome drawn over the artwork, and a peer's selected layer is a fact
+/// about them. Only a live gesture makes the composited picture stale — plus a peer
+/// arriving or leaving, which changes the set of actors whose selection outline may be
+/// drawn.
+///
+/// Reporting one undifferentiated "changed" made every remote cursor move cost a
+/// rebuild of the live fold — a `DocState` clone and a re-render of every stroke in
+/// flight — thirty times a second per peer, and worst of all *while* someone was
+/// painting, which is exactly when the frame budget is already spoken for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct PresenceChange {
+    /// Anything at all moved, so a cached projection of the roster is stale.
+    pub roster: bool,
+    /// The composited picture is stale and the live fold must be rebuilt. Implies
+    /// [`roster`](Self::roster).
+    pub canvas: bool,
+}
+
+impl PresenceChange {
+    /// Nothing moved.
+    pub const NONE: Self = Self {
+        roster: false,
+        canvas: false,
+    };
+    /// The canvas moved — which is also a roster change.
+    pub const CANVAS: Self = Self {
+        roster: true,
+        canvas: true,
+    };
+
+    /// A roster change that reached the canvas only if `canvas`.
+    fn roster(canvas: bool) -> Self {
+        Self {
+            roster: true,
+            canvas,
+        }
     }
 }
 
@@ -317,34 +392,38 @@ impl Peers {
         self.revision
     }
 
-    /// Integrate a frame published by `actor`. Returns whether anything changed.
+    /// Integrate a frame published by `actor`, reporting what it moved.
     ///
     /// `actor` comes from the transport's authenticated origin, never from the
     /// frame: a peer can publish its own presence and nobody else's, which is the
     /// same guarantee `Action` gets from its id (PEER_DESIGN.md §7).
-    pub fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
-        let changed = self.merge_inner(actor, frame, now);
-        self.revision += u64::from(changed);
-        changed
+    pub fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
+        let change = self.merge_inner(actor, frame, now);
+        self.revision += u64::from(change.roster);
+        change
     }
 
-    fn merge_inner(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
+    fn merge_inner(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
         if frame.leaving {
-            return self.map.remove(&actor).is_some();
+            // A departure takes the peer's gesture — and its selection outline — off
+            // the canvas with it.
+            return match self.map.remove(&actor) {
+                Some(_) => PresenceChange::CANVAS,
+                None => PresenceChange::NONE,
+            };
         }
         match self.map.get_mut(&actor) {
             // Stale or duplicate: presence is a snapshot, so an overtaken frame
             // carries nothing a newer one has not already said.
-            Some(peer) if frame.seq <= peer.seq => false,
-            Some(peer) => {
-                peer.apply(frame, now);
-                true
-            }
+            Some(peer) if frame.seq <= peer.seq => PresenceChange::NONE,
+            Some(peer) => PresenceChange::roster(peer.apply(frame, now)),
             None => {
+                // An arrival changes which actors' selections may be outlined, so the
+                // fold is stale whatever else the frame carries.
                 let mut peer = Peer::new(actor, frame.active_layer, now);
                 peer.apply(frame, now);
                 self.map.insert(actor, peer);
-                true
+                PresenceChange::CANVAS
             }
         }
     }
@@ -353,21 +432,27 @@ impl Peers {
     /// on the frontend's publish cadence, which is the only clock `stark-core` has —
     /// the engine deliberately owns none, so it runs on wasm and native alike.
     ///
-    /// Returns whether anything changed, so the caller knows whether to redraw. A
-    /// stalled *gesture* changes what is on the canvas without changing the roster's
-    /// size, so counting peers is not enough to notice it.
-    pub fn tick(&mut self, now: f64) -> bool {
-        let before = self.map.len();
-        self.map.retain(|_, p| now - p.last_seen < PEER_TIMEOUT);
-        let mut changed = self.map.len() != before;
+    /// Reports what it moved, so the caller knows whether to redraw. A stalled
+    /// *gesture* changes what is on the canvas without changing the roster's size, so
+    /// counting peers is not enough to notice it. Everything expiry does reaches the
+    /// canvas: a departure takes the peer's selection outline with it.
+    pub fn tick(&mut self, now: f64) -> PresenceChange {
+        let mut change = PresenceChange::NONE;
+        self.map.retain(|_, p| {
+            let live = now - p.last_seen < PEER_TIMEOUT;
+            if !live {
+                change = PresenceChange::CANVAS;
+            }
+            live
+        });
         for peer in self.map.values_mut() {
             if peer.gesture.is_some() && now - peer.gesture_seen >= GESTURE_TIMEOUT {
                 peer.end_gesture();
-                changed = true;
+                change = PresenceChange::CANVAS;
             }
         }
-        self.revision += u64::from(changed);
-        changed
+        self.revision += u64::from(change.roster);
+        change
     }
 
     /// Whether [`tick`](Self::tick) would change anything — the cheap test, so a
@@ -466,6 +551,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::{SelectionMode, SelectionShape};
     use crate::path::ControlPoint;
 
     fn frame(seq: u64, gesture: Option<GestureFrame>) -> PeerFrame {
@@ -498,9 +584,94 @@ mod tests {
     fn a_stale_frame_is_dropped() {
         let mut peers = Peers::new();
         let a = ActorId(1);
-        assert!(peers.merge(a, frame(5, None), 0.0));
-        assert!(!peers.merge(a, frame(4, None), 1.0), "seq went backwards");
-        assert!(peers.merge(a, frame(6, None), 2.0));
+        assert!(peers.merge(a, frame(5, None), 0.0).roster);
+        assert!(
+            !peers.merge(a, frame(4, None), 1.0).roster,
+            "seq went backwards"
+        );
+        assert!(peers.merge(a, frame(6, None), 2.0).roster);
+    }
+
+    /// A cursor is chrome drawn over the artwork, not part of it. Saying so is what
+    /// keeps one peer's pointer from costing everyone a re-fold thirty times a second.
+    #[test]
+    fn a_cursor_move_is_not_a_canvas_change() {
+        let mut peers = Peers::new();
+        let a = ActorId(1);
+        // The arrival itself is: it changes whose selection may be outlined.
+        assert!(peers.merge(a, frame(1, None), 0.0).canvas, "arrival");
+
+        let mut moved = frame(2, None);
+        moved.cursor = Some(Vec2::new(4.0, 9.0));
+        let change = peers.merge(a, moved, 0.1);
+        assert!(change.roster, "the roster projection is stale");
+        assert!(!change.canvas, "a cursor is not painted into the document");
+        assert_eq!(peers.get(a).expect("peer").cursor, Some(Vec2::new(4.0, 9.0)));
+
+        // A layer selection is likewise a fact about the peer, not about the picture.
+        let mut relayered = frame(3, None);
+        relayered.active_layer = LayerId(7);
+        assert!(!peers.merge(a, relayered, 0.2).canvas);
+
+        // But a gesture is.
+        let stroking = frame(
+            4,
+            Some(GestureFrame::Stroke {
+                id: 0,
+                head: Some(head()),
+                from: 0,
+                points: pts(3),
+            }),
+        );
+        assert!(peers.merge(a, stroking, 0.3).canvas, "a live stroke is");
+        assert!(peers.merge(a, frame(5, None), 0.4).canvas, "so is its end");
+    }
+
+    /// The ordinal, not the stroke assembly, is what says "this is a different
+    /// gesture" — a selection leaves no assembly, so keying on one let a peer's
+    /// marquee outlive the gesture that drew it.
+    #[test]
+    fn a_stroke_delta_clears_a_stale_selection() {
+        let mut peers = Peers::new();
+        let a = ActorId(1);
+        peers.merge(
+            a,
+            frame(
+                1,
+                Some(GestureFrame::Selection {
+                    id: 0,
+                    op: SelectionOp::new(
+                        SelectionMode::Replace,
+                        SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(10.0)),
+                        0.0,
+                    ),
+                }),
+            ),
+            0.0,
+        );
+        assert!(peers.get(a).expect("peer").live_selection().is_some());
+
+        // The frame clearing the marquee and the new stroke's head frame are both
+        // lost; a headless delta for the *next* gesture is the first thing to arrive.
+        let change = peers.merge(
+            a,
+            frame(
+                4,
+                Some(GestureFrame::Stroke {
+                    id: 1,
+                    head: None,
+                    from: 3,
+                    points: pts(1),
+                }),
+            ),
+            0.1,
+        );
+        assert!(change.canvas, "taking the marquee down is a canvas change");
+        assert!(
+            peers.get(a).expect("peer").gesture.is_none(),
+            "a gesture that ended must not be left on the canvas by the frames of the \
+             one that replaced it"
+        );
     }
 
     #[test]
@@ -541,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_drops_the_preview_and_a_resync_repairs_it() {
+    fn a_gap_holds_the_prefix_and_a_resync_repairs_it() {
         let mut peers = Peers::new();
         let a = ActorId(1);
         peers.merge(
@@ -558,7 +729,7 @@ mod tests {
             0.0,
         );
         // Frame 2 never arrived; frame 3 starts past what we hold.
-        peers.merge(
+        let change = peers.merge(
             a,
             frame(
                 3,
@@ -571,9 +742,18 @@ mod tests {
             ),
             0.1,
         );
-        assert!(
-            peers.get(a).expect("peer").live_stroke().is_none(),
-            "a path with a hole in it is not shown"
+        assert!(!change.canvas, "nothing drawn changed, so nothing to repaint");
+        assert_eq!(
+            peers
+                .get(a)
+                .expect("peer")
+                .live_stroke()
+                .expect("the prefix stays on the canvas")
+                .path
+                .len(),
+            2,
+            "the points already held are a true prefix of the stroke — short is \
+             provisional, which a live preview always is; absent is a flicker"
         );
         peers.merge(
             a,
@@ -673,7 +853,7 @@ mod tests {
         peers.merge(a, frame(1, None), 0.0);
         let mut bye = frame(2, None);
         bye.leaving = true;
-        assert!(peers.merge(a, bye, 0.1));
+        assert!(peers.merge(a, bye, 0.1).roster);
         assert!(peers.is_empty());
     }
 

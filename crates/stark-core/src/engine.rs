@@ -445,7 +445,7 @@ impl Engine {
                 }
             }
             PeerCommand::SetCursor(pos) => self.session.cursor = pos,
-            PeerCommand::SetName(name) => self.session.name = name,
+            PeerCommand::SetName(name) => self.session.set_name(name),
         }
     }
 
@@ -1084,7 +1084,7 @@ impl Engine {
         let initial = DocState::with_layer(ROOT_LAYER);
         self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.actor = actor;
-        self.session.name = crate::peer::default_name(actor);
+        self.session.adopt_default_name(actor);
         self.outbox_enabled = true;
         self.matte_preview = None;
         self.doc_epoch += 1;
@@ -1119,7 +1119,7 @@ impl Engine {
             ctx,
         ));
         self.actor = actor;
-        self.session.name = crate::peer::default_name(actor);
+        self.session.adopt_default_name(actor);
         self.resync_counters(&file.actions);
         self.outbox_enabled = true;
         // Whatever the replayed log left the document on.
@@ -1217,7 +1217,7 @@ impl Engine {
     ///
     /// Returns `None` when solo: presence with nobody to read it is pure cost.
     pub fn take_presence(&mut self, now: f64) -> Option<PeerFrame> {
-        if self.peers.tick(now) {
+        if self.peers.tick(now).canvas {
             self.refresh_live();
         }
         if !self.outbox_enabled {
@@ -1236,6 +1236,13 @@ impl Engine {
     /// Integrate presence published by `actor`, whose identity comes from the
     /// transport's authenticated origin and never from the frame body — a peer can
     /// publish its own presence and nobody else's (PEER_DESIGN.md §7).
+    ///
+    /// Returns whether the **canvas** changed, i.e. whether a repaint is owed. A
+    /// frame that only moved a cursor or a selected layer returns `false`: those are
+    /// chrome, drawn from the roster projection, which a caller notices moved through
+    /// [`peers_revision`](Self::peers_revision) instead. Presence arrives at pointer
+    /// rate from every peer at once, so the difference between the two questions is
+    /// the difference between a compositor pass per remote pointer move and none.
     pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
         if actor == self.actor {
             // Our own frame, echoed back by a flood transport. The local session is
@@ -1243,11 +1250,11 @@ impl Engine {
             // with it.
             return false;
         }
-        let merged = self.peers.merge(actor, frame, now);
-        if merged {
+        let change = self.peers.merge(actor, frame, now);
+        if change.canvas {
             self.refresh_live();
         }
-        merged
+        change.canvas
     }
 
     /// Everyone else in the session, in ascending [`ActorId`] order (empty solo).
@@ -1257,7 +1264,7 @@ impl Engine {
 
     /// This client's display name, as peers see it.
     pub fn name(&self) -> &str {
-        &self.session.name
+        self.session.name()
     }
 
     /// Every imported brush asset (id + canonical PNG bytes) — used to seed a

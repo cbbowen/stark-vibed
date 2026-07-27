@@ -264,8 +264,10 @@ impl Renderer {
         self.engine.leaving_presence()
     }
 
-    /// Integrate a peer's presence; returns whether anything changed (and so
-    /// whether the canvas needs repainting).
+    /// Integrate a peer's presence; returns whether the canvas needs repainting.
+    ///
+    /// Narrower than "anything changed": a moved cursor or a switched layer is
+    /// chrome, picked up from [`peers_revision`](Self::peers_revision) instead.
     pub fn merge_presence(
         &mut self,
         actor: stark_core::document::ActorId,
