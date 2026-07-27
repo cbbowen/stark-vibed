@@ -45,8 +45,6 @@ pub fn BrushPanel() -> Element {
         }
         Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
-        Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
-            oninput: move |v| update_brush(state, move |b| b.color[3] = v) }
         Slider { label: "Amount", min: 0.0, max: 1.5, value: brush.dynamics.add,
             oninput: move |v| update_brush(state, move |b| b.dynamics.add = v) }
         button {
