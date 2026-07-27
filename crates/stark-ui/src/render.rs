@@ -90,6 +90,11 @@ impl Renderer {
         self.engine.environment()
     }
 
+    /// Whether an environment's bytes are loaded (the procedural `Neutral` always is).
+    pub fn environment_loaded(&self, id: EnvironmentId) -> bool {
+        self.engine.environment_loaded(id)
+    }
+
     /// Register frontend-fetched HDR bytes for a lighting environment (§6.3).
     pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
         self.engine.register_environment(id, hdr_bytes);

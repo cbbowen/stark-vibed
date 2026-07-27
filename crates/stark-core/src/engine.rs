@@ -279,7 +279,7 @@ impl Engine {
         // Fresh documents start on the procedural flat surface; image-backed
         // surfaces are registered later by the frontend (DESIGN.md §6.4).
         let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
-        // Lighting starts on the procedural studio environment; image HDRs are
+        // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (DESIGN.md §6.3).
         let _environment_id = EnvironmentId::default();
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
@@ -1209,7 +1209,7 @@ impl Engine {
         self.environment.id()
     }
 
-    /// Whether `id` is ready — `Studio` always is; an HDR environment is ready once
+    /// Whether `id` is ready — `Neutral` always is; an HDR environment is ready once
     /// its bytes have been [`register_environment`](Self::register_environment)ed.
     pub fn environment_loaded(&self, id: EnvironmentId) -> bool {
         self.environment.is_loaded(id)
@@ -1225,7 +1225,7 @@ impl Engine {
 
     /// Switch the lighting environment. A view setting, so this never touches the
     /// document — it just re-lights the canvas on the next render. Image
-    /// environments fall back to the procedural studio until their bytes arrive.
+    /// environments fall back to the procedural neutral one until their bytes arrive.
     ///
     /// Private: reached through
     /// [`crate::command::ViewCommand::SetEnvironment`].

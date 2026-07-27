@@ -881,7 +881,11 @@ painterly result, and it is where the "old masters" look lives:
   picks up the environment's highlights. Exposure is divided by the
   environment's mean luminance, so any environment — procedural or a 1600 × 800
   HDR — is normalized to a neutral level and a flat surface reads roughly its
-  own albedo.
+  own albedo. Two ship: `Neutral`, generated procedurally (an achromatic dome
+  under a soft overhead key — relief still reads, nothing is tinted), and
+  `Ferndale`, the bundled studio HDR. They differ only in the equirect image
+  handed to the same prefilter, so there is one lighting path, not two: a
+  reference light you can switch to, and a room you paint in.
 - **Wet gloss.** `specular` sets how smooth fully-wet paint becomes, driving a
   Cook–Torrance term. Dry paint and bare canvas stay rough, so matte.
 - **Present.** The working channels are converted to the surface's display space

@@ -8,7 +8,7 @@ use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
 use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::{MediaParams, SurfaceId};
+use stark_core::{EnvironmentId, MediaParams, SurfaceId};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (DESIGN.md §6.6). The engine is handed the bytes.
@@ -21,6 +21,21 @@ pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1
 pub const SURFACES: &[(SurfaceId, &str)] =
     &[(SurfaceId::Flat, "Smooth"), (SurfaceId::Linen, "Linen")];
 
+/// The selectable lighting environments, in display order (DESIGN.md §6.3). Same
+/// shape as [`SURFACES`]: one row per environment, its bytes (if any) resolved by
+/// [`environment_asset`]. `Neutral` leads because it is the reference light — the
+/// achromatic one you switch to to judge colour; the HDRs are the room you paint in.
+pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
+    (EnvironmentId::Neutral, "Neutral"),
+    (EnvironmentId::Ferndale, "Ferndale studio"),
+];
+
+/// What the app lights the canvas with on startup. An HDR, because that is the look
+/// the media pass exists for; `Neutral` is a deliberate switch away from it, not the
+/// state you land in. The engine still boots on `Neutral` — this is applied once the
+/// bytes arrive (see the startup hook in `main.rs`).
+pub const DEFAULT_ENVIRONMENT: EnvironmentId = EnvironmentId::Ferndale;
+
 /// Lighting controls for the image-based-lighting media pass (DESIGN.md §6.3).
 /// The canvas is lit by the studio HDR environment; these tune how it reads.
 #[component]
@@ -31,6 +46,7 @@ pub fn LightingPanel() -> Element {
     let obs = state.obs.read();
     let p = obs.as_ref().map(|o| o.media).unwrap_or_default();
     let surf = obs.as_ref().map(|o| o.surface).unwrap_or_default();
+    let env = obs.as_ref().map(|o| o.environment).unwrap_or_default();
     // The canvas substrate colour (straight sRGB), shown as a swatch that pops out an
     // Oklab picker. Read from the engine's projection rather than a local signal:
     // it is document state now (FRAME_DESIGN.md §5), so a copy here would go stale
@@ -75,6 +91,20 @@ pub fn LightingPanel() -> Element {
                 },
                 for (id, name) in SURFACES.iter().copied() {
                     option { value: "{id:?}", selected: surf == id, "{name}" }
+                }
+            }
+        }
+        div { class: "slider-row",
+            div { class: "slider-label", "Light" }
+            select {
+                class: "select",
+                onchange: move |e| {
+                    if let Some((id, _)) = ENVIRONMENTS.iter().find(|(v, _)| format!("{v:?}") == e.value()) {
+                        set_environment(state, *id);
+                    }
+                },
+                for (id, name) in ENVIRONMENTS.iter().copied() {
+                    option { value: "{id:?}", selected: env == id, "{name}" }
                 }
             }
         }
@@ -152,6 +182,49 @@ pub fn set_surface(state: AppState, id: SurfaceId) {
         }
         if let Some(r) = renderer.write().as_mut() {
             r.set_surface(id);
+            r.paint();
+        }
+    });
+}
+
+/// The bundled HDR behind an image-backed environment (`None` for the procedural
+/// `Neutral`, which is generated on the GPU side and needs no bytes). The one place
+/// to map a new [`ENVIRONMENTS`] row to its file.
+pub fn environment_asset(id: EnvironmentId) -> Option<Asset> {
+    match id {
+        EnvironmentId::Neutral => None,
+        EnvironmentId::Ferndale => Some(ENV_FERNDALE),
+    }
+}
+
+/// Re-light the canvas with `id` and repaint. A view setting: no stored pixel moves,
+/// only how the relief catches the light (DESIGN.md §6.3). HDR-backed environments
+/// are fetched on first use — the same `spawn_forever` + register-then-switch shape
+/// as [`set_surface`], for the same reason: closing the panel mid-fetch must not
+/// cancel the switch.
+pub fn set_environment(state: AppState, id: EnvironmentId) {
+    let mut renderer = state.renderer;
+    spawn_forever(async move {
+        let needs_bytes = renderer
+            .read()
+            .as_ref()
+            .is_some_and(|r| !r.environment_loaded(id));
+        if needs_bytes && let Some(asset) = environment_asset(id) {
+            tracing::info!(environment = ?id, url = %asset, "fetching environment asset");
+            match dioxus::asset_resolver::read_asset_bytes(asset).await {
+                Ok(bytes) => {
+                    if let Some(r) = renderer.write().as_mut() {
+                        r.register_environment(id, bytes);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("environment fetch failed: {e}");
+                    return;
+                }
+            }
+        }
+        if let Some(r) = renderer.write().as_mut() {
+            r.set_environment(id);
             r.paint();
         }
     });

@@ -37,7 +37,7 @@ use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, Men
 use input::{elem_xy, end_interaction, handle_keydown, handle_keyup, input_tolerance, sample};
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
-use panels::lighting::{ENV_FERNDALE, surface_asset};
+use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_mode, current_tool, modifier_mode};
 use panels::{FrameBar, FrameOverlay, SelectionBar};
 use platform::capture_pointer;
@@ -45,7 +45,7 @@ use render::{CANVAS_ID, Renderer};
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::{SelectionMode, SelectionOp};
 use stark_core::geom::Vec2;
-use stark_core::{ColorSpaceId, EnvironmentId, ObservableState, SurfaceId};
+use stark_core::{ColorSpaceId, ObservableState, SurfaceId};
 use state::{AppState, CollabState, dispatch, resize};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
@@ -107,11 +107,14 @@ fn app() -> Element {
             if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(BRISTLE_BRUSH).await {
                 r.load_bristle(&bytes);
             }
-            // Fetch the studio HDR and light the canvas with it (DESIGN.md §6.3);
-            // until then the procedural studio environment is used.
-            if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(ENV_FERNDALE).await {
-                r.register_environment(EnvironmentId::Ferndale, bytes);
-                r.set_environment(EnvironmentId::Ferndale);
+            // Fetch the default environment's HDR and light the canvas with it
+            // (DESIGN.md §6.3); until it arrives the procedural neutral one is used,
+            // and the Lighting panel can switch back to it at any time.
+            if let Some(asset) = environment_asset(DEFAULT_ENVIRONMENT)
+                && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
+            {
+                r.register_environment(DEFAULT_ENVIRONMENT, bytes);
+                r.set_environment(DEFAULT_ENVIRONMENT);
             }
             r.paint();
             obs.set(Some(r.observe()));

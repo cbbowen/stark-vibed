@@ -24,7 +24,7 @@ use dioxus::prelude::*;
 
 use stark_core::document::{BrushParams, BrushShape, NoiseKind, OrientationSource, Tool};
 use stark_core::geom::Vec2;
-use stark_core::{ColorSpaceId, EnvironmentId, InputSample};
+use stark_core::{ColorSpaceId, InputSample};
 
 use crate::panels::brush::{
     MAX_RADIUS, set_bristles, set_brush_preset, set_knife, set_orientation, set_shape,
@@ -358,12 +358,12 @@ async fn init_preview(state: AppState, mut preview: Preview) {
         r.register_surface(surface_id, bytes);
     }
     r.set_surface(surface_id);
-    if env_id == EnvironmentId::Ferndale
-        && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(crate::ENV_FERNDALE).await
+    if let Some(asset) = crate::panels::lighting::environment_asset(env_id)
+        && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
     {
         r.register_environment(env_id, bytes);
-        r.set_environment(env_id);
     }
+    r.set_environment(env_id);
     r.set_media_params(media);
     r.process(DocCommand::SetBackground(bg));
 

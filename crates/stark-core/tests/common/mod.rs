@@ -27,10 +27,11 @@ pub const BG: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 /// A neutral near-white paper substrate, for color spaces that composite over a light
-/// ground. Matches the app's default (`stark-ui` `render::BG`). Neutral on purpose: the
-/// studio HDR lights the scene warm, and a warm paper on top of that rendered so
-/// red-dominant it defeated channel-dominance checks like `is_red` (tests asserting "is
-/// paint here?" were vacuously true on bare paper).
+/// ground. Matches the app's default (`stark-ui` `render::BG`). Neutral on purpose: a
+/// warm paper rendered so red-dominant it defeated channel-dominance checks like
+/// `is_red` (tests asserting "is paint here?" were vacuously true on bare paper). The
+/// headless engine lights with the achromatic `Neutral` environment, so nothing else
+/// in the pipeline pushes these toward a hue.
 pub const PAPER: wgpu::Color = wgpu::Color {
     r: 0.97,
     g: 0.97,

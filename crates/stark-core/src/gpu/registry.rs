@@ -10,7 +10,7 @@
 //! different nouns.
 //!
 //! Each resource keeps one **builtin** id that needs no bytes at all — `Flat` for
-//! surfaces, the procedural `Studio` for environments — which is also the fallback
+//! surfaces, the procedural `Neutral` for environments — which is also the fallback
 //! when an id's bytes have not arrived yet.
 
 use std::collections::HashMap;

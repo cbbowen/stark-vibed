@@ -18,10 +18,13 @@ use crate::gpu::context::GpuContext;
 /// future uploaded HDRs slot in here.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum EnvironmentId {
-    /// A procedural, no-HDR default: a soft overhead key over ambient fill, so the
-    /// canvas is still lit (and relief still reads) before any HDR is registered.
+    /// The procedural **reference** light: achromatic, generated on the fly, no HDR
+    /// file. A soft overhead key over an ambient dome — enough directionality that
+    /// impasto relief still reads, but no colour cast, so paint reads as its own
+    /// hue. This is what you switch to when you want to judge colour rather than
+    /// enjoy the room; it is also the fallback before any HDR's bytes arrive.
     #[default]
-    Studio,
+    Neutral,
     /// The bundled `ferndale_studio` HDR.
     Ferndale,
 }
@@ -189,34 +192,13 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// The procedural default (no HDR): a soft overhead key over ambient fill, so
-    /// the canvas is lit and impasto/weave relief still reads before — or without —
-    /// any HDR being registered.
-    pub fn studio(ctx: &GpuContext) -> Self {
-        const W: u32 = 256;
-        const H: u32 = 128;
-        // A front-overhead key direction (y-up), normalized.
-        let kd = {
-            let k = [0.28f32, 0.9, 0.34];
-            let n = (k[0] * k[0] + k[1] * k[1] + k[2] * k[2]).sqrt();
-            [k[0] / n, k[1] / n, k[2] / n]
-        };
-        let mut px = vec![[0.0f32; 3]; (W * H) as usize];
-        for y in 0..H {
-            for x in 0..W {
-                let dir = equirect_dir((x as f32 + 0.5) / W as f32, (y as f32 + 0.5) / H as f32);
-                let up = dir.1.max(0.0);
-                // Soft ambient fill (smooth → dominates the blurred diffuse tone).
-                let ambient = 0.5 + 0.3 * up;
-                // A gentle, broad overhead key — soft enough not to clip flats or
-                // throw a harsh white rim, but enough that relief still catches it.
-                let cosang = dir.0 * kd[0] + dir.1 * kd[1] + dir.2 * kd[2];
-                let softbox = smoothstep(0.78, 0.98, cosang) * 1.6;
-                let l = ambient + softbox;
-                px[(y * W + x) as usize] = [l, l * 0.99, l * 0.95]; // slightly warm
-            }
-        }
-        Self::from_equirect(ctx, &px, W, H)
+    /// The procedural reference light (no HDR): a soft overhead key over an ambient
+    /// dome, generated here rather than shipped as a file. Deliberately achromatic —
+    /// every texel is grey — so it lights the relief without tinting the paint, which
+    /// is what makes it usable as a colour reference next to [`Self::load`]ed HDRs.
+    pub fn neutral(ctx: &GpuContext) -> Self {
+        let (px, w, h) = neutral_equirect();
+        Self::from_equirect(ctx, &px, w, h)
     }
 
     /// Decode a Radiance HDR and prefilter it for lighting.
@@ -282,6 +264,40 @@ impl Environment {
             mean_luminance,
         }
     }
+}
+
+/// Generate the `Neutral` reference environment as a linear-RGB equirect image,
+/// returning `(pixels, width, height)` in the same form [`decode_hdr`] produces — so
+/// it feeds the identical prefilter and the identical shader, and "neutral" costs a
+/// procedure rather than a second lighting path or a checked-in `.hdr`.
+///
+/// Every texel is grey; the only variation is directional, so relief still catches
+/// the light while paint keeps its own hue.
+fn neutral_equirect() -> (Vec<[f32; 3]>, u32, u32) {
+    const W: u32 = 256;
+    const H: u32 = 128;
+    // A front-overhead key direction (y-up), normalized.
+    let kd = {
+        let k = [0.28f32, 0.9, 0.34];
+        let n = (k[0] * k[0] + k[1] * k[1] + k[2] * k[2]).sqrt();
+        [k[0] / n, k[1] / n, k[2] / n]
+    };
+    let mut px = vec![[0.0f32; 3]; (W * H) as usize];
+    for y in 0..H {
+        for x in 0..W {
+            let dir = equirect_dir((x as f32 + 0.5) / W as f32, (y as f32 + 0.5) / H as f32);
+            let up = dir.1.max(0.0);
+            // Soft ambient fill (smooth → dominates the blurred diffuse tone).
+            let ambient = 0.5 + 0.3 * up;
+            // A gentle, broad overhead key — soft enough not to clip flats or
+            // throw a harsh white rim, but enough that relief still catches it.
+            let cosang = dir.0 * kd[0] + dir.1 * kd[1] + dir.2 * kd[2];
+            let softbox = smoothstep(0.78, 0.98, cosang) * 1.6;
+            let l = ambient + softbox;
+            px[(y * W + x) as usize] = [l, l, l]; // achromatic: no cast on the paint
+        }
+    }
+    (px, W, H)
 }
 
 /// Upload one mip level (linear RGB → `Rgba16Float`, alpha = 1).
@@ -376,16 +392,16 @@ fn f32_to_f16(x: f32) -> u16 {
 impl crate::gpu::registry::Resource for EnvironmentId {
     type Gpu = Environment;
 
-    /// `Studio` is procedural — a soft overhead key over ambient fill — so the
+    /// `Neutral` is procedural — a soft overhead key over an ambient dome — so the
     /// canvas is lit before any HDR arrives (DESIGN.md §6.3).
     fn is_builtin(self) -> bool {
-        self == EnvironmentId::Studio
+        self == EnvironmentId::Neutral
     }
 
     fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Environment {
         match bytes {
             Some(bytes) if !self.is_builtin() => Environment::load(gpu, bytes),
-            _ => Environment::studio(gpu),
+            _ => Environment::neutral(gpu),
         }
     }
 }
@@ -407,6 +423,24 @@ mod tests {
             max > 1.0,
             "studio HDR should contain values >1 (got max {max})"
         );
+    }
+
+    /// The whole point of `Neutral` is that it is a *reference*: it may shape the
+    /// light, but it must not tint it. A colour cast here would silently bias every
+    /// judgement made against it.
+    #[test]
+    fn neutral_environment_is_achromatic_and_directional() {
+        let (px, w, h) = neutral_equirect();
+        assert_eq!(px.len(), (w * h) as usize);
+        for c in &px {
+            assert!(c[0] > 0.0 && c[0].is_finite(), "non-positive radiance {c:?}");
+            assert_eq!([c[0], c[0]], [c[1], c[2]], "neutral must be grey, got {c:?}");
+        }
+        // Still lit from somewhere: a uniform dome would flatten all relief away.
+        let lum = |c: &[f32; 3]| c[0];
+        let min = px.iter().map(lum).fold(f32::INFINITY, f32::min);
+        let max = px.iter().map(lum).fold(0.0f32, f32::max);
+        assert!(max > min * 1.5, "too flat to read relief: {min}..{max}");
     }
 
     #[test]
