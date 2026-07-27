@@ -37,7 +37,9 @@ mod dynamics;
 mod segments;
 mod swept;
 
-use dynamics::{DynamicsKit, build_dynamics_kit, build_integrate_pipeline, dynamics_setup};
+use dynamics::{
+    DynamicsKit, StrokePath, build_dynamics_kit, build_integrate_pipeline, dynamics_setup,
+};
 use segments::{SegmentInstance, round_coverage};
 
 /// Resolution of the generated round-tip prefix texture.
@@ -66,12 +68,15 @@ const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// the rates through by this makes an axis mean a fraction **per pass of the tip**
 /// — hardness-independent, and what a 0..1 knob is expected to mean.
 const TAU_PER_PASS: f32 = 6.9;
-/// Largest stroke-region edge (canvas px) the stamp loop composites. Oversized
-/// strokes degrade to the plain swept deposit — rare, and it bounds the transient
-/// GPU memory (DESIGN.md §6.2).
+/// Largest region edge (canvas px) the stamp loop composites at once. A stroke that
+/// wants more is drawn in as many region-sized *pieces* as it takes
+/// ([`segments::chunk_segments`]), so this bounds the loop's transient GPU memory —
+/// at 2048² the colour and aux regions are ~34 MB together — rather than deciding
+/// which strokes the loop can draw at all (DESIGN.md §6.2).
 const MAX_REGION_DIM: u32 = 2048;
-/// Hard cap on stamps per stroke: beyond it the segment length cap stretches,
-/// trading per-radius fidelity on extremely long strokes for bounded cost.
+/// Cap on the segments one piece dispatches, which bounds its stamp uniform buffer.
+/// Reached only by a stroke fine enough to fill a whole region with segments, and it
+/// cuts a new piece rather than coarsening anything.
 const MAX_STAMPS: usize = 4096;
 /// Gain on the `add` axis in the stamp loop, tuned so `add = 1` lays roughly a
 /// full-thickness deposit per pass of the tip. The swept fast path needs no
@@ -212,6 +217,12 @@ impl ScopedResources {
     fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
         self.buffers.push(buf.clone());
         buf
+    }
+
+    /// Whether anything is registered — how the stamp loop tells a first piece of a
+    /// stroke from a later one (see `dynamics::DynamicsRun::flush`).
+    fn is_empty(&self) -> bool {
+        self.textures.is_empty() && self.buffers.is_empty()
     }
 }
 
@@ -423,14 +434,29 @@ impl StrokeRenderer {
         tool: Option<&ToolState>,
     ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
         // Which path the stroke takes — and how finely it flattens — is decided from
-        // the *whole* record, never from the piece in hand. A live tail and the commit
-        // that eventually replaces it have to make the same choice, or releasing the
-        // pointer would visibly redraw the stroke; and both gates below (region size,
-        // stamp count) would otherwise answer differently for a short piece than for
-        // the stroke it belongs to. See `dynamics_setup`.
+        // the record, never from the piece in hand. A live tail and the commit that
+        // eventually replaces it have to make the same choice, or releasing the pointer
+        // would visibly redraw the stroke. See `dynamics_setup`.
         match dynamics_setup(rec) {
-            Some(tol) => self.render_dynamic(scene, rec, spans, tool, tol),
-            None => self.render_swept(scene, rec, spans),
+            StrokePath::Loop(tol) => self.render_dynamic(scene, rec, spans, tool, tol),
+            StrokePath::Swept => self.render_swept(scene, rec, spans),
+            StrokePath::TipTooLarge => {
+                // An error, not a warning: what lands is not a rougher version of the
+                // stroke that was asked for but a different brush — the swept deposit
+                // only ever adds paint, so `lift`, `deposit` and `charge` all silently
+                // do nothing. It is the one degradation left (stroke *length* is
+                // handled by drawing the stroke in pieces, DESIGN.md §6.2), and no
+                // brush the UI can build reaches it, so hitting it means a record came
+                // from somewhere else and is not being honoured. It repeats per
+                // pointer move, because the gate is re-asked per render.
+                tracing::error!(
+                    radius = rec.brush.radius,
+                    max_region_dim = MAX_REGION_DIM,
+                    "brush tip too large for one dynamics region: falling back to the \
+                     swept deposit, so this stroke's lift/deposit/charge do nothing",
+                );
+                self.render_swept(scene, rec, spans)
+            }
         }
     }
 
@@ -535,6 +561,8 @@ impl StrokeRenderer {
 /// recovered per fragment, as the colour-dynamics arc is) needs a length cap too.
 pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
+    // Use a more relaxed tolerance for larger brushes.
+    tol.position = tol.position.max(0.01 * b.radius);
     // `drain` fades the laid amount/opacity by `drain · dist`, sampled at the
     // segment midpoint: cap the step it can take across one segment at ~2%.
     if b.drain > 0.0 {

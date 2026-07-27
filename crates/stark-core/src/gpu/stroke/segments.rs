@@ -1,19 +1,20 @@
-//! Turning a fitted path into swept segments, and the region measurements the
-//! brush-dynamics gate gets its answer from (DESIGN.md §6.2).
+//! Turning a fitted path into swept segments, and the region measurements that decide
+//! where the stamp loop cuts one into pieces (DESIGN.md §6.2).
 //!
 //! Both render paths flatten through here, so both see the same segments for the
 //! same record — which is what lets a live tail and the commit that replaces it
 //! agree pixel for pixel.
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::document::{OrientationSource, StrokeRecord};
+use crate::document::{BrushParams, OrientationSource, StrokeRecord};
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::noise::NOISE_TILE_PX;
 
-use super::{MAX_REGION_DIM, StrokeSpans};
+use super::{MAX_REGION_DIM, MAX_STAMPS, StrokeSpans};
 
 /// One swept segment of the stroke.
 #[derive(Copy, Clone)]
@@ -68,15 +69,6 @@ pub(super) fn round_coverage(hardness: f32, res: u32) -> Vec<f32> {
 pub(super) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-/// The whole stroke's swept segments at an explicit budget — the swept-exchange
-/// loop re-flattens coarser when a stroke would otherwise exceed [`MAX_STAMPS`].
-pub(super) fn generate_segments_tol(
-    rec: &StrokeRecord,
-    tol: crate::path::FlattenTolerance,
-) -> Vec<Segment> {
-    generate_segments_in(rec, tol, StrokeSpans::whole(rec)).0
 }
 
 /// Build swept segments from the fitted control points (DESIGN.md §6.2): flatten
@@ -213,10 +205,7 @@ pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
     let tile = TILE_SIZE as f32;
     let mut coords = BTreeSet::new();
     for s in segments {
-        let end = s.start + s.dir * s.length;
-        let reach = Vec2::splat(s.radius + TILE_APRON as f32);
-        let lo = s.start.min(end) - reach;
-        let hi = s.start.max(end) + reach;
+        let (lo, hi) = segment_bounds(s);
         let (x0, x1) = ((lo.x / tile).floor() as i32, (hi.x / tile).floor() as i32);
         let (y0, y1) = ((lo.y / tile).floor() as i32, (hi.y / tile).floor() as i32);
         for y in y0..=y1 {
@@ -228,33 +217,94 @@ pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
     coords
 }
 
-/// The size of the region [`region_rect`] would build for `segments`, without
+/// The canvas box one segment's swept coverage occupies, grown by the apron a
+/// rewritten tile's neighbours reach into (§6.4). The one place that reach is
+/// defined: [`affected_tiles`] enumerates the tiles it touches, [`chunk_segments`]
+/// accumulates it into the region a run of segments needs, and those two answers have
+/// to be the same rectangle.
+fn segment_bounds(s: &Segment) -> (Vec2, Vec2) {
+    let end = s.start + s.dir * s.length;
+    let reach = Vec2::splat(s.radius + TILE_APRON as f32);
+    (s.start.min(end) - reach, s.start.max(end) + reach)
+}
+
+/// The size of the region [`region_rect`] would build for a coverage box, without
 /// building the tile set.
 ///
-/// Same rectangle, reached by bounding box rather than by enumerating tiles: the
-/// whole-stroke gate in [`dynamics_setup`] is re-evaluated on every pointer move, and
-/// `affected_tiles` costs a set insert per tile per segment, which on a long stroke is
-/// the very cost the incremental repaint exists to avoid. `None` if there are no
-/// segments.
-pub(super) fn region_dim(segments: &[Segment]) -> Option<(u32, u32)> {
+/// Same rectangle, reached by bounding box rather than by enumerating tiles:
+/// [`chunk_segments`] asks this question once per segment while it walks a stroke,
+/// and `affected_tiles` costs a set insert per tile per segment — on a long stroke,
+/// the very cost the incremental repaint exists to avoid.
+fn region_of(lo: Vec2, hi: Vec2) -> (u32, u32) {
     let tile = TILE_SIZE as f32;
-    let mut lo = Vec2::splat(f32::INFINITY);
-    let mut hi = Vec2::splat(f32::NEG_INFINITY);
-    for s in segments {
-        let end = s.start + s.dir * s.length;
-        let reach = Vec2::splat(s.radius + TILE_APRON as f32);
-        lo = lo.min(s.start.min(end) - reach);
-        hi = hi.max(s.start.max(end) + reach);
-    }
-    if !lo.x.is_finite() {
-        return None;
-    }
     // The tile block the coverage spans, measured between tile origins.
     let span = |a: f32, b: f32| ((b / tile).floor() - (a / tile).floor()) * tile;
-    Some((
+    (
         span(lo.x, hi.x) as u32 + TILE_TEX,
         span(lo.y, hi.y) as u32 + TILE_TEX,
-    ))
+    )
+}
+
+/// Split a stroke's segments into consecutive runs, each of which the stamp loop can
+/// evolve inside one [`MAX_REGION_DIM`]-bounded region (DESIGN.md §6.2).
+///
+/// The loop works on a 1:1 copy of the canvas under the stroke, so a stroke that
+/// crosses the document would want a region the size of the document. It does not
+/// have to have one: the loop is *sequential*, so running the first run of segments
+/// and then the second — each over its own region, the second compositing what the
+/// first wrote back — is the same computation as running them all over one region.
+/// The same segments in the same order, and the state that threads between them is
+/// the reservoir, which is brush-local and says nothing about where the stroke is.
+/// That is the identical argument that lets a live tail resume a frozen head
+/// ([`ToolState`](super::ToolState)); a piece is just a cut the renderer makes for
+/// itself rather than one the fitter made for it.
+///
+/// Greedy: extend the run until one more segment would push its region past
+/// [`MAX_REGION_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always holds
+/// at least one segment — one tip's own footprint is the floor no subdivision gets
+/// under, which is what [`segment_fits_region`] gates on instead.
+pub(super) fn chunk_segments(segments: &[Segment]) -> Vec<Range<usize>> {
+    let mut runs = Vec::new();
+    let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+    let mut start = 0;
+    for (i, s) in segments.iter().enumerate() {
+        let (slo, shi) = segment_bounds(s);
+        let (glo, ghi) = (lo.min(slo), hi.max(shi));
+        let (w, h) = region_of(glo, ghi);
+        if i > start && (w > MAX_REGION_DIM || h > MAX_REGION_DIM || i - start >= MAX_STAMPS) {
+            runs.push(start..i);
+            (start, lo, hi) = (i, slo, shi);
+        } else {
+            (lo, hi) = (glo, ghi);
+        }
+    }
+    if start < segments.len() {
+        runs.push(start..segments.len());
+    }
+    runs
+}
+
+/// Whether one segment of `b`'s swept footprint fits a region.
+///
+/// [`chunk_segments`] can cut a stroke as fine as a single segment, but no finer: the
+/// reservoir pickup reduces over the whole tip at once, so the region can never be
+/// smaller than one footprint. A brush too fat for that is the one thing left that
+/// sends a dynamics stroke to the plain swept deposit — and, unlike the whole-stroke
+/// measurement this replaced, it is decided from the brush alone, so it costs nothing
+/// to re-ask on every pointer move and cannot answer differently for a piece than for
+/// the stroke it belongs to.
+///
+/// Bounded rather than measured, since it has to hold for segments that do not exist
+/// yet: radius peaks at the brush's own (pressure only scales it down), travel at the
+/// flattening cap — or at the 0.6 radii a click sweeps, which ignores the cap — and a
+/// coverage box of a given extent spans at most one tile more than it covers,
+/// whichever tile boundary it happens to straddle.
+pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTolerance) -> bool {
+    let radius = b.radius.max(0.5);
+    let length = tol.max_len.max(0.6 * radius);
+    let extent = length + 2.0 * (radius + TILE_APRON as f32);
+    let worst = (extent / TILE_SIZE as f32).ceil().max(0.0) as u32 * TILE_SIZE + TILE_TEX;
+    worst <= MAX_REGION_DIM
 }
 
 /// The region the stamp loop evolves for a stroke piece's affected `coords`: exactly
@@ -270,8 +320,9 @@ pub(super) fn region_dim(segments: &[Segment]) -> Option<(u32, u32)> {
 /// live tail, which covers a handful of tiles and is redrawn on every pointer move,
 /// that difference is most of the cost of the whole path.
 ///
-/// Returns `(tiles to composite, lo origin, region origin, w, h)`, or `None` if empty
-/// or larger than [`MAX_REGION_DIM`].
+/// Returns `(tiles to composite, lo origin, region origin, w, h)`, or `None` if
+/// `coords` is empty. The size is [`chunk_segments`]'s business, not this one's — it
+/// hands over pieces that fit by construction.
 pub(super) fn region_rect(
     coords: &BTreeSet<TileCoord>,
 ) -> Option<(Vec<TileCoord>, Vec2, Vec2, u32, u32)> {
@@ -286,9 +337,6 @@ pub(super) fn region_rect(
     }
     let w = (hi.x - lo.x) as u32 + TILE_TEX;
     let h = (hi.y - lo.y) as u32 + TILE_TEX;
-    if w > MAX_REGION_DIM || h > MAX_REGION_DIM {
-        return None;
-    }
     let mut halo: BTreeSet<TileCoord> = BTreeSet::new();
     for c in coords {
         for dy in -1..=1 {
@@ -325,15 +373,26 @@ mod tests {
         }
     }
 
-    /// [`dynamics_setup`] decides whether a stroke may run the stamp loop by measuring
-    /// its region with [`region_dim`], but the render that follows sizes the actual
-    /// textures from [`region_rect`]. They are two ways of measuring one rectangle —
-    /// bounding box versus enumerated tiles — so they have to agree exactly. If
-    /// `region_dim` ever under-reported, the gate would admit a stroke whose region
-    /// then allocated past [`MAX_REGION_DIM`]; if it over-reported, long strokes would
-    /// silently fall back to the swept deposit early.
+    /// The union of every segment's [`segment_bounds`], as [`chunk_segments`]
+    /// accumulates it.
+    fn measured(segments: &[Segment]) -> Option<(u32, u32)> {
+        let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+        for s in segments {
+            let (slo, shi) = segment_bounds(s);
+            (lo, hi) = (lo.min(slo), hi.max(shi));
+        }
+        lo.x.is_finite().then(|| region_of(lo, hi))
+    }
+
+    /// [`chunk_segments`] decides where to cut a stroke by measuring the region a run
+    /// of segments would need with [`region_of`], but the render that follows sizes
+    /// the actual textures from [`region_rect`]. They are two ways of measuring one
+    /// rectangle — bounding box versus enumerated tiles — so they have to agree
+    /// exactly. If the bounding box ever under-reported, a piece would allocate past
+    /// [`MAX_REGION_DIM`]; if it over-reported, strokes would be cut into more pieces
+    /// than they need, each paying for its own region composite.
     #[test]
-    fn the_region_gate_measures_the_region_the_render_builds() {
+    fn the_chunker_measures_the_region_the_render_builds() {
         let tile = TILE_SIZE as f32;
         let cases: Vec<(&str, Vec<Segment>)> = vec![
             (
@@ -364,11 +423,66 @@ mod tests {
         for (what, segments) in cases {
             let want = region_rect(&affected_tiles(&segments)).map(|(_, _, _, w, h)| (w, h));
             assert_eq!(
-                region_dim(&segments),
+                measured(&segments),
                 want,
                 "region size disagrees for {what}"
             );
         }
-        assert_eq!(region_dim(&[]), None, "no segments is not a region");
+        assert_eq!(measured(&[]), None, "no segments is not a region");
+    }
+
+    /// What [`chunk_segments`] promises the loop: the pieces tile the stroke in order
+    /// (so the sequence of segments the loop walks is unchanged — the whole reason
+    /// cutting it is sound), and every piece actually fits the region bound the cut
+    /// exists to respect.
+    #[test]
+    fn the_chunks_tile_the_stroke_and_each_one_fits() {
+        // A stroke far longer than one region in both axes, and a fat tip whose own
+        // footprint eats a good part of the budget.
+        let segments: Vec<Segment> = (0..600)
+            .map(|i| {
+                let t = i as f32;
+                let a = Vec2::new(t * 9.0 - 400.0, (t * 0.05).sin() * 1500.0);
+                let b = Vec2::new((t + 1.0) * 9.0 - 400.0, ((t + 1.0) * 0.05).sin() * 1500.0);
+                seg(a, b, 60.0)
+            })
+            .collect();
+        let runs = chunk_segments(&segments);
+        assert!(runs.len() > 1, "an oversized stroke should be cut up");
+
+        let mut next = 0;
+        for run in &runs {
+            assert_eq!(run.start, next, "the pieces leave a gap or overlap");
+            next = run.end;
+            let (w, h) = measured(&segments[run.clone()]).expect("a piece is never empty");
+            assert!(
+                w <= MAX_REGION_DIM && h <= MAX_REGION_DIM,
+                "piece {run:?} needs a {w}x{h} region",
+            );
+            assert!(run.len() <= MAX_STAMPS, "piece {run:?} overruns the batch");
+        }
+        assert_eq!(next, segments.len(), "the pieces do not cover the stroke");
+    }
+
+    /// The floor the chunker cannot get under: one segment's own footprint. A brush
+    /// whose tip fits is drawn by the loop however long the stroke gets, which is the
+    /// whole point of cutting it into pieces; one whose tip does not is the only case
+    /// left that degrades to the swept deposit.
+    #[test]
+    fn the_gate_admits_any_brush_whose_own_tip_fits() {
+        let fits = |radius: f32| {
+            let mut b = BrushParams {
+                radius,
+                ..BrushParams::default()
+            };
+            b.dynamics.lift = 0.5;
+            segment_fits_region(&b, super::super::flatten_tolerance(&b))
+        };
+        assert!(fits(1.0), "a hairline tip fits");
+        assert!(fits(120.0), "the largest tip the UI offers fits");
+        assert!(
+            !fits(MAX_REGION_DIM as f32),
+            "a tip wider than the whole region cannot fit"
+        );
     }
 }

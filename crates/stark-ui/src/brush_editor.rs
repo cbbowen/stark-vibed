@@ -26,7 +26,9 @@ use stark_core::document::{BrushParams, BrushShape, NoiseKind, OrientationSource
 use stark_core::geom::Vec2;
 use stark_core::{ColorSpaceId, EnvironmentId, InputSample};
 
-use crate::panels::brush::{set_bristles, set_brush_preset, set_knife, set_orientation, set_shape};
+use crate::panels::brush::{
+    MAX_RADIUS, set_bristles, set_brush_preset, set_knife, set_orientation, set_shape,
+};
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::render::{self, Renderer};
 use crate::state::{AppState, update_brush};
@@ -208,7 +210,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                                     "Pen angle" }
                             }
                         }
-                        Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
+                        Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
                             oninput: move |v| edit(state, preview, move |b| b.radius = v) }
                         if is_round {
                             Slider { label: "Hardness", min: 0.0, max: 0.95, value: brush.hardness,

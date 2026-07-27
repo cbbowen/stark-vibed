@@ -630,13 +630,25 @@ stroke is, so the region rectangle may change completely between the piece that
 saved it and the piece that resumes. The canvas side needs no carrying: it is already
 in the head's tiles.
 
-Two things then have to be decided from the **whole** record rather than from the
-piece in hand, because a live tail and the commit that replaces it must draw the same
-pixels: whether the stroke runs the stamp loop at all (it degrades to the swept
-deposit past `MAX_REGION_DIM`) and how finely it flattens (it coarsens past
-`MAX_STAMPS`). A gate that looked at the piece would answer differently for a short
-tail than for the stroke it belongs to, and the stroke would visibly redraw on
-release. See `gpu::stroke::dynamics_setup`.
+The renderer cuts the path for its own purposes too, on the same argument. A region
+is a 1:1 copy of the canvas under the stroke, so a stroke that crosses the document
+would want a region the size of the document; instead it is drawn in as many
+region-sized **pieces** as it takes, each compositing what the last wrote back
+(`gpu::stroke::chunk_segments`). Length therefore costs a dynamics stroke pieces, not
+correctness — where it used to degrade past `MAX_REGION_DIM` to the plain swept
+deposit, which is not a coarser version of the same brush but a different one: the
+swept path only ever *adds* paint, so a brush whose purpose was to lift it stopped
+doing the one thing it was for, on exactly the long strokes and fat tips that wanted
+it most.
+
+One thing still has to be decided from the record rather than from the piece in hand,
+because a live tail and the commit that replaces it must draw the same pixels:
+whether the stroke runs the stamp loop at all. It is decided from the **brush alone**
+— the strongest form of that guarantee, since there is nothing about the piece, or
+about how long the stroke has grown, for it to disagree over — and what it asks is
+the floor no subdivision gets under: whether one segment's own footprint fits a
+region, since the reservoir pickup reduces over the whole tip at once. See
+`gpu::stroke::dynamics_setup`.
 
 **Continuous stamping (swept segments).** Discrete dabs are still visible with
 hard tips. The fix: stamp each short *segment* of the flattened curve as one
@@ -691,10 +703,11 @@ continuous, dab-free footprint. All on the GPU with no readback
 1. **Region composite.** The base tiles under the stroke (the affected set plus a
    one-tile ring) are composited once into a 1:1 canvas **region** texture
    (colour + the wide aux). This is the working canvas the stroke evolves.
-   Bounded by `MAX_REGION_DIM`; an oversized stroke degrades to the plain swept
-   deposit.
+   Bounded by `MAX_REGION_DIM`, which bounds the transient memory rather than the
+   stroke: a stroke too big for one region is cut into pieces that fit, run back to
+   back (see incremental repaint above).
 2. **The loop.** The stroke's flattened segments (the same ones the fast path
-   sweeps; re-flattened coarser past `MAX_STAMPS`) run *in order* inside a
+   sweeps, at the same budget) run *in order* inside a
    **single compute pass** — the implicit barriers between dispatches give the
    sequential semantics, and usage scopes are per-dispatch, so the region can be
    sampled by one dispatch and storage-written by the next with no copies and no

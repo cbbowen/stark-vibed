@@ -71,6 +71,12 @@ pub fn engine_or_skip() -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine(TARGET, SIZE)))
 }
 
+/// A headless engine with a chosen viewport, for tests whose stroke has to be far
+/// wider than the default [`SIZE`] window shows.
+pub fn engine_or_skip_sized(size: Extent2) -> Option<Engine> {
+    or_skip(pollster::block_on(headless_engine(TARGET, size)))
+}
+
 /// A headless engine in a chosen color space (DESIGN.md §6.7).
 pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine_with(TARGET, SIZE, id)))

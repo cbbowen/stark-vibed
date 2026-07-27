@@ -11,6 +11,9 @@ use stark_core::document::{BrushDynamics, BrushShape, OrientationSource};
 /// stay out of the wasm binary (DESIGN.md §6.6). The engine is handed the bytes.
 pub const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
 
+/// The maximum brush radius (`BrushParams::radius`).
+pub const MAX_RADIUS: f32 = 500.0;
+
 /// The floating Brush panel: the everyday quick controls (shape, size, opacity,
 /// amount). Everything else — the full grouped parameter set with a live test
 /// stroke — lives in the brush editor dialog ("Edit brush…").
@@ -40,7 +43,7 @@ pub fn BrushPanel() -> Element {
                 "Bristles"
             }
         }
-        Slider { label: "Size", min: 1.0, max: 120.0, value: brush.radius,
+        Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
         Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
             oninput: move |v| update_brush(state, move |b| b.color[3] = v) }

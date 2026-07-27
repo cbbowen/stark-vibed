@@ -372,6 +372,110 @@ fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
     }
 }
 
+/// An undercoat for a stroke measured in thousands of pixels: an ordinary brush with
+/// its one-way load switched off, since the default `drain` runs a stroke dry a few
+/// hundred px in and would leave the far end of the band bare.
+fn long_band(engine: &mut Engine, points: &[Vec2]) {
+    let mut b = brush([0.1, 0.9, 0.2, 1.0], 30.0);
+    b.drain = 0.0;
+    stroke_with(engine, b, points);
+}
+
+/// A stroke far wider than one stamp-loop region still **manipulates paint**.
+///
+/// This is the regression the piecewise path exists for. The loop works on a 1:1 copy
+/// of the canvas under the stroke, and a stroke whose bounding box outgrew
+/// `MAX_REGION_DIM` used to degrade to the plain swept deposit — which is not a
+/// coarser version of the same brush but a different one: the swept path only ever
+/// *adds* paint, so a brush whose whole purpose is to lift it silently stopped doing
+/// the one thing it was for. Long strokes and fat tips are exactly where a smear
+/// brush earns its keep, so the failure landed on the strokes that wanted it most.
+/// Now the stroke is drawn in as many region-sized pieces as it takes.
+///
+/// The brush here is a pure scrape — it lifts everything and lays nothing back, and
+/// its own colour is fully transparent — so the two paths are unmistakable: the loop
+/// takes the undercoat away, while the swept deposit has nothing to lay and leaves it
+/// exactly where it was. The stroke runs well past the window on both sides; only its
+/// bounding box has to be oversized, not the part under test.
+#[test]
+fn a_stroke_too_wide_for_one_region_still_moves_paint() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let across = [
+        Vec2::new(-1200.0, 0.0),
+        Vec2::new(0.0, 0.0),
+        Vec2::new(1200.0, 0.0),
+    ];
+    long_band(&mut engine, &across);
+    assert!(
+        !is_blue(center(&engine.render_to_image(BG))),
+        "the undercoat did not land, so there is nothing to scrape"
+    );
+
+    let mut scrape = brush([0.0, 0.0, 0.0, 0.0], 22.0);
+    scrape.drain = 0.0;
+    scrape.dynamics.add = 0.0;
+    scrape.dynamics.lift = 1.0;
+    stroke_with(&mut engine, scrape, &across);
+    assert!(
+        is_blue(center(&engine.render_to_image(BG))),
+        "a stroke too wide for one region left the paint under it untouched"
+    );
+}
+
+/// [`a_smear_stroke_previews_as_it_commits`] for a stroke that no longer fits one
+/// region — so the commit runs the loop in several pieces while the preview's ranges
+/// each run it in one.
+///
+/// The pieces are cut where the *region* fills up, which has nothing to do with where
+/// the fitter freezes, so the two renders cut the same stroke in different places.
+/// That is what makes this worth running: a piece boundary that dropped the reservoir
+/// — or restarted the pickup cadence — would show as a step in colour under the
+/// commit that the preview never draws.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn an_oversized_smear_stroke_previews_as_it_commits() {
+    // Wide enough to see a piece boundary: the first piece fills its region around
+    // `x = -2000 + MAX_REGION_DIM`, which lands just right of centre.
+    let Some(mut engine) = engine_or_skip_sized(stark_core::geom::Extent2 {
+        width: 1280,
+        height: 256,
+    }) else {
+        return;
+    };
+    let path: Vec<Vec2> = (0..220)
+        .map(|i| {
+            let t = i as f32 / 219.0;
+            Vec2::new(t * 2560.0 - 2000.0, (t * 26.0).sin() * 40.0)
+        })
+        .collect();
+    long_band(&mut engine, &path);
+
+    engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
+    let mut it = path.iter();
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+    });
+    for &p in it {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+    }
+
+    let preview = engine.render_to_image(BG);
+    engine.process(GestureCommand::End);
+    let committed = engine.render_to_image(BG);
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 8),
+        0.0,
+        "an oversized smear stroke commits differently than it previewed \
+         ({:.4}% of px over tol 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}
+
 #[test]
 fn stroke_commit_undo_redo() {
     let Some(mut engine) = engine_or_skip() else {

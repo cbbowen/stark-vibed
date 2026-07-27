@@ -19,14 +19,13 @@ use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, Vec
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle};
 
 use super::segments::{
-    Segment, affected_tiles, generate_segments_in, generate_segments_tol, noise_uniform,
-    region_dim, region_rect,
+    Segment, affected_tiles, chunk_segments, generate_segments_in, noise_uniform, region_rect,
+    segment_fits_region,
 };
 use super::swept::{TileInstance, ViewUniform};
 use super::{
-    ADD_GAIN, BAKE_FORMAT, BAKE_RES, BRUSH_RES, MAX_REGION_DIM, MAX_STAMPS, RESERVOIR_CADENCE,
-    ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, TAU_PER_PASS,
-    ToolState, flatten_tolerance,
+    ADD_GAIN, BAKE_FORMAT, BAKE_RES, BRUSH_RES, RESERVOIR_CADENCE, ScopedResources, StrokeCarry,
+    StrokeRenderer, StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, flatten_tolerance,
 };
 
 /// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
@@ -84,18 +83,26 @@ pub(super) struct DynamicsKit {
 
 impl StrokeRenderer {
     /// Render `spans` of a paint-manipulating stroke via the **sequential
-    /// swept-exchange loop** (DESIGN.md §6.2): composite the base under that piece
-    /// into a 1:1 region, then walk it *in order* on the GPU — the canvas-side
-    /// exchange swept per flattened segment through the prefix-τ integral (the
-    /// same definite-integral footprint as the plain deposit), the 2-D tool
-    /// reservoir updated at `spacing · radius` cadence — and slice the evolved
-    /// region back into fresh CoW tiles.
+    /// swept-exchange loop** (DESIGN.md §6.2): composite the base under it into a 1:1
+    /// region, then walk it *in order* on the GPU — the canvas-side exchange swept per
+    /// flattened segment through the prefix-τ integral (the same definite-integral
+    /// footprint as the plain deposit), the 2-D tool reservoir updated at
+    /// `spacing · radius` cadence — and slice the evolved region back into fresh CoW
+    /// tiles.
+    ///
+    /// A region is a 1:1 copy of the canvas under the stroke, so the range is drawn in
+    /// as many region-sized **pieces** as it takes ([`chunk_segments`]) rather than in
+    /// one: the loop is sequential, so pieces run back to back over the same segments
+    /// in the same order, each compositing what the last wrote back. Length therefore
+    /// costs the stroke extra pieces, not correctness — where it used to degrade past
+    /// [`MAX_REGION_DIM`](super::MAX_REGION_DIM) to the plain swept deposit, which
+    /// cannot manipulate paint at all.
     ///
     /// The loop starts from `tool` rather than from a fresh tip when one is given, and
     /// hands back the state it ends in whenever a further range remains to be drawn,
     /// so a live stroke redraws only its tail (see [`ToolState`]). `tol` comes from
-    /// [`dynamics_setup`], which has already decided — from the whole record — that
-    /// this stroke runs the loop at all.
+    /// [`dynamics_setup`], which has already decided — from the brush — that this
+    /// stroke runs the loop at all.
     pub(super) fn render_dynamic(
         &self,
         scene: StrokeScene<'_>,
@@ -104,112 +111,286 @@ impl StrokeRenderer {
         tool: Option<&ToolState>,
         tol: crate::path::FlattenTolerance,
     ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
-        let StrokeScene {
-            pool,
-            assets,
-            base,
-            selection,
-        } = scene;
-        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
-        let channels = self.color_space.rgb_to_channels(rgb);
         // Nothing follows the range that reaches the end of the stroke, so there is no
         // reason to snapshot a reservoir for it — which is the common case, since the
         // live tail is exactly that range and it re-renders every pointer move.
         let capture = spans.range.end < crate::path::span_count(rec.path.len());
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
-        let since0 = tool.map_or(f32::INFINITY, |t| t.since);
         // A range with no geometry runs no dispatches, so it leaves the brush exactly
         // as it found it. Handing back `None` says "unchanged" — the caller keeps the
         // state it passed in rather than paying for a copy of it.
         if segments.is_empty() {
             return (
-                base.clone(),
+                scene.base.clone(),
                 StrokeCarry {
                     dist: end_dist,
                     tool: None,
                 },
             );
         }
-        let coords = affected_tiles(&segments);
-        // The range's region is a subset of the whole stroke's, which `dynamics_setup`
-        // has already bounded, so this cannot be the oversized case — only the empty
-        // one, and `segments` is non-empty.
-        let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
-            return (
-                base.clone(),
-                StrokeCarry {
-                    dist: end_dist,
-                    tool: None,
-                },
-            );
-        };
 
-        let kit = &self.dynamics;
-        let device = &self.ctx.device;
+        let mut run = DynamicsRun::new(self, scene, rec, tool);
+        let mut map = scene.base.clone();
+        for piece in chunk_segments(&segments) {
+            map = run.draw(&map, &segments[piece]);
+        }
+        let tool_out = capture.then(|| run.capture_tool());
+        run.submit();
+        (
+            map,
+            StrokeCarry {
+                dist: end_dist,
+                tool: tool_out,
+            },
+        )
+    }
+}
+
+/// One [`StrokeRenderer::render_dynamic`] call in progress: the brush-local state the
+/// loop threads along the stroke, and the GPU objects that outlive any one region.
+///
+/// What survives from piece to piece is exactly what survives from one *range* to the
+/// next — the tool reservoir, and the travel since its last pickup — because that is
+/// all the loop carries between segments that is not already on the canvas. It lives
+/// here rather than being copied out into a [`ToolState`] and back in at every cut:
+/// the pieces are recorded one after another against the same reservoir textures, so
+/// the ping-pong simply keeps going.
+struct DynamicsRun<'a> {
+    r: &'a StrokeRenderer,
+    rec: &'a StrokeRecord,
+    scene: StrokeScene<'a>,
+    encoder: wgpu::CommandEncoder,
+    /// GPU objects scoped to the whole run — the reservoir and the bake pair, which
+    /// carry the tool from one piece to the next.
+    scoped: ScopedResources,
+    /// GPU objects scoped to the piece being recorded: the region, its selection
+    /// mask, the snapshot scratch, the stamp buffer. Destroyed as soon as the piece
+    /// is submitted (see [`Self::flush`]), so a stroke of any length costs one
+    /// region's worth of transient memory rather than one per piece.
+    piece: ScopedResources,
+    /// The brush's own colour in the working space, plus its per-unit opacity.
+    channels: [f32; 4],
+    /// Functions of the brush alone, so shared by every piece: the swept-footprint
+    /// prefix-τ bind group (group 1 of `bake`/`deposit` — the same texture the swept
+    /// fast path samples), the plain coverage mask the reservoir texels weight by,
+    /// and the colour-dynamics field the `add` paint is jittered against.
+    prefix_bg: wgpu::BindGroup,
+    cov: wgpu::TextureView,
+    noise: wgpu::TextureView,
+    /// The tool reservoir ping-pong, and which half currently holds the tool.
+    brush_color_tex: [wgpu::Texture; 2],
+    brush_aux_tex: [wgpu::Texture; 2],
+    brush_color: [wgpu::TextureView; 2],
+    brush_aux: [wgpu::TextureView; 2],
+    cur: usize,
+    /// The segment's swept reservoir prefix (fp32, so the per-fragment difference
+    /// keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a single
+    /// pair serves the whole stroke: nothing reads the last segment's bake.
+    bake_load: wgpu::TextureView,
+    bake_latm: wgpu::TextureView,
+    /// Travel since the last reservoir pickup (see [`ToolState`]).
+    since: f32,
+}
+
+impl<'a> DynamicsRun<'a> {
+    /// Open the run: resolve the brush's textures, and put the tool in the state the
+    /// stroke arrives at this range with — resumed from `tool`, or freshly charged.
+    fn new(
+        r: &'a StrokeRenderer,
+        scene: StrokeScene<'a>,
+        rec: &'a StrokeRecord,
+        tool: Option<&ToolState>,
+    ) -> Self {
+        let device = &r.ctx.device;
         let mut scoped = ScopedResources::default();
-
-        // The brush's swept-footprint prefix-τ (shared with the fast path) and its
-        // plain coverage mask (the reservoir texels' own footprint weights).
-        let prefix_view = self.prefix_view(assets, &rec.brush);
-        let cov_view = match rec.brush.shape {
-            BrushShape::Stamp(id) => assets
-                .coverage_view(id)
-                .unwrap_or_else(|| self.round_coverage_view(rec.brush.hardness)),
-            BrushShape::Round => self.round_coverage_view(rec.brush.hardness),
-        };
-        // Colour dynamics for the brush's own `add` paint — the same field and
-        // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
-        let noise_view = self.noise_view(&rec.brush.color_dynamics);
-
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark dynamics stroke"),
         });
+        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
+        let channels = r.color_space.rgb_to_channels(rgb);
+
+        // The brush's swept-footprint prefix-τ (shared with the fast path) and its
+        // plain coverage mask (the reservoir texels' own footprint weights).
+        let prefix_view = r.prefix_view(scene.assets, &rec.brush);
+        let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark dynamics prefix bg"),
+            layout: &r.dynamics.prefix_bgl,
+            entries: &[tex(0, &prefix_view)],
+        });
+        let cov = match rec.brush.shape {
+            BrushShape::Stamp(id) => scene
+                .assets
+                .coverage_view(id)
+                .unwrap_or_else(|| r.round_coverage_view(rec.brush.hardness)),
+            BrushShape::Round => r.round_coverage_view(rec.brush.hardness),
+        };
+        // Colour dynamics for the brush's own `add` paint — the same field and
+        // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
+        let noise = r.noise_view(&rec.brush.color_dynamics);
+
+        // A stroke that starts fresh initializes its first reservoir by a render clear
+        // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
+        // a [`ToolState`] copies into it instead, hence the COPY pair — which also
+        // carries the end state back out.
+        let brush_usage = LOOP_USAGE
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST;
+        let brush_tex = |scoped: &mut ScopedResources, label: &'static str| {
+            scoped.texture(device.create_texture(&reservoir_desc(label, brush_usage)))
+        };
+        let brush_color_tex = [
+            brush_tex(&mut scoped, "stark dynamics brush color a"),
+            brush_tex(&mut scoped, "stark dynamics brush color b"),
+        ];
+        let brush_aux_tex = [
+            brush_tex(&mut scoped, "stark dynamics brush aux a"),
+            brush_tex(&mut scoped, "stark dynamics brush aux b"),
+        ];
+        let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+        let brush_color = [view_of(&brush_color_tex[0]), view_of(&brush_color_tex[1])];
+        let brush_aux = [view_of(&brush_aux_tex[0]), view_of(&brush_aux_tex[1])];
+        if let Some(t) = tool {
+            // Resume: the tip arrives at this range carrying exactly what it carried
+            // when the previous range stopped.
+            encoder.copy_texture_to_texture(
+                t.color.as_image_copy(),
+                brush_color_tex[0].as_image_copy(),
+                RESERVOIR_EXTENT,
+            );
+            encoder.copy_texture_to_texture(
+                t.aux.as_image_copy(),
+                brush_aux_tex[0].as_image_copy(),
+                RESERVOIR_EXTENT,
+            );
+        } else {
+            // Init: latent = the brush's own colour, per-unit opacity = its alpha;
+            // the carried amount starts at the pre-`charge` glob (0 = empty tool).
+            let d = rec.brush.dynamics;
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark dynamics brush init"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &brush_color[0],
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: channels[0] as f64,
+                                g: channels[1] as f64,
+                                b: channels[2] as f64,
+                                a: rec.brush.color[3] as f64,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &brush_aux[0],
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                // Carried height = the pre-`charge` glob; carried wet
+                                // is 0 (the brush has no wetness knob, so the tool
+                                // never picks up or lays gloss of its own).
+                                r: d.charge as f64,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        let mut bake = |label: &'static str| {
+            scoped_view(
+                device,
+                &mut scoped,
+                (BAKE_RES, BAKE_RES),
+                BAKE_FORMAT,
+                LOOP_USAGE,
+                label,
+            )
+        };
+        let bake_load = bake("stark dynamics bake load");
+        let bake_latm = bake("stark dynamics bake latm");
+
+        Self {
+            r,
+            rec,
+            scene,
+            encoder,
+            scoped,
+            piece: ScopedResources::default(),
+            channels,
+            prefix_bg,
+            cov,
+            noise,
+            brush_color_tex,
+            brush_aux_tex,
+            brush_color,
+            brush_aux,
+            cur: 0,
+            bake_load,
+            bake_latm,
+            since: tool.map_or(f32::INFINITY, |t| t.since),
+        }
+    }
+
+    /// Evolve one region-sized piece of the stroke over `base`: composite the tiles
+    /// under `segments` into a region, walk them through the loop, and slice the
+    /// result back into fresh CoW tiles. The tool carries on from where the previous
+    /// piece left it, and the canvas side needs no carrying — it is in `base`, which
+    /// for a later piece is what the earlier ones wrote back.
+    fn draw(
+        &mut self,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        segments: &[Segment],
+    ) -> HashTrieMap<TileCoord, TilePairHandle> {
+        self.flush();
+        let r = self.r;
+        let rec = self.rec;
+        let kit = &r.dynamics;
+        let device = &r.ctx.device;
+        let channels = self.channels;
+
+        let coords = affected_tiles(segments);
+        // A piece holds at least one segment, and a segment covers at least one tile,
+        // so the empty case cannot arise here — but it costs nothing to leave the
+        // canvas alone if it ever did.
+        let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
+            return base.clone();
+        };
+
         let clear = wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
             store: wgpu::StoreOp::Store,
         };
 
-        // ---- The stroke's canvas region (colour + wide aux), composited from the
+        // ---- The piece's canvas region (colour + wide aux), composited from the
         // base tiles of the affected set plus a one-tile ring, so rewritten tiles'
         // aprons read real neighbour content (§6.4). Rgba16Float throughout: it is
         // both filterable and a core storage format, and matches the tile colour
         // format of both color spaces (asserted in `build_dynamics_kit`).
-        let make_tex = |scoped: &mut ScopedResources,
-                        size: (u32, u32),
-                        usage: wgpu::TextureUsages,
-                        label: &'static str| {
-            scoped
-                .texture(device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: size.0,
-                        height: size.1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    usage,
-                    view_formats: &[],
-                }))
-                .create_view(&wgpu::TextureViewDescriptor::default())
+        let region_usage = wgpu::TextureUsages::RENDER_ATTACHMENT | LOOP_USAGE;
+        let mut region_tex = |label: &'static str| {
+            scoped_view(
+                device,
+                &mut self.piece,
+                (w, h),
+                wgpu::TextureFormat::Rgba16Float,
+                region_usage,
+                label,
+            )
         };
-        let region_usage = wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::STORAGE_BINDING;
-        let region_color = make_tex(
-            &mut scoped,
-            (w, h),
-            region_usage,
-            "stark dynamics region color",
-        );
-        let region_aux = make_tex(
-            &mut scoped,
-            (w, h),
-            region_usage,
-            "stark dynamics region aux",
-        );
+        let region_color = region_tex("stark dynamics region color");
+        let region_aux = region_tex("stark dynamics region aux");
 
         // Composite pass: base tiles → region, 1:1 with canvas px.
         let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
@@ -273,7 +454,7 @@ impl StrokeRenderer {
             })
         });
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark dynamics region composite"),
                 color_attachments: &[
                     Some(wgpu::RenderPassColorAttachment {
@@ -311,159 +492,62 @@ impl StrokeRenderer {
         // halo tiles the paint came from, so it is 1:1 with the colour/aux regions.
         // An unrestricted selection binds the 1×1 constant instead — the loop's masked
         // reads then return 1 everywhere and the stroke behaves exactly as before.
-        let sel_mask = if selection.is_universal() {
-            self.selection.constant(1.0).clone()
+        let sel_mask = if self.scene.selection.is_universal() {
+            r.selection.constant(1.0).clone()
         } else {
-            let (tex, view) =
-                self.selection
-                    .region_mask(&mut encoder, selection, &halo, region_origin, w, h);
-            scoped.texture(tex);
+            let (tex, view) = r.selection.region_mask(
+                &mut self.encoder,
+                self.scene.selection,
+                &halo,
+                region_origin,
+                w,
+                h,
+            );
+            self.piece.texture(tex);
             view
         };
 
-        // ---- Tool reservoir (ping-pong) + footprint snapshot textures. The
-        // snapshot rect must cover a segment quad's AABB at any rotation: half
-        // extents (radius + len/2 + margin, radius + margin), bounded by √2 × the
-        // half-diagonal.
-        let loop_usage =
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING;
+        // ---- Footprint snapshot textures. The snapshot rect must cover a segment
+        // quad's AABB at any rotation: half extents (radius + len/2 + margin,
+        // radius + margin), bounded by √2 × the half-diagonal. Sized from *this*
+        // piece's segments, so a piece drawn with a fine tip pays for a fine tip.
         let rmax = segments.iter().fold(0.5f32, |m, s| m.max(s.radius));
         let lmax = segments.iter().fold(0.0f32, |m, s| m.max(s.length));
         let dsize = (2.0 * std::f32::consts::SQRT_2 * (rmax + lmax * 0.5 + 1.5)).ceil() as u32;
-        let under_color = make_tex(
-            &mut scoped,
-            (dsize, dsize),
-            loop_usage,
-            "stark dynamics under color",
-        );
-        let under_aux = make_tex(
-            &mut scoped,
-            (dsize, dsize),
-            loop_usage,
-            "stark dynamics under aux",
-        );
-        // A stroke that starts fresh initializes its first reservoir by a render clear
-        // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
-        // a [`ToolState`] copies into it instead, hence the COPY pair — which also
-        // carries the end state back out.
-        let brush_usage = loop_usage
-            | wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST;
-        let brush_tex = |scoped: &mut ScopedResources, label: &'static str| {
-            scoped.texture(device.create_texture(&reservoir_desc(label, brush_usage)))
+        let mut under_tex = |label: &'static str| {
+            scoped_view(
+                device,
+                &mut self.piece,
+                (dsize, dsize),
+                wgpu::TextureFormat::Rgba16Float,
+                LOOP_USAGE,
+                label,
+            )
         };
-        let brush_color_tex = [
-            brush_tex(&mut scoped, "stark dynamics brush color a"),
-            brush_tex(&mut scoped, "stark dynamics brush color b"),
-        ];
-        let brush_aux_tex = [
-            brush_tex(&mut scoped, "stark dynamics brush aux a"),
-            brush_tex(&mut scoped, "stark dynamics brush aux b"),
-        ];
-        let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
-        let brush_color = [view_of(&brush_color_tex[0]), view_of(&brush_color_tex[1])];
-        let brush_aux = [view_of(&brush_aux_tex[0]), view_of(&brush_aux_tex[1])];
-        // The segment's swept reservoir prefix (fp32, so the per-fragment difference
-        // keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a
-        // single buffer serves: nothing reads last segment's bake.
-        let mut make_bake = |label: &'static str| {
-            scoped
-                .texture(device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: BAKE_RES,
-                        height: BAKE_RES,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: BAKE_FORMAT,
-                    usage: loop_usage,
-                    view_formats: &[],
-                }))
-                .create_view(&wgpu::TextureViewDescriptor::default())
-        };
-        let bake_load = make_bake("stark dynamics bake load");
-        let bake_latm = make_bake("stark dynamics bake latm");
-        if let Some(t) = tool {
-            // Resume: the tip arrives at this piece carrying exactly what it carried
-            // when the previous piece stopped.
-            encoder.copy_texture_to_texture(
-                t.color.as_image_copy(),
-                brush_color_tex[0].as_image_copy(),
-                RESERVOIR_EXTENT,
-            );
-            encoder.copy_texture_to_texture(
-                t.aux.as_image_copy(),
-                brush_aux_tex[0].as_image_copy(),
-                RESERVOIR_EXTENT,
-            );
-        } else {
-            // Init: latent = the brush's own colour, per-unit opacity = its alpha;
-            // the carried amount starts at the pre-`charge` glob (0 = empty tool).
-            let d = rec.brush.dynamics;
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics brush init"),
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &brush_color[0],
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: channels[0] as f64,
-                                g: channels[1] as f64,
-                                b: channels[2] as f64,
-                                a: rec.brush.color[3] as f64,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &brush_aux[0],
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                // Carried height = the pre-`charge` glob; carried wet
-                                // is 0 (the brush has no wetness knob, so the tool
-                                // never picks up or lays gloss of its own).
-                                r: d.charge as f64,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.0,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
-                ],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        }
+        let under_color = under_tex("stark dynamics under color");
+        let under_aux = under_tex("stark dynamics under aux");
 
         // ---- The dispatch plan (segments + interleaved pickups), one 256-byte
         // slot each (dynamic uniform offsets — the standard way to vary a uniform
         // across dispatches within one pass).
         let (plan, since_end) =
-            dynamics_plan(rec, &segments, region_origin, dsize, channels, since0);
+            dynamics_plan(rec, segments, region_origin, dsize, channels, self.since);
+        self.since = since_end;
         const STRIDE: usize = 256;
         const SLOT: usize = 144; // sizeof the `Stamp` uniform (9 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
         for (i, d) in plan.iter().enumerate() {
             data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::cast_slice(&d.slot));
         }
-        let stamp_buf = scoped.buffer(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark dynamics stamps"),
-            size: data.len() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        self.ctx.queue.write_buffer(&stamp_buf, 0, &data);
+        let stamp_buf = self
+            .scoped
+            .buffer(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stark dynamics stamps"),
+                size: data.len() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        r.ctx.queue.write_buffer(&stamp_buf, 0, &data);
 
         // ---- Bind groups. `params` binds a single slot-sized window whose dynamic
         // offset selects the dispatch; pickup/deposit come in two flavours for the
@@ -476,12 +560,6 @@ impl StrokeRenderer {
                 size: wgpu::BufferSize::new(SLOT as u64),
             }),
         };
-        fn tex(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
-            wgpu::BindGroupEntry {
-                binding,
-                resource: wgpu::BindingResource::TextureView(view),
-            }
-        }
         let samp = || wgpu::BindGroupEntry {
             binding: 5,
             resource: wgpu::BindingResource::Sampler(&kit.exchange_sampler),
@@ -507,11 +585,11 @@ impl StrokeRenderer {
                         tex(1, &region_color),
                         tex(2, &region_aux),
                         samp(),
-                        tex(6, &cov_view),
-                        tex(7, &brush_color[i]),
-                        tex(8, &brush_aux[i]),
-                        tex(9, &brush_color[1 - i]),
-                        tex(10, &brush_aux[1 - i]),
+                        tex(6, &self.cov),
+                        tex(7, &self.brush_color[i]),
+                        tex(8, &self.brush_aux[i]),
+                        tex(9, &self.brush_color[1 - i]),
+                        tex(10, &self.brush_aux[1 - i]),
                         tex(21, &sel_mask),
                     ],
                 })
@@ -527,10 +605,10 @@ impl StrokeRenderer {
                     entries: &[
                         params(),
                         samp(),
-                        tex(7, &brush_color[i]),
-                        tex(8, &brush_aux[i]),
-                        tex(17, &bake_load),
-                        tex(18, &bake_latm),
+                        tex(7, &self.brush_color[i]),
+                        tex(8, &self.brush_aux[i]),
+                        tex(17, &self.bake_load),
+                        tex(18, &self.bake_latm),
                     ],
                 })
             })
@@ -543,44 +621,40 @@ impl StrokeRenderer {
                     entries: &[
                         params(),
                         samp(),
-                        tex(19, &bake_load),
-                        tex(20, &bake_latm),
+                        tex(19, &self.bake_load),
+                        tex(20, &self.bake_latm),
                         tex(11, &under_color),
                         tex(12, &under_aux),
                         tex(13, &region_color),
                         tex(14, &region_aux),
-                        tex(15, &noise_view),
+                        tex(15, &self.noise),
                         wgpu::BindGroupEntry {
                             binding: 16,
-                            resource: wgpu::BindingResource::Sampler(&self.noise_sampler),
+                            resource: wgpu::BindingResource::Sampler(&r.noise_sampler),
                         },
                         tex(21, &sel_mask),
                     ],
                 })
             })
             .collect();
-        // The deposit's prefix-τ volume (group 1) — the same view the fast path
-        // binds, so the exchange footprint is the identical definite integral.
-        let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark dynamics prefix bg"),
-            layout: &kit.prefix_bgl,
-            entries: &[tex(0, &prefix_view)],
-        });
 
         // ---- The loop: snapshot → pickup → deposit per stamp, in stroke order.
         // One compute pass; the implicit barriers between dispatches give the
         // sequential semantics, and usage scopes are per-dispatch, so the region
         // may be sampled by one dispatch and storage-written by the next.
         //
-        // `cur` outlives the pass: it names the reservoir texture holding the tool's
-        // state, so after the last dispatch it names the state this piece ends in —
-        // which is what the next piece has to resume from.
-        let mut cur = 0usize;
+        // `self.cur` outlives the pass: it names the reservoir texture holding the
+        // tool's state, so after the last dispatch it names the state this piece ends
+        // in — which is what the next piece, or the next range, resumes from.
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("stark dynamics stamp loop"),
-                timestamp_writes: None,
-            });
+            let mut cur = self.cur;
+            let prefix_bg = &self.prefix_bg;
+            let mut cpass = self
+                .encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("stark dynamics stamp loop"),
+                    timestamp_writes: None,
+                });
             let du = dsize.div_ceil(8);
             let bu = BRUSH_RES.div_ceil(8);
             // The bake is one thread per row of its own texture.
@@ -604,14 +678,14 @@ impl StrokeRenderer {
                     // so it is per segment, not per pickup.
                     cpass.set_pipeline(&kit.bake_pipeline);
                     cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
-                    cpass.set_bind_group(1, &prefix_bg, &[]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(ku, 1, 1);
                     cpass.set_pipeline(&kit.snapshot_pipeline);
                     cpass.set_bind_group(0, &snapshot_bg, &[off]);
                     cpass.dispatch_workgroups(du, du, 1);
                     cpass.set_pipeline(&kit.deposit_pipeline);
                     cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
-                    cpass.set_bind_group(1, &prefix_bg, &[]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(du, du, 1);
                     // Drain the tool by what this segment just took, so the next one
                     // reads a tool that has actually travelled.
@@ -621,37 +695,15 @@ impl StrokeRenderer {
                     cur = 1 - cur;
                 }
             }
+            self.cur = cur;
         }
-
-        // ---- Remember the tool. Copied rather than aliased: the loop's own reservoir
-        // textures are scoped to this call and destroyed at the end of it, and the
-        // range that resumes will write its first pickup straight into whatever it is
-        // handed. 64² rgba16f, so the copy is ~32 KB — nothing beside the region work
-        // it saves the next pointer move.
-        let tool_out = capture.then(|| {
-            let mut copy_out = |src: &wgpu::Texture, label: &'static str| {
-                let usage = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
-                let dst = device.create_texture(&reservoir_desc(label, usage));
-                encoder.copy_texture_to_texture(
-                    src.as_image_copy(),
-                    dst.as_image_copy(),
-                    RESERVOIR_EXTENT,
-                );
-                dst
-            };
-            ToolState {
-                color: copy_out(&brush_color_tex[cur], "stark tool state color"),
-                aux: copy_out(&brush_aux_tex[cur], "stark tool state aux"),
-                since: since_end,
-            }
-        });
 
         // ---- Write-back: slice each affected tile's full TILE_TEX block out of
         // the shared region → aprons stay bit-identical to neighbour interiors
         // (§6.4), and the wide region aux narrows to the persistent (height, wet).
         let mut new_map = base.clone();
         for coord in &coords {
-            let dst = self.acquire_tile(pool, AllocSource::DynamicsWriteback);
+            let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
             let off = coord.origin() - lo;
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stark dynamics slice params"),
@@ -673,7 +725,7 @@ impl StrokeRenderer {
                 ],
             });
             {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark dynamics slice"),
                     color_attachments: &[
                         Some(wgpu::RenderPassColorAttachment {
@@ -700,21 +752,117 @@ impl StrokeRenderer {
             }
             new_map = new_map.insert(*coord, dst);
         }
-
-        self.ctx.queue.submit([encoder.finish()]);
-        // Destroy the per-stroke region/reservoir textures + buffers now (safe:
-        // WebGPU defers the real free past the submitted work) — see the
-        // `ScopedResources` docs for why waiting on JS GC OOMs the tab. `tool_out` is
-        // deliberately *not* among them: it outlives this call by design.
-        drop(scoped);
-        (
-            new_map,
-            StrokeCarry {
-                dist: end_dist,
-                tool: tool_out,
-            },
-        )
+        new_map
     }
+
+    /// Close out the piece already recorded, if any: submit its encoder, then destroy
+    /// the region it worked on. Peak transient memory is then one region however long
+    /// the stroke is — which is what [`MAX_REGION_DIM`](super::MAX_REGION_DIM) is for,
+    /// and it would not hold if every piece's region had to live until the last one
+    /// finished. Submissions run in order, so the next piece still composites what
+    /// this one wrote back.
+    ///
+    /// A stroke that fits one region never reaches the second call, so the everyday
+    /// case still records and submits exactly once.
+    fn flush(&mut self) {
+        if self.piece.is_empty() {
+            return;
+        }
+        let fresh = self
+            .r
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("stark dynamics stroke"),
+            });
+        let done = std::mem::replace(&mut self.encoder, fresh);
+        self.r.ctx.queue.submit([done.finish()]);
+        drop(std::mem::take(&mut self.piece));
+    }
+
+    /// Remember the tool for the range that resumes after this one. Copied rather
+    /// than aliased: the loop's own reservoir textures are scoped to this call and
+    /// destroyed at the end of it, and the range that resumes will write its first
+    /// pickup straight into whatever it is handed. 64² rgba16f, so the copy is
+    /// ~32 KB — nothing beside the region work it saves the next pointer move.
+    fn capture_tool(&mut self) -> ToolState {
+        let device = &self.r.ctx.device;
+        let copy_out = |encoder: &mut wgpu::CommandEncoder, src: &wgpu::Texture, label| {
+            let usage = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+            let dst = device.create_texture(&reservoir_desc(label, usage));
+            encoder.copy_texture_to_texture(
+                src.as_image_copy(),
+                dst.as_image_copy(),
+                RESERVOIR_EXTENT,
+            );
+            dst
+        };
+        ToolState {
+            color: copy_out(
+                &mut self.encoder,
+                &self.brush_color_tex[self.cur],
+                "stark tool state color",
+            ),
+            aux: copy_out(
+                &mut self.encoder,
+                &self.brush_aux_tex[self.cur],
+                "stark tool state aux",
+            ),
+            since: self.since,
+        }
+    }
+
+    /// Close the run: submit what is still recorded, then destroy the per-stroke
+    /// region/reservoir textures + buffers (safe: WebGPU defers the real free past the
+    /// submitted work) — see the [`ScopedResources`] docs for why waiting on JS GC
+    /// OOMs the tab. What [`Self::capture_tool`] handed back is deliberately *not*
+    /// among them: it outlives this call by design.
+    fn submit(self) {
+        self.r.ctx.queue.submit([self.encoder.finish()]);
+        drop(self.piece);
+        drop(self.scoped);
+    }
+}
+
+/// Shorthand for a texture-view bind-group entry.
+fn tex(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+    wgpu::BindGroupEntry {
+        binding,
+        resource: wgpu::BindingResource::TextureView(view),
+    }
+}
+
+/// What every texture the loop reads and writes needs to be: sampled by one
+/// dispatch, storage-written by the next.
+const LOOP_USAGE: wgpu::TextureUsages =
+    wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
+
+/// A texture scoped to one `render_dynamic` call, as a view: registered with `scoped`
+/// so it is destroyed right after the submit.
+fn scoped_view(
+    device: &wgpu::Device,
+    scoped: &mut ScopedResources,
+    size: (u32, u32),
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+    label: &'static str,
+) -> wgpu::TextureView {
+    scoped
+        .texture(device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        }))
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// The reservoir textures' shape — [`BRUSH_RES`]² of the tile colour format, which
@@ -884,41 +1032,51 @@ fn dynamics_plan(
     (plan, since)
 }
 
-/// Whether `rec` runs the sequential stamp loop, and the flattening budget it runs
-/// at — or `None` for the plain swept fast path.
+/// Which path a stroke takes, as [`dynamics_setup`] decides it.
 ///
-/// **A pure function of the whole record.** Both gates below could answer differently
-/// for a short piece of a stroke than for the stroke it belongs to, and every render
-/// of every piece has to agree with the commit that eventually replaces it: a live
-/// tail that took the stamp loop while the commit degraded to the swept deposit would
-/// redraw the stroke the moment the pointer came up. So neither gate is allowed to
-/// look at the piece in hand — see [`StrokeRenderer::render_range`].
-pub(super) fn dynamics_setup(rec: &StrokeRecord) -> Option<crate::path::FlattenTolerance> {
+/// The two swept answers are kept apart because they are not the same event: one is
+/// the fast path doing its job, the other is the renderer failing to draw the brush
+/// it was given. Only the caller knows how loudly to say so, so the distinction is
+/// carried out rather than resolved here.
+pub(super) enum StrokePath {
+    /// Run the sequential stamp loop, flattening at this budget.
+    Loop(crate::path::FlattenTolerance),
+    /// The brush manipulates no paint already on the canvas, so the swept deposit
+    /// *is* the whole stroke — one pass, no region, nothing given up.
+    Swept,
+    /// The brush manipulates paint, but its tip alone wants more than one region, and
+    /// the region is the one thing pieces cannot subdivide. The swept deposit draws
+    /// what it can, which is the brush's own `add` paint and none of the manipulation.
+    TipTooLarge,
+}
+
+/// Which path `rec` takes, and the flattening budget if it is the stamp loop.
+///
+/// **A pure function of the record, and of the brush alone.** This answer has to
+/// agree across every render of every piece of the stroke and with the commit that
+/// eventually replaces them: a live tail that took the stamp loop while the commit
+/// degraded to the swept deposit would redraw the stroke the moment the pointer came
+/// up. Asking only about the brush is the strongest form of that guarantee — there is
+/// nothing about the piece in hand, or the stroke's length, for it to disagree over —
+/// and it is what lets `render_range` re-ask on every pointer move for free.
+///
+/// It reads that way because the stroke's *size* no longer decides anything: an
+/// oversized stroke is drawn one region-sized piece at a time ([`chunk_segments`])
+/// rather than degraded. All that is left is the floor no subdivision gets under —
+/// one segment's own footprint — which is [`segment_fits_region`]'s question.
+pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePath {
     let d = rec.brush.dynamics;
     if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 {
-        return None;
+        return StrokePath::Swept;
     }
-    // The same flattened segments as the fast path; extremely long strokes re-flatten
-    // coarser so the dispatch count stays bounded. First stretch the length cap to the
-    // spacing that would hit the cap exactly, then relax the error bounds — each
-    // doubling roughly halves the count on a curved stroke.
-    let mut tol = flatten_tolerance(&rec.brush);
-    let mut segments = generate_segments_tol(rec, tol);
-    if segments.len() > MAX_STAMPS {
-        let total: f32 = segments.iter().map(|s| s.length).sum();
-        tol.max_len = tol.max_len.max(total / MAX_STAMPS as f32);
-        for _ in 0..8 {
-            segments = generate_segments_tol(rec, tol);
-            if segments.len() <= MAX_STAMPS {
-                break;
-            }
-            tol = tol.relaxed(2.0);
-        }
+    // The same flattened segments as the fast path, at the same budget: a long stroke
+    // costs more pieces, not coarser geometry.
+    let tol = flatten_tolerance(&rec.brush);
+    if segment_fits_region(&rec.brush, tol) {
+        StrokePath::Loop(tol)
+    } else {
+        StrokePath::TipTooLarge
     }
-    // An oversized stroke degrades to the swept deposit, bounding the transient GPU
-    // memory the loop's 1:1 region costs.
-    let (w, h) = region_dim(&segments)?;
-    (w <= MAX_REGION_DIM && h <= MAX_REGION_DIM).then_some(tol)
 }
 
 /// Build the brush-dynamics stamp-loop kit (DESIGN.md §6.2): the region
