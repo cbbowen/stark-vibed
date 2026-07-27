@@ -20,6 +20,7 @@ use common::*;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
+use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{MediaParams, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.15, 0.1, 1.0];
@@ -55,6 +56,7 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
@@ -122,6 +124,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(60.0, 60.0)),
@@ -140,6 +143,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),

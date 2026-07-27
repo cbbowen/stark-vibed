@@ -8,6 +8,7 @@ use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::Tool;
 use stark_core::engine::headless_engine;
 use stark_core::geom::{Extent2, Vec2};
+use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{Engine, RgbaImage};
 use stark_net::{CollabSession, NetOptions, RemoteEvent, SessionTicket};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -45,6 +46,7 @@ fn paint(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         engine.process(GestureCommand::To {

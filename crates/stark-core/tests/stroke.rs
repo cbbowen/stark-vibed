@@ -8,6 +8,7 @@ use stark_core::Engine;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, Tool};
 use stark_core::geom::Vec2;
+use stark_core::path::DEFAULT_TOLERANCE;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
@@ -72,6 +73,7 @@ fn live_preview_shows_stroke_before_commit() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-30.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 0.0)),
@@ -108,6 +110,7 @@ fn a_split_live_preview_matches_the_single_pass_commit() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         engine.process(GestureCommand::To {
@@ -150,6 +153,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         engine.process(GestureCommand::To {
@@ -192,6 +196,7 @@ fn a_real_captured_stroke_previews_as_it_commits() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         engine.process(GestureCommand::To {
@@ -235,6 +240,7 @@ fn the_incremental_preview_matches_a_fresh_one_throughout() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for (i, &p) in it.enumerate() {
         engine.process(GestureCommand::To {
@@ -307,6 +313,7 @@ fn a_smear_stroke_previews_as_it_commits() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         engine.process(GestureCommand::To {
@@ -349,6 +356,7 @@ fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for (i, &p) in it.enumerate() {
         engine.process(GestureCommand::To {
@@ -457,6 +465,7 @@ fn an_oversized_smear_stroke_previews_as_it_commits() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         engine.process(GestureCommand::To {
@@ -570,6 +579,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     let (mut early, mut late) = (0.0f64, 0.0f64);
     let (mut ne, mut nl) = (0u32, 0u32);

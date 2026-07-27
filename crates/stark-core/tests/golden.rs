@@ -9,6 +9,7 @@ use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushShape, OrientationSource, Tool};
 use stark_core::geom::Vec2;
+use stark_core::path::DEFAULT_TOLERANCE;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
@@ -130,6 +131,7 @@ fn golden_bristle_stroke() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-90.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(90.0, 0.0)),
@@ -171,6 +173,7 @@ fn golden_pen_orientation_stroke() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: sample(-80.0, -50.0),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &(x, y) in &[(0.0, -50.0), (60.0, -10.0), (60.0, 70.0)] {
         engine.process(GestureCommand::To {
@@ -202,6 +205,7 @@ fn golden_canvas_surface() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-95.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(95.0, 0.0)),

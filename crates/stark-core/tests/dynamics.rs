@@ -9,6 +9,7 @@ use common::*;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, BrushParams, Tool};
 use stark_core::geom::Vec2;
+use stark_core::path::DEFAULT_TOLERANCE;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
@@ -361,6 +362,7 @@ fn golden_self_smear() {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-40.0, -70.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &(x, y) in &[(-40.0, 60.0), (20.0, 70.0), (40.0, 0.0), (-70.0, 10.0)] {
         engine.process(GestureCommand::To {

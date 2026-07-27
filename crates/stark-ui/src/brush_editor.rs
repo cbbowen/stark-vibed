@@ -549,6 +549,7 @@ fn start_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
     r.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: s,
+        tolerance: crate::input::input_tolerance_in(r.view(), e),
     });
     r.paint();
     drop(guard);

@@ -17,6 +17,7 @@ use common::*;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
+use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{RgbaImage, SelectionMode, SelectionOp, SelectionShape};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -380,6 +381,7 @@ fn a_selection_gesture_commits_the_same_op_it_previewed() {
     engine.process(GestureCommand::Start {
         tool: Tool::SelectRect,
         sample: InputSample::at(BOX_MIN),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(-20.0, 0.0)),
@@ -406,6 +408,7 @@ fn a_click_with_a_marquee_selects_nothing() {
     engine.process(GestureCommand::Start {
         tool: Tool::SelectRect,
         sample: InputSample::at(Vec2::ZERO),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::End);
     assert!(
@@ -431,6 +434,7 @@ fn drawing_a_selection_disarms_the_tool() {
         engine.process(GestureCommand::Start {
             tool,
             sample: InputSample::at(BOX_MIN),
+            tolerance: DEFAULT_TOLERANCE,
         });
         // A marquee spans the drag's two corners; a lasso needs a traced interior.
         let path: &[Vec2] = if tool == Tool::SelectLasso {
@@ -473,6 +477,7 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
     engine.process(GestureCommand::Start {
         tool: Tool::SelectRect,
         sample: InputSample::at(BOX_MIN),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(BOX_MAX),
@@ -486,6 +491,7 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
     engine.process(GestureCommand::Start {
         tool,
         sample: InputSample::at(Vec2::new(-30.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 0.0)),

@@ -33,7 +33,7 @@ use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
-use input::{elem_xy, end_interaction, handle_keydown, handle_keyup, sample};
+use input::{elem_xy, end_interaction, handle_keydown, handle_keyup, input_tolerance, sample};
 use layout::{PanelId, PanelLayout, PanelStack, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{ENV_FERNDALE, surface_asset};
@@ -205,7 +205,13 @@ fn Canvas() -> Element {
                                 mode_restore.set(Some(current_mode(state)));
                                 dispatch(state, ViewCommand::SetSelectionMode(m));
                             }
-                            dispatch(state, GestureCommand::Start { tool, sample: sample(state, &e) });
+                            dispatch(state, GestureCommand::Start {
+                                tool,
+                                sample: sample(state, &e),
+                                // What this device and this zoom level actually
+                                // resolve to, which is what the fit prices against.
+                                tolerance: input_tolerance(state, &e),
+                            });
                             drawing.set(true);
                         }
                     }

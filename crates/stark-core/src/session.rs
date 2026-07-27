@@ -207,11 +207,13 @@ impl Session {
     }
 
     /// Begin a stroke. `seed` is supplied by the engine so it can be derived
-    /// deterministically (DESIGN.md §6.2). Replaces any abandoned in-flight one.
-    pub fn start_stroke(&mut self, tool: Tool, sample: InputSample, seed: u64) {
+    /// deterministically (DESIGN.md §6.2). `tolerance` is what the frontend says its
+    /// input resolves to, in canvas px ([`PathFitter::with_tolerance`]). Replaces any
+    /// abandoned in-flight one.
+    pub fn start_stroke(&mut self, tool: Tool, sample: InputSample, seed: u64, tolerance: f32) {
         self.tool = tool;
         self.selecting = None;
-        let mut fitter = PathFitter::new();
+        let mut fitter = PathFitter::with_tolerance(tolerance);
         fitter.push(sample);
         self.in_flight = Some(StrokeBuilder {
             tool,

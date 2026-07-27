@@ -13,6 +13,7 @@ use common::*;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, ColorDynamics, NoiseKind, Tool};
 use stark_core::geom::Vec2;
+use stark_core::path::DEFAULT_TOLERANCE;
 
 /// A muted teal mid-tone: enough headroom in every Oklab channel for the jitter
 /// to wander both ways without everything clamping at the gamut edge.
@@ -183,6 +184,7 @@ fn jittered_live_preview_matches_commit() {
     live.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         live.process(GestureCommand::To {

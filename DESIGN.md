@@ -545,8 +545,8 @@ A `PathFitter` streams samples into control points as a **least-squares clamped
 cubic B-spline** (`spline.rs`), grown and refit as they arrive:
 
 - **Grow.** The control polygon lengthens with the stroke — one point per
-  `KNOT_SPACING` of arc length, plus more wherever the input's *sagitta* over one
-  such interval exceeds `SAGITTA_TOLERANCE`. Fitting is what smooths, so there is
+  `KNOT_SPACING` of arc length, plus more wherever taking one on measurably
+  reduces the error, by at least `KNOT_COST`. Fitting is what smooths, so there is
   no separate low-pass stage: a polygon far coarser than the jitter averages a
   pixel-quantized staircase away. The arc-length floor is not redundant with the
   sagitta test — it is what makes the polygon grow, and so freezing advance, on a
@@ -556,6 +556,16 @@ cubic B-spline** (`spline.rs`), grown and refit as they arrive:
 - **Freeze** all but the last few control points. Those are final — nothing drawn
   later can move them — which is what makes the fit append-only and lets a caller
   treat the settled prefix (`frozen_spans`) as already rendered.
+
+Both growth thresholds are denominated in an **input tolerance** the frontend
+supplies with `GestureCommand::Start`, in canvas px — the error one as its square,
+since it is compared against a mean square. Canvas px are the wrong unit to fix
+them in: the same hand movement covers 64× as many zoomed in as zoomed out, and a
+pen digitizer, a touchscreen and a mouse each report at a different grain through
+the same pointer API. Only the frontend knows either fact, so it states the grain
+and the fit becomes invariant to zoom. This is a *fitting* knob and reaches nothing
+else — flattening's budget (below) is an error against the curve, in the canvas px
+it will actually be drawn in.
 
 Both **ends are pinned**: a least-squares fit does not hold them, because a
 stretch of parameter with no sample assigned to it costs nothing, so the curve
@@ -582,8 +592,9 @@ one that spikes exactly at a corner. This solves several problems:
 - **No stair-step aliasing** — jittery pixel-stepped input (a slow diagonal drawn
   as right/up steps snapped to the device grid) is smoothed and collapses to a
   clean curve instead of axis-aligned segments. This is the fit doing it, and it
-  is why `SAGITTA_TOLERANCE` has to sit *above* the input's own quantization: set
-  it below and a staircase reads as curvature and gets traced rather than smoothed.
+  is why the price of a control point has to sit *above* the input's own
+  quantization — which is what the frontend's declared tolerance is for. Priced
+  below it, a staircase reads as curvature and gets traced rather than smoothed.
 - **Continuous-looking stamping** — stamps ride a smooth path with smooth
   tangents, so even hard-edged tips read as one stroke rather than a row of
   discrete dabs (an approximation of a path integral over the stroke).
@@ -1400,6 +1411,9 @@ undo/redo, layer panel) surrounds it.
   was committed — so no call site has to remember that sequence. Pointer events
   on the canvas become `GestureCommand::Start`/`To`/`End`, with element
   coordinates mapped to canvas space via `ViewTransform::screen_to_canvas`.
+  `Start` also carries the **input tolerance** (§6.2): `devicePixelRatio` and the
+  event's `pointerType` give the device's grain in CSS px, and the same view
+  transform carries it into the canvas px the fit prices against.
 - Components render from `ObservableState` (held in a Dioxus signal) so toggles
   like undo-availability stay reactive — **no pixel data crosses this boundary.**
 - The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each

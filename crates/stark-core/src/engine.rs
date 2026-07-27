@@ -264,13 +264,19 @@ impl Engine {
     /// stroke, and both preview through the same `preview` DocState.
     fn process_gesture(&mut self, command: GestureCommand) {
         match command {
-            GestureCommand::Start { tool, sample } => {
+            GestureCommand::Start {
+                tool,
+                sample,
+                tolerance,
+            } => {
                 if tool.is_selection() {
+                    // A marquee or lasso fits no curve, so it has no use for the
+                    // tolerance; its own decimation is a mask-cost knob (§6.8).
                     self.session.start_selection(tool, sample.pos);
                     self.refresh_selection_preview();
                 } else {
                     let seed = self.clock;
-                    self.session.start_stroke(tool, sample, seed);
+                    self.session.start_stroke(tool, sample, seed, tolerance);
                     self.debug_samples.clear();
                     self.debug_samples.push(sample);
                     self.refresh_preview();
@@ -433,7 +439,10 @@ impl Engine {
     ) {
         let mut it = samples.iter();
         let Some(first) = it.next() else { return };
-        self.session.start_stroke(tool, *first, seed);
+        // Replayed samples are already in canvas space and came from a fit or from a
+        // generator, not from a device, so there is no device grain to declare.
+        self.session
+            .start_stroke(tool, *first, seed, crate::path::DEFAULT_TOLERANCE);
         for s in it {
             self.session.stroke_to(*s);
         }

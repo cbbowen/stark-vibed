@@ -84,8 +84,27 @@ pub enum InputCommand {
 /// produces document state, and [`GestureCommand::Cancel`] produces none.
 #[derive(Clone, Debug)]
 pub enum GestureCommand {
-    Start { tool: Tool, sample: InputSample },
-    To { sample: InputSample },
+    Start {
+        tool: Tool,
+        sample: InputSample,
+        /// How finely this gesture's input actually resolves position, in canvas px
+        /// — see [`PathFitter::with_tolerance`](crate::path::PathFitter::with_tolerance).
+        ///
+        /// The frontend states it because the frontend is the only thing that knows
+        /// it: canvas px are 64× coarser zoomed out than zoomed in, and a pen
+        /// digitizer, a touchscreen and a mouse each report at a different grain
+        /// through the same API. Passing [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE)
+        /// asks for the fit the engine has always done: one canvas px, i.e. a mouse
+        /// at 1:1.
+        ///
+        /// It tunes the **fit** and nothing else — the selection tools, which share
+        /// this gesture but fit no curve, ignore it, and so does the flattening that
+        /// turns a fitted path into segments.
+        tolerance: f32,
+    },
+    To {
+        sample: InputSample,
+    },
     End,
     Cancel,
 }

@@ -51,16 +51,18 @@ use crate::spline::CubicBSpline;
 /// corner before the corner is committed.
 const FREE_CONTROL_POINTS: usize = 3;
 
-/// What a control point has to earn, in **mean** squared canvas px of error over
-/// the samples in the window, before the fit will take one on.
+/// What a control point has to earn, in **mean** squared error over the samples in
+/// the window, before the fit will take one on — measured in units of the caller's
+/// input tolerance, so the price in canvas px² is `KNOT_COST × tolerance²`.
 ///
 /// Every sample is fitted both ways — as the polygon stands, and with one more
 /// control point — and the larger fit is adopted only if it buys at least this much.
 /// Adopting it is also what *freezes* one, since the window is a fixed size, so this
 /// single number decides both how detailed the curve is and how promptly the stroke
 /// settles behind the pointer.
-/// Measured on the six recorded strokes, worst *live* error and control-point
-/// count, once the parameterization was corrected (see `arc_profile`):
+/// Measured on the six recorded strokes at `DEFAULT_TOLERANCE`, worst *live* error
+/// and control-point count, once the parameterization was corrected (see
+/// `arc_profile`):
 ///
 /// | price | C        | hairpin  | loop     | spiral   | big-C    | fast     |
 /// |-------|----------|----------|----------|----------|----------|----------|
@@ -70,16 +72,40 @@ const FREE_CONTROL_POINTS: usize = 3;
 ///
 /// The floor is set by the input's own quantization rather than by taste: priced
 /// below the jitter, the fit buys control points to *trace* a pixel staircase
-/// instead of smoothing through it.
+/// instead of smoothing through it. That is why the price is denominated in the
+/// tolerance and why it scales as its **square** — input landing on a grid of
+/// `tolerance` leaves a residual whose *mean square* goes as `tolerance²`, so a
+/// price fixed in canvas px² would sit above the jitter at one zoom level and
+/// below it at another.
 pub const KNOT_COST: f32 = 0.06;
 
-/// Distance (canvas px) after which the polygon gains a control point regardless of
-/// error.
+/// Distance after which the polygon gains a control point regardless of error, in
+/// units of the caller's input tolerance (`KNOT_SPACING × tolerance` canvas px).
 ///
 /// Not about accuracy: a dead-straight stroke is fitted perfectly by a handful of
 /// control points however long it runs, so on error alone it would never gain one,
 /// never freeze one, and never let the renderer retire any of it.
+///
+/// Scaled by the tolerance for the same reason the price is. What it bounds is how
+/// long the free window may go without advancing, and the window's job is to average
+/// over a certain number of *input reports* — canvas px say nothing about how many
+/// of those a stretch of stroke holds.
 pub const KNOT_SPACING: f32 = 64.0;
+
+/// The input tolerance assumed when a caller does not supply one: one canvas px,
+/// which is a mouse over a 1:1 view — what the two prices above were measured
+/// against.
+pub const DEFAULT_TOLERANCE: f32 = 1.0;
+
+/// Bounds a supplied tolerance is held to.
+///
+/// Zero (or negative) would make a control point free and every sample worth one.
+/// The ceiling is 64 canvas px per input px — past the most zoomed-out view
+/// [`ViewTransform`](crate::geom::ViewTransform) allows — and is what keeps the
+/// window advancing, and so the per-sample work bounded, rather than letting a
+/// stroke never grow a control point at all.
+const MIN_TOLERANCE: f32 = 1.0 / 64.0;
+const MAX_TOLERANCE: f32 = 64.0;
 
 /// Curvature penalty on the control polygon, as a fraction of the data's own pull
 /// (see [`CubicBSpline::fit_channels`]).
@@ -247,6 +273,13 @@ const MAX_SUBDIVISION_DEPTH: u32 = 10;
 /// makes the first and last control points the curve's endpoints, and least squares
 /// does not otherwise hold them there. They are pinned as *constraints* of the solve
 /// (held rows), not written over its result, so the rest solves around them.
+///
+/// Both thresholds in that growth rule are quoted in the caller's **input tolerance**
+/// rather than in canvas px (see [`Self::with_tolerance`]) — what counts as jitter to
+/// smooth through, as against detail to keep, is a fact about the device and the zoom
+/// level, and only the caller knows it. Flattening is untouched by this: its budget
+/// is an error against the *curve*, in the canvas px it will be drawn in
+/// ([`FlattenTolerance`]).
 pub struct PathFitter {
     /// Every accepted report, with the distance along the stroke that parameterizes
     /// it. Kept whole — a few hundred is nothing — while the solve only ever looks
@@ -264,7 +297,8 @@ pub struct PathFitter {
     /// Arc at which the polygon last gained a control point.
     grown_at: f32,
     smoothing: f32,
-    knot_cost: f32,
+    /// The input's own positional resolution, in canvas px (see [`Self::with_tolerance`]).
+    tolerance: f32,
     /// Absolute time of the first sample; channel times are relative to it.
     t0: f64,
     finished: bool,
@@ -284,6 +318,7 @@ impl std::fmt::Debug for PathFitter {
             .field("samples", &self.pts.len())
             .field("control_points", &self.geom.nrows())
             .field("frozen_spans", &self.frozen_spans())
+            .field("tolerance", &self.tolerance)
             .field("arc", &self.arc)
             .field("finished", &self.finished)
             .finish()
@@ -298,11 +333,22 @@ impl Default for PathFitter {
 
 impl PathFitter {
     pub fn new() -> Self {
-        Self::with_params(KNOT_COST)
+        Self::with_tolerance(DEFAULT_TOLERANCE)
     }
 
-    /// A fitter with an explicit price per control point (see [`KNOT_COST`]).
-    pub fn with_params(knot_cost: f32) -> Self {
+    /// A fitter for input whose positional resolution is `tolerance` **canvas px**.
+    ///
+    /// This is the one thing about the input the fit cannot work out for itself: how
+    /// far apart two reports have to be before the difference means anything. Canvas
+    /// px are the wrong unit for it — the same hand movement covers 64× as many of
+    /// them zoomed in as zoomed out, and a pen digitizer resolves far finer than a
+    /// mouse does at either — so the caller that owns the view transform and knows
+    /// what device is reporting states it, and the fit's two prices ([`KNOT_COST`],
+    /// [`KNOT_SPACING`]) are denominated in it.
+    ///
+    /// Clamped to `[1/64, 64]`; a non-finite tolerance falls back to
+    /// [`DEFAULT_TOLERANCE`].
+    pub fn with_tolerance(tolerance: f32) -> Self {
         Self {
             pts: Vec::new(),
             first_live: 0,
@@ -312,7 +358,11 @@ impl PathFitter {
             settled_profile: Vec::new(),
             grown_at: 0.0,
             smoothing: SMOOTHING,
-            knot_cost,
+            tolerance: if tolerance.is_finite() {
+                tolerance.clamp(MIN_TOLERANCE, MAX_TOLERANCE)
+            } else {
+                DEFAULT_TOLERANCE
+            },
             t0: 0.0,
             finished: false,
         }
@@ -360,8 +410,13 @@ impl PathFitter {
         // The arc-length term is not about accuracy: a dead-straight stroke is fitted
         // perfectly by a handful of control points forever, so nothing would ever
         // freeze and the renderer could never retire any of it.
-        let earns_it =
-            err_as_is - err_grown > self.knot_cost || self.arc - self.grown_at > KNOT_SPACING;
+        //
+        // Both prices are quoted in the input's own units rather than in canvas px —
+        // the error one squared, since it is compared against a mean square. See
+        // `KNOT_COST`.
+        let price = KNOT_COST * self.tolerance * self.tolerance;
+        let spacing = KNOT_SPACING * self.tolerance;
+        let earns_it = err_as_is - err_grown > price || self.arc - self.grown_at > spacing;
         if earns_it {
             self.grown_at = self.arc;
             self.adopt(grown);
@@ -682,11 +737,16 @@ fn clamp_tilt(t: Vec2) -> Vec2 {
     if len > 1.0 { t / len } else { t }
 }
 
-/// Fit a whole sample sequence in one call — the batch form of [`PathFitter`],
-/// used by replay and tests. Identical output to feeding the same samples one at
-/// a time and finishing.
+/// Fit a whole sample sequence in one call at [`DEFAULT_TOLERANCE`] — the batch form
+/// of [`PathFitter`], used by replay and tests. Identical output to feeding the same
+/// samples one at a time and finishing.
 pub fn fit(samples: &[InputSample]) -> Vec<ControlPoint> {
-    let mut f = PathFitter::new();
+    fit_with_tolerance(samples, DEFAULT_TOLERANCE)
+}
+
+/// [`fit`] for input of a stated resolution (see [`PathFitter::with_tolerance`]).
+pub fn fit_with_tolerance(samples: &[InputSample], tolerance: f32) -> Vec<ControlPoint> {
+    let mut f = PathFitter::with_tolerance(tolerance);
     for s in samples {
         f.push(*s);
     }
@@ -1151,8 +1211,10 @@ mod tests {
         // A 2-px right / 2-px up staircase, e.g. a slow diagonal snapped to a 2px
         // device grid. Each corner sits ~1.4px off the diagonal. Fitting is what
         // smooths here — there is no separate low-pass stage — so this is really a
-        // test that `SAGITTA_TOLERANCE` sits above the input's own quantization: set
-        // it below and the zigzag reads as curvature and gets traced.
+        // test of what happens when the price a control point pays sits *below* the
+        // input's own quantization: the zigzag reads as curvature and gets traced.
+        // `a_coarser_tolerance_smooths_what_a_finer_one_traces` is the other half —
+        // the same staircase with the grid declared.
         let mut stair = vec![sample(0.0, 0.0)];
         for i in 0..12 {
             let b = (i * 2) as f32;
@@ -1171,6 +1233,102 @@ mod tests {
             (0.5..2.0).contains(&err),
             "err {err} — traced, not smoothed?"
         );
+    }
+
+    /// The same 2px staircase, with the grid it was quantized to declared. Told what
+    /// the input can actually resolve, the fit stops paying for control points to
+    /// explain a zigzag that is not there.
+    #[test]
+    fn a_coarser_tolerance_smooths_what_a_finer_one_traces() {
+        let mut stair = vec![sample(0.0, 0.0)];
+        for i in 0..12 {
+            let b = (i * 2) as f32;
+            stair.push(sample(b + 2.0, b));
+            stair.push(sample(b + 2.0, b + 2.0));
+        }
+        let fine = fit_with_tolerance(&stair, DEFAULT_TOLERANCE).len();
+        let coarse = fit_with_tolerance(&stair, 2.0).len();
+        assert!(
+            coarse * 2 <= fine,
+            "2px grid declared: {coarse} control points against {fine} — not smoothed"
+        );
+        // And what is left is still the diagonal, not a shortcut across it: every
+        // sample is within a step of the curve.
+        let poly = flatten(&fit_with_tolerance(&stair, 2.0), FLATTEN_TOLERANCE);
+        let worst = stair
+            .iter()
+            .map(|s| {
+                poly.windows(2)
+                    .map(|w| point_segment_distance(s.pos, w[0].pos, w[1].pos))
+                    .fold(f32::INFINITY, f32::min)
+            })
+            .fold(0.0, f32::max);
+        assert!(worst < 2.0, "smoothed off the diagonal: {worst}px");
+    }
+
+    /// The point of letting the caller state the tolerance: one gesture, drawn at
+    /// different zoom levels, fits to one curve.
+    ///
+    /// Zoom scales canvas coordinates and the input's resolution *in* them by the
+    /// same factor, so a declared tolerance makes the fit scale-invariant — the error
+    /// price goes as its square and the spacing floor as its first power, which is
+    /// exactly how a uniform scaling moves the two quantities they are each compared
+    /// against. Priced in canvas px instead, the same stroke bought control points to
+    /// trace its own jitter zoomed in and lost real detail zoomed out.
+    #[test]
+    fn a_declared_tolerance_makes_the_fit_zoom_invariant() {
+        let screen: Vec<InputSample> = stark_testdata::BIG_C_STROKE
+            .iter()
+            .map(|&[x, y]| sample(x, y))
+            .collect();
+        let reference = fit_with_tolerance(&screen, DEFAULT_TOLERANCE);
+        // Powers of two, so scaling the input is exact in f32 and any difference
+        // that shows up is the growth rule's and not the arithmetic's.
+        for zoom in [0.25f32, 4.0, 16.0] {
+            let k = 1.0 / zoom;
+            let pts: Vec<InputSample> = screen
+                .iter()
+                .map(|s| InputSample {
+                    pos: s.pos * k,
+                    ..*s
+                })
+                .collect();
+            let got = fit_with_tolerance(&pts, DEFAULT_TOLERANCE * k);
+            assert_eq!(
+                got.len(),
+                reference.len(),
+                "zoom {zoom}: {} control points against {}",
+                got.len(),
+                reference.len()
+            );
+            for (i, (a, b)) in got.iter().zip(&reference).enumerate() {
+                let d = (a.pos - b.pos * k).length();
+                assert!(d < 1e-3 * k, "zoom {zoom}: control point {i} moved {d}");
+            }
+        }
+    }
+
+    /// The tolerance arrives from a frontend, so it is guarded rather than trusted.
+    /// Zero or negative would make a control point free of charge and the spacing
+    /// floor zero; huge would leave a stroke never growing the polygon, never
+    /// freezing, and re-solving against every sample it ever took. Held to the usable
+    /// range, each of these still fits a well-formed polygon bounded by its data (one
+    /// growth per report, from a polygon that starts at two).
+    #[test]
+    fn a_degenerate_tolerance_is_held_to_the_usable_range() {
+        let pts: Vec<InputSample> = (0..48).map(|i| sample(i as f32 * 3.0, 0.0)).collect();
+        for t in [0.0, -5.0, f32::NAN, f32::INFINITY, 1e9] {
+            let m = fit_with_tolerance(&pts, t).len();
+            assert!(
+                (2..=pts.len() + 1).contains(&m),
+                "tolerance {t}: {m} control points"
+            );
+        }
+        // A number that is not one falls back to the default rather than to an end of
+        // the range — there is nothing to read from it in either direction.
+        for t in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(fit_with_tolerance(&pts, t), fit(&pts), "tolerance {t}");
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ use common::*;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
+use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{Engine, SurfaceId};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
@@ -103,6 +104,7 @@ fn brush_assets_survive_save_load() {
     original.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(Vec2::new(-70.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
     });
     original.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(70.0, 0.0)),

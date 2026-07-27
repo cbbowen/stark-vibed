@@ -12,6 +12,7 @@ use stark_core::command::{GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushParams, Tool};
 use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
+use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{Engine, RgbaImage};
 
 pub const SIZE: Extent2 = Extent2 {
@@ -110,6 +111,7 @@ pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
     engine.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: InputSample::at(first),
+        tolerance: DEFAULT_TOLERANCE,
     });
     for &p in it {
         engine.process(GestureCommand::To {
