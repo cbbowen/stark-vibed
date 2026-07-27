@@ -1231,6 +1231,24 @@ with the gradient taken at one canvas pixel, converted to screen px by the zoom 
 so it stays a constant on-screen width at any zoom, stays thin over a feathered
 edge, and needs no bookkeeping to survive union/subtract/intersect.
 
+**The selection tools are momentary.** `Session::end_selection` hands the canvas
+back to `Tool::Brush` the moment a gesture actually encloses something. Selecting
+is a step *towards* painting and is essentially never done twice in a row, so a
+modal selection tool charges a deliberate switch-back on the overwhelmingly common
+path — and when the user forgets, their next brush gesture silently redefines the
+selection instead of painting. A gesture that enclosed nothing (a stray click) is
+not a selection, so it leaves the tool armed rather than punishing a mis-click.
+
+This is engine-side, not chrome: the session owns `tool`, so every frontend gets
+the same behaviour and `observe().tool` reports it in the same update that
+committed the op. The frontend then needs no "Paint" tool chip at all — *no chip
+lit* is the brush, and clicking the lit chip disarms it, so the control that armed
+a tool is the one that takes it back. The two commands that act on a whole
+selection (deselect, invert) live in a small floating bar mounted only while a
+selection is in force: they are meaningless without one, and a bar that is present
+or absent indicates the canvas is masked more directly than permanently-visible
+buttons that happen to be greyed out.
+
 ## 7. The engine actor (async backend)
 
 > **Status: the target, not the present.** Today `Engine::process` is called

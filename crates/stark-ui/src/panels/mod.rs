@@ -11,4 +11,4 @@ pub use brush::BrushPanel;
 pub use color::ColorPanel;
 pub use layer::LayerPanel;
 pub use lighting::LightingPanel;
-pub use select::SelectPanel;
+pub use select::{SelectPanel, SelectionBar};

@@ -37,6 +37,7 @@ use input::{elem_xy, end_interaction, handle_keydown, handle_keyup, sample};
 use layout::{PanelId, PanelLayout, PanelStack, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{ENV_FERNDALE, surface_asset};
+use panels::SelectionBar;
 use panels::select::{current_mode, current_tool, modifier_mode};
 use platform::capture_pointer;
 use render::{CANVAS_ID, Renderer};
@@ -145,6 +146,10 @@ fn app() -> Element {
 
             // Floating tool panels, stacked top-right — order + visibility are data-driven.
             PanelStack {}
+
+            // Bottom-centre: the whole-selection commands, present only while there is
+            // a selection to act on — so it doubles as the "canvas is masked" indicator.
+            SelectionBar {}
 
             // The brush editor dialog (mounted only while open, so each open
             // re-inits its preview against the current canvas look).

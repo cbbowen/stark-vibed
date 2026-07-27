@@ -234,11 +234,46 @@
   cursor: default;
 }
 
-/* Rows of chips in the Select panel (tool, combine mode, whole-selection commands). */
+/* Rows of chips in the Select panel (tool, combine mode). */
 .tool-row {
   display: flex;
   gap: 6px;
   margin-bottom: 10px;
+}
+
+/* Floating selection bar (DESIGN.md §6.8): the whole-selection commands, mounted
+   only while a selection is in force. Bottom-centre keeps it clear of the left rail
+   and the right-hand panel stack, and near the canvas it describes. It is only as
+   wide as its contents, so it never blocks a drag it isn't over. */
+.selection-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  color: #e8e8ea;
+}
+
+/* The label is the indicator; the buttons beside it are the commands. */
+.selection-bar-label {
+  font-size: 12px;
+  color: #ffffff8c;
+  padding-left: 2px;
+}
+
+/* Chips stretch to fill a panel row; in the bar they size to their own text. */
+.selection-bar .chip {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12px;
 }
 
 /* Native drop-down styled to the panel chrome (e.g. the Surface picker). */

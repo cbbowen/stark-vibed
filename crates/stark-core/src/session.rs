@@ -185,8 +185,20 @@ impl Session {
     }
 
     /// Finish the gesture, returning the op to commit (`None` if it encloses nothing).
+    ///
+    /// The selection tools are **momentary**: having drawn a selection, the session
+    /// hands the canvas straight back to the brush. Selecting is a step *towards*
+    /// painting, essentially never something you do twice in a row, so making it
+    /// modal costs a deliberate switch-back on the overwhelmingly common path — and
+    /// leaves a brush gesture silently redefining the selection when the user forgets.
+    /// A gesture that enclosed nothing (a stray click) is not a selection and leaves
+    /// the tool armed, so a mis-click doesn't disarm it.
     pub fn end_selection(&mut self) -> Option<SelectionOp> {
-        self.selecting.take().and_then(|d| d.to_op())
+        let op = self.selecting.take().and_then(|d| d.to_op());
+        if op.is_some() {
+            self.tool = Tool::Brush;
+        }
+        op
     }
 
     /// Discard the in-flight selection gesture without committing.

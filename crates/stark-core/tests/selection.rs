@@ -14,7 +14,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{DocCommand, GestureCommand, InputSample};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, Tool};
 use stark_core::geom::Vec2;
 use stark_core::{RgbaImage, SelectionMode, SelectionOp, SelectionShape};
@@ -411,6 +411,93 @@ fn a_click_with_a_marquee_selects_nothing() {
     assert!(
         !engine.observe().has_selection,
         "a zero-area marquee is not a selection"
+    );
+    assert_eq!(
+        engine.observe().tool,
+        Tool::SelectRect,
+        "a stray click is not a selection, so it must not disarm the tool either"
+    );
+}
+
+#[test]
+fn drawing_a_selection_disarms_the_tool() {
+    // Selection tools are momentary (DESIGN.md §6.8): selecting is a step towards
+    // painting, so the canvas comes back to the brush of its own accord rather than
+    // leaving a mode the next gesture would silently redefine the selection through.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    for tool in [Tool::SelectRect, Tool::SelectEllipse, Tool::SelectLasso] {
+        engine.process(GestureCommand::Start {
+            tool,
+            sample: InputSample::at(BOX_MIN),
+        });
+        // A marquee spans the drag's two corners; a lasso needs a traced interior.
+        let path: &[Vec2] = if tool == Tool::SelectLasso {
+            &[
+                Vec2::new(BOX_MAX.x, BOX_MIN.y),
+                BOX_MAX,
+                Vec2::new(BOX_MIN.x, BOX_MAX.y),
+            ]
+        } else {
+            &[BOX_MAX]
+        };
+        for &p in path {
+            engine.process(GestureCommand::To {
+                sample: InputSample::at(p),
+            });
+        }
+        assert_eq!(
+            engine.observe().tool,
+            tool,
+            "{tool:?} stays armed for the length of its own gesture"
+        );
+
+        engine.process(GestureCommand::End);
+        assert!(engine.observe().has_selection, "{tool:?} drew a selection");
+        assert_eq!(
+            engine.observe().tool,
+            Tool::Brush,
+            "{tool:?} hands the canvas back to the brush once it has drawn"
+        );
+    }
+}
+
+#[test]
+fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
+    // The point of the momentary tool: the gesture right after a marquee is a brush
+    // stroke, gated by the selection just drawn — not a second marquee replacing it.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(GestureCommand::Start {
+        tool: Tool::SelectRect,
+        sample: InputSample::at(BOX_MIN),
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(BOX_MAX),
+    });
+    engine.process(GestureCommand::End);
+
+    // Drive the next gesture with whatever tool the engine now reports, exactly as a
+    // frontend does — no explicit switch back to the brush anywhere.
+    engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
+    let tool = engine.observe().tool;
+    engine.process(GestureCommand::Start {
+        tool,
+        sample: InputSample::at(Vec2::new(-30.0, 0.0)),
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(Vec2::new(30.0, 0.0)),
+    });
+    engine.process(GestureCommand::End);
+
+    let img = engine.render_to_image(PAPER);
+    assert!(engine.observe().has_selection, "the selection is still in force");
+    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)), "the gesture painted");
+    assert!(
+        !is_painted(&img, Vec2::new(20.0, 0.0)),
+        "and was gated by the selection it followed"
     );
 }
 
