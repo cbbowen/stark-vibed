@@ -34,7 +34,7 @@ use dioxus::prelude::*;
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use input::{elem_xy, end_interaction, handle_keydown, handle_keyup, input_tolerance, sample};
-use layout::{PanelId, PanelLayout, PanelStack, drag_end, drag_move};
+use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{ENV_FERNDALE, surface_asset};
 use panels::SelectionBar;
@@ -67,6 +67,7 @@ fn app() -> Element {
     let renderer = use_signal(|| None::<Renderer>);
     let obs = use_signal(|| None::<ObservableState>);
     let space_down = use_signal(|| false);
+    let canvas_active = use_signal(|| false);
     let brush_editor_open = use_signal(|| false);
     let collab = CollabState {
         session: use_signal(|| None::<stark_net::CollabSession>),
@@ -79,6 +80,7 @@ fn app() -> Element {
         renderer,
         obs,
         space_down,
+        canvas_active,
         brush_editor_open,
         collab,
     };
@@ -175,6 +177,9 @@ fn Canvas() -> Element {
     // The panel's selection mode, stashed while a gesture's modifier keys override it
     // (DESIGN.md §6.8) and restored when the gesture ends.
     let mut mode_restore = use_signal(|| None::<SelectionMode>);
+    // Set for as long as the canvas is the thing being used, which fades the floating
+    // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
+    let mut canvas_active = state.canvas_active;
 
     rsx! {
         canvas {
@@ -193,6 +198,7 @@ fn Canvas() -> Element {
                 match e.trigger_button() {
                     Some(MouseButton::Primary) => {
                         capture_pointer(&e);
+                        canvas_active.set(true);
                         if (state.space_down)() {
                             panning.set(true);
                         } else {
@@ -218,6 +224,7 @@ fn Canvas() -> Element {
                     Some(MouseButton::Auxiliary) => {
                         e.prevent_default(); // suppress middle-click autoscroll
                         capture_pointer(&e);
+                        canvas_active.set(true);
                         panning.set(true);
                     }
                     _ => {}
@@ -269,7 +276,7 @@ fn CommandRail() -> Element {
     let hidden = (layout.hidden)();
 
     rsx! {
-        div { class: "command-rail",
+        div { class: chrome_class(state, "command-rail"),
             Menubar {
                 MenubarMenu { index: 0usize,
                     // ☰ — the catch-all menu for infrequent commands.

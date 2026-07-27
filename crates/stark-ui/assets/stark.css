@@ -35,6 +35,24 @@
   background: #fff;
 }
 
+/* --- floating chrome, and its fade ---
+   Everything that floats over the canvas (panel stack, command rail, selection bar)
+   carries `chrome`, and `dimmed` while a canvas gesture is in flight: the screen goes
+   back to being the painting for as long as the user is painting on it. Not `display:
+   none` and not `visibility` — the chrome keeps its box, so nothing reflows and it can
+   cross-fade rather than blink. Faded chrome stops taking clicks too, so a stroke that
+   strays under a panel keeps painting instead of pressing a control it can barely see.
+   Out quickly (it is already in the way), back a touch slower once the hand lifts. */
+.chrome {
+  transition: opacity 140ms ease-out;
+}
+
+.chrome.dimmed {
+  opacity: 0.0;
+  pointer-events: none;
+  transition: opacity 100ms ease-in;
+}
+
 .panel-stack {
   position: absolute;
   top: 14px;

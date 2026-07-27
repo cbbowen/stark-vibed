@@ -1416,6 +1416,12 @@ undo/redo, layer panel) surrounds it.
   transform carries it into the canvas px the fit prices against.
 - Components render from `ObservableState` (held in a Dioxus signal) so toggles
   like undo-availability stay reactive — **no pixel data crosses this boundary.**
+- The floating chrome (panel stack, command rail, selection bar) **fades out while
+  the canvas is in hand** — a stroke, a selection drag, a pan, or a run of wheel
+  zooming — and fades back the moment the gesture ends. One signal,
+  `AppState::canvas_active`, toggles a `dimmed` class the stylesheet animates; the
+  chrome keeps its box (nothing reflows) and stops taking clicks while faded, so a
+  stroke straying under a panel keeps painting.
 - The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each
   command the engine renders **straight into the surface texture**
   (`get_current_texture` → `engine.render(view)` → `present`) — no readback, no

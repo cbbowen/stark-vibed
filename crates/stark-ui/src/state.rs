@@ -24,6 +24,11 @@ pub struct AppState {
     pub obs: Signal<Option<ObservableState>>,
     /// Whether the user is holding space.
     pub space_down: Signal<bool>,
+    /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
+    /// or a run of wheel zooming). The floating chrome fades out while it is set,
+    /// handing the screen back to the painting — see
+    /// [`chrome_class`](crate::layout::chrome_class).
+    pub canvas_active: Signal<bool>,
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,

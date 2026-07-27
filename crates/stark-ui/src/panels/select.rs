@@ -4,6 +4,7 @@
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 
+use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
 use stark_core::command::{DocCommand, ViewCommand};
@@ -95,7 +96,7 @@ pub fn SelectionBar() -> Element {
 
     rsx! {
         if active {
-            div { class: "selection-bar",
+            div { class: chrome_class(state, "selection-bar"),
                 span { class: "selection-bar-label", "Selection" }
                 button {
                     class: "chip",

@@ -126,9 +126,10 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> InputSample {
 }
 
 /// End any in-progress stroke, selection gesture, or pan, and put back the selection
-/// mode a modifier key overrode for the gesture (DESIGN.md §6.8).
+/// mode a modifier key overrode for the gesture (DESIGN.md §6.8). The canvas is no
+/// longer in hand once this returns, so the floating chrome fades back in.
 pub fn end_interaction(
-    state: AppState,
+    mut state: AppState,
     drawing: &mut Signal<bool>,
     panning: &mut Signal<bool>,
     mode_restore: &mut Signal<Option<SelectionMode>>,
@@ -141,4 +142,5 @@ pub fn end_interaction(
         dispatch(state, ViewCommand::SetSelectionMode(base));
     }
     panning.set(false);
+    state.canvas_active.set(false);
 }

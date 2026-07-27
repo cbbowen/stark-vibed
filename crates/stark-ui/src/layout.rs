@@ -1,4 +1,5 @@
-//! Floating-panel layout: identity, order, visibility, and the title-bar drag
+//! Floating-panel layout: identity, order, visibility, the title-bar drag, and the
+//! fade that gets all the floating chrome out of the way mid-gesture
 //! (DESIGN.md §11).
 //!
 //! The drag math deliberately never reads the layout it is mutating: panel
@@ -13,6 +14,7 @@ use dioxus::prelude::*;
 
 use crate::panels::{BrushPanel, ColorPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform::sleep_ms;
+use crate::state::AppState;
 
 /// Identity of a floating tool panel. The set is fixed; `PanelLayout` tracks their
 /// order and which are open (DESIGN.md §11).
@@ -154,6 +156,23 @@ impl DragState {
     }
 }
 
+/// The class list for a floating-chrome container (the panel stack, the command rail,
+/// the selection bar): its own class plus `chrome`, and `dimmed` while a canvas gesture
+/// is in flight.
+///
+/// Every one of them sits over the canvas and none of them is what the user is looking
+/// at mid-stroke, so they all fade together — the screen goes back to being the
+/// painting, and comes back the moment the gesture ends. The fade is CSS
+/// ([`crate::state::AppState::canvas_active`] only toggles the class), so the chrome
+/// stays laid out where it was and nothing reflows on the way in or out.
+pub fn chrome_class(state: AppState, base: &str) -> String {
+    if (state.canvas_active)() {
+        format!("{base} chrome dimmed")
+    } else {
+        format!("{base} chrome")
+    }
+}
+
 /// The floating tool panels, top-right. Data-driven: renders `layout.order` minus the
 /// hidden set, each wrapped in the unified [`Panel`] chrome (keyed by id so reordering
 /// moves nodes rather than recreating them — preserves per-panel state and, later,
@@ -161,9 +180,10 @@ impl DragState {
 #[component]
 pub fn PanelStack() -> Element {
     let layout = use_context::<PanelLayout>();
+    let state = use_context::<AppState>();
     let hidden = (layout.hidden)();
     rsx! {
-        div { class: "panel-stack",
+        div { class: chrome_class(state, "panel-stack"),
             for id in (layout.order)() {
                 if !hidden.contains(&id) {
                     Panel { key: "{id:?}", id,
