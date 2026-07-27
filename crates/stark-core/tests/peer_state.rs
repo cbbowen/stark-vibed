@@ -341,7 +341,7 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
     let pump = |a: &mut Engine, b: &mut Engine, now: &mut f64| {
         *now += 0.05;
         if let Some(frame) = a.take_presence(*now) {
-            b.merge_presence(ActorId(1), frame, *now);
+            b.merge_presence(ActorId(1), frame);
         }
     };
     pump(&mut a, &mut b, &mut now);
@@ -401,7 +401,7 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
         }),
         leaving: false,
     };
-    assert!(engine.merge_presence(ActorId(2), frame, 0.0));
+    assert!(engine.merge_presence(ActorId(2), frame));
     assert!(
         is_painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
         "a peer's live stroke should be visible"
@@ -447,7 +447,6 @@ fn peer_selection_outlines_are_opt_in() {
             gesture: None,
             leaving: false,
         },
-        0.0,
     );
 
     let hidden = snap(&mut a);
@@ -575,7 +574,7 @@ fn presence_never_reaches_the_save_file() {
         }),
         leaving: false,
     };
-    a.merge_presence(ActorId(2), frame, 0.0);
+    a.merge_presence(ActorId(2), frame);
     b.load_bytes(&a.save_bytes().expect("save")).expect("load");
 
     assert_eq!(

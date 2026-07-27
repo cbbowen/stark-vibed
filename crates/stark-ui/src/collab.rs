@@ -253,7 +253,7 @@ fn install(state: AppState, mut session: CollabSession) {
                     // from, and refreshing it at pointer rate would re-run the whole
                     // component tree.
                     RemoteEvent::Presence { actor, frame } => {
-                        if r.merge_presence(actor, frame, now_seconds()) {
+                        if r.merge_presence(actor, frame) {
                             r.paint();
                         }
                         None
@@ -295,61 +295,67 @@ fn start_presence_pump(state: AppState) {
     let task = spawn_forever(async move {
         let mut sent_revision = 0;
         loop {
-            crate::platform::sleep_ms(PRESENCE_TICK_MS).await;
-            let Some(tx): Option<Broadcaster> = state
-                .collab
-                .session
-                .read()
-                .as_ref()
-                .map(|s| s.broadcaster())
-            else {
-                // The session is gone; so is the reason for this loop.
-                return;
-            };
-            let now = now_seconds();
-            // `peek`, not `read`: this runs outside any component, and subscribing a
-            // background task to a signal is meaningless anyway.
-            let work = state
-                .renderer
-                .peek()
-                .as_ref()
-                .map(|r| (r.presence_due(now), r.peers_revision() != sent_revision));
-            let Some((due, roster_stale)) = work else {
-                continue;
-            };
-            if !due && !roster_stale {
-                continue;
-            }
-
-            let (frame, roster) = {
-                let mut renderer = state.renderer;
-                let mut guard = renderer.write();
-                match guard.as_mut() {
-                    Some(r) => {
-                        let frame = due.then(|| r.take_presence(now)).flatten();
-                        // Re-read the revision *after* the drain, which may itself
-                        // have expired a peer — and compare against what was last
-                        // handed to the signal, so a change made here is not skipped
-                        // by the watermark advancing past it.
-                        let revision = r.peers_revision();
-                        let stale = revision != sent_revision;
-                        sent_revision = revision;
-                        (frame, stale.then(|| r.peers()))
-                    }
-                    None => continue,
+            // The tick runs *first* and the sleep last, so the engine's clock is set
+            // before the incoming pump can hand it a frame to date. A labelled block
+            // rather than `continue`, so that stays true however the body grows —
+            // `continue` here would skip the sleep and spin.
+            'tick: {
+                let Some(tx): Option<Broadcaster> = state
+                    .collab
+                    .session
+                    .read()
+                    .as_ref()
+                    .map(|s| s.broadcaster())
+                else {
+                    // The session is gone; so is the reason for this loop.
+                    return;
+                };
+                let now = now_seconds();
+                // `peek`, not `read`: this runs outside any component, and subscribing
+                // a background task to a signal is meaningless anyway.
+                let work = state
+                    .renderer
+                    .peek()
+                    .as_ref()
+                    .map(|r| (r.presence_due(now), r.peers_revision() != sent_revision));
+                let Some((due, roster_stale)) = work else {
+                    break 'tick;
+                };
+                if !due && !roster_stale {
+                    break 'tick;
                 }
-            };
-            if let Some(roster) = roster {
-                let mut peers = state.collab.peers;
-                peers.set(roster);
+
+                let (frame, roster) = {
+                    let mut renderer = state.renderer;
+                    let mut guard = renderer.write();
+                    match guard.as_mut() {
+                        Some(r) => {
+                            let frame = due.then(|| r.take_presence(now)).flatten();
+                            // Re-read the revision *after* the drain, which may itself
+                            // have expired a peer — and compare against what was last
+                            // handed to the signal, so a change made here is not
+                            // skipped by the watermark advancing past it.
+                            let revision = r.peers_revision();
+                            let stale = revision != sent_revision;
+                            sent_revision = revision;
+                            (frame, stale.then(|| r.peers()))
+                        }
+                        None => break 'tick,
+                    }
+                };
+                if let Some(roster) = roster {
+                    let mut peers = state.collab.peers;
+                    peers.set(roster);
+                }
+                if let Some(frame) = frame
+                    && let Err(e) = tx.publish(frame).await
+                {
+                    // Best effort by design: the next frame supersedes this one, and
+                    // nothing in the log depends on it.
+                    tracing::debug!("presence publish failed: {e}");
+                }
             }
-            if let Some(frame) = frame
-                && let Err(e) = tx.publish(frame).await
-            {
-                // Best effort by design: the next frame supersedes this one, and
-                // nothing in the log depends on it.
-                tracing::debug!("presence publish failed: {e}");
-            }
+            crate::platform::sleep_ms(PRESENCE_TICK_MS).await;
         }
     });
     if let Some(old) = presence.write().replace(task) {

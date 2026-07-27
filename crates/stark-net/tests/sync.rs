@@ -66,7 +66,7 @@ fn drain_events(events: &mut UnboundedReceiver<RemoteEvent>, engine: &mut Engine
                 applied += 1;
             }
             RemoteEvent::Presence { actor, frame } => {
-                engine.merge_presence(actor, frame, 0.0);
+                engine.merge_presence(actor, frame);
             }
         }
     }

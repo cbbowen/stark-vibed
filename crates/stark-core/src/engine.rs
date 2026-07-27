@@ -260,6 +260,16 @@ pub struct Engine {
     session: crate::session::Session,
     /// Everyone else in the session (PEER_DESIGN.md §4). Empty when solo.
     peers: Peers,
+    /// The presence clock: the newest instant a caller has handed in, in seconds on
+    /// a monotonic scale.
+    ///
+    /// `stark-core` deliberately owns no clock *source* — that is what lets it run on
+    /// wasm and native alike — but it does own the *value*. Sampling one per tick and
+    /// reading it everywhere else means expiry, publishing and the timestamping of
+    /// arriving frames all see the same instant, instead of each call site being free
+    /// to hand in its own. `max` because a clock that steps backwards must not
+    /// un-expire a peer, whatever the frontend hands in.
+    now: f64,
     /// The frame-handle drag in flight (FRAME_DESIGN.md §7): a whole document that
     /// stands in for the committed one, because moving a matte is not a tile edit.
     /// `None` when no handle is held.
@@ -349,6 +359,7 @@ impl Engine {
             timeline,
             session,
             peers: Peers::new(),
+            now: 0.0,
             matte_preview: None,
             live: None,
             heads: BTreeMap::new(),
@@ -1221,13 +1232,14 @@ impl Engine {
     ///
     /// Returns `None` when solo: presence with nobody to read it is pure cost.
     pub fn take_presence(&mut self, now: f64) -> Option<PeerFrame> {
-        if self.peers.tick(now).canvas {
+        self.now = now.max(self.now);
+        if self.peers.tick(self.now).canvas {
             self.refresh_live();
         }
         if !self.outbox_enabled {
             return None;
         }
-        self.session.publish(now)
+        self.session.publish(self.now)
     }
 
     /// The farewell frame, so peers drop this client at once instead of waiting out
@@ -1247,7 +1259,13 @@ impl Engine {
     /// [`peers_revision`](Self::peers_revision) instead. Presence arrives at pointer
     /// rate from every peer at once, so the difference between the two questions is
     /// the difference between a compositor pass per remote pointer move and none.
-    pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
+    ///
+    /// Dated by the engine's own clock rather than by a fresh sample from the caller:
+    /// a frame is timestamped with the same instant the expiry that will judge it
+    /// used ([`Self::now`]). The lag is one tick of the caller's cadence, against a
+    /// `PEER_TIMEOUT` of seconds.
+    pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame) -> bool {
+        let now = self.now;
         if actor == self.actor {
             // Our own frame, echoed back by a flood transport. The local session is
             // the authority on this client; taking it back off the wire would fight

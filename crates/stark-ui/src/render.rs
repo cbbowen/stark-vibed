@@ -272,9 +272,8 @@ impl Renderer {
         &mut self,
         actor: stark_core::document::ActorId,
         frame: stark_core::PeerFrame,
-        now: f64,
     ) -> bool {
-        self.engine.merge_presence(actor, frame, now)
+        self.engine.merge_presence(actor, frame)
     }
 
     /// Everyone else in the session, for the peer chrome (PEER_DESIGN.md §4).
