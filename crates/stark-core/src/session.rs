@@ -8,12 +8,14 @@
 
 use crate::command::InputSample;
 use crate::document::{
-    BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, SelectionMode,
+    ActorId, BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, SelectionMode,
     SelectionOp, SelectionShape, StrokeRecord, Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
-use crate::peer::{HEARTBEAT, Identity, PeerFrame, StrokeHead, default_name};
+use crate::peer::{
+    GestureView, HEARTBEAT, Identity, LiveGesture, PeerFrame, StrokeHead, default_name,
+};
 use crate::presence::{GestureSource, GestureTx};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
@@ -469,6 +471,25 @@ impl Session {
         if let Some(b) = self.in_flight.as_mut() {
             b.fitter.push(sample);
         }
+    }
+
+    /// This client's gesture in flight as the preview fold wants it, authored by
+    /// `actor` — the same shape [`Peer::gesture_view`](crate::peer::Peer::gesture_view)
+    /// produces for everyone else, so the fold treats them alike without either being
+    /// stored in the other's form.
+    pub fn gesture_view(&self, actor: ActorId) -> Option<GestureView> {
+        let (gesture, frozen_spans) = match self.preview_record() {
+            Some(rec) => (LiveGesture::Stroke(rec), self.frozen_spans()),
+            // A marquee has no settled prefix to retire: its closing edge follows the
+            // cursor, so every part of it can still move.
+            None => (LiveGesture::Selection(self.preview_selection()?), 0),
+        };
+        Some(GestureView {
+            actor,
+            gesture,
+            ordinal: self.gesture_ordinal,
+            frozen_spans,
+        })
     }
 
     /// Snapshot the in-flight stroke as a record without ending it, for live

@@ -24,7 +24,7 @@ use crate::gpu::{
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
-use crate::peer::{Identity, LiveGesture, Peer, PeerFrame, Peers};
+use crate::peer::{GestureView, Identity, LiveGesture, Peer, PeerFrame, Peers};
 use crate::{EngineError, Result};
 
 /// The starting layer present in every new document.
@@ -1575,7 +1575,13 @@ impl Engine {
             .unwrap_or_else(|| self.timeline.current().clone());
         let mut out = base.clone();
         let mut heads = std::mem::take(&mut self.heads);
-        for (actor, gesture, ordinal, frozen) in gestures {
+        for GestureView {
+            actor,
+            gesture,
+            ordinal,
+            frozen_spans: frozen,
+        } in gestures
+        {
             match gesture {
                 LiveGesture::Selection(op) => {
                     // A marquee previews as the mask it will commit — the very same
@@ -1603,41 +1609,17 @@ impl Engine {
         self.live = Some(out);
     }
 
-    /// Every gesture in flight, as `(author, gesture, ordinal, frozen spans)`, in
-    /// ascending [`ActorId`] order.
+    /// Every gesture in flight, in ascending [`ActorId`] order.
     ///
     /// The local client's is *derived* from the session's fitter rather than kept in
     /// the roster: copying it there would make two sources of truth for the one thing
     /// the `preview == committed` invariant rests on. Merging the two here is what
     /// gives the uniform ordering without the duplication (PEER_DESIGN.md §4.1).
-    fn live_gestures(&self) -> Vec<(ActorId, LiveGesture, u64, usize)> {
-        let mut out: Vec<(ActorId, LiveGesture, u64, usize)> = Vec::new();
-        if let Some(rec) = self.session.preview_record() {
-            out.push((
-                self.actor,
-                LiveGesture::Stroke(rec),
-                self.session.gesture_ordinal(),
-                self.session.frozen_spans(),
-            ));
-        } else if let Some(op) = self.session.preview_selection() {
-            out.push((
-                self.actor,
-                LiveGesture::Selection(op),
-                self.session.gesture_ordinal(),
-                0,
-            ));
-        }
-        for peer in self.peers.iter() {
-            if let Some(gesture) = peer.gesture().cloned() {
-                out.push((
-                    peer.actor,
-                    gesture,
-                    peer.gesture_id().unwrap_or(0),
-                    peer.live_frozen_spans(),
-                ));
-            }
-        }
-        out.sort_by_key(|(actor, ..)| *actor);
+    fn live_gestures(&self) -> Vec<GestureView> {
+        let mut out: Vec<GestureView> = Vec::new();
+        out.extend(self.session.gesture_view(self.actor));
+        out.extend(self.peers.iter().filter_map(Peer::gesture_view));
+        out.sort_by_key(|g| g.actor);
         out
     }
 

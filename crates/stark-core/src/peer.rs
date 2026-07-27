@@ -98,6 +98,29 @@ pub enum LiveGesture {
     Selection(SelectionOp),
 }
 
+/// One gesture in flight, from whoever is making it — the shape the preview fold
+/// consumes, and the only place the local client and a peer are interchangeable.
+///
+/// They are deliberately *not* stored alike. The local gesture is derived from the
+/// session's live [`PathFitter`](crate::path::PathFitter), which stays the single
+/// source of truth for the one thing `preview == committed` rests on; a peer's is
+/// reassembled from frames. Copying the local one into the roster to make them
+/// uniform would make two sources of truth for exactly that. So they meet here
+/// instead, at the point of use — which is all the fold ever needed, and gives it one
+/// shape to reason about with every field present, rather than a tuple whose ordinal
+/// had to be defaulted.
+#[derive(Clone, Debug)]
+pub struct GestureView {
+    pub actor: ActorId,
+    pub gesture: LiveGesture,
+    /// Per-actor ordinal: what tells a cached render of *this* gesture apart from a
+    /// render of the one before it.
+    pub ordinal: u64,
+    /// How many leading spans are settled, so an incremental repaint can retire them
+    /// (DESIGN.md §6.2, PEER_DESIGN.md §6).
+    pub frozen_spans: usize,
+}
+
 /// The invariant part of a live stroke: everything but the path. Sent on the
 /// gesture's first frame and repeated on every resync frame, so a client that joined
 /// mid-stroke or missed a delta can start rendering without asking for anything.
@@ -208,6 +231,21 @@ impl Peer {
     /// What to draw for this peer right now, if anything.
     pub fn gesture(&self) -> Option<&LiveGesture> {
         self.rx.drawn()
+    }
+
+    /// This peer's gesture as the preview fold wants it — the same shape
+    /// [`Session::gesture_view`](crate::session::Session::gesture_view) produces for
+    /// the local client.
+    pub fn gesture_view(&self) -> Option<GestureView> {
+        Some(GestureView {
+            actor: self.actor,
+            gesture: self.rx.drawn()?.clone(),
+            // Set and cleared with `drawn`, so this is never the fallback the tuple
+            // form needed — where `unwrap_or(0)` quietly gave every peer's selection
+            // the same ordinal.
+            ordinal: self.rx.id()?,
+            frozen_spans: self.rx.frozen_spans(),
+        })
     }
 
     /// Whether this peer has a gesture on the canvas.
