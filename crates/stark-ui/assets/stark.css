@@ -315,8 +315,23 @@
 /* --- layer panel --- */
 .layer-header {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 6px;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* Remove sits apart from the two "add" buttons: it is the destructive one, and a
+   gap is cheaper than a confirmation. */
+.layer-remove {
+  margin-left: auto;
+}
+
+.layer-remove:hover:enabled {
+  background: #7a3535;
+}
+
+.layer-add:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .layer-add {
@@ -329,8 +344,8 @@
 }
 
 .layer-row {
-  margin: 6px 0;
-  padding: 6px;
+  margin: 4px 0;
+  padding: 5px 6px;
   border-radius: 6px;
   background: #33333a;
 }
@@ -679,9 +694,6 @@
   color: #ffffff73;
 }
 
-.chip.frame-remove:hover {
-  background: #7a3535;
-}
 
 
 /* Native colour input, stripped back to a plain swatch. */
@@ -816,9 +828,6 @@
   background: #ffffff1f;
 }
 
-.frame-bar .slider.frame-opacity {
-  width: 90px;
-}
 
 /* A selected frame row. It shares `.active` with a selected paint layer, because
    there is only one kind of selection — the colour means "selected" and nothing
@@ -834,4 +843,12 @@
    before a stroke that would go nowhere. */
 .paint-canvas.no-paint {
   cursor: not-allowed;
+}
+
+/* The aspect drop-down in the frame bar: sized to its content, unlike the panel
+   `.select` which fills its row. */
+.select.frame-aspect {
+  width: auto;
+  padding: 4px 6px;
+  font-size: 12px;
 }

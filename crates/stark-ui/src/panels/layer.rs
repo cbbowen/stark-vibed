@@ -11,12 +11,18 @@ use stark_core::command::{DocCommand, ViewCommand};
 #[component]
 pub fn LayerPanel() -> Element {
     let state = use_context::<AppState>();
-    let layers = state
-        .obs
-        .read()
+    let obs = state.obs.read();
+    let layers = obs.as_ref().map(|o| o.layers.clone()).unwrap_or_default();
+    // The properties that belong to *whichever* layer is selected live here, once,
+    // rather than being repeated per row and again in the frame bar. A frame is a
+    // layer, so it needs no copies of its own (FRAME_DESIGN.md §7).
+    let selected = obs
         .as_ref()
-        .map(|o| o.layers.clone())
-        .unwrap_or_default();
+        .and_then(|o| o.layers.iter().find(|l| l.id == o.active_layer).copied());
+    drop(obs);
+    // Removing the last layer would leave a document with nothing to paint on and
+    // no way for the active layer to fall back, so the floor is one.
+    let can_remove = layers.len() > 1;
 
     rsx! {
         div { class: "layer-header",
@@ -25,10 +31,42 @@ pub fn LayerPanel() -> Element {
             AddFrameButton {}
             button {
                 class: "layer-add",
+                title: "Add a paint layer",
                 onclick: move |_| dispatch(state, DocCommand::AddLayer { above: None }),
                 "+ Layer"
             }
+            button {
+                class: "layer-add layer-remove",
+                title: if can_remove { "Remove the selected layer" }
+                       else { "A document needs at least one layer" },
+                disabled: !can_remove || selected.is_none(),
+                onclick: move |_| {
+                    if let Some(l) = selected {
+                        dispatch(state, DocCommand::RemoveLayer(l.id));
+                    }
+                },
+                "\u{2212} Remove"
+            }
         }
+
+        if let Some(l) = selected {
+            div { class: "slider-row",
+                div { class: "slider-label", "Opacity" }
+                input {
+                    class: "slider",
+                    r#type: "range", min: "0", max: "100", step: "any",
+                    value: "{(l.opacity * 100.0) as i32}",
+                    title: if l.is_paintable() { "Opacity of the selected layer" }
+                           else { "Frame opacity \u{2014} drag down to see through it while composing" },
+                    oninput: move |e| {
+                        if let Ok(v) = e.value().parse::<f32>() {
+                            dispatch(state, DocCommand::SetLayerOpacity(l.id, v / 100.0));
+                        }
+                    },
+                }
+            }
+        }
+
         for info in layers.iter().rev().cloned() {
             LayerRow { info }
         }
@@ -56,35 +94,27 @@ pub fn LayerRow(info: LayerInfo) -> Element {
         (false, false) => "layer-row",
     };
 
+    // A row is now one line — visibility, then the name that selects it. The
+    // per-layer opacity slider moved to the panel's single set of controls for
+    // whatever is selected, so the inner flex wrapper it needed is gone too.
     rsx! {
         div {
-            class: row_class,
-            div { class: "row",
-                input {
-                    r#type: "checkbox",
-                    checked: info.visible,
-                    onchange: move |_| dispatch(state, DocCommand::SetLayerVisible(info.id, !info.visible)),
-                }
-                button {
-                    class: if matte { "layer-name layer-name-matte" } else { "layer-name" },
-                    title: if matte {
-                        "Compose this frame — shows its handles and controls"
-                    } else {
-                        "Paint on this layer"
-                    },
-                    onclick: move |_| dispatch(state, ViewCommand::SetActiveLayer(info.id)),
-                    if matte { "\u{25F1} Frame" } else { "Layer {info.id.0}" }
-                }
-            }
+            class: "{row_class} row",
             input {
-                class: "slider",
-                r#type: "range", min: "0", max: "100",
-                value: "{(info.opacity * 100.0) as i32}",
-                oninput: move |e| {
-                    if let Ok(v) = e.value().parse::<f32>() {
-                        dispatch(state, DocCommand::SetLayerOpacity(info.id, v / 100.0));
-                    }
+                r#type: "checkbox",
+                title: "Show this layer",
+                checked: info.visible,
+                onchange: move |_| dispatch(state, DocCommand::SetLayerVisible(info.id, !info.visible)),
+            }
+            button {
+                class: if matte { "layer-name layer-name-matte" } else { "layer-name" },
+                title: if matte {
+                    "Compose this frame — shows its handles and controls"
+                } else {
+                    "Paint on this layer"
                 },
+                onclick: move |_| dispatch(state, ViewCommand::SetActiveLayer(info.id)),
+                if matte { "\u{25F1} Frame" } else { "Layer {info.id.0}" }
             }
         }
     }

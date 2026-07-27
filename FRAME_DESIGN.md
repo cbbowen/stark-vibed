@@ -256,10 +256,20 @@ the same slope, resolved finer.
 
 ## 7. Interaction
 
-A frame has **no permanent panel**. Creating one is a `+ Frame` button in the
-Layers panel — a frame *is* a layer, so that is where making one belongs — and
-everything else lives in a bar mounted only while a frame is **selected for
-composing**, alongside the selection bar and on the same argument (DESIGN §6.8):
+A frame has **no permanent panel**, and — the sharper form of the same rule —
+**nothing that is an ordinary layer property gets a frame-specific control.**
+Creating one is `+ Frame` in the Layers panel; opacity (which *is* the crop scrim)
+and removal are the Layers panel's single set of controls for whatever is
+selected, applying to a frame and a paint layer alike. Only the fill colour lives
+in the frame bar, because it is the one thing that is about the frame rather than
+about a layer.
+
+That is what a matte being a real layer is worth: duplicating opacity and delete
+into a frame-specific bar would have meant two controls for one property, which is
+the same duplication that made frame *selection* confusing.
+
+The rest lives in a bar mounted only while a frame is **selected**, alongside the
+selection bar and on the same argument (DESIGN §6.8):
 controls meaningless without a frame should be absent rather than greyed out, and
 a bar that is simply present or absent says "you are composing" more directly than
 a mode indicator would.
@@ -304,8 +314,12 @@ actually want:
   default on an unbounded canvas.
 - **Fit to art** — snap to `DocState::bounds`. **Fit to view** — snap to the
   viewport.
-- **Aspect presets** — 1:1, 4:5, 3:2, 16:9, reshaping about the centre and
-  *preserving area*, so switching presets neither grows nor shrinks the piece.
+- **Aspect** — a drop-down of 1:1, 4:5, 3:2, 16:9, reshaping about the centre and
+  *preserving area*, so switching neither grows nor shrinks the piece. It reads the
+  frame's current ratio back, showing `Custom` when a dragged handle has landed on
+  something arbitrary — a state readout rather than a row of fire-and-forget
+  buttons. `Custom` is offered only while it is what the frame *is*, since picking
+  it could not mean anything.
 
 Once it exists, it is adjusted by **handles drawn over the canvas**: eight
 edge/corner grips plus a move pill. Two decisions there are forced by this frame
@@ -376,9 +390,10 @@ it usable by hand.
 
 **P3 — the composition tool. ✅ Mostly done** (taken before P2, since export needs
 something to frame *against* before it can be tested by hand). `+ Frame` in the
-Layers panel; matte rows that select a frame for composing; the frame bar (aspect
-presets, fit-to-art, fit-to-view, fill colour, opacity, done, remove) in a shared
-bottom-bar column with the selection bar; the on-canvas grips with live preview and
+Layers panel, beside one Remove button and one opacity slider that act on whatever
+is selected; matte rows that select a frame; the frame bar (size readout, aspect
+drop-down, fit-to-art, fit-to-view, fill colour, done) in a shared bottom-bar
+column with the selection bar; the on-canvas grips with live preview and
 single-action commit. **Not yet:** snapping, composition guides, review mode,
 fit-to-frame, frame-from-selection.
 

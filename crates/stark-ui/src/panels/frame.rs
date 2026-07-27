@@ -39,6 +39,26 @@ const ASPECTS: [(&str, f32); 4] = [
     ("16:9", 16.0 / 9.0),
 ];
 
+/// What the aspect drop-down shows when the frame matches no preset — a real
+/// state, since dragging a handle lands on an arbitrary ratio and the control
+/// should say so rather than lie about the nearest preset.
+const CUSTOM: &str = "Custom";
+
+/// The preset this frame's ratio matches, if any. Tolerance is relative, so it
+/// holds at any size; loose enough that a handle dragged to visually 16:9 reads as
+/// 16:9 rather than flicking to "Custom" on a sub-pixel difference.
+fn matched_aspect(matte: MatteInfo) -> &'static str {
+    let (w, h) = (matte.width(), matte.height());
+    if h.abs() < 1e-3 {
+        return CUSTOM;
+    }
+    let ratio = w / h;
+    ASPECTS
+        .iter()
+        .find(|(_, a)| (ratio - a).abs() <= a * 0.005)
+        .map_or(CUSTOM, |(label, _)| label)
+}
+
 /// The frame being composed, if the **selected layer** is one.
 ///
 /// There is deliberately no separate frame-selection state. `active_layer` is the
@@ -154,6 +174,7 @@ pub fn FrameBar() -> Element {
         return rsx! {};
     };
     let (w, h) = (matte.width(), matte.height());
+    let current_aspect = matched_aspect(matte);
     let set_rect = move |min: Vec2, max: Vec2| {
         dispatch(state, DocCommand::SetMatteRect(info.id, min, max));
     };
@@ -168,15 +189,25 @@ pub fn FrameBar() -> Element {
 
             span { class: "bar-sep" }
 
-            for (label, aspect) in ASPECTS {
-                button {
-                    class: "chip",
-                    title: "Reshape the frame to this aspect, keeping its area",
-                    onclick: move |_| {
-                        let (min, max) = to_aspect(matte.min, matte.max, aspect);
+            // Reads the frame's *current* ratio and reshapes to a chosen one, so it
+            // is a state readout rather than a row of fire-and-forget buttons.
+            select {
+                class: "select frame-aspect",
+                title: "Reshape the frame to this aspect, keeping its area",
+                onchange: move |e| {
+                    if let Some((_, a)) = ASPECTS.iter().find(|(l, _)| *l == e.value()) {
+                        let (min, max) = to_aspect(matte.min, matte.max, *a);
                         set_rect(min, max);
-                    },
-                    "{label}"
+                    }
+                },
+                // Only offered while it is what the frame actually is: picking
+                // "Custom" could not mean anything, since there is no ratio to
+                // reshape *to*.
+                if current_aspect == CUSTOM {
+                    option { value: CUSTOM, selected: true, "{CUSTOM}" }
+                }
+                for (label, _) in ASPECTS {
+                    option { value: label, selected: current_aspect == label, "{label}" }
                 }
             }
 
@@ -203,10 +234,11 @@ pub fn FrameBar() -> Element {
 
             span { class: "bar-sep" }
 
-            // Fill and opacity. The opacity slider *is* the crop scrim — it needs
-            // no control of its own because it is ordinary layer opacity
-            // (FRAME_DESIGN.md §3) — and it sits here rather than only in the
-            // Layers panel because reaching for it is part of composing.
+            // Only the fill lives here — it is the one thing that is *about the
+            // frame* rather than about a layer. Opacity (the crop scrim) and
+            // removal are ordinary layer properties, so they belong to the Layers
+            // panel's single set of controls for whatever is selected, and having
+            // them in two places was the duplication this replaced.
             input {
                 class: "frame-swatch",
                 r#type: "color",
@@ -218,17 +250,6 @@ pub fn FrameBar() -> Element {
                     }
                 },
             }
-            input {
-                class: "slider frame-opacity",
-                r#type: "range", min: "0", max: "100", step: "any",
-                value: "{(info.opacity * 100.0) as i32}",
-                title: "Frame opacity — drag down to see through it while composing",
-                oninput: move |e| {
-                    if let Ok(v) = e.value().parse::<f32>() {
-                        dispatch(state, DocCommand::SetLayerOpacity(info.id, v / 100.0));
-                    }
-                },
-            }
 
             span { class: "bar-sep" }
 
@@ -237,12 +258,6 @@ pub fn FrameBar() -> Element {
                 title: "Stop composing and go back to painting (the frame stays)",
                 onclick: move |_| done_composing(state),
                 "Done"
-            }
-            button {
-                class: "chip frame-remove",
-                title: "Remove the frame layer",
-                onclick: move |_| dispatch(state, DocCommand::RemoveLayer(info.id)),
-                "Remove"
             }
         }
     }
