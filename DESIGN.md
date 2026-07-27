@@ -65,7 +65,7 @@ stark/
 │   │   │   ├── color.rs        # Oklab working space, conversions, mixing (§6.5)
 │   │   │   ├── colorspace.rs   # ColorSpace trait; Oklab + Mixbox impls (§6.7)
 │   │   │   ├── assets.rs       # content-addressed brush/image asset store (§6.6)
-│   │   │   ├── noise.rs        # tileable 3-D noise volumes for colour dynamics (§6.2)
+│   │   │   ├── noise.rs        # tileable 2-D noise tiles for colour dynamics (§6.2)
 │   │   │   ├── image.rs        # RgbaImage (readback / export)
 │   │   │   ├── gpu/
 │   │   │   │   ├── mod.rs
@@ -850,27 +850,39 @@ layer**, which composites as if dry, so no drying model is needed.
 
 **Colour dynamics (colour jitter).** The applied colour can vary **across the
 brush and along the stroke**: `BrushParams.color_dynamics` (historized — it
-changes stored pixels) holds a noise kind plus three per-axis **frequency** and
-three per-channel **amplitude** factors. A 3-channel, exactly **tileable 3-D
-noise volume** — `White` (per-texel hash) or `Simplex` (a periodic simplex
+changes stored pixels) holds a noise kind plus two per-axis **frequency** and
+three per-channel **amplitude** factors. A 3-channel, exactly **tileable 2-D
+noise tile** — `White` (per-texel hash) or `Simplex` (a periodic simplex
 lattice: gradients hashed from `q = 6·(i,j,k) − (i+j+k)·𝟙 mod 6·P`, which is
-invariant under input translation by the period `P`, a multiple of 3) — is baked
-**once on the CPU with fixed constants** (`noise.rs`, `Rgba8Snorm` 64³, no
-transcendentals ⇒ bit-reproducible across platforms) and sampled with a repeat
-sampler. The lookup domain is `(canvas.x·f₀, canvas.y·f₁, arc·f₂)/NOISE_TILE_PX`
-plus a per-stroke translation derived from the stroke `seed`: the two canvas
-axes vary the colour across the footprint (and, being canvas-anchored, keep the
-deposit a pure function of canvas position + the stroke, so tile aprons stay
-bit-consistent — §6.4); the **arc-length** axis evolves it along the stroke, and
-clamping the arc to each segment's body makes it *continuous across overlapping
-segment quads* (a trailing margin's arc equals the next segment's start — no
-joint artifacts). The sampled signed noise offsets the brush's **channel triple
-in the current colour space** (Oklab `L,a,b`; Mixbox concentrations), applied
-per fragment in the sweep stamp (`brush_color`, stamp_common.wesl) and per texel
-to the `add` paint in the exchange loop's `deposit` (dynamics.wesl) — both
-paths share the field and parameters, so a brush looks the same whichever path
-renders it. Amplitude 0 (the default) binds a 1×1×1 zero volume and early-outs —
-bit-identical to the constant-colour deposit (all prior goldens unchanged).
+invariant under input translation by the period `P`, a multiple of 3; the
+lattice stays 3-D and the bake takes its `z = 0` plane, because only `G3 = 1/6`
+makes the unskewed lattice positions integral — the 2-D skew constant is
+irrational, so a 2-D lattice can be made periodic along its own skewed vectors
+but not along the axes a tileable texture needs) — is baked **once on the CPU
+with fixed constants** (`noise.rs`, `Rgba8Snorm` 64², no transcendentals ⇒
+bit-reproducible across platforms) and sampled with a repeat sampler.
+
+The lookup domain is **stroke-local**: `(lateral·f₀, arc·f₁)/NOISE_TILE_PX` plus
+a per-stroke translation derived from the stroke `seed`, where `lateral` is the
+signed offset from the stroke's centreline and `arc` the length along it, both in
+canvas px (brush-local y is in radius units, so it is scaled by the radius — the
+pattern keeps one scale whatever size the tip is). One axis varies the colour
+across the footprint, the other evolves it along the stroke. Anchoring to the
+stroke rather than the canvas is what makes the variation belong to the *gesture*
+— the same stroke carries the same colour wander wherever it is drawn — and it
+costs nothing in determinism: both coordinates are still functions of the
+fragment's canvas position and the segment, so the deposit remains a pure
+function of the two and tile aprons stay bit-consistent (§6.4). Clamping the arc
+to each segment's body makes it *continuous across overlapping segment quads* (a
+trailing margin's arc equals the next segment's start — no joint artifacts).
+
+The sampled signed noise offsets the brush's **channel triple in the current
+colour space** (Oklab `L,a,b`; Mixbox concentrations), applied per fragment in
+the sweep stamp (`brush_color`, stamp_common.wesl) and per texel to the `add`
+paint in the exchange loop's `deposit` (dynamics.wesl) — both paths share the
+field and parameters, so a brush looks the same whichever path renders it.
+Amplitude 0 (the default) binds a 1×1 zero tile and early-outs — bit-identical
+to the constant-colour deposit (all prior goldens unchanged).
 
 ### 6.3 Compositing and the media pass
 

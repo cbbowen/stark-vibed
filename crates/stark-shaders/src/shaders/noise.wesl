@@ -85,25 +85,27 @@ fn noise_3_to_4(p: vec3f, seed: u32) -> vec4f {
 }
 
 // --- colour dynamics (DESIGN.md §6.2) ---------------------------------------------
-// Per-channel colour offset at a canvas position + arc length along the stroke:
-// sample the baked tileable 3-D noise field (signed, ≈[-1,1] per channel; built
-// on the CPU in stark-core's noise.rs) and scale each channel by its amplitude.
-// The lookup domain is (canvas.x, canvas.y, arc) — canvas-anchored, so the
-// offset is a pure function of canvas position + the stroke and tile aprons stay
-// bit-consistent (§6.4).
-//   freq: per-axis frequency .xyz, with 1/NOISE_TILE_PX pre-folded into .w.
-//   amp:  per colour-channel amplitude (0 = that channel holds still).
-//   off:  the per-stroke lookup translation (derived from the stroke seed).
-// The sampler must wrap (repeat) on all three axes.
+// Per-channel colour offset at a **stroke-local** position: sample the baked
+// tileable 2-D noise field (signed, ≈[-1,1] per channel; built on the CPU in
+// stark-core's noise.rs) and scale each channel by its amplitude.
+//   local: (lateral offset from the stroke centreline, arc length along the
+//          stroke), both in canvas px — the brush's own frame, so the pattern
+//          rides the stroke instead of the canvas underneath it. Both are
+//          functions of the fragment's canvas position and the segment, so the
+//          deposit stays a pure function of the two and tile aprons remain
+//          bit-consistent (§6.4).
+//   freq:  per-axis frequency .xy, with 1/NOISE_TILE_PX pre-folded into .z.
+//   amp:   per colour-channel amplitude (0 = that channel holds still).
+//   off:   the per-stroke lookup translation (derived from the stroke seed).
+// The sampler must wrap (repeat) on both axes.
 fn color_jitter(
-    tex: texture_3d<f32>,
+    tex: texture_2d<f32>,
     s: sampler,
-    canvas: vec2f,
-    arc: f32,
+    local: vec2f,
     freq: vec4f,
     amp: vec3f,
-    off: vec3f,
+    off: vec2f,
 ) -> vec3f {
-    let q = vec3f(canvas.x * freq.x, canvas.y * freq.y, arc * freq.z) * freq.w + off;
+    let q = local * freq.xy * freq.z + off;
     return amp * textureSampleLevel(tex, s, q, 0.0).xyz;
 }

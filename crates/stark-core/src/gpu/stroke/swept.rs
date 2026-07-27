@@ -28,9 +28,9 @@ use super::{
 struct TileXform {
     params: [f32; 4],     // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
     color: [f32; 4],      // brush channels (.xyz), _
-    noise_freq: [f32; 4], // colour-dynamics frequency (x, y, arc), 1/NOISE_TILE_PX
+    noise_freq: [f32; 4], // colour-dynamics frequency (across, along), 1/NOISE_TILE_PX, _
     noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
-    noise_off: [f32; 4],  // per-stroke noise lookup translation, _
+    noise_off: [f32; 4],  // per-stroke noise lookup translation (2), _, _
 }
 
 /// Mirrors `View` in `composite.wesl`: canvas→region NDC + tile/apron uv mapping.
@@ -98,9 +98,9 @@ impl StrokeRenderer {
             }],
         });
 
-        // Colour dynamics (DESIGN.md §6.2): the noise volume for this brush and
+        // Colour dynamics (DESIGN.md §6.2): the noise tile for this brush and
         // the stroke's lookup parameters. An inactive brush binds the zero
-        // volume with zero amplitudes — the deposit is exactly the constant
+        // tile with zero amplitudes — the deposit is exactly the constant
         // colour.
         let noise_view = self.noise_view(&rec.brush.color_dynamics);
         let (nfreq, namp, noff) = noise_uniform(rec);

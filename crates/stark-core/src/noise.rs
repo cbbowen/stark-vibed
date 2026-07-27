@@ -1,12 +1,16 @@
-//! Tileable 3-D noise fields for colour dynamics (DESIGN.md §6.2).
+//! Tileable 2-D noise fields for colour dynamics (DESIGN.md §6.2).
 //!
 //! Each [`crate::document::NoiseKind`] is baked **once, on the CPU,
-//! with fixed constants** into a small `Rgba8Snorm` 3-D texture (three
+//! with fixed constants** into a small `Rgba8Snorm` 2-D texture (three
 //! independent signed channels; alpha unused) and sampled in the stamp shaders
 //! with a repeat sampler. Baking on the CPU keeps the field bit-identical across
 //! GPUs, runs, and peers — the same determinism contract as the sRGB↔Oklab
 //! constants (§6.5) — and the bake uses only IEEE add/mul/floor (no
 //! transcendentals), so the bytes are reproducible across platforms.
+//!
+//! Two axes are enough because the lookup is **stroke-local** — across the
+//! stroke and along it — so the field never has to resolve a third, canvas
+//! axis.
 //!
 //! Tileability is exact, not blended:
 //! - **White** noise is per-texel hashed, so it wraps trivially.
@@ -17,14 +21,23 @@
 //!   lattice point to one whose `q` differs by exactly `6·PERIOD` on that axis,
 //!   so the hash — and the noise — repeats exactly. (`PERIOD` must be a multiple
 //!   of 3 for the skewed cell indices to translate integrally.)
+//!
+//!   The lattice stays **three-dimensional** even though the bake is a plane:
+//!   the periodic-gradient trick above needs the unskewed lattice positions to
+//!   be integral, which holds in 3-D (`G3 = 1/6`) and *not* in 2-D, where
+//!   `G2 = (3−√3)/6` is irrational — a 2-D simplex grid can be made periodic
+//!   along its own skewed lattice vectors, but not along the axes, which is
+//!   exactly what a tileable texture needs. So the field is the 3-D one
+//!   restricted to `z = 0`: still smooth, still exactly axis-periodic.
 
 use crate::document::NoiseKind;
 use crate::gpu::context::GpuContext;
 
-/// Texels per side of the baked 3-D noise volume.
+/// Texels per side of the baked 2-D noise tile.
 pub const NOISE_RES: u32 = 64;
-/// Canvas pixels (and arc-length pixels) spanned by one noise tile at
-/// frequency 1. The shader lookup is `coord · frequency / NOISE_TILE_PX`.
+/// Stroke-local pixels (across the stroke and along its arc) spanned by one
+/// noise tile at frequency 1. The shader lookup is
+/// `coord · frequency / NOISE_TILE_PX`.
 pub const NOISE_TILE_PX: f32 = 256.0;
 /// Simplex lattice units per noise tile — the tile holds this many noise
 /// "features" per side. Must be a multiple of 3 (see the module docs).
@@ -32,22 +45,22 @@ const SIMPLEX_PERIOD: i32 = 6;
 /// Fixed bake seeds, one per colour channel.
 const CHANNEL_SEEDS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
 
-/// Bake `kind` and upload it as an `Rgba8Snorm` 3-D texture.
+/// Bake `kind` and upload it as an `Rgba8Snorm` 2-D texture.
 pub fn build_noise_texture(
     ctx: &GpuContext,
     kind: NoiseKind,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let bytes = bake(kind, NOISE_RES);
-    upload_3d(ctx, NOISE_RES, &bytes, "stark noise field")
+    upload_2d(ctx, NOISE_RES, &bytes, "stark noise field")
 }
 
-/// A 1×1×1 zero volume: sampled offset is exactly 0, so binding it makes the
+/// A 1×1 zero tile: sampled offset is exactly 0, so binding it makes the
 /// jitter a no-op without a second shader path.
 pub fn dummy_noise_texture(ctx: &GpuContext) -> (wgpu::Texture, wgpu::TextureView) {
-    upload_3d(ctx, 1, &[0u8; 4], "stark noise dummy")
+    upload_2d(ctx, 1, &[0u8; 4], "stark noise dummy")
 }
 
-fn upload_3d(
+fn upload_2d(
     ctx: &GpuContext,
     res: u32,
     bytes: &[u8],
@@ -56,14 +69,14 @@ fn upload_3d(
     let extent = wgpu::Extent3d {
         width: res,
         height: res,
-        depth_or_array_layers: res,
+        depth_or_array_layers: 1,
     };
     let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
-        dimension: wgpu::TextureDimension::D3,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Snorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
@@ -82,35 +95,30 @@ fn upload_3d(
     (texture, view)
 }
 
-/// Bake `kind` at `res`³ texels: 4 bytes per texel (`Rgba8Snorm`), three signed
+/// Bake `kind` at `res`² texels: 4 bytes per texel (`Rgba8Snorm`), three signed
 /// noise channels in ≈[-1, 1] plus an unused alpha.
 fn bake(kind: NoiseKind, res: u32) -> Vec<u8> {
     let n = res as usize;
-    let mut out = vec![0u8; n * n * n * 4];
-    for z in 0..n {
-        for y in 0..n {
-            for x in 0..n {
-                let i = ((z * n + y) * n + x) * 4;
-                let v = match kind {
-                    NoiseKind::White => white_at(x as u32, y as u32, z as u32),
-                    NoiseKind::Simplex => {
-                        // Texel centres over `SIMPLEX_PERIOD` lattice units per side.
-                        let s = SIMPLEX_PERIOD as f32 / res as f32;
-                        let p = [
-                            (x as f32 + 0.5) * s,
-                            (y as f32 + 0.5) * s,
-                            (z as f32 + 0.5) * s,
-                        ];
-                        [
-                            periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[0]),
-                            periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[1]),
-                            periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[2]),
-                        ]
-                    }
-                };
-                for (c, val) in v.iter().enumerate() {
-                    out[i + c] = (val.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8;
+    let mut out = vec![0u8; n * n * 4];
+    for y in 0..n {
+        for x in 0..n {
+            let i = (y * n + x) * 4;
+            let v = match kind {
+                NoiseKind::White => white_at(x as u32, y as u32),
+                NoiseKind::Simplex => {
+                    // Texel centres over `SIMPLEX_PERIOD` lattice units per side,
+                    // on the `z = 0` plane of the periodic 3-D field (module docs).
+                    let s = SIMPLEX_PERIOD as f32 / res as f32;
+                    let p = [(x as f32 + 0.5) * s, (y as f32 + 0.5) * s, 0.0];
+                    [
+                        periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[0]),
+                        periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[1]),
+                        periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[2]),
+                    ]
                 }
+            };
+            for (c, val) in v.iter().enumerate() {
+                out[i + c] = (val.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8;
             }
         }
     }
@@ -118,8 +126,8 @@ fn bake(kind: NoiseKind, res: u32) -> Vec<u8> {
 }
 
 /// Three independent white-noise channels for one texel, in [-1, 1].
-fn white_at(x: u32, y: u32, z: u32) -> [f32; 3] {
-    let h = pcg4d([x, y, z, CHANNEL_SEEDS[0]]);
+fn white_at(x: u32, y: u32) -> [f32; 3] {
+    let h = pcg4d([x, y, 0, CHANNEL_SEEDS[0]]);
     [unit(h[0]), unit(h[1]), unit(h[2])].map(|u| u * 2.0 - 1.0)
 }
 
@@ -315,20 +323,22 @@ mod tests {
         }
     }
 
-    /// Tileability of the *baked* volume: stepping across the wrap seam
+    /// Tileability of the *baked* tile: stepping across the wrap seam
     /// (texel N−1 → texel 0) must look exactly like stepping anywhere in the
     /// interior — a broken wrap shows up as an outsized seam step.
     #[test]
     fn simplex_bake_seam_matches_interior() {
         let n = 64usize;
         let a = bake(NoiseKind::Simplex, n as u32);
-        let texel = |x: usize, y: usize, z: usize| a[((z * n + y) * n + x) * 4] as i8 as i32;
+        let texel = |x: usize, y: usize| a[(y * n + x) * 4] as i8 as i32;
         let (mut interior_max, mut seam_max) = (0, 0);
-        for z in 0..n {
-            for y in 0..n {
-                for x in 0..n {
-                    let d = (texel(x, y, z) - texel((x + 1) % n, y, z)).abs();
-                    if x + 1 == n {
+        for y in 0..n {
+            for x in 0..n {
+                for (d, on_seam) in [
+                    ((texel(x, y) - texel((x + 1) % n, y)).abs(), x + 1 == n),
+                    ((texel(x, y) - texel(x, (y + 1) % n)).abs(), y + 1 == n),
+                ] {
+                    if on_seam {
                         seam_max = seam_max.max(d);
                     } else {
                         interior_max = interior_max.max(d);

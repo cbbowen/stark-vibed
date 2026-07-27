@@ -255,12 +255,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // sliders live only while some channel is active (no effect at 0).
                         if cd.amplitude.iter().any(|a| *a > 0.0) {
                             div { class: "be-sub",
-                                Slider { label: "Scale \u{2192} canvas X", min: 0.0, max: 8.0, value: cd.frequency[0],
+                                Slider { label: "Scale \u{2192} across stroke", min: 0.0, max: 8.0, value: cd.frequency[0],
                                     oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[0] = v) }
-                                Slider { label: "Scale \u{2192} canvas Y", min: 0.0, max: 8.0, value: cd.frequency[1],
+                                Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[1],
                                     oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[1] = v) }
-                                Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[2],
-                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[2] = v) }
                             }
                         }
                     }

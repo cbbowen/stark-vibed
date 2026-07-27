@@ -305,7 +305,7 @@ impl StrokeRenderer {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D3,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
                     count: None,
@@ -318,12 +318,11 @@ impl StrokeRenderer {
                 },
             ],
         });
-        // Wrapping on every axis — the noise volume tiles (that's the whole point).
+        // Wrapping on both axes — the noise tile tiles (that's the whole point).
         let noise_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("stark noise sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -524,9 +523,9 @@ impl StrokeRenderer {
         view
     }
 
-    /// The colour-dynamics noise volume for a brush: the baked field for its
+    /// The colour-dynamics noise tile for a brush: the baked field for its
     /// kind (built once, cached — the bake is a fixed pure function, so at most
-    /// one texture per [`NoiseKind`] ever exists), or the 1×1×1 zero volume when
+    /// one texture per [`NoiseKind`] ever exists), or the 1×1 zero tile when
     /// the jitter is off (amplitudes all 0 ⇒ the shader adds exactly nothing).
     fn noise_view(&self, cd: &ColorDynamics) -> wgpu::TextureView {
         if !cd.is_active() {

@@ -59,17 +59,16 @@ struct Stamp {
     d: vec4<f32>,
     // e: `add` rates per unit exposure: height .x, wet .y. .zw unused.
     e: vec4<f32>,
-    // f–i: colour dynamics (DESIGN.md §6.2) for the brush's own `add` paint —
+    // f–h: colour dynamics (DESIGN.md §6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
-    // f: noise frequency per lookup axis .xyz, 1/NOISE_TILE_PX in .w.
+    // f: noise frequency per lookup axis (across the stroke, along it) .xy,
+    //    1/NOISE_TILE_PX in .z; .w unused.
     f: vec4<f32>,
     // g: per colour-channel noise amplitude .xyz (all 0 = off); arc length at
     //    the segment start (canvas px) in .w.
     g: vec4<f32>,
-    // h: per-stroke noise lookup translation .xyz; .w unused.
+    // h: per-stroke noise lookup translation .xy; .zw unused.
     h: vec4<f32>,
-    // i: the region's canvas origin .xy (region px → canvas px); .zw unused.
-    i: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
@@ -102,7 +101,7 @@ struct Stamp {
 @group(0) @binding(14) var region_aux_w: texture_storage_2d<rgba16float, write>;
 // The colour-dynamics noise field + its repeat sampler (deposit only): jitters
 // the brush's own `add` paint exactly like the fast path's stamp (DESIGN §6.2).
-@group(0) @binding(15) var dyn_noise_tex: texture_3d<f32>;
+@group(0) @binding(15) var dyn_noise_tex: texture_2d<f32>;
 @group(0) @binding(16) var dyn_noise_samp: sampler;
 // The reservoir's **swept prefix** in the travel frame (written by `bake`, read by
 // `deposit`): running integrals of the carried paint weighted by the footprint's
@@ -477,14 +476,18 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let canvas_lat = uc.rgb / max(uc.a, EPS);
 
     // The brush's own colour at this texel: the stroke colour offset by the
-    // colour-dynamics field, sampled at the same (canvas, arc) domain as the fast
-    // path (canvas = region origin + region px; arc clamped to the segment body,
-    // continuous across overlapping quads).
+    // colour-dynamics field, sampled at the same stroke-local (lateral, arc)
+    // domain as the fast path — both in canvas px (the travel frame's y is in
+    // radius units, so it scales by the radius), the arc clamped to the segment
+    // body so it stays continuous across overlapping quads.
     var own_lat = st.c.xyz;
     if any(st.g.xyz != vec3<f32>(0.0, 0.0, 0.0)) {
-        let canvas = st.i.xy + p;
+        let lateral = yl * st.b.x;
         let arc = st.g.w + clamp(xl, 0.0, st.b.y) * st.b.x;
-        own_lat += color_jitter(dyn_noise_tex, dyn_noise_samp, canvas, arc, st.f, st.g.xyz, st.h.xyz);
+        own_lat += color_jitter(
+            dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
+            st.f, st.g.xyz, st.h.xy,
+        );
     }
 
     // The parcel this segment lays: the tool's deposit + the brush's own `add`

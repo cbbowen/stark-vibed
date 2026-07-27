@@ -147,7 +147,7 @@ impl Default for BrushDynamics {
 }
 
 /// The kind of noise field driving [`ColorDynamics`] (DESIGN.md §6.2). Each kind
-/// is baked once into a small tileable 3-D texture (`noise.rs`), so lookups are
+/// is baked once into a small tileable 2-D texture (`noise.rs`), so lookups are
 /// cheap and deterministic across replay, peers, and builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum NoiseKind {
@@ -160,22 +160,23 @@ pub enum NoiseKind {
 }
 
 /// Colour dynamics (colour jitter): lets the applied colour vary **across the
-/// brush and along the stroke** (DESIGN.md §6.2). A 3-channel tileable 3-D noise
-/// field is sampled at `(canvas.x, canvas.y, arc length)` — the two canvas axes
-/// give spatial variation across the footprint (and keep tile aprons consistent,
-/// §6.4: the offset is a pure function of canvas position + the stroke), the
-/// third evolves the colour along the stroke — and the three noise channels
-/// offset the three colour channels *of the current colour space* (Oklab
-/// `L, a, b`; Mixbox pigment concentrations). The per-stroke `seed` translates
-/// the lookup so each stroke draws a fresh part of the field, deterministically.
+/// brush and along the stroke** (DESIGN.md §6.2). A 3-channel tileable 2-D noise
+/// field is sampled in the stroke's **own** frame — `(lateral offset from the
+/// centreline, arc length)`, both in canvas px — so the variation belongs to the
+/// gesture rather than to the patch of canvas under it: one axis spreads the
+/// colour across the footprint, the other evolves it along the stroke. The three
+/// noise channels offset the three colour channels *of the current colour space*
+/// (Oklab `L, a, b`; Mixbox pigment concentrations). The per-stroke `seed`
+/// translates the lookup so each stroke draws a fresh part of the field,
+/// deterministically.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColorDynamics {
     /// Which noise field to sample.
     pub noise: NoiseKind,
-    /// Frequency scale per lookup axis (canvas x, canvas y, arc length): 1 = one
-    /// noise tile per [`crate::noise::NOISE_TILE_PX`] canvas px; higher = finer
+    /// Frequency scale per lookup axis (across the stroke, along it): 1 = one
+    /// noise tile per [`crate::noise::NOISE_TILE_PX`] px; higher = finer
     /// variation along that axis; 0 = constant along that axis.
-    pub frequency: [f32; 3],
+    pub frequency: [f32; 2],
     /// Noise amplitude per colour channel, in the colour space's own units
     /// (noise is signed, so a channel wanders ±amplitude). All 0 = off — the
     /// exact historical constant-colour deposit.
@@ -186,7 +187,7 @@ impl Default for ColorDynamics {
     fn default() -> Self {
         Self {
             noise: NoiseKind::default(),
-            frequency: [1.0; 3],
+            frequency: [1.0; 2],
             amplitude: [0.0; 3],
         }
     }

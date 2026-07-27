@@ -1,5 +1,6 @@
 //! Colour dynamics (colour jitter) — DESIGN.md §6.2: the applied colour varies
-//! across the brush and along the stroke, driven by a tileable 3-D noise field.
+//! across the brush and along the stroke, driven by a tileable 2-D noise field
+//! sampled in the stroke's own (lateral, arc) frame.
 //! These tests pin the three contracts: **off is exactly off** (a zero-amplitude
 //! brush deposits bit-identically to one with no dynamics at all), **on is
 //! deterministic** (same record ⇒ same pixels, across engines and through
@@ -28,7 +29,7 @@ const S_CURVE: [Vec2; 5] = [
     Vec2::new(95.0, 55.0),
 ];
 
-fn jitter_brush(noise: NoiseKind, frequency: [f32; 3], amplitude: [f32; 3]) -> BrushParams {
+fn jitter_brush(noise: NoiseKind, frequency: [f32; 2], amplitude: [f32; 3]) -> BrushParams {
     let mut b = brush(TEAL, 42.0);
     b.color_dynamics = ColorDynamics {
         noise,
@@ -44,8 +45,8 @@ fn golden_color_jitter_simplex() {
         return;
     };
     // Smooth organic wander in all three Oklab channels, at a scale that shows a
-    // few colour "clouds" across the stroke.
-    let b = jitter_brush(NoiseKind::Simplex, [50.0, 50.0, 0.0], [0.18, 0.14, 0.14]);
+    // few colour "clouds" across the stroke and a few more along it.
+    let b = jitter_brush(NoiseKind::Simplex, [2.0, 0.5], [0.18, 0.14, 0.14]);
     stroke_with(&mut engine, b, &S_CURVE);
     let img = engine.render_to_image();
     assert_golden("color_jitter_simplex", &img, 6);
@@ -57,20 +58,20 @@ fn golden_color_jitter_white() {
         return;
     };
     // High-frequency white noise: fine speckled grain in lightness + chroma.
-    let b = jitter_brush(NoiseKind::White, [6.0, 6.0, 6.0], [0.15, 0.10, 0.10]);
+    let b = jitter_brush(NoiseKind::White, [6.0, 6.0], [0.15, 0.10, 0.10]);
     stroke_with(&mut engine, b, &S_CURVE);
     let img = engine.render_to_image();
     assert_golden("color_jitter_white", &img, 6);
 }
 
-/// Along-stroke-only jitter (`frequency = [0, 0, f]`): the colour drifts along
+/// Along-stroke-only jitter (`frequency = [0, f]`): the colour drifts along
 /// the arc but is uniform across the footprint at any point of the stroke.
 #[test]
 fn golden_color_jitter_along_stroke() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let b = jitter_brush(NoiseKind::Simplex, [0.0, 0.0, 4.0], [0.16, 0.16, 0.16]);
+    let b = jitter_brush(NoiseKind::Simplex, [0.0, 4.0], [0.16, 0.16, 0.16]);
     stroke_with(&mut engine, b, &S_CURVE);
     let img = engine.render_to_image();
     assert_golden("color_jitter_along_stroke", &img, 6);
@@ -89,7 +90,7 @@ fn zero_amplitude_is_bit_identical_to_off() {
     let mut jb = brush(TEAL, 42.0);
     jb.color_dynamics = ColorDynamics {
         noise: NoiseKind::White,
-        frequency: [5.0, 5.0, 5.0],
+        frequency: [5.0, 5.0],
         amplitude: [0.0; 3],
     };
     stroke_with(&mut b, jb, &S_CURVE);
@@ -110,7 +111,7 @@ fn jitter_is_deterministic_and_effective() {
     else {
         return;
     };
-    let jb = jitter_brush(NoiseKind::Simplex, [3.0, 3.0, 3.0], [0.2, 0.12, 0.12]);
+    let jb = jitter_brush(NoiseKind::Simplex, [3.0, 3.0], [0.2, 0.12, 0.12]);
     stroke_with(&mut a, jb, &S_CURVE);
     stroke_with(&mut b, jb, &S_CURVE);
     paint(&mut plain, TEAL, 42.0, &S_CURVE);
@@ -131,7 +132,7 @@ fn jitter_survives_save_load() {
     let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
         return;
     };
-    let jb = jitter_brush(NoiseKind::White, [4.0, 4.0, 2.0], [0.15, 0.1, 0.1]);
+    let jb = jitter_brush(NoiseKind::White, [4.0, 2.0], [0.15, 0.1, 0.1]);
     stroke_with(&mut a, jb, &S_CURVE);
     let bytes = a.save_bytes().expect("save");
     b.load_bytes(&bytes).expect("load");
@@ -152,7 +153,7 @@ fn jitter_applies_in_dynamics_loop() {
     else {
         return;
     };
-    let mut jb = jitter_brush(NoiseKind::Simplex, [3.0, 3.0, 3.0], [0.2, 0.12, 0.12]);
+    let mut jb = jitter_brush(NoiseKind::Simplex, [3.0, 3.0], [0.2, 0.12, 0.12]);
     jb.dynamics.lift = 0.3;
     jb.dynamics.deposit = 0.3; // lift/deposit > 0 ⇒ the exchange-loop path
     stroke_with(&mut a, jb, &S_CURVE);
@@ -177,7 +178,7 @@ fn jittered_live_preview_matches_commit() {
     let (Some(mut live), Some(mut replayed)) = (engine_or_skip(), engine_or_skip()) else {
         return;
     };
-    let jb = jitter_brush(NoiseKind::Simplex, [2.0, 2.0, 3.0], [0.15, 0.1, 0.1]);
+    let jb = jitter_brush(NoiseKind::Simplex, [2.0, 3.0], [0.15, 0.1, 0.1]);
 
     live.process(ViewCommand::SetBrush(jb));
     let mut it = S_CURVE.iter();

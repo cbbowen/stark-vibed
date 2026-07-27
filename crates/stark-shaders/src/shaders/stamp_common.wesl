@@ -16,11 +16,12 @@ struct TileXform {
     // attributes, and colour dynamics (below) jitter it per fragment.
     color: vec4<f32>,
     // Colour dynamics (DESIGN.md §6.2): noise frequency per lookup axis
-    // (canvas x, canvas y, arc) in .xyz with 1/NOISE_TILE_PX pre-folded into .w.
+    // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
+    // .z; .w unused.
     noise_freq: vec4<f32>,
     // Per colour-channel noise amplitude .xyz (all 0 = jitter off); .w unused.
     noise_amp: vec4<f32>,
-    // Per-stroke noise lookup translation .xyz (from the stroke seed); .w unused.
+    // Per-stroke noise lookup translation .xy (from the stroke seed); .zw unused.
     noise_off: vec4<f32>,
 }
 
@@ -30,10 +31,10 @@ struct TileXform {
 // rotation-invariant and have a single slice; image stamps carry up to
 // MAX_ORIENTATION_LAYERS. A 2D array (not a 3D texture) so the mask keeps its full size.
 @group(1) @binding(0) var prefix_tex: texture_2d_array<f32>;
-// The colour-dynamics noise field (DESIGN.md §6.2): a tileable 3-D volume
-// (three signed channels) sampled at (canvas.x, canvas.y, arc) with a repeat
-// sampler. A 1×1×1 zero volume is bound when the brush's jitter is off.
-@group(2) @binding(0) var noise_tex: texture_3d<f32>;
+// The colour-dynamics noise field (DESIGN.md §6.2): a tileable 2-D tile
+// (three signed channels) sampled at (lateral, arc) with a repeat sampler.
+// A 1×1 zero tile is bound when the brush's jitter is off.
+@group(2) @binding(0) var noise_tex: texture_2d<f32>;
 @group(2) @binding(1) var noise_samp: sampler;
 
 struct VsOut {
@@ -92,22 +93,27 @@ fn sweep_vertex(
 
 // The brush's colour channels (per the color space) at this fragment: the
 // stroke-constant colour, offset by the colour-dynamics noise field (DESIGN.md
-// §6.2). The lookup domain is (canvas position, arc length along the stroke):
-// canvas-anchored, so the deposit stays a pure function of canvas position + the
-// stroke (tile aprons remain bit-consistent, §6.4). The arc is clamped to the
-// segment body, which makes it *continuous* across the overlapping quads of
-// consecutive segments (a trailing margin's arc equals the next segment's start).
+// §6.2). The lookup domain is **stroke-local** — (lateral offset from the
+// centreline, arc length along the stroke), both in canvas px — so the pattern
+// belongs to the stroke rather than to the canvas it lands on: the same gesture
+// carries the same colour variation wherever it is drawn. Both coordinates are
+// still functions of the fragment's canvas position and the segment, so the
+// deposit remains a pure function of the two and tile aprons stay bit-consistent
+// (§6.4). The arc is clamped to the segment body, which makes it *continuous*
+// across the overlapping quads of consecutive segments (a trailing margin's arc
+// equals the next segment's start).
 fn brush_color(in: VsOut) -> vec3<f32> {
     if all(xf.noise_amp.xyz == vec3<f32>(0.0, 0.0, 0.0)) {
         return xf.color.xyz;
     }
-    // TODO: Using a local parameterization, we no longer need 3D noise. 
-    // let canvas = xf.params.xy + in.clip.xy;
-    let canvas = vec2(0.0, in.local.y);
-    let arc = in.sinfo.x + clamp(in.local.x, 0.0, in.lr) * in.sinfo.y;
+    let radius = in.sinfo.y;
+    // Brush-local y is in radius units; the noise domain is px on both axes, so
+    // the pattern keeps one scale whatever size the tip is.
+    let lateral = in.local.y * radius;
+    let arc = in.sinfo.x + clamp(in.local.x, 0.0, in.lr) * radius;
     let jitter = color_jitter(
-        noise_tex, noise_samp, canvas, arc,
-        xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xyz,
+        noise_tex, noise_samp, vec2<f32>(lateral, arc),
+        xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xy,
     );
     return xf.color.xyz + jitter;
 }

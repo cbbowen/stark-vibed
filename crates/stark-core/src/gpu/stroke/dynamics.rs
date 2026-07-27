@@ -37,11 +37,11 @@ struct SliceUniform {
 
 /// One dispatch step of the sequential swept-exchange loop (DESIGN.md §6.2):
 /// either a reservoir `pickup` or a segment's `snapshot`+`deposit` pair. `slot`
-/// is the 144-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
+/// is the 128-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
 /// a pure function of the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
     pickup: bool,
-    slot: [f32; 36],
+    slot: [f32; 32],
 }
 
 /// GPU objects for the brush-dynamics stamp loop (DESIGN.md §6.2), built once.
@@ -538,7 +538,7 @@ impl<'a> DynamicsRun<'a> {
             dynamics_plan(rec, segments, region_origin, dsize, channels, self.since);
         self.since = since_end;
         const STRIDE: usize = 256;
-        const SLOT: usize = 144; // sizeof the `Stamp` uniform (9 × vec4)
+        const SLOT: usize = 128; // sizeof the `Stamp` uniform (8 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
         for (i, d) in plan.iter().enumerate() {
             data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::cast_slice(&d.slot));
@@ -961,11 +961,7 @@ fn dynamics_plan(
                     0.0,
                     0.0,
                     0.0,
-                    // f–i (colour dynamics) — unused by `pickup`.
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
+                    // f–h (colour dynamics) — unused by `pickup`.
                     0.0,
                     0.0,
                     0.0,
@@ -1012,7 +1008,7 @@ fn dynamics_plan(
                 0.0,
                 0.0,
                 0.0,
-                // f–i: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
+                // f–h: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
                 nfreq[0],
                 nfreq[1],
                 nfreq[2],
@@ -1024,10 +1020,6 @@ fn dynamics_plan(
                 noff[0],
                 noff[1],
                 noff[2],
-                0.0,
-                region_origin.x,
-                region_origin.y,
-                0.0,
                 0.0,
             ],
         });
@@ -1198,7 +1190,7 @@ pub(super) fn build_dynamics_kit(
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: true,
-            min_binding_size: wgpu::BufferSize::new(144), // sizeof `Stamp` (9 × vec4)
+            min_binding_size: wgpu::BufferSize::new(128), // sizeof `Stamp` (8 × vec4)
         },
         count: None,
     };
@@ -1291,13 +1283,13 @@ pub(super) fn build_dynamics_kit(
             ctex(12, false),
             stor(13),
             stor(14),
-            // The colour-dynamics noise volume + its repeat sampler (§6.2).
+            // The colour-dynamics noise tile + its repeat sampler (§6.2).
             wgpu::BindGroupLayoutEntry {
                 binding: 15,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D3,
+                    view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
                 count: None,

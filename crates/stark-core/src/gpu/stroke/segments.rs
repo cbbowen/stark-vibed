@@ -141,7 +141,8 @@ pub(super) fn generate_segments_in(
     (segs, end_dist)
 }
 
-/// The stroke's colour-dynamics uniform triplet — (frequency + 1/NOISE_TILE_PX,
+/// The stroke's colour-dynamics uniform triplet — (per-axis frequency
+/// (across the stroke, along it) + 1/NOISE_TILE_PX,
 /// per-channel amplitude, per-stroke lookup translation) — shared by the sweep's
 /// `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter
 /// identically. Inactive jitter zeroes frequency *and* amplitude, so with the
@@ -151,22 +152,22 @@ pub(super) fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]
     let (freq, amp) = if cd.is_active() {
         (cd.frequency, cd.amplitude)
     } else {
-        ([0.0; 3], [0.0; 3])
+        ([0.0; 2], [0.0; 3])
     };
     let off = noise_offset(rec.seed);
     (
-        [freq[0], freq[1], freq[2], 1.0 / NOISE_TILE_PX],
+        [freq[0], freq[1], 1.0 / NOISE_TILE_PX, 0.0],
         [amp[0], amp[1], amp[2], 0.0],
-        [off[0], off[1], off[2], 0.0],
+        [off[0], off[1], 0.0, 0.0],
     )
 }
 
-/// The per-stroke noise lookup translation in [0, 1)³, derived from the stroke
+/// The per-stroke noise lookup translation in [0, 1)², derived from the stroke
 /// seed via splitmix64 — each stroke samples a fresh part of the tileable field,
 /// deterministically (replay and live == committed hold, DESIGN.md §6.2).
-pub(super) fn noise_offset(seed: u64) -> [f32; 3] {
+pub(super) fn noise_offset(seed: u64) -> [f32; 2] {
     let mut state = seed;
-    [(); 3].map(|_| {
+    [(); 2].map(|_| {
         state = state.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = state;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
