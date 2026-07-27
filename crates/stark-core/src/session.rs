@@ -13,7 +13,8 @@ use crate::document::{
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
-use crate::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead, default_name};
+use crate::peer::{HEARTBEAT, PeerFrame, StrokeHead, default_name};
+use crate::presence::{GestureSource, GestureTx};
 
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a
@@ -109,14 +110,16 @@ impl SelectionDrag {
 
 /// What this session last put on the wire, for change detection (see
 /// [`Session::publish`]). Compared rather than dirty-flagged: a comparison cannot be
-/// forgotten at a call site, and these are four cheap fields.
+/// forgotten at a call site, and these are three cheap fields.
+///
+/// The gesture is *not* here: what the wire has been told about it is
+/// [`GestureTx`]'s business, and asking it ([`GestureTx::in_flight`]) beats keeping a
+/// second copy in step.
 #[derive(Clone, PartialEq)]
 struct Published {
     active_layer: LayerId,
     cursor: Option<Vec2>,
     name: String,
-    /// Ordinal of the gesture in flight, or `None` for none.
-    gesture: Option<u64>,
 }
 
 pub struct Session {
@@ -166,10 +169,10 @@ pub struct Session {
     published: Option<Published>,
     pub_seq: u64,
     pub_at: f64,
-    pub_resync_at: f64,
-    /// Control points of the current gesture the wire has already carried. Only
-    /// *frozen* ones count: the provisional tail is resent because it can still move.
-    pub_sent: usize,
+    /// The sending half of the gesture protocol — the watermarks recording what the
+    /// wire has been told. Its counterpart, [`GestureRx`](crate::presence::GestureRx),
+    /// lives beside it in [`crate::presence`] rather than in the receiver's module.
+    tx: GestureTx,
 }
 
 fn hard_round_brush_params() -> BrushParams {
@@ -210,8 +213,7 @@ impl Session {
             published: None,
             pub_seq: 0,
             pub_at: f64::NEG_INFINITY,
-            pub_resync_at: f64::NEG_INFINITY,
-            pub_sent: 0,
+            tx: GestureTx::new(),
         }
     }
 
@@ -262,19 +264,19 @@ impl Session {
         // path. That repairs any receiver that missed a delta and primes any client
         // that arrived mid-stroke — without either of them having to ask, which is
         // what keeps the wire one-way and the sender stateless about its audience.
-        let resync = now - self.pub_resync_at >= GESTURE_RESYNC;
-        let gesture = self.gesture_frame(resync);
+        let resync = self.tx.resync_due(now);
+        let source = self.gesture_source();
 
         let state = Published {
             active_layer: self.active_layer,
             cursor: self.cursor,
             name: self.name.clone(),
-            gesture: gesture.as_ref().map(GestureFrame::id),
         };
         let changed = self.published.as_ref() != Some(&state)
-            // A live gesture's path grows every move, so its frame always differs
-            // even when the ordinal has not.
-            || gesture.is_some();
+            // A live gesture's path grows every move, so its frame always differs.
+            || source.is_some()
+            // ...and one that has just ended still owes the frame that clears it.
+            || self.tx.in_flight();
         if !changed && now - self.pub_at < HEARTBEAT {
             return None;
         }
@@ -285,14 +287,13 @@ impl Session {
             .then(|| self.name.clone())
             .filter(|n| !n.is_empty());
 
-        // Stamped for *any* frame that went out carrying resync, not just one with a
-        // gesture on it. Gated on a gesture, the watermark sat at `NEG_INFINITY` for
-        // as long as nobody was drawing, so `resync` was permanently true whenever
-        // idle — which is not a cadence, and quietly became the name's cadence too
-        // (above). A gesture starting while the flag is down still sends its head on
-        // its first frame: `gesture_frame` tests `fresh`, not `resync`.
+        // Everything below this line commits to sending, which is the only point at
+        // which the watermarks may move: they record what the receiver has been told.
+        // Encoding *before* the early return above worked only because a gesture
+        // always forced `changed` — a coupling nothing stated and nothing checked.
+        let gesture = self.tx.encode(self.gesture_ordinal, source, resync);
         if resync {
-            self.pub_resync_at = now;
+            self.tx.stamp_resync(now);
         }
         self.pub_at = now;
         self.pub_seq += 1;
@@ -322,13 +323,13 @@ impl Session {
         now - self.pub_at >= HEARTBEAT
             || self.in_flight.is_some()
             || self.selecting.is_some()
+            // A gesture that just ended: the frame clearing it is the one that stops
+            // peers drawing a stroke nobody is making any more.
+            || self.tx.in_flight()
             || self.published.as_ref().is_none_or(|p| {
                 p.active_layer != self.active_layer
                     || p.cursor != self.cursor
                     || p.name != self.name
-                    // A gesture that just ended: the frame clearing it is the one
-                    // that stops peers drawing a stroke nobody is making any more.
-                    || p.gesture.is_some()
             })
     }
 
@@ -346,43 +347,27 @@ impl Session {
         }
     }
 
-    /// The in-flight gesture as a wire frame, advancing the sent-path watermark.
-    fn gesture_frame(&mut self, resync: bool) -> Option<GestureFrame> {
-        let ordinal = self.gesture_ordinal;
-        if let Some(b) = self.in_flight.as_ref() {
-            let path = b.fitter.path();
-            // Only frozen points are settled, so only they may be counted as sent:
-            // the provisional tail is resent every frame because it can still move
-            // (DESIGN §6.2). This is the same partition the renderer's `FrozenHead`
-            // uses, spent on the wire instead of on the GPU.
-            let frozen = b.fitter.frozen_points().min(path.len());
-            let fresh = resync || self.published.as_ref().and_then(|p| p.gesture) != Some(ordinal);
-            let from = if fresh {
-                0
-            } else {
-                self.pub_sent.min(path.len())
-            };
-            let head = fresh.then_some(StrokeHead {
-                layer: b.layer,
-                tool: b.tool,
-                brush: b.brush,
-                seed: b.seed,
-            });
-            let points = path[from..].to_vec();
-            self.pub_sent = frozen;
-            Some(GestureFrame::Stroke {
-                id: ordinal,
-                head,
-                from: from as u32,
-                points,
-            })
-        } else {
-            // A marquee or lasso goes whole: it is already decimated, and unlike a
-            // stroke its tail is not append-only — the closing edge follows the
-            // cursor, so there is no frozen prefix to exploit.
-            self.pub_sent = 0;
-            self.preview_selection()
-                .map(|op| GestureFrame::Selection { id: ordinal, op })
+    /// The gesture in flight, in the form the encoder reads it — a window onto the
+    /// live fitter, not a copy of it. `None` when nothing is being dragged out (which
+    /// includes a selection gesture that so far encloses nothing).
+    ///
+    /// Only frozen control points are reported as settled: the provisional tail is
+    /// resent every frame because it can still move (DESIGN §6.2). That is the same
+    /// partition the renderer's `FrozenHead` uses, spent on the wire instead of on
+    /// the GPU.
+    fn gesture_source(&self) -> Option<GestureSource> {
+        match self.in_flight.as_ref() {
+            Some(b) => Some(GestureSource::Stroke {
+                head: StrokeHead {
+                    layer: b.layer,
+                    tool: b.tool,
+                    brush: b.brush,
+                    seed: b.seed,
+                },
+                path: b.fitter.path(),
+                frozen: b.fitter.frozen_points(),
+            }),
+            None => self.preview_selection().map(GestureSource::Selection),
         }
     }
 

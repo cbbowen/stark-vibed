@@ -1606,7 +1606,7 @@ impl Engine {
             ));
         }
         for peer in self.peers.iter() {
-            if let Some(gesture) = peer.gesture.clone() {
+            if let Some(gesture) = peer.gesture().cloned() {
                 out.push((
                     peer.actor,
                     gesture,

@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::{ActorId, BrushParams, LayerId, SelectionOp, StrokeRecord, Tool};
 use crate::geom::Vec2;
 use crate::path::ControlPoint;
+use crate::presence::GestureRx;
 
 /// How long a peer may go unheard-from before it leaves the roster, in seconds.
 /// Peers publish at least every [`HEARTBEAT`] even when idle, so this is several
@@ -139,31 +140,14 @@ pub struct Peer {
     pub color: [f32; 3],
     pub active_layer: LayerId,
     pub cursor: Option<Vec2>,
-    pub gesture: Option<LiveGesture>,
     seq: u64,
-    /// The ordinal of the gesture in flight, tracked separately from both `gesture`
-    /// and `stroke` because neither is present in every state one can be in: a
-    /// selection leaves no `stroke`, and a stroke whose head has not arrived leaves
-    /// no `gesture`. It is the only thing that reliably distinguishes *this* gesture
-    /// from the one before it.
-    gesture_id: Option<u64>,
-    /// The gesture currently being reassembled, and the path so far. Kept apart from
-    /// `gesture` because a stroke that has lost frames stops *growing* while still
-    /// being tracked, awaiting the next resync frame.
-    stroke: Option<StrokeAssembly>,
+    /// The receiving half of the gesture protocol. Its counterpart,
+    /// [`GestureTx`](crate::presence::GestureTx), lives beside it in
+    /// [`crate::presence`] rather than in the sender's module — they are one protocol
+    /// and their invariants are properties of the pair.
+    rx: GestureRx,
     last_seen: f64,
     gesture_seen: f64,
-}
-
-#[derive(Clone, Debug)]
-struct StrokeAssembly {
-    id: u64,
-    head: StrokeHead,
-    path: Vec<ControlPoint>,
-    /// Control points the sender has stopped resending — i.e. the ones its fitter
-    /// froze. The receiver learns this for free from the delta's `from`, and it is
-    /// exactly what the incremental repaint needs to know (PEER_DESIGN.md §6).
-    frozen: usize,
 }
 
 impl Peer {
@@ -174,18 +158,26 @@ impl Peer {
             color: peer_color(actor),
             active_layer,
             cursor: None,
-            gesture: None,
             seq: 0,
-            gesture_id: None,
-            stroke: None,
+            rx: GestureRx::default(),
             last_seen: now,
             gesture_seen: now,
         }
     }
 
+    /// What to draw for this peer right now, if anything.
+    pub fn gesture(&self) -> Option<&LiveGesture> {
+        self.rx.drawn()
+    }
+
+    /// Whether this peer has a gesture on the canvas.
+    pub fn is_gesturing(&self) -> bool {
+        self.rx.drawn().is_some()
+    }
+
     /// The live stroke this peer is drawing, if any — what the preview fold renders.
     pub fn live_stroke(&self) -> Option<&StrokeRecord> {
-        match &self.gesture {
+        match self.rx.drawn() {
             Some(LiveGesture::Stroke(rec)) => Some(rec),
             _ => None,
         }
@@ -193,7 +185,7 @@ impl Peer {
 
     /// The marquee or lasso this peer is dragging, if any.
     pub fn live_selection(&self) -> Option<&SelectionOp> {
-        match &self.gesture {
+        match self.rx.drawn() {
             Some(LiveGesture::Selection(op)) => Some(op),
             _ => None,
         }
@@ -202,15 +194,21 @@ impl Peer {
     /// The per-actor ordinal of the gesture in flight — what tells a cached render
     /// of this peer's stroke apart from a render of the one before it.
     pub fn gesture_id(&self) -> Option<u64> {
-        self.gesture_id
+        self.rx.id()
     }
 
     /// How many spans of [`live_stroke`](Self::live_stroke) are settled, so the
     /// preview can repaint only the tail (DESIGN.md §6.2, PEER_DESIGN.md §6).
     pub fn live_frozen_spans(&self) -> usize {
-        self.stroke
-            .as_ref()
-            .map_or(0, |s| crate::path::frozen_spans_for(s.frozen, s.path.len()))
+        self.rx.frozen_spans()
+    }
+
+    /// How many leading control points of [`live_stroke`](Self::live_stroke) the
+    /// author has declared final. The protocol's core promise is about exactly these:
+    /// a frozen control point never moves again, so they must equal the author's.
+    #[cfg(test)]
+    pub(crate) fn live_frozen_points(&self) -> usize {
+        self.rx.frozen()
     }
 
     /// Integrate a frame. Returns whether the **canvas** changed, which is a much
@@ -226,98 +224,16 @@ impl Peer {
         self.active_layer = frame.active_layer;
         self.cursor = frame.cursor;
         match frame.gesture {
-            None => {
-                let was_drawing = self.gesture.is_some();
-                self.end_gesture();
-                was_drawing
-            }
-            Some(frame) => {
+            None => self.rx.clear(),
+            Some(gesture) => {
                 self.gesture_seen = now;
-                self.apply_gesture(frame)
-            }
-        }
-    }
-
-    /// Integrate one gesture frame. Returns whether what is *drawn* for this peer
-    /// changed.
-    fn apply_gesture(&mut self, frame: GestureFrame) -> bool {
-        // A new ordinal is a different gesture: drop whatever was being drawn or
-        // assembled rather than splicing two of them together.
-        //
-        // Keyed on the ordinal itself rather than on the stroke assembly, because a
-        // *selection* leaves no assembly. Keyed on the assembly, a stroke delta whose
-        // head had been lost found nothing to clear, took the early return below, and
-        // left the peer's last marquee sitting on the canvas — held there, since
-        // `apply` refreshes `gesture_seen` for every gesture frame, by the very frames
-        // that should have replaced it.
-        let mut changed = false;
-        if self.gesture_id != Some(frame.id()) {
-            changed = self.gesture.is_some();
-            self.end_gesture();
-        }
-        self.gesture_id = Some(frame.id());
-        match frame {
-            GestureFrame::Selection { op, .. } => {
-                self.stroke = None;
-                self.gesture = Some(LiveGesture::Selection(op));
-                true
-            }
-            GestureFrame::Stroke {
-                id,
-                head,
-                from,
-                points,
-            } => {
-                let from = from as usize;
-                // Start (or restart, on a resync frame) whenever the head is present.
-                if let Some(head) = head
-                    && (self.stroke.as_ref().is_none_or(|s| s.id != id) || from == 0)
-                {
-                    self.stroke = Some(StrokeAssembly {
-                        id,
-                        head,
-                        path: Vec::new(),
-                        frozen: 0,
-                    });
-                }
-                let Some(assembly) = self.stroke.as_mut() else {
-                    // A delta for a gesture whose head we never saw. Nothing to draw
-                    // until the next resync frame (PEER_DESIGN.md §5) — and nothing of
-                    // the *previous* gesture either, which the ordinal check above has
-                    // already seen to.
-                    return changed;
-                };
-                if from > assembly.path.len() {
-                    // A gap: frames were lost. Splicing these points on at the wrong
-                    // index would put a hole in the path, so they are dropped — but
-                    // what we already hold is a true *prefix* of the stroke, every
-                    // control point of it sent by the author for this gesture. So it
-                    // stays on the canvas and simply stops growing, rather than
-                    // blinking out for up to a `GESTURE_RESYNC`. Short is provisional,
-                    // which a live preview always is; absent is a flicker.
-                    return changed;
-                }
-                assembly.path.truncate(from);
-                assembly.path.extend(points);
-                // A resync frame resends the whole path, which says nothing new about
-                // what is frozen — so the watermark only ever advances.
-                assembly.frozen = assembly.frozen.max(from);
-                self.gesture = Some(LiveGesture::Stroke(StrokeRecord {
-                    layer: assembly.head.layer,
-                    tool: assembly.head.tool,
-                    brush: assembly.head.brush,
-                    path: assembly.path.clone(),
-                    seed: assembly.head.seed,
-                }));
-                true
+                self.rx.apply(gesture, frame.seq)
             }
         }
     }
 
     fn end_gesture(&mut self) {
-        self.gesture = None;
-        self.stroke = None;
-        self.gesture_id = None;
+        self.rx.clear();
     }
 }
 
@@ -446,7 +362,7 @@ impl Peers {
             live
         });
         for peer in self.map.values_mut() {
-            if peer.gesture.is_some() && now - peer.gesture_seen >= GESTURE_TIMEOUT {
+            if peer.is_gesturing() && now - peer.gesture_seen >= GESTURE_TIMEOUT {
                 peer.end_gesture();
                 change = PresenceChange::CANVAS;
             }
@@ -461,7 +377,7 @@ impl Peers {
     pub fn expiry_due(&self, now: f64) -> bool {
         self.map.values().any(|p| {
             now - p.last_seen >= PEER_TIMEOUT
-                || (p.gesture.is_some() && now - p.gesture_seen >= GESTURE_TIMEOUT)
+                || (p.is_gesturing() && now - p.gesture_seen >= GESTURE_TIMEOUT)
         })
     }
 
@@ -470,7 +386,7 @@ impl Peers {
     /// the live copy and the committed one are drawn.
     pub fn clear_gesture(&mut self, actor: ActorId) {
         if let Some(peer) = self.map.get_mut(&actor)
-            && peer.gesture.is_some()
+            && peer.is_gesturing()
         {
             peer.end_gesture();
             self.revision += 1;
@@ -668,7 +584,7 @@ mod tests {
         );
         assert!(change.canvas, "taking the marquee down is a canvas change");
         assert!(
-            peers.get(a).expect("peer").gesture.is_none(),
+            peers.get(a).expect("peer").gesture().is_none(),
             "a gesture that ended must not be left on the canvas by the frames of the \
              one that replaced it"
         );
@@ -780,6 +696,60 @@ mod tests {
         );
     }
 
+    /// A lost frame that leaves **no hole** is the dangerous one.
+    ///
+    /// Deltas splice with `truncate(from); extend(points)`, keeping everything below
+    /// `from` — which is only sound if the sender had frozen those points, and it
+    /// announces that through the `from` of the frames in between. Lose one and a
+    /// still-provisional control point is retained, then promoted to "frozen" by the
+    /// next frame's `from`. The result has the right length and no gap, and is wrong
+    /// in the middle. Only frame continuity catches it.
+    #[test]
+    fn a_lost_frame_that_leaves_no_hole_is_still_a_gap() {
+        let mut peers = Peers::new();
+        let a = ActorId(1);
+        peers.merge(
+            a,
+            frame(
+                1,
+                Some(GestureFrame::Stroke {
+                    id: 0,
+                    head: Some(head()),
+                    from: 0,
+                    points: pts(3),
+                }),
+            ),
+            0.0,
+        );
+        // Frame 2 (which would have revised control point 1 and 2) never arrived.
+        // Frame 3 starts at 2 — inside the path, so nothing looks amiss.
+        peers.merge(
+            a,
+            frame(
+                3,
+                Some(GestureFrame::Stroke {
+                    id: 0,
+                    head: None,
+                    from: 2,
+                    points: pts(2),
+                }),
+            ),
+            0.1,
+        );
+        let path = &peers
+            .get(a)
+            .expect("peer")
+            .live_stroke()
+            .expect("the prefix stays up")
+            .path;
+        assert_eq!(
+            path.len(),
+            3,
+            "a delta that is not the next frame must not be spliced, however \
+             plausible its `from` looks"
+        );
+    }
+
     #[test]
     fn a_new_gesture_ordinal_starts_over() {
         let mut peers = Peers::new();
@@ -841,7 +811,7 @@ mod tests {
             0.0,
         );
         peers.tick(GESTURE_TIMEOUT + 0.1);
-        assert!(peers.get(a).expect("still present").gesture.is_none());
+        assert!(peers.get(a).expect("still present").gesture().is_none());
         peers.tick(PEER_TIMEOUT + 0.1);
         assert!(peers.is_empty());
     }
@@ -875,7 +845,7 @@ mod tests {
             0.0,
         );
         peers.clear_gesture(a);
-        assert!(peers.get(a).expect("peer").gesture.is_none());
+        assert!(peers.get(a).expect("peer").gesture().is_none());
     }
 
     #[test]

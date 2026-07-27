@@ -53,6 +53,7 @@ pub mod io;
 pub mod noise;
 pub mod path;
 pub mod peer;
+mod presence;
 pub mod session;
 pub mod spline;
 
