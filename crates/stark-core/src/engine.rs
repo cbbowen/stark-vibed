@@ -13,14 +13,14 @@ use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::{DocCommand, GestureCommand, InputCommand, ViewCommand};
 use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
-    DocState, Layer, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode, StrokeRecord,
-    Timeline, Tool, effective_actions,
+    DocState, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode,
+    StrokeRecord, Timeline, Tool, effective_actions,
 };
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
-    Compositor, Environment, EnvironmentId, GpuContext, Registry, SelectionRenderer,
-    StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePairHandle, TilePool,
+    CompositeItem, Compositor, Environment, EnvironmentId, GpuContext, MatteDraw, Registry,
+    SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -35,6 +35,43 @@ pub struct LayerInfo {
     pub blend: crate::document::BlendMode,
     pub opacity: f32,
     pub visible: bool,
+    /// Set when this layer is a **matte** (FRAME_DESIGN.md §2) — a frame rather
+    /// than paint. `None` for an ordinary paint layer.
+    ///
+    /// Projected so the frontend can label it, draw its handles, and show that the
+    /// brush has nowhere to go while it is selected — all without reaching past
+    /// `observe()` into `DocState`.
+    pub matte: Option<MatteInfo>,
+}
+
+impl LayerInfo {
+    /// Whether a stroke aimed at this layer would draw anything. A matte has no
+    /// tile map, so selecting one is legal but painting on it does nothing
+    /// (FRAME_DESIGN.md §7).
+    pub fn is_paintable(&self) -> bool {
+        self.matte.is_none()
+    }
+}
+
+/// A matte layer's geometry and fill, for the frame chrome (FRAME_DESIGN.md §7).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatteInfo {
+    /// The rect the region is defined against, in canvas px. For a frame this is
+    /// the *hole* — the piece — which is what the handles resize and what export
+    /// frames against (FRAME_DESIGN.md §6).
+    pub min: crate::geom::Vec2,
+    pub max: crate::geom::Vec2,
+    /// Fill colour, straight sRGB.
+    pub color: [f32; 3],
+}
+
+impl MatteInfo {
+    pub fn width(&self) -> f32 {
+        self.max.x - self.min.x
+    }
+    pub fn height(&self) -> f32 {
+        self.max.y - self.min.y
+    }
 }
 
 /// A cheap, UI-facing projection of engine state (DESIGN.md §7). Published to
@@ -353,11 +390,47 @@ impl Engine {
                 // A freshly added layer becomes the active painting target.
                 self.session.active_layer = id;
             }
+            DocCommand::AddMatte {
+                above,
+                region,
+                color,
+            } => {
+                let id = LayerId(self.next_layer);
+                self.next_layer += 1;
+                self.commit(ActionKind::AddMatte {
+                    id,
+                    above,
+                    region,
+                    color,
+                });
+                // Deliberately *not* made the active layer, unlike `AddLayer`: a
+                // matte has no tile map, so painting on it is refused
+                // (FRAME_DESIGN.md §7) and arming it as the target would just
+                // swallow the user's next stroke.
+            }
+            DocCommand::SetMatteRect(id, min, max) => {
+                // The committed rect supersedes whatever the drag was previewing;
+                // leaving the preview up would pin the canvas to the last dragged
+                // value and shadow every later edit.
+                self.preview = None;
+                self.commit(ActionKind::SetMatteRect(id, min, max));
+            }
+            DocCommand::SetMatteColor(id, color) => {
+                self.commit(ActionKind::SetMatteColor(id, color))
+            }
             DocCommand::RemoveLayer(id) => {
                 self.commit(ActionKind::RemoveLayer(id));
-                // Keep the active layer valid after removal.
+                // Keep the active layer valid after removal, preferring a paintable
+                // one: a matte may legitimately be selected, but someone who just
+                // deleted the layer they were painting on wants to keep painting,
+                // not to land on the frame.
                 if self.session.active_layer == id
-                    && let Some(first) = self.document().layers.iter().next()
+                    && let Some(first) = self
+                        .document()
+                        .layers
+                        .iter()
+                        .find(|l| l.is_paintable())
+                        .or_else(|| self.document().layers.iter().next())
                 {
                     self.session.active_layer = first.id;
                 }
@@ -405,10 +478,25 @@ impl Engine {
             ViewCommand::SetSelectionFeather(feather) => {
                 self.session.selection_feather = feather.max(0.0)
             }
+            // Any existing layer, including a matte. `active_layer` is *the
+            // selected layer*, not "a paint target" — a frame is selected the same
+            // way a paint layer is, which is what lets the frontend have one
+            // selection concept instead of two (FRAME_DESIGN.md §7). A stroke aimed
+            // at a matte then simply draws nothing, refused identically by `apply`
+            // and by the preview path.
             ViewCommand::SetActiveLayer(id) => {
                 if self.document().layer_index(id).is_some() {
                     self.session.active_layer = id;
                 }
+            }
+            // Reuses the same `preview` slot the in-flight stroke uses (§6.2): a
+            // frame drag and a stroke are both pointer gestures, so they cannot
+            // overlap, and the compositor already prefers `preview` over the
+            // committed document.
+            ViewCommand::PreviewMatteRect(drag) => {
+                self.preview = drag.map(|(id, min, max)| {
+                    self.timeline.current().set_matte_rect(id, min, max)
+                });
             }
             ViewCommand::SetMediaParams(params) => self.compositor.set_media(params),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
@@ -460,17 +548,40 @@ impl Engine {
             .as_ref()
             .unwrap_or_else(|| self.timeline.current());
 
-        // Gather populated tiles bottom-to-top, skipping hidden layers and
-        // tagging each tile with its layer opacity. Normal-blend layers compose
-        // correctly under premultiplied "over"; richer blend modes (which need
-        // per-layer isolation) are a follow-up.
-        let mut tiles: Vec<(crate::geom::TileCoord, TilePairHandle, f32)> = Vec::new();
+        // Walk the stack bottom-to-top, skipping hidden layers and tagging each
+        // item with its layer opacity. Normal-blend layers compose correctly
+        // under premultiplied "over"; richer blend modes (which need per-layer
+        // isolation) are a follow-up.
+        //
+        // This is an *ordered* item list rather than a flat tile list because a
+        // matte has to composite at its own place in the stack — a frame over the
+        // painting, a ground under it (FRAME_DESIGN.md §4.4). The compositor
+        // re-batches consecutive tiles into one instanced draw, so an all-paint
+        // document costs exactly what it did before.
+        let mut items: Vec<CompositeItem> = Vec::new();
         for layer in doc.layers.iter() {
             if !layer.visible || layer.opacity <= 0.0 {
                 continue;
             }
-            for (coord, handle) in layer.tiles.iter() {
-                tiles.push((*coord, handle.clone(), layer.opacity));
+            match &layer.content {
+                LayerContent::Paint(tiles) => {
+                    items.extend(tiles.iter().map(|(coord, handle)| CompositeItem::Tile {
+                        coord: *coord,
+                        handle: handle.clone(),
+                        opacity: layer.opacity,
+                    }));
+                }
+                LayerContent::Matte { region, color } => {
+                    let (min, max) = region.rect();
+                    items.push(CompositeItem::Matte(MatteDraw {
+                        rect: [min.x, min.y, max.x, max.y],
+                        // sRGB in the log, working-space channels on the GPU — the
+                        // same conversion the brush colour gets, so a matte means
+                        // the same colour in an Oklab and a Mixbox document.
+                        channels: self.color_space.rgb_to_channels(*color),
+                        opacity: layer.opacity,
+                    }));
+                }
             }
         }
 
@@ -483,7 +594,7 @@ impl Engine {
         let view = self.session.view;
         let selection = doc.selection.clone();
         self.compositor
-            .render(target, view, bg_channels, &tiles, &selection);
+            .render(target, view, bg_channels, &items, &selection);
     }
 
     /// Render the current canvas to a CPU-side image at the viewport size
@@ -600,7 +711,17 @@ impl Engine {
     /// A snapshot of UI-facing state (DESIGN.md §7).
     pub fn observe(&self) -> ObservableState {
         let doc = self.timeline.current();
-        let layers = doc
+        // Layers alone are read from the *previewed* document when one is in
+        // flight, so the frame's handles track a drag (which lives in the preview,
+        // FRAME_DESIGN.md §7) instead of lagging on the committed rect.
+        //
+        // Deliberately only the layers. `has_selection` must stay committed-only —
+        // a marquee drag would otherwise flash the selection bar in and out before
+        // anything is selected — and that is asserted by
+        // `a_selection_gesture_commits_the_same_op_it_previewed`. A stroke preview
+        // changes no presentation property, so this is a no-op while painting.
+        let shown = self.preview.as_ref().unwrap_or(doc);
+        let layers = shown
             .layers
             .iter()
             .map(|l| LayerInfo {
@@ -608,6 +729,17 @@ impl Engine {
                 blend: l.blend,
                 opacity: l.opacity,
                 visible: l.visible,
+                matte: match &l.content {
+                    LayerContent::Matte { region, color } => {
+                        let (min, max) = region.rect();
+                        Some(MatteInfo {
+                            min,
+                            max,
+                            color: *color,
+                        })
+                    }
+                    LayerContent::Paint(_) => None,
+                },
             })
             .collect();
         ObservableState {
@@ -1067,22 +1199,28 @@ impl Engine {
         tool: Option<&crate::gpu::stroke::ToolState>,
     ) -> (DocState, crate::gpu::stroke::StrokeCarry) {
         let carry_only = |dist| crate::gpu::stroke::StrokeCarry { dist, tool: None };
-        let Some(idx) = base.layer_index(rec.layer) else {
+        // A matte has no tile map, so it previews as nothing — matching the commit,
+        // which refuses the stroke outright (FRAME_DESIGN.md §7). Preview and
+        // commit agreeing is the §1.3 invariant, so the two refusals must line up.
+        let Some((idx, tiles_base)) = base
+            .layer_index(rec.layer)
+            .and_then(|idx| base.layer_at(idx).tiles().map(|t| (idx, t)))
+        else {
             return (base.clone(), carry_only(spans.dist));
         };
-        let layer = base.layer_at(idx).clone();
         let (tiles, carry) = self.apply.stroke.render_range(
             crate::gpu::stroke::StrokeScene {
                 pool: &self.apply.pool,
                 assets: &self.apply.assets,
-                base: &layer.tiles,
+                base: tiles_base,
                 selection: &base.selection,
             },
             rec,
             spans,
             tool,
         );
-        (base.with_layer_at(idx, Layer { tiles, ..layer }), carry)
+        let layer = base.layer_at(idx).with_tiles(tiles);
+        (base.with_layer_at(idx, layer), carry)
     }
 
     /// Rasterize the in-flight selection gesture onto a copy of the committed state,

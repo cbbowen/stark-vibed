@@ -55,6 +55,10 @@
 
 .panel-stack {
   position: absolute;
+  /* Explicit, and matching the rail/bars: without it the stack sits at auto level,
+     where *any* positioned sibling with a z-index (the frame overlay) wins over it
+     no matter what the DOM order is. */
+  z-index: 20;
   top: 14px;
   right: 14px;
   display: flex;
@@ -264,11 +268,6 @@
    and the right-hand panel stack, and near the canvas it describes. It is only as
    wide as its contents, so it never blocks a drag it isn't over. */
 .selection-bar {
-  position: absolute;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  z-index: 20;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -280,15 +279,16 @@
   color: #e8e8ea;
 }
 
-/* The label is the indicator; the buttons beside it are the commands. */
-.selection-bar-label {
+/* The label is the indicator; the controls beside it are the commands. */
+.bar-label {
   font-size: 12px;
   color: #ffffff8c;
   padding-left: 2px;
 }
 
-/* Chips stretch to fill a panel row; in the bar they size to their own text. */
-.selection-bar .chip {
+/* Chips stretch to fill a panel row; in a bar they size to their own text. */
+.selection-bar .chip,
+.frame-bar .chip {
   flex: none;
   padding: 4px 12px;
   font-size: 12px;
@@ -642,4 +642,196 @@
 .btn-primary {
   background: #3a6ea5;
   color: #fff;
+}
+
+/* --- frame / matte layers (FRAME_DESIGN.md §7) --- */
+
+/* A matte layer's row in the Layers panel. Never "active" — a frame cannot be a
+   paint target — so it gets its own muted treatment rather than borrowing the
+   active-layer highlight it can never legitimately show. */
+.layer-row.matte {
+  background: #2b2b33;
+  border: 1px dashed #ffffff26;
+  padding: 5px;
+}
+
+.layer-name-matte {
+  flex: 1;
+  text-align: left;
+  color: #ffffffa6;
+  cursor: default;
+}
+
+
+
+/* The frame's pixel dimensions — the number you are actually composing to, so it
+   reads as data rather than as another control. Tabular figures so it does not
+   jitter while a handle is dragged. */
+.frame-dim {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: #eee;
+  white-space: nowrap;
+}
+
+.frame-unit {
+  font-size: 11px;
+  color: #ffffff73;
+}
+
+.chip.frame-remove:hover {
+  background: #7a3535;
+}
+
+
+/* Native colour input, stripped back to a plain swatch. */
+.frame-swatch {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+}
+.frame-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
+.frame-swatch::-webkit-color-swatch { border: 1px solid #ffffff2e; border-radius: 4px; }
+.frame-swatch::-moz-color-swatch { border: 1px solid #ffffff2e; border-radius: 4px; }
+
+/* The on-canvas frame box. `pointer-events: none` is load-bearing: the interior of
+   the frame is exactly where the user paints, so every event over it must reach the
+   canvas. Only the grips below opt back in. */
+.frame-overlay {
+  position: absolute;
+  /* Below all floating chrome (rail, panels, bars at 20+): the handles belong to
+     the canvas, and a panel over them must win. */
+  z-index: 10;
+  pointer-events: none;
+  outline: 1px solid #ffffffbf;
+  outline-offset: 0;
+  box-shadow: 0 0 0 1px #00000059;
+}
+
+/* Grips are sized in screen px and centred on the frame's edges, so they stay the
+   same size at any zoom and never scale with the piece. */
+.frame-grip {
+  position: absolute;
+  pointer-events: auto;
+  background: #fff;
+  border: 1px solid #0000008c;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+
+/* Corners: 10px squares centred on each corner. */
+.frame-grip-nw, .frame-grip-ne, .frame-grip-sw, .frame-grip-se {
+  width: 10px;
+  height: 10px;
+}
+.frame-grip-nw { left: -5px; top: -5px; }
+.frame-grip-ne { right: -5px; top: -5px; }
+.frame-grip-sw { left: -5px; bottom: -5px; }
+.frame-grip-se { right: -5px; bottom: -5px; }
+
+/* Edges: thin invisible bars spanning the side, inset past the corners so they
+   never overlap them. Transparent because the outline already draws the edge —
+   these are hit targets, not decoration. */
+.frame-grip-n, .frame-grip-s {
+  left: 10px;
+  right: 10px;
+  height: 9px;
+  background: none;
+  border: none;
+}
+.frame-grip-n { top: -5px; }
+.frame-grip-s { bottom: -5px; }
+
+.frame-grip-e, .frame-grip-w {
+  top: 10px;
+  bottom: 10px;
+  width: 9px;
+  background: none;
+  border: none;
+}
+.frame-grip-w { left: -5px; }
+.frame-grip-e { right: -5px; }
+
+/* The move pill, above the top edge. Outside the frame on purpose: the interior
+   belongs to the brush, so the one gesture every other crop tool puts there needs
+   somewhere else to live. */
+.frame-grip-move {
+  left: 50%;
+  top: -20px;
+  width: 36px;
+  height: 12px;
+  margin-left: -18px;
+  border-radius: 6px;
+  background: #ffffffd9;
+}
+
+/* Bottom-centre stack. Both bars are mounted only while the thing they act on
+   exists, so this column is usually empty, sometimes one row, occasionally two —
+   a flex column means they never need to know about each other. `pointer-events`
+   is off on the container so the empty space above a bar does not eat canvas
+   drags; each bar turns it back on. */
+.bottom-bars {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.bottom-bars > * {
+  pointer-events: auto;
+}
+
+/* The frame bar: the composition controls, mounted only while a frame is selected
+   (FRAME_DESIGN.md §7). Same surface as the selection bar — they are the same kind
+   of thing, and stack in the same column. */
+.frame-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  color: #e8e8ea;
+}
+
+/* Hairline groupings, so a wide bar reads as a few clusters rather than a run of
+   interchangeable buttons. */
+.bar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 0 2px;
+  background: #ffffff1f;
+}
+
+.frame-bar .slider.frame-opacity {
+  width: 90px;
+}
+
+/* A selected frame row. It shares `.active` with a selected paint layer, because
+   there is only one kind of selection — the colour means "selected" and nothing
+   more. What kind of layer it is is already said by the dashed border and the
+   ◱ label. */
+.layer-row.matte.active {
+  border-style: solid;
+  border-color: #ffffff59;
+}
+
+/* The canvas while the selected layer takes no paint (a frame). Saying so in the
+   cursor is why the gesture does not need blocking: the canvas explains itself
+   before a stroke that would go nowhere. */
+.paint-canvas.no-paint {
+  cursor: not-allowed;
 }

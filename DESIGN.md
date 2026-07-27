@@ -415,8 +415,17 @@ pub struct DocState {
 pub struct Layer {
     pub id: LayerId,
     pub blend: BlendMode,
+    pub opacity: f32,
+    pub visible: bool,
+    pub content: LayerContent,
+}
+
+pub enum LayerContent {
     // sparse map: only populated tiles exist (infinite canvas)
-    pub tiles: rpds::HashTrieMap<TileCoord, TileHandle>,
+    Paint(rpds::HashTrieMap<TileCoord, TileHandle>),
+    // a procedural region + a flat fill — the frame, and later comic gutters
+    // and grounds. See FRAME_DESIGN.md.
+    Matte { region: MatteRegion, color: [f32; 3] },
 }
 
 #[derive(Clone)]
@@ -1389,6 +1398,7 @@ assert_golden!("oil_blend_01", png, tolerance);
 | A new media/lighting model | the media pass shader in `gpu/composite.rs` |
 | A different frontend (native, CLI exporter) | new consumer of `Engine`; core untouched |
 | Another selection producer (by colour, painted quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; the mask representation, ops, history and masking sites are unchanged (§6.8) |
+| A richer frame / comic gutters / a solid ground | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing are unchanged (FRAME_DESIGN.md) |
 | Transforms, text | new `ActionKind`s + optionally new channels; the action-log model already supports them |
 | A wider-gamut / spectral color pipeline | `color.rs` + `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
 | Multi-user collaboration | swap `LinearTimeline` → `ReplicatedTimeline`; add `stark-net` (iroh) transport; engine/GPU untouched (§12) |

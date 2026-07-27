@@ -7,9 +7,9 @@
 
 use rpds::Vector;
 
-use super::layer::{BlendMode, Layer, LayerId};
+use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 use super::selection::Selection;
-use crate::geom::TileCoord;
+use crate::geom::{TileCoord, Vec2};
 use crate::gpu::SurfaceId;
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (DESIGN.md §6),
@@ -99,8 +99,24 @@ impl DocState {
         self.with_layers(layers)
     }
 
-    /// Insert a new empty layer directly above `above` (or on top if `None`).
+    /// Insert a new empty paint layer directly above `above` (or on top if `None`).
     pub fn insert_layer(&self, id: LayerId, above: Option<LayerId>) -> Self {
+        self.insert(Layer::new(id), above)
+    }
+
+    /// Insert a matte layer directly above `above` (or on top if `None`) —
+    /// FRAME_DESIGN.md §2. A frame is one of these on top of the stack.
+    pub fn insert_matte(
+        &self,
+        id: LayerId,
+        above: Option<LayerId>,
+        region: MatteRegion,
+        color: [f32; 3],
+    ) -> Self {
+        self.insert(Layer::matte(id, region, color), above)
+    }
+
+    fn insert(&self, layer: Layer, above: Option<LayerId>) -> Self {
         let at = match above {
             Some(target) => self
                 .layer_index(target)
@@ -111,14 +127,44 @@ impl DocState {
         let mut layers = Vector::new();
         for (i, l) in self.layers.iter().enumerate() {
             if i == at {
-                layers = layers.push_back(Layer::new(id));
+                layers = layers.push_back(layer.clone());
             }
             layers = layers.push_back(l.clone());
         }
         if at >= self.layers.len() {
-            layers = layers.push_back(Layer::new(id));
+            layers = layers.push_back(layer);
         }
         self.with_layers(layers)
+    }
+
+    /// Move a matte layer's rect (the frame drag's commit). A no-op on a paint
+    /// layer or an absent id.
+    pub fn set_matte_rect(&self, id: LayerId, min: Vec2, max: Vec2) -> Self {
+        self.map_layer(id, |l| match &l.content {
+            LayerContent::Matte { region, color } => Layer {
+                content: LayerContent::Matte {
+                    region: region.with_rect(min, max),
+                    color: *color,
+                },
+                ..l.clone()
+            },
+            LayerContent::Paint(_) => l,
+        })
+    }
+
+    /// Set a matte layer's fill colour (straight sRGB). A no-op on a paint layer
+    /// or an absent id.
+    pub fn set_matte_color(&self, id: LayerId, color: [f32; 3]) -> Self {
+        self.map_layer(id, |l| match &l.content {
+            LayerContent::Matte { region, .. } => Layer {
+                content: LayerContent::Matte {
+                    region: *region,
+                    color,
+                },
+                ..l.clone()
+            },
+            LayerContent::Paint(_) => l,
+        })
     }
 
     /// Remove the layer with the given id (no-op if absent).
@@ -187,12 +233,15 @@ impl DocState {
     /// Rebuild from a new layer stack: bounds are recomputed from every populated
     /// tile, and the selection carries over — it is orthogonal to the layer stack
     /// (a mask applies to whatever is painted through it, §6.8).
+    ///
+    /// Bounds are **paint-only**: a matte covers the infinite plane, so counting
+    /// it would make `bounds` unbounded and break both "frame to content" and
+    /// export's no-frame fallback (FRAME_DESIGN.md §6). `Layer::tiles` is empty
+    /// for a matte, so this falls out rather than needing a branch.
     fn with_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();
-        for layer in layers.iter() {
-            for coord in layer.tiles.keys() {
-                bounds.include(*coord);
-            }
+        for coord in layers.iter().filter_map(Layer::tiles).flat_map(|t| t.keys()) {
+            bounds.include(*coord);
         }
         Self {
             layers,

@@ -11,7 +11,7 @@ pub mod stroke;
 pub mod surface;
 pub mod tile;
 
-pub use composite::{Compositor, MediaParams};
+pub use composite::{CompositeItem, Compositor, MatteDraw, MediaParams};
 pub use context::GpuContext;
 pub use environment::{Environment, EnvironmentId};
 pub use registry::{Registry, Resource};

@@ -37,8 +37,8 @@ use input::{elem_xy, end_interaction, handle_keydown, handle_keyup, input_tolera
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{ENV_FERNDALE, surface_asset};
-use panels::SelectionBar;
 use panels::select::{current_mode, current_tool, modifier_mode};
+use panels::{FrameBar, FrameOverlay, SelectionBar};
 use platform::capture_pointer;
 use render::{CANVAS_ID, Renderer};
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
@@ -143,15 +143,29 @@ fn app() -> Element {
 
             Canvas {}
 
+            // The frame's edges and handles, over the canvas but *under* all the
+            // floating chrome. Mounted only while a frame is selected for composing
+            // (FRAME_DESIGN.md §7); its interior passes pointer events through, so
+            // painting inside the frame is unaffected.
+            FrameOverlay {}
+
             // Left command rail: rarely-used document commands, tucked away.
             CommandRail {}
 
             // Floating tool panels, stacked top-right — order + visibility are data-driven.
             PanelStack {}
 
-            // Bottom-centre: the whole-selection commands, present only while there is
-            // a selection to act on — so it doubles as the "canvas is masked" indicator.
-            SelectionBar {}
+            // Bottom-centre: the bars that are mounted only while the thing they act
+            // on exists. Stacked in one column so a frame and a selection in force at
+            // the same time sit above one another instead of on top of each other.
+            div { class: "bottom-bars",
+                // The whole-selection commands, present only while there is a
+                // selection — so it doubles as the "canvas is masked" indicator.
+                SelectionBar {}
+                // The frame's composition controls, present only while a frame is
+                // selected for composing (FRAME_DESIGN.md §7).
+                FrameBar {}
+            }
 
             // The brush editor dialog (mounted only while open, so each open
             // re-inits its preview against the current canvas look).
@@ -181,10 +195,26 @@ fn Canvas() -> Element {
     // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
     let mut canvas_active = state.canvas_active;
 
+    // The selected layer may be a frame, which takes no paint (FRAME_DESIGN.md §7).
+    // Rather than block the gesture, say so in the cursor: the brush crosshair
+    // becomes "not-allowed", so the canvas explains itself before the user draws a
+    // stroke that would go nowhere. Panning still works, so the pan cursor wins
+    // while space is held.
+    let paintable = state
+        .obs
+        .read()
+        .as_ref()
+        .is_some_and(|o| o.layers.iter().any(|l| l.id == o.active_layer && l.is_paintable()));
+    let canvas_class = if paintable || (state.space_down)() {
+        "paint-canvas"
+    } else {
+        "paint-canvas no-paint"
+    };
+
     rsx! {
         canvas {
             id: "{CANVAS_ID}",
-            class: "paint-canvas",
+            class: canvas_class,
             onresize: move |e| {
                 if let Ok(size) = e.get_content_box_size() {
                     resize(state, size.width as u32, size.height as u32);

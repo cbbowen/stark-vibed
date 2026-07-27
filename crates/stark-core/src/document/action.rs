@@ -7,9 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::layer::{BlendMode, Layer, LayerId};
+use super::layer::{BlendMode, LayerId, MatteRegion};
 use super::selection::SelectionOp;
 use super::state::DocState;
+use crate::geom::Vec2;
 use crate::gpu::SurfaceId;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
@@ -309,6 +310,26 @@ pub enum ActionKind {
     Select(SelectionOp),
     /// Swap selected for unselected everywhere (DESIGN.md §6.8).
     InvertSelection,
+
+    /// Add a **matte** layer — a region filled with a flat colour
+    /// (FRAME_DESIGN.md §2). A frame is one of these on top of the stack; the
+    /// same action serves comic gutters and opaque grounds once the region
+    /// generalizes (P4). Appended last, like every variant before it, so postcard
+    /// — which encodes an enum by variant *index* — keeps decoding older files.
+    AddMatte {
+        id: LayerId,
+        above: Option<LayerId>,
+        region: MatteRegion,
+        /// Straight sRGB, like `BrushParams::color` — converted to working-space
+        /// channels at composite time, so the log is colour-space independent.
+        color: [f32; 3],
+    },
+    /// Move a matte's rect — the frame drag's commit. One action per drag, not
+    /// per pointer move: the gesture accumulates in session state and commits on
+    /// release, so fifty tweaks are fifty undo steps rather than five thousand.
+    SetMatteRect(LayerId, Vec2, Vec2),
+    /// Recolour a matte (straight sRGB).
+    SetMatteColor(LayerId, [f32; 3]),
 }
 
 /// A committed document mutation with its identity.
@@ -339,31 +360,38 @@ impl history::Action for Action {
 
     fn apply(&self, state: DocState, ctx: &mut ApplyCtx) -> Result<DocState, Self::Error> {
         Ok(match &self.kind {
-            ActionKind::CommitStroke(rec) => match state.layer_index(rec.layer) {
-                Some(idx) => {
-                    let layer = state.layer_at(idx);
-                    // The selection in force *at this point in the log* gates the
-                    // stroke (DESIGN.md §6.8) — it is read from the state being
-                    // folded over, so replay reproduces it exactly.
-                    let tiles = ctx.stroke.render(
-                        crate::gpu::stroke::StrokeScene {
-                            pool: &ctx.pool,
-                            assets: &ctx.assets,
-                            base: &layer.tiles,
-                            selection: &state.selection,
-                        },
-                        rec,
-                    );
-                    state.with_layer_at(
-                        idx,
-                        Layer {
-                            tiles,
-                            ..layer.clone()
-                        },
-                    )
+            // A matte has no tile map, so a stroke targeting one is refused
+            // rather than swallowed or magically rasterized (FRAME_DESIGN.md §7).
+            // Refusing here (not only in the frontend) is what keeps replay and
+            // peers agreeing about a log that contains such a stroke.
+            ActionKind::CommitStroke(rec) => {
+                match state.layer_index(rec.layer).and_then(|idx| {
+                    state.layer_at(idx).tiles().map(|base| (idx, base))
+                }) {
+                    Some((idx, base)) => {
+                        // The selection in force *at this point in the log* gates
+                        // the stroke (DESIGN.md §6.8) — it is read from the state
+                        // being folded over, so replay reproduces it exactly.
+                        let tiles = ctx.stroke.render(
+                            crate::gpu::stroke::StrokeScene {
+                                pool: &ctx.pool,
+                                assets: &ctx.assets,
+                                base,
+                                selection: &state.selection,
+                            },
+                            rec,
+                        );
+                        let layer = state.layer_at(idx).with_tiles(tiles);
+                        state.with_layer_at(idx, layer)
+                    }
+                    // Absent layer, or a matte — a matte has no tile map, so a
+                    // stroke targeting one is refused rather than swallowed
+                    // (FRAME_DESIGN.md §7). Refusing here and not only in the
+                    // frontend is what keeps replay and peers agreeing about a
+                    // log that happens to contain such a stroke.
+                    None => state,
                 }
-                None => state,
-            },
+            }
             ActionKind::AddLayer { id, above } => state.insert_layer(*id, *above),
             ActionKind::RemoveLayer(id) => state.remove_layer(*id),
             ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
@@ -389,6 +417,14 @@ impl history::Action for Action {
                 state.with_selection(selection)
             }
             ActionKind::SetSurface(id) => state.with_surface(*id),
+            ActionKind::AddMatte {
+                id,
+                above,
+                region,
+                color,
+            } => state.insert_matte(*id, *above, *region, *color),
+            ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
+            ActionKind::SetMatteColor(id, color) => state.set_matte_color(*id, *color),
         })
     }
 }

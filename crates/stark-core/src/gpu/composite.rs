@@ -40,6 +40,44 @@ struct Instance {
     opacity: f32,
 }
 
+/// Per-matte instance, mirroring `matte.wesl`'s vertex attributes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct MatteInstance {
+    rect: [f32; 4],     // min.xy, max.xy in canvas px
+    channels: [f32; 4], // fill, in the working color space
+    opacity: f32,
+    _pad: [f32; 3],
+}
+
+/// A matte layer's draw parameters (FRAME_DESIGN.md §4).
+#[derive(Copy, Clone, Debug)]
+pub struct MatteDraw {
+    /// The region's rect in canvas px: `min.xy, max.xy`. For a frame this is the
+    /// *hole* — the fill covers everything outside it.
+    pub rect: [f32; 4],
+    /// Fill color in the document's working color space.
+    pub channels: [f32; 4],
+    /// The layer's opacity.
+    pub opacity: f32,
+}
+
+/// One item of compositing pass A, in bottom-to-top stack order.
+///
+/// An ordered list rather than a flat tile array because a matte composites at
+/// its own place in the stack — a frame over the painting, a ground under it
+/// (FRAME_DESIGN.md §4.4). Tiles already cost one draw each (each needs its own
+/// bind group), so interleaving mattes adds no per-tile overhead.
+#[derive(Clone)]
+pub enum CompositeItem {
+    Tile {
+        coord: TileCoord,
+        handle: TilePairHandle,
+        opacity: f32,
+    },
+    Matte(MatteDraw),
+}
+
 /// Mirrors `Media` in `media_common.wesl` (80 bytes).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -91,6 +129,14 @@ pub struct Compositor {
     tile_bgl: wgpu::BindGroupLayout,
     instances: wgpu::Buffer,
     instance_cap: usize,
+
+    // Matte layers, drawn inside pass A at their place in the stack
+    // (FRAME_DESIGN.md §4). Its own pipeline because its blend state differs from
+    // the color space's: `over` on *both* targets, so an opaque matte erases the
+    // relief beneath it rather than letting underlying impasto emboss through.
+    matte_pipeline: wgpu::RenderPipeline,
+    matte_instances: wgpu::Buffer,
+    matte_cap: usize,
 
     // Pass C: the selection outline, drawn over the lit result (DESIGN.md §6.8).
     // One instanced quad per mask tile, in the same canvas→NDC frame as pass A.
@@ -239,6 +285,73 @@ impl Compositor {
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
+        });
+
+        // ---- Matte layers, inside pass A (FRAME_DESIGN.md §4) ----
+        //
+        // Reuses pass A's view bind group (vertex-only uniform: the fragment stage
+        // gets canvas position as a varying, and the zoom rides through `misc.w`
+        // for the edge antialiasing width).
+        let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stark matte"),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte().into()),
+        });
+        let matte_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("stark matte layout"),
+            bind_group_layouts: &[Some(&view_bgl)],
+            immediate_size: 0,
+        });
+        let matte_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark matte pipeline"),
+            layout: Some(&matte_layout),
+            vertex: wgpu::VertexState {
+                module: &matte_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<MatteInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32],
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &matte_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                // Premultiplied `over` on BOTH targets. The aux one is the load-
+                // bearing difference from pass A's additive aux: additive would
+                // keep the height of paint *underneath* the matte, and the media
+                // pass would emboss that paint's impasto as ghost ridges through
+                // an opaque mat board (FRAME_DESIGN.md §4.2). `OneMinusSrcAlpha`
+                // is valid on the alpha-less Rg16Float aux: the factor reads the
+                // *source* alpha from the shader's output vec4.
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: aux_format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let matte_instances = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark matte instances"),
+            size: std::mem::size_of::<MatteInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         // ---- Pass C: selection outline (DESIGN.md §6.8) ----
@@ -422,6 +535,9 @@ impl Compositor {
             tile_bgl,
             instances,
             instance_cap: 1,
+            matte_pipeline,
+            matte_instances,
+            matte_cap: 1,
             overlay_pipeline,
             overlay_view_bg,
             overlay_tile_bgl,
@@ -493,7 +609,7 @@ impl Compositor {
         target: &wgpu::TextureView,
         view: ViewTransform,
         bg_channels: [f32; 4],
-        tiles: &[(TileCoord, TilePairHandle, f32)],
+        items: &[CompositeItem],
         selection: &Selection,
     ) {
         if view.viewport != self.size {
@@ -560,14 +676,47 @@ impl Compositor {
             }),
         );
 
-        // Instances (tile origins).
-        let instances: Vec<Instance> = tiles
-            .iter()
-            .map(|(c, _, opacity)| Instance {
-                origin: c.origin().to_array(),
-                opacity: *opacity,
-            })
-            .collect();
+        // Split the ordered item list into the two instance streams, remembering
+        // for each item which stream slot it draws from. The *order* of `items` is
+        // what has to survive — a matte must composite over the tiles below it and
+        // under the tiles above — so the draw loop below walks `items`, not these.
+        let mut instances: Vec<Instance> = Vec::new();
+        let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
+        let mut mattes: Vec<MatteInstance> = Vec::new();
+        for item in items {
+            match item {
+                CompositeItem::Tile {
+                    coord,
+                    handle,
+                    opacity,
+                } => {
+                    instances.push(Instance {
+                        origin: coord.origin().to_array(),
+                        opacity: *opacity,
+                    });
+                    tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("stark composite tile bg"),
+                        layout: &self.tile_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(handle.color_view()),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(handle.aux_view()),
+                            },
+                        ],
+                    }));
+                }
+                CompositeItem::Matte(m) => mattes.push(MatteInstance {
+                    rect: m.rect,
+                    channels: m.channels,
+                    opacity: m.opacity,
+                    _pad: [0.0; 3],
+                }),
+            }
+        }
         if !instances.is_empty() {
             if instances.len() > self.instance_cap {
                 self.instances = alloc_instances(device, instances.len());
@@ -577,26 +726,20 @@ impl Compositor {
                 .queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(&instances));
         }
-
-        let tile_bgs: Vec<wgpu::BindGroup> = tiles
-            .iter()
-            .map(|(_, t, _)| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark composite tile bg"),
-                    layout: &self.tile_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(t.color_view()),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(t.aux_view()),
-                        },
-                    ],
-                })
-            })
-            .collect();
+        if !mattes.is_empty() {
+            if mattes.len() > self.matte_cap {
+                self.matte_instances = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("stark matte instances"),
+                    size: (std::mem::size_of::<MatteInstance>() * mattes.len()) as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.matte_cap = mattes.len();
+            }
+            self.ctx
+                .queue
+                .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
+        }
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark composite encoder"),
@@ -621,13 +764,34 @@ impl Compositor {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.composite_pipeline);
+            // Walk the stack in order, switching pipelines where a matte sits
+            // between runs of tiles. Both pipelines share group 0 (the view
+            // uniform), so only the vertex buffer and pipeline change.
             pass.set_bind_group(0, &self.view_bg, &[]);
-            pass.set_vertex_buffer(0, self.instances.slice(..));
-            for (i, bg) in tile_bgs.iter().enumerate() {
-                let idx = i as u32;
-                pass.set_bind_group(1, bg, &[]);
-                pass.draw(0..4, idx..idx + 1);
+            let (mut tile_i, mut matte_i) = (0u32, 0u32);
+            let mut pipeline_is_matte = None;
+            for item in items {
+                match item {
+                    CompositeItem::Tile { .. } => {
+                        if pipeline_is_matte != Some(false) {
+                            pass.set_pipeline(&self.composite_pipeline);
+                            pass.set_vertex_buffer(0, self.instances.slice(..));
+                            pipeline_is_matte = Some(false);
+                        }
+                        pass.set_bind_group(1, &tile_bgs[tile_i as usize], &[]);
+                        pass.draw(0..4, tile_i..tile_i + 1);
+                        tile_i += 1;
+                    }
+                    CompositeItem::Matte(_) => {
+                        if pipeline_is_matte != Some(true) {
+                            pass.set_pipeline(&self.matte_pipeline);
+                            pass.set_vertex_buffer(0, self.matte_instances.slice(..));
+                            pipeline_is_matte = Some(true);
+                        }
+                        pass.draw(0..4, matte_i..matte_i + 1);
+                        matte_i += 1;
+                    }
+                }
             }
         }
 

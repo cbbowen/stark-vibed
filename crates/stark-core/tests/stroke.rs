@@ -528,7 +528,7 @@ fn stroke_spans_multiple_tiles_via_cow() {
         .document()
         .layers
         .iter()
-        .map(|l| l.tiles.size())
+        .map(|l| l.tiles().map_or(0, |t| t.size()))
         .sum();
     assert!(
         populated >= 2,

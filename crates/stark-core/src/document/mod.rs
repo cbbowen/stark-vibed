@@ -10,7 +10,7 @@ pub use action::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
     ColorDynamics, NoiseKind, OrientationSource, StrokeRecord, Tool,
 };
-pub use layer::{BlendMode, Layer, LayerId};
+pub use layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DocState};
 pub use timeline::{LinearTimeline, ReplicatedTimeline, Timeline, effective_actions};

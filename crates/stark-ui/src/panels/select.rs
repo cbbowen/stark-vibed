@@ -83,6 +83,9 @@ pub fn SelectPanel() -> Element {
 /// absent says the canvas is masked more directly than a pair of permanently-visible
 /// buttons that happen to be greyed out — and without spending panel space the rest
 /// of the time.
+///
+/// Positioned by the shared `.bottom-bars` column in `main`, which it shares with
+/// the frame bar (built on the same argument) so the two stack rather than overlap.
 #[component]
 pub fn SelectionBar() -> Element {
     let state = use_context::<AppState>();
@@ -97,7 +100,7 @@ pub fn SelectionBar() -> Element {
     rsx! {
         if active {
             div { class: chrome_class(state, "selection-bar"),
-                span { class: "selection-bar-label", "Selection" }
+                span { class: "bar-label", "Selection" }
                 button {
                     class: "chip",
                     title: "Deselect (Ctrl+D)",

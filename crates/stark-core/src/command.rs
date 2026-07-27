@@ -30,7 +30,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{BlendMode, BrushParams, LayerId, SelectionMode, SelectionOp, Tool};
+use crate::document::{
+    BlendMode, BrushParams, LayerId, MatteRegion, SelectionMode, SelectionOp, Tool,
+};
 use crate::geom::{Extent2, Vec2};
 use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
 
@@ -135,6 +137,21 @@ pub enum DocCommand {
     /// Swap selected for unselected everywhere.
     InvertSelection,
 
+    /// Add a **matte** layer — a region filled with a flat colour
+    /// (FRAME_DESIGN.md §2). A frame is one of these on top of the stack. The
+    /// engine mints the id, as it does for `AddLayer`; unlike `AddLayer` it does
+    /// *not* become the active layer, because a matte cannot be painted on.
+    AddMatte {
+        above: Option<LayerId>,
+        region: MatteRegion,
+        /// Straight sRGB.
+        color: [f32; 3],
+    },
+    /// Move a matte's rect — one action per frame drag, committed on release.
+    SetMatteRect(LayerId, Vec2, Vec2),
+    /// Recolour a matte (straight sRGB).
+    SetMatteColor(LayerId, [f32; 3]),
+
     /// Switch the canvas surface (DESIGN.md §6.4).
     ///
     /// Document state, not view state: which canvas a piece was painted on is part
@@ -171,9 +188,26 @@ pub enum ViewCommand {
     /// Edge softness (canvas px) for the next selection gesture.
     SetSelectionFeather(f32),
 
-    /// Which layer the next stroke goes on. Per-client: collaborators paint on
-    /// whichever layer each has selected.
+    /// The selected layer — where the next stroke goes, if that layer can take
+    /// one. Per-client: collaborators paint on whichever layer each has selected.
+    ///
+    /// A **matte** may be selected like any other layer (FRAME_DESIGN.md §7). It
+    /// has no tile map, so a stroke aimed at one draws nothing — refused
+    /// identically by `apply` and by the preview path, so the frontend needs no
+    /// rule of its own. Selection is therefore one concept rather than "the paint
+    /// target" plus a separate frame-focus the engine cannot see.
     SetActiveLayer(LayerId),
+
+    /// Show a matte at `min..max` **without logging it** — the in-flight half of a
+    /// frame-handle drag (FRAME_DESIGN.md §7). `None` drops the preview.
+    ///
+    /// A view command rather than a `GestureCommand` because a frame drag is
+    /// handle-relative, not sample-driven: there is no `InputSample` to feed
+    /// `Start`/`To`/`End`, and which handle is held is the frontend's business.
+    /// What it shares with a gesture is the shape that matters — it builds in view
+    /// state and the frontend commits one [`DocCommand::SetMatteRect`] on release,
+    /// so a drag costs one undo step rather than one per pointer move.
+    PreviewMatteRect(Option<(LayerId, Vec2, Vec2)>),
 
     /// Tune the media/lighting pass (DESIGN.md §6.3). Changes how the canvas
     /// looks, not what it is.

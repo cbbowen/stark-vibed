@@ -3,12 +3,14 @@
 
 pub mod brush;
 pub mod color;
+pub mod frame;
 pub mod layer;
 pub mod lighting;
 pub mod select;
 
 pub use brush::BrushPanel;
 pub use color::ColorPanel;
+pub use frame::{FrameBar, FrameOverlay};
 pub use layer::LayerPanel;
 pub use lighting::LightingPanel;
 pub use select::{SelectPanel, SelectionBar};

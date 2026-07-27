@@ -3,6 +3,7 @@
 
 use dioxus::prelude::*;
 
+use crate::panels::frame::AddFrameButton;
 use crate::state::{AppState, dispatch};
 use stark_core::LayerInfo;
 use stark_core::command::{DocCommand, ViewCommand};
@@ -19,10 +20,13 @@ pub fn LayerPanel() -> Element {
 
     rsx! {
         div { class: "layer-header",
+            // A frame is a layer, so making one belongs here rather than in a
+            // panel of its own (FRAME_DESIGN.md §7).
+            AddFrameButton {}
             button {
                 class: "layer-add",
                 onclick: move |_| dispatch(state, DocCommand::AddLayer { above: None }),
-                "+ Add"
+                "+ Layer"
             }
         }
         for info in layers.iter().rev().cloned() {
@@ -34,16 +38,22 @@ pub fn LayerPanel() -> Element {
 #[component]
 pub fn LayerRow(info: LayerInfo) -> Element {
     let state = use_context::<AppState>();
+    // One selection, one highlight. A matte is selected exactly the way a paint
+    // layer is (FRAME_DESIGN.md §7) — selecting it raises the frame bar and its
+    // on-canvas handles, and the brush simply has nowhere to go until a paint layer
+    // is selected again. Because there is only one thing to highlight, "exactly one
+    // row is highlighted" is a consequence rather than a rule to keep.
     let active = state
         .obs
         .read()
         .as_ref()
-        .map(|o| o.active_layer == info.id)
-        .unwrap_or(false);
-    let row_class = if active {
-        "layer-row active"
-    } else {
-        "layer-row"
+        .is_some_and(|o| o.active_layer == info.id);
+    let matte = info.matte.is_some();
+    let row_class = match (matte, active) {
+        (true, true) => "layer-row matte active",
+        (true, false) => "layer-row matte",
+        (false, true) => "layer-row active",
+        (false, false) => "layer-row",
     };
 
     rsx! {
@@ -56,9 +66,14 @@ pub fn LayerRow(info: LayerInfo) -> Element {
                     onchange: move |_| dispatch(state, DocCommand::SetLayerVisible(info.id, !info.visible)),
                 }
                 button {
-                    class: "layer-name",
+                    class: if matte { "layer-name layer-name-matte" } else { "layer-name" },
+                    title: if matte {
+                        "Compose this frame — shows its handles and controls"
+                    } else {
+                        "Paint on this layer"
+                    },
                     onclick: move |_| dispatch(state, ViewCommand::SetActiveLayer(info.id)),
-                    "Layer {info.id.0}"
+                    if matte { "\u{25F1} Frame" } else { "Layer {info.id.0}" }
                 }
             }
             input {

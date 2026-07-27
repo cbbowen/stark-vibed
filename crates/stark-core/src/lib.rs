@@ -54,7 +54,7 @@ pub use assets::{AssetId, AssetStore};
 pub use colorspace::{ColorSpace, ColorSpaceId};
 pub use command::{InputCommand, InputSample};
 pub use document::{Selection, SelectionMode, SelectionOp, SelectionShape};
-pub use engine::{Engine, LayerInfo, ObservableState};
+pub use engine::{Engine, LayerInfo, MatteInfo, ObservableState};
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gpu::{

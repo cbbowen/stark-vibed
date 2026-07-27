@@ -15,6 +15,12 @@ pub fn composite() -> &'static str {
     include_wesl!("composite")
 }
 
+/// WGSL matte-layer fill, drawn inside pass A at the matte's place in the layer
+/// stack — FRAME_DESIGN.md §4.
+pub fn matte() -> &'static str {
+    include_wesl!("matte")
+}
+
 /// WGSL media/lighting pass for the Oklab color space (DESIGN.md §6.3, pass B).
 pub fn media_oklab() -> &'static str {
     include_wesl!("media_oklab")

@@ -22,6 +22,8 @@ fn main() {
 
     // Compositing (pass A) and media/lighting (pass B) shaders (DESIGN.md §6.3).
     compiler.build_artifact(&"package::composite".parse().unwrap(), "composite");
+    // Matte layers, drawn inside pass A at their place in the stack (FRAME_DESIGN §4).
+    compiler.build_artifact(&"package::matte".parse().unwrap(), "matte");
     compiler.build_artifact(&"package::media_oklab".parse().unwrap(), "media_oklab");
 
     // Mixbox color space: latent→RGB polynomial in the media pass (DESIGN.md §6.7).

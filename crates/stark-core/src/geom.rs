@@ -109,6 +109,15 @@ impl ViewTransform {
         (screen - half) / self.zoom + self.center
     }
 
+    /// Forward of [`screen_to_canvas`](Self::screen_to_canvas): a canvas-space
+    /// point to its screen-pixel position (origin top-left). Used by frontend
+    /// chrome that has to sit over a canvas-space feature — the frame's handles
+    /// (FRAME_DESIGN.md §7).
+    pub fn canvas_to_screen(self, canvas: Vec2) -> Vec2 {
+        let half = Vec2::new(self.viewport.width as f32, self.viewport.height as f32) * 0.5;
+        (canvas - self.center) * self.zoom + half
+    }
+
     /// Scale the zoom by `factor` while keeping the canvas point under `anchor`
     /// (a screen-pixel position) pinned in place — cursor-anchored zoom.
     pub fn zoom_about(&mut self, anchor: Vec2, factor: f32) {
