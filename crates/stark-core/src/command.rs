@@ -198,6 +198,11 @@ pub enum ViewCommand {
     /// Edge softness (canvas px) for the next selection gesture.
     SetSelectionFeather(f32),
 
+    /// Whether collaborators' selection outlines are drawn over the canvas
+    /// (PEER_DESIGN.md §3). View state, so each client decides for itself — this is
+    /// a preference about what you look at, not a fact about the drawing.
+    SetShowPeerSelections(bool),
+
     /// Show a matte at `min..max` **without logging it** — the in-flight half of a
     /// frame-handle drag (FRAME_DESIGN.md §7). `None` drops the preview.
     ///

@@ -135,13 +135,27 @@ Consequences that fall out with no further work:
   ids, the map is keyed off ids, and the rebuild is a `resync`.
 
 **Rendering the outline.** The selection overlay pass (§6.8) draws one instanced
-quad per mask tile. Extend it from one mask to a short list: the local actor's
-selection in the current style, and the selection of every actor *currently
-present* in that peer's colour at reduced opacity — so you can see the region
-someone else is working inside. Note the asymmetry, which is deliberate and worth
-stating: `DocState` holds a selection for every actor that ever selected, because
-replay needs them; the UI shows only those the **roster** says are here. **The log
-decides what exists; presence decides what is shown.**
+quad per mask tile. It takes a short list rather than one mask: the local actor's
+selection in the marching-ants style, and — **only if this client asks for it** — the
+selection of every actor *currently present*, drawn as a flat line in that peer's
+colour so the two never read as the same thing.
+
+`ViewCommand::SetShowPeerSelections` gates the second group, and it is **off by
+default**. Knowing which region someone else is working inside is occasionally
+useful; a second contour over the artwork is a cost paid on every frame you look at
+it, and most of the time the answer to "what is that line?" should be "the one I
+drew". It is view state, so each client decides for itself and nothing about the
+choice is logged or sent — it changes what you look at, not what the drawing is. The
+control is mounted in the Select panel only while a session is live, on the same
+argument §6.8 makes for the selection bar: a control that is present or absent says
+whether the thing it governs exists, which a permanently-visible one greyed out does
+not.
+
+Note the asymmetry underneath, which is deliberate and worth stating: `DocState`
+holds a selection for every actor that ever selected, because replay needs them; the
+roster says which of those are here; the setting says whether to draw them. **The log
+decides what exists, presence decides what could be shown, and the client decides
+whether it is.**
 
 ## 4. Presence — the ephemeral roster
 

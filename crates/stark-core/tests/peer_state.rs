@@ -13,7 +13,7 @@
 mod common;
 
 use common::{engine_or_skip, images_match, paint};
-use stark_core::command::{DocCommand, GestureCommand, InputSample, PeerCommand};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_core::document::{ActorId, LayerId, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
@@ -415,6 +415,65 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
     );
     engine.take_presence(stark_core::peer::PEER_TIMEOUT + 0.1);
     assert_eq!(engine.peers().count(), 0, "the peer left");
+}
+
+/// A collaborator's selection outline is off by default and drawn only when this
+/// client asks for it — a view setting, so it changes what you look at and nothing
+/// about the drawing (PEER_DESIGN.md §3). Your own outline is unaffected either way.
+#[test]
+fn peer_selection_outlines_are_opt_in() {
+    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+    a.start_collaboration(ActorId(1));
+    b.join_collaboration(&a.document_file(), ActorId(2));
+
+    // B is present and has a selection whose edge crosses the viewport.
+    b.process(DocCommand::Select(SelectionOp::new(
+        SelectionMode::Replace,
+        SelectionShape::rect_from_corners(LEFT_MIN, LEFT_MAX),
+        0.0,
+    )));
+    sync(&mut a, &mut b);
+    a.merge_presence(
+        ActorId(2),
+        PeerFrame {
+            seq: 1,
+            name: None,
+            active_layer: LayerId(0),
+            cursor: None,
+            gesture: None,
+            leaving: false,
+        },
+        0.0,
+    );
+
+    let hidden = snap(&mut a);
+    assert!(
+        !a.observe().show_peer_selections,
+        "collaborators' outlines are off until asked for"
+    );
+
+    a.process(ViewCommand::SetShowPeerSelections(true));
+    let shown = snap(&mut a);
+    assert!(
+        !images_match(&hidden, &shown, 0),
+        "turning the setting on should draw B's outline"
+    );
+
+    a.process(ViewCommand::SetShowPeerSelections(false));
+    assert!(
+        images_match(&hidden, &snap(&mut a), 0),
+        "turning it back off should restore exactly the canvas without it"
+    );
+
+    // And it reaches only the peers' outlines: A's own is drawn regardless.
+    select_left(&mut a);
+    let mine = snap(&mut a);
+    assert!(
+        !images_match(&mine, &hidden, 0),
+        "this client's own selection outline is not gated by the setting"
+    );
 }
 
 /// `presence_due` is the cheap `&self` test a pump uses to skip an idle tick

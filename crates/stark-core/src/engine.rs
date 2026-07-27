@@ -149,6 +149,8 @@ pub struct ObservableState {
     pub selection_mode: SelectionMode,
     /// Edge softness (canvas px) the next selection gesture will apply.
     pub selection_feather: f32,
+    /// Whether collaborators' selection outlines are drawn (PEER_DESIGN.md §3).
+    pub show_peer_selections: bool,
 
     // --- view settings (per-client, never historized) ---------------------
     //
@@ -572,6 +574,7 @@ impl Engine {
             ViewCommand::SetSelectionFeather(feather) => {
                 self.session.selection_feather = feather.max(0.0)
             }
+            ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
             ViewCommand::PreviewMatteRect(drag) => {
                 self.matte_preview =
                     drag.map(|(id, min, max)| self.timeline.current().set_matte_rect(id, min, max));
@@ -1012,6 +1015,7 @@ impl Engine {
             has_selection: doc.has_selection(self.actor),
             selection_mode: self.session.selection_mode,
             selection_feather: self.session.selection_feather,
+            show_peer_selections: self.session.show_peer_selections,
             media: self.compositor.media(),
             environment: self.environment.id(),
             color_space: self.color_space.id(),
@@ -1495,8 +1499,10 @@ impl Engine {
     /// The selection masks to outline, and whose each is (PEER_DESIGN.md §3).
     ///
     /// `DocState` holds a selection for every actor that ever made one, because
-    /// replay needs them all; only the actors actually *here* are drawn. The log
-    /// decides what exists, presence decides what is shown.
+    /// replay needs them all; only the actors actually *here* are candidates. The log
+    /// decides what exists, presence decides what could be shown — and
+    /// `show_peer_selections` decides whether it is, since a second contour over the
+    /// artwork is a preference rather than a fact about the drawing.
     fn visible_selections(&self) -> Vec<(crate::document::Selection, Option<[f32; 3]>)> {
         let doc = self.presented();
         let mut out = Vec::new();
@@ -1504,10 +1510,12 @@ impl Engine {
         if mine.is_active() {
             out.push((mine, None));
         }
-        for peer in self.peers.iter() {
-            let theirs = doc.selection_of(peer.actor);
-            if theirs.is_active() {
-                out.push((theirs, Some(peer.color)));
+        if self.session.show_peer_selections {
+            for peer in self.peers.iter() {
+                let theirs = doc.selection_of(peer.actor);
+                if theirs.is_active() {
+                    out.push((theirs, Some(peer.color)));
+                }
             }
         }
         out

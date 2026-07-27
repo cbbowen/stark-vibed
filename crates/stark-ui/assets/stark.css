@@ -934,3 +934,19 @@
   font-weight: 600;
   white-space: nowrap;
 }
+
+/* The "show others' selections" toggle, mounted only in a shared session. Sits
+   under the feather slider, so it gets a rule above it rather than relying on
+   spacing alone to say it governs something different. */
+.peer-toggle {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #ffffff14;
+  font-size: 12px;
+  color: #cfcfd6;
+}
+
+.peer-toggle label {
+  cursor: pointer;
+  user-select: none;
+}

@@ -123,6 +123,14 @@ pub struct Session {
     pub selection_mode: SelectionMode,
     /// Edge softness (canvas px) applied by the next selection gesture.
     pub selection_feather: f32,
+    /// Whether collaborators' selection outlines are drawn (PEER_DESIGN.md §3).
+    ///
+    /// View state, so each client decides for itself and nothing about it is logged
+    /// or sent. Off by default: knowing which region someone else is working inside
+    /// is occasionally useful, but a second contour over the artwork is a cost paid
+    /// on every frame you look at it, and most of the time the answer to "what is
+    /// that line?" should be "the one I drew".
+    pub show_peer_selections: bool,
 
     // --- the published half (PEER_DESIGN.md §4.1) -------------------------
     //
@@ -181,6 +189,7 @@ impl Session {
             active_layer,
             selection_mode: SelectionMode::default(),
             selection_feather: 0.0,
+            show_peer_selections: false,
             name: String::new(),
             cursor: None,
             in_flight: None,
