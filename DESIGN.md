@@ -1764,9 +1764,10 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
    tickets). Convergence **is** a test, twice: headless cross-merged engines
    (`stark-core/tests/collab.rs`) and two engines over real loopback iroh
    endpoints (`stark-net/tests/sync.rs`) must render bit-identical canvases.
-   UI: "Shared drawing" dialog (share / join-by-ticket / leave) with two pumps
-   in `stark-ui/src/collab.rs`. Permissions remain future (§12.5); presence became
-   step 13.
+   UI: a "Share" dialog (one click starts the session and shows the link to copy;
+   leaving stops it) with two pumps in `stark-ui/src/collab.rs`. Joining has no UI —
+   the ticket rides the page URL's fragment and opening such a link joins on load.
+   Permissions remain future (§12.5); presence became step 13.
 13. **Per-client state ([PEER_DESIGN.md](PEER_DESIGN.md)):** the third class —
    owned by one client, read by all. Two mechanisms, split by whether replay needs
    the state: the **selection** moves into `DocState` keyed by `ActorId`, so a

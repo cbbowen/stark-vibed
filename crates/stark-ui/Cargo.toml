@@ -33,6 +33,9 @@ web-sys = { version = "0.3", features = [
     # replaceState to reflect/clear it without adding history entries.
     "Location",
     "History",
+    # "Copy link" in the share dialog (collab.rs).
+    "Navigator",
+    "Clipboard",
     # This browser's durable client identity (identity.rs).
     "Storage",
     # Save / open / export (platform.rs): a download is a Blob behind an object

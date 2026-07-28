@@ -6,6 +6,11 @@
 //! - **incoming**: a spawned task feeds [`RemoteEvent`]s into the engine and
 //!   repaints.
 //!
+//! Both ends of the invitation are one gesture. Sharing starts the moment
+//! "Share…" is picked, and [`SessionModal`] only hands over the resulting link;
+//! joining has no UI at all — opening a link whose fragment carries a ticket
+//! joins on load.
+//!
 //! The session itself lives in a signal beside the renderer; iroh runs in the
 //! browser over its relay transport, so this is the same code path native
 //! tests exercise over UDP.
@@ -90,7 +95,9 @@ pub fn share(state: AppState) {
     });
 }
 
-/// Join a session from a pasted ticket. Replaces the current document.
+/// Join the session a ticket names. Replaces the current document. The only
+/// caller is the page-load path in `main.rs`, which reads the ticket out of the
+/// URL fragment — a shared link is the whole of the joining UI.
 pub fn join(state: AppState, ticket_text: String) {
     if (state.collab.phase)() != CollabPhase::Solo {
         return;
@@ -412,6 +419,32 @@ pub fn url_ticket() -> Option<String> {
     ticket.starts_with("stark").then(|| ticket.to_string())
 }
 
+/// The invitation to hand out: this page's address with `ticket` in the fragment.
+///
+/// Rebuilt from the ticket rather than read back out of `location.href`, so the
+/// dialog re-renders when the ticket signal changes — `location` is not reactive,
+/// and reading it during a render that beat `replaceState` would show the old URL.
+fn invite_url(ticket: &str) -> String {
+    let Some(location) = web_sys::window().map(|w| w.location()) else {
+        return format!("#{ticket}");
+    };
+    format!(
+        "{}{}{}#{ticket}",
+        location.origin().unwrap_or_default(),
+        location.pathname().unwrap_or_default(),
+        location.search().unwrap_or_default()
+    )
+}
+
+/// Put `text` on the system clipboard. Fire-and-forget: the returned promise is
+/// dropped, and a browser that denies the permission just leaves the readonly
+/// field on screen to select by hand.
+fn copy_to_clipboard(text: &str) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.navigator().clipboard().write_text(text);
+    }
+}
+
 /// Reflect (or clear) the live session's ticket in the URL bar. Uses
 /// `replaceState` so joining/leaving doesn't pollute tab history.
 fn set_url_ticket(ticket: Option<&str>) {
@@ -438,16 +471,18 @@ fn set_url_ticket(ticket: Option<&str>) {
     }
 }
 
-/// The "Shared drawing" dialog: start sharing, join from a ticket, or (while
-/// live) read out the ticket and leave.
+/// The "Share" dialog. Sharing has already started by the time this opens (the
+/// menu item calls [`share`]), so the dialog's whole job is to hand over the
+/// link — and to let this client leave again. There is no join half: opening a
+/// shared link *is* joining (see `url_ticket`), so nothing here asks for a
+/// ticket.
 #[component]
 pub fn SessionModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
     let phase = (state.collab.phase)();
     let ticket = (state.collab.ticket)();
     let error = (state.collab.error)();
-    let mut join_text = use_signal(String::new);
-    let mut identity_reset = use_signal(|| false);
+    let mut copied = use_signal(|| false);
 
     rsx! {
         div {
@@ -457,90 +492,73 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                 class: "modal-dialog",
                 onclick: move |e| e.stop_propagation(),
 
-                div { class: "modal-title", "Shared Drawing" }
+                div { class: "modal-title", "Share" }
 
                 if let Some(message) = error {
                     div { class: "collab-error", {message} }
                 }
 
                 match phase {
+                    // Only reached when sharing failed — the menu starts it before
+                    // this dialog mounts, so there is nothing to wait for otherwise.
                     CollabPhase::Solo => rsx! {
                         div { class: "modal-subtitle",
-                            "Paint together in real time, peer-to-peer. Share this canvas, or join someone else's."
+                            "This canvas isn't shared."
                         }
-                        div { class: "modal-section-label", "SHARE THIS CANVAS" }
                         button {
                             class: "btn btn-primary",
                             onclick: move |_| share(state),
-                            "Start sharing"
-                        }
-                        div { class: "modal-section-label", "JOIN A SESSION" }
-                        div { class: "modal-subtitle", "Joining replaces your current canvas with the shared one." }
-                        input {
-                            class: "ticket-input",
-                            placeholder: "Paste a ticket (stark…)",
-                            value: "{join_text}",
-                            oninput: move |e| join_text.set(e.value()),
-                        }
-                        div { class: "modal-section-label", "THIS BROWSER" }
-                        div { class: "modal-subtitle",
-                            "Collaborators recognise you by a key kept in this browser, so your strokes stay yours — and stay undoable — when you reload. Starting over gives you a new one, and everything you have already drawn in a shared canvas stays where it is."
-                        }
-                        button {
-                            class: "btn btn-secondary",
-                            disabled: identity_reset(),
-                            onclick: move |_| {
-                                crate::identity::reset();
-                                identity_reset.set(true);
-                            },
-                            if identity_reset() { "New identity on next reload" } else { "Start over as someone new" }
-                        }
-                        div { class: "modal-actions",
-                            button {
-                                class: "btn btn-secondary",
-                                onclick: move |_| on_close.call(()),
-                                "Close"
-                            }
-                            button {
-                                class: "btn btn-primary",
-                                disabled: join_text().trim().is_empty(),
-                                onclick: move |_| join(state, join_text()),
-                                "Join"
-                            }
+                            "Try again"
                         }
                     },
                     CollabPhase::Connecting => rsx! {
-                        div { class: "modal-subtitle", "Connecting…" }
-                        div { class: "modal-actions",
-                            button {
-                                class: "btn btn-secondary",
-                                onclick: move |_| on_close.call(()),
-                                "Close"
-                            }
-                        }
+                        div { class: "modal-subtitle", "Creating a link…" }
                     },
                     CollabPhase::Shared => rsx! {
                         div { class: "modal-subtitle",
-                            "Live. Send the page URL (the ticket rides the #fragment) — or this ticket — to anyone who should paint with you. Every member can share it."
+                            "Anyone who opens this link paints here with you, in real time. Every member can pass it on."
                         }
-                        textarea {
-                            class: "ticket-text",
-                            readonly: true,
-                            value: ticket.unwrap_or_default(),
+                        {
+                            let url = invite_url(ticket.as_deref().unwrap_or_default());
+                            let to_copy = url.clone();
+                            rsx! {
+                                div { class: "invite-row",
+                                    input {
+                                        class: "invite-url",
+                                        readonly: true,
+                                        value: "{url}",
+                                    }
+                                    button {
+                                        class: "btn btn-primary",
+                                        onclick: move |_| {
+                                            copy_to_clipboard(&to_copy);
+                                            copied.set(true);
+                                            // Back to "Copy" after a beat, so the
+                                            // button reads as a button again.
+                                            spawn(async move {
+                                                crate::platform::sleep_ms(1600).await;
+                                                copied.set(false);
+                                            });
+                                        },
+                                        if copied() { "Copied" } else { "Copy" }
+                                    }
+                                }
+                            }
                         }
-                        div { class: "modal-actions",
-                            button {
-                                class: "btn btn-secondary",
-                                onclick: move |_| { leave(state); },
-                                "Leave session"
-                            }
-                            button {
-                                class: "btn btn-primary",
-                                onclick: move |_| on_close.call(()),
-                                "Close"
-                            }
+                        button {
+                            class: "btn btn-secondary",
+                            onclick: move |_| { leave(state); },
+                            "Stop sharing"
                         }
                     },
+                }
+
+                div { class: "modal-actions",
+                    button {
+                        class: "btn btn-primary",
+                        onclick: move |_| on_close.call(()),
+                        "Done"
+                    }
                 }
             }
         }

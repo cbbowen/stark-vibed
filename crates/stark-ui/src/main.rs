@@ -404,9 +404,15 @@ fn CommandRail() -> Element {
                         }
                         MenubarItem {
                             index: 6usize,
-                            value: "shared-drawing".to_string(),
-                            on_select: move |_| show_session.set(true),
-                            span { if live { "Shared drawing \u{25CF}" } else { "Shared drawing…" } }
+                            value: "share".to_string(),
+                            // Sharing starts on the click, not on a second button
+                            // inside the dialog: the dialog exists to hand over the
+                            // link. A no-op once the session is live.
+                            on_select: move |_| {
+                                collab::share(state);
+                                show_session.set(true);
+                            },
+                            span { if live { "Share \u{25CF}" } else { "Share…" } }
                         }
                         MenubarItem {
                             index: 0usize,

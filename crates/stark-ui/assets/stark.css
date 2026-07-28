@@ -427,10 +427,19 @@
   margin-top: 18px;
 }
 
-/* --- shared-drawing dialog (collab.rs) --- */
-.ticket-input,
-.ticket-text {
-  width: 100%;
+/* --- share dialog (collab.rs) --- */
+.invite-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+/* The link is long; let it scroll inside the field rather than widen the
+   dialog, and keep the Copy button at its natural width beside it. */
+.invite-url {
+  flex: 1;
+  min-width: 0;
   box-sizing: border-box;
   padding: 8px 10px;
   border-radius: 8px;
@@ -439,16 +448,18 @@
   color: #e8e8ea;
   font-family: ui-monospace, monospace;
   font-size: 11px;
+  text-overflow: ellipsis;
 }
 
-.ticket-input::placeholder {
-  color: #e8e8ea66;
+.invite-row .btn {
+  flex: none;
 }
 
-.ticket-text {
-  resize: none;
-  height: 96px;
-  word-break: break-all;
+/* Sits under whichever phase block is showing, so it owns the gap above it. */
+.identity-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #ffffff14;
 }
 
 .collab-error {
