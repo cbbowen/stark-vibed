@@ -237,18 +237,17 @@ fn install(state: AppState, mut session: CollabSession) {
         let mut renderer = state.renderer;
         let mut obs = state.obs;
         while let Some(event) = events.recv().await {
-            let snapshot = {
+            let (snapshot, repaint) = {
                 let mut guard = renderer.write();
                 let Some(r) = guard.as_mut() else { continue };
                 match event {
                     RemoteEvent::Asset { bytes } => {
                         r.import_brush(&bytes);
-                        None
+                        (None, false)
                     }
                     RemoteEvent::Action(action) => {
                         r.merge_remote(action);
-                        r.paint();
-                        Some(r.observe())
+                        (Some(r.observe()), true)
                     }
                     // A peer moved, switched layer, or drew another stretch of a
                     // live stroke (PEER_DESIGN.md §4). Repaint only when the frame
@@ -260,13 +259,16 @@ fn install(state: AppState, mut session: CollabSession) {
                     // from, and refreshing it at pointer rate would re-run the whole
                     // component tree.
                     RemoteEvent::Presence { actor, frame } => {
-                        if r.merge_presence(actor, frame) {
-                            r.paint();
-                        }
-                        None
+                        (None, r.merge_presence(actor, frame))
                     }
                 }
             };
+            // Requested, not painted inline: peer gesture frames arrive at ~30 Hz
+            // *per stroking peer*, on top of the local pointer rate — the request
+            // latch is what folds all of it into one paint per displayed frame.
+            if repaint {
+                crate::state::request_paint(state);
+            }
             if snapshot.is_some() {
                 obs.set(snapshot);
             }

@@ -2,7 +2,9 @@
 //!
 //! The engine renders directly into the canvas's `wgpu::Surface` texture — no
 //! readback, no encode. A [`Renderer`] bundles the surface and the engine; the
-//! app stores it in a signal, calls [`Renderer::paint`] after each command, and
+//! app stores it in a signal, requests a paint after each command (coalesced to
+//! one [`Renderer::paint`] per animation frame —
+//! [`request_paint`](crate::state::request_paint)), and calls
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
 use stark_core::command::{DocCommand, ViewCommand};

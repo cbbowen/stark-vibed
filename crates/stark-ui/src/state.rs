@@ -4,7 +4,7 @@
 //! goes through it, so repaint, observable refresh and collaboration broadcast
 //! happen in one place rather than at each call site (DESIGN.md §4).
 
-use dioxus::dioxus_core::Task;
+use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::prelude::*;
 
 use crate::collab;
@@ -72,6 +72,11 @@ pub struct AppState {
     /// the engine sees only the previews it produces and the one commit on
     /// "Done".
     pub transform: Signal<Option<TransformState>>,
+    /// Whether a [`request_paint`] is already waiting on the next animation frame.
+    /// The latch that turns any number of paint requests into one paint per frame.
+    /// Read and written only from non-component code (`peek`/`set`), so no
+    /// component ever subscribes to it.
+    pub paint_queued: Signal<bool>,
     /// Everything to do with a shared drawing (DESIGN.md §12).
     pub collab: CollabState,
 }
@@ -94,6 +99,7 @@ impl AppState {
                 dragging: root_signal(|| false),
             },
             transform: root_signal(|| None),
+            paint_queued: root_signal(|| false),
             collab: CollabState {
                 session: root_signal(|| None),
                 ticket: root_signal(|| None),
@@ -249,7 +255,39 @@ pub struct CollabState {
     pub presence: Signal<Option<Task>>,
 }
 
-/// Apply a command, repaint the surface, and refresh the observable snapshot.
+/// Repaint the canvas surface on the **next animation frame**, coalescing however
+/// many requests land before it into one paint.
+///
+/// This is deliberately not `Renderer::paint` called inline. Paint requests arrive
+/// per local pointer sample ([`dispatch`]) *and* per peer gesture frame (the collab
+/// pump, ~30 Hz × peers) — with several clients drawing, that sums to hundreds of
+/// full-frame composites a second submitted to a display that shows ~60. Nothing
+/// bounds the GPU queue, so it grows for as long as the strokes last and input
+/// latency climbs with it. The engine's state still integrates per event
+/// (coalescing there would drop samples); it is only the *presentation* that is a
+/// snapshot, and painting the latest state once per frame shows exactly what
+/// painting it per event would have — minus the queue.
+pub fn request_paint(state: AppState) {
+    let mut queued = state.paint_queued;
+    if *queued.peek() {
+        return;
+    }
+    queued.set(true);
+    // `spawn_forever`: requests originate in component event handlers and in the
+    // collab pump alike, and a paint owed must not die with whichever scope asked
+    // for it (see the module note on `root_signal`).
+    spawn_forever(async move {
+        crate::render::next_frame().await;
+        let mut queued = state.paint_queued;
+        queued.set(false);
+        let mut renderer = state.renderer;
+        if let Some(r) = renderer.write().as_mut() {
+            r.paint();
+        }
+    });
+}
+
+/// Apply a command, request a repaint, and refresh the observable snapshot.
 /// In a shared session, whatever the command committed is then broadcast.
 pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
     let mut renderer = state.renderer;
@@ -258,10 +296,10 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
         let mut guard = renderer.write();
         if let Some(r) = guard.as_mut() {
             r.process(command);
-            r.paint();
             obs.set(Some(r.observe()));
         }
     }
+    request_paint(state);
     collab::flush_outbox(state);
 }
 
@@ -281,7 +319,9 @@ pub fn dispatch_quiet(state: AppState, command: impl Into<InputCommand>) {
     }
 }
 
-/// Resize the surface/engine, then repaint.
+/// Resize the surface/engine, then repaint — inline, not [`request_paint`]: the
+/// surface was just reconfigured, and a frame of the old size shown until the next
+/// rAF is a visible flash. Resize arrives at layout rate, which cannot flood.
 pub fn resize(state: AppState, width: u32, height: u32) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
