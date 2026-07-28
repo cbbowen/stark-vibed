@@ -4,9 +4,11 @@
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::geometry::ElementPoint;
+use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
+use crate::platform::capture_pointer;
 use crate::state::{AppState, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
@@ -14,6 +16,103 @@ use stark_core::document::SelectionMode;
 use stark_core::document::SelectionOp;
 use stark_core::geom::{Vec2, ViewTransform};
 use stark_core::{PickOptions, PickSource};
+
+/// The view-navigation bindings — middle-drag / space-drag pan, cursor-anchored
+/// wheel zoom — shared by every surface that sits over the canvas: the canvas
+/// itself and the transform mode's catcher, box and handles. One implementation,
+/// so what "the pan buttons" and "the zoom rate" mean cannot drift between
+/// surfaces.
+///
+/// Each surface makes its own with [`Nav::use_nav`]; the pointer capture on the
+/// pressed element keeps two instances from ever panning at once. Policy stays
+/// at the call site — the canvas fades the chrome while it pans, the transform
+/// overlay deliberately does not — only the mechanics live here.
+#[derive(Clone, Copy)]
+pub struct Nav {
+    state: AppState,
+    /// The pan in flight: the pointer's last position in **page px** (the one
+    /// frame every surface reports in, whatever its own origin), or `None`.
+    last: Signal<Option<Vec2>>,
+}
+
+impl Nav {
+    /// A hook: call unconditionally, like any `use_*`.
+    pub fn use_nav(state: AppState) -> Self {
+        Self {
+            state,
+            last: use_signal(|| None),
+        }
+    }
+
+    /// Whether `e` presses the pan bindings — middle button anywhere, or space
+    /// with the primary button — and if so, begin the pan: capture the pointer
+    /// and swallow the event. `true` means "this press is navigation, not
+    /// yours"; callers check it before starting their own gesture.
+    pub fn start_pan(self, e: &Event<PointerData>) -> bool {
+        let pan = match e.trigger_button() {
+            Some(MouseButton::Auxiliary) => true,
+            Some(MouseButton::Primary) => *self.state.space_down.peek(),
+            _ => false,
+        };
+        if pan {
+            e.prevent_default(); // suppress middle-click autoscroll
+            e.stop_propagation();
+            capture_pointer(e);
+            let mut last = self.last;
+            last.set(Some(page_xy(e)));
+        }
+        pan
+    }
+
+    /// Advance the pan in flight, if any. `Pan` is an incremental command, so
+    /// the anchor is re-set each move. `true` means the move was navigation and
+    /// the caller's own gesture logic should not see it; a no-op otherwise.
+    pub fn pan_move(self, e: &Event<PointerData>) -> bool {
+        let mut last = self.last;
+        let Some(prev) = last() else { return false };
+        let p = page_xy(e);
+        dispatch(self.state, ViewCommand::Pan { delta: p - prev });
+        last.set(Some(p));
+        true
+    }
+
+    /// End the pan in flight (release / cancel). Harmless when there is none.
+    pub fn stop(self) {
+        let mut last = self.last;
+        if last.peek().is_some() {
+            last.set(None);
+        }
+    }
+
+    /// Cursor-anchored wheel zoom. Anchored by page position: it equals the
+    /// canvas's own coordinates for full-viewport surfaces, and it is the only
+    /// frame an element like the transform box (whose local coordinates move
+    /// with it) can meaningfully report.
+    pub fn wheel(self, e: Event<WheelData>) {
+        e.prevent_default();
+        e.stop_propagation();
+        let dy = e.delta().strip_units().y;
+        if dy != 0.0 {
+            let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
+            let p = e.page_coordinates();
+            dispatch(
+                self.state,
+                ViewCommand::Zoom {
+                    anchor: Vec2::new(p.x as f32, p.y as f32),
+                    factor,
+                },
+            );
+        }
+    }
+}
+
+/// Pointer position in page coordinates — the frame that stays still while
+/// absolutely-positioned chrome (frame handles, the transform box) moves under
+/// the pointer mid-drag.
+pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
+    let p = e.page_coordinates();
+    Vec2::new(p.x as f32, p.y as f32)
+}
 
 pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
     match e.key() {
@@ -214,7 +313,7 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
 pub fn end_interaction(
     mut state: AppState,
     drawing: &mut Signal<bool>,
-    panning: &mut Signal<bool>,
+    nav: Nav,
     mode_restore: &mut Signal<Option<SelectionMode>>,
 ) {
     if drawing() {
@@ -224,7 +323,7 @@ pub fn end_interaction(
     if let Some(base) = mode_restore.take() {
         dispatch(state, ViewCommand::SetSelectionMode(base));
     }
-    panning.set(false);
+    nav.stop();
     // Not a parameter like the two above because the eyedropper's drag flag is shared
     // state, not the canvas's own — the options bar reads it (see `PickState`).
     // Nothing to undo, either: a sample already in flight is left to land, since it

@@ -37,7 +37,7 @@ use dioxus::prelude::*;
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use input::{
-    elem_xy, end_interaction, handle_keydown, handle_keyup, input_tolerance, pick_color, sample,
+    Nav, end_interaction, handle_keydown, handle_keyup, input_tolerance, pick_color, sample,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
@@ -48,7 +48,6 @@ use platform::capture_pointer;
 use render::CANVAS_ID;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use stark_core::document::{DEFAULT_SURFACE, SelectionMode, SelectionOp};
-use stark_core::geom::Vec2;
 use stark_core::{ColorSpaceId, SurfaceId};
 use state::{AppState, dispatch, dispatch_quiet, resize};
 
@@ -206,12 +205,13 @@ fn app() -> Element {
 fn Canvas() -> Element {
     let state = use_context::<AppState>();
     let mut drawing = use_signal(|| false);
-    let mut panning = use_signal(|| false);
+    // The shared pan/zoom bindings (`input::Nav`) — the same instance the
+    // transform overlay makes for itself, so navigation means one thing.
+    let nav = Nav::use_nav(state);
     // Whether an Alt+drag is sampling colour off the canvas rather than painting on
     // it (MISSING_FEATURES §0.2). Shared rather than local, unlike the two above,
     // because the options bar is mounted on *armed but not dragging*.
     let mut picking = state.pick.dragging;
-    let mut last_position = use_signal(|| None::<Vec2>);
     // The panel's selection mode, stashed while a gesture's modifier keys override it
     // (DESIGN.md §6.8) and restored when the gesture ends.
     let mut mode_restore = use_signal(|| None::<SelectionMode>);
@@ -259,65 +259,62 @@ fn Canvas() -> Element {
             // viewport anyway — and the interaction ends on release/cancel, never by
             // crossing the canvas edge.
             onpointerdown: move |e| {
-                match e.trigger_button() {
-                    Some(MouseButton::Primary) => {
-                        capture_pointer(&e);
-                        // Painting and selecting are the same gesture from here — the
-                        // tool decides what the engine builds (DESIGN.md §6.8).
-                        let tool = current_tool(state);
-                        // Alt+press samples the canvas instead of painting on it, and
-                        // Alt+drag keeps sampling — the binding Clip Studio Paint and
-                        // Rebelle both use, so a colour is picked up without putting
-                        // the brush down (MISSING_FEATURES §0.2). Alt over a selection
-                        // tool is left alone: there it already means subtract.
-                        let alt_pick = e.modifiers().contains(Modifiers::ALT)
-                            && !tool.is_selection()
-                            && !(state.space_down)();
-                        if alt_pick {
-                            // Deliberately *not* `canvas_active`: the chrome fade
-                            // exists to hand the screen back to the painting
-                            // mid-stroke, but the Color panel is where a pick's answer
-                            // shows up, so fading it out would hide the one thing this
-                            // gesture is for.
-                            picking.set(true);
-                            if let Some(s) = sample(state, &e) {
-                                pick_color(state, s.pos);
-                            }
-                            return;
+                // Navigation first: middle-drag, or space + the primary button
+                // (`input::Nav` — the one definition of the pan bindings, shared
+                // with the transform overlay). Taking it here is also what keeps
+                // space+Alt panning rather than sampling.
+                if nav.start_pan(&e) {
+                    canvas_active.set(true);
+                    return;
+                }
+                if e.trigger_button() == Some(MouseButton::Primary) {
+                    capture_pointer(&e);
+                    // Painting and selecting are the same gesture from here — the
+                    // tool decides what the engine builds (DESIGN.md §6.8).
+                    let tool = current_tool(state);
+                    // Alt+press samples the canvas instead of painting on it, and
+                    // Alt+drag keeps sampling — the binding Clip Studio Paint and
+                    // Rebelle both use, so a colour is picked up without putting
+                    // the brush down (MISSING_FEATURES §0.2). Alt over a selection
+                    // tool is left alone: there it already means subtract.
+                    // (Space+Alt never reaches here — `nav` took it as a pan.)
+                    let alt_pick =
+                        e.modifiers().contains(Modifiers::ALT) && !tool.is_selection();
+                    if alt_pick {
+                        // Deliberately *not* `canvas_active`: the chrome fade
+                        // exists to hand the screen back to the painting
+                        // mid-stroke, but the Color panel is where a pick's answer
+                        // shows up, so fading it out would hide the one thing this
+                        // gesture is for.
+                        picking.set(true);
+                        if let Some(s) = sample(state, &e) {
+                            pick_color(state, s.pos);
                         }
-                        canvas_active.set(true);
-                        if (state.space_down)() {
-                            panning.set(true);
-                        // A press before WebGPU init has finished has no canvas
-                        // space to land in, so it starts no gesture (and `drawing`
-                        // stays false, which is what keeps the moves after it inert
-                        // too).
-                        } else if let Some(sample) = sample(state, &e)
-                            && let Some(tolerance) = input_tolerance(state, &e)
+                        return;
+                    }
+                    canvas_active.set(true);
+                    // A press before WebGPU init has finished has no canvas
+                    // space to land in, so it starts no gesture (and `drawing`
+                    // stays false, which is what keeps the moves after it inert
+                    // too).
+                    if let Some(sample) = sample(state, &e)
+                        && let Some(tolerance) = input_tolerance(state, &e)
+                    {
+                        if tool.is_selection()
+                            && let Some(m) = modifier_mode(e.modifiers())
                         {
-                            if tool.is_selection()
-                                && let Some(m) = modifier_mode(e.modifiers())
-                            {
-                                mode_restore.set(Some(current_mode(state)));
-                                dispatch(state, ViewCommand::SetSelectionMode(m));
-                            }
-                            dispatch(state, GestureCommand::Start {
-                                tool,
-                                sample,
-                                // What this device and this zoom level actually
-                                // resolve to, which is what the fit prices against.
-                                tolerance,
-                            });
-                            drawing.set(true);
+                            mode_restore.set(Some(current_mode(state)));
+                            dispatch(state, ViewCommand::SetSelectionMode(m));
                         }
+                        dispatch(state, GestureCommand::Start {
+                            tool,
+                            sample,
+                            // What this device and this zoom level actually
+                            // resolve to, which is what the fit prices against.
+                            tolerance,
+                        });
+                        drawing.set(true);
                     }
-                    Some(MouseButton::Auxiliary) => {
-                        e.prevent_default(); // suppress middle-click autoscroll
-                        capture_pointer(&e);
-                        canvas_active.set(true);
-                        panning.set(true);
-                    }
-                    _ => {}
                 }
             },
             onpointermove: move |e| {
@@ -332,8 +329,8 @@ fn Canvas() -> Element {
                         pick_color(state, s.pos);
                     } else if drawing() {
                         dispatch(state, GestureCommand::To { sample: s });
-                    } else if panning() && let Some(l) = last_position() {
-                        dispatch(state, ViewCommand::Pan { delta: elem_xy(&e) - l });
+                    } else {
+                        nav.pan_move(&e);
                     }
                     // Where collaborators see this client's pointer (PEER_DESIGN.md
                     // §4). Quiet: it changes nothing *this* client renders — the
@@ -342,23 +339,11 @@ fn Canvas() -> Element {
                     // The presence pump reads it off the engine on its own cadence.
                     dispatch_quiet(state, PeerCommand::SetCursor(Some(s.pos)));
                 }
-                last_position.set(Some(elem_xy(&e)));
             },
             onpointerleave: move |_| dispatch_quiet(state, PeerCommand::SetCursor(None)),
-            onpointerup: move |_| end_interaction(state, &mut drawing, &mut panning, &mut mode_restore),
-            onpointercancel: move |_| {
-                end_interaction(state, &mut drawing, &mut panning, &mut mode_restore);
-                last_position.set(None);
-            },
-            onwheel: move |e| {
-                e.prevent_default();
-                let dy = e.delta().strip_units().y;
-                if dy != 0.0 {
-                    let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
-                    let c = e.element_coordinates();
-                    dispatch(state, ViewCommand::Zoom { anchor: Vec2::new(c.x as f32, c.y as f32), factor });
-                }
-            },
+            onpointerup: move |_| end_interaction(state, &mut drawing, nav, &mut mode_restore),
+            onpointercancel: move |_| end_interaction(state, &mut drawing, nav, &mut mode_restore),
+            onwheel: move |e| nav.wheel(e),
         }
     }
 }

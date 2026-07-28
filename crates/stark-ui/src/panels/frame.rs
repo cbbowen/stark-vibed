@@ -20,6 +20,7 @@
 
 use dioxus::prelude::*;
 
+use crate::input::page_xy;
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
@@ -474,10 +475,3 @@ pub fn FrameOverlay() -> Element {
     }
 }
 
-/// Pointer position in page coordinates. The handles are absolutely positioned and
-/// move *with* the drag, so their element-local coordinates shift under the pointer
-/// as it drags — page coordinates are the only frame that stays still.
-pub(crate) fn page_xy(e: &Event<PointerData>) -> Vec2 {
-    let p = e.page_coordinates();
-    Vec2::new(p.x as f32, p.y as f32)
-}

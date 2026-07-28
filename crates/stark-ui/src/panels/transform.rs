@@ -19,7 +19,8 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use super::frame::{Grip, content_rect, page_xy, view_rect};
+use super::frame::{Grip, content_rect, view_rect};
+use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::state::{AppState, TransformState, dispatch};
 use stark_core::command::{DocCommand, ViewCommand};
@@ -129,11 +130,6 @@ enum DragKind {
         /// The gesture's angle at that moment.
         angle: f32,
     },
-    /// A view pan — middle-drag or space-drag, exactly as on the canvas.
-    /// Composing a transform must not cost navigation, so every transform
-    /// element diverts to this when those bindings are held; `Drag::origin` is
-    /// re-anchored each move, since `ViewCommand::Pan` takes incremental deltas.
-    Pan,
 }
 
 /// An in-flight handle drag: what it holds, where the pointer went down (page
@@ -157,6 +153,9 @@ struct Drag {
 pub fn TransformOverlay() -> Element {
     let state = use_context::<AppState>();
     let mut drag = use_signal(|| None::<Drag>);
+    // The canvas's own navigation bindings, live on every transform element:
+    // composing a transform must not cost the view (see `input::Nav`).
+    let nav = Nav::use_nav(state);
 
     let Some(ts) = *state.transform.read() else {
         return rsx! {};
@@ -185,27 +184,10 @@ pub fn TransformOverlay() -> Element {
     // A pointer delta in screen px is a canvas delta over the zoom.
     let to_canvas = move |screen: Vec2, origin: Vec2| (screen - origin) / view.zoom;
     let bearing_about_centre = move |p: Vec2| (p.y - centre.y).atan2(p.x - centre.x);
-    // The navigation bindings, exactly as the canvas has them: middle-drag or
-    // space-drag pans. Checked first by every transform element, so holding
-    // space over the box pans instead of moving the selection. Returns whether
-    // the press was taken.
-    let mut start_pan = move |e: &Event<PointerData>| -> bool {
-        let pan =
-            e.trigger_button() == Some(MouseButton::Auxiliary) || *state.space_down.peek();
-        if pan {
-            e.prevent_default(); // suppress middle-click autoscroll
-            e.stop_propagation();
-            crate::platform::capture_pointer(e);
-            drag.set(Some(Drag {
-                kind: DragKind::Pan,
-                origin: page_xy(e),
-                start: ts.rect,
-            }));
-        }
-        pan
-    };
+    // Navigation first: holding the pan bindings over the box pans instead of
+    // moving the selection, exactly as they override the brush on the canvas.
     let mut start = move |e: &Event<PointerData>, kind: DragKind| {
-        if start_pan(e) {
+        if nav.start_pan(e) {
             return;
         }
         if e.trigger_button() != Some(MouseButton::Primary) {
@@ -219,23 +201,10 @@ pub fn TransformOverlay() -> Element {
             start: ts.rect,
         }));
     };
-    // Wheel zoom, exactly as on the canvas. Anchored by page position: the
-    // catcher shares the canvas's origin and the box does not, and page
-    // coordinates are the one frame both report in.
-    let wheel = move |e: Event<WheelData>| {
-        e.prevent_default();
-        e.stop_propagation();
-        let dy = e.delta().strip_units().y;
-        if dy != 0.0 {
-            let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
-            let p = e.page_coordinates();
-            dispatch(state, ViewCommand::Zoom {
-                anchor: Vec2::new(p.x as f32, p.y as f32),
-                factor,
-            });
+    let follow = move |e: &Event<PointerData>| {
+        if nav.pan_move(e) {
+            return;
         }
-    };
-    let mut follow = move |e: &Event<PointerData>| {
         let Some(d) = drag() else { return };
         match d.kind {
             // Translation is rotation-invariant: the box follows the pointer.
@@ -262,14 +231,12 @@ pub fn TransformOverlay() -> Element {
                 let turned = angle + bearing_about_centre(page_xy(e)) - bearing;
                 update(state, TransformState { angle: turned, ..ts });
             }
-            // Incremental, re-anchoring the origin each move: `Pan` is a delta
-            // command, unlike the grips' from-the-start geometry.
-            DragKind::Pan => {
-                let p = page_xy(e);
-                dispatch(state, ViewCommand::Pan { delta: p - d.origin });
-                drag.set(Some(Drag { origin: p, ..d }));
-            }
         }
+    };
+    let mut finish = move |e: &Event<PointerData>| {
+        follow(e);
+        nav.stop();
+        drag.set(None);
     };
 
     // The catcher advertises the pan while space is held, as the canvas cursor
@@ -286,14 +253,11 @@ pub fn TransformOverlay() -> Element {
         // still works: middle-drag and space-drag pan, the wheel zooms.
         div {
             class: "{catcher_class}",
-            onpointerdown: move |e| { start_pan(&e); },
+            onpointerdown: move |e| { nav.start_pan(&e); },
             onpointermove: move |e| follow(&e),
-            onpointerup: move |e| {
-                follow(&e);
-                drag.set(None);
-            },
-            onpointercancel: move |_| { drag.set(None); },
-            onwheel: wheel,
+            onpointerup: move |e| finish(&e),
+            onpointercancel: move |_| { nav.stop(); drag.set(None); },
+            onwheel: move |e| nav.wheel(e),
         }
 
         div {
@@ -301,16 +265,13 @@ pub fn TransformOverlay() -> Element {
             style: "{box_style}",
             // Grips and the rotate knob bubble their wheel events here, so the
             // zoom works over the box too.
-            onwheel: wheel,
+            onwheel: move |e| nav.wheel(e),
             // The interior moves the box — dragging the region *is* the
             // translation, which is what freed the top handle for rotation.
             onpointerdown: move |e| start(&e, DragKind::Grip(Grip::Move)),
             onpointermove: move |e| follow(&e),
-            onpointerup: move |e| {
-                follow(&e);
-                drag.set(None);
-            },
-            onpointercancel: move |_| { drag.set(None); },
+            onpointerup: move |e| finish(&e),
+            onpointercancel: move |_| { nav.stop(); drag.set(None); },
 
             // The eight resize grips. `Move` is skipped: its pill has become the
             // rotate handle below, and translation lives on the interior.
@@ -324,11 +285,8 @@ pub fn TransformOverlay() -> Element {
                             style: "cursor: {cursor};",
                             onpointerdown: move |e| start(&e, DragKind::Grip(grip)),
                             onpointermove: move |e| follow(&e),
-                            onpointerup: move |e| {
-                                follow(&e);
-                                drag.set(None);
-                            },
-                            onpointercancel: move |_| { drag.set(None); },
+                            onpointerup: move |e| finish(&e),
+                            onpointercancel: move |_| { nav.stop(); drag.set(None); },
                         }
                     }
                 }
@@ -344,11 +302,8 @@ pub fn TransformOverlay() -> Element {
                     start(&e, DragKind::Rotate { bearing, angle: ts.angle });
                 },
                 onpointermove: move |e| follow(&e),
-                onpointerup: move |e| {
-                    follow(&e);
-                    drag.set(None);
-                },
-                onpointercancel: move |_| { drag.set(None); },
+                onpointerup: move |e| finish(&e),
+                onpointercancel: move |_| { nav.stop(); drag.set(None); },
             }
         }
     }
