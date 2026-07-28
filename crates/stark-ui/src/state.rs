@@ -10,7 +10,8 @@ use dioxus::prelude::*;
 use crate::collab;
 use crate::render::Renderer;
 use stark_core::command::ViewCommand;
-use stark_core::document::BrushParams;
+use stark_core::document::{BrushParams, LayerId};
+use stark_core::geom::{Affine2, Vec2};
 use stark_core::{InputCommand, ObservableState};
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
@@ -66,6 +67,11 @@ pub struct AppState {
     pub color_epoch: Signal<u64>,
     /// The eyedropper (MISSING_FEATURES §0.2).
     pub pick: PickState,
+    /// The transform gesture in flight (TRANSFORM_DESIGN.md §6): `Some` while the
+    /// user is composing a move/scale/flip of the selected paint. View state —
+    /// the engine sees only the previews it produces and the one commit on
+    /// "Done".
+    pub transform: Signal<Option<TransformState>>,
     /// Everything to do with a shared drawing (DESIGN.md §12).
     pub collab: CollabState,
 }
@@ -87,6 +93,7 @@ impl AppState {
                 alt_down: root_signal(|| false),
                 dragging: root_signal(|| false),
             },
+            transform: root_signal(|| None),
             collab: CollabState {
                 session: root_signal(|| None),
                 ticket: root_signal(|| None),
@@ -97,6 +104,72 @@ impl AppState {
                 presence: root_signal(|| None),
             },
         }
+    }
+}
+
+/// The transform gesture being composed (TRANSFORM_DESIGN.md §6): the rect the
+/// handles started from, the rect they have dragged it to, and the flips applied
+/// inside it. The affine the engine sees is *derived* from these on every change,
+/// always mapping the original `hull` to the current `rect` — so a long drag is
+/// one accumulated transform, never a chain of them, and the preview resamples the
+/// committed tiles exactly once ("lossless" until "Done").
+#[derive(Clone, Copy, PartialEq)]
+pub struct TransformState {
+    /// The layer whose selected paint is being transformed.
+    pub layer: LayerId,
+    /// The canvas-space box the handles were mounted around — the selection hull
+    /// at entry (or the painted content's bounds for an unbounded selection).
+    pub hull: (Vec2, Vec2),
+    /// Where the drags have taken that box, canvas space, normalized min/max.
+    pub rect: (Vec2, Vec2),
+    /// Mirrors applied within the box: (horizontal, vertical) — i.e. flip.0
+    /// mirrors left↔right, flip.1 top↔bottom.
+    pub flip: (bool, bool),
+}
+
+impl TransformState {
+    pub fn begin(layer: LayerId, hull: (Vec2, Vec2)) -> Self {
+        Self {
+            layer,
+            hull,
+            rect: hull,
+            flip: (false, false),
+        }
+    }
+
+    /// Whether committing would change nothing — "Done" then skips the commit
+    /// rather than spending an undo step on a no-op.
+    pub fn is_identity(&self) -> bool {
+        self.rect == self.hull && !self.flip.0 && !self.flip.1
+    }
+
+    /// The affine mapping `hull` onto `rect` with the flips applied — what the
+    /// preview shows and "Done" commits.
+    pub fn affine(&self) -> Affine2 {
+        let (hmin, hmax) = self.hull;
+        let (rmin, rmax) = self.rect;
+        // One axis of the map: hull span → rect span, mirrored if flipped. A drag
+        // that only *moved* the box leaves the spans equal up to float noise, and
+        // the scale is snapped to exactly 1 there — a pure move must be a pure
+        // translation, which resamples losslessly on the integer grid
+        // (TRANSFORM_DESIGN.md §4) instead of softening under a 1±ε scale.
+        let axis = |h0: f32, h1: f32, r0: f32, r1: f32, flipped: bool| {
+            let hw = (h1 - h0).max(1e-3);
+            let mut s = (r1 - r0) / hw;
+            if (s - 1.0).abs() < 1e-4 {
+                s = 1.0;
+            }
+            if flipped {
+                (-s, r1 + h0 * s)
+            } else {
+                (s, r0 - h0 * s)
+            }
+        };
+        let (sx, tx) = axis(hmin.x, hmax.x, rmin.x, rmax.x, self.flip.0);
+        let (sy, ty) = axis(hmin.y, hmax.y, rmin.y, rmax.y, self.flip.1);
+        let mut a = Affine2::from_scale(Vec2::new(sx, sy));
+        a.translation = Vec2::new(tx, ty);
+        a
     }
 }
 

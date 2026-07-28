@@ -163,15 +163,34 @@ partial / fully-selected), build the quad list, intersect transformed quads with
 tile rects (exact convex test, not AABB — a loose test would mint empty tiles),
 and enforce the caps.
 
-## 6. What this deliberately defers
+## 6. The gesture (first cut — built)
 
-- **The gesture.** Live preview should render through this same renderer over
-  the committed document (the `doc_preview` slot the frame drag uses), so
-  preview == committed by construction; a cheaper compositor-side float is a
-  fallback if per-move re-rendering proves too slow on huge selections. To be
-  settled by the UI experiments.
+Entered from the selection bar's **Transform** button; a box with the frame's
+grips mounts around the selection and a bar carries **Flip ↔ / Flip ↕ / Done**.
+Everything before Done is a **lossless preview**: the drags accumulate into one
+frontend `TransformState { hull, rect, flip }` whose affine always maps the
+*original* box onto the current one, and every change runs
+`ViewCommand::PreviewTransform` — the same renderer as the commit, over the
+committed tiles, into the `doc_preview` slot the frame drag uses. So the screen
+shows exactly what Done will produce, a long drag resamples once, and Done
+commits a single action (one undo step per gesture). A pure move snaps its scale
+to exactly 1, so dragging the box around never softens the paint (§4). The
+handle box anchors to a conservative analytic **hull** the selection now carries
+through its op algebra (`Selection::hull`, `ObservableState::selection_hull`);
+an unbounded selection falls back to the painted content's bounds — which is
+also how "move the whole layer" arrives for free. While the mode is active a
+full-viewport catcher blocks canvas painting: the pointer is composing, not
+painting.
+
+Known rough edges for the UI experiments: no rotation or skew handle yet (the
+engine takes any affine — this is purely chrome), pan/zoom are blocked by the
+catcher for the mode's duration, there is no cancel affordance other than Done
+at identity, and the keyboard selection shortcuts (Ctrl+D / invert) still fire
+mid-mode and change what Done would cut.
+
+## 7. What this deliberately defers
+
 - **Cut / copy / paste** across layers and documents — the parcel machinery is
   the ingredient, the clipboard policy is not designed here.
 - **Better minification** (EWA / mips) — a parcel-shader-local upgrade.
-- **`Selection::bounds()` tightening** — planning walks mask tiles, it never
-  needs an analytic bound.
+- **Rotation/skew chrome** — six floats already carry it; the handles don't.

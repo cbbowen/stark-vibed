@@ -1694,7 +1694,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
 | 13 | Per-client state: owned selections + presence ([PEER_DESIGN.md](PEER_DESIGN.md)) | done — its own build order is PEER_DESIGN §14 |
-| — | Transform ([TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md)) | **engine done** — `ActionKind::Transform`, the parcel/combine/mask GPU passes, exactness + replay tests; the interactive gesture/UI is not started |
+| — | Transform ([TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md)) | **done (first cut)** — `ActionKind::Transform`, the parcel/combine/mask GPU passes, exactness + replay tests, and the gesture UI (handles + flips/Done bar, lossless preview through the same renderer); rotation chrome + clipboard remain |
 
 1. **GPU + tiles skeleton:** `GpuContext`, the recycling `TilePool`, and a tile
    blitted to a target under a `ViewTransform`. Proves infinite-canvas pan/zoom

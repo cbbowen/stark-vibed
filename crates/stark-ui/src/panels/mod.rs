@@ -8,6 +8,7 @@ pub mod layer;
 pub mod lighting;
 pub mod pick;
 pub mod select;
+pub mod transform;
 
 pub use brush::BrushPanel;
 pub use color::ColorPanel;
@@ -16,3 +17,4 @@ pub use layer::LayerPanel;
 pub use lighting::LightingPanel;
 pub use pick::PickBar;
 pub use select::{SelectPanel, SelectionBar};
+pub use transform::{TransformBar, TransformOverlay};

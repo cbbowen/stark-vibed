@@ -354,7 +354,19 @@ impl TransformRenderer {
             self.render_mask(&mut encoder, selection, affine, *dest, sources, &dst);
             mask_tiles = mask_tiles.insert(*dest, dst);
         }
-        let moved_selection = Selection::from_parts(mask_tiles, selection.outside() > 0.5);
+        // The hull rides along: the AABB of the affine image of its corners.
+        let hull = selection.hull().map(|(lo, hi)| {
+            let corners = [
+                affine.transform_point2(lo),
+                affine.transform_point2(Vec2::new(hi.x, lo.y)),
+                affine.transform_point2(Vec2::new(lo.x, hi.y)),
+                affine.transform_point2(hi),
+            ];
+            let min = corners.iter().fold(corners[0], |a, p| a.min(*p));
+            let max = corners.iter().fold(corners[0], |a, p| a.max(*p));
+            (min, max)
+        });
+        let moved_selection = Selection::from_parts(mask_tiles, selection.outside() > 0.5, hull);
 
         self.ctx.queue.submit([encoder.finish()]);
         drop(scratch); // now safe to recycle

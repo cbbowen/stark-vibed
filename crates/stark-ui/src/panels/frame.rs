@@ -103,7 +103,7 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
 }
 
 /// The painted content's canvas-space bounds, inset to the populated tiles.
-fn content_rect(o: &stark_core::ObservableState) -> Option<(Vec2, Vec2)> {
+pub(crate) fn content_rect(o: &stark_core::ObservableState) -> Option<(Vec2, Vec2)> {
     let (min, max) = o.bounds.tile_range()?;
     let t = stark_core::geom::TILE_SIZE as f32;
     Some((
@@ -114,7 +114,7 @@ fn content_rect(o: &stark_core::ObservableState) -> Option<(Vec2, Vec2)> {
 
 /// What the viewport currently shows, in canvas px, inset a little so a frame made
 /// from it is visibly a frame rather than flush with the window edge.
-fn view_rect(o: &stark_core::ObservableState) -> (Vec2, Vec2) {
+pub(crate) fn view_rect(o: &stark_core::ObservableState) -> (Vec2, Vec2) {
     let v = o.view;
     let half = Vec2::new(v.viewport.width as f32, v.viewport.height as f32) * (0.5 / v.zoom);
     let inset = half * 0.12;
@@ -307,7 +307,7 @@ impl Grip {
     /// `(class suffix, cursor)`. Placement itself lives in the stylesheet — edges
     /// are thin bars, corners are squares, all positioned against the frame box's
     /// own edges, so nothing here needs measuring.
-    fn spec(self) -> (&'static str, &'static str) {
+    pub(crate) fn spec(self) -> (&'static str, &'static str) {
         match self {
             Grip::N => ("n", "n-resize"),
             Grip::S => ("s", "s-resize"),
@@ -325,7 +325,7 @@ impl Grip {
     /// *outside* the top edge rather than the frame's interior: dragging the
     /// inside is what every other crop tool uses to move a frame, and it is the
     /// one thing this frame cannot borrow, because the inside is where you paint.
-    const ALL: [Grip; 9] = [
+    pub(crate) const ALL: [Grip; 9] = [
         Grip::N,
         Grip::S,
         Grip::E,
@@ -340,7 +340,7 @@ impl Grip {
     /// Apply a canvas-space pointer delta to the rect this grip was pressed on.
     /// Edges move one side, corners two, `Move` translates. The rect is normalized
     /// afterwards, so dragging a side past its opposite flips rather than inverts.
-    fn apply(self, (min, max): (Vec2, Vec2), d: Vec2) -> (Vec2, Vec2) {
+    pub(crate) fn apply(self, (min, max): (Vec2, Vec2), d: Vec2) -> (Vec2, Vec2) {
         let (mut lo, mut hi) = (min, max);
         let (north, south) = (
             matches!(self, Grip::N | Grip::Nw | Grip::Ne),
@@ -477,7 +477,7 @@ pub fn FrameOverlay() -> Element {
 /// Pointer position in page coordinates. The handles are absolutely positioned and
 /// move *with* the drag, so their element-local coordinates shift under the pointer
 /// as it drags — page coordinates are the only frame that stays still.
-fn page_xy(e: &Event<PointerData>) -> Vec2 {
+pub(crate) fn page_xy(e: &Event<PointerData>) -> Vec2 {
     let p = e.page_coordinates();
     Vec2::new(p.x as f32, p.y as f32)
 }

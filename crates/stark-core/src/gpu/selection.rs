@@ -76,6 +76,8 @@ pub struct SelectionRenderer {
 struct RasterShape<'a> {
     /// Coverage outside the rasterized tiles (DESIGN.md §6.8).
     outside: bool,
+    /// The result's analytic hull, as the plan computed it ([`Selection::hull`]).
+    hull: Option<(Vec2, Vec2)>,
     b: [f32; 4],
     c: [f32; 4],
     feather: f32,
@@ -277,6 +279,7 @@ impl SelectionRenderer {
             &plan.rasterize,
             RasterShape {
                 outside: plan.outside,
+                hull: plan.hull,
                 b,
                 c,
                 feather: op.feather,
@@ -298,6 +301,7 @@ impl SelectionRenderer {
             &plan.rasterize,
             RasterShape {
                 outside: plan.outside,
+                hull: plan.hull,
                 b: [0.0; 4],
                 c: [0.0, MODE_INVERT, 0.0, 0.0],
                 feather: 0.0,
@@ -431,13 +435,14 @@ impl SelectionRenderer {
     ) -> Selection {
         let RasterShape {
             outside,
+            hull,
             b,
             c,
             feather,
             edges,
         } = shape;
         if coords.is_empty() {
-            return Selection::from_parts(base, outside);
+            return Selection::from_parts(base, outside, hull);
         }
         let device = &self.ctx.device;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -500,7 +505,7 @@ impl SelectionRenderer {
             tiles = tiles.insert(*coord, dst);
         }
         self.ctx.queue.submit([encoder.finish()]);
-        Selection::from_parts(tiles, outside)
+        Selection::from_parts(tiles, outside, hull)
     }
 
     /// Upload the lasso's edge list as an `N×1` texture (see `selection.wesl`).

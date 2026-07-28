@@ -267,7 +267,8 @@
    only while a selection is in force. Bottom-centre keeps it clear of the left rail
    and the right-hand panel stack, and near the canvas it describes. It is only as
    wide as its contents, so it never blocks a drag it isn't over. */
-.selection-bar {
+.selection-bar,
+.transform-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -289,6 +290,7 @@
 /* Chips stretch to fill a panel row; in a bar they size to their own text. */
 .selection-bar .chip,
 .frame-bar .chip,
+.transform-bar .chip,
 .pick-bar .chip {
   flex: none;
   padding: 4px 12px;
@@ -792,6 +794,28 @@
   margin-left: -18px;
   border-radius: 6px;
   background: #ffffffd9;
+}
+
+/* Transform mode (TRANSFORM_DESIGN.md §6). The catcher soaks up every pointer
+   event while the selected paint is being composed, so a stray drag beside the
+   box cannot start a stroke — in this mode the pointer composes, not paints. */
+.transform-catcher {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+}
+
+/* The transform box reuses the frame's grips (same geometry, same styles). Two
+   deliberate differences from `.frame-overlay`: the edge is dashed, so a held,
+   movable region reads differently from a frame's fixed rectangle; and pointer
+   events stay ON, because the interior is itself the move gesture. */
+.transform-overlay {
+  position: absolute;
+  z-index: 10;
+  outline: 1px dashed #ffffffbf;
+  outline-offset: 0;
+  box-shadow: 0 0 0 1px #00000059;
+  cursor: move;
 }
 
 /* Bottom-centre stack. Both bars are mounted only while the thing they act on

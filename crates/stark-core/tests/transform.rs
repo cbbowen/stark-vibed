@@ -411,6 +411,55 @@ fn save_load_reproduces_a_transform() {
     assert_identical(&before, &after, "save/load of a transform");
 }
 
+/// The preview is the commit, before the commit: `ViewCommand::PreviewTransform`
+/// runs the same renderer over the same committed tiles as `DocCommand::Transform`,
+/// so the previewed frame and the committed frame must be identical — the §1.3
+/// live == committed invariant, extended to the transform gesture
+/// (TRANSFORM_DESIGN.md §6).
+#[test]
+fn preview_matches_the_commit() {
+    use stark_core::command::ViewCommand;
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    blob(&mut engine, Vec2::new(-40.0, -10.0));
+    select_rect(&mut engine, Vec2::new(-80.0, -50.0), Vec2::new(0.0, 30.0), 8.0);
+    let layer = engine.observe().active_layer;
+    let affine = Affine2::from_translation(Vec2::new(57.0, 23.0));
+
+    engine.process(ViewCommand::PreviewTransform(Some((layer, affine))));
+    let previewed = engine.render_to_image();
+    engine.process(ViewCommand::PreviewTransform(None));
+    engine.process(DocCommand::Transform { layer, affine });
+    let committed = engine.render_to_image();
+    assert_identical(&previewed, &committed, "transform preview vs commit");
+}
+
+/// The selection hull tracks the ops that build the mask and the transforms that
+/// move it — it is what the transform chrome hangs its handles on.
+#[test]
+fn selection_hull_follows_ops_and_transforms() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    assert_eq!(
+        engine.observe().selection_hull,
+        None,
+        "the unrestricted selection has no hull"
+    );
+    select_rect(&mut engine, Vec2::new(-60.0, -40.0), Vec2::new(-20.0, 40.0), 0.0);
+    let (lo, hi) = engine.observe().selection_hull.expect("a rect has a hull");
+    assert!(lo.x <= -60.0 && hi.x >= -20.0 && lo.y <= -40.0 && hi.y >= 40.0);
+    assert!(lo.x > -70.0, "hull should be near the shape, got {lo:?}");
+
+    transform(&mut engine, Affine2::from_translation(Vec2::new(80.0, 0.0)));
+    let (lo2, hi2) = engine.observe().selection_hull.expect("hull survives");
+    assert!(
+        (lo2.x - (lo.x + 80.0)).abs() < 1e-3 && (hi2.x - (hi.x + 80.0)).abs() < 1e-3,
+        "hull should translate with the selection: {lo:?}..{hi:?} -> {lo2:?}..{hi2:?}"
+    );
+}
+
 /// The one golden: genuinely resampled output — a rotation about the blob's
 /// centre — pinning the bilinear quality, the seam-free tiling of the quads, and
 /// the carried mask's outline (DESIGN.md §9).

@@ -125,11 +125,21 @@ pub fn SelectionBar() -> Element {
     // The committed selection, not the in-flight preview — so the bar does not flicker
     // in and out under a drag that has not been released yet.
     let active = state.obs.read().as_ref().is_some_and(|o| o.has_selection);
+    // While a transform gesture is composing, its bar stands in for this one: the
+    // whole-selection commands would fight the gesture (deselecting mid-transform
+    // would move the wrong region on "Done").
+    let transforming = state.transform.read().is_some();
 
     rsx! {
-        if active {
+        if active && !transforming {
             div { class: chrome_class(state, "selection-bar"),
                 span { class: "bar-label", "Selection" }
+                button {
+                    class: "chip",
+                    title: "Move, scale or flip the selected paint (TRANSFORM_DESIGN.md)",
+                    onclick: move |_| crate::panels::transform::begin_transform(state),
+                    "Transform"
+                }
                 button {
                     class: "chip",
                     title: "Deselect (Ctrl+D)",

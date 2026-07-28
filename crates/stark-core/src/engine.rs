@@ -201,6 +201,12 @@ pub struct ObservableState {
     /// Whether a selection is masking the canvas (DESIGN.md §6.8) — drives the
     /// "Deselect"/"Invert" affordances and the selection indicator.
     pub has_selection: bool,
+    /// A conservative canvas-space bounding box of this client's selected
+    /// coverage, or `None` when the selection is unbounded or unknown
+    /// ([`Selection::hull`](crate::document::Selection::hull)). What the
+    /// transform chrome hangs its handles on; committed-only, like
+    /// `has_selection`.
+    pub selection_hull: Option<(crate::geom::Vec2, crate::geom::Vec2)>,
     /// How the next selection gesture will combine with the current selection.
     pub selection_mode: SelectionMode,
     /// Edge softness (canvas px) the next selection gesture will apply.
@@ -570,6 +576,9 @@ impl Engine {
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
             DocCommand::Transform { layer, affine } => {
+                // The commit supersedes whatever the gesture was previewing, for
+                // the same reason `SetMatteRect` drops its preview.
+                self.doc_preview = None;
                 // A degenerate or non-finite affine would be rejected by `apply`
                 // anyway (deterministically — TRANSFORM_DESIGN.md §1); refusing it
                 // here as well keeps a knowably-dead action out of the log.
@@ -677,6 +686,10 @@ impl Engine {
             }
             ViewCommand::PreviewBackground(rgb) => {
                 let preview = rgb.map(|rgb| self.timeline.current().with_background(rgb));
+                self.set_doc_preview(preview);
+            }
+            ViewCommand::PreviewTransform(t) => {
+                let preview = t.and_then(|(layer, affine)| self.preview_transform(layer, affine));
                 self.set_doc_preview(preview);
             }
             ViewCommand::SetMediaParams(params) => self.compositor.set_media(params),
@@ -1232,6 +1245,7 @@ impl Engine {
             active_layer: self.session.active_layer,
             layers,
             has_selection: doc.has_selection(self.actor),
+            selection_hull: doc.selection_of(self.actor).hull(),
             selection_mode: self.session.selection_mode,
             selection_feather: self.session.selection_feather,
             show_peer_selections: self.session.show_peer_selections,
@@ -1730,6 +1744,28 @@ impl Engine {
 
     /// Install (or, with `None`, drop) the stand-in document for an unlogged edit
     /// in flight — the shared tail of every `Preview*` command.
+    /// The document as a `Transform { layer, affine }` commit would leave it,
+    /// built through the **same renderer** the commit uses — which is what makes
+    /// the preview lossless and exact: what is shown is what "Done" will produce
+    /// (TRANSFORM_DESIGN.md §6). `None` when the layer cannot be transformed (a
+    /// matte, absent) or the transform is rejected — the preview then simply
+    /// shows the committed document, matching the commit's refusal.
+    fn preview_transform(&self, layer: LayerId, affine: crate::geom::Affine2) -> Option<DocState> {
+        let doc = self.timeline.current();
+        let idx = doc.layer_index(layer)?;
+        let base = doc.layer_at(idx).tiles()?;
+        let selection = doc.selection_of(self.actor);
+        let (tiles, moved) =
+            self.apply
+                .transform
+                .apply(&self.apply.pool, base, &selection, affine)?;
+        let layer = doc.layer_at(idx).with_tiles(tiles);
+        Some(
+            doc.with_layer_at(idx, layer)
+                .with_selection(self.actor, moved),
+        )
+    }
+
     fn set_doc_preview(&mut self, preview: Option<DocState>) {
         self.doc_preview = preview;
         // The gesture previews are composited onto this, so moving it invalidates

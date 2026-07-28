@@ -61,15 +61,17 @@ Move / scale / rotate / flip / free-transform of a selection or a layer, plus
 cut / copy / paste. Every competitor treats transform as co-equal with the
 brush.
 
-The engine half is **done** — see [TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md):
+The engine is **done** — see [TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md):
 `ActionKind::Transform { layer, affine }` cuts the author's selected paint by
 the lift law, resamples it once under the affine (forward-rasterized source-tile
 quads, exact at texel centres), stacks it back by the dynamics parcel law, and
 carries the selection mask with it. Identity, integer translations and flips are
 byte-exact by test; rejection (degenerate or oversized) is deterministic, so
-replay and peers agree. What remains is the **interactive gesture** — handles,
-snapping, a live preview through the same renderer so preview == committed —
-and the cut/copy/paste clipboard, which reuses the parcel machinery.
+replay and peers agree. A **first gesture UI is built too** (TRANSFORM_DESIGN
+§6): the selection bar's Transform button mounts drag handles and a flips/Done
+bar, previewing losslessly through the same renderer and committing once.
+Remaining: rotation/skew chrome, snapping, and the cut/copy/paste clipboard,
+which reuses the parcel machinery.
 
 ### 0.4 Fill, gradient, and blend modes
 

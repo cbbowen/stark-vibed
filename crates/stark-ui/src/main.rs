@@ -43,7 +43,7 @@ use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_mode, current_tool, modifier_mode};
-use panels::{FrameBar, FrameOverlay, PickBar, SelectionBar};
+use panels::{FrameBar, FrameOverlay, PickBar, SelectionBar, TransformBar, TransformOverlay};
 use platform::capture_pointer;
 use render::CANVAS_ID;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
@@ -153,6 +153,11 @@ fn app() -> Element {
             // painting inside the frame is unaffected.
             FrameOverlay {}
 
+            // The transform gesture's box and handles, over the canvas while the
+            // selected paint is being composed (TRANSFORM_DESIGN.md §6). Its
+            // catcher blocks canvas painting for the mode's duration.
+            TransformOverlay {}
+
             // Collaborators' pointers, over the canvas and under the chrome
             // (PEER_DESIGN.md §4). Empty and free when solo.
             PeerCursors {}
@@ -170,6 +175,9 @@ fn app() -> Element {
                 // The whole-selection commands, present only while there is a
                 // selection — so it doubles as the "canvas is masked" indicator.
                 SelectionBar {}
+                // The transform gesture's flips and "Done", standing in for the
+                // selection bar while one is composing (TRANSFORM_DESIGN.md §6).
+                TransformBar {}
                 // The frame's composition controls, present only while a frame is
                 // selected for composing (FRAME_DESIGN.md §7).
                 FrameBar {}

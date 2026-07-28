@@ -223,6 +223,18 @@ pub enum ViewCommand {
     /// so a drag costs one undo step rather than one per pointer move.
     PreviewMatteRect(Option<(LayerId, Vec2, Vec2)>),
 
+    /// Show the document as a [`DocCommand::Transform`] would leave it, **without
+    /// logging it** — the in-flight half of the transform gesture
+    /// (TRANSFORM_DESIGN.md §6). `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewMatteRect`](Self::PreviewMatteRect): the drag
+    /// builds in view state and the frontend commits one `Transform` on "Done".
+    /// The preview runs the *same renderer* as the commit over the committed
+    /// tiles, so what is shown is what committing would produce — and because
+    /// each preview resamples from the committed tiles under the accumulated
+    /// affine, a long drag never compounds resampling loss.
+    PreviewTransform(Option<(LayerId, Affine2)>),
+
     /// Show a substrate colour **without logging it** — the in-flight half of a
     /// canvas-colour drag (FRAME_DESIGN.md §5). `None` drops the preview.
     ///

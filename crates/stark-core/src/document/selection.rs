@@ -187,6 +187,14 @@ pub struct Selection {
     /// fully out: every combine rule maps `{0,1}²` into `{0,1}`, and the only shape
     /// with non-zero coverage at infinity is `All`.
     outside: bool,
+    /// A conservative analytic bounding box of the selected coverage, in canvas px
+    /// — `None` when the selection is unbounded (`outside`) or its extent is not
+    /// analytically known. Carried through the op algebra so the transform chrome
+    /// has a rect to hang its handles on (TRANSFORM_DESIGN.md); nothing about the
+    /// mask itself depends on it. Conservative means coverage ⊆ hull, never that
+    /// the hull is tight: `Subtract` keeps the previous hull, `Intersect`
+    /// intersects boxes.
+    hull: Option<(Vec2, Vec2)>,
 }
 
 impl Default for Selection {
@@ -202,7 +210,15 @@ impl Selection {
         Self {
             tiles: HashTrieMap::new(),
             outside: true,
+            hull: None,
         }
+    }
+
+    /// A conservative canvas-space bounding box of the selected coverage, or
+    /// `None` when the selection is unbounded or its extent is unknown — see the
+    /// field docs. Chrome-facing: the transform handles anchor to it.
+    pub fn hull(&self) -> Option<(Vec2, Vec2)> {
+        self.hull
     }
 
     /// Whether nothing is masked, so tools act everywhere. Callers use this to skip
@@ -242,8 +258,19 @@ impl Selection {
         &self.tiles
     }
 
-    pub(crate) fn from_parts(tiles: HashTrieMap<TileCoord, MaskHandle>, outside: bool) -> Self {
-        Self { tiles, outside }
+    pub(crate) fn from_parts(
+        tiles: HashTrieMap<TileCoord, MaskHandle>,
+        outside: bool,
+        hull: Option<(Vec2, Vec2)>,
+    ) -> Self {
+        // The hull's meaning is "coverage ⊆ hull"; an unbounded selection has no
+        // such box, whatever a caller computed.
+        let hull = if outside { None } else { hull };
+        Self {
+            tiles,
+            outside,
+            hull,
+        }
     }
 
     /// Plan the effect of `op` on this selection: which tiles have to be rasterized,
@@ -266,6 +293,7 @@ impl Selection {
                         keep_prev: false,
                         rasterize: Vec::new(),
                         outside,
+                        hull: None,
                     }
                 }
                 // `p · 1 = p`: the selection is unchanged.
@@ -273,11 +301,28 @@ impl Selection {
                     keep_prev: true,
                     rasterize: Vec::new(),
                     outside,
+                    hull: self.hull,
                 },
             });
         }
 
         let (lo, hi) = op.shape.bounds()?;
+        // The hull under the soft-set algebra — conservative, per the field docs.
+        // The op's coverage reaches half its (floored) feather ramp past the shape
+        // boundary, so the box is padded to keep coverage ⊆ hull literal.
+        let pad = Vec2::splat(op.feather.max(1.0) * 0.5);
+        let (slo, shi) = (lo - pad, hi + pad);
+        let hull = match op.mode {
+            SelectionMode::Replace => Some((slo, shi)),
+            // An unbounded previous hull stays unbounded under union.
+            SelectionMode::Union => self.hull.map(|(a, b)| (a.min(slo), b.max(shi))),
+            // Subtracting can only shrink coverage: the old box still contains it.
+            SelectionMode::Subtract => self.hull,
+            SelectionMode::Intersect => match self.hull {
+                None => Some((slo, shi)),
+                Some((a, b)) => Some((a.max(slo), b.min(shi))),
+            },
+        };
         // Pad by the feather ramp (plus the pixel of antialiasing that is always
         // there), then by a whole tile: the extra ring gives the mask a margin of
         // constant coverage, which is what lets the outline pass find the boundary by
@@ -303,15 +348,39 @@ impl Selection {
             keep_prev,
             rasterize,
             outside,
+            hull,
         })
     }
 
-    /// Plan an inversion: every existing tile flips, and so does `outside`.
+    /// Plan an inversion: every existing tile flips, and so does `outside`. The
+    /// hull of a newly-bounded result (inverting an unbounded selection with
+    /// holes) is not analytically known, so it falls back to the flipped tiles'
+    /// own extent — coarse, but still a box the coverage lives inside.
     pub(crate) fn plan_invert(&self) -> SelectionPlan {
+        let rasterize: Vec<TileCoord> = self.tiles.keys().copied().collect();
+        let outside = !self.outside;
+        let hull = (!outside)
+            .then(|| {
+                let mut it = rasterize.iter();
+                let first = *it.next()?;
+                let (lo, hi) = it.fold((first, first), |(lo, hi), c| {
+                    (
+                        TileCoord::new(lo.x.min(c.x), lo.y.min(c.y)),
+                        TileCoord::new(hi.x.max(c.x), hi.y.max(c.y)),
+                    )
+                });
+                let apron = Vec2::splat(TILE_APRON as f32);
+                Some((
+                    lo.origin() - apron,
+                    hi.origin() + Vec2::splat(TILE_SIZE as f32) + apron,
+                ))
+            })
+            .flatten();
         SelectionPlan {
             keep_prev: false,
-            rasterize: self.tiles.keys().copied().collect(),
-            outside: !self.outside,
+            rasterize,
+            outside,
+            hull,
         }
     }
 }
@@ -323,6 +392,8 @@ pub(crate) struct SelectionPlan {
     /// Tiles to rasterize afresh.
     pub rasterize: Vec<TileCoord>,
     pub outside: bool,
+    /// The result's analytic hull — see [`Selection::hull`].
+    pub hull: Option<(Vec2, Vec2)>,
 }
 
 /// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
