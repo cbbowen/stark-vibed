@@ -411,9 +411,7 @@ impl Peers {
             // carries nothing a newer one has not already said. Ordered on
             // `(boot, seq)`, because `seq` alone cannot tell a client that restarted
             // from one whose frames arrived late.
-            Some(peer) if (frame.boot, frame.seq) <= (peer.boot, peer.seq) => {
-                PresenceChange::NONE
-            }
+            Some(peer) if (frame.boot, frame.seq) <= (peer.boot, peer.seq) => PresenceChange::NONE,
             Some(peer) if frame.boot > peer.boot => {
                 // A new run of a client we already know — it reloaded. Its `seq` and
                 // its gesture ordinals both restart at zero, so nothing from the
@@ -622,7 +620,13 @@ mod tests {
         old.boot = 3;
         assert!(peers.merge(a, old, 0.0).roster);
         assert_eq!(
-            peers.get(a).expect("peer").live_stroke().expect("live").path.len(),
+            peers
+                .get(a)
+                .expect("peer")
+                .live_stroke()
+                .expect("live")
+                .path
+                .len(),
             4
         );
 
@@ -632,7 +636,13 @@ mod tests {
         fresh.boot = 4;
         assert!(peers.merge(a, fresh, 0.1).canvas, "a new run must be heard");
         assert_eq!(
-            peers.get(a).expect("peer").live_stroke().expect("live").path.len(),
+            peers
+                .get(a)
+                .expect("peer")
+                .live_stroke()
+                .expect("live")
+                .path
+                .len(),
             2,
             "and must not inherit the previous run's path, ordinal collision or not"
         );
@@ -658,7 +668,10 @@ mod tests {
         let change = peers.merge(a, moved, 0.1);
         assert!(change.roster, "the roster projection is stale");
         assert!(!change.canvas, "a cursor is not painted into the document");
-        assert_eq!(peers.get(a).expect("peer").cursor, Some(Vec2::new(4.0, 9.0)));
+        assert_eq!(
+            peers.get(a).expect("peer").cursor,
+            Some(Vec2::new(4.0, 9.0))
+        );
 
         // A layer selection is likewise a fact about the peer, not about the picture.
         let mut relayered = frame(3, None);
@@ -794,7 +807,10 @@ mod tests {
             ),
             0.1,
         );
-        assert!(!change.canvas, "nothing drawn changed, so nothing to repaint");
+        assert!(
+            !change.canvas,
+            "nothing drawn changed, so nothing to repaint"
+        );
         assert_eq!(
             peers
                 .get(a)

@@ -78,10 +78,21 @@ pub struct DocState {
     pub background: [f32; 3],
 }
 
-/// The default substrate: a neutral near-white paper. Neutral on purpose — the
-/// studio HDR lights the scene warm, and a warm paper on top of that reads
-/// noticeably red.
-pub const DEFAULT_BACKGROUND: [f32; 3] = [0.97, 0.97, 0.97];
+/// The default substrate: a light neutral grey ground. Neutral on purpose — an HDR
+/// lights the scene warm, and a warm ground on top of that reads noticeably red.
+/// Grey rather than near-white so paint has somewhere to go in *both* directions:
+/// a highlight can read lighter than the bare canvas.
+pub const DEFAULT_BACKGROUND: [f32; 3] = [0.85, 0.85, 0.85];
+
+/// The canvas a new document starts on (DESIGN.md §6.4): linen, not `Flat`. The
+/// weave is what paint has to sit in — its relief is read by the stroke pass
+/// whether or not `MediaParams::surface_strength` makes the light show it — so it
+/// is the honest starting substrate, and `Flat` is the deliberate switch away.
+///
+/// Distinct from `SurfaceId::default()`, which stays `Flat`: that is the *builtin*
+/// the surface registry falls back to before any bytes arrive (the frontend fetches
+/// the linen height map at runtime — DESIGN.md §6.6).
+pub const DEFAULT_SURFACE: SurfaceId = SurfaceId::Linen;
 
 impl DocState {
     /// An empty document with a single starting layer and nothing masked.
@@ -90,7 +101,7 @@ impl DocState {
             layers: Vector::new().push_back(Layer::new(id)),
             bounds: CanvasBounds::default(),
             selections: HashTrieMap::new(),
-            surface: SurfaceId::default(),
+            surface: DEFAULT_SURFACE,
             background: DEFAULT_BACKGROUND,
         }
     }

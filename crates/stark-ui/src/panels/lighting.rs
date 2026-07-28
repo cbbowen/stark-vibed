@@ -30,14 +30,17 @@ pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
     (EnvironmentId::Ferndale, "Ferndale studio"),
 ];
 
-/// What the app lights the canvas with on startup. An HDR, because that is the look
-/// the media pass exists for; `Neutral` is a deliberate switch away from it, not the
-/// state you land in. The engine still boots on `Neutral` — this is applied once the
-/// bytes arrive (see the startup hook in `main.rs`).
-pub const DEFAULT_ENVIRONMENT: EnvironmentId = EnvironmentId::Ferndale;
+/// What the app lights the canvas with on startup: the achromatic reference light,
+/// which is also what the engine boots on. Paint reads as its own colour under it —
+/// at `Neutral`'s exposure of 1.0 the media pass is an identity (DESIGN.md §6.3) — so
+/// what you mix is what you see, and the studio HDR is the deliberate switch into a
+/// room. Kept a named constant because the startup hook in `main.rs` fetches its
+/// bytes if it has any; `Neutral` is procedural, so today that fetch is skipped.
+pub const DEFAULT_ENVIRONMENT: EnvironmentId = EnvironmentId::Neutral;
 
 /// Lighting controls for the image-based-lighting media pass (DESIGN.md §6.3).
-/// The canvas is lit by the studio HDR environment; these tune how it reads.
+/// The canvas is lit by the chosen environment; these tune how it reads. Exposure is
+/// not among them — it rides with the environment, so picking a light picks it.
 #[component]
 pub fn LightingPanel() -> Element {
     let state = use_context::<AppState>();
@@ -64,11 +67,9 @@ pub fn LightingPanel() -> Element {
         c[2] * 100.0
     );
     rsx! {
-        Slider { label: "Exposure", min: 0.1, max: 2.0, value: p.exposure,
-            oninput: move |v| update_media(state, move |m| m.exposure = v) }
-        Slider { label: "Relief", min: 0.0, max: 0.6, value: p.height_strength,
+        Slider { label: "Impasto", min: 0.0, max: 1.0, value: p.height_strength,
             oninput: move |v| update_media(state, move |m| m.height_strength = v) }
-        Slider { label: "Weave", min: 0.0, max: 1.5, value: p.surface_strength,
+        Slider { label: "Texture", min: 0.0, max: 1.0, value: p.surface_strength,
             oninput: move |v| update_media(state, move |m| m.surface_strength = v) }
         Slider { label: "Wet gloss", min: 0.0, max: 0.35, value: p.specular,
             oninput: move |v| update_media(state, move |m| m.specular = v) }

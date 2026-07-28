@@ -44,7 +44,7 @@ use panels::{FrameBar, FrameOverlay, SelectionBar};
 use platform::capture_pointer;
 use render::CANVAS_ID;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
-use stark_core::document::{SelectionMode, SelectionOp};
+use stark_core::document::{DEFAULT_SURFACE, SelectionMode, SelectionOp};
 use stark_core::geom::Vec2;
 use stark_core::{ColorSpaceId, SurfaceId};
 use state::{AppState, dispatch, dispatch_quiet, resize};
@@ -92,9 +92,20 @@ fn app() -> Element {
             if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(BRISTLE_BRUSH).await {
                 r.load_bristle(&bytes);
             }
+            // Fetch the default canvas surface's height map (DESIGN.md §6.4, §6.6).
+            // The document already starts on it, so registering the bytes is all it
+            // takes for the engine to swap the flat stand-in for the real weave —
+            // no `SetSurface` action, which would put a bogus first step in the undo
+            // history of every fresh document.
+            if let Some(asset) = surface_asset(DEFAULT_SURFACE)
+                && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
+            {
+                r.register_surface(DEFAULT_SURFACE, bytes);
+            }
             // Fetch the default environment's HDR and light the canvas with it
             // (DESIGN.md §6.3); until it arrives the procedural neutral one is used,
-            // and the Lighting panel can switch back to it at any time.
+            // and the Lighting panel can switch back to it at any time. A no-op while
+            // the default *is* the procedural one, which has no bytes to fetch.
             if let Some(asset) = environment_asset(DEFAULT_ENVIRONMENT)
                 && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
             {

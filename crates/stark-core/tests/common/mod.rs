@@ -26,16 +26,16 @@ pub const BG: wgpu::Color = wgpu::Color {
     b: 1.0,
     a: 1.0,
 };
-/// A neutral near-white paper substrate, for color spaces that composite over a light
-/// ground. Matches the app's default (`stark-ui` `render::BG`). Neutral on purpose: a
-/// warm paper rendered so red-dominant it defeated channel-dominance checks like
-/// `is_red` (tests asserting "is paint here?" were vacuously true on bare paper). The
-/// headless engine lights with the achromatic `Neutral` environment, so nothing else
-/// in the pipeline pushes these toward a hue.
+/// A light neutral grey substrate, for color spaces that composite over a light
+/// ground. Matches the engine's `DEFAULT_BACKGROUND`. Neutral on purpose: a warm
+/// paper rendered so red-dominant it defeated channel-dominance checks like `is_red`
+/// (tests asserting "is paint here?" were vacuously true on bare paper). The headless
+/// engine lights with the achromatic `Neutral` environment, so nothing else in the
+/// pipeline pushes these toward a hue.
 pub const PAPER: wgpu::Color = wgpu::Color {
-    r: 0.97,
-    g: 0.97,
-    b: 0.97,
+    r: 0.85,
+    g: 0.85,
+    b: 0.85,
     a: 1.0,
 };
 
@@ -133,9 +133,11 @@ pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine_with(TARGET, SIZE, id)))
 }
 
-/// Light the test engine with the real studio HDR (the frontend's default), so
-/// goldens exercise the same image-based lighting the app uses rather than the
-/// procedural fallback (DESIGN.md §6.3).
+/// Light the test engine with the real studio HDR, so goldens exercise image-based
+/// lighting from an actual decoded environment rather than the procedural one
+/// (DESIGN.md §6.3). Not the app's startup default — that is the achromatic
+/// `Neutral` — but the more demanding of the two paths, and one switch away in the
+/// Lighting panel; [`engine_or_skip_neutral`] covers the reference light.
 fn with_studio_env(mut engine: Engine) -> Engine {
     let hdr = stark_testdata::assets::studio_hdr();
     engine.register_environment(stark_core::EnvironmentId::Ferndale, hdr);

@@ -192,8 +192,8 @@ fn hard_round_brush_params() -> BrushParams {
         },
         color_dynamics: ColorDynamics {
             noise: NoiseKind::Simplex,
-            frequency: [1.0, 4.0],
-            amplitude: [0.0, 0.05, 0.1],
+            frequency: [0.05, 0.1],
+            amplitude: [0.0, 0.0125, 0.025],
         },
         ..BrushParams::default()
     }

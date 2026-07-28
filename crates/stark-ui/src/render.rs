@@ -145,7 +145,8 @@ impl Renderer {
         self.engine.process(ViewCommand::SetEnvironment(id));
     }
 
-    /// Tune the media/lighting parameters (exposure, gloss, relief — §6.3).
+    /// Tune the media/lighting parameters (relief, gloss, weave — §6.3). Not exposure:
+    /// that belongs to the chosen environment (`EnvironmentId::exposure`).
     pub fn set_media_params(&mut self, params: MediaParams) {
         self.engine.process(ViewCommand::SetMediaParams(params));
     }

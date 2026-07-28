@@ -119,11 +119,6 @@ struct MediaUniform {
 pub struct MediaParams {
     /// Relief slope: how strongly the height field tilts normals (impasto/weave).
     pub height_strength: f32,
-    /// Overall exposure applied to the lit result before the sRGB encode. `1.0` is the
-    /// reference point — a flat patch of paint comes back its own colour (DESIGN.md
-    /// §6.3) — so the default sits below it to leave the environment's highlights
-    /// somewhere to go.
-    pub exposure: f32,
     /// Wet glossiness in `[0,1]`: how smooth (low-roughness) fully-wet paint becomes,
     /// driving the Cook–Torrance specular. 0 = stays matte even when wet; 1 = near
     /// mirror-smooth. Dry paint and bare canvas are always rough → matte.
@@ -136,15 +131,11 @@ impl Default for MediaParams {
     fn default() -> Self {
         Self {
             height_strength: 0.15,
-            // Retuned with the tonemap. 0.8 was calibrated against a curve that
-            // compressed everything above 0.76, so it could be pushed hot and let the
-            // shoulder catch what overflowed. The reference curve catches nothing
-            // below 1.0, so the same 0.8 drove saturated paint under a warm HDR
-            // straight into the clip. 0.65 lands bare canvas at the brightness 0.8
-            // used to, with the headroom back.
-            exposure: 0.65,
             specular: 0.20,
-            surface_strength: 0.6,
+            // The weave is off until asked for: the default canvas is linen, and its
+            // relief is there to be *painted into* (§6.2) whether or not the light is
+            // made to show it. Raising this embosses it into the lit result.
+            surface_strength: 0.0,
         }
     }
 }
@@ -682,10 +673,11 @@ impl Compositor {
         // its own mip from roughness, spanning the whole chain (roughness 0 → mip 0
         // sharp; roughness 1 → the diffuse level, the hemispherical average).
         let diffuse_lod = self.environment.diffuse_lod as f32;
-        // Normalize by the irradiance a *flat* canvas receives, so `exposure = 1` means
-        // the same thing in every environment: an unrelieved patch of paint comes back
-        // out its own colour (DESIGN.md §6.3).
-        let exposure = self.media.exposure / self.environment.flat_irradiance;
+        // Exposure belongs to the light, not to a knob beside it: each environment is
+        // shown at the value it was judged at (DESIGN.md §6.3). Normalized by the
+        // irradiance a *flat* canvas receives, so `1.0` means the same thing in every
+        // environment — an unrelieved patch of paint comes back out its own colour.
+        let exposure = self.environment.exposure / self.environment.flat_irradiance;
 
         // Media uniform.
         self.ctx.queue.write_buffer(

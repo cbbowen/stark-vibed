@@ -29,6 +29,33 @@ pub enum EnvironmentId {
     Ferndale,
 }
 
+impl EnvironmentId {
+    /// The exposure this light is used at (DESIGN.md §6.3).
+    ///
+    /// A property of the environment rather than a knob beside it, because there is
+    /// no single value that suits every light. Exposure is already normalized by
+    /// [`Environment::flat_irradiance`], so `1.0` means "a flat patch of paint comes
+    /// back its own colour" in *any* environment — but that is a statement about the
+    /// diffuse response, not about the peaks. A room with bright windows in it puts
+    /// saturated paint over 1.0 and into the clip long before a smooth grey dome
+    /// does, and what buys the headroom back is exposure. So each light carries the
+    /// value it was judged at, and switching lights carries it along.
+    pub fn exposure(self) -> f32 {
+        match self {
+            // The reference point: `Neutral` exists to be an identity, and any value
+            // but 1.0 would make it a look. `tests/reference.rs` pins this.
+            EnvironmentId::Neutral => 1.0,
+            // Retuned with the tonemap. 0.8 was calibrated against a curve that
+            // compressed everything above 0.76, so it could be pushed hot and let the
+            // shoulder catch what overflowed. The reference curve catches nothing
+            // below 1.0, so the same 0.8 drove saturated paint under this warm HDR
+            // straight into the clip. 0.65 lands bare canvas at the brightness 0.8
+            // used to, with the headroom back.
+            EnvironmentId::Ferndale => 0.65,
+        }
+    }
+}
+
 /// Decode a Radiance RGBE (`#?RADIANCE`, `FORMAT=32-bit_rle_rgbe`) file into a
 /// linear-RGB equirectangular image (row-major, top row first). Returns
 /// `(pixels, width, height)`.
@@ -200,6 +227,11 @@ pub struct Environment {
     /// front-facing canvas ever sees, leaving a flat patch ~13% dark under the
     /// procedural environment.
     pub flat_irradiance: f32,
+    /// The exposure these pixels are shown at — [`EnvironmentId::exposure`] of
+    /// whichever id actually produced them. Carried on the built environment rather
+    /// than looked up from the id in use, so the procedural stand-in for an HDR whose
+    /// bytes have not arrived is lit at *its* exposure, not at the missing HDR's.
+    pub exposure: f32,
 }
 
 impl Environment {
@@ -209,18 +241,18 @@ impl Environment {
     /// is what makes it usable as a colour reference next to [`Self::load`]ed HDRs.
     pub fn neutral(ctx: &GpuContext) -> Self {
         let (px, w, h) = neutral_equirect();
-        Self::from_equirect(ctx, &px, w, h)
+        Self::from_equirect(ctx, &px, w, h, EnvironmentId::Neutral.exposure())
     }
 
-    /// Decode a Radiance HDR and prefilter it for lighting.
-    pub fn load(ctx: &GpuContext, hdr_bytes: &[u8]) -> Self {
+    /// Decode a Radiance HDR and prefilter it for lighting, to be shown at `exposure`.
+    pub fn load(ctx: &GpuContext, hdr_bytes: &[u8], exposure: f32) -> Self {
         let (px, w, h) = decode_hdr(hdr_bytes).expect("environment: decode HDR");
-        Self::from_equirect(ctx, &px, w, h)
+        Self::from_equirect(ctx, &px, w, h, exposure)
     }
 
     /// Upload a linear-RGB equirect image as a mipped `Rgba16Float` texture, the
     /// mip chain box-downsampled on the CPU (it is built once per environment).
-    fn from_equirect(ctx: &GpuContext, base: &[[f32; 3]], w: u32, h: u32) -> Self {
+    fn from_equirect(ctx: &GpuContext, base: &[[f32; 3]], w: u32, h: u32, exposure: f32) -> Self {
         let mip_count = 32 - (w.max(h)).leading_zeros(); // floor(log2(max))+1
         let diffuse_lod = diffuse_lod(mip_count);
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
@@ -273,6 +305,7 @@ impl Environment {
             mip_count,
             diffuse_lod,
             flat_irradiance,
+            exposure,
         }
     }
 }
@@ -450,9 +483,11 @@ impl crate::gpu::registry::Resource for EnvironmentId {
         self == EnvironmentId::Neutral
     }
 
+    /// Each light is built at its own [`EnvironmentId::exposure`]. The fallback keeps
+    /// `Neutral`'s, since that is the light it actually is.
     fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Environment {
         match bytes {
-            Some(bytes) if !self.is_builtin() => Environment::load(gpu, bytes),
+            Some(bytes) if !self.is_builtin() => Environment::load(gpu, bytes, self.exposure()),
             _ => Environment::neutral(gpu),
         }
     }

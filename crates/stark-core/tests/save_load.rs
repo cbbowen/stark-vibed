@@ -159,7 +159,13 @@ fn a_surface_switch_is_historized() {
         return;
     };
     let start = engine.surface();
-    assert_ne!(start, SurfaceId::Linen, "test needs a surface to switch to");
+    // Whichever surface a fresh document *doesn't* start on — the test is about the
+    // switch being historized, not about which way it goes.
+    let target = if start == SurfaceId::Linen {
+        SurfaceId::Flat
+    } else {
+        SurfaceId::Linen
+    };
 
     paint(
         &mut engine,
@@ -167,14 +173,14 @@ fn a_surface_switch_is_historized() {
         20.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
-    engine.process(DocCommand::SetSurface(SurfaceId::Linen));
-    assert_eq!(engine.surface(), SurfaceId::Linen);
+    engine.process(DocCommand::SetSurface(target));
+    assert_eq!(engine.surface(), target);
 
     // Undo reaches it, because it is an action like any other.
     engine.process(DocCommand::Undo);
     assert_eq!(engine.surface(), start, "undo must revert the surface");
     engine.process(DocCommand::Redo);
-    assert_eq!(engine.surface(), SurfaceId::Linen);
+    assert_eq!(engine.surface(), target);
 
     // And it round-trips: the header still says the document *started* on `start`.
     let file = engine.document_file();
@@ -190,7 +196,7 @@ fn a_surface_switch_is_historized() {
     loaded.load_bytes(&bytes).expect("load");
     assert_eq!(
         loaded.surface(),
-        SurfaceId::Linen,
+        target,
         "replaying the log must land on the switched-to surface"
     );
 }

@@ -364,7 +364,8 @@ mod tests {
     fn round_trip_survives_a_lossy_channel() {
         for seed in 0..64u64 {
             let mut rng = Lcg(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-            let mut session = Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId(0));
+            let mut session =
+                Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId(0));
             let mut peers = Peers::new();
             let actor = ActorId(1);
             let mut inflight: Vec<PeerFrame> = Vec::new();
@@ -465,7 +466,10 @@ mod tests {
         let mut now = 0.0;
         // Every frame of the first half-second is dropped on the floor.
         for step in 1..20u32 {
-            session.stroke_to(InputSample::at(Vec2::new(f32::from(step as u16) * 4.0, 0.0)));
+            session.stroke_to(InputSample::at(Vec2::new(
+                f32::from(step as u16) * 4.0,
+                0.0,
+            )));
             now += 0.025;
             let _ = session.publish(now);
         }

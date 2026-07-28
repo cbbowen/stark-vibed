@@ -910,10 +910,13 @@ painterly result, and it is where the "old masters" look lives:
   still reads, nothing is tinted), and `Ferndale`, the bundled studio HDR. They
   differ only in the equirect image handed to the same prefilter, so there is one
   lighting path, not two: a reference light you can switch to, and a room you
-  paint in.
+  paint in. **Exposure is a property of the environment**, not a knob beside it
+  (`EnvironmentId::exposure`): `Neutral` is shown at 1.0 and `Ferndale` at 0.65, and
+  switching lights carries the value along. See the shoulder discussion below for
+  why no single number serves both.
 
-**The reference invariant.** Under `Neutral`, with `height_strength = 0` and
-`exposure = 1`, the media pass is an identity — paint comes back out its own
+**The reference invariant.** Under `Neutral` (exposure 1.0), with
+`height_strength = 0`, the media pass is an identity — paint comes back out its own
 colour, within about two bytes. That is what makes the neutral environment worth
 having: it is the light you switch to in order to *judge* a colour rather than
 enjoy it. Three things have to hold for it, and each is a constraint on the model
@@ -935,8 +938,12 @@ rather than a correction bolted onto the end:
 
 Exactness in `[0,1]` and a filmic shoulder are not both available: a curve that is
 the identity up to 1 has nowhere to bend. The shoulder is what was given up, and
-`exposure` is what buys the headroom back — which is why its default sits at 0.65
-rather than the 0.8 that suited a curve compressing everything above 0.76.
+`exposure` is what buys the headroom back — which is why it belongs to the *light*.
+Dividing by `flat_irradiance` already makes 1.0 mean the same thing everywhere, but
+that is a statement about the diffuse response, not about the peaks: a room with
+bright windows puts saturated paint over 1.0 and into the clip long before a smooth
+grey dome does. So `Neutral` stays at 1.0, where it has to be to be a reference at
+all, and `Ferndale` is authored at 0.65 — the value it was judged at.
 `tests/reference.rs` pins the invariant.
 - **Wet gloss.** `specular` sets how smooth fully-wet paint becomes, driving a
   Cook–Torrance term. Dry paint and bare canvas stay rough, so matte.
@@ -947,9 +954,11 @@ rather than the 0.8 that suited a curve compressing everything above 0.76.
 **C — selection outline.** One instanced quad per mask tile, drawn over the lit
 result in the same canvas→NDC frame as pass A (§6.8).
 
-`MediaParams` (`height_strength`, `exposure`, `specular`, `surface_strength`) is a **view setting** — per-client, never historized, changed by
-`ViewCommand::SetMediaParams` (§4). So is the choice of environment: switching it
-re-lights the canvas and touches no stored pixel. Neither is in the save file.
+`MediaParams` (`height_strength`, `specular`, `surface_strength`) is a **view
+setting** — per-client, never historized, changed by `ViewCommand::SetMediaParams`
+(§4). So is the choice of environment: switching it re-lights the canvas and touches
+no stored pixel. Exposure is neither: it is not tunable at all, it is what the
+chosen environment says it is. Nothing here is in the save file.
 
 The whole media model is a single shader stage, which is the point: Kubelka–Munk
 pigment mixing, granulation, varnish gloss can be iterated on without touching the
@@ -1050,16 +1059,19 @@ shared by the stamp and media passes. It drives two effects:
   *normalized* so a flat surface leaves it unchanged. `surface_strength` is a
   view setting (`MediaParams`), like the lighting — it doesn't touch stored pixels.
 
-The surface is **document state** (`SurfaceId { Flat, Linen }`, default `Flat`):
-which canvas a piece was painted on is part of what the document *is*, it is
-saved, and reopening on a different weave would be a different painting.
+The surface is **document state** (`SurfaceId { Flat, Linen }`): which canvas a
+piece was painted on is part of what the document *is*, it is saved, and reopening
+on a different weave would be a different painting. A fresh document starts on
+`DEFAULT_SURFACE` = `Linen` — the honest substrate, and the one the stroke pass has
+relief to work against — while `SurfaceId::default()` stays `Flat`, since that is
+the builtin the registry falls back to before the frontend's bytes arrive.
 `CanvasMeta` records the surface the log *starts* from; a mid-document switch is a
 logged `ActionKind::SetSurface`, so it undoes, replays and replicates like any
 other edit (§4). Today only the media pass reads it, so a switch changes no stored
 pixel — logging it anyway is what would let a future deposition gate read it
 without that becoming a history change. `Flat` is a 1×1 *full-height* texel — a
-constant height has zero gradient (no relief), so the flat default is *exactly*
-equivalent to having no surface. That orthogonality is deliberate: most goldens
+constant height has zero gradient (no relief), so it is *exactly* equivalent to
+having no surface. That orthogonality is deliberate: most goldens
 use `Flat` to test other features in isolation, and a dedicated golden
 (`linen_surface`) exercises the weave. The set is open for future
 custom/uploaded surfaces. The engine **embeds no image bytes**: image-backed

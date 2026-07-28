@@ -208,12 +208,14 @@ fn a_real_captured_stroke_previews_as_it_commits() {
     let committed = engine.render_to_image();
     {
         let (frac, worst) = diff_fraction(&preview, &committed);
-        eprintln!("PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
-            frac*100.0,
-            frac_exceeding(&preview,&committed,2)*100.0,
-            frac_exceeding(&preview,&committed,4)*100.0,
-            frac_exceeding(&preview,&committed,8)*100.0,
-            frac_exceeding(&preview,&committed,12)*100.0);
+        eprintln!(
+            "PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
+            frac * 100.0,
+            frac_exceeding(&preview, &committed, 2) * 100.0,
+            frac_exceeding(&preview, &committed, 4) * 100.0,
+            frac_exceeding(&preview, &committed, 8) * 100.0,
+            frac_exceeding(&preview, &committed, 12) * 100.0
+        );
     }
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),
@@ -335,12 +337,14 @@ fn a_smear_stroke_previews_as_it_commits() {
     let committed = engine.render_to_image();
     {
         let (frac, worst) = diff_fraction(&preview, &committed);
-        eprintln!("PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
-            frac*100.0,
-            frac_exceeding(&preview,&committed,2)*100.0,
-            frac_exceeding(&preview,&committed,4)*100.0,
-            frac_exceeding(&preview,&committed,8)*100.0,
-            frac_exceeding(&preview,&committed,12)*100.0);
+        eprintln!(
+            "PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
+            frac * 100.0,
+            frac_exceeding(&preview, &committed, 2) * 100.0,
+            frac_exceeding(&preview, &committed, 4) * 100.0,
+            frac_exceeding(&preview, &committed, 8) * 100.0,
+            frac_exceeding(&preview, &committed, 12) * 100.0
+        );
     }
     // Not zero-difference: the loop's freeze boundary leaves a small residue either
     // way (~1.6% of pixels differ by a level or two even when this passes). The bound
@@ -508,12 +512,14 @@ fn an_oversized_smear_stroke_previews_as_it_commits() {
     let committed = engine.render_to_image();
     {
         let (frac, worst) = diff_fraction(&preview, &committed);
-        eprintln!("PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
-            frac*100.0,
-            frac_exceeding(&preview,&committed,2)*100.0,
-            frac_exceeding(&preview,&committed,4)*100.0,
-            frac_exceeding(&preview,&committed,8)*100.0,
-            frac_exceeding(&preview,&committed,12)*100.0);
+        eprintln!(
+            "PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
+            frac * 100.0,
+            frac_exceeding(&preview, &committed, 2) * 100.0,
+            frac_exceeding(&preview, &committed, 4) * 100.0,
+            frac_exceeding(&preview, &committed, 8) * 100.0,
+            frac_exceeding(&preview, &committed, 12) * 100.0
+        );
     }
     assert_eq!(
         frac_exceeding(&preview, &committed, 8),

@@ -12,5 +12,5 @@ pub use action::{
 };
 pub use layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
-pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DocState};
+pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState};
 pub use timeline::{LinearTimeline, ReplicatedTimeline, Timeline, effective_actions};

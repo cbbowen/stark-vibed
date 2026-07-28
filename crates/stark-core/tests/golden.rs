@@ -193,12 +193,20 @@ fn golden_canvas_surface() {
     };
     // Paint on the linen canvas surface (DESIGN.md §6.4): a light, partial-coverage
     // stroke sits on the weave, and the bare paper
-    // shows the woven relief under raking light. The other goldens stay on the flat
-    // default so they test orthogonally. The surface bytes are read from disk and
-    // registered (the engine embeds none — the frontend provides them at runtime).
+    // shows the woven relief under raking light. The other goldens never register the
+    // linen bytes, so they fall back to the flat builtin and test orthogonally. The
+    // surface bytes are read from disk and registered (the engine embeds none — the
+    // frontend provides them at runtime).
     let linen_png = stark_testdata::assets::linen();
     engine.register_surface(SurfaceId::Linen, linen_png);
     engine.process(DocCommand::SetSurface(SurfaceId::Linen));
+    // Turn the weave up: `surface_strength` defaults to 0, which leaves the relief
+    // there for paint to sit in but keeps the light from embossing it. This golden is
+    // about the embossing, so it has to ask for it.
+    engine.process(ViewCommand::SetMediaParams(stark_core::MediaParams {
+        surface_strength: 0.6,
+        ..Default::default()
+    }));
     let mut brush = brush(RED, 60.0);
     brush.drain = 0.005;
     engine.process(ViewCommand::SetBrush(brush));

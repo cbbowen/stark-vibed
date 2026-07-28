@@ -325,8 +325,10 @@ impl Engine {
         color_space: ColorSpaceId,
     ) -> Self {
         let color_space = color_space.make();
-        // Fresh documents start on the procedural flat surface; image-backed
-        // surfaces are registered later by the frontend (DESIGN.md §6.4).
+        // The registry starts on the builtin flat surface — it is all that can be
+        // built before any bytes exist. A fresh document is on `DEFAULT_SURFACE`
+        // (linen), so the two are reconciled at the end of this function; until the
+        // frontend registers the height map, linen renders as flat (DESIGN.md §6.4).
         let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (DESIGN.md §6.3).
@@ -345,10 +347,11 @@ impl Engine {
         let assets = AssetStore::new(gpu.clone());
 
         let initial = DocState::with_layer(ROOT_LAYER);
+        let initial_surface = initial.surface;
         let timeline: Box<dyn Timeline> = Box::new(LinearTimeline::new(initial));
         let session = crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER);
 
-        Self {
+        let mut engine = Self {
             gpu,
             target_format,
             color_space,
@@ -359,7 +362,7 @@ impl Engine {
                 selection,
             },
             compositor,
-            initial_surface: surface.id(),
+            initial_surface,
             surface,
             environment,
             timeline,
@@ -376,7 +379,12 @@ impl Engine {
             next_layer: 1,
             outbox: Vec::new(),
             outbox_enabled: false,
-        }
+        };
+        // Point the surface registry at the document's surface. A no-op when that is
+        // the builtin; otherwise it parks on the id so the frontend's later
+        // `register_surface` is recognised as "the one in use" and takes effect.
+        engine.apply_document_surface();
+        engine
     }
 
     /// Apply one input command (DESIGN.md §4).
@@ -1108,8 +1116,11 @@ impl Engine {
                 a.id.actor = actor;
             }
         }
+        // Replay from the surface this document's log *starts* from, not from the
+        // default — same base state `reset_document` builds, so re-hosting a document
+        // that was created on a non-default canvas doesn't silently move it.
+        let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
         let ctx = &mut self.apply;
-        let initial = DocState::with_layer(ROOT_LAYER);
         self.timeline = Box::new(ReplicatedTimeline::from_log(actor, initial, log, ctx));
         self.actor = actor;
         self.session.adopt_identity(identity);

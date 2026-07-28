@@ -43,7 +43,6 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
         height_strength: 2.5,
         specular: 0.3,
         surface_strength: 0.0,
-        ..MediaParams::default()
     }));
 
     // Diagonal stroke through the 4-tile corner at `shift` (origin for shift=0).
@@ -109,7 +108,6 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         height_strength: 2.5,
         specular: 0.3,
         surface_strength: 0.0,
-        ..MediaParams::default()
     }));
 
     // A wide base field along the diagonal, fully containing the smudge's path.

@@ -599,8 +599,11 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // cap also bounds the snapshot scratch, which is sized by the longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
-        tol.max_len = tol.max_len.min((0.5 * RESERVOIR_CADENCE * b.radius).max(0.5));
+        tol.max_len = tol
+            .max_len
+            .min((0.5 * RESERVOIR_CADENCE * b.radius).max(0.5));
     }
+    tracing::warn!(?tol, "flatten_tolerance");
     tol
 }
 

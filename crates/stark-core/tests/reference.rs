@@ -1,7 +1,7 @@
 //! The **reference light** invariant (DESIGN.md §6.3).
 //!
-//! Under the procedural `Neutral` environment, with the relief flattened and unit
-//! exposure, the media pass is supposed to be an identity: what you painted is what
+//! Under the procedural `Neutral` environment — whose exposure is 1.0 — with the
+//! relief flattened, the media pass is supposed to be an identity: what you painted is what
 //! you see. That is the whole claim the `Neutral` environment makes — it is the light
 //! you switch to in order to judge a colour rather than enjoy it — and it is a claim
 //! about the *entire* tail of the pipeline, so nothing here reaches into it. Each test
@@ -21,12 +21,12 @@ use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::BrushParams;
 use stark_core::geom::Vec2;
 
-/// The reference configuration: no relief to tilt a normal, no weave, no wet gloss,
-/// and unit exposure — every knob that could shape the light turned off, so what is
-/// left is only the lighting model itself.
+/// The reference configuration: no relief to tilt a normal, no weave, no wet gloss —
+/// every knob that could shape the light turned off, so what is left is only the
+/// lighting model itself. Exposure is not among them: it rides with the environment,
+/// and these tests run on `Neutral`, whose exposure is 1.0 for exactly this reason.
 const REFERENCE: MediaParams = MediaParams {
     height_strength: 0.0,
-    exposure: 1.0,
     specular: 0.0,
     surface_strength: 0.0,
 };

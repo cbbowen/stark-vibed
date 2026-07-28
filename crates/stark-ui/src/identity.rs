@@ -53,11 +53,7 @@ thread_local! {
 
 /// This client's identity, minting and storing one on first run.
 pub fn get() -> ClientIdentity {
-    RESOLVED.with(|slot| {
-        slot.borrow_mut()
-            .get_or_insert_with(resolve)
-            .clone()
-    })
+    RESOLVED.with(|slot| slot.borrow_mut().get_or_insert_with(resolve).clone())
 }
 
 /// Discard the stored identity, so the next run is a different author.
