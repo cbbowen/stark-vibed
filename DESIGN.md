@@ -27,7 +27,7 @@ without rework.
    or event loops. It consumes `InputCommand`s and GPU handles, and exposes
    state + a render entry point. Dioxus is one consumer; headless golden tests
    are another.
-5. **Data-driven where it counts.** Channels (color/depth/wetness/…), tools,
+5. **Data-driven where it counts.** Channels (color/height/…), tools,
    actions, and blend modes are open sets behind small traits/enums so new
    capabilities are additive.
 6. **Perceptual color is the working space.** All color channels store and blend
@@ -514,7 +514,6 @@ that affect more than color (GOALS §1):
 pub struct GpuTile {
     pub color:  wgpu::Texture,   // Rgba16Float — Oklab (L,a,b) + premult alpha
     pub height: wgpu::Texture,   // R16Float — total paint height, thickness computed by subtracting surface height
-    pub wet:    wgpu::Texture,   // R16Float — wetness for wet-on-wet mixing
     // future channels (normal, granulation, …) are additive here
 }
 ```
@@ -702,7 +701,7 @@ So:
   stroke's coverage is the continuous path integral `1 − exp(−τ_total)`.
 - **Every** channel a segment deposits must therefore be a function of that
   segment's `τ` in one of exactly two shapes: *additive* in `τ` (an amount — the
-  height and wet the aux target sums), or `1 − exp(−k·τ)` (a rate — the opacity
+  height the aux target sums), or `1 − exp(−k·τ)` (a rate — the opacity
   the colour target over-blends). Those are the two that survive re-cutting the
   path, because `τ` is what sums. Any other shape makes the stroke depend on the
   *number* of segments rather than on the path: a per-segment `√`, for instance,
@@ -783,7 +782,7 @@ continuous, dab-free footprint. All on the GPU with no readback
      coarser, cheap cadence while the canvas footprint stays continuous.
 3. **Write-back.** Each affected tile's full `TILE_TEX` block is sliced out of
    the shared region into a fresh CoW tile (`slice.wesl`, narrowing the wide aux
-   to the persistent `(height, wet)`). Aprons are bit-identical to neighbour
+   to the persistent `(height)`). Aprons are bit-identical to neighbour
    interiors **by construction** — both are cut from the same texture — and the
    ring in the composite gives rewritten tiles real neighbour content (§6.4; the
    `apron_makes_dynamics_writeback_seamless_under_zoom` regression guards it).
@@ -830,9 +829,14 @@ rates. Likewise `BrushParams` no longer carries `spacing`, `flow`, `height` or
 (the reservoir reload cadence is now the fixed `RESERVOIR_CADENCE`), and `flow`
 and `height` were redundant multipliers on the one amount `add` already sets —
 `flow` doubly so, since it also carried the `drain` factor into `τ` and so applied
-the run-dry falloff *twice*. `wetness` was the only source of the gloss channel,
-so paint is now uniformly matte; the `(height, wet)` aux layout and the media
-pass's roughness term are unchanged and simply read a constant 0.
+the run-dry falloff *twice*. `wetness` was the only source of the **wet channel**,
+which is why that channel is gone too: a per-texel `wet` that nothing could ever
+write is a stored zero, and every pass that carried it — the stamp, the integrate,
+the stamp loop's reservoir and bake packing, the write-back slice — paid for it.
+Gloss is now a **uniform property of the paint** instead (§6.3): the media pass
+ramps its roughness by the paint's own visible alpha, so paint is glossy wherever
+it is and the substrate behind it stays matte, with no channel in between. The
+persistent aux is one channel, `(height)`.
 
 *Determinism* — a stroke is a pure function of `base` + the `StrokeRecord`
 (fixed segment/pickup plan, fixed shader math), so replay and
@@ -843,9 +847,9 @@ re-renders only its tail, resuming the reservoir from the frozen head (see
 *Incremental repaint* above), so per-move cost follows the tail rather than the
 stroke. What remains is per-segment dispatch overhead: the tail is a few hundred
 segments and each costs four small serialized dispatches, which dominates a move.
-Batching the independent ones is the next win here. *Paint never dries* — wetness
-persists, the whole
-canvas stays workable; to glaze over "dry" paint the user adds a **new document
+Batching the independent ones is the next win here. *Paint never dries* — every
+texel stays as workable as the moment it was laid, which is what lets there be no
+wetness state at all; to glaze over "dry" paint the user adds a **new document
 layer**, which composites as if dry, so no drying model is needed.
 
 **Colour dynamics (colour jitter).** The applied colour can vary **across the
@@ -891,7 +895,7 @@ is chrome.
 
 **A — composite.** Every visible tile of every visible layer is drawn, bottom to
 top, into two viewport-sized offscreen targets: colour (premultiplied "over", in
-the working colour space) and the `(height, wet)` aux (additive). Layer opacity
+the working colour space) and the `(height)` aux (additive). Layer opacity
 rides on the instance. Normal-blend layers compose correctly under premultiplied
 over; richer blend modes need per-layer isolation and are a follow-up.
 
@@ -903,8 +907,8 @@ painterly result, and it is where the "old masters" look lives:
   `height_strength`, so ridges catch the light.
 - **Image-based lighting.** The scene is lit by an [`Environment`](§6.3): an HDR
   decoded to a linear-RGB equirectangular texture with a full mip chain. Diffuse
-  irradiance samples a very blurred mip in the *normal* direction; wet specular
-  samples a gloss-selected mip in the *view-reflection* direction, so wet paint
+  irradiance samples a very blurred mip in the *normal* direction; the specular
+  samples a gloss-selected mip in the *view-reflection* direction, so paint
   picks up the environment's highlights. Two environments ship: `Neutral`,
   generated procedurally (an achromatic dome under a soft overhead key — relief
   still reads, nothing is tinted), and `Ferndale`, the bundled studio HDR. They
@@ -945,8 +949,15 @@ bright windows puts saturated paint over 1.0 and into the clip long before a smo
 grey dome does. So `Neutral` stays at 1.0, where it has to be to be a reference at
 all, and `Ferndale` is authored at 0.65 — the value it was judged at.
 `tests/reference.rs` pins the invariant.
-- **Wet gloss.** `specular` sets how smooth fully-wet paint becomes, driving a
-  Cook–Torrance term. Dry paint and bare canvas stay rough, so matte.
+- **Paint gloss.** `specular` sets how smooth the paint film is, driving a
+  Cook–Torrance term. It is a **uniform property of paint**, not a stored channel:
+  the roughness ramp is the paint's own *visible alpha* — `1 − exp(−K · opacity ·
+  thickness)`, the same quantity the composite-over-substrate uses — so paint is
+  equally glossy everywhere it is, a thin glaze reads nearly as matte as the ground
+  it barely covers, and the bare canvas behind the paint stays rough, so matte.
+  There was once a per-texel `wet` channel here instead; nothing could source it
+  after `BrushParams::wetness` was removed (§6.2), so it was a stored zero that
+  every pass carried, and it is gone.
 - **Present.** The working channels are converted to the surface's display space
   (e.g. sRGB) and composited over the substrate colour. This is the *only* place
   gamma-encoded colour exists.
@@ -1204,7 +1215,7 @@ the **stamp** and **media** shaders, the formats, and the blends are
 space-specific. The CPU `color.rs` Oklab helpers become `OkLabColorSpace`.
 
 **`OkLabColorSpace`** — the current pipeline, unchanged: `color = Rgba16Float`
-holding premultiplied `(L, a, b, coverage)`, `aux = Rg16Float (height, wet)`,
+holding premultiplied `(L, a, b, coverage)`, `aux = R16Float (height)`,
 premultiplied-"over" color blend (coverage *is* the blend alpha), additive aux.
 
 **`MixboxColorSpace`** — the experimental one: realistic pigment mixing via
@@ -1216,7 +1227,7 @@ polynomial. The decisive fit with our architecture: *latents blend linearly*, so
 the ordinary premultiplied-"over" deposit **already performs Mixbox mixing** — no
 programmable blend, no extra pass. Concretely the tile layout is **identical to
 Oklab**: `color = Rgba16Float` holding premultiplied `(c0, c1, c2, coverage)`,
-`aux = Rg16Float (height, wet)`, over-blend color + additive aux. The stamp shader
+`aux = R16Float (height)`, over-blend color + additive aux. The stamp shader
 is reused verbatim; only the **media shader differs** — it un-premultiplies the
 concentrations and evaluates Mixbox's polynomial (`c3 = 1 − (c0+c1+c2)` derived)
 to a base color before the shared impasto lighting.
@@ -1689,7 +1700,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
    CoW.
 3. **History + golden harness:** headless context, readback, first golden tests
    incl. undo/redo and replay-equivalence.
-4. **Multi-channel + media pass:** add height/wet channels, the one-way load
+4. **Multi-channel + media pass:** add the height channel, the one-way load
    (`drain`) reservoir, and normal-from-height lighting — the "old masters"
    payoff. (Bidirectional canvas pickup is its own step, 10.)
 5. **Save/load + timelapse:** serialize the action log; load-then-undo; replay
@@ -1783,7 +1794,10 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
    quantity (paint `height`) — the integrate is one unified branch. The horizontal-flux
    axes sketched here (drag as conservative finite-volume advection, ridge as a
    zero-mean doublet) are still the intended design when they are built; they are no
-   longer carried as inert fields in the meantime (§6.2).
+   longer carried as inert fields in the meantime (§6.2). Nor is the `wet` *channel*:
+   a real diffusion model would reintroduce it as a second aux component, which is a
+   format change (`R16Float` → `Rg16Float`) plus the passes that carry it — cheap to
+   redo, and cheaper than storing a zero until then (§6.3).
 
 Each step is independently testable through `stark-core` before any UI exists,
 which is exactly the leverage the frontend/backend split was meant to provide.

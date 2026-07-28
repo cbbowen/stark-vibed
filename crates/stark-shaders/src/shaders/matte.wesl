@@ -9,7 +9,8 @@
 //     `1 − exp(−OPACITY_K · color.a · thickness)`, so a matte that wrote only
 //     colour would be perfectly invisible (FRAME_DESIGN.md §4.1).
 //   · Its interior is at *constant* height, so its gradient is zero and it lights
-//     flat and matte — no weave, no gloss, like a mat board. Its boundary is a
+//     flat — no weave, and the paint film's uniform sheen (media_common.wesl) reads
+//     as an even wash rather than a glint, like a mat board. Its boundary is a
 //     height cliff and catches light the way every stroke edge already does.
 //   · Both targets blend as premultiplied `over` (declared by the pipeline, NOT
 //     the colour space's additive aux blend), so an opaque matte *erases* the

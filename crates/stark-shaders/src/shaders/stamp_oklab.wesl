@@ -26,7 +26,7 @@
 // independence is not something a parameter can buy back.
 //   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
-//             (height, wet)) — (height, wet, footprint coverage, unused)
+//             (height)) — (height, footprint coverage, unused, unused)
 
 import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, brush_color};
 
@@ -63,14 +63,12 @@ fn fs_main(in: VsOut) -> FsOut {
     //   .x = laid height — linear in τ, so the additive target sums to the true path
     //        integral of the footprint and a second pass builds impasto in full
     //        (a saturating form would flatten out instead);
-    //   .y = laid wet — always 0. The brush has no wetness knob, so nothing sources
-    //        the gloss channel; the channel itself stays in the tile layout and in
-    //        the media pass's roughness term (media_common.wesl), which is why this
-    //        writes an explicit zero rather than the channel being removed.
-    //   .z = footprint coverage (read by nothing today; kept for the write-back);
-    //   .w = unused.
+    //   .y = footprint coverage (read by nothing today; kept for the write-back);
+    //   .zw = unused.
     // Height is the amount of paint; the colour alpha is per-unit opacity only and
-    // never represents amount (§6.1).
-    out.aux = vec4<f32>(in.amount * tau, 0.0, cov, 0.0);
+    // never represents amount (§6.1). Height is also the *only* thing a persistent
+    // tile keeps: gloss is a uniform property of paint, not a stored channel, so
+    // there is nothing here that a brush could source it from.
+    out.aux = vec4<f32>(in.amount * tau, cov, 0.0, 0.0);
     return out;
 }

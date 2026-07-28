@@ -2,7 +2,7 @@
 // the per-color-space media shaders. Each variant only differs in how it derives
 // the un-lit linear *base color* from the composited channels; everything else —
 // the bindings, the fullscreen vertex, the impasto normal-from-height, the
-// directional lighting + wet gloss, and the composite-over-background + sRGB
+// directional lighting + paint gloss, and the composite-over-background + sRGB
 // encode — lives here so it is written once.
 
 import package::color::{linear_to_srgb};
@@ -11,18 +11,18 @@ import package::noise::{noise_2_to_4};
 struct Media {
     light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: vec4<f32>,     // background (substrate) in latent color space
-    shade: vec4<f32>,  // exposure, diffuse_lod, wet_gloss, _
+    shade: vec4<f32>,  // exposure, diffuse_lod, gloss, _
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _
 }
 
 @group(0) @binding(0) var<uniform> m: Media;
 @group(0) @binding(1) var comp_color: texture_2d<f32>;
-@group(0) @binding(2) var comp_aux: texture_2d<f32>;
+@group(0) @binding(2) var comp_aux: texture_2d<f32>; // paint height (r), the only aux channel
 @group(0) @binding(3) var surface: texture_2d<f32>; // tileable canvas bump (height)
 @group(0) @binding(4) var surface_samp: sampler;
 // The HDR lighting environment (equirectangular, mipped) for image-based lighting
-// (DESIGN.md §6.3): diffuse irradiance from a high mip in the normal direction, wet
+// (DESIGN.md §6.3): diffuse irradiance from a high mip in the normal direction,
 // specular from a gloss-selected mip in the reflection direction.
 @group(0) @binding(5) var env: texture_2d<f32>;
 @group(0) @binding(6) var env_samp: sampler;
@@ -152,7 +152,7 @@ fn env_brdf_approx(n_dot_v: f32, roughness: f32) -> vec2<f32> {
 //     roughly 0.016 for dry paint, and subtracting 0.04 of it crushed every midtone.
 //   · The highlight knee sits at 1.0 instead of 0.8, so nothing representable is
 //     reshaped on its way to the display. Only what genuinely overflows — the
-//     environment's lights glinting off wet impasto — is rolled off.
+//     environment's lights glinting off glossy impasto — is rolled off.
 //
 // WGSL has no `if`-expression and parameters are immutable, so the work is done on a
 // local `var`.
@@ -182,21 +182,27 @@ fn commerce_tonemap(color: vec3<f32>, black_point: f32) -> vec3<f32> {
 
 // Light the un-lit linear `base` color by image-based lighting from the HDR
 // environment (DESIGN.md §6.3): diffuse irradiance sampled (blurred) in the relief
-// normal direction, plus a wet specular reflection that sharpens with `wet` so
+// normal direction, plus a specular reflection that sharpens with `paint` so
 // impasto ridges glint with the studio lights. `base` is already the composited
-// paint-over-substrate color (the over happened in the caller's latent space).
-fn finish(base: vec3<f32>, wet: f32, alpha: f32, p: vec2f, dim: vec2<i32>) -> vec4<f32> {
+// paint-over-substrate color (the over happened in the caller's latent space), and
+// `paint` is the visible alpha that composite used — the paint film's own share of
+// the fragment. Specularity is a **uniform property of the paint**, not of a stored
+// channel: paint is glossy everywhere it is, and the substrate behind it never is.
+fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2f, dim: vec2<i32>) -> vec4<f32> {
     let n = surface_normal(p, dim);
     let exposure = m.shade.x;
     let diffuse_lod = m.shade.y;
-    let wet_gloss = m.shade.z; // how smooth/glossy wet paint becomes, 0..1
+    let gloss = m.shade.z; // how smooth/glossy the paint film is, 0..1
 
     // Orthographic view V = (0,0,1), so N·V is just the normal's z.
     let n_dot_v = clamp(n.z, 1e-4, 1.0);
-    // Paint is a dielectric (F0 ≈ 0.04); wetter paint is smoother (lower roughness),
-    // dry paint and the bare canvas are rough → matte.
+    // Paint is a dielectric (F0 ≈ 0.04) and is smoother than the canvas it sits on;
+    // the bare canvas is rough → matte. Ramping by the paint's *visible alpha* is
+    // what keeps the gloss on the film rather than the ground: a thin glaze reads
+    // almost as matte as the substrate it barely covers, thick paint carries the
+    // full sheen, and bare canvas carries none.
     let f0 = 0.04;
-    let roughness = clamp(1.0 - wet_gloss * clamp(wet, 0.0, 1.0), 0.045, 1.0);
+    let roughness = clamp(1.0 - gloss * clamp(paint, 0.0, 1.0), 0.045, 1.0);
 
     // Cook–Torrance split-sum image-based lighting:
     //  · diffuse — hemispherical irradiance (heavily-blurred env) in the normal dir;

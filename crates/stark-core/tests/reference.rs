@@ -21,7 +21,7 @@ use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::BrushParams;
 use stark_core::geom::Vec2;
 
-/// The reference configuration: no relief to tilt a normal, no weave, no wet gloss —
+/// The reference configuration: no relief to tilt a normal, no weave, no gloss —
 /// every knob that could shape the light turned off, so what is left is only the
 /// lighting model itself. Exposure is not among them: it rides with the environment,
 /// and these tests run on `Neutral`, whose exposure is 1.0 for exactly this reason.

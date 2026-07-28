@@ -71,7 +71,7 @@ pub fn LightingPanel() -> Element {
             oninput: move |v| update_media(state, move |m| m.height_strength = v) }
         Slider { label: "Texture", min: 0.0, max: 1.0, value: p.surface_strength,
             oninput: move |v| update_media(state, move |m| m.surface_strength = v) }
-        Slider { label: "Wet gloss", min: 0.0, max: 0.35, value: p.specular,
+        Slider { label: "Gloss", min: 0.0, max: 0.35, value: p.specular,
             oninput: move |v| update_media(state, move |m| m.specular = v) }
         div { class: "slider-row",
             div { class: "slider-label", "Canvas" }

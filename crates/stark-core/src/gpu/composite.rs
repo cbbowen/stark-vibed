@@ -2,11 +2,11 @@
 //!
 //! Two passes:
 //!   A. Composite every visible tile's channels into viewport-sized offscreen
-//!      targets — Oklab color (premultiplied "over") and `(height, wet)` aux
+//!      targets — Oklab color (premultiplied "over") and the `(height)` aux
 //!      (additive).
 //!   B. A fullscreen media pass that derives normals from the height field,
-//!      lights the impasto, adds wet gloss, converts Oklab → display, and
-//!      composites over the background into the final target.
+//!      lights the impasto, adds the paint film's gloss, converts Oklab →
+//!      display, and composites over the background into the final target.
 //!
 //! This replaces the step-1 `Presenter` for engine rendering; the height/normal
 //! lighting is the "old masters" payoff.
@@ -105,7 +105,7 @@ pub enum CompositeItem {
 struct MediaUniform {
     light: [f32; 4], // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: [f32; 4],    // background (substrate) in latent channels (xyz), unused w
-    shade: [f32; 4], // exposure, diffuse_lod, wet_gloss, _
+    shade: [f32; 4], // exposure, diffuse_lod, gloss, _
     // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
     surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: [f32; 4], // surface_strength, _, _, _
@@ -119,9 +119,11 @@ struct MediaUniform {
 pub struct MediaParams {
     /// Relief slope: how strongly the height field tilts normals (impasto/weave).
     pub height_strength: f32,
-    /// Wet glossiness in `[0,1]`: how smooth (low-roughness) fully-wet paint becomes,
-    /// driving the Cook–Torrance specular. 0 = stays matte even when wet; 1 = near
-    /// mirror-smooth. Dry paint and bare canvas are always rough → matte.
+    /// Paint glossiness in `[0,1]`: how smooth (low-roughness) the paint film is,
+    /// driving the Cook–Torrance specular. 0 = matte; 1 = near mirror-smooth. It is
+    /// a uniform property of paint — every texel with paint on it is equally glossy,
+    /// ramped only by how much of the fragment *is* paint (its visible alpha), so
+    /// the bare canvas behind it stays rough → matte.
     pub specular: f32,
     /// How strongly the canvas surface relief shows (its weave amplitude).
     pub surface_strength: f32,
@@ -350,7 +352,7 @@ impl Compositor {
                 // keep the height of paint *underneath* the matte, and the media
                 // pass would emboss that paint's impasto as ghost ridges through
                 // an opaque mat board (FRAME_DESIGN.md §4.2). `OneMinusSrcAlpha`
-                // is valid on the alpha-less Rg16Float aux: the factor reads the
+                // is valid on the alpha-less R16Float aux: the factor reads the
                 // *source* alpha from the shader's output vec4.
                 targets: &[
                     Some(wgpu::ColorTargetState {

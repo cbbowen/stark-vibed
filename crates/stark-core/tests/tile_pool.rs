@@ -27,7 +27,7 @@ fn context_or_skip() -> Option<GpuContext> {
 #[test]
 fn pool_recycles_dropped_tiles() {
     let Some(ctx) = context_or_skip() else { return };
-    let pool = TilePool::new(ctx, [COLOR, wgpu::TextureFormat::Rg16Float]);
+    let pool = TilePool::new(ctx, [COLOR, wgpu::TextureFormat::R16Float]);
 
     assert_eq!(pool.free_count(), 0, "fresh pool has no recycled tiles");
 
@@ -55,7 +55,7 @@ fn pool_recycles_dropped_tiles() {
 #[test]
 fn free_lists_do_not_cross_formats() {
     let Some(ctx) = context_or_skip() else { return };
-    let aux = wgpu::TextureFormat::Rg16Float;
+    let aux = wgpu::TextureFormat::R16Float;
     let pool = TilePool::new(ctx, [COLOR, aux]);
 
     let c = pool.acquire_tex(COLOR, AllocSource::Unknown);

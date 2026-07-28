@@ -26,9 +26,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let conc = cc.rgb / max(cc.a, 1e-4);       // un-premultiply opacity → concentrations
     // Mixbox latent mixes linearly, so composite paint-over-substrate in latent space.
     let over = over_substrate(conc, vis);      // substrate, or a transparent cut-out
-    let wet = clamp(textureLoad(comp_aux, p, 0).y, 0.0, 1.0) * vis;
 
     // Evaluate Mixbox's pigment polynomial → sRGB, then linearize for lighting.
     let srgb = clamp(mixbox_eval_polynomial(over.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
-    return finish(srgb_to_linear(srgb), wet, over.a, frag.xy, dim);
+    // `vis` doubles as the gloss ramp: the paint film is uniformly specular, so how
+    // much sheen a fragment shows is just how much of it is paint (media_common).
+    return finish(srgb_to_linear(srgb), vis, over.a, frag.xy, dim);
 }

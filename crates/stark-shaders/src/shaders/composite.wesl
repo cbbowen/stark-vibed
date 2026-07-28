@@ -1,6 +1,6 @@
 // Compositing pass A (DESIGN.md §6.3): draw each visible tile's channels into
 // viewport-sized offscreen targets. Color composites with premultiplied "over",
-// aux (height, wet) accumulates additively. The media pass then lights the
+// the aux (paint height) accumulates additively. The media pass then lights the
 // result. Vertex setup matches the present pass: one instanced quad per tile.
 
 struct View {

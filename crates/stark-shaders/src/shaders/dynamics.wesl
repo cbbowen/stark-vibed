@@ -76,9 +76,9 @@ struct Stamp {
     //    the last pickup in radius units; segments: 1 — exposure comes from the
     //    prefix difference directly).
     d: vec4<f32>,
-    // e: `add` rates per unit exposure: height .x, wet .y. For a segment slot, the
-    //    gain-ramp coordinates: travel into the current pickup interval at the
-    //    segment start .z and the interval's nominal length .w (radius units).
+    // e: the `add` rate per unit exposure: height .x (.y unused). For a segment
+    //    slot, the gain-ramp coordinates: travel into the current pickup interval at
+    //    the segment start .z and the interval's nominal length .w (radius units).
     e: vec4<f32>,
     // f–h: colour dynamics (DESIGN.md §6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
@@ -95,7 +95,7 @@ struct Stamp {
 @group(0) @binding(0) var<uniform> st: Stamp;
 
 // The stroke's canvas region: premultiplied colour (latent·op, op) + wide aux
-// (height, wet, _, _). Read by snapshot (textureLoad) and pickup (bilinear).
+// (height, _, _, _). Read by snapshot (textureLoad) and pickup (bilinear).
 @group(0) @binding(1) var region_color: texture_2d<f32>;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
 // Footprint snapshot targets (written by `snapshot`).
@@ -108,7 +108,7 @@ struct Stamp {
 // prefix-τ exposure instead).
 @group(0) @binding(6) var cov_tex: texture_2d<f32>;
 // The tool reservoir ping-pong: colour = (latent .xyz, per-unit opacity .w),
-// aux = (carried height, carried wet, _, _). `src` is read this dispatch, `dst`
+// aux = (carried height, _, _, _). `src` is read this dispatch, `dst`
 // written; the host swaps the bind group at each pickup.
 @group(0) @binding(7) var brush_src_color: texture_2d<f32>;
 @group(0) @binding(8) var brush_src_aux: texture_2d<f32>;
@@ -130,7 +130,7 @@ struct Stamp {
 // parcel `G` (plain and travel-weighted — the two prefixes the linear reload ramp
 // decomposes into; see the header). Packed to stay within the four storage
 // textures core WebGPU guarantees a stage:
-//   load = (∫h_R·dτ,      ∫m_R·dτ,      ∫wet_R·dτ,    ∫h_G·dτ)
+//   load = (∫h_R·dτ,      ∫m_R·dτ,      ∫h_G·dτ,      unused)
 //   latm = (∫lat_R·m_R·dτ,                             ∫m_G·dτ)
 //   g    = (∫lat_G·m_G·dτ,                             ∫h_G·q·dτ)
 //   gq   = (∫lat_G·m_G·q·dτ,                           ∫m_G·q·dτ)
@@ -155,7 +155,7 @@ struct Stamp {
 // tool lifted over the preceding interval, kept separately from the reservoir it
 // was also added to so the bake can ramp it in across the interval instead of
 // serving it as a step (see the header). Same layout as the reservoir pair:
-// colour = (lifted latent .xyz, its per-unit opacity .w), aux = (height, wet, _, _).
+// colour = (lifted latent .xyz, its per-unit opacity .w), aux = (height, _, _, _).
 // Not ping-ponged: each pickup overwrites it whole, `deplete` leaves it alone (the
 // undrained tail of a ramping gain is second-order), and nothing else writes it.
 @group(0) @binding(22) var gain_color_w: texture_storage_2d<rgba16float, write>;
@@ -317,15 +317,14 @@ fn bake(@builtin(global_invocation_id) gid: vec3<u32>) {
         let g_c = textureSampleLevel(gain_color, samp, buv, 0.0);
         let g_a = textureSampleLevel(gain_aux, samp, buv, 0.0);
 
-        // Carried height, optical mass (opacity·height) and wet, each weighted by
-        // the exposure they are presented with; latent rides as a mass weight so a
+        // Carried height and optical mass (opacity·height), each weighted by the
+        // exposure they are presented with; latent rides as a mass weight so a
         // ratio of the two prefixes recovers it (§6.1). The gain parcel gets the
         // same treatment twice — plain and travel-weighted (`xc`) — which is what
-        // lets the deposit evaluate the linear reload ramp as prefix differences
-        // (wet is left out: nothing sources it, so there is nothing to ramp).
+        // lets the deposit evaluate the linear reload ramp as prefix differences.
         let m = b_c.a * b_a.x;
         let mg = g_c.a * g_a.x;
-        acc_load += vec4<f32>(b_a.x, m, b_a.y, g_a.x) * de;
+        acc_load += vec4<f32>(b_a.x, m, g_a.x, 0.0) * de;
         acc_latm += vec4<f32>(b_c.rgb * m, mg) * de;
         acc_g += vec4<f32>(g_c.rgb * mg, g_a.x * xc) * de;
         acc_gq += vec4<f32>(g_c.rgb * (mg * xc), mg * xc) * de;
@@ -393,14 +392,13 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ra = textureSampleLevel(region_aux, samp, world / rdim, 0.0);
 
     let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult
-    let b_a = textureLoad(brush_src_aux, t, 0);   // (height, wet, _, _)
+    let b_a = textureLoad(brush_src_aux, t, 0);   // (height, _, _, _)
 
     // Only the canvas→tool direction happens here. The tool's own draining is per
     // *segment* (`deplete`), because it has to advance with travel for the exchange
     // to be independent of how the path was cut — at pickup cadence, every segment
     // in an interval would deposit from the same undepleted load.
     var h = b_a.x;
-    var wet = b_a.y;
     var m = b_c.a * h;
 
     // Fold in the paint lifted off the canvas: height moves, colour/opacity
@@ -410,17 +408,16 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
     let canvas_lat = rc.rgb / max(rc.a, EPS);
     let lat = blend_latent(b_c.rgb, m, canvas_lat, take_m);
     h += take_h;
-    wet += ra.y * lift;
     m += take_m;
 
     textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
-    textureStore(brush_dst_aux_w, t, vec4<f32>(h, wet, 0.0, 0.0));
+    textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
     // The reload just folded in, again as its own parcel — the bake reads it back
     // out of the reservoir sum so the deposit can ramp it in across the coming
     // interval instead of serving it as a step (see the header). Same convention
     // as the reservoir pair: straight latent + per-unit opacity, mass = op·height.
     textureStore(gain_color_w, t, vec4<f32>(canvas_lat, rc.a));
-    textureStore(gain_aux_w, t, vec4<f32>(take_h, ra.y * lift, 0.0, 0.0));
+    textureStore(gain_aux_w, t, vec4<f32>(take_h, 0.0, 0.0, 0.0));
 }
 
 // ---- 2b. Deplete: the tool drains as it gives paint up, per segment. ------------
@@ -448,7 +445,7 @@ fn deplete(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b_c = textureLoad(brush_src_color, t, 0);
     let b_a = textureLoad(brush_src_aux, t, 0);
     textureStore(brush_dst_color_w, t, b_c);
-    textureStore(brush_dst_aux_w, t, vec4<f32>(b_a.x * keep, b_a.y * keep, 0.0, 0.0));
+    textureStore(brush_dst_aux_w, t, vec4<f32>(b_a.x * keep, 0.0, 0.0, 0.0));
 }
 
 // ---- 3. Deposit: the swept exchange over one segment. ----------------------------
@@ -529,25 +526,23 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // exactly the stepped amount — so this changes the seams, not the stroke.
     let rc0 = (st.e.z + xl) / st.e.w - 0.5;
     let rc1 = 1.0 / st.e.w;
-    // Height, mass and wet are non-negative and the ramp is a fraction of the
-    // parcel already inside the reservoir sum, so a total below zero can only be
+    // Height and mass are non-negative and the ramp is a fraction of the parcel
+    // already inside the reservoir sum, so a total below zero can only be
     // rounding. The *latent* is not: these are colour-space channels (Oklab a/b
     // are signed — green carries a negative a), so its prefix is not monotonic and
     // clamping the difference would shear the chroma off whatever the tool is
     // carrying.
     let inv_e = 1.0 / e;
-    let tool_h = max(d_load.x + rc0 * d_load.w - rc1 * d_g.w, 0.0) * inv_e;
+    let tool_h = max(d_load.x + rc0 * d_load.z - rc1 * d_g.w, 0.0) * inv_e;
     let tool_m = max(d_load.y + rc0 * d_latm.w - rc1 * d_gq.w, 0.0) * inv_e;
-    let tool_wet = max(d_load.z, 0.0) * inv_e;
     let latm = d_latm.xyz + rc0 * d_g.xyz - rc1 * d_gq.xyz;
     let tool_op = tool_m / max(tool_h, EPS);
     let tool_lat = latm * inv_e / max(tool_m, EPS);
 
-    // The lift's removal: height (and wet) leave; the remaining paint's latent and
-    // per-unit opacity are unchanged — the source fades because its *thickness*
-    // drops, never because its alpha is scaled (§6.1).
+    // The lift's removal: height leaves; the remaining paint's latent and per-unit
+    // opacity are unchanged — the source fades because its *thickness* drops,
+    // never because its alpha is scaled (§6.1).
     var h = ua.x * (1.0 - lift);
-    var wet = ua.y * (1.0 - lift);
     var m = uc.a * h;
     let canvas_lat = uc.rgb / max(uc.a, EPS);
 
@@ -577,11 +572,9 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     if par_m > EPS {
         par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (st.c.w * add_h)) / par_m;
     }
-    let par_wet = tool_wet * dep + st.e.y * laid;
 
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
     h += par_h;
-    wet += par_wet;
     m += par_m;
     let op = m / max(h, EPS);
 
@@ -590,5 +583,5 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // segment did — the lift as well as the deposit — which is exactly the fraction
     // `pickup` scaled its own side of the transfer by.
     textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
-    textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, wet, 0.0, 0.0), sel));
+    textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));
 }

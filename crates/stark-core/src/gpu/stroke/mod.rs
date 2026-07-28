@@ -110,7 +110,7 @@ pub struct StrokeRenderer {
 
     // Stroke integrate (DESIGN.md §6.2/§6.1): a fullscreen pass reads the base tile +
     // the stroke's footprint scratch and writes `new = f(base, scratch)` into a fresh
-    // CoW tile's color+aux MRT — premultiplied-over + additive height/wet.
+    // CoW tile's color+aux MRT — premultiplied-over + additive height.
     integrate_pipeline: wgpu::RenderPipeline,
     integrate_bgl: wgpu::BindGroupLayout,
 
@@ -140,7 +140,7 @@ pub struct StrokeRenderer {
 pub struct ToolState {
     /// Reservoir colour: per texel, the latent paint (rgb) and its per-unit opacity.
     color: wgpu::Texture,
-    /// Reservoir aux: per texel, the carried amount and its wetness.
+    /// Reservoir aux: per texel, the carried amount (height).
     aux: wgpu::Texture,
     /// The last pickup's gain parcel (same two-texture layout), which the deposit
     /// ramps in across the pickup interval rather than serving as a step
@@ -482,7 +482,7 @@ impl StrokeRenderer {
     /// The pool hands out textures, not tiles (see [`TexHandle`](crate::gpu::tile::TexHandle)).
     /// Pairing them here is what keeps the two formats coming from the colour space
     /// actually in use rather than from a constant — the pool previously hardcoded
-    /// `Rg16Float` for aux, which happened to match every colour space but would have
+    /// `R16Float` for aux, which happened to match every colour space but would have
     /// panicked on the first one that chose otherwise (DESIGN.md §6.7).
     fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
         TilePairHandle::new(
@@ -603,7 +603,6 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
             .max_len
             .min((0.5 * RESERVOIR_CADENCE * b.radius).max(0.5));
     }
-    tracing::warn!(?tol, "flatten_tolerance");
     tol
 }
 

@@ -21,7 +21,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let vis = paint_vis_at(p, dim);            // translucent-slab visible alpha
     let lab = cc.rgb / max(cc.a, 1e-4);        // un-premultiply opacity → latent Oklab
     let over = over_substrate(lab, vis);       // substrate, or a transparent cut-out
-    let wet = clamp(textureLoad(comp_aux, p, 0).y, 0.0, 1.0) * vis;
 
-    return finish(oklab_to_linear_srgb(over.rgb), wet, over.a, frag.xy, dim);
+    // `vis` doubles as the gloss ramp: the paint film is uniformly specular, so how
+    // much sheen a fragment shows is just how much of it is paint (media_common).
+    return finish(oklab_to_linear_srgb(over.rgb), vis, over.a, frag.xy, dim);
 }

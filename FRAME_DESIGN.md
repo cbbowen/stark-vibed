@@ -122,8 +122,10 @@ the surface height (≤ ~0.6) is subtracted.
 
 The physical reading is honest rather than a workaround: **a matte is a flat,
 opaque coat of paint.** Its interior has constant height, so its gradient is
-zero, so it lights flat and matte — no weave, no gloss. That is what a mat board
-looks like. Its boundary is a height cliff and therefore catches light, the same
+zero, so it lights flat — no weave, and no *varying* gloss: it is opaque paint, so
+it carries the paint film's uniform sheen (§6.3), but with a flat normal that sheen
+is an even wash rather than a glint. That is what a mat board looks like. Its
+boundary is a height cliff and therefore catches light, the same
 way every paint stroke's edge already does; at the frame border that reads as a
 crisp bevel, which is wanted.
 
@@ -136,12 +138,12 @@ paint *underneath* it would survive, and `height_at` would emboss that paint's
 impasto as ghost ridges through an opaque mat board.
 
 So the matte pipeline declares its own blend state: premultiplied **over** on
-both targets. The aux then composites as `aux' = aux·(1−a) + (H·a, 0)`, which is
+both targets. The aux then composites as `aux' = aux·(1−a) + H·a`, which is
 right at both ends — an opaque matte erases the relief beneath it, a 30% scrim
 keeps 70% of it.
 
 (`OneMinusSrcAlpha` as a destination factor is valid on the alpha-less
-`Rg16Float` aux target: the factor reads the *source* alpha from the fragment
+`R16Float` aux target: the factor reads the *source* alpha from the fragment
 shader's output vec4, which exists regardless of the format's channel count.)
 
 ### 4.3 Matte opacity is non-linear, and that is deliberate

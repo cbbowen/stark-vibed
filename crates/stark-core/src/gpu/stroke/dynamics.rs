@@ -320,9 +320,9 @@ impl<'a> DynamicsRun<'a> {
                         depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                // Carried height = the pre-`charge` glob; carried wet
-                                // is 0 (the brush has no wetness knob, so the tool
-                                // never picks up or lays gloss of its own).
+                                // Carried height = the pre-`charge` glob; the rest of
+                                // the reservoir aux is unused (height is the only
+                                // thing the tool carries, DESIGN.md §6.1).
                                 r: d.charge as f64,
                                 g: 0.0,
                                 b: 0.0,
@@ -750,7 +750,7 @@ impl<'a> DynamicsRun<'a> {
 
         // ---- Write-back: slice each affected tile's full TILE_TEX block out of
         // the shared region → aprons stay bit-identical to neighbour interiors
-        // (§6.4), and the wide region aux narrows to the persistent (height, wet).
+        // (§6.4), and the wide region aux narrows to the persistent (height).
         let mut new_map = base.clone();
         for coord in &coords {
             let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
@@ -1059,13 +1059,12 @@ fn dynamics_plan(
                 (mid.y - half).floor(),
                 s.orient,
                 1.0,
-                // e: the `add` source rate — height per unit exposure. The wet rate
-                // (.y) is 0: paint carries no wetness now that the brush has no
-                // wetness knob, so nothing ever adds to the gloss channel. .zw are
-                // the reload ramp's coordinates (dynamics.wesl): travel into the
-                // pickup interval at the segment start, and the interval's nominal
-                // length — both in radius units, both replay-deterministic (`since`
-                // is carried across ranges, the step is a function of the segment).
+                // e: the `add` source rate — height per unit exposure. `.y` is unused
+                // (height is the only thing a segment sources). `.zw` are the reload
+                // ramp's coordinates (dynamics.wesl): travel into the pickup interval
+                // at the segment start, and the interval's nominal length — both in
+                // radius units, both replay-deterministic (`since` is carried across
+                // ranges, the step is a function of the segment).
                 s.amount * ADD_GAIN,
                 0.0,
                 since / s.radius,

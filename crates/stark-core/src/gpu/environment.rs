@@ -3,7 +3,7 @@
 //! A studio (or any) HDR is decoded from its Radiance RGBE file into a linear-RGB
 //! equirectangular image, then used to light the painting: the media pass samples
 //! it in the surface-normal direction (diffuse irradiance) and the view-reflection
-//! direction (wet specular), so impasto relief catches the environment's lights.
+//! direction (the paint's specular), so impasto relief catches the environment's lights.
 //!
 //! Like [`super::surface::Surface`], the bytes come from the frontend at runtime
 //! (the engine embeds none); decoding and prefiltering happen here, on the CPU,
@@ -204,7 +204,7 @@ fn rgbe_to_linear(rgbe: [u8; 4]) -> [f32; 3] {
 /// equirectangular `Rgba16Float` texture with a full mip chain (each level a box
 /// downsample of the last). The media pass samples a high mip in the surface-normal
 /// direction for diffuse irradiance and a gloss-selected mip in the reflection
-/// direction for wet specular (DESIGN.md §6.3). Cloning is cheap (Arc-backed wgpu
+/// direction for the paint's specular (DESIGN.md §6.3). Cloning is cheap (Arc-backed wgpu
 /// handles), so it can live alongside the [`super::surface::Surface`].
 #[derive(Clone)]
 pub struct Environment {

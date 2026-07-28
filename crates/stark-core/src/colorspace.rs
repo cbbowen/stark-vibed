@@ -36,7 +36,7 @@ pub trait ColorSpace {
 
     /// Tile color channel texture format.
     fn color_format(&self) -> wgpu::TextureFormat;
-    /// Tile auxiliary channel texture format (height/wet/…).
+    /// Tile auxiliary channel texture format (paint height).
     fn aux_format(&self) -> wgpu::TextureFormat;
     /// Blend for the color target when stamping/compositing.
     fn color_blend(&self) -> wgpu::BlendState;
@@ -70,7 +70,7 @@ fn additive() -> wgpu::BlendState {
 }
 
 /// The default perceptual color space: Oklab `(L, a, b)` premultiplied by the
-/// paint's *opacity* (in the color alpha), with height/wet in a two-channel aux
+/// paint's *opacity* (in the color alpha), with paint height in a one-channel aux
 /// (DESIGN.md §6.5/§6.1). The media pass derives visible alpha from opacity × thickness,
 /// where thickness is the difference between paint height and surface height.
 pub struct OkLabColorSpace;
@@ -84,7 +84,7 @@ impl ColorSpace for OkLabColorSpace {
         wgpu::TextureFormat::Rgba16Float
     }
     fn aux_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Rg16Float
+        wgpu::TextureFormat::R16Float
     }
     fn color_blend(&self) -> wgpu::BlendState {
         over()
@@ -140,7 +140,7 @@ impl ColorSpace for MixboxColorSpace {
         wgpu::TextureFormat::Rgba16Float
     }
     fn aux_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Rg16Float
+        wgpu::TextureFormat::R16Float
     }
     fn color_blend(&self) -> wgpu::BlendState {
         over()

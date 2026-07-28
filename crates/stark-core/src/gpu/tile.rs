@@ -16,8 +16,11 @@
 //! Channels (DESIGN.md §6.1, normalized representation):
 //! - `color`: `Rgba16Float`, latent colour premultiplied by **opacity**
 //!   (`L·op, a·op, b·op, op`) — opacity, *not* coverage.
-//! - `aux`: `Rg16Float`, `(thickness, wet)` — impasto thickness and wetness. The
-//!   media pass combines opacity × thickness into the visible alpha.
+//! - `aux`: `R16Float`, `(height)` — the amount of paint, from which the media pass
+//!   gets impasto thickness (height − surface height) and combines opacity ×
+//!   thickness into the visible alpha. Height is the *only* persistent auxiliary
+//!   channel: gloss is a uniform property of paint (§6.3), not something a stroke
+//!   stores per texel.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};

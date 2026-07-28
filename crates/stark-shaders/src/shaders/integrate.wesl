@@ -4,16 +4,16 @@
 // `new = f(base, scratch)`, written to the color+aux MRT.
 //
 // It is a render pass (not compute) because the tile channels are `Rgba16Float` /
-// `Rg16Float`, which are not core-WebGPU storage-texture formats. Everything is
+// `R16Float`, which are not core-WebGPU storage-texture formats. Everything is
 // sampled with `textureLoad` (1:1 with the destination — no filtering), so the
 // result is a deterministic function of canvas position and a tile's apron is
 // rewritten identically to its neighbour's interior (the seam invariant, §6.4).
 //
 // In the normalized representation (§6.1): color = latent·opacity with opacity in
-// `.a`, aux = (height, wet). The merge is the ordinary premultiplied-"over" on
-// color and an additive sum of height/wet. Brush dynamics (the sequential stamp
-// loop, §6.2) will replace this with richer read-modify-write physics; this plain
-// merge is the pure-`add` fast path they must reduce to.
+// `.a`, aux = (height). The merge is the ordinary premultiplied-"over" on color and
+// an additive sum of height. Brush dynamics (the sequential stamp loop, §6.2) will
+// replace this with richer read-modify-write physics; this plain merge is the
+// pure-`add` fast path they must reduce to.
 
 @group(0) @binding(0) var base_color: texture_2d<f32>;
 @group(0) @binding(1) var base_aux: texture_2d<f32>;
@@ -42,14 +42,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let base_c = textureLoad(base_color, c, 0);
     let base_a = textureLoad(base_aux, c, 0);
     let s_c = textureLoad(scratch_color, c, 0); // stroke slab: latent·opacity, opacity in .a
-    // Wide scratch aux: (laid height, laid wet·op, footprint coverage √cov, unused) —
-    // see stamp_oklab.wesl's fs_main for the channel-by-channel story.
+    // Wide scratch aux: (laid height, footprint coverage, unused, unused) — see
+    // stamp_oklab.wesl's fs_main for the channel-by-channel story.
     let s_a = textureLoad(scratch_aux, c, 0);
 
     // Colour: lay the stroke slab over the base (premultiplied "over").
     let merged_c = s_c + base_c * (1.0 - s_c.a);
-    // Height/wet accumulate: height is the amount of paint (§6.1).
-    let merged_a = vec4<f32>(base_a.x + s_a.x, base_a.y + s_a.y, 0.0, 0.0);
+    // Height accumulates: it is the amount of paint (§6.1).
+    let merged_a = vec4<f32>(base_a.x + s_a.x, 0.0, 0.0, 0.0);
 
     // Gate by the selection: the tile keeps its base value where the mask is 0 and
     // takes the stroke where it is 1 (§6.8). A *lerp of the result*, not a scaling of
@@ -61,6 +61,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     var out: FsOut;
     out.color = mix(base_c, merged_c, m);
-    out.aux = mix(vec4<f32>(base_a.x, base_a.y, 0.0, 0.0), merged_a, m);
+    out.aux = mix(vec4<f32>(base_a.x, 0.0, 0.0, 0.0), merged_a, m);
     return out;
 }

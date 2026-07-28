@@ -127,10 +127,11 @@ pub enum LayerContent {
     /// it being a layer.
     ///
     /// Physically this is a flat, opaque *coat of paint*: the compositor gives it
-    /// a constant thickness, so its interior lights flat and matte (zero height
-    /// gradient — no weave, no gloss) while its boundary catches light the same
-    /// way any stroke edge does. See FRAME_DESIGN.md §4 for why it must write the
-    /// aux target at all, and why its blend there is `over` rather than additive.
+    /// a constant thickness, so its interior lights flat (zero height gradient —
+    /// no weave, and the paint film's uniform sheen reads as an even wash rather
+    /// than a glint) while its boundary catches light the same way any stroke edge
+    /// does. See FRAME_DESIGN.md §4 for why it must write the aux target at all,
+    /// and why its blend there is `over` rather than additive.
     ///
     /// [`BrushParams::color`]: crate::document::BrushParams::color
     Matte {
