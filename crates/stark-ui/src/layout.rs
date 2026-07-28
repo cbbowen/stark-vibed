@@ -23,8 +23,8 @@ pub enum PanelId {
     Color,
     Brush,
     Select,
-    Lighting,
     Layers,
+    Lighting,
 }
 
 impl PanelId {
@@ -33,9 +33,13 @@ impl PanelId {
         PanelId::Color,
         PanelId::Brush,
         PanelId::Select,
-        PanelId::Lighting,
         PanelId::Layers,
+        PanelId::Lighting,
     ];
+
+    /// The panels that start closed: lighting is a scene-setup control, not something
+    /// touched mid-painting, so it stays out of the stack until asked for.
+    pub const CLOSED_BY_DEFAULT: [PanelId; 1] = [PanelId::Lighting];
 
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
@@ -43,8 +47,8 @@ impl PanelId {
             PanelId::Color => "Color",
             PanelId::Brush => "Brush",
             PanelId::Select => "Select",
-            PanelId::Lighting => "Lighting",
             PanelId::Layers => "Layers",
+            PanelId::Lighting => "Lighting",
         }
     }
 }

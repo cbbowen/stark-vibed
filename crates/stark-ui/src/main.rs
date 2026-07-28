@@ -76,10 +76,11 @@ fn app() -> Element {
     use_context_provider(|| state);
 
     // Floating-panel layout: order + which are open. Provided so the panel chrome and
-    // the "Panels" menu can reorder/close/restore them.
+    // the "Panels" menu can reorder/close/restore them. Panels in `CLOSED_BY_DEFAULT`
+    // start hidden but keep their slot, so the menu reopens them where they belong.
     let panels = PanelLayout {
         order: use_signal(|| PanelId::ALL.to_vec()),
-        hidden: use_signal(HashSet::new),
+        hidden: use_signal(|| HashSet::from(PanelId::CLOSED_BY_DEFAULT)),
         drag: use_signal(|| None),
         refs: use_signal(HashMap::new),
     };
