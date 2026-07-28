@@ -38,7 +38,8 @@ jobs:
         run: cargo binstall dioxus-cli@0.7.9 --no-confirm --force
 
       - name: Build
-        run: dx build --package stark-ui --platform web --release --base-path ${{ github.event.repository.name }}
+        # `--debug-symbols false` is only to keep wasm-opt from failing.
+        run: dx build --package stark-ui --platform web --release --debug-symbols false --base-path ${{ github.event.repository.name }}
 
       - uses: actions/configure-pages@v6
 
