@@ -37,6 +37,10 @@ fn main() {
     compiler.build_artifact(&"package::dynamics".parse().unwrap(), "dynamics");
     compiler.build_artifact(&"package::slice".parse().unwrap(), "slice");
 
+    // Affine transform of the selected paint: parcel + combine + mask passes
+    // (TRANSFORM_DESIGN.md).
+    compiler.build_artifact(&"package::transform".parse().unwrap(), "transform");
+
     // Selections: mask rasterization, the stamp loop's region gather, and the
     // on-screen outline — DESIGN §6.8.
     compiler.build_artifact(&"package::selection".parse().unwrap(), "selection");

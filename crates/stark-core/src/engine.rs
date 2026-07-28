@@ -21,6 +21,7 @@ use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
     CompositeItem, Compositor, Environment, EnvironmentId, GpuContext, MatteDraw, Registry,
     SelectionOutline, SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
+    TransformRenderer,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -390,7 +391,7 @@ impl Engine {
         let _environment_id = EnvironmentId::default();
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
-        let (pool, stroke, compositor) = build_gpu(GpuBuild {
+        let (pool, stroke, compositor, transform) = build_gpu(GpuBuild {
             gpu: &gpu,
             target_format,
             viewport,
@@ -415,6 +416,7 @@ impl Engine {
                 stroke,
                 assets,
                 selection,
+                transform,
             },
             compositor,
             initial_surface,
@@ -567,6 +569,14 @@ impl Engine {
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
+            DocCommand::Transform { layer, affine } => {
+                // A degenerate or non-finite affine would be rejected by `apply`
+                // anyway (deterministically — TRANSFORM_DESIGN.md §1); refusing it
+                // here as well keeps a knowably-dead action out of the log.
+                if crate::document::affine_usable(affine) {
+                    self.commit(ActionKind::Transform { layer, affine });
+                }
+            }
             DocCommand::SetSurface(id) => {
                 if id != self.document().surface {
                     self.commit(ActionKind::SetSurface(id));
@@ -1644,7 +1654,7 @@ impl Engine {
     /// document is already empty (no tiles of the old format are referenced).
     fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
         let cs = id.make();
-        let (pool, stroke, compositor) = build_gpu(GpuBuild {
+        let (pool, stroke, compositor, transform) = build_gpu(GpuBuild {
             gpu: &self.gpu,
             target_format: self.target_format,
             viewport: self.session.view.viewport,
@@ -1656,6 +1666,7 @@ impl Engine {
         self.color_space = cs;
         self.apply.pool = pool;
         self.apply.stroke = stroke;
+        self.apply.transform = transform;
         self.compositor = compositor;
     }
 
@@ -2058,7 +2069,7 @@ struct GpuBuild<'a> {
     selection: &'a SelectionRenderer,
 }
 
-fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor) {
+fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor, TransformRenderer) {
     let GpuBuild {
         gpu,
         target_format,
@@ -2083,7 +2094,8 @@ fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor) {
         surface.clone(),
         environment.clone(),
     );
-    (pool, stroke, compositor)
+    let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone());
+    (pool, stroke, compositor, transform)
 }
 
 /// Convenience for tests/tools: build an engine on a headless device.

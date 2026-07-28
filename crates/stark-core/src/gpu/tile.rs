@@ -53,6 +53,12 @@ pub enum AllocSource {
     StrokeScratch,
     DynamicsWriteback,
     SelectionMask,
+    /// The transform's moved-parcel scratch pair (TRANSFORM_DESIGN.md §5).
+    TransformScratch,
+    /// A tile rewritten by a transform's combine pass.
+    TransformDestination,
+    /// A selection mask tile carried under a transform's affine.
+    TransformMask,
 }
 
 /// One pooled GPU texture (`TILE_TEX` square). `Option` only so [`Drop`] can move it

@@ -5,6 +5,7 @@ pub mod layer;
 pub mod selection;
 pub mod state;
 pub mod timeline;
+pub mod transform;
 
 pub use action::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
@@ -14,3 +15,4 @@ pub use layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState};
 pub use timeline::{LinearTimeline, ReplicatedTimeline, Timeline, effective_actions};
+pub use transform::{MAX_TRANSFORM_TILES, affine_usable};

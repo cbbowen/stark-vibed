@@ -1494,7 +1494,7 @@ assert_golden!("oil_blend_01", png, tolerance);
 | A different frontend (native, CLI exporter) | new consumer of `Engine`; core untouched |
 | Another selection producer (by colour, painted quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; the mask representation, ops, history and masking sites are unchanged (§6.8) |
 | A richer frame / comic gutters / a solid ground | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing are unchanged (FRAME_DESIGN.md) |
-| Transforms, text | new `ActionKind`s + optionally new channels; the action-log model already supports them |
+| Text | a new `ActionKind` + optionally new channels; the action-log model already supports it (transforms landed exactly this way — [TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md)) |
 | A wider-gamut / spectral color pipeline | `color.rs` + `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
 | Multi-user collaboration | swap `LinearTimeline` → `ReplicatedTimeline`; add `stark-net` (iroh) transport; engine/GPU untouched (§12) |
 
@@ -1694,6 +1694,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
 | 13 | Per-client state: owned selections + presence ([PEER_DESIGN.md](PEER_DESIGN.md)) | done — its own build order is PEER_DESIGN §14 |
+| — | Transform ([TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md)) | **engine done** — `ActionKind::Transform`, the parcel/combine/mask GPU passes, exactness + replay tests; the interactive gesture/UI is not started |
 
 1. **GPU + tiles skeleton:** `GpuContext`, the recycling `TilePool`, and a tile
    blitted to a target under a `ViewTransform`. Proves infinite-canvas pan/zoom

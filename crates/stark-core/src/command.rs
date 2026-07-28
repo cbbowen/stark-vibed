@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::{
     BlendMode, BrushParams, LayerId, MatteRegion, SelectionMode, SelectionOp, Tool,
 };
-use crate::geom::{Extent2, Vec2};
+use crate::geom::{Affine2, Extent2, Vec2};
 use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
 
 /// One pen/mouse sample in canvas space.
@@ -161,6 +161,15 @@ pub enum DocCommand {
     /// sRGB (FRAME_DESIGN.md §5). A document property, not a view setting: it is
     /// what the piece was painted on, and it is saved.
     SetBackground([f32; 3]),
+
+    /// Affine-transform this client's selected paint on `layer`, carrying the
+    /// selection along with it (TRANSFORM_DESIGN.md). A universal selection moves
+    /// the whole layer. One action per gesture — the interactive drag builds in
+    /// view state and commits once on release, like the frame drag.
+    Transform {
+        layer: LayerId,
+        affine: Affine2,
+    },
 
     /// Switch the canvas surface (DESIGN.md §6.4).
     ///

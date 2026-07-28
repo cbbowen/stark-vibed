@@ -5,7 +5,7 @@
 //! The infinite canvas (DESIGN.md §6) is realized by tiles being sparse and
 //! addressed by signed integer coordinates.
 
-pub use glam::Vec2;
+pub use glam::{Affine2, Vec2};
 
 /// Apron (halo) width in pixels carried around each tile's interior, replicated
 /// from the neighboring canvas content (DESIGN.md §6.4). The compositor samples a

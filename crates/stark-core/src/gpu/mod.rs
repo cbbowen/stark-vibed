@@ -10,6 +10,7 @@ pub mod selection;
 pub mod stroke;
 pub mod surface;
 pub mod tile;
+pub mod transform;
 
 pub use composite::{CompositeItem, Compositor, MatteDraw, MediaParams, SelectionOutline};
 pub use context::GpuContext;
@@ -19,3 +20,4 @@ pub use selection::SelectionRenderer;
 pub use stroke::{StrokeRenderer, StrokeSpans};
 pub use surface::{Surface, SurfaceId};
 pub use tile::{MaskHandle, TilePairHandle, TilePool};
+pub use transform::TransformRenderer;

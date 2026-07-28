@@ -48,6 +48,12 @@ pub fn slice() -> &'static str {
     include_wesl!("slice")
 }
 
+/// WGSL affine-transform passes: the moved parcel, the cut+stack combine, and
+/// the carried selection mask — TRANSFORM_DESIGN.md.
+pub fn transform() -> &'static str {
+    include_wesl!("transform")
+}
+
 /// WGSL selection-mask rasterization: one op's shape combined into a mask tile —
 /// DESIGN §6.8.
 pub fn selection() -> &'static str {

@@ -55,17 +55,21 @@ the ground, not paint to pick up. Sample-layer(s) and sample-radius are options
 present-or-absent argument the selection and frame bars make, and what makes a
 modifier binding discoverable rather than secret.
 
-### 0.3 Transform
+### 0.3 Transform — engine built
 
 Move / scale / rotate / flip / free-transform of a selection or a layer, plus
-cut / copy / paste. Today a selection can only *mask*
-([selection.rs](crates/stark-core/src/document/selection.rs)); not one painted
-pixel can be moved. Every competitor treats transform as co-equal with the
+cut / copy / paste. Every competitor treats transform as co-equal with the
 brush.
 
-This is the largest genuine engineering item on the list — resampling tiles
-under an affine, a new `ActionKind`, and a live preview that matches the commit —
-but §10 already lists it as additive and the log model supports it.
+The engine half is **done** — see [TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md):
+`ActionKind::Transform { layer, affine }` cuts the author's selected paint by
+the lift law, resamples it once under the affine (forward-rasterized source-tile
+quads, exact at texel centres), stacks it back by the dynamics parcel law, and
+carries the selection mask with it. Identity, integer translations and flips are
+byte-exact by test; rejection (degenerate or oversized) is deterministic, so
+replay and peers agree. What remains is the **interactive gesture** — handles,
+snapping, a live preview through the same renderer so preview == committed —
+and the cut/copy/paste clipboard, which reuses the parcel machinery.
 
 ### 0.4 Fill, gradient, and blend modes
 
@@ -200,8 +204,8 @@ Naming these is part of not becoming Photoshop.
 
 1. **Now** — framing/export, save/open, ~~eyedropper~~, blend modes, fill. The
    difference between a tech demo and something a finished piece comes out of.
-2. **Next** — transform; layer masks / clipping / alpha lock / merge; view
-   mirror and rotate.
+2. **Next** — transform (engine done; the gesture UI remains); layer masks /
+   clipping / alpha lock / merge; view mirror and rotate.
 3. **Then, in parallel** — brush parameter mapping and the brush library
    (deepens what is already the strongest asset); symmetry and guides (highest
    value per line of code on this list).

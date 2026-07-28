@@ -336,6 +336,22 @@ pub enum ActionKind {
     /// is part of what it is; it was previously a view setting, so the paper colour
     /// of a painting was not saved at all.
     SetBackground([f32; 3]),
+
+    /// Affine transform of the selected paint on `layer` (TRANSFORM_DESIGN.md):
+    /// cut what the **author's** selection holds, resample it once under
+    /// `affine`, stack it back over what remained — and carry the author's mask
+    /// along with it, so the moved region stays selected. A universal selection
+    /// moves the whole layer. Six floats in the log; every peer re-derives the
+    /// same tiles from them. Appended last so postcard keeps decoding older
+    /// files.
+    ///
+    /// Deterministically **rejected** (the document is left unchanged) when the
+    /// affine is unusable or the rewrite exceeds the tile caps — see
+    /// [`super::transform`].
+    Transform {
+        layer: LayerId,
+        affine: crate::geom::Affine2,
+    },
 }
 
 /// A committed document mutation with its identity.
@@ -354,6 +370,7 @@ pub struct ApplyCtx {
     pub stroke: StrokeRenderer,
     pub assets: crate::assets::AssetStore,
     pub selection: SelectionRenderer,
+    pub transform: crate::gpu::transform::TransformRenderer,
 }
 
 impl history::Action for Action {
@@ -444,6 +461,37 @@ impl history::Action for Action {
             ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
             ActionKind::SetMatteColor(id, color) => state.set_matte_color(*id, *color),
             ActionKind::SetBackground(rgb) => state.with_background(*rgb),
+            // Cut the author's selected paint, restack it under the affine, and
+            // carry the author's mask with it (TRANSFORM_DESIGN.md). Gated and
+            // keyed exactly as a stroke is: the mask comes off the state being
+            // folded over, the actor off the action's own id. A matte or absent
+            // layer refuses it, like a stroke; an unusable or oversized transform
+            // is rejected deterministically, so peers and replays agree.
+            ActionKind::Transform { layer, affine } => {
+                match state
+                    .layer_index(*layer)
+                    .and_then(|idx| state.layer_at(idx).tiles().map(|base| (idx, base)))
+                {
+                    Some((idx, base)) => {
+                        let selection = state.selection_of(self.id.actor);
+                        match ctx.transform.apply(&ctx.pool, base, &selection, *affine) {
+                            Some((tiles, moved_selection)) => {
+                                let layer = state.layer_at(idx).with_tiles(tiles);
+                                state
+                                    .with_layer_at(idx, layer)
+                                    .with_selection(self.id.actor, moved_selection)
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "transform rejected (unusable affine or too many tiles); ignored"
+                                );
+                                state
+                            }
+                        }
+                    }
+                    None => state,
+                }
+            }
         })
     }
 }
