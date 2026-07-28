@@ -187,11 +187,22 @@ struct DynamicsRun<'a> {
     brush_color: [wgpu::TextureView; 2],
     brush_aux: [wgpu::TextureView; 2],
     cur: usize,
-    /// The segment's swept reservoir prefix (fp32, so the per-fragment difference
-    /// keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a single
-    /// pair serves the whole stroke: nothing reads the last segment's bake.
+    /// The last pickup's gain parcel (dynamics.wesl): written whole by every
+    /// `pickup`, read by `bake` so the deposit can ramp the reload in across the
+    /// interval. Not ping-ponged — nothing reads and writes it in one dispatch.
+    gain_color_tex: wgpu::Texture,
+    gain_aux_tex: wgpu::Texture,
+    gain_color: wgpu::TextureView,
+    gain_aux: wgpu::TextureView,
+    /// The segment's swept reservoir prefixes (fp32, so the per-fragment difference
+    /// keeps its precision — see [`BAKE_FORMAT`]): the reservoir set and the
+    /// gain-ramp set (plain + travel-weighted; see dynamics.wesl for the packing).
+    /// Rebuilt per segment, so a single quad serves the whole stroke: nothing reads
+    /// the last segment's bake.
     bake_load: wgpu::TextureView,
     bake_latm: wgpu::TextureView,
+    bake_g: wgpu::TextureView,
+    bake_gq: wgpu::TextureView,
     /// Travel since the last reservoir pickup (see [`ToolState`]).
     since: f32,
 }
@@ -254,6 +265,11 @@ impl<'a> DynamicsRun<'a> {
         let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let brush_color = [view_of(&brush_color_tex[0]), view_of(&brush_color_tex[1])];
         let brush_aux = [view_of(&brush_aux_tex[0]), view_of(&brush_aux_tex[1])];
+        // The gain parcel needs no init of its own: a fresh stroke's plan opens with
+        // a forced pickup (`since = ∞`), which writes every texel before the first
+        // bake reads any; a resumed one copies the carried parcel in below.
+        let gain_color_tex = brush_tex(&mut scoped, "stark dynamics gain color");
+        let gain_aux_tex = brush_tex(&mut scoped, "stark dynamics gain aux");
         if let Some(t) = tool {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
@@ -265,6 +281,16 @@ impl<'a> DynamicsRun<'a> {
             encoder.copy_texture_to_texture(
                 t.aux.as_image_copy(),
                 brush_aux_tex[0].as_image_copy(),
+                RESERVOIR_EXTENT,
+            );
+            encoder.copy_texture_to_texture(
+                t.gain_color.as_image_copy(),
+                gain_color_tex.as_image_copy(),
+                RESERVOIR_EXTENT,
+            );
+            encoder.copy_texture_to_texture(
+                t.gain_aux.as_image_copy(),
+                gain_aux_tex.as_image_copy(),
                 RESERVOIR_EXTENT,
             );
         } else {
@@ -324,7 +350,11 @@ impl<'a> DynamicsRun<'a> {
         };
         let bake_load = bake("stark dynamics bake load");
         let bake_latm = bake("stark dynamics bake latm");
+        let bake_g = bake("stark dynamics bake g");
+        let bake_gq = bake("stark dynamics bake gq");
 
+        let gain_color = view_of(&gain_color_tex);
+        let gain_aux = view_of(&gain_aux_tex);
         Self {
             r,
             rec,
@@ -341,8 +371,14 @@ impl<'a> DynamicsRun<'a> {
             brush_color,
             brush_aux,
             cur: 0,
+            gain_color_tex,
+            gain_aux_tex,
+            gain_color,
+            gain_aux,
             bake_load,
             bake_latm,
+            bake_g,
+            bake_gq,
             since: tool.map_or(f32::INFINITY, |t| t.since),
         }
     }
@@ -595,6 +631,10 @@ impl<'a> DynamicsRun<'a> {
                         tex(9, &self.brush_color[1 - i]),
                         tex(10, &self.brush_aux[1 - i]),
                         tex(21, &sel_mask),
+                        // The gain parcel the pickup writes for the bake's reload
+                        // ramp — not ping-ponged, so both phases bind the same pair.
+                        tex(22, &self.gain_color),
+                        tex(23, &self.gain_aux),
                     ],
                 })
             })
@@ -613,6 +653,10 @@ impl<'a> DynamicsRun<'a> {
                         tex(8, &self.brush_aux[i]),
                         tex(17, &self.bake_load),
                         tex(18, &self.bake_latm),
+                        tex(24, &self.gain_color),
+                        tex(25, &self.gain_aux),
+                        tex(26, &self.bake_g),
+                        tex(27, &self.bake_gq),
                     ],
                 })
             })
@@ -627,6 +671,8 @@ impl<'a> DynamicsRun<'a> {
                         samp(),
                         tex(19, &self.bake_load),
                         tex(20, &self.bake_latm),
+                        tex(28, &self.bake_g),
+                        tex(29, &self.bake_gq),
                         tex(11, &under_color),
                         tex(12, &under_aux),
                         tex(13, &region_color),
@@ -787,8 +833,8 @@ impl<'a> DynamicsRun<'a> {
     /// Remember the tool for the range that resumes after this one. Copied rather
     /// than aliased: the loop's own reservoir textures are scoped to this call and
     /// destroyed at the end of it, and the range that resumes will write its first
-    /// pickup straight into whatever it is handed. 64² rgba16f, so the copy is
-    /// ~32 KB — nothing beside the region work it saves the next pointer move.
+    /// pickup straight into whatever it is handed. 64² rgba16f ×4, so the copy is
+    /// ~64 KB — nothing beside the region work it saves the next pointer move.
     fn capture_tool(&mut self) -> ToolState {
         let device = &self.r.ctx.device;
         let copy_out = |encoder: &mut wgpu::CommandEncoder, src: &wgpu::Texture, label| {
@@ -811,6 +857,18 @@ impl<'a> DynamicsRun<'a> {
                 &mut self.encoder,
                 &self.brush_aux_tex[self.cur],
                 "stark tool state aux",
+            ),
+            // The gain parcel rides along: a range resuming mid pickup interval
+            // still has part of this reload left to ramp in (dynamics.wesl).
+            gain_color: copy_out(
+                &mut self.encoder,
+                &self.gain_color_tex,
+                "stark tool state gain color",
+            ),
+            gain_aux: copy_out(
+                &mut self.encoder,
+                &self.gain_aux_tex,
+                "stark tool state gain aux",
             ),
             since: self.since,
         }
@@ -1003,11 +1061,15 @@ fn dynamics_plan(
                 1.0,
                 // e: the `add` source rate — height per unit exposure. The wet rate
                 // (.y) is 0: paint carries no wetness now that the brush has no
-                // wetness knob, so nothing ever adds to the gloss channel.
+                // wetness knob, so nothing ever adds to the gloss channel. .zw are
+                // the reload ramp's coordinates (dynamics.wesl): travel into the
+                // pickup interval at the segment start, and the interval's nominal
+                // length — both in radius units, both replay-deterministic (`since`
+                // is carried across ranges, the step is a function of the segment).
                 s.amount * ADD_GAIN,
                 0.0,
-                0.0,
-                0.0,
+                since / s.radius,
+                (RESERVOIR_CADENCE * s.radius).max(0.5) / s.radius,
                 // f–h: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
                 nfreq[0],
                 nfreq[1],
@@ -1257,6 +1319,11 @@ pub(super) fn build_dynamics_kit(
             // The selection mask over the region (§6.8) — sampled bilinearly here,
             // since a reservoir texel sits over an arbitrary sub-pixel spot.
             ctex(21, true),
+            // The gain parcel `pickup` writes for the bake's reload ramp. With the
+            // reservoir ping-pong this puts the stage at core WebGPU's guaranteed
+            // four storage textures — exactly.
+            stor(22),
+            stor(23),
         ],
     });
     // `bake` integrates the reservoir along the travel axis for one segment; the
@@ -1270,6 +1337,13 @@ pub(super) fn build_dynamics_kit(
             ctex(8, true),
             stor32(17),
             stor32(18),
+            // The gain parcel (read) and its two ramp prefixes (written) — see the
+            // packing note in dynamics.wesl. Four storage textures: exactly core
+            // WebGPU's guaranteed limit.
+            ctex(24, true),
+            ctex(25, true),
+            stor32(26),
+            stor32(27),
         ],
     });
     let deposit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1279,6 +1353,8 @@ pub(super) fn build_dynamics_kit(
             csamp,
             ctex(19, false),
             ctex(20, false),
+            ctex(28, false),
+            ctex(29, false),
             ctex(11, false),
             ctex(12, false),
             stor(13),

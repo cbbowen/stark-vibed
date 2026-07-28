@@ -142,9 +142,17 @@ pub struct ToolState {
     color: wgpu::Texture,
     /// Reservoir aux: per texel, the carried amount and its wetness.
     aux: wgpu::Texture,
+    /// The last pickup's gain parcel (same two-texture layout), which the deposit
+    /// ramps in across the pickup interval rather than serving as a step
+    /// (dynamics.wesl). A range resuming mid-interval still has part of this
+    /// reload left to ramp, so it travels with the reservoir.
+    gain_color: wgpu::Texture,
+    gain_aux: wgpu::Texture,
     /// Travel (canvas px) since the last reservoir pickup. The tool reloads every
     /// `spacing · radius` of travel and a pickup can only land *between* segments, so
-    /// a range that resumed this at zero would reload early and lay a visible step.
+    /// a range that resumed this at zero would reload early and lay a visible step —
+    /// and the reload ramp reads it as the interval-elapsed coordinate, so it would
+    /// also restart every gain ramp from zero.
     since: f32,
 }
 
@@ -156,6 +164,8 @@ impl Drop for ToolState {
         // them retires.
         self.color.destroy();
         self.aux.destroy();
+        self.gain_color.destroy();
+        self.gain_aux.destroy();
     }
 }
 
@@ -578,13 +588,18 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // The stamp loop reloads its reservoir every [`RESERVOIR_CADENCE`] radii of
     // travel, and a pickup can only land *between* segments — so a segment longer
     // than that cadence would silently thin the reloads and change how the tool
-    // carries paint. That is the binding constraint: the exchange itself is exact at
-    // any length (`dynamics.wesl::bake` integrates the reservoir over the whole pass
-    // rather than sampling it mid-pass), and this also bounds the snapshot scratch,
-    // which is sized by the longest segment.
+    // carries paint. The cap sits at *half* the cadence: the reload itself is
+    // ramped in continuously (dynamics.wesl), but `deplete`'s per-segment drain
+    // step still disagrees with the deposit's exposure currency where the
+    // footprint's density varies, and that residual — the crescent seams a
+    // lift × deposit stroke used to show at the cadence — shrinks linearly with
+    // segment length while the per-texel drain composes exactly across any cut.
+    // The exchange itself is exact at any length (`dynamics.wesl::bake` integrates
+    // the reservoir over the whole pass rather than sampling it mid-pass), and the
+    // cap also bounds the snapshot scratch, which is sized by the longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
-        tol.max_len = tol.max_len.min((RESERVOIR_CADENCE * b.radius).max(0.5));
+        tol.max_len = tol.max_len.min((0.5 * RESERVOIR_CADENCE * b.radius).max(0.5));
     }
     tol
 }
