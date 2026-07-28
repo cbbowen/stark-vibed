@@ -55,6 +55,17 @@ pub struct AppState {
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,
+    /// Bumped whenever the brush colour is set from **outside** the colour picker —
+    /// today only by the eyedropper.
+    ///
+    /// The Color panel's picker holds its own Oklab state (out-of-gamut `a`/`b`
+    /// survive there but not in the clamped sRGB it reports), so it is *seeded*
+    /// rather than driven, and this is how it is told to re-seed. Deliberately not
+    /// "the colour changed": a pick inside the field would then drag its own marker
+    /// back onto the gamut boundary under the user's cursor.
+    pub color_epoch: Signal<u64>,
+    /// The eyedropper (MISSING_FEATURES §0.2).
+    pub pick: PickState,
     /// Everything to do with a shared drawing (DESIGN.md §12).
     pub collab: CollabState,
 }
@@ -68,6 +79,14 @@ impl AppState {
             space_down: root_signal(|| false),
             canvas_active: root_signal(|| false),
             brush_editor_open: root_signal(|| false),
+            color_epoch: root_signal(|| 0),
+            pick: PickState {
+                all_layers: root_signal(|| true),
+                radius: root_signal(|| 0),
+                busy: root_signal(|| false),
+                alt_down: root_signal(|| false),
+                dragging: root_signal(|| false),
+            },
             collab: CollabState {
                 session: root_signal(|| None),
                 ticket: root_signal(|| None),
@@ -79,6 +98,34 @@ impl AppState {
             },
         }
     }
+}
+
+/// The eyedropper's signals (MISSING_FEATURES §0.2), grouped because they are one
+/// feature's worth of view state: the two options a sample is taken with, the latch
+/// that keeps Alt+drag from asking for samples faster than the GPU answers them, and
+/// the two flags that say where in the gesture we are.
+///
+/// The options live here rather than in the engine because nothing in the engine
+/// reads them between calls — [`Engine::pick_color`](stark_core::Engine::pick_color)
+/// is a request and they are its arguments, so a copy projected back through
+/// `observe()` would be state with no owner.
+#[derive(Clone, Copy)]
+pub struct PickState {
+    /// Sample the whole visible stack, rather than the selected layer alone.
+    pub all_layers: Signal<bool>,
+    /// Half-width of the averaged square, in canvas px (0 = point sample).
+    pub radius: Signal<u32>,
+    /// Whether a sample is in flight — see [`crate::input::pick_color`].
+    pub busy: Signal<bool>,
+    /// Whether Alt is held. Only ever *shown*: the canvas wears the eyedropper
+    /// cursor while it is and the options bar comes up, so the modifier announces
+    /// itself before it is used — which is the whole reason a modifier binding is
+    /// discoverable at all.
+    pub alt_down: Signal<bool>,
+    /// Whether an Alt+drag is actually sampling. Shared rather than local to the
+    /// canvas, unlike `drawing`/`panning`, because the options bar is mounted on
+    /// *armed but not yet dragging* and so has to be able to tell the two apart.
+    pub dragging: Signal<bool>,
 }
 
 /// The shared-session signals, grouped because they share one lifecycle: they are

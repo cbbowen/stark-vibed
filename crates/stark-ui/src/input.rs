@@ -2,16 +2,18 @@
 //! [`InputCommand`](stark_core::InputCommand)s
 //! (DESIGN.md §4).
 
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::SelectionMode;
 use stark_core::document::SelectionOp;
 use stark_core::geom::{Vec2, ViewTransform};
+use stark_core::{PickOptions, PickSource};
 
 pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
     match e.key() {
@@ -19,10 +21,14 @@ pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
             state.space_down.set(true);
             e.prevent_default();
         }
+        // Alt on its own focuses the browser's menu bar on Windows and Linux, which
+        // would take the keyboard away the moment the eyedropper is reached for.
+        Key::Alt => e.prevent_default(),
         _ => {}
     }
 
     let m = e.modifiers();
+    track_alt(state, m);
     if !(m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)) {
         return;
     }
@@ -60,6 +66,77 @@ pub fn handle_keyup(mut state: AppState, e: &Event<KeyboardData>) {
         }
         _ => {}
     }
+    track_alt(state, e.modifiers());
+}
+
+/// Record whether Alt is held, so the canvas can wear the eyedropper cursor while it
+/// is (MISSING_FEATURES §0.2).
+///
+/// Read off the event's **modifier set** rather than off the Alt key itself: a
+/// keystroke that arrives after Alt was pressed or released while the window was not
+/// focused then corrects the flag, instead of leaving it stuck on a press whose
+/// release never came. Written only on a change, since every write re-renders the
+/// canvas component.
+fn track_alt(state: AppState, m: Modifiers) {
+    let alt = m.contains(Modifiers::ALT);
+    let mut held = state.pick.alt_down;
+    if *held.peek() != alt {
+        held.set(alt);
+    }
+}
+
+/// Sample the canvas colour under `pos` and load the brush with it — the eyedropper
+/// (MISSING_FEATURES §0.2).
+///
+/// One sample at a time. A pick is a render plus an asynchronous readback, and
+/// Alt+drag asks for one per pointer move, so a move arriving while one is still in
+/// flight is **dropped rather than queued**: queueing would spend a GPU submit per
+/// pointer move and let an older sample land after a newer one, and for a sampler
+/// being dragged only the latest answer matters anyway.
+pub fn pick_color(state: AppState, pos: Vec2) {
+    let mut busy = state.pick.busy;
+    if *busy.peek() {
+        return;
+    }
+    // The *choice* is what the panel holds; which layer it means is resolved here,
+    // against whichever layer is selected at the moment of the sample.
+    let all_layers = *state.pick.all_layers.peek();
+    let active = state.obs.peek().as_ref().map(|o| o.active_layer);
+    let options = PickOptions {
+        source: match active {
+            Some(id) if !all_layers => PickSource::Layer(id),
+            _ => PickSource::Composite,
+        },
+        radius: *state.pick.radius.peek(),
+    };
+
+    // Render now and **drop the guard before awaiting** — the readback future owns
+    // everything it needs, so nothing holds the renderer while the browser's event
+    // loop runs the copy, which it must be free to do since the UI re-renders during
+    // it (the same bargain `files::export_png` makes).
+    let readback = {
+        let mut renderer = state.renderer;
+        let mut guard = renderer.write();
+        let Some(r) = guard.as_mut() else { return };
+        r.pick_color(pos, options)
+    };
+    busy.set(true);
+    // Detached: the sample outlives the pointer gesture that asked for it (a release
+    // must not cancel the answer to the press), and every signal it writes is
+    // root-owned — see `state::root_signal`.
+    spawn_forever(async move {
+        let picked = readback.await;
+        busy.set(false);
+        // Nothing under the sampler: leave the brush as it was. Bare canvas is the
+        // ground, not paint to pick up.
+        let Some(rgb) = picked else { return };
+        update_brush(state, |br| br.color = [rgb[0], rgb[1], rgb[2], br.color[3]]);
+        // Tell the Color panel the colour moved from outside its own picker, so its
+        // markers follow (see `AppState::color_epoch`).
+        let mut epoch = state.color_epoch;
+        let next = *epoch.peek() + 1;
+        epoch.set(next);
+    });
 }
 
 /// The engine's current view, or `None` before WebGPU init has finished.
@@ -130,9 +207,10 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
     })
 }
 
-/// End any in-progress stroke, selection gesture, or pan, and put back the selection
-/// mode a modifier key overrode for the gesture (DESIGN.md §6.8). The canvas is no
-/// longer in hand once this returns, so the floating chrome fades back in.
+/// End any in-progress stroke, selection gesture, pan, or eyedropper drag, and put
+/// back the selection mode a modifier key overrode for the gesture (DESIGN.md §6.8).
+/// The canvas is no longer in hand once this returns, so the floating chrome fades
+/// back in.
 pub fn end_interaction(
     mut state: AppState,
     drawing: &mut Signal<bool>,
@@ -147,5 +225,10 @@ pub fn end_interaction(
         dispatch(state, ViewCommand::SetSelectionMode(base));
     }
     panning.set(false);
+    // Not a parameter like the two above because the eyedropper's drag flag is shared
+    // state, not the canvas's own — the options bar reads it (see `PickState`).
+    // Nothing to undo, either: a sample already in flight is left to land, since it
+    // is the answer to a press the user made.
+    state.pick.dragging.set(false);
     state.canvas_active.set(false);
 }

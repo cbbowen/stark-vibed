@@ -201,6 +201,20 @@ impl Renderer {
         self.engine.export(frame, scale, background)
     }
 
+    /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).
+    ///
+    /// The same borrow bargain as [`Renderer::export`], and it matters more here:
+    /// the sample is taken mid-gesture, so the caller has to be able to drop its
+    /// write guard before awaiting or the UI's own re-render will panic on a
+    /// renderer it still holds borrowed.
+    pub fn pick_color(
+        &mut self,
+        at: stark_core::Vec2,
+        options: stark_core::PickOptions,
+    ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
+        self.engine.pick_color(at, options)
+    }
+
     /// The built-in bristle brush's asset id, once its bytes have been imported.
     pub fn bristle(&self) -> Option<stark_core::AssetId> {
         self.bristle

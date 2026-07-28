@@ -288,7 +288,8 @@
 
 /* Chips stretch to fill a panel row; in a bar they size to their own text. */
 .selection-bar .chip,
-.frame-bar .chip {
+.frame-bar .chip,
+.pick-bar .chip {
   flex: none;
   padding: 4px 12px;
   font-size: 12px;
@@ -839,6 +840,33 @@
   background: #ffffff1f;
 }
 
+/* The eyedropper bar: how a sample is taken, mounted only while Alt arms it
+   (MISSING_FEATURES §0.2). Same surface as the other two bars — it is the same kind
+   of thing — but it comes and goes on a *keystroke* rather than on a selection, so
+   it fades in instead of blinking on. Short, because it has to be readable by the
+   time the hand reaches the canvas. */
+.pick-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  color: #e8e8ea;
+  animation: pick-bar-in 120ms ease-out;
+}
+
+@keyframes pick-bar-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 
 /* A selected frame row. It shares `.active` with a selected paint layer, because
    there is only one kind of selection — the colour means "selected" and nothing
@@ -854,6 +882,19 @@
    before a stroke that would go nowhere. */
 .paint-canvas.no-paint {
   cursor: not-allowed;
+}
+
+/* The canvas while Alt is held: the eyedropper is armed and a press will sample
+   rather than paint (MISSING_FEATURES §0.2). The cursor is the whole discoverability
+   of a modifier binding — without it Alt+drag is a secret — so it changes on the key
+   rather than on the press. Inline SVG so it needs no asset fetch; the hotspot sits
+   on the dropper's tip, and `crosshair` is the fallback if the URL cursor is
+   refused. */
+.paint-canvas.picking {
+  cursor:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M3.5 20.5l.8-3.4 8.4-8.4 2.6 2.6-8.4 8.4z' fill='%23fff' stroke='%23000' stroke-width='1.4' stroke-linejoin='round'/%3E%3Cpath d='M13.6 6.6l3.8 3.8 2.1-2.1a2.7 2.7 0 1 0-3.8-3.8z' fill='%23fff' stroke='%23000' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E")
+      3 21,
+    crosshair;
 }
 
 /* The aspect drop-down in the frame bar: sized to its content, unlike the panel

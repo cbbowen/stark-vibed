@@ -30,17 +30,30 @@ fixed canvas; we need an explicit, movable **frame** (see
 [readback.rs](crates/stark-core/src/gpu/readback.rs) already does GPU→CPU. That
 is why framing is the right thing to build first.
 
-### 0.2 Eyedropper
+### 0.2 Eyedropper — **built**
 
 Sampling colour off the canvas is the most-used non-brush action in painting,
 and it matters more here than anywhere else: the entire point of Mixbox pigment
 mixing (DESIGN §6.7) is to pick the mix back up. Without it the mixing engine is
 a rendering feature rather than a working one.
 
-It is a **request**, not a command (it must answer), so it belongs in §4's
-request tier next to `save_bytes`. One decision to make deliberately: it should
-sample the raw layer channels, not the **composited, lit** result — with
-sample-layer(s) and sample-radius as options.
+`Engine::pick_color` is a **request**, not a command (it must answer), so it sits
+in §4's request tier next to `save_bytes`, and returns a future because the
+readback is the one inherently asynchronous GPU operation — the same shape as
+`export`. Alt+drag on the canvas is the binding, as in Clip Studio Paint and
+Rebelle, so a colour is picked up without putting the brush down.
+
+The decision it turns on: it samples the **raw layer channels**, not the
+composited, lit result. It runs the compositor's pass A into a small target and
+stops there, so what comes back is the paint's own channels — not a colour that
+has been through image-based lighting, a tonemap and an sRGB encode, and in a
+Mixbox document not a display colour in place of the pigment mixture. Sharing
+pass A with rendering rather than reimplementing it is what keeps a sample and
+the screen from drifting apart. Bare canvas answers *nothing*: the substrate is
+the ground, not paint to pick up. Sample-layer(s) and sample-radius are options
+(`PickOptions`), in a floating bar mounted only while Alt arms the tool — the same
+present-or-absent argument the selection and frame bars make, and what makes a
+modifier binding discoverable rather than secret.
 
 ### 0.3 Transform
 
@@ -185,7 +198,7 @@ Naming these is part of not becoming Photoshop.
 
 ## Sequencing
 
-1. **Now** — framing/export, save/open, eyedropper, blend modes, fill. The
+1. **Now** — framing/export, save/open, ~~eyedropper~~, blend modes, fill. The
    difference between a tech demo and something a finished piece comes out of.
 2. **Next** — transform; layer masks / clipping / alpha lock / merge; view
    mirror and rotate.

@@ -625,23 +625,24 @@ impl Compositor {
         self.rebuild_offscreen();
     }
 
-    /// Composite `tiles`, light the result into `target` under `view`, and outline
-    /// each of `outlines` over it (DESIGN.md §6.8 — a universal selection draws
-    /// nothing, so an unmasked document costs one skipped iteration).
-    pub fn render(
+    /// The raw channel formats pass A writes: `(color, aux)`. A caller supplying its
+    /// own targets to [`Self::composite_channels`] has to match them.
+    pub fn channel_formats(&self) -> (wgpu::TextureFormat, wgpu::TextureFormat) {
+        (self.color_format, self.aux_format)
+    }
+
+    /// Write the view uniform and upload pass A's instance streams for `items`,
+    /// returning the per-tile bind groups that pass draws with.
+    ///
+    /// Split out of [`Self::render`] so [`Self::composite_channels`] runs the *same*
+    /// pass A rather than a second copy of it: what the eyedropper reports and what
+    /// the screen shows then cannot drift, which is the whole reason for sampling
+    /// through the compositor at all.
+    fn prepare_composite(
         &mut self,
-        target: &wgpu::TextureView,
         view: ViewTransform,
-        bg_channels: [f32; 4],
         items: &[CompositeItem],
-        outlines: &[SelectionOutline<'_>],
-        transparent: bool,
-    ) {
-        if view.viewport != self.size {
-            self.size = view.viewport;
-            self.rebuild_offscreen();
-        }
-        // Bound after the resize, which needs `&mut self`.
+    ) -> Vec<wgpu::BindGroup> {
         let device = &self.ctx.device;
 
         // View uniform (canvas px -> NDC).
@@ -662,54 +663,11 @@ impl Compositor {
             }),
         );
 
-        // Screen→canvas mapping for sampling the surface bump in canvas space, so
-        // the weave stays attached to the canvas as it pans/zooms (DESIGN.md §6.4).
-        let inv_zoom = 1.0 / view.zoom;
-        let canvas_origin = view.center
-            - crate::geom::Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
-                * (0.5 * inv_zoom);
-
-        // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
-        // level is the environment's own, so the CPU-side normalization below is
-        // reading exactly the texels the shader will. The Cook–Torrance specular picks
-        // its own mip from roughness, spanning the whole chain (roughness 0 → mip 0
-        // sharp; roughness 1 → the diffuse level, the hemispherical average).
-        let diffuse_lod = self.environment.diffuse_lod as f32;
-        // Exposure belongs to the light, not to a knob beside it: each environment is
-        // shown at the value it was judged at (DESIGN.md §6.3). Normalized by the
-        // irradiance a *flat* canvas receives, so `1.0` means the same thing in every
-        // environment — an unrelieved patch of paint comes back out its own colour.
-        let exposure = self.environment.exposure / self.environment.flat_irradiance;
-
-        // Media uniform.
-        self.ctx.queue.write_buffer(
-            &self.media_buf,
-            0,
-            bytemuck::bytes_of(&MediaUniform {
-                light: [0.0, 0.0, 0.0, self.media.height_strength],
-                bg: bg_channels,
-                shade: [exposure, diffuse_lod, self.media.specular, 0.0],
-                surf_a: [
-                    canvas_origin.x,
-                    canvas_origin.y,
-                    inv_zoom,
-                    1.0 / SURFACE_TILE_PX,
-                ],
-                surf_b: [
-                    self.media.surface_strength,
-                    // Transparent export: the media pass skips the substrate and
-                    // carries the paint's visible alpha out (FRAME_DESIGN.md §6).
-                    if transparent { 1.0 } else { 0.0 },
-                    0.0,
-                    0.0,
-                ],
-            }),
-        );
-
         // Split the ordered item list into the two instance streams, remembering
         // for each item which stream slot it draws from. The *order* of `items` is
         // what has to survive — a matte must composite over the tiles below it and
-        // under the tiles above — so the draw loop below walks `items`, not these.
+        // under the tiles above — so the draw loop in `encode_composite` walks
+        // `items`, not these.
         let mut instances: Vec<Instance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
         let mut mattes: Vec<MatteInstance> = Vec::new();
@@ -770,60 +728,170 @@ impl Compositor {
                 .queue
                 .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
         }
+        tile_bgs
+    }
+
+    /// Encode pass A: every item composited into `color` + `aux`, in stack order.
+    /// Requires a preceding [`Self::prepare_composite`] for the same `items`.
+    fn encode_composite(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        aux: &wgpu::TextureView,
+        items: &[CompositeItem],
+        tile_bgs: &[wgpu::BindGroup],
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark composite pass"),
+            color_attachments: &[
+                Some(clear_attachment(color, wgpu::Color::TRANSPARENT)),
+                Some(clear_attachment(aux, wgpu::Color::TRANSPARENT)),
+            ],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        // Walk the stack in order, switching pipelines where a matte sits
+        // between runs of tiles. Both pipelines share group 0 (the view
+        // uniform), so only the vertex buffer and pipeline change.
+        pass.set_bind_group(0, &self.view_bg, &[]);
+        let (mut tile_i, mut matte_i) = (0u32, 0u32);
+        let mut pipeline_is_matte = None;
+        for item in items {
+            match item {
+                CompositeItem::Tile { .. } => {
+                    if pipeline_is_matte != Some(false) {
+                        pass.set_pipeline(&self.composite_pipeline);
+                        pass.set_vertex_buffer(0, self.instances.slice(..));
+                        pipeline_is_matte = Some(false);
+                    }
+                    pass.set_bind_group(1, &tile_bgs[tile_i as usize], &[]);
+                    pass.draw(0..4, tile_i..tile_i + 1);
+                    tile_i += 1;
+                }
+                CompositeItem::Matte(_) => {
+                    if pipeline_is_matte != Some(true) {
+                        pass.set_pipeline(&self.matte_pipeline);
+                        pass.set_vertex_buffer(0, self.matte_instances.slice(..));
+                        pipeline_is_matte = Some(true);
+                    }
+                    pass.draw(0..4, matte_i..matte_i + 1);
+                    matte_i += 1;
+                }
+            }
+        }
+    }
+
+    /// Composite `items` into caller-supplied targets and **stop there** — pass A
+    /// alone, with no media pass over it.
+    ///
+    /// This is the eyedropper's sampling path (MISSING_FEATURES §0.2). What lands in
+    /// `color` is the paint's own channels in the document's working space, which is
+    /// what a picker has to read: the lit result has been through image-based
+    /// lighting, a tonemap and an sRGB encode, so picking *that* would hand back a
+    /// colour the palette never mixed — and in a Mixbox document (DESIGN.md §6.7) a
+    /// pigment mixture that cannot be picked back up, which is the point of mixing
+    /// in pigment space at all.
+    ///
+    /// `color` and `aux` must carry the formats [`Self::channel_formats`] reports,
+    /// and be `view.viewport` in size. The compositor's own offscreen targets are
+    /// left alone, unlike in [`Self::render`], which resizes them to whatever view
+    /// it is given — so a sample never disturbs what is on screen.
+    pub fn composite_channels(
+        &mut self,
+        color: &wgpu::TextureView,
+        aux: &wgpu::TextureView,
+        view: ViewTransform,
+        items: &[CompositeItem],
+    ) {
+        let tile_bgs = self.prepare_composite(view, items);
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("stark pick encoder"),
+            });
+        self.encode_composite(&mut encoder, color, aux, items, &tile_bgs);
+        self.ctx.queue.submit([encoder.finish()]);
+    }
+
+    /// Composite `tiles`, light the result into `target` under `view`, and outline
+    /// each of `outlines` over it (DESIGN.md §6.8 — a universal selection draws
+    /// nothing, so an unmasked document costs one skipped iteration).
+    pub fn render(
+        &mut self,
+        target: &wgpu::TextureView,
+        view: ViewTransform,
+        bg_channels: [f32; 4],
+        items: &[CompositeItem],
+        outlines: &[SelectionOutline<'_>],
+        transparent: bool,
+    ) {
+        if view.viewport != self.size {
+            self.size = view.viewport;
+            self.rebuild_offscreen();
+        }
+        let tile_bgs = self.prepare_composite(view, items);
+        // Bound after everything that needs `&mut self`.
+        let device = &self.ctx.device;
+
+        // Screen→canvas mapping for sampling the surface bump in canvas space, so
+        // the weave stays attached to the canvas as it pans/zooms (DESIGN.md §6.4).
+        let inv_zoom = 1.0 / view.zoom;
+        let canvas_origin = view.center
+            - crate::geom::Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
+                * (0.5 * inv_zoom);
+
+        // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
+        // level is the environment's own, so the CPU-side normalization below is
+        // reading exactly the texels the shader will. The Cook–Torrance specular picks
+        // its own mip from roughness, spanning the whole chain (roughness 0 → mip 0
+        // sharp; roughness 1 → the diffuse level, the hemispherical average).
+        let diffuse_lod = self.environment.diffuse_lod as f32;
+        // Exposure belongs to the light, not to a knob beside it: each environment is
+        // shown at the value it was judged at (DESIGN.md §6.3). Normalized by the
+        // irradiance a *flat* canvas receives, so `1.0` means the same thing in every
+        // environment — an unrelieved patch of paint comes back out its own colour.
+        let exposure = self.environment.exposure / self.environment.flat_irradiance;
+
+        // Media uniform.
+        self.ctx.queue.write_buffer(
+            &self.media_buf,
+            0,
+            bytemuck::bytes_of(&MediaUniform {
+                light: [0.0, 0.0, 0.0, self.media.height_strength],
+                bg: bg_channels,
+                shade: [exposure, diffuse_lod, self.media.specular, 0.0],
+                surf_a: [
+                    canvas_origin.x,
+                    canvas_origin.y,
+                    inv_zoom,
+                    1.0 / SURFACE_TILE_PX,
+                ],
+                surf_b: [
+                    self.media.surface_strength,
+                    // Transparent export: the media pass skips the substrate and
+                    // carries the paint's visible alpha out (FRAME_DESIGN.md §6).
+                    if transparent { 1.0 } else { 0.0 },
+                    0.0,
+                    0.0,
+                ],
+            }),
+        );
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark composite encoder"),
         });
 
         // Pass A: composite tiles into offscreen color + aux.
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark composite pass"),
-                color_attachments: &[
-                    Some(clear_attachment(
-                        &self.comp_color_view,
-                        wgpu::Color::TRANSPARENT,
-                    )),
-                    Some(clear_attachment(
-                        &self.comp_aux_view,
-                        wgpu::Color::TRANSPARENT,
-                    )),
-                ],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            // Walk the stack in order, switching pipelines where a matte sits
-            // between runs of tiles. Both pipelines share group 0 (the view
-            // uniform), so only the vertex buffer and pipeline change.
-            pass.set_bind_group(0, &self.view_bg, &[]);
-            let (mut tile_i, mut matte_i) = (0u32, 0u32);
-            let mut pipeline_is_matte = None;
-            for item in items {
-                match item {
-                    CompositeItem::Tile { .. } => {
-                        if pipeline_is_matte != Some(false) {
-                            pass.set_pipeline(&self.composite_pipeline);
-                            pass.set_vertex_buffer(0, self.instances.slice(..));
-                            pipeline_is_matte = Some(false);
-                        }
-                        pass.set_bind_group(1, &tile_bgs[tile_i as usize], &[]);
-                        pass.draw(0..4, tile_i..tile_i + 1);
-                        tile_i += 1;
-                    }
-                    CompositeItem::Matte(_) => {
-                        if pipeline_is_matte != Some(true) {
-                            pass.set_pipeline(&self.matte_pipeline);
-                            pass.set_vertex_buffer(0, self.matte_instances.slice(..));
-                            pipeline_is_matte = Some(true);
-                        }
-                        pass.draw(0..4, matte_i..matte_i + 1);
-                        matte_i += 1;
-                    }
-                }
-            }
-        }
+        self.encode_composite(
+            &mut encoder,
+            &self.comp_color_view,
+            &self.comp_aux_view,
+            items,
+            &tile_bgs,
+        );
 
         // Pass B: media/lighting → target.
         {

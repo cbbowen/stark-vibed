@@ -82,6 +82,61 @@ pub struct ExportPlan {
 /// than surfacing as a wgpu validation panic.
 const MAX_EXPORT_DIM: u32 = 8192;
 
+/// Which layers an eyedropper sample is taken from (MISSING_FEATURES §0.2).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum PickSource {
+    /// Every visible layer, composited — the colour the canvas shows.
+    #[default]
+    Composite,
+    /// One layer alone: the colour that layer would have if it were the only one in
+    /// the document. What "sample the current layer" has to mean, since a glaze on
+    /// top of somebody else's underpainting is not the same paint as the two mixed.
+    Layer(LayerId),
+}
+
+/// How an eyedropper sample is taken (MISSING_FEATURES §0.2).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub struct PickOptions {
+    pub source: PickSource,
+    /// Half-width of the averaged square, in **canvas** px: 0 samples the single
+    /// canvas pixel under the point, 1 averages 3×3, 2 averages 5×5 — the prior
+    /// art's point / N×N sampler.
+    ///
+    /// Canvas px rather than screen px, so what a sample covers is a property of the
+    /// painting and not of how far the artist happens to be zoomed in.
+    pub radius: u32,
+}
+
+/// Largest eyedropper radius, in canvas px — a 65×65 average. Not a taste limit but
+/// a bound on what one sample may cost: the sampled square is rendered and read
+/// back, so an unbounded radius is an unbounded render.
+const MAX_PICK_RADIUS: u32 = 32;
+
+/// Below this summed opacity a sampled patch holds no paint worth calling a colour,
+/// and dividing by it would amplify float noise into an arbitrary hue.
+const PICK_MIN_OPACITY: f32 = 1e-3;
+
+/// The mean **unpremultiplied** channels of a sampled patch, or `None` where there
+/// is no paint in it.
+///
+/// The composite is premultiplied by opacity (DESIGN.md §6.1), so summing and
+/// dividing by the summed opacity *is* the opacity-weighted mean: a texel carrying
+/// more paint counts for more and a bare one counts for nothing. That is what lets a
+/// radius wider than the stroke still report the stroke's colour rather than a wash
+/// of it fading into empty canvas.
+fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
+    let mut sum = [0.0f32; 4];
+    for t in texels.as_chunks::<4>().0 {
+        for (s, v) in sum.iter_mut().zip(t) {
+            *s += v;
+        }
+    }
+    if !sum[3].is_finite() || sum[3] <= PICK_MIN_OPACITY {
+        return None;
+    }
+    Some([sum[0] / sum[3], sum[1] / sum[3], sum[2] / sum[3], 1.0])
+}
+
 /// A layer's presentation properties, for the UI's layer panel (DESIGN.md §11).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerInfo {
@@ -688,43 +743,7 @@ impl Engine {
         chrome: Chrome,
     ) {
         let doc = self.presented();
-
-        // Walk the stack bottom-to-top, skipping hidden layers and tagging each
-        // item with its layer opacity. Normal-blend layers compose correctly
-        // under premultiplied "over"; richer blend modes (which need per-layer
-        // isolation) are a follow-up.
-        //
-        // This is an *ordered* item list rather than a flat tile list because a
-        // matte has to composite at its own place in the stack — a frame over the
-        // painting, a ground under it (FRAME_DESIGN.md §4.4). The compositor
-        // re-batches consecutive tiles into one instanced draw, so an all-paint
-        // document costs exactly what it did before.
-        let mut items: Vec<CompositeItem> = Vec::new();
-        for layer in doc.layers.iter() {
-            if !layer.visible || layer.opacity <= 0.0 {
-                continue;
-            }
-            match &layer.content {
-                LayerContent::Paint(tiles) => {
-                    items.extend(tiles.iter().map(|(coord, handle)| CompositeItem::Tile {
-                        coord: *coord,
-                        handle: handle.clone(),
-                        opacity: layer.opacity,
-                    }));
-                }
-                LayerContent::Matte { region, color } => {
-                    let (min, max) = region.rect();
-                    items.push(CompositeItem::Matte(MatteDraw {
-                        rect: [min.x, min.y, max.x, max.y],
-                        // sRGB in the log, working-space channels on the GPU — the
-                        // same conversion the brush colour gets, so a matte means
-                        // the same colour in an Oklab and a Mixbox document.
-                        channels: self.color_space.rgb_to_channels(*color),
-                        opacity: layer.opacity,
-                    }));
-                }
-            }
-        }
+        let items = self.composite_items(doc, None);
 
         // The substrate is document state now (FRAME_DESIGN.md §5), so the ground a
         // piece was painted on travels with it instead of living in whichever
@@ -888,6 +907,162 @@ impl Engine {
         Ok(async move {
             let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await;
             RgbaImage::from_target_bytes(size.width, size.height, pixels, format)
+        })
+    }
+
+    /// The compositor's draw list for `doc`, bottom-to-top: every visible layer's
+    /// tiles and mattes, each tagged with its layer opacity. Normal-blend layers
+    /// compose correctly under premultiplied "over"; richer blend modes (which need
+    /// per-layer isolation) are a follow-up.
+    ///
+    /// This is an *ordered* item list rather than a flat tile list because a matte
+    /// has to composite at its own place in the stack — a frame over the painting, a
+    /// ground under it (FRAME_DESIGN.md §4.4). The compositor re-batches consecutive
+    /// tiles into one instanced draw, so an all-paint document costs nothing for it.
+    ///
+    /// `only` restricts the list to a single layer — the eyedropper's
+    /// sample-one-layer option (MISSING_FEATURES §0.2). Sharing this with rendering
+    /// is what makes a sample come off the same stack the screen draws, hidden
+    /// layers and layer opacity included.
+    fn composite_items(&self, doc: &DocState, only: Option<LayerId>) -> Vec<CompositeItem> {
+        let mut items: Vec<CompositeItem> = Vec::new();
+        for layer in doc.layers.iter() {
+            if !layer.visible || layer.opacity <= 0.0 || only.is_some_and(|id| id != layer.id) {
+                continue;
+            }
+            match &layer.content {
+                LayerContent::Paint(tiles) => {
+                    items.extend(tiles.iter().map(|(coord, handle)| CompositeItem::Tile {
+                        coord: *coord,
+                        handle: handle.clone(),
+                        opacity: layer.opacity,
+                    }));
+                }
+                LayerContent::Matte { region, color } => {
+                    let (min, max) = region.rect();
+                    items.push(CompositeItem::Matte(MatteDraw {
+                        rect: [min.x, min.y, max.x, max.y],
+                        // sRGB in the log, working-space channels on the GPU — the
+                        // same conversion the brush colour gets, so a matte means
+                        // the same colour in an Oklab and a Mixbox document.
+                        channels: self.color_space.rgb_to_channels(*color),
+                        opacity: layer.opacity,
+                    }));
+                }
+            }
+        }
+        items
+    }
+
+    /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).
+    ///
+    /// A **request**, not a command: it has to answer, so it stays a direct method
+    /// beside `save_bytes` rather than joining [`InputCommand`](crate::InputCommand),
+    /// whose whole property is that nothing comes back (DESIGN.md §4).
+    ///
+    /// What it samples is the **raw layer channels**, not the composited, *lit*
+    /// result the screen shows, and that is the decision the feature turns on. The
+    /// media pass lights the paint, tonemaps it and encodes sRGB, so picking its
+    /// output would load the brush with a colour the palette never mixed — and in a
+    /// Mixbox document (DESIGN.md §6.7) with a display colour rather than the pigment
+    /// mixture, which would make picking the mix back up impossible. That is the
+    /// entire reason pigment mixing is worth having.
+    ///
+    /// `None` where the sampled patch holds no paint: the substrate is the ground,
+    /// not something a brush picks up, so bare canvas answers "nothing here" rather
+    /// than quietly loading the brush with the paper colour.
+    ///
+    /// Renders immediately and returns a future for the **readback**, the only
+    /// asynchronous part — the same shape as [`Engine::export`], and for the same
+    /// reason: an `async fn` would hold `&mut self` across an await during which the
+    /// frontend re-renders and tries to read the engine.
+    pub fn pick_color(
+        &mut self,
+        at: crate::geom::Vec2,
+        options: PickOptions,
+    ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
+        let radius = options.radius.min(MAX_PICK_RADIUS);
+        let size = Extent2::new(2 * radius + 1, 2 * radius + 1);
+        // Centred on the canvas *pixel* the point falls in rather than on the point
+        // itself: pass A samples tile textures bilinearly, so a fractional offset
+        // would blend neighbouring texels and a "point sample" would answer with a
+        // colour that is at neither of them. Snapping puts every fragment on a texel
+        // centre, so radius 0 reports exactly the texel under the cursor.
+        let view = ViewTransform {
+            center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
+            zoom: 1.0,
+            viewport: size,
+        };
+        // The *presented* document, so a sample agrees with what is on screen —
+        // including a collaborator's stroke that has not committed yet.
+        let items = {
+            let doc = self.presented();
+            let only = match options.source {
+                PickSource::Composite => None,
+                PickSource::Layer(id) => Some(id),
+            };
+            self.composite_items(doc, only)
+        };
+
+        let (color_format, aux_format) = self.compositor.channel_formats();
+        // `read_rgba16f` decodes four halves per texel. Both colour spaces store the
+        // colour channels that way (DESIGN.md §6.1); a new one that did not would
+        // have to say so here rather than silently mis-decoding.
+        debug_assert_eq!(color_format, wgpu::TextureFormat::Rgba16Float);
+        let color = self.pick_target(
+            "stark pick color",
+            color_format,
+            size,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        // Written by pass A and never read: the composite pipeline has two targets,
+        // and the height it accumulates says how *much* paint is there, not what
+        // colour it is.
+        let aux = self.pick_target(
+            "stark pick aux",
+            aux_format,
+            size,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        self.compositor.composite_channels(
+            &color.create_view(&wgpu::TextureViewDescriptor::default()),
+            &aux.create_view(&wgpu::TextureViewDescriptor::default()),
+            view,
+            &items,
+        );
+
+        // Captured, not read through `self`: the future deliberately does not borrow
+        // the engine (see `export`). The colour space is an `Arc`, so carrying the
+        // channels→RGB conversion into it costs a refcount bump.
+        let gpu = self.gpu.clone();
+        let color_space = self.color_space.clone();
+        async move {
+            let texels = crate::gpu::readback::read_rgba16f(&gpu, &color, size).await;
+            mean_channels(&texels).map(|c| color_space.channels_to_rgb(c))
+        }
+    }
+
+    /// A small offscreen target for one eyedropper sample.
+    fn pick_target(
+        &self,
+        label: &str,
+        format: wgpu::TextureFormat,
+        size: Extent2,
+        usage: wgpu::TextureUsages,
+    ) -> wgpu::Texture {
+        self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
         })
     }
 

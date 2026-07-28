@@ -278,6 +278,10 @@ fn register_environment(&mut self, id: EnvironmentId, hdr: Vec<u8>);
 // persistence (§8)
 fn save_bytes(&self) -> Result<Vec<u8>>;
 fn load_bytes(&mut self, bytes: &[u8]) -> Result<()>;
+// sampling — the eyedropper (MISSING_FEATURES §0.2). Returns a *future*, because
+// readback is the one inherently asynchronous GPU operation (§7); the future owns
+// what it needs so the engine borrow ends before the await, as `export` does.
+fn pick_color(&mut self, at: Vec2, o: PickOptions) -> impl Future<Output = Option<[f32; 3]>>;
 // collaboration transport (§12)
 fn merge_remote(&mut self, action: Action) -> bool;
 fn take_outbox(&mut self) -> Vec<Action>;

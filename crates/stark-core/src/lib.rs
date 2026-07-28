@@ -13,7 +13,7 @@
 //!   document action at the end.
 //! - **Requests** — the operations that must answer, and so cannot be commands:
 //!   [`Engine::import_brush`], [`Engine::save_bytes`], [`Engine::merge_remote`],
-//!   and friends. They stay direct methods (DESIGN.md §4).
+//!   [`Engine::pick_color`], and friends. They stay direct methods (DESIGN.md §4).
 //! - [`ObservableState`] — the cheap UI-facing projection, read back after each
 //!   command.
 //!
@@ -63,6 +63,7 @@ pub use command::{InputCommand, InputSample};
 pub use document::{LayerId, Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use engine::{
     Background, Engine, ExportPlan, ExportScale, LayerInfo, MatteInfo, ObservableState,
+    PickOptions, PickSource,
 };
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};

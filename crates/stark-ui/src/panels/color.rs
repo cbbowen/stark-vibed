@@ -1,4 +1,10 @@
 //! The floating Color panel: an Oklab picker over an `a`/`b` plane at a chosen `L`.
+//!
+//! The eyedropper writes the same brush colour this picker does, but its *options*
+//! are not here — they live in a bar that comes up on Alt
+//! ([`crate::panels::pick`]), since it is a modifier rather than a tool. What the
+//! panel owes it is `seed`: a pick sets the colour from outside the picker, and the
+//! markers have to follow.
 
 use dioxus::prelude::*;
 
@@ -16,9 +22,14 @@ pub fn ColorPanel() -> Element {
         .as_ref()
         .map(|o| o.brush.color)
         .unwrap_or([0.85, 0.15, 0.1, 1.0]);
+    // Read reactively, unlike the colour: this is how a pick — which sets the colour
+    // from outside the picker — gets the markers to move (see `AppState::color_epoch`).
+    let seed = (state.color_epoch)();
+
     rsx! {
         OklabPicker {
             init: [init[0], init[1], init[2]],
+            seed,
             onchange: move |rgb: [f32; 3]| {
                 update_brush(state, move |br| {
                     br.color = [rgb[0], rgb[1], rgb[2], br.color[3]];
@@ -51,18 +62,43 @@ const FIELD_N: usize = 96;
 /// being one edit: a caller feeding history hangs the unlogged preview off
 /// `onchange` and the single commit off `oncommit`. Omitting it is right for a
 /// caller whose colour is not historized at all — the brush's, which is view state.
+///
+/// `seed` re-seeds the markers from `init`. The picker is *seeded* rather than
+/// driven — it holds Oklab, and `init` comes back through sRGB, which cannot
+/// represent an out-of-gamut `a`/`b` — so a caller that sets the colour some other
+/// way (the eyedropper) has to say so. Keyed on a counter rather than on `init`
+/// itself, and deliberately: reseeding whenever the colour changed would drag a
+/// marker the user has dragged out of gamut back onto the gamut boundary, under
+/// their own cursor.
 #[component]
 pub fn OklabPicker(
     init: [f32; 3],
     onchange: EventHandler<[f32; 3]>,
     #[props(default)] oncommit: Option<EventHandler<[f32; 3]>>,
+    #[props(default)] seed: u64,
 ) -> Element {
     let lab = srgb_to_oklab([init[0], init[1], init[2], 1.0]);
-    let l = use_signal(|| lab[0]);
-    let a = use_signal(|| lab[1]);
-    let b = use_signal(|| lab[2]);
+    let mut l = use_signal(|| lab[0]);
+    let mut a = use_signal(|| lab[1]);
+    let mut b = use_signal(|| lab[2]);
     let mut picking_ab = use_signal(|| false);
     let mut picking_l = use_signal(|| false);
+
+    // `init` is a plain prop, so `use_reactive!` is what makes a change in it visible
+    // to an effect at all. Both are dependencies, but only a moved `seed` reseeds:
+    // `init` is here so the effect reads the colour of the render it fires on rather
+    // than the one it was created on.
+    let mut seeded = use_signal(|| seed);
+    use_effect(use_reactive!(|seed, init| {
+        if seed == *seeded.peek() {
+            return;
+        }
+        seeded.set(seed);
+        let lab = srgb_to_oklab([init[0], init[1], init[2], 1.0]);
+        l.set(lab[0]);
+        a.set(lab[1]);
+        b.set(lab[2]);
+    }));
 
     // The a/b field is the colour plane at the current `L`; it only depends on `L`, so
     // memoize it (no rebuild while dragging in the field, which moves only `a`/`b`).

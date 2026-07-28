@@ -30,17 +30,20 @@ mod widgets;
 use std::collections::{HashMap, HashSet};
 
 use dioxus::dioxus_core::spawn_forever;
+use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
-use input::{elem_xy, end_interaction, handle_keydown, handle_keyup, input_tolerance, sample};
+use input::{
+    elem_xy, end_interaction, handle_keydown, handle_keyup, input_tolerance, pick_color, sample,
+};
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_mode, current_tool, modifier_mode};
-use panels::{FrameBar, FrameOverlay, SelectionBar};
+use panels::{FrameBar, FrameOverlay, PickBar, SelectionBar};
 use platform::capture_pointer;
 use render::CANVAS_ID;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
@@ -169,6 +172,10 @@ fn app() -> Element {
                 // The frame's composition controls, present only while a frame is
                 // selected for composing (FRAME_DESIGN.md §7).
                 FrameBar {}
+                // The eyedropper's options, present only while Alt arms it
+                // (MISSING_FEATURES §0.2). Last in the column, so it comes up
+                // nearest the canvas — it is the most transient of the three.
+                PickBar {}
             }
 
             // The brush editor dialog (mounted only while open, so each open
@@ -191,6 +198,10 @@ fn Canvas() -> Element {
     let state = use_context::<AppState>();
     let mut drawing = use_signal(|| false);
     let mut panning = use_signal(|| false);
+    // Whether an Alt+drag is sampling colour off the canvas rather than painting on
+    // it (MISSING_FEATURES §0.2). Shared rather than local, unlike the two above,
+    // because the options bar is mounted on *armed but not dragging*.
+    let mut picking = state.pick.dragging;
     let mut last_position = use_signal(|| None::<Vec2>);
     // The panel's selection mode, stashed while a gesture's modifier keys override it
     // (DESIGN.md §6.8) and restored when the gesture ends.
@@ -209,7 +220,17 @@ fn Canvas() -> Element {
             .iter()
             .any(|l| l.id == o.active_layer && l.is_paintable())
     });
-    let canvas_class = if paintable || (state.space_down)() {
+    // Alt arms the eyedropper over the brush, and the cursor says so before it is
+    // used — the only thing that makes a modifier binding discoverable. Not over a
+    // selection tool, where alt already means "subtract from the selection"
+    // (DESIGN.md §6.8), so the cursor promises the pick exactly where a press would
+    // take one. It beats `no-paint`, because a layer that takes no paint can still
+    // be sampled.
+    let sampling =
+        (state.pick.alt_down)() && !(state.space_down)() && !current_tool(state).is_selection();
+    let canvas_class = if sampling {
+        "paint-canvas picking"
+    } else if paintable || (state.space_down)() {
         "paint-canvas"
     } else {
         "paint-canvas no-paint"
@@ -232,6 +253,29 @@ fn Canvas() -> Element {
                 match e.trigger_button() {
                     Some(MouseButton::Primary) => {
                         capture_pointer(&e);
+                        // Painting and selecting are the same gesture from here — the
+                        // tool decides what the engine builds (DESIGN.md §6.8).
+                        let tool = current_tool(state);
+                        // Alt+press samples the canvas instead of painting on it, and
+                        // Alt+drag keeps sampling — the binding Clip Studio Paint and
+                        // Rebelle both use, so a colour is picked up without putting
+                        // the brush down (MISSING_FEATURES §0.2). Alt over a selection
+                        // tool is left alone: there it already means subtract.
+                        let alt_pick = e.modifiers().contains(Modifiers::ALT)
+                            && !tool.is_selection()
+                            && !(state.space_down)();
+                        if alt_pick {
+                            // Deliberately *not* `canvas_active`: the chrome fade
+                            // exists to hand the screen back to the painting
+                            // mid-stroke, but the Color panel is where a pick's answer
+                            // shows up, so fading it out would hide the one thing this
+                            // gesture is for.
+                            picking.set(true);
+                            if let Some(s) = sample(state, &e) {
+                                pick_color(state, s.pos);
+                            }
+                            return;
+                        }
                         canvas_active.set(true);
                         if (state.space_down)() {
                             panning.set(true);
@@ -242,9 +286,6 @@ fn Canvas() -> Element {
                         } else if let Some(sample) = sample(state, &e)
                             && let Some(tolerance) = input_tolerance(state, &e)
                         {
-                            // Painting and selecting are the same gesture from here —
-                            // the tool decides what the engine builds (DESIGN.md §6.8).
-                            let tool = current_tool(state);
                             if tool.is_selection()
                                 && let Some(m) = modifier_mode(e.modifiers())
                             {
@@ -276,7 +317,11 @@ fn Canvas() -> Element {
                 // view to map through yet, and a move with nowhere to land simply
                 // does nothing.
                 if let Some(s) = sample(state, &e) {
-                    if drawing() {
+                    if picking() {
+                        // Alt+drag keeps sampling; `pick_color` drops a move that
+                        // arrives while the last sample is still settling.
+                        pick_color(state, s.pos);
+                    } else if drawing() {
                         dispatch(state, GestureCommand::To { sample: s });
                     } else if panning() && let Some(l) = last_position() {
                         dispatch(state, ViewCommand::Pan { delta: elem_xy(&e) - l });
