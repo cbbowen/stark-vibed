@@ -116,13 +116,27 @@ pub fn TransformBar() -> Element {
     }
 }
 
-/// An in-flight handle drag: which grip, where the pointer went down (page px),
-/// and the rect as it was then. Deltas are taken from the start rect rather than
-/// accumulated, so rounding cannot drift over a long drag — same discipline as
-/// the frame's [`FrameDrag`](super::frame::FrameDrag).
+/// What an in-flight drag has hold of: a resize/move grip, or the rotate handle
+/// (which tracks the pointer's bearing about the box centre rather than a
+/// positional delta).
+#[derive(Clone, Copy)]
+enum DragKind {
+    Grip(Grip),
+    Rotate {
+        /// The pointer's bearing about the box centre when it went down.
+        bearing: f32,
+        /// The gesture's angle at that moment.
+        angle: f32,
+    },
+}
+
+/// An in-flight handle drag: what it holds, where the pointer went down (page
+/// px), and the rect as it was then. Deltas are taken from the *start* state
+/// rather than accumulated, so rounding cannot drift over a long drag — same
+/// discipline as the frame's [`FrameDrag`](super::frame::FrameDrag).
 #[derive(Clone, Copy)]
 struct Drag {
-    grip: Grip,
+    kind: DragKind,
     origin: Vec2,
     start: (Vec2, Vec2),
 }
@@ -148,29 +162,60 @@ pub fn TransformOverlay() -> Element {
 
     let tl = view.canvas_to_screen(ts.rect.0);
     let br = view.canvas_to_screen(ts.rect.1);
+    // The box is laid out from the unrotated rect and turned by CSS about its
+    // centre — the same composition the affine applies to the paint, so the
+    // chrome and the preview always agree.
     let box_style = format!(
-        "left: {}px; top: {}px; width: {}px; height: {}px;",
+        "left: {}px; top: {}px; width: {}px; height: {}px; transform: rotate({}rad);",
         tl.x,
         tl.y,
         br.x - tl.x,
-        br.y - tl.y
+        br.y - tl.y,
+        ts.angle,
     );
+    // The box centre on screen — the rotate handle's pivot.
+    let centre = view.canvas_to_screen((ts.rect.0 + ts.rect.1) * 0.5);
 
     // A pointer delta in screen px is a canvas delta over the zoom.
     let to_canvas = move |screen: Vec2, origin: Vec2| (screen - origin) / view.zoom;
-    let mut start = move |e: &Event<PointerData>, grip: Grip| {
+    let bearing_about_centre = move |p: Vec2| (p.y - centre.y).atan2(p.x - centre.x);
+    let mut start = move |e: &Event<PointerData>, kind: DragKind| {
         e.stop_propagation();
         crate::platform::capture_pointer(e);
         drag.set(Some(Drag {
-            grip,
+            kind,
             origin: page_xy(e),
             start: ts.rect,
         }));
     };
     let follow = move |e: &Event<PointerData>| {
         let Some(d) = drag() else { return };
-        let rect = d.grip.apply(d.start, to_canvas(page_xy(e), d.origin));
-        update(state, TransformState { rect, ..ts });
+        match d.kind {
+            // Translation is rotation-invariant: the box follows the pointer.
+            DragKind::Grip(Grip::Move) => {
+                let rect = Grip::Move.apply(d.start, to_canvas(page_xy(e), d.origin));
+                update(state, TransformState { rect, ..ts });
+            }
+            // A resize works in the box's own (unrotated) frame: rotate the
+            // pointer delta back by the current angle before applying it...
+            DragKind::Grip(grip) => {
+                let dc = to_canvas(page_xy(e), d.origin);
+                let (sin, cos) = ts.angle.sin_cos();
+                let local = Vec2::new(cos * dc.x + sin * dc.y, cos * dc.y - sin * dc.x);
+                let rect = grip.apply(d.start, local);
+                // ...and re-pin the un-dragged side. The box rotates about its
+                // centre, and the resize moved the centre, which would otherwise
+                // swing the whole box on screen by `(I − R)·(c₀ − c₁)`.
+                let v = (d.start.0 + d.start.1 - rect.0 - rect.1) * 0.5;
+                let shift = v - Vec2::new(cos * v.x - sin * v.y, sin * v.x + cos * v.y);
+                let rect = (rect.0 + shift, rect.1 + shift);
+                update(state, TransformState { rect, ..ts });
+            }
+            DragKind::Rotate { bearing, angle } => {
+                let turned = angle + bearing_about_centre(page_xy(e)) - bearing;
+                update(state, TransformState { angle: turned, ..ts });
+            }
+        }
     };
 
     rsx! {
@@ -181,8 +226,9 @@ pub fn TransformOverlay() -> Element {
         div {
             class: chrome_class(state, "transform-overlay"),
             style: "{box_style}",
-            // The interior moves the box — the composing mode's one free gesture.
-            onpointerdown: move |e| start(&e, Grip::Move),
+            // The interior moves the box — dragging the region *is* the
+            // translation, which is what freed the top handle for rotation.
+            onpointerdown: move |e| start(&e, DragKind::Grip(Grip::Move)),
             onpointermove: move |e| follow(&e),
             onpointerup: move |e| {
                 follow(&e);
@@ -190,7 +236,9 @@ pub fn TransformOverlay() -> Element {
             },
             onpointercancel: move |_| { drag.set(None); },
 
-            for grip in Grip::ALL {
+            // The eight resize grips. `Move` is skipped: its pill has become the
+            // rotate handle below, and translation lives on the interior.
+            for grip in Grip::ALL.into_iter().filter(|g| *g != Grip::Move) {
                 {
                     let (suffix, cursor) = grip.spec();
                     rsx! {
@@ -198,7 +246,7 @@ pub fn TransformOverlay() -> Element {
                             key: "{suffix}",
                             class: "frame-grip frame-grip-{suffix}",
                             style: "cursor: {cursor};",
-                            onpointerdown: move |e| start(&e, grip),
+                            onpointerdown: move |e| start(&e, DragKind::Grip(grip)),
                             onpointermove: move |e| follow(&e),
                             onpointerup: move |e| {
                                 follow(&e);
@@ -208,6 +256,23 @@ pub fn TransformOverlay() -> Element {
                         }
                     }
                 }
+            }
+
+            // The rotate handle, where the frame keeps its move pill: it tracks
+            // the pointer's bearing about the box centre, so the box turns with
+            // the hand rather than by an abstract delta.
+            div {
+                class: "transform-rotate",
+                onpointerdown: move |e| {
+                    let bearing = bearing_about_centre(page_xy(&e));
+                    start(&e, DragKind::Rotate { bearing, angle: ts.angle });
+                },
+                onpointermove: move |e| follow(&e),
+                onpointerup: move |e| {
+                    follow(&e);
+                    drag.set(None);
+                },
+                onpointercancel: move |_| { drag.set(None); },
             }
         }
     }

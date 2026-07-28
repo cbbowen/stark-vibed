@@ -68,10 +68,10 @@ quads, exact at texel centres), stacks it back by the dynamics parcel law, and
 carries the selection mask with it. Identity, integer translations and flips are
 byte-exact by test; rejection (degenerate or oversized) is deterministic, so
 replay and peers agree. A **first gesture UI is built too** (TRANSFORM_DESIGN
-§6): the selection bar's Transform button mounts drag handles and a flips/Done
-bar, previewing losslessly through the same renderer and committing once.
-Remaining: rotation/skew chrome, snapping, and the cut/copy/paste clipboard,
-which reuses the parcel machinery.
+§6): the selection bar's Transform button mounts resize handles, a rotate knob,
+and a flips/Done bar, previewing losslessly through the same renderer and
+committing once. Remaining: skew chrome, snapping, and the cut/copy/paste
+clipboard, which reuses the parcel machinery.
 
 ### 0.4 Fill, gradient, and blend modes
 

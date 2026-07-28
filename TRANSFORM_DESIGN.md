@@ -166,31 +166,47 @@ and enforce the caps.
 ## 6. The gesture (first cut — built)
 
 Entered from the selection bar's **Transform** button; a box with the frame's
-grips mounts around the selection and a bar carries **Flip ↔ / Flip ↕ / Done**.
+resize grips mounts around the selection, a **rotate knob** sits where the frame
+keeps its move pill (dragging the box interior *is* the translation here, which
+is what freed that spot), and a bar carries **Flip ↔ / Flip ↕ / Done**.
 Everything before Done is a **lossless preview**: the drags accumulate into one
-frontend `TransformState { hull, rect, flip }` whose affine always maps the
-*original* box onto the current one, and every change runs
-`ViewCommand::PreviewTransform` — the same renderer as the commit, over the
+frontend `TransformState { hull, rect, flip, angle }` whose affine always maps
+the *original* box onto the current one — scale/flip into the rect, then the
+rotation about the rect's centre — and every change runs
+`ViewCommand::PreviewTransform`: the same renderer as the commit, over the
 committed tiles, into the `doc_preview` slot the frame drag uses. So the screen
 shows exactly what Done will produce, a long drag resamples once, and Done
 commits a single action (one undo step per gesture). A pure move snaps its scale
-to exactly 1, so dragging the box around never softens the paint (§4). The
-handle box anchors to a conservative analytic **hull** the selection now carries
-through its op algebra (`Selection::hull`, `ObservableState::selection_hull`);
-an unbounded selection falls back to the painted content's bounds — which is
-also how "move the whole layer" arrives for free. While the mode is active a
-full-viewport catcher blocks canvas painting: the pointer is composing, not
-painting.
+to exactly 1 and an unrotated gesture skips the rotation factor entirely, so
+dragging the box around never softens the paint (§4).
 
-Known rough edges for the UI experiments: no rotation or skew handle yet (the
-engine takes any affine — this is purely chrome), pan/zoom are blocked by the
-catcher for the mode's duration, there is no cancel affordance other than Done
-at identity, and the keyboard selection shortcuts (Ctrl+D / invert) still fire
-mid-mode and change what Done would cut.
+Rotation mechanics, because rotated boxes are where transform chrome usually
+goes wrong: the box is laid out from the unrotated rect and turned by CSS about
+its centre — the same composition the affine applies to the paint, so chrome and
+preview cannot disagree. The knob tracks the pointer's *bearing* about the box
+centre (the box turns with the hand, not by an abstract delta); a resize maps
+the pointer delta back into the box's own frame, then re-pins the un-dragged
+side by the `(I − R)·(c₀ − c₁)` shift that recentring the rotation would
+otherwise cause.
+
+The handle box anchors to a conservative analytic **hull** the selection now
+carries through its op algebra (`Selection::hull`,
+`ObservableState::selection_hull`); an unbounded selection falls back to the
+painted content's bounds — which is also how "move the whole layer" arrives for
+free. While the mode is active a full-viewport catcher blocks canvas painting:
+the pointer is composing, not painting.
+
+Known rough edges for the UI experiments: no skew chrome, no angle snapping
+(shift-for-15° is the convention), the resize cursors keep their unrotated
+compass directions, pan/zoom are blocked by the catcher for the mode's duration,
+there is no cancel affordance other than Done at identity, and the keyboard
+selection shortcuts (Ctrl+D / invert) still fire mid-mode and change what Done
+would cut.
 
 ## 7. What this deliberately defers
 
 - **Cut / copy / paste** across layers and documents — the parcel machinery is
   the ingredient, the clipboard policy is not designed here.
 - **Better minification** (EWA / mips) — a parcel-shader-local upgrade.
-- **Rotation/skew chrome** — six floats already carry it; the handles don't.
+- **Skew chrome and angle snapping** — six floats already carry any affine; the
+  handles don't ask for it yet.

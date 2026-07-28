@@ -121,10 +121,16 @@ pub struct TransformState {
     /// at entry (or the painted content's bounds for an unbounded selection).
     pub hull: (Vec2, Vec2),
     /// Where the drags have taken that box, canvas space, normalized min/max.
+    /// Kept in the box's own (unrotated) frame: `angle` turns the whole box
+    /// afterwards, about its centre.
     pub rect: (Vec2, Vec2),
     /// Mirrors applied within the box: (horizontal, vertical) — i.e. flip.0
     /// mirrors left↔right, flip.1 top↔bottom.
     pub flip: (bool, bool),
+    /// Rotation about `rect`'s centre, radians, clockwise on screen (canvas y is
+    /// down, so `Affine2::from_angle`, the CSS `rotate()` the box is drawn with,
+    /// and the pointer's `atan2` all agree on the sign).
+    pub angle: f32,
 }
 
 impl TransformState {
@@ -134,13 +140,14 @@ impl TransformState {
             hull,
             rect: hull,
             flip: (false, false),
+            angle: 0.0,
         }
     }
 
     /// Whether committing would change nothing — "Done" then skips the commit
     /// rather than spending an undo step on a no-op.
     pub fn is_identity(&self) -> bool {
-        self.rect == self.hull && !self.flip.0 && !self.flip.1
+        self.rect == self.hull && !self.flip.0 && !self.flip.1 && self.angle == 0.0
     }
 
     /// The affine mapping `hull` onto `rect` with the flips applied — what the
@@ -169,7 +176,18 @@ impl TransformState {
         let (sy, ty) = axis(hmin.y, hmax.y, rmin.y, rmax.y, self.flip.1);
         let mut a = Affine2::from_scale(Vec2::new(sx, sy));
         a.translation = Vec2::new(tx, ty);
-        a
+        if self.angle == 0.0 {
+            return a;
+        }
+        // The rotation turns the finished box about its own centre, after the
+        // scale/flip map — matching what the rotated chrome shows. Gated on
+        // exactly zero so an unrotated gesture keeps the pure scale/translate
+        // form the exactness invariants rely on (TRANSFORM_DESIGN.md §4).
+        let c = (rmin + rmax) * 0.5;
+        Affine2::from_translation(c)
+            * Affine2::from_angle(self.angle)
+            * Affine2::from_translation(-c)
+            * a
     }
 }
 

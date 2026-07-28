@@ -818,6 +818,26 @@
   cursor: move;
 }
 
+/* The rotate handle, in the spot the frame's move pill occupies: a knob above the
+   top edge (translation lives on the box interior here, which is what freed it).
+   It rotates with the box, so it always sits over the box's own "up". */
+.transform-rotate {
+  position: absolute;
+  left: 50%;
+  top: -24px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: #ffffffd9;
+  border: 1px solid #0000008c;
+  box-sizing: border-box;
+  cursor: grab;
+}
+.transform-rotate:active {
+  cursor: grabbing;
+}
+
 /* Bottom-centre stack. Both bars are mounted only while the thing they act on
    exists, so this column is usually empty, sometimes one row, occasionally two —
    a flex column means they never need to know about each other. `pointer-events`
