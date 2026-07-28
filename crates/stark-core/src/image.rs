@@ -52,7 +52,7 @@ impl RgbaImage {
     ) -> Self {
         use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb};
         if matches!(format, Bgra8Unorm | Bgra8UnormSrgb) {
-            for texel in bytes.chunks_exact_mut(4) {
+            for texel in bytes.as_chunks_mut::<4>().0 {
                 texel.swap(0, 2);
             }
         }
