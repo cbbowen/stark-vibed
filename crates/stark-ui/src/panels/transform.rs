@@ -16,6 +16,7 @@
 //! must stay paintable, the whole point of this mode is that the pointer is
 //! *composing*, not painting.
 
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use super::frame::{Grip, content_rect, page_xy, view_rect};
@@ -128,6 +129,11 @@ enum DragKind {
         /// The gesture's angle at that moment.
         angle: f32,
     },
+    /// A view pan — middle-drag or space-drag, exactly as on the canvas.
+    /// Composing a transform must not cost navigation, so every transform
+    /// element diverts to this when those bindings are held; `Drag::origin` is
+    /// re-anchored each move, since `ViewCommand::Pan` takes incremental deltas.
+    Pan,
 }
 
 /// An in-flight handle drag: what it holds, where the pointer went down (page
@@ -179,7 +185,32 @@ pub fn TransformOverlay() -> Element {
     // A pointer delta in screen px is a canvas delta over the zoom.
     let to_canvas = move |screen: Vec2, origin: Vec2| (screen - origin) / view.zoom;
     let bearing_about_centre = move |p: Vec2| (p.y - centre.y).atan2(p.x - centre.x);
+    // The navigation bindings, exactly as the canvas has them: middle-drag or
+    // space-drag pans. Checked first by every transform element, so holding
+    // space over the box pans instead of moving the selection. Returns whether
+    // the press was taken.
+    let mut start_pan = move |e: &Event<PointerData>| -> bool {
+        let pan =
+            e.trigger_button() == Some(MouseButton::Auxiliary) || *state.space_down.peek();
+        if pan {
+            e.prevent_default(); // suppress middle-click autoscroll
+            e.stop_propagation();
+            crate::platform::capture_pointer(e);
+            drag.set(Some(Drag {
+                kind: DragKind::Pan,
+                origin: page_xy(e),
+                start: ts.rect,
+            }));
+        }
+        pan
+    };
     let mut start = move |e: &Event<PointerData>, kind: DragKind| {
+        if start_pan(e) {
+            return;
+        }
+        if e.trigger_button() != Some(MouseButton::Primary) {
+            return;
+        }
         e.stop_propagation();
         crate::platform::capture_pointer(e);
         drag.set(Some(Drag {
@@ -188,7 +219,23 @@ pub fn TransformOverlay() -> Element {
             start: ts.rect,
         }));
     };
-    let follow = move |e: &Event<PointerData>| {
+    // Wheel zoom, exactly as on the canvas. Anchored by page position: the
+    // catcher shares the canvas's origin and the box does not, and page
+    // coordinates are the one frame both report in.
+    let wheel = move |e: Event<WheelData>| {
+        e.prevent_default();
+        e.stop_propagation();
+        let dy = e.delta().strip_units().y;
+        if dy != 0.0 {
+            let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
+            let p = e.page_coordinates();
+            dispatch(state, ViewCommand::Zoom {
+                anchor: Vec2::new(p.x as f32, p.y as f32),
+                factor,
+            });
+        }
+    };
+    let mut follow = move |e: &Event<PointerData>| {
         let Some(d) = drag() else { return };
         match d.kind {
             // Translation is rotation-invariant: the box follows the pointer.
@@ -215,17 +262,46 @@ pub fn TransformOverlay() -> Element {
                 let turned = angle + bearing_about_centre(page_xy(e)) - bearing;
                 update(state, TransformState { angle: turned, ..ts });
             }
+            // Incremental, re-anchoring the origin each move: `Pan` is a delta
+            // command, unlike the grips' from-the-start geometry.
+            DragKind::Pan => {
+                let p = page_xy(e);
+                dispatch(state, ViewCommand::Pan { delta: p - d.origin });
+                drag.set(Some(Drag { origin: p, ..d }));
+            }
         }
+    };
+
+    // The catcher advertises the pan while space is held, as the canvas cursor
+    // would if it could still be seen.
+    let catcher_class = if (state.space_down)() {
+        "transform-catcher pan"
+    } else {
+        "transform-catcher"
     };
 
     rsx! {
         // The catcher: soaks up every pointer event the box does not, so a drag
-        // beside the box cannot start a stroke while composing.
-        div { class: "transform-catcher" }
+        // beside the box cannot start a stroke while composing — but navigation
+        // still works: middle-drag and space-drag pan, the wheel zooms.
+        div {
+            class: "{catcher_class}",
+            onpointerdown: move |e| { start_pan(&e); },
+            onpointermove: move |e| follow(&e),
+            onpointerup: move |e| {
+                follow(&e);
+                drag.set(None);
+            },
+            onpointercancel: move |_| { drag.set(None); },
+            onwheel: wheel,
+        }
 
         div {
             class: chrome_class(state, "transform-overlay"),
             style: "{box_style}",
+            // Grips and the rotate knob bubble their wheel events here, so the
+            // zoom works over the box too.
+            onwheel: wheel,
             // The interior moves the box — dragging the region *is* the
             // translation, which is what freed the top handle for rotation.
             onpointerdown: move |e| start(&e, DragKind::Grip(Grip::Move)),

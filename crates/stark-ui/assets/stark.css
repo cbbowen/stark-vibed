@@ -805,6 +805,11 @@
   z-index: 9;
 }
 
+/* Space is held: the catcher is a pan surface until it lifts. */
+.transform-catcher.pan {
+  cursor: grab;
+}
+
 /* The transform box reuses the frame's grips (same geometry, same styles). Two
    deliberate differences from `.frame-overlay`: the edge is dashed, so a held,
    movable region reads differently from a frame's fixed rectangle; and pointer

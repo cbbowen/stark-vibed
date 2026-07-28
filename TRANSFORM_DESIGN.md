@@ -193,15 +193,18 @@ The handle box anchors to a conservative analytic **hull** the selection now
 carries through its op algebra (`Selection::hull`,
 `ObservableState::selection_hull`); an unbounded selection falls back to the
 painted content's bounds — which is also how "move the whole layer" arrives for
-free. While the mode is active a full-viewport catcher blocks canvas painting:
-the pointer is composing, not painting.
+free. While the mode is active a full-viewport catcher blocks canvas *painting*
+— the pointer is composing, not painting — but **navigation survives**:
+middle-drag and space-drag pan and the wheel zooms, with the canvas's exact
+bindings, from anywhere — the catcher, the box, a grip, the knob all divert to
+them first. Composing a transform should not cost the view, any more than
+holding a brush does.
 
 Known rough edges for the UI experiments: no skew chrome, no angle snapping
 (shift-for-15° is the convention), the resize cursors keep their unrotated
-compass directions, pan/zoom are blocked by the catcher for the mode's duration,
-there is no cancel affordance other than Done at identity, and the keyboard
-selection shortcuts (Ctrl+D / invert) still fire mid-mode and change what Done
-would cut.
+compass directions, there is no cancel affordance other than Done at identity,
+and the keyboard selection shortcuts (Ctrl+D / invert) still fire mid-mode and
+change what Done would cut.
 
 ## 7. What this deliberately defers
 
