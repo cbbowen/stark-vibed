@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::Result;
 use crate::backend::{self, Dialer, Shutdown};
-use crate::mesh::{Mesh, MeshConfig, MeshEvent, TopicId};
+use crate::mesh::{LinkKind, Mesh, MeshConfig, MeshEvent, TopicId};
 use crate::mirror::Mirror;
 use crate::proto::{AssetResponse, Request, Wire};
 use crate::ticket::SessionTicket;
@@ -75,6 +75,20 @@ pub enum RemoteEvent {
     /// the log refers to it, so losing one costs a frame of someone else's cursor
     /// and nothing else.
     Presence { actor: ActorId, frame: PeerFrame },
+}
+
+/// How this client's connection to one session member currently travels —
+/// the answer to "are we peer-to-peer or riding a relay?".
+///
+/// Keyed by the member's [`ActorId`] so the UI can join it against the
+/// presence roster. Members with no entry have no *direct* connection to this
+/// client; their traffic is forwarded through the mesh by whoever does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerLink {
+    /// The author id the peer's endpoint identity maps to.
+    pub actor: ActorId,
+    /// How the connection reaches them right now.
+    pub kind: LinkKind,
 }
 
 /// Connectivity configuration for a session.
@@ -246,6 +260,11 @@ impl CollabSession {
             .insert_asset(id, bytes);
     }
 
+    /// See [`Broadcaster::links`].
+    pub async fn links(&self) -> Vec<PeerLink> {
+        self.broadcaster().links().await
+    }
+
     /// Leave the session gracefully.
     pub async fn shutdown(self) {
         self.mesh.shutdown();
@@ -298,6 +317,26 @@ impl Broadcaster {
             .lock()
             .expect("mirror poisoned")
             .insert_asset(id, bytes);
+    }
+
+    /// How each directly-connected session member is reached right now —
+    /// direct (WebRTC or hole-punched UDP) or via a relay. Sampled per call;
+    /// an iroh link upgrades from relay to direct when hole punching lands, so
+    /// poll rather than cache. Empty once the mesh is gone.
+    pub async fn links(&self) -> Vec<PeerLink> {
+        let Ok(links) = self.mesh.links().await else {
+            return Vec::new();
+        };
+        links
+            .into_iter()
+            .filter_map(|(peer, kind)| {
+                let id = crate::transport::to_endpoint_id(peer)?;
+                Some(PeerLink {
+                    actor: actor_from_endpoint_id(id),
+                    kind,
+                })
+            })
+            .collect()
     }
 }
 

@@ -24,9 +24,10 @@ pub(in crate::browser_runtime) use rtc::{
     AttachDataChannelOutcome, BrowserBootstrapSignalInput, BrowserBootstrapSignalResult,
     BrowserTerminalDecision, DataChannelSource,
 };
+pub use session::BrowserResolvedTransport;
 pub(in crate::browser_runtime) use session::{
-    BrowserDialAllocation, BrowserDialStart, BrowserResolvedTransport, BrowserSessionLifecycle,
-    BrowserSessionRole, BrowserSessionSnapshot, DataChannelAttachmentState,
+    BrowserDialAllocation, BrowserDialStart, BrowserSessionLifecycle, BrowserSessionRole,
+    BrowserSessionSnapshot, DataChannelAttachmentState,
 };
 pub(in crate::browser_runtime) use stream::BrowserStreamBackpressureState;
 pub(crate) use stream::{

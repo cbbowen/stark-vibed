@@ -20,5 +20,11 @@ is pulled in only behind `stark-net`'s `webrtc` feature.
 - **wasm-bindgen pin relaxed** from `=0.2.118` to `0.2` so it unifies with the
   version `stark-ui` (Dioxus) resolves.
 - `publish = false`.
+- **`BrowserResolvedTransport` made public and exposed on connections.** The
+  runtime already records whether each facade connection resolved to direct
+  WebRTC or the iroh relay fallback (`BrowserConnectionInfo.transport`), but the
+  facade dropped it. The enum is now `pub` (re-exported from `browser`), and
+  `BrowserWebRtcConnection` carries it, readable via a new `transport()` method
+  — `stark-net` uses it to tell the UI how each peer is reached.
 
 Any further deltas from upstream should be recorded here.

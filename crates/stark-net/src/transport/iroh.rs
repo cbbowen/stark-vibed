@@ -17,7 +17,8 @@ use iroh::{Endpoint, EndpointAddr};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::mesh::{
-    MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError, PeerId, TransportResult,
+    LinkKind, MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError, PeerId,
+    TransportResult,
 };
 
 use super::{MESH_ALPN as ALPN, to_endpoint_id, to_peer_id};
@@ -166,6 +167,22 @@ impl MeshSender for IrohSender {
             .map_err(MeshTransportError::new)
     }
 
+    /// The *selected* path decides: iroh keeps a relay path open even after
+    /// hole punching, but application data rides only the selected one.
+    fn link_kind(&self) -> LinkKind {
+        let paths = self.conn.paths();
+        let Some(path) = paths.iter().find(|p| p.is_selected()) else {
+            return LinkKind::Unknown;
+        };
+        if path.is_relay() {
+            LinkKind::Relay
+        } else if path.is_ip() {
+            LinkKind::Direct
+        } else {
+            LinkKind::Unknown
+        }
+    }
+
     fn close(&self) {
         self.conn.close(0u32.into(), b"mesh closed");
     }
@@ -212,7 +229,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::mesh::{Mesh, MeshConfig, MeshEvent, TopicId};
+    use crate::mesh::{LinkKind, Mesh, MeshConfig, MeshEvent, TopicId};
 
     const TOPIC: TopicId = TopicId::from_bytes([3u8; 32]);
 
@@ -331,6 +348,11 @@ mod tests {
 
         b_mesh.broadcast(b"and back".to_vec()).await.unwrap();
         assert_eq!(next_payload(&mut a_events).await.1, b"and back");
+
+        // Loopback sockets with no relay configured: the link must report as
+        // direct, not relay or unknown.
+        let links = a_mesh.links().await.unwrap();
+        assert_eq!(links, vec![(to_peer_id(b.endpoint.id()), LinkKind::Direct)]);
 
         shutdown(a, a_mesh).await;
         shutdown(b, b_mesh).await;

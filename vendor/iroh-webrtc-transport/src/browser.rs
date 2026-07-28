@@ -110,6 +110,12 @@ pub use crate::browser_runtime::BrowserProtocolRegistry;
     target_family = "wasm",
     target_os = "unknown"
 ))]
+pub use crate::browser_runtime::BrowserResolvedTransport;
+#[cfg(all(
+    feature = "browser-main-thread",
+    target_family = "wasm",
+    target_os = "unknown"
+))]
 pub(crate) use crate::browser_runtime::BrowserRuntime;
 #[cfg(all(
     feature = "browser-main-thread",

@@ -106,6 +106,7 @@ impl AppState {
                 phase: root_signal(collab::CollabPhase::default),
                 error: root_signal(|| None),
                 peers: root_signal(Vec::new),
+                links: root_signal(Vec::new),
                 pump: root_signal(|| None),
                 presence: root_signal(|| None),
             },
@@ -244,6 +245,12 @@ pub struct CollabState {
     /// pointer move, and re-running the whole component tree at that rate to move a
     /// cursor would be absurd.
     pub peers: Signal<Vec<crate::render::PeerInfo>>,
+    /// How each directly-connected peer is reached — WebRTC, hole-punched UDP,
+    /// or an iroh relay — polled off the mesh by the presence pump on a slow
+    /// cadence (links change on the order of seconds, not frames). Peers in the
+    /// roster but absent here have no direct connection; the mesh forwards
+    /// their traffic. Read by the session dialog.
+    pub links: Signal<Vec<stark_net::PeerLink>>,
     /// The incoming-event pump for `session`. Its lifetime is tied to the
     /// session's: `collab::install` replaces it, [`crate::collab::leave`]
     /// cancels it.

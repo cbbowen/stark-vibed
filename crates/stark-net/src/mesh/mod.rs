@@ -55,8 +55,8 @@ use state::DeliveryTracker;
 
 pub use proto::TopicId;
 pub use transport::{
-    MaybeSend, MaybeSync, MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError,
-    PeerId, TransportResult,
+    LinkKind, MaybeSend, MaybeSync, MeshConn, MeshRecv, MeshSender, MeshTransport,
+    MeshTransportError, PeerId, TransportResult,
 };
 
 /// Tuning. Defaults suit a drawing session: a handful of peers, small payloads.
@@ -127,6 +127,7 @@ enum Command {
     },
     AddPeer(PeerId),
     Neighbors(oneshot::Sender<Vec<PeerId>>),
+    Links(oneshot::Sender<Vec<(PeerId, LinkKind)>>),
     Shutdown,
 }
 
@@ -263,6 +264,17 @@ impl Mesh {
         rx.await.map_err(|_| MeshClosed)
     }
 
+    /// Each neighbour with how its connection currently reaches it. Sampled
+    /// fresh per call: an iroh link upgrades from relay to direct when hole
+    /// punching succeeds, so the answer can change between calls.
+    pub async fn links(&self) -> Result<Vec<(PeerId, LinkKind)>, MeshClosed> {
+        let (tx, rx) = oneshot::channel();
+        self.commands
+            .send(Command::Links(tx))
+            .map_err(|_| MeshClosed)?;
+        rx.await.map_err(|_| MeshClosed)
+    }
+
     /// Stop the mesh and drop every connection.
     pub fn shutdown(&self) {
         let _ = self.commands.send(Command::Shutdown);
@@ -299,12 +311,16 @@ struct PeerState {
 
 /// A live connection, reduced to what the driver needs: an ordered outgoing
 /// queue. Dropping this closes the connection (the writer task exits).
-struct Neighbor {
+struct Neighbor<S> {
     conn_id: u64,
     out: mpsc::UnboundedSender<Vec<u8>>,
     /// Who opened this connection — the tie-break for simultaneous dials, and
     /// identical on both sides.
     dialer: PeerId,
+    /// A second handle on the write half, kept only to answer
+    /// [`Mesh::links`] — link kind is a property of the live connection, so it
+    /// has to be asked, not recorded.
+    sender: S,
 }
 
 struct Driver<T: MeshTransport> {
@@ -314,7 +330,7 @@ struct Driver<T: MeshTransport> {
     /// Every peer we have ever heard of. Never pruned: a peer that is gone today
     /// may be back tomorrow, and the swarm is small.
     known: HashMap<PeerId, PeerState>,
-    conns: HashMap<PeerId, Neighbor>,
+    conns: HashMap<PeerId, Neighbor<<T::Conn as MeshConn>::Sender>>,
     dialing: HashSet<PeerId>,
     delivery: DeliveryTracker,
     next_seq: u64,
@@ -341,6 +357,14 @@ impl<T: MeshTransport> Driver<T> {
                 }
                 Ev::Cmd(Command::Neighbors(reply)) => {
                     let _ = reply.send(self.conns.keys().copied().collect());
+                }
+                Ev::Cmd(Command::Links(reply)) => {
+                    let links = self
+                        .conns
+                        .iter()
+                        .map(|(peer, n)| (*peer, n.sender.link_kind()))
+                        .collect();
+                    let _ = reply.send(links);
                 }
                 Ev::Cmd(Command::Shutdown) => break,
                 Ev::Inbound(conn) => self.register(conn, false),
@@ -386,6 +410,7 @@ impl<T: MeshTransport> Driver<T> {
 
         // One writer task per connection keeps frame order without locking.
         let (out, mut queue) = mpsc::unbounded_channel::<Vec<u8>>();
+        let sender_handle = sender.clone();
         task::spawn(async move {
             while let Some(frame) = queue.recv().await {
                 if let Err(e) = sender.send(frame).await {
@@ -409,6 +434,7 @@ impl<T: MeshTransport> Driver<T> {
                 conn_id,
                 out,
                 dialer,
+                sender: sender_handle,
             },
         );
         self.known.entry(peer).or_default().reset();

@@ -26,7 +26,8 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_core::peer::Identity;
 use stark_net::{
-    Broadcaster, CollabSession, NetOptions, RemoteEvent, SessionTicket, actor_from_endpoint_id,
+    Broadcaster, CollabSession, LinkKind, NetOptions, RemoteEvent, SessionTicket,
+    actor_from_endpoint_id,
 };
 
 use crate::state::AppState;
@@ -35,6 +36,11 @@ use crate::state::AppState;
 /// painter's stroke grows smoothly, slow enough that a 240 Hz pen does not put 240
 /// frames a second on a flood mesh.
 const PRESENCE_TICK_MS: i32 = 33;
+
+/// Presence ticks between polls of how each peer is reached (WebRTC / relay /
+/// hole-punched — the session dialog's badges). ~2 s: links change when a
+/// connection is made, lost, or upgraded by hole punching, never per frame.
+const LINK_POLL_TICKS: u32 = 60;
 
 /// The UI's view of the collaboration state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -163,6 +169,8 @@ pub fn leave(state: AppState) {
     }
     let mut peers = state.collab.peers;
     peers.set(Vec::new());
+    let mut links = state.collab.links;
+    links.set(Vec::new());
     // Say goodbye before the transport goes: peers drop this client at once rather
     // than waiting out the presence timeout with a stale cursor on their canvas.
     let farewell = {
@@ -303,6 +311,7 @@ fn start_presence_pump(state: AppState) {
     let mut presence = state.collab.presence;
     let task = spawn_forever(async move {
         let mut sent_revision = 0;
+        let mut ticks: u32 = 0;
         loop {
             // The tick runs *first* and the sleep last, so the engine's clock is set
             // before the incoming pump can hand it a frame to date. A labelled block
@@ -319,6 +328,19 @@ fn start_presence_pump(state: AppState) {
                     // The session is gone; so is the reason for this loop.
                     return;
                 };
+                // Refresh how each peer is reached, on its own slow cadence and
+                // before the idle check — a link upgrading from relay to WebRTC
+                // moves no cursor. On the first tick too, so the dialog isn't
+                // blank for the poll interval after sharing starts. Write only
+                // on change: the signal re-renders the session dialog.
+                if ticks % LINK_POLL_TICKS == 0 {
+                    let links = tx.links().await;
+                    let mut links_sig = state.collab.links;
+                    if *links_sig.peek() != links {
+                        links_sig.set(links);
+                    }
+                }
+                ticks = ticks.wrapping_add(1);
                 let now = now_seconds();
                 // `peek`, not `read`: this runs outside any component, and subscribing
                 // a background task to a signal is meaningless anyway.
@@ -473,6 +495,19 @@ fn set_url_ticket(ticket: Option<&str>) {
     }
 }
 
+/// The label and style for how a peer's connection reaches us, from the link
+/// the mesh reports for it — or `None`, meaning no direct connection at all:
+/// the mesh forwards that peer's traffic through the members that do have one.
+fn link_badge(kind: Option<LinkKind>) -> (&'static str, &'static str) {
+    match kind {
+        Some(LinkKind::WebRtc) => ("direct · WebRTC", "peer-link peer-link-direct"),
+        Some(LinkKind::Direct) => ("direct", "peer-link peer-link-direct"),
+        Some(LinkKind::Relay) => ("via relay", "peer-link peer-link-relay"),
+        Some(LinkKind::Unknown) => ("connecting…", "peer-link"),
+        None => ("via peers", "peer-link"),
+    }
+}
+
 /// The "Share" dialog. Sharing has already started by the time this opens (the
 /// menu item calls [`share`]), so the dialog's whole job is to hand over the
 /// link — and to let this client leave again. There is no join half: opening a
@@ -543,6 +578,43 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                             });
                                         },
                                         if copied() { "Copied" } else { "Copy" }
+                                    }
+                                }
+                            }
+                        }
+                        // Who is here, and how each one is reached — the only
+                        // place the relay-or-direct question is answered. Names
+                        // come from the presence roster; link kinds from the
+                        // mesh, polled by the presence pump.
+                        {
+                            let peers = (state.collab.peers)();
+                            let links = (state.collab.links)();
+                            rsx! {
+                                div { class: "peer-list",
+                                    if peers.is_empty() {
+                                        div { class: "peer-list-empty",
+                                            "No one else has joined yet."
+                                        }
+                                    }
+                                    for peer in peers {
+                                        {
+                                            let kind = links
+                                                .iter()
+                                                .find(|l| l.actor == peer.actor)
+                                                .map(|l| l.kind);
+                                            let (label, class) = link_badge(kind);
+                                            let color = peer.css_color();
+                                            rsx! {
+                                                div { class: "peer-row",
+                                                    span {
+                                                        class: "peer-dot",
+                                                        style: "background: {color}",
+                                                    }
+                                                    span { class: "peer-name", {peer.name.clone()} }
+                                                    span { class: "{class}", {label} }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

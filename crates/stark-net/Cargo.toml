@@ -30,6 +30,8 @@ publish = false
 # the (well-tested) iroh path, but exercising real browser WebRTC needs a browser.
 # See vendor/iroh-webrtc-transport/VENDORING.md.
 webrtc = ["dep:iroh-webrtc-transport"]
+# TODO: We would like to enable this by default, but it currently breaks sharing.
+# default = ["webrtc"]
 
 [dependencies]
 stark-core = { path = "../stark-core" }

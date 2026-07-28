@@ -38,13 +38,14 @@ use std::time::Duration;
 
 use iroh::EndpointId;
 use iroh_webrtc_transport::browser::{
-    BrowserDialOptions, BrowserWebRtcAcceptor, BrowserWebRtcConnection, BrowserWebRtcNode,
-    BrowserWebRtcStream,
+    BrowserDialOptions, BrowserResolvedTransport, BrowserWebRtcAcceptor, BrowserWebRtcConnection,
+    BrowserWebRtcNode, BrowserWebRtcStream,
 };
 use n0_future::task;
 
 use crate::mesh::{
-    MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError, PeerId, TransportResult,
+    LinkKind, MeshConn, MeshRecv, MeshSender, MeshTransport, MeshTransportError, PeerId,
+    TransportResult,
 };
 use crate::mirror::Mirror;
 
@@ -214,6 +215,15 @@ impl MeshSender for WebRtcSender {
         out.extend_from_slice(&len.to_le_bytes());
         out.extend_from_slice(&frame);
         self.stream.send_all(&out).await.map_err(js_err)
+    }
+
+    /// Fixed at establishment: a facade connection either negotiated WebRTC or
+    /// fell back to relay, and never migrates afterwards.
+    fn link_kind(&self) -> LinkKind {
+        match self.conn.transport() {
+            BrowserResolvedTransport::WebRtc => LinkKind::WebRtc,
+            BrowserResolvedTransport::IrohRelay => LinkKind::Relay,
+        }
     }
 
     fn close(&self) {

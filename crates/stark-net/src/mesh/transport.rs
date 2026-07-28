@@ -91,6 +91,25 @@ impl std::error::Error for MeshTransportError {}
 
 pub type TransportResult<T> = std::result::Result<T, MeshTransportError>;
 
+/// How a live connection reaches its peer, as reported by the transport.
+///
+/// Diagnostic only: the mesh treats every link the same, but a user cares
+/// whether their strokes ride a peer-to-peer path or bounce off a relay. iroh
+/// links may migrate (relay first, direct once hole punching lands), so this is
+/// sampled at query time rather than recorded at connection time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// A peer-to-peer WebRTC data channel (the browser transport's direct path).
+    WebRtc,
+    /// A hole-punched UDP path (native iroh's direct path).
+    Direct,
+    /// Via an iroh relay server.
+    Relay,
+    /// The transport cannot tell — no path selected yet, or it has no notion of
+    /// paths at all (the in-memory test transport).
+    Unknown,
+}
+
 /// Dials peers and surfaces inbound connections.
 ///
 /// `accept` is pull-based; transports whose inbound side is push-based (iroh's
@@ -132,6 +151,12 @@ pub trait MeshSender: Clone + MaybeSend + MaybeSync + 'static {
     /// Deliver one whole frame. Implementations must preserve frame boundaries
     /// and ordering; the mesh relies on both.
     fn send(&self, frame: Vec<u8>) -> impl Future<Output = TransportResult<()>> + MaybeSend;
+
+    /// How this connection currently reaches its peer. Sampled per call — an
+    /// iroh link upgrades from relay to direct when hole punching succeeds.
+    fn link_kind(&self) -> LinkKind {
+        LinkKind::Unknown
+    }
 
     /// Drop the channel. Idempotent.
     fn close(&self);

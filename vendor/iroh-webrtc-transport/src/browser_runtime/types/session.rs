@@ -5,8 +5,11 @@ use crate::{
     core::signaling::{BootstrapTransportIntent, DialId, WebRtcTerminalReason},
 };
 
+/// Which transport a browser connection actually ended up on: a direct WebRTC
+/// data channel, or the iroh relay fallback. Decided per connection during the
+/// bootstrap handshake and fixed for the connection's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum BrowserResolvedTransport {
+pub enum BrowserResolvedTransport {
     #[serde(rename = "webrtc")]
     WebRtc,
     #[serde(rename = "irohRelay")]

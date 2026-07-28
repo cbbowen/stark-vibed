@@ -458,6 +458,64 @@
   flex: none;
 }
 
+/* Who's in the session and how each connection travels (direct vs relay). */
+.peer-list {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.peer-list-empty {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.peer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.peer-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.peer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.peer-link {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #ffffff1f;
+  background: #ffffff08;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+
+.peer-link-direct {
+  border-color: #4caf7a52;
+  background: #4caf7a1f;
+  color: #a5e8c5;
+}
+
+.peer-link-relay {
+  border-color: #d9a44252;
+  background: #d9a4421f;
+  color: #f0d9a8;
+}
+
 /* Sits under whichever phase block is showing, so it owns the gap above it. */
 .identity-section {
   margin-top: 20px;

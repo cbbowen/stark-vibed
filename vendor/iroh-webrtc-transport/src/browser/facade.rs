@@ -360,6 +360,7 @@ pub struct BrowserWebRtcConnection {
     connection_key: String,
     remote_endpoint_id: String,
     alpn: String,
+    transport: crate::browser_runtime::BrowserResolvedTransport,
 }
 
 impl BrowserWebRtcConnection {
@@ -369,6 +370,7 @@ impl BrowserWebRtcConnection {
             connection_key: result.connection_key,
             remote_endpoint_id: result.remote_endpoint,
             alpn: result.alpn,
+            transport: result.transport,
         }
     }
 
@@ -378,6 +380,12 @@ impl BrowserWebRtcConnection {
 
     pub fn alpn(&self) -> &str {
         &self.alpn
+    }
+
+    /// Which transport this connection resolved to (direct WebRTC or the iroh
+    /// relay fallback). Fixed at establishment; a connection never migrates.
+    pub fn transport(&self) -> crate::browser_runtime::BrowserResolvedTransport {
+        self.transport
     }
 
     pub async fn open_bi(&self) -> Result<BrowserWebRtcStream, JsValue> {

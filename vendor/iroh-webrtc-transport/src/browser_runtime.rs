@@ -62,10 +62,11 @@ pub(in crate::browser_runtime) use rtc_lifecycle::{
 pub(in crate::browser_runtime) use runtime::BrowserRuntimeCore;
 #[cfg(test)]
 pub(in crate::browser_runtime) use types::BrowserRuntimeNodeState;
+pub use types::BrowserResolvedTransport;
 pub(in crate::browser_runtime) use types::{
     AttachDataChannelOutcome, BrowserAcceptId, BrowserAcceptNext, BrowserAcceptRegistration,
     BrowserAcceptedConnection, BrowserBootstrapSignalInput, BrowserBootstrapSignalResult,
-    BrowserConnectionKey, BrowserDialAllocation, BrowserDialStart, BrowserResolvedTransport,
+    BrowserConnectionKey, BrowserDialAllocation, BrowserDialStart,
     BrowserRuntimeNodeConfig, BrowserSessionKey, BrowserSessionLifecycle, BrowserSessionRole,
     BrowserSessionSnapshot, BrowserStreamBackpressureState, BrowserStreamKey,
     BrowserTerminalDecision, DataChannelAttachmentState, DataChannelSource,
