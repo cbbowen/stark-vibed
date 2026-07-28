@@ -902,6 +902,84 @@ mod tests {
         );
     }
 
+    /// A resync frame restarts the *assembly*, not the gesture: the frozen
+    /// watermark must survive it. Reset to zero, every resync discarded the
+    /// renderer's cached head (`Engine::render_live_stroke` keys on it) and the
+    /// whole stroke was redrawn from scratch — once a second per stroking peer,
+    /// which is the multi-client slowdown.
+    #[test]
+    fn a_resync_does_not_walk_the_frozen_watermark_back() {
+        let mut peers = Peers::new();
+        let a = ActorId(1);
+        peers.merge(
+            a,
+            frame(
+                1,
+                Some(GestureFrame::Stroke {
+                    id: 0,
+                    head: Some(head()),
+                    from: 0,
+                    points: pts(3),
+                }),
+            ),
+            0.0,
+        );
+        // A delta whose `from` announces the sender froze two control points.
+        peers.merge(
+            a,
+            frame(
+                2,
+                Some(GestureFrame::Stroke {
+                    id: 0,
+                    head: None,
+                    from: 2,
+                    points: pts(4)[2..].to_vec(),
+                }),
+            ),
+            0.1,
+        );
+        assert_eq!(peers.get(a).expect("peer").live_frozen_points(), 2);
+
+        // The resync: same gesture, head present, whole path from 0.
+        peers.merge(
+            a,
+            frame(
+                3,
+                Some(GestureFrame::Stroke {
+                    id: 0,
+                    head: Some(head()),
+                    from: 0,
+                    points: pts(5),
+                }),
+            ),
+            1.2,
+        );
+        let peer = peers.get(a).expect("peer");
+        assert_eq!(peer.live_stroke().expect("live").path.len(), 5);
+        assert_eq!(
+            peer.live_frozen_points(),
+            2,
+            "a resync says nothing new about what is frozen, so it must not walk \
+             the watermark back"
+        );
+
+        // A new gesture must not inherit it.
+        peers.merge(
+            a,
+            frame(
+                4,
+                Some(GestureFrame::Stroke {
+                    id: 1,
+                    head: Some(head()),
+                    from: 0,
+                    points: pts(2),
+                }),
+            ),
+            1.3,
+        );
+        assert_eq!(peers.get(a).expect("peer").live_frozen_points(), 0);
+    }
+
     #[test]
     fn a_new_gesture_ordinal_starts_over() {
         let mut peers = Peers::new();

@@ -248,11 +248,23 @@ impl GestureRx {
                 if let Some(head) = head
                     && (self.stroke.as_ref().is_none_or(|s| s.id != id) || from == 0)
                 {
+                    // A resync restarts the *assembly*, not the gesture: for the same
+                    // ordinal the frozen watermark carries over, because the resent
+                    // path's prefix is exactly the frozen points already held — a
+                    // frozen control point never moves, and a resync says nothing new
+                    // about freezing. Reset to zero here, every resync frame
+                    // discarded the renderer's cached head (`Engine::refresh_live`
+                    // keys on `frozen_spans`) and redrew the whole stroke from
+                    // scratch — once a second, per stroking peer.
+                    let frozen = match self.stroke.as_ref() {
+                        Some(s) if s.id == id => s.frozen,
+                        _ => 0,
+                    };
                     self.stroke = Some(StrokeAssembly {
                         id,
                         head,
                         path: Vec::new(),
-                        frozen: 0,
+                        frozen,
                     });
                     self.last_seq = None;
                 }
@@ -295,10 +307,11 @@ impl GestureRx {
                 self.last_seq = Some(seq);
                 assembly.path.truncate(from);
                 assembly.path.extend(points);
-                // A resync frame resends the whole path, which says nothing new about
-                // what is frozen — so the watermark only ever advances.
-                assembly.frozen = assembly.frozen.max(from);
-                debug_assert!(assembly.frozen <= assembly.path.len());
+                // The watermark only ever advances (`max`) — a resync frame, whose
+                // `from` is 0, leaves the carried-over count standing. Clamped rather
+                // than asserted against the path: an honest sender never resends
+                // fewer points than it froze, but the frame came off a wire.
+                assembly.frozen = assembly.frozen.max(from).min(assembly.path.len());
                 self.drawn = Some(LiveGesture::Stroke(StrokeRecord {
                     layer: assembly.head.layer,
                     tool: assembly.head.tool,
@@ -359,7 +372,11 @@ mod tests {
     /// 2. its frozen watermark never outruns the path it indexes;
     /// 3. once a resync frame is delivered, the receiver's path matches the sender's
     ///    entirely — the protocol's whole promise, that loss costs latency and not
-    ///    correctness.
+    ///    correctness;
+    /// 4. within one gesture the watermark never walks back — the module-level rule
+    ///    a resync frame used to violate by resetting the assembly's frozen count,
+    ///    which discarded the renderer's cached head and redrew the whole stroke
+    ///    from scratch once a second.
     #[test]
     fn round_trip_survives_a_lossy_channel() {
         for seed in 0..64u64 {
@@ -372,6 +389,8 @@ mod tests {
             let mut now = 0.0;
             // Three gestures back to back, so a restart has to be unambiguous too.
             for gesture in 0..3u32 {
+                // Invariant 4's memory: the highest frozen count seen this gesture.
+                let mut watermark = 0usize;
                 let seedling = u64::from(gesture);
                 session.start_stroke(
                     Tool::Brush,
@@ -401,7 +420,7 @@ mod tests {
                             peers.merge(actor, frame, now);
                         }
                     }
-                    check(&session, &peers, actor);
+                    check(&session, &peers, actor, &mut watermark);
                 }
                 session.end_stroke();
                 now += 0.033;
@@ -411,7 +430,7 @@ mod tests {
                 for frame in inflight.drain(..) {
                     peers.merge(actor, frame, now);
                 }
-                check(&session, &peers, actor);
+                check(&session, &peers, actor, &mut watermark);
                 assert!(
                     peers.get(actor).and_then(|p| p.live_stroke()).is_none(),
                     "seed {seed}: the frame clearing a finished gesture must land"
@@ -420,8 +439,10 @@ mod tests {
         }
     }
 
-    /// Invariants 1 and 2. The receiver may lag the sender, but never disagree.
-    fn check(session: &Session, peers: &Peers, actor: ActorId) {
+    /// Invariants 1, 2 and 4. The receiver may lag the sender, but never disagree —
+    /// and never *unlearn*: `watermark` remembers the highest frozen count seen this
+    /// gesture, which no later frame (a resync in particular) may fall below.
+    fn check(session: &Session, peers: &Peers, actor: ActorId, watermark: &mut usize) {
         let Some(peer) = peers.get(actor) else { return };
         let Some(shown) = peer.live_stroke() else {
             return;
@@ -430,6 +451,11 @@ mod tests {
             peer.live_frozen_spans() <= crate::path::span_count(shown.path.len()),
             "frozen watermark outran the path it indexes"
         );
+        assert!(
+            peer.live_frozen_points() >= *watermark,
+            "the frozen watermark walked back within one gesture"
+        );
+        *watermark = peer.live_frozen_points();
         let Some(truth) = session.preview_record() else {
             // The sender has no stroke in flight, so what is drawn is a leftover from
             // one that ended — the clearing frame has not landed yet. It must still be
