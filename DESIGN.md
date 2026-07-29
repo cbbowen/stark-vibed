@@ -926,6 +926,22 @@ caller asked. The media pass therefore keeps one bind group and the eyedropper k
 its own targets. The scratch pairs are allocated on first use, so an ordinary
 painting never pays for them.
 
+> **Known defect: a layer covers by its opacity, not by what it shows.** Pass A
+> weights a layer's "over" by the tile's per-unit **opacity** alone, but a tile
+> stores opacity *and* amount, and only the two together say how much of a fragment
+> is paint — which is why the media pass combines them as a translucent slab. A film
+> with opacity 1 and no thickness therefore draws as nothing over bare canvas and
+> replaces the colour outright over another layer's paint. Every soft brush has a
+> wide fringe of exactly that state (`stamp_oklab.wesl` saturates opacity as
+> `1 − exp(−op·τ)` while height stays linear in `τ`), so the symptom is a ghost of
+> the brush's whole footprint appearing on the layer below. `tests/composite.rs` is
+> an ignored repro with the full diagnosis. The fix is to weight by the layer's own
+> visible alpha — the slab law `paint_common.wesl` already uses to stack parcels
+> *within* a layer — and let the media pass read the accumulated coverage instead of
+> re-deriving it; it is the identity for a single layer, but it perturbs the
+> **smear** path in a way not yet understood, including
+> `a_smear_stroke_previews_as_it_commits`, so it is not landed.
+
 The modes themselves are the interesting part, and they are deliberately not
 Photoshop's: each is ordinary **addition of light, conjugated by a tone curve** —
 `f(a,b) = T(T⁻¹(a) + T⁻¹(b))` — evaluated in CIE XYZ normalized to the display

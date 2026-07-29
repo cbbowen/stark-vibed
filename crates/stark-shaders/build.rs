@@ -52,6 +52,20 @@ fn main() {
     compiler.build_artifact(&"package::mask_region".parse().unwrap(), "mask_region");
     compiler.build_artifact(&"package::overlay".parse().unwrap(), "overlay");
 
+    // Every module by name, not just the directory. A directory dependency is a
+    // trap here: `generate_mixbox_poly` *writes into* `src/shaders`, so the
+    // directory's own fingerprint is entangled with this script's output, and cargo
+    // would sometimes consider the artifacts fresh after a shader edit. A stale
+    // `composite.wgsl` paired with a freshly built `media_oklab.wgsl` is two halves
+    // of two different compositing models, which shows up as tile-shaped artifacts
+    // that survive edits and vanish on `cargo clean` — the worst possible failure
+    // mode, because it discredits whatever you happened to be changing at the time.
+    for entry in std::fs::read_dir("src/shaders").expect("read src/shaders") {
+        let path = entry.expect("shader dir entry").path();
+        if path.extension().is_some_and(|e| e == "wesl") {
+            println!("cargo::rerun-if-changed={}", path.display());
+        }
+    }
     println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
 }
