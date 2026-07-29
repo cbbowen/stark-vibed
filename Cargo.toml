@@ -15,6 +15,9 @@ exclude = [
     # Experimental second vendoring (anchalshivank's crate of the same name);
     # standalone, not a dependency of anything yet. See its VENDORING.md.
     "vendor/iroh-webrtc-transport2",
+    # iroh 1.0.3 + the custom-transport path-opening patch (see its
+    # VENDORING.md); substituted for the crates.io version via [patch] below.
+    "vendor/iroh",
 ]
 # stark-ui is a wasm/web app (Dioxus web + WebGPU); keep it out of the native
 # default build/test so `cargo build`/`cargo test` stay host-only. Build it with
@@ -63,3 +66,9 @@ nalgebra = "0.35"
 opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
+
+# Vendored iroh with the custom-transport path-opening patch: without it, a
+# connection that establishes over the relay can never migrate onto a custom
+# transport (WebRTC). See vendor/iroh/VENDORING.md.
+[patch.crates-io]
+iroh = { path = "vendor/iroh" }

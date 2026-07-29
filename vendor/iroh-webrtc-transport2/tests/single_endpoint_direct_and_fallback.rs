@@ -13,24 +13,24 @@
 //!    data — ride the str0m WebRTC data channel ([`webrtc_carries_the_connection_when_the_relay_is_down`]).
 //!    The old spike's "iroh never calls `is_valid_send_addr`" dead end is gone.
 //! 2. **Relay fallback works per connection** ([`unattached_webrtc_falls_back_to_relay`]).
-//! 3. **But path choice is a dial-time race, not a preference.** A new
-//!    connection's Initial is sent to every known addr **only when no
-//!    `selected_path` is cached for the peer** (so the previous connection to
-//!    the peer must be closed first — see `handle_msg_send_datagram` in iroh's
-//!    `remote_state.rs`), and whichever transport completes the handshake
-//!    becomes PathId 0 — **forever**. iroh 1.0.3 never opens a custom path
-//!    after the handshake: holepunching opens IP paths only, the post-hoc
-//!    re-add logic exists only for relay paths, and `PathSelector` (public,
-//!    unstable) only picks among already-open paths, so it cannot pull traffic
-//!    onto WebRTC ([`with_relay_up_the_dial_race_decides_the_path`] — on a
-//!    loopback relay, relay always wins the race).
+//! 3. **Stock iroh 1.0.3: path choice was a dial-time race, not a
+//!    preference.** A new connection's Initial is sent to every known addr
+//!    only when no sticky `selected_path` is cached for the peer, and
+//!    whichever transport completes the handshake becomes PathId 0 — forever:
+//!    stock iroh never opens a custom path after the handshake (holepunching
+//!    opens IP paths only, post-hoc re-add exists only for relay paths, and
+//!    `PathSelector` only picks among already-open paths). On a loopback
+//!    relay, relay always won.
+//! 4. **`vendor/iroh`'s `open_custom_paths` patch resolves finding 3** (see
+//!    its VENDORING.md): known custom addrs are opened as paths on live
+//!    connections, so a connection that lands on the relay migrates onto
+//!    WebRTC once the path validates —
+//!    [`established_connection_migrates_to_webrtc`] proves this WITHOUT even
+//!    closing the signaling connection, and shows the migration also pulls
+//!    other live connections (the signaling one) onto WebRTC.
 //!
-//! Consequence: "prefer WebRTC when it works, relay otherwise" needs a small
-//! iroh patch (feed known-but-unopened custom addrs into the existing
-//! `pending_open_paths` / `open_path_on_all_conns` machinery, which does
-//! exactly this for CID-exhaustion retries; once a custom path opens, even the
-//! DEFAULT selector prefers it — custom is Primary, relay is Backup), or
-//! upstream support for the same.
+//! These tests build against the patched `vendor/iroh` via `[patch.crates-io]`
+//! in this crate's manifest.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -252,19 +252,23 @@ struct Peers {
     server_id: EndpointId,
     server_relay: EndpointAddr,
     client: Endpoint,
+    /// The signaling connection, when `bootstrap_webrtc` was asked to keep it.
+    sig_conn: Option<Connection>,
     _router: Router,
 }
 
 /// Bind both peers, JSEP over a relay connection, attach the channel on both
-/// sides, publish mixed addrs, and close the signaling connection.
+/// sides, and publish mixed addrs.
 ///
-/// Closing the signaling connection before the app dial is load-bearing, not
-/// hygiene: iroh keeps a sticky `selected_path` per peer while any connection
-/// is open, and a NEW connection's Initial goes ONLY to the selected path — so
-/// dialing while the (relay-selected) signaling connection is open can never
-/// touch the WebRTC path. Closing the last connection clears `selected_path`
-/// and the next dial sends to ALL known addrs.
-async fn bootstrap_webrtc(relay_map: RelayMap) -> Result<Peers> {
+/// With STOCK iroh, closing the signaling connection before the app dial was
+/// load-bearing: iroh keeps a sticky `selected_path` per peer while any
+/// connection is open, and a NEW connection's Initial goes ONLY to the
+/// selected path, so the dial could never touch WebRTC otherwise. With the
+/// patched `vendor/iroh` this only decides where the handshake runs — the
+/// connection migrates to WebRTC either way. The relay-down test still closes
+/// it (a sticky relay `selected_path` would make the dial's Initials go
+/// nowhere); the migration test keeps it open on purpose.
+async fn bootstrap_webrtc(relay_map: RelayMap, close_signaling: bool) -> Result<Peers> {
     let (server, server_transport, server_lookup) = bind_peer(relay_map.clone(), SERVER_OPAQUE).await?;
     let server_id = server.id();
     let router = Router::builder(server.clone())
@@ -302,14 +306,20 @@ async fn bootstrap_webrtc(relay_map: RelayMap) -> Result<Peers> {
     client_lookup.add_endpoint_info(mixed_addr(server_id, &server_relay, &SERVER_OPAQUE));
     server_lookup.add_endpoint_info(mixed_addr(client.id(), &client_relay, &CLIENT_OPAQUE));
 
-    sig_conn.close(0u32.into(), b"signaling done");
-    tokio::time::sleep(Duration::from_millis(750)).await;
+    let sig_conn = if close_signaling {
+        sig_conn.close(0u32.into(), b"signaling done");
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        None
+    } else {
+        Some(sig_conn)
+    };
 
     Ok(Peers {
         server,
         server_id,
         server_relay,
         client,
+        sig_conn,
         _router: router,
     })
 }
@@ -321,7 +331,7 @@ async fn bootstrap_webrtc(relay_map: RelayMap) -> Result<Peers> {
 async fn webrtc_carries_the_connection_when_the_relay_is_down() -> Result<()> {
     init_logging();
     let (relay_map, _url, relay_guard) = run_relay_server().await.context("local relay")?;
-    let peers = bootstrap_webrtc(relay_map).await?;
+    let peers = bootstrap_webrtc(relay_map, true).await?;
 
     // Kill the relay: from here on, only the WebRTC channel can deliver.
     // (Dropping the Server is not enough — established relay client
@@ -391,22 +401,23 @@ async fn unattached_webrtc_falls_back_to_relay() -> Result<()> {
     Ok(())
 }
 
-/// Finding 3 (documented limitation): with both the relay and the WebRTC
-/// channel live, the app dial RACES its Initial over both, and whichever
-/// completes the handshake first is the path — permanently. On a loopback
-/// relay that is always the relay (observed: the Initial demonstrably arrives
-/// over the custom transport too, ~7ms later, and is discarded as a handshake
-/// duplicate). In production the race would be genuinely nondeterministic.
-/// Nothing in iroh 1.0.3 migrates an established connection onto a custom
-/// path, so `PreferWebRtc` never gets a WebRTC candidate to prefer.
+/// Finding 4 (POSITIVE, requires the patched `vendor/iroh`): with the relay
+/// live and the signaling connection STILL OPEN — the worst case for stock
+/// iroh, where the sticky relay `selected_path` guarantees the app dial's
+/// handshake runs over the relay — the app connection still migrates onto the
+/// WebRTC path once `open_custom_paths` opens and validates it. The migration
+/// then applies to every live connection to the peer, so the signaling
+/// connection lands on WebRTC too.
 ///
-/// Asserted loosely (the connection works; the winner is logged) because the
-/// winner is an artifact of relative latency, not a contract.
+/// (Stock iroh 1.0.3 behavior, preserved in git history: the dial raced its
+/// Initial over both transports only if all prior connections were closed,
+/// the winner was permanent, and on a loopback relay the relay always won.)
 #[tokio::test]
-async fn with_relay_up_the_dial_race_decides_the_path() -> Result<()> {
+async fn established_connection_migrates_to_webrtc() -> Result<()> {
     init_logging();
     let (relay_map, _url, _guard) = run_relay_server().await.context("local relay")?;
-    let peers = bootstrap_webrtc(relay_map).await?;
+    let peers = bootstrap_webrtc(relay_map, false).await?;
+    let sig_conn = peers.sig_conn.as_ref().expect("kept signaling conn");
 
     let conn = timeout(
         STEP,
@@ -418,17 +429,20 @@ async fn with_relay_up_the_dial_race_decides_the_path() -> Result<()> {
     .await
     .map_err(|_| anyhow!("echo connect timed out"))??;
 
-    run_echo(&conn, b"echo over whichever path won").await?;
-    // Give selection time to settle before reporting.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    eprintln!(
-        "race winner: {:?}; paths = [{}]",
-        selected_kind(&conn),
-        describe_paths(&conn)
-    );
-    run_echo(&conn, b"second echo").await?;
+    run_echo(&conn, b"echo, probably over relay").await?;
+    eprintln!("paths after first echo: [{}]", describe_paths(&conn));
+
+    // The patch's contract: the established connection migrates to WebRTC.
+    wait_selected(&conn, "custom").await?;
+    run_echo(&conn, b"echo over webrtc").await?;
+    eprintln!("app conn paths at end: [{}]", describe_paths(&conn));
+
+    // And the still-open signaling connection is pulled along.
+    wait_selected(sig_conn, "custom").await?;
+    eprintln!("sig conn paths at end: [{}]", describe_paths(sig_conn));
 
     conn.close(0u32.into(), b"done");
+    sig_conn.close(0u32.into(), b"done");
     peers.client.close().await;
     peers.server.close().await;
     Ok(())

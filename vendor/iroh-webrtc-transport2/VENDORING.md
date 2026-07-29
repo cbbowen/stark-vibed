@@ -85,13 +85,16 @@ The 2026-07-24 "single-endpoint migration is a dead end" conclusion is
    already-open paths). On the loopback test relay, relay always wins the
    race; in production it would be nondeterministic.
 
-Consequence: "prefer WebRTC when available, relay otherwise" needs a small
-iroh patch — feed known-but-unopened custom addrs into the existing
-`pending_open_paths` → `open_path_on_all_conns` machinery in
-`socket/remote_map/remote_state.rs` (it already does exactly this to retry
-CID-exhausted path opens). Once a custom path opens, even iroh's DEFAULT
-selector prefers it (custom = Primary, relay = Backup). Alternatively,
-upstream may accept that as a feature request.
+**RESOLVED same day by patching iroh** — `vendor/iroh` (1.0.3 + an
+`open_custom_paths` hook, see its VENDORING.md), substituted via
+`[patch.crates-io]` in this crate's manifest and in the root workspace. With
+the patch, `established_connection_migrates_to_webrtc` shows the target
+behavior deterministically: the app connection completes its handshake over
+the relay (worst case — the signaling connection is deliberately left open,
+so the sticky `selected_path` forces relay), then migrates onto the WebRTC
+path once it opens and validates, keeping the relay path as live backup —
+and the still-open signaling connection is pulled onto WebRTC too. Relay
+fallback (dead custom addr) is unaffected.
 
 ## Known limitations (upstream design, unchanged)
 
