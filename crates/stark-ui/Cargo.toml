@@ -56,6 +56,12 @@ web-sys = { version = "0.3", features = [
     "FileReader",
     "ProgressEvent",
     "EventTarget",
+    # Importing custom brush shapes (platform::normalize_shape_image): the
+    # browser decodes any image format it knows into a canvas, we normalize the
+    # pixels (downscale, dark-on-light inversion) and re-encode as PNG.
+    "CanvasRenderingContext2d",
+    "ImageBitmap",
+    "ImageData",
 ] }
 console_error_panic_hook = "0.1"
 # Routes `tracing` events to the browser console (set as the global subscriber).

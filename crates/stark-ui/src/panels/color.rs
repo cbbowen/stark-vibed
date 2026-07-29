@@ -240,29 +240,8 @@ fn ab_field_data_url(l: f32) -> String {
             bmp.push(q(rgb[0])); // R
         }
     }
-    format!("url(data:image/bmp;base64,{})", base64(&bmp))
-}
-
-/// Standard base64 (with padding) — small, so a data URL stays dependency-free.
-fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let n = (chunk[0] as u32) << 16
-            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
-            | (*chunk.get(2).unwrap_or(&0) as u32);
-        out.push(T[(n >> 18 & 63) as usize] as char);
-        out.push(T[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            T[(n >> 6 & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            T[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
+    format!(
+        "url(data:image/bmp;base64,{})",
+        crate::platform::base64_encode(&bmp)
+    )
 }

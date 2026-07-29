@@ -26,10 +26,13 @@ use stark_core::document::{BrushParams, BrushShape, NoiseKind, OrientationSource
 use stark_core::geom::Vec2;
 use stark_core::{ColorSpaceId, InputSample};
 
+use dioxus::html::HasFileData;
+
 use crate::panels::brush::{
-    MAX_RADIUS, set_bristles, set_brush_preset, set_knife, set_orientation, set_shape,
+    BRISTLE_BRUSH, MAX_RADIUS, set_bristles, set_brush_preset, set_knife, set_orientation,
+    set_shape,
 };
-use crate::platform::{capture_pointer, sleep_ms};
+use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::{self, Renderer};
 use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
@@ -103,6 +106,17 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         if let Some(f) = pending.write().take() {
             update_brush(state, f);
         }
+    });
+
+    // Re-stroke whenever the brush *shape* changes, wherever from — a gallery
+    // click, an async import finishing after its click handler returned, the
+    // quick panel, a preset. The memo keeps this from firing on unrelated
+    // `obs` churn (sliders restroke through `edit`'s throttle instead), and
+    // the initial run is a no-op because the preview renderer isn't up yet.
+    let shape = use_memo(move || state.obs.read().as_ref().map(|o| o.brush.shape));
+    use_effect(move || {
+        let _ = shape();
+        restroke(state, preview);
     });
 
     // Section fold state: the everyday groups start open, the specialised ones closed.
@@ -189,14 +203,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     Section {
                         title: "Tip", desc: "The footprint the stroke sweeps along the path.",
                         open: tip_open,
-                        div { class: "brush-shapes",
-                            button { class: chip(is_round),
-                                onclick: move |_| { set_shape(state, BrushShape::Round); restroke(state, preview); },
-                                "Round" }
-                            button { class: chip(!is_round),
-                                onclick: move |_| { set_bristles(state); restroke(state, preview); },
-                                "Bristles" }
-                        }
+                        ShapeGallery {}
                         // Orientation only matters for non-round tips (per-orientation
                         // footprint slices, DESIGN §6.6); hardness only for the
                         // procedural round tip.
@@ -285,6 +292,121 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
                 }
             }
+        }
+    }
+}
+
+/// The Tip section's shape gallery: the procedural round tip, the built-in
+/// bristle stamp, every shape in the user's library (thumbnail + name, with a
+/// hover ✕ to remove), and an import card. Images can also be dropped anywhere
+/// on the grid.
+///
+/// No restroke calls here: selection and import go through the brush's `shape`,
+/// and the modal's shape effect re-strokes on any change — which is what lets
+/// an async import (finishing long after its click handler returned) still
+/// refresh the preview. Safe as a child component (unlike the slider rows):
+/// nothing here spawns into this scope — imports are `spawn_forever` in
+/// `crate::shapes`.
+#[component]
+fn ShapeGallery() -> Element {
+    let state = use_context::<AppState>();
+    let mut dropping = use_signal(|| false);
+
+    let brush_shape = state
+        .obs
+        .read()
+        .as_ref()
+        .map(|o| o.brush.shape)
+        .unwrap_or_default();
+    let bristle = state.renderer.read().as_ref().and_then(|r| r.bristle());
+    let entries = state.shapes.entries;
+    // Thumbnails are base64 data URLs of the canonical PNGs — memoized so they
+    // re-encode only when the library changes, not on every obs refresh.
+    let thumbs = use_memo(move || {
+        entries
+            .read()
+            .iter()
+            .map(|e| {
+                (
+                    e.id,
+                    crate::shapes::id_hex(e.id),
+                    e.name.clone(),
+                    crate::shapes::data_url(e),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let card = |active: bool| {
+        if active {
+            "shape-card selected"
+        } else {
+            "shape-card"
+        }
+    };
+    let is_round = matches!(brush_shape, BrushShape::Round);
+    let is_bristles = matches!(brush_shape, BrushShape::Stamp(id) if Some(id) == bristle);
+
+    rsx! {
+        div {
+            class: if dropping() { "be-shapes dropping" } else { "be-shapes" },
+            // `preventDefault` on dragover is what makes the element a drop
+            // target at all; the class is just the highlight.
+            ondragover: move |e| {
+                e.prevent_default();
+                dropping.set(true);
+            },
+            ondragleave: move |_| dropping.set(false),
+            ondrop: move |e| {
+                e.prevent_default();
+                dropping.set(false);
+                crate::shapes::import_dropped(state, e.files());
+            },
+
+            div { class: card(is_round),
+                onclick: move |_| set_shape(state, BrushShape::Round),
+                div { class: "shape-thumb round" }
+                div { class: "shape-name", "Round" }
+            }
+            div { class: card(is_bristles),
+                onclick: move |_| set_bristles(state),
+                div { class: "shape-thumb", style: "background-image: url({BRISTLE_BRUSH});" }
+                div { class: "shape-name", "Bristles" }
+            }
+            for (id, key, name, url) in thumbs() {
+                div {
+                    key: "{key}",
+                    class: card(brush_shape == BrushShape::Stamp(id)),
+                    onclick: move |_| crate::shapes::select(state, id),
+                    div { class: "shape-thumb", style: "background-image: url({url});" }
+                    div { class: "shape-name", title: "{name}", "{name}" }
+                    button {
+                        class: "shape-remove",
+                        title: "Remove from library",
+                        onclick: move |e| {
+                            e.stop_propagation();
+                            crate::shapes::remove(state, id);
+                        },
+                        "\u{00D7}"
+                    }
+                }
+            }
+            div { class: "shape-card import",
+                // `pick_file` must run inside the click gesture — no task hop.
+                onclick: move |_| {
+                    pick_file("image/*", move |name, bytes| {
+                        crate::shapes::import_file(state, name, bytes);
+                    });
+                },
+                div { class: "shape-thumb plus", "+" }
+                div { class: "shape-name", "Import\u{2026}" }
+            }
+        }
+        if let Some(notice) = (state.shapes.notice)() {
+            div { class: "be-shape-notice", "{notice}" }
+        }
+        div { class: "be-shape-hint",
+            "Import any image or drop one on the grid — white paints, black doesn't, transparency counts."
         }
     }
 }
@@ -457,6 +579,19 @@ fn restroke(state: AppState, mut preview: Preview) {
     let Some(mut brush) = state.obs.peek().as_ref().map(|o| o.brush) else {
         return;
     };
+    // A custom shape selected on the main engine may be missing from the
+    // preview engine (its store is per-document). Copy the canonical bytes
+    // over — content-addressing lines the ids up, the same trick the preview's
+    // `load_bristle` relies on.
+    let shape_bytes = match brush.shape {
+        BrushShape::Stamp(id) => state
+            .renderer
+            .peek()
+            .as_ref()
+            .and_then(|main| main.asset_bytes(id))
+            .map(|bytes| (id, bytes)),
+        BrushShape::Round => None,
+    };
     // Force the test stroke to the fixed preview blue so it reads over the red
     // reference stroke; the brush's own alpha (Opacity) is left untouched.
     brush.color[..3].copy_from_slice(&PREVIEW_STROKE_COLOR);
@@ -464,6 +599,11 @@ fn restroke(state: AppState, mut preview: Preview) {
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
+    if let Some((id, bytes)) = shape_bytes
+        && !r.has_asset(id)
+    {
+        r.import_brush(&bytes);
+    }
     if *preview.committed.peek() {
         r.process(DocCommand::Undo);
     }

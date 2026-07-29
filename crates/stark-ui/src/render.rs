@@ -318,6 +318,22 @@ impl Renderer {
         }
     }
 
+    /// Import a user's brush-shape image, returning its content id — the
+    /// error surfaces to the import UI rather than a log line.
+    pub fn import_brush_id(&self, png_bytes: &[u8]) -> Result<stark_core::AssetId, String> {
+        self.engine.import_brush(png_bytes).map_err(|e| e.to_string())
+    }
+
+    /// The canonical PNG bytes of one imported brush asset, if loaded.
+    pub fn asset_bytes(&self, id: stark_core::AssetId) -> Option<Vec<u8>> {
+        self.engine.asset_bytes(id)
+    }
+
+    /// Whether a brush asset is loaded in this engine.
+    pub fn has_asset(&self, id: stark_core::AssetId) -> bool {
+        self.engine.has_asset(id)
+    }
+
     /// Every imported brush asset, to seed a session's asset mirror.
     pub fn all_asset_bytes(&self) -> Vec<(stark_core::AssetId, Vec<u8>)> {
         self.engine.all_asset_bytes()

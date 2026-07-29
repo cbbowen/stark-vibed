@@ -249,9 +249,14 @@ fn install(state: AppState, mut session: CollabSession) {
                 let mut guard = renderer.write();
                 let Some(r) = guard.as_mut() else { continue };
                 match event {
+                    // Repaint: an asset resolved off a *presence* head arrives
+                    // while the peer's live stroke is already on screen as a
+                    // round-tip fallback — the import is what upgrades it. (On
+                    // the commit path the following Action repaints anyway;
+                    // assets are rare enough that one extra request is free.)
                     RemoteEvent::Asset { bytes } => {
                         r.import_brush(&bytes);
-                        (None, false)
+                        (None, true)
                     }
                     RemoteEvent::Action(action) => {
                         r.merge_remote(action);

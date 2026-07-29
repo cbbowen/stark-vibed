@@ -1820,7 +1820,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 | 9 | Pluggable colour spaces (§6.7) | done — Oklab + Mixbox |
 | 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
 | — | Surface bump maps (§6.4) | done — relief only; the deposition tooth idea was removed unimplemented (§6.4) |
-| 11 | Brush file upload | **not started** |
+| 11 | Brush file upload | done — custom shape library (import/normalize UI, localStorage persistence, mid-session peer replication) |
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
 | 13 | Per-client state: owned selections + presence ([PEER_DESIGN.md](PEER_DESIGN.md)) | done — its own build order is PEER_DESIGN §14 |
@@ -1886,10 +1886,22 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
    added back as they are built. Goldens `smudge_drag`/`self_smear` plus the
    conservation/eraser/charge/determinism suite (`tests/dynamics.rs`) and the
    write-back seam regression (`tests/seam.rs`).
-11. **Brush file upload:** a `<input type="file">` in the brush panel that reads
-   image bytes and calls `Engine::import_brush`, so users can bring arbitrary
-   brush shapes — not just built-ins. Pure frontend; the engine/asset/save paths
-   from step 7 already accept arbitrary bytes.
+11. **Brush file upload — DONE (2026-07-29):** users bring their own shape
+   images. A shape **library** (`stark-ui/src/shapes.rs`): entries are the
+   engine's canonical grayscale PNGs keyed by `AssetId`, persisted per-browser
+   in `localStorage` (`identity`-style, graceful without storage), shown as
+   thumbnail chips in the Brush panel and a card gallery in the brush editor's
+   Tip section (file picker + drag-and-drop). Imports run through the
+   *browser's* decoder (`platform::normalize_shape_image`): any displayable
+   format, downscaled to the engine cap, and dark-on-light images auto-inverted
+   (border-ring heuristic) so scanned ink imports as the ink, not the paper.
+   Engine hardening: imports are box-downsampled to `assets::MAX_SHAPE_DIM`
+   (1024) before hashing, so an oversized upload can't exceed device texture
+   limits (`tests/assets.rs`). Replication hardening (§12.4): a mid-session
+   import seeds the session mirror at import time, and a *presence* stroke head
+   referencing an unknown shape triggers a detached fetch, so a peer's live
+   preview upgrades from the round-tip fallback without waiting for the commit
+   (`stark-net/tests/sync.rs::custom_shapes_replicate_mid_session`).
 12. **Collaboration (§12) — DONE (2026-07-12):** `ReplicatedTimeline` behind
    the existing `Timeline` seam (total-ordered log + effective-sequence
    resolution of `ActionKind::Undo` + rewind/replay merge over the `history`

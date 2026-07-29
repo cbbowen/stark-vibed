@@ -125,7 +125,7 @@ pub fn download_bytes(_bytes: &[u8], _filename: &str, _mime: &str) -> Result<(),
     Ok(())
 }
 
-/// Ask the user for a file and hand its bytes to `on_bytes`.
+/// Ask the user for a file and hand its name and bytes to `on_file`.
 ///
 /// A hidden `<input type=file>` clicked programmatically: a page cannot open a
 /// file picker any other way, and the click must happen inside the user gesture
@@ -136,7 +136,7 @@ pub fn download_bytes(_bytes: &[u8], _filename: &str, _mime: &str) -> Result<(),
 /// outlive this call by design (the user may sit in the picker for a minute), and
 /// dropping the `Closure` would invalidate the JS callback before it fires.
 #[cfg(target_arch = "wasm32")]
-pub fn pick_file(accept: &str, on_bytes: impl Fn(Vec<u8>) + 'static) {
+pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
@@ -156,7 +156,7 @@ pub fn pick_file(accept: &str, on_bytes: impl Fn(Vec<u8>) + 'static) {
     // The handler outlives this call and is re-entered per selected file, so it is
     // shared rather than moved: `Fn` is not `Clone`, and the inner (per-file)
     // closure needs its own handle.
-    let on_bytes = std::rc::Rc::new(on_bytes);
+    let on_file = std::rc::Rc::new(on_file);
     let input_for_change = input.clone();
     let on_change = Closure::<dyn FnMut()>::new(move || {
         let Some(file) = input_for_change.files().and_then(|f| f.get(0)) else {
@@ -165,13 +165,14 @@ pub fn pick_file(accept: &str, on_bytes: impl Fn(Vec<u8>) + 'static) {
         let Ok(reader) = web_sys::FileReader::new() else {
             return;
         };
+        let name = file.name();
         let reader_for_load = reader.clone();
-        let on_bytes = on_bytes.clone();
+        let on_file = on_file.clone();
         let on_load = Closure::<dyn FnMut()>::new(move || {
             if let Ok(buffer) = reader_for_load.result()
                 && let Some(buffer) = buffer.dyn_ref::<js_sys::ArrayBuffer>()
             {
-                on_bytes(js_sys::Uint8Array::new(buffer).to_vec());
+                on_file(name.clone(), js_sys::Uint8Array::new(buffer).to_vec());
             }
         });
         reader.set_onload(Some(on_load.as_ref().unchecked_ref()));
@@ -183,4 +184,169 @@ pub fn pick_file(accept: &str, on_bytes: impl Fn(Vec<u8>) + 'static) {
     input.click();
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn pick_file(_accept: &str, _on_bytes: impl Fn(Vec<u8>) + 'static) {}
+pub fn pick_file(_accept: &str, _on_file: impl Fn(String, Vec<u8>) + 'static) {}
+
+/// Normalize an image into a brush-shape PNG, using the browser as the decoder —
+/// any format the browser can display can be imported (JPEG, WebP, GIF, …).
+///
+/// Two normalizations beyond transcoding:
+/// - **Downscale** so the longest edge is at most the engine's shape cap
+///   (1024 px, `stark_core::assets::MAX_SHAPE_DIM`). The engine would cap it
+///   anyway; doing it here keeps library entries small in `localStorage`.
+/// - **Dark-on-light inversion.** The engine reads coverage as
+///   `luminance × alpha` (white paints, black doesn't) — but scanned or drawn
+///   brush images are usually dark ink on light paper, which would import as a
+///   solid rectangle with a shape-shaped hole. If the image's border ring is
+///   mostly covered, it's read as ink-on-paper and the luminance is inverted.
+///
+/// Returns the PNG bytes and whether the inversion fired (so the UI can say so).
+#[cfg(target_arch = "wasm32")]
+pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
+    use wasm_bindgen::JsCast;
+
+    let window = web_sys::window().ok_or("no window")?;
+    let array = js_sys::Uint8Array::from(bytes.as_slice());
+    let parts = js_sys::Array::of1(&array.buffer());
+    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
+        .map_err(|_| "could not wrap the image bytes".to_string())?;
+    let promise = window
+        .create_image_bitmap_with_blob(&blob)
+        .map_err(|_| "image decoding unavailable".to_string())?;
+    let bitmap: web_sys::ImageBitmap = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|_| "not an image the browser can decode".to_string())?
+        .dyn_into()
+        .map_err(|_| "unexpected decode result".to_string())?;
+
+    let (sw, sh) = (bitmap.width(), bitmap.height());
+    if sw == 0 || sh == 0 {
+        return Err("the image is empty".to_string());
+    }
+    let cap = stark_core::assets::MAX_SHAPE_DIM;
+    let scale = (cap as f64 / sw.max(sh) as f64).min(1.0);
+    let w = ((sw as f64 * scale) as u32).max(1);
+    let h = ((sh as f64 * scale) as u32).max(1);
+
+    let document = window.document().ok_or("no document")?;
+    let canvas: web_sys::HtmlCanvasElement = document
+        .create_element("canvas")
+        .ok()
+        .and_then(|e| e.dyn_into().ok())
+        .ok_or("could not create a canvas")?;
+    canvas.set_width(w);
+    canvas.set_height(h);
+    let ctx: web_sys::CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|c| c.dyn_into().ok())
+        .ok_or("no 2d context")?;
+    ctx.draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, 0.0, 0.0, w as f64, h as f64)
+        .map_err(|_| "could not draw the image".to_string())?;
+
+    let data = ctx
+        .get_image_data(0.0, 0.0, w as f64, h as f64)
+        .map_err(|_| "could not read the pixels".to_string())?;
+    let mut px = data.data().0;
+
+    // Mirror of the engine's coverage read (assets.rs::decode_coverage):
+    // coverage = luminance × alpha, in [0, 255].
+    let coverage = |px: &[u8], i: usize| -> u32 {
+        let lum = (77 * px[i] as u32 + 150 * px[i + 1] as u32 + 29 * px[i + 2] as u32) >> 8;
+        lum * px[i + 3] as u32 / 255
+    };
+    let (mut border_sum, mut border_n) = (0u64, 0u64);
+    let mut ring = |x: u32, y: u32, px: &[u8]| {
+        border_sum += coverage(px, ((y * w + x) * 4) as usize) as u64;
+        border_n += 1;
+    };
+    for x in 0..w {
+        ring(x, 0, &px);
+        ring(x, h - 1, &px);
+    }
+    for y in 1..h.saturating_sub(1) {
+        ring(0, y, &px);
+        ring(w - 1, y, &px);
+    }
+    let inverted = border_sum / border_n.max(1) > 127;
+    if inverted {
+        for p in px.as_chunks_mut::<4>().0 {
+            let lum = ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8) as u8;
+            let inv = 255 - lum;
+            (p[0], p[1], p[2]) = (inv, inv, inv);
+        }
+        let data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+            wasm_bindgen::Clamped(&px),
+            w,
+            h,
+        )
+        .map_err(|_| "could not rebuild the pixels".to_string())?;
+        ctx.put_image_data(&data, 0.0, 0.0)
+            .map_err(|_| "could not write the pixels".to_string())?;
+    }
+
+    let url = canvas
+        .to_data_url_with_type("image/png")
+        .map_err(|_| "could not encode the PNG".to_string())?;
+    let b64 = url
+        .strip_prefix("data:image/png;base64,")
+        .ok_or("unexpected data URL")?;
+    Ok((base64_decode(b64)?, inverted))
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
+    Ok((bytes, false))
+}
+
+/// Standard base64 (with padding) — small, so data URLs and `localStorage`
+/// blobs stay dependency-free.
+pub fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Standard-alphabet base64 → bytes, the inverse of [`base64_encode`].
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [255u8; 256];
+    for (i, &c) in ALPHABET.iter().enumerate() {
+        lookup[c as usize] = i as u8;
+    }
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for &c in text.as_bytes() {
+        if c == b'=' {
+            break;
+        }
+        let v = lookup[c as usize];
+        if v == 255 {
+            return Err("invalid base64".to_string());
+        }
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Ok(out)
+}

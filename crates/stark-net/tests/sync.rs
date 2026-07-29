@@ -5,8 +5,9 @@
 use std::time::Duration;
 
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_core::document::Tool;
+use stark_core::document::{BrushParams, BrushShape, Tool};
 use stark_core::engine::headless_engine;
+use stark_core::peer::{GestureFrame, PeerFrame, StrokeHead};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{Engine, RgbaImage};
@@ -29,11 +30,15 @@ fn engine_or_skip() -> Option<Engine> {
 }
 
 fn paint(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
-    let brush = stark_core::document::BrushParams {
+    let brush = BrushParams {
         color,
         radius: 12.0,
         ..Default::default()
     };
+    paint_with(engine, brush, points);
+}
+
+fn paint_with(engine: &mut Engine, brush: BrushParams, points: &[Vec2]) {
     engine.process(ViewCommand::SetBrush(brush));
     let mut it = points.iter();
     engine.process(GestureCommand::Start {
@@ -174,6 +179,138 @@ async fn two_peers_converge_over_iroh() {
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),
         "peers diverged after undo over iroh"
+    );
+
+    host_session.shutdown().await;
+    peer_session.shutdown().await;
+}
+
+/// Encode a grayscale radial-blob PNG — a stand-in for a user's custom brush
+/// shape. `size` varies the pixels, so different sizes give different ids.
+fn blob_png(size: u32) -> Vec<u8> {
+    let c = size as f32 / 2.0;
+    let mut pixels = vec![0u8; (size * size) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let d = ((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt() / c;
+            pixels[(y * size + x) as usize] = (255.0 * (1.0 - d).clamp(0.0, 1.0)) as u8;
+        }
+    }
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, size, size);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("png header");
+        writer.write_image_data(&pixels).expect("png data");
+    }
+    out
+}
+
+/// A custom shape imported *mid-session* reaches the other side by content
+/// hash on both wires: a live-preview head triggers a detached background
+/// fetch (presence must never block on assets), and a committed stroke with a
+/// second, never-previewed shape pulls the blob inline before the action so
+/// the render is faithful immediately. The importing side seeds its session
+/// mirror the way the UI's import path does.
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_shapes_replicate_mid_session() {
+    let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+
+    let secret = stark_net::SecretKey::generate();
+    let host_actor = stark_net::actor_from_endpoint_id(secret.public());
+    host.start_collaboration(host_actor);
+    let host_session = CollabSession::host(
+        host.document_file(),
+        NetOptions {
+            secret: Some(secret),
+            local_only: true,
+        },
+    )
+    .await
+    .expect("host session");
+    let ticket: SessionTicket = host_session
+        .ticket()
+        .to_string()
+        .parse()
+        .expect("ticket text");
+
+    let (mut peer_session, snapshot) = CollabSession::join(&ticket, NetOptions::local())
+        .await
+        .expect("join session");
+    let mut peer_events = peer_session.take_events().expect("peer events");
+    peer.join_collaboration(&snapshot, peer_session.actor_id());
+
+    // --- live-preview path: a stroke head names a shape the peer lacks ---
+    let live = host.import_brush(&blob_png(96)).expect("import live shape");
+    host_session.add_asset(live, host.asset_bytes(live).expect("canonical bytes"));
+    let layer = host.observe().active_layer;
+    let brush = BrushParams {
+        radius: 24.0,
+        shape: BrushShape::Stamp(live),
+        ..Default::default()
+    };
+    host_session
+        .broadcaster()
+        .publish(PeerFrame {
+            boot: 1,
+            seq: 1,
+            name: None,
+            active_layer: layer,
+            cursor: Some(Vec2::new(10.0, 10.0)),
+            gesture: Some(GestureFrame::Stroke {
+                id: 1,
+                head: Some(StrokeHead {
+                    layer,
+                    tool: Tool::Brush,
+                    brush,
+                    seed: 7,
+                }),
+                from: 0,
+                points: vec![],
+            }),
+            leaving: false,
+        })
+        .await
+        .expect("publish presence");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !peer.has_asset(live) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "presence-referenced shape never arrived"
+        );
+        drain_events(&mut peer_events, &mut peer);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // --- commit path: a stroke with a second, never-previewed shape ---
+    let committed = host
+        .import_brush(&blob_png(64))
+        .expect("import committed shape");
+    host_session.add_asset(committed, host.asset_bytes(committed).expect("canonical bytes"));
+    paint_with(
+        &mut host,
+        BrushParams {
+            color: [0.8, 0.2, 0.1, 1.0],
+            radius: 20.0,
+            shape: BrushShape::Stamp(committed),
+            ..Default::default()
+        },
+        &[Vec2::new(60.0, 128.0), Vec2::new(196.0, 128.0)],
+    );
+    flush_outbox(&mut host, &host_session).await;
+    wait_for_actions(&mut peer_events, &mut peer, 1).await;
+
+    assert!(
+        peer.has_asset(committed),
+        "commit-referenced shape must be fetched before the action is applied"
+    );
+    assert!(
+        identical(&host.render_to_image(), &peer.render_to_image()),
+        "peers diverged on a mid-session custom-shape stroke"
     );
 
     host_session.shutdown().await;

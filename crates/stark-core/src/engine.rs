@@ -1619,6 +1619,17 @@ impl Engine {
         self.apply.assets.all_bytes()
     }
 
+    /// The canonical PNG bytes of one imported brush asset, if loaded — for
+    /// seeding a live session's mirror or a second (preview) engine.
+    pub fn asset_bytes(&self, id: AssetId) -> Option<Vec<u8>> {
+        self.apply.assets.bytes(id)
+    }
+
+    /// Whether a brush asset is loaded in this engine.
+    pub fn has_asset(&self, id: AssetId) -> bool {
+        self.apply.assets.contains(id)
+    }
+
     fn commit(&mut self, kind: ActionKind) {
         let action = Action {
             id: self.next_action_id(),

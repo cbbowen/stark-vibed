@@ -84,6 +84,11 @@ impl AssetStore {
 
     fn load(&self, decode_from: &[u8], store_bytes: Option<Vec<u8>>) -> Result<AssetId> {
         let (w, h, coverage) = decode_coverage(decode_from)?;
+        // Cap user imports at MAX_SHAPE_DIM before hashing, so the id names the
+        // canonical (stored) coverage and a reload of the downsampled PNG maps
+        // to the same id. Integer box filter — deterministic across peers.
+        let (coverage, w, h) =
+            crate::gpu::surface::downsample_to_limit(coverage, w, h, MAX_SHAPE_DIM);
         let id = coverage_id(w, h, &coverage);
         let mut inner = self.inner.lock().expect("asset store poisoned");
         if let Entry::Vacant(slot) = inner.masks.entry(id) {
@@ -133,6 +138,26 @@ impl AssetStore {
             .map(|m| m.coverage_view.clone())
     }
 
+    /// Whether `id` is loaded in this store.
+    pub fn contains(&self, id: AssetId) -> bool {
+        self.inner
+            .lock()
+            .expect("asset store poisoned")
+            .masks
+            .contains_key(&id)
+    }
+
+    /// The canonical PNG bytes of one asset, if loaded — what a peer mirror or
+    /// a second (preview) engine needs to reproduce the shape.
+    pub fn bytes(&self, id: AssetId) -> Option<Vec<u8>> {
+        self.inner
+            .lock()
+            .expect("asset store poisoned")
+            .masks
+            .get(&id)
+            .map(|m| m.bytes.clone())
+    }
+
     /// Source bytes of every loaded asset, for bundling into the save file (§8).
     pub fn all_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
         self.inner
@@ -144,6 +169,14 @@ impl AssetStore {
             .collect()
     }
 }
+
+/// Largest edge (px) an imported brush shape keeps; bigger images are
+/// box-downsampled by an integer factor on import. 1024 matches the largest
+/// practical stamp footprint (brush radius caps at ~500 canvas px), stays well
+/// inside the device's 2048 texture limit, and — via [`orientation_layers`]'s
+/// memory budget — keeps rotated stamps smooth (16 slices at 1024², vs 4 if a
+/// 2048² source were kept).
+pub const MAX_SHAPE_DIM: u32 = 1024;
 
 /// Largest number of orientation slices a brush's prefix-τ volume holds (DESIGN.md
 /// §6.6). With linear interpolation between adjacent layers this is ~5.6° resolution

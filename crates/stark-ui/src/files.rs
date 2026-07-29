@@ -50,7 +50,7 @@ pub fn open_document(state: AppState) {
     // The handler is `Fn`, not `FnMut` — it may be re-entered per selected file —
     // so the signals are copied out of the capture on each call rather than
     // mutated in place. `Signal` is `Copy`, which is what makes that free.
-    pick_file(&format!(".{DOC_EXT}"), move |bytes| {
+    pick_file(&format!(".{DOC_EXT}"), move |_name, bytes| {
         let (mut renderer, mut obs) = (state.renderer, state.obs);
         let mut guard = renderer.write();
         if let Some(r) = guard.as_mut() {

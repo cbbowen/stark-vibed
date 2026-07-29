@@ -137,7 +137,7 @@ impl Surface {
 /// Box-downsample a single-channel image by the smallest integer factor that
 /// brings both edges within `limit`. An integer factor keeps a tileable texture
 /// tileable; `factor == 1` returns the input unchanged.
-fn downsample_to_limit(src: Vec<u8>, w: u32, h: u32, limit: u32) -> (Vec<u8>, u32, u32) {
+pub(crate) fn downsample_to_limit(src: Vec<u8>, w: u32, h: u32, limit: u32) -> (Vec<u8>, u32, u32) {
     let factor = w.div_ceil(limit).max(h.div_ceil(limit)).max(1);
     if factor == 1 {
         return (src, w, h);

@@ -79,6 +79,20 @@ pub struct AppState {
     pub paint_queued: Signal<bool>,
     /// Everything to do with a shared drawing (DESIGN.md §12).
     pub collab: CollabState,
+    /// The custom brush-shape library (DESIGN.md §6.6; `crate::shapes`).
+    pub shapes: ShapesState,
+}
+
+/// The custom brush-shape library's signals (`crate::shapes`). Root-owned:
+/// imports are started from the brush editor's modal scope but must survive
+/// its close.
+#[derive(Clone, Copy)]
+pub struct ShapesState {
+    /// Library entries, loaded from `localStorage` at startup.
+    pub entries: Signal<Vec<crate::shapes::ShapeEntry>>,
+    /// A transient line under the shape gallery: import errors, or the
+    /// "inverted a dark-on-light image" explanation. `None` when quiet.
+    pub notice: Signal<Option<String>>,
 }
 
 impl AppState {
@@ -109,6 +123,10 @@ impl AppState {
                 links: root_signal(Vec::new),
                 pump: root_signal(|| None),
                 presence: root_signal(|| None),
+            },
+            shapes: ShapesState {
+                entries: root_signal(Vec::new),
+                notice: root_signal(|| None),
             },
         }
     }

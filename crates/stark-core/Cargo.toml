@@ -42,6 +42,8 @@ debug-unfrozen = []
 
 [dev-dependencies]
 pollster = { workspace = true }
+# Synthesizing oversized brush-shape PNGs in tests/assets.rs (already a regular dep).
+png = { workspace = true }
 # Recorded pen input for the fitter tests. A dev-dependency on purpose: as a module
 # it was public API and rode along in the wasm binary.
 stark-testdata = { path = "../stark-testdata" }

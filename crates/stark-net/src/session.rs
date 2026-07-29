@@ -21,7 +21,7 @@ use std::time::Duration;
 use iroh::{EndpointAddr, EndpointId, SecretKey};
 use n0_future::task;
 use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
-use stark_core::peer::PeerFrame;
+use stark_core::peer::{GestureFrame, PeerFrame};
 use stark_core::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
@@ -414,6 +414,22 @@ async fn recv_loop(
                 let Some(id) = crate::transport::to_endpoint_id(origin) else {
                     continue;
                 };
+                // A live stroke's head names its brush image just like the
+                // eventual commit will. Resolve it detached — presence must
+                // never wait on a fetch — so the rest of the gesture renders
+                // with the real shape as soon as the bytes land; until then
+                // the receiver's preview degrades to the round tip.
+                if let Some(asset) = referenced_presence_asset(&frame)
+                    && !mirror.lock().expect("mirror poisoned").has_asset(asset)
+                {
+                    task::spawn(resolve_asset(
+                        dialer.clone(),
+                        asset_sources(origin, from),
+                        asset,
+                        mirror.clone(),
+                        tx.clone(),
+                    ));
+                }
                 let event = RemoteEvent::Presence {
                     actor: actor_from_endpoint_id(id),
                     frame,
@@ -432,21 +448,16 @@ async fn recv_loop(
         if let Some(id) = referenced_asset(&action)
             && !mirror.lock().expect("mirror poisoned").has_asset(id)
         {
-            let sources = asset_sources(origin, from);
-            match fetch_asset(&dialer, &sources, id).await {
-                Some(bytes) => {
-                    mirror
-                        .lock()
-                        .expect("mirror poisoned")
-                        .insert_asset(id, bytes.clone());
-                    if tx.send(RemoteEvent::Asset { bytes }).is_err() {
-                        return;
-                    }
-                }
-                None => {
-                    tracing::warn!("brush asset {id:?} unavailable; stroke will fall back")
-                }
-            }
+            // Awaited (not spawned): the Asset event must reach the engine
+            // before the Action that references it.
+            resolve_asset(
+                dialer.clone(),
+                asset_sources(origin, from),
+                id,
+                mirror.clone(),
+                tx.clone(),
+            )
+            .await;
         }
 
         let fresh = mirror
@@ -471,6 +482,45 @@ fn asset_sources(origin: crate::mesh::PeerId, from: crate::mesh::PeerId) -> Vec<
         }
     }
     ids
+}
+
+/// The brush image a *live* remote gesture depends on, if any: a stroke's head
+/// frame carries the full `BrushParams` (PEER_DESIGN.md §5). Only head/resync
+/// frames name it — delta frames extend the path of a head already seen.
+fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetId> {
+    match &frame.gesture {
+        Some(GestureFrame::Stroke {
+            head: Some(head), ..
+        }) => match head.brush.shape {
+            BrushShape::Stamp(id) => Some(id),
+            BrushShape::Round => None,
+        },
+        _ => None,
+    }
+}
+
+/// Fetch a missing brush image, mirror it (so this peer can serve it onward),
+/// and surface it to the engine. The action path awaits this — assets must
+/// precede the action that references them — while the presence path runs it
+/// detached. Two concurrent resolvers are harmless: the blob is
+/// content-addressed, so the second insert and import are idempotent.
+async fn resolve_asset(
+    dialer: Dialer,
+    sources: Vec<EndpointId>,
+    id: AssetId,
+    mirror: Arc<Mutex<Mirror>>,
+    tx: mpsc::UnboundedSender<RemoteEvent>,
+) {
+    match fetch_asset(&dialer, &sources, id).await {
+        Some(bytes) => {
+            mirror
+                .lock()
+                .expect("mirror poisoned")
+                .insert_asset(id, bytes.clone());
+            let _ = tx.send(RemoteEvent::Asset { bytes });
+        }
+        None => tracing::warn!("brush asset {id:?} unavailable; stroke will fall back"),
+    }
 }
 
 /// The brush image a stroke depends on, if any (DESIGN.md §6.6).

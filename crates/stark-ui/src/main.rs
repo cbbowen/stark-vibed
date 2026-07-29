@@ -24,6 +24,7 @@ mod layout;
 mod panels;
 mod platform;
 mod render;
+mod shapes;
 mod state;
 mod widgets;
 
@@ -87,6 +88,10 @@ fn app() -> Element {
     // they answer whatever has focus — including `document.body`, where the browser
     // leaves it after a clicked button unmounts itself (see `platform::on_window_key`).
     use_hook(|| bind_shortcuts(state));
+
+    // The shape library follows the browser, not the document — load it before
+    // the renderer exists so the gallery is populated on first open.
+    use_hook(|| shapes::load(state));
 
     use_hook(|| {
         let mut renderer = renderer;

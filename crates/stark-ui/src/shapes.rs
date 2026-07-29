@@ -1,0 +1,286 @@
+//! The user's custom brush-shape library (DESIGN.md §6.6, build-order step 11).
+//!
+//! An entry is a **canonical grayscale PNG keyed by content id** — exactly the
+//! bytes the engine's `AssetStore` holds, bundles into save files, and serves
+//! to session peers, so one representation flows everywhere. The library
+//! itself is frontend state: the engine's store is per-document (populated on
+//! import and load), while the library follows this browser across documents
+//! via `localStorage` (the `identity` bargain — where storage is unavailable
+//! it degrades to a per-session library and breaks nothing).
+//!
+//! Import runs through [`crate::platform::normalize_shape_image`], so anything
+//! the browser can decode becomes a shape, downscaled to the engine cap and
+//! auto-inverted when it reads as dark ink on light paper. The engine then
+//! canonicalizes (grayscale, content-hashed), and the canonical bytes — not
+//! the user's file — are what the library keeps.
+//!
+//! Every task here is `spawn_forever` and every result lands in root-owned
+//! signals: imports are started from the brush editor, and closing a modal
+//! must not cancel or dangle them (see `collab.rs` for the same rule).
+
+use dioxus::dioxus_core::spawn_forever;
+use dioxus::prelude::*;
+use stark_core::AssetId;
+use stark_core::document::BrushShape;
+
+use crate::platform::{base64_decode, base64_encode, normalize_shape_image};
+use crate::state::{AppState, update_brush};
+
+/// One key, namespaced like `identity`'s; versioned so a future format change
+/// can migrate rather than mis-parse.
+const KEY_SHAPES: &str = "stark.shapes.v1";
+
+/// One custom shape in the library.
+#[derive(Clone, PartialEq)]
+pub struct ShapeEntry {
+    /// Display name, defaulted from the imported file's stem.
+    pub name: String,
+    /// Canonical grayscale PNG (what the engine stores under `id`).
+    pub png: Vec<u8>,
+    /// Content id of `png`. Persisted alongside the bytes; if an engine
+    /// upgrade ever re-canonicalizes differently, [`select`] heals the entry
+    /// from the id the import actually returns.
+    pub id: AssetId,
+}
+
+/// A `background-image` data URL for an entry's thumbnail. Callers should
+/// memoize per entry — the PNG is re-encoded to base64 each call.
+pub fn data_url(entry: &ShapeEntry) -> String {
+    format!("data:image/png;base64,{}", base64_encode(&entry.png))
+}
+
+/// Populate the library signal from storage. Called once at app start.
+pub fn load(state: AppState) {
+    let mut entries = state.shapes.entries;
+    entries.set(read_storage());
+}
+
+/// Import an image file as a new shape: normalize in the browser, canonicalize
+/// in the engine, add to the library, select it, and seed any live session so
+/// peers can fetch it the moment a stroke (or live preview) references it.
+pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
+    let mut notice = state.shapes.notice;
+    notice.set(None);
+    spawn_forever(async move {
+        let (png, inverted) = match normalize_shape_image(bytes).await {
+            Ok(v) => v,
+            Err(e) => {
+                notice.set(Some(format!("Couldn't import “{file_name}”: {e}.")));
+                return;
+            }
+        };
+        let imported = {
+            let renderer = state.renderer;
+            let guard = renderer.read();
+            match guard.as_ref() {
+                Some(r) => r
+                    .import_brush_id(&png)
+                    .map(|id| (id, r.asset_bytes(id).unwrap_or(png))),
+                None => Err("the canvas is still starting".to_string()),
+            }
+        };
+        let (id, canonical) = match imported {
+            Ok(v) => v,
+            Err(e) => {
+                notice.set(Some(format!("Couldn't import “{file_name}”: {e}.")));
+                return;
+            }
+        };
+
+        let name = display_name(&file_name);
+        let mut entries = state.shapes.entries;
+        let known = entries.read().iter().any(|e| e.id == id);
+        if !known {
+            entries.write().push(ShapeEntry {
+                name: name.clone(),
+                png: canonical.clone(),
+                id,
+            });
+            persist(&entries.read());
+        }
+        seed_session(state, id, canonical);
+        update_brush(state, |b| b.shape = BrushShape::Stamp(id));
+        notice.set(match (known, inverted) {
+            (true, _) => Some(format!("“{name}” is already in your library — selected it.")),
+            (false, true) => Some(format!(
+                "“{name}” read as dark ink on light paper, so it was inverted — white now paints."
+            )),
+            (false, false) => None,
+        });
+    });
+}
+
+/// Import files dropped onto the shape gallery. Each file reads and imports
+/// independently; when several are dropped the last import to finish holds the
+/// brush (arbitrary but harmless — every one lands in the library).
+pub fn import_dropped(state: AppState, files: Vec<dioxus::html::FileData>) {
+    for file in files {
+        spawn_forever(async move {
+            let name = file.name();
+            match file.read_bytes().await {
+                Ok(bytes) => import_file(state, name, bytes.to_vec()),
+                Err(e) => {
+                    let mut notice = state.shapes.notice;
+                    notice.set(Some(format!("Couldn't read “{name}”: {e}.")));
+                }
+            }
+        });
+    }
+}
+
+/// An entry id as hex — a stable rsx `key` for gallery items.
+pub fn id_hex(id: AssetId) -> String {
+    hex_encode(&id.0)
+}
+
+/// Make `id` the active brush shape, importing the entry's bytes into the
+/// engine first when this document hasn't seen it yet (content-addressing
+/// makes a repeat import free).
+pub fn select(state: AppState, id: AssetId) {
+    let entry = state
+        .shapes
+        .entries
+        .read()
+        .iter()
+        .find(|e| e.id == id)
+        .cloned();
+    let Some(entry) = entry else { return };
+
+    let imported = {
+        let renderer = state.renderer;
+        let guard = renderer.read();
+        match guard.as_ref() {
+            Some(r) if r.has_asset(entry.id) => Ok(entry.id),
+            Some(r) => r.import_brush_id(&entry.png),
+            None => return,
+        }
+    };
+    let actual = match imported {
+        Ok(actual) => actual,
+        Err(e) => {
+            let mut notice = state.shapes.notice;
+            notice.set(Some(format!("“{}” failed to load: {e}.", entry.name)));
+            return;
+        }
+    };
+    if actual != entry.id {
+        // The stored id predates a canonicalization change; heal it in place.
+        let mut entries = state.shapes.entries;
+        if let Some(e) = entries.write().iter_mut().find(|e| e.id == entry.id) {
+            e.id = actual;
+        }
+        persist(&entries.read());
+    }
+    seed_session(state, actual, entry.png);
+    update_brush(state, |b| b.shape = BrushShape::Stamp(actual));
+}
+
+/// Drop an entry from the library. Paint already on canvases is untouched —
+/// the engine's per-document store keeps every imported asset, and save files
+/// bundle whatever strokes reference. A brush currently holding the removed
+/// shape falls back to the round tip.
+pub fn remove(state: AppState, id: AssetId) {
+    let mut entries = state.shapes.entries;
+    entries.write().retain(|e| e.id != id);
+    persist(&entries.read());
+
+    let selected = state
+        .obs
+        .read()
+        .as_ref()
+        .map(|o| o.brush.shape == BrushShape::Stamp(id))
+        .unwrap_or(false);
+    if selected {
+        update_brush(state, |b| b.shape = BrushShape::Round);
+    }
+}
+
+/// Register the shape with a live session's mirror so peers can fetch it by
+/// hash. A no-op when solo; idempotent when repeated (content-addressed).
+fn seed_session(state: AppState, id: AssetId, bytes: Vec<u8>) {
+    if let Some(broadcaster) = state
+        .collab
+        .session
+        .read()
+        .as_ref()
+        .map(|s| s.broadcaster())
+    {
+        broadcaster.add_asset(id, bytes);
+    }
+}
+
+/// A human name from a picked file's name: the stem, tidied.
+fn display_name(file_name: &str) -> String {
+    let stem = file_name
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(file_name)
+        .trim();
+    if stem.is_empty() {
+        "Imported shape".to_string()
+    } else {
+        stem.to_string()
+    }
+}
+
+// --- persistence ----------------------------------------------------------
+//
+// One storage key holding one line per entry: `b64(name)|hex(id)|b64(png)`.
+// Line-oriented and field-delimited so a single damaged entry is skipped
+// rather than poisoning the whole library; dependency-free like `identity`.
+
+fn persist(entries: &[ShapeEntry]) {
+    let Some(store) = storage() else { return };
+    let text: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            format!(
+                "{}|{}|{}",
+                base64_encode(e.name.as_bytes()),
+                hex_encode(&e.id.0),
+                base64_encode(&e.png)
+            )
+        })
+        .collect();
+    if store.set_item(KEY_SHAPES, &text.join("\n")).is_err() {
+        // Quota, most likely. The library still works for this session.
+        tracing::warn!("could not persist the shape library (storage full or unavailable)");
+    }
+}
+
+fn read_storage() -> Vec<ShapeEntry> {
+    let Some(store) = storage() else {
+        return Vec::new();
+    };
+    let Ok(Some(text)) = store.get_item(KEY_SHAPES) else {
+        return Vec::new();
+    };
+    text.lines().filter_map(parse_entry).collect()
+}
+
+fn parse_entry(line: &str) -> Option<ShapeEntry> {
+    let mut fields = line.split('|');
+    let name = String::from_utf8(base64_decode(fields.next()?).ok()?).ok()?;
+    let id = AssetId(hex_decode(fields.next()?)?);
+    let png = base64_decode(fields.next()?).ok()?;
+    Some(ShapeEntry { name, png, id })
+}
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_decode(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(bytes)
+}

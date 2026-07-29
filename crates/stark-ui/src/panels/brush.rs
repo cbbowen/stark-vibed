@@ -14,8 +14,8 @@ pub const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
 /// The maximum brush radius (`BrushParams::radius`).
 pub const MAX_RADIUS: f32 = 500.0;
 
-/// The floating Brush panel: the everyday quick controls (shape, size, opacity,
-/// amount). Everything else — the full grouped parameter set with a live test
+/// The floating Brush panel: the everyday quick controls (size, amount).
+/// Everything else — the full grouped parameter set with a live test
 /// stroke — lives in the brush editor dialog ("Edit brush…").
 #[component]
 pub fn BrushPanel() -> Element {
@@ -26,23 +26,8 @@ pub fn BrushPanel() -> Element {
         .as_ref()
         .map(|o| o.brush)
         .unwrap_or_default();
-    let is_round = matches!(brush.shape, BrushShape::Round);
-
-    let chip = |active: bool| if active { "chip active" } else { "chip" };
 
     rsx! {
-        div { class: "brush-shapes",
-            button {
-                class: chip(is_round),
-                onclick: move |_| set_shape(state, BrushShape::Round),
-                "Round"
-            }
-            button {
-                class: chip(!is_round),
-                onclick: move |_| set_bristles(state),
-                "Bristles"
-            }
-        }
         Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
         Slider { label: "Amount", min: 0.0, max: 1.5, value: brush.dynamics.add,
