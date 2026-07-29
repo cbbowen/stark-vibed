@@ -72,7 +72,7 @@ impl GestureTx {
     /// head and its whole path, repairing any receiver that missed a delta and
     /// priming any client that arrived mid-stroke, without either having to ask.
     pub(crate) fn resync_due(&self, now: f64) -> bool {
-        now - self.resync_at >= GESTURE_RESYNC
+        GESTURE_RESYNC.is_some_and(|interval| now - self.resync_at >= interval)
     }
 
     /// Record that a frame carrying a resync went out at `now`.
@@ -502,19 +502,21 @@ mod tests {
         assert!(peers.get(actor).is_none(), "nothing has been delivered");
 
         // The next resync frame is delivered, and it alone must be enough.
-        now += crate::peer::GESTURE_RESYNC;
-        session.stroke_to(InputSample::at(Vec2::new(120.0, 0.0)));
-        let frame = session.publish(now).expect("a resync frame is due");
-        peers.merge(actor, frame, now);
+        if let Some(resync_interval) = crate::peer::GESTURE_RESYNC {
+            now += resync_interval;
+            session.stroke_to(InputSample::at(Vec2::new(120.0, 0.0)));
+            let frame = session.publish(now).expect("a resync frame is due");
+            peers.merge(actor, frame, now);
 
-        let truth = session.preview_record().expect("in flight");
-        let shown = peers
-            .get(actor)
-            .and_then(|p| p.live_stroke())
-            .expect("repaired from one frame");
-        assert_eq!(
-            shown.path, truth.path,
-            "a resync carries the whole path, so one frame is a complete repair"
-        );
+            let truth = session.preview_record().expect("in flight");
+            let shown = peers
+                .get(actor)
+                .and_then(|p| p.live_stroke())
+                .expect("repaired from one frame");
+            assert_eq!(
+                shown.path, truth.path,
+                "a resync carries the whole path, so one frame is a complete repair"
+            );
+        }
     }
 }

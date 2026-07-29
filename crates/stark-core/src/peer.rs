@@ -51,7 +51,7 @@ pub const GESTURE_TIMEOUT: f64 = 2.0;
 /// How often the sender re-sends a gesture's invariant head and its whole path
 /// (seconds), repairing any receiver that missed a delta and priming any client
 /// that arrived mid-stroke (PEER_DESIGN.md §5).
-pub const GESTURE_RESYNC: f64 = 1.0;
+pub const GESTURE_RESYNC: Option<f64> = None;
 
 /// Who this client is on the wire.
 ///
