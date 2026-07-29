@@ -131,6 +131,12 @@ pub enum DocCommand {
     SetLayerBlend(LayerId, BlendMode),
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
+    /// Name a layer, or with `None` clear the name so it goes back to being
+    /// described by its place in the stack. The text is trimmed and length-capped
+    /// on the way in, and one that comes out blank clears the name rather than
+    /// setting an empty one — so "a name is either absent or something you can
+    /// read" holds however the frontend collects it.
+    SetLayerName(LayerId, Option<String>),
     MoveLayer {
         id: LayerId,
         above: Option<LayerId>,

@@ -27,8 +27,10 @@ web-sys = { version = "0.3", features = [
     "HtmlCanvasElement",
     "PointerEvent",
     # The app's shortcuts are bound to the window rather than to an element
-    # (platform::on_window_key), so they read raw KeyboardEvents.
+    # (platform::on_window_key), so they read raw KeyboardEvents — and ask the
+    # event's target whether it is a field being typed into (input::bind_shortcuts).
     "KeyboardEvent",
+    "HtmlElement",
     # The presence clock (collab.rs). Monotonic, unlike `Date.now()`, which is what
     # peer timeouts and heartbeats need.
     "Performance",

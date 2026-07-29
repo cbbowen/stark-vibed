@@ -64,6 +64,26 @@ pub fn capture_pointer(e: &Event<PointerData>) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn capture_pointer(_e: &Event<PointerData>) {}
 
+/// Select all the text in the element `e` was mounted on — a no-op unless it is a
+/// text field.
+///
+/// Dioxus's `MountedData` can focus an element but has nothing to say about the
+/// selection inside it, so this reaches for the DOM node directly, the same route
+/// [`capture_pointer`] takes.
+#[cfg(target_arch = "wasm32")]
+pub fn select_all(e: &Event<MountedData>) {
+    use dioxus::web::WebEventExt;
+    use wasm_bindgen::JsCast;
+    if let Some(field) = e
+        .try_as_web_event()
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+    {
+        field.select();
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn select_all(_e: &Event<MountedData>) {}
+
 /// Hand `bytes` to the browser as a file download named `filename`.
 ///
 /// A Blob behind an object URL, clicked through a synthetic `<a download>` — the

@@ -351,6 +351,7 @@
   padding: 5px 6px;
   border-radius: 6px;
   background: #33333a;
+  font-size: 12px;
 }
 
 .layer-row.active {
@@ -359,11 +360,28 @@
 
 .layer-name {
   flex: 1;
+  min-width: 0;
+  padding: 0;
   text-align: left;
   background: none;
   border: none;
   color: #eee;
   cursor: pointer;
+}
+
+/* The rename field, standing in for the name button while a row is being renamed.
+   Deliberately the same box: same flex share, same text metrics, same position, so
+   opening it reads as the label becoming editable rather than as a form appearing
+   in the row. Only the sunken well and the caret say it is now a field. */
+.layer-rename {
+  outline: none;
+}
+
+/* An unnamed layer opens on an empty field, so the placeholder is carrying what the
+   row said a moment ago — dimmed, because it is a description rather than text you
+   are about to edit. */
+.layer-rename::placeholder {
+  color: #eeeeee59;
 }
 
 /* --- command rail --- */

@@ -108,6 +108,105 @@ fn reordering_changes_which_layer_wins() {
     );
 }
 
+/// What `id` is called right now, or `None` if it has never been named.
+fn name_of(engine: &Engine, id: LayerId) -> Option<String> {
+    engine
+        .observe()
+        .layers
+        .iter()
+        .find(|l| l.id == id)
+        .and_then(|l| l.name.as_ref().map(|n| n.to_string()))
+}
+
+#[test]
+fn renaming_a_layer_is_undoable() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    assert_eq!(name_of(&engine, TOP), None, "a new layer starts unnamed");
+
+    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+    assert_eq!(name_of(&engine, TOP), Some("Sky".to_string()));
+
+    // A name is part of the document, so taking one back is an undo step — which is
+    // what makes a mistyped rename recoverable the way a mis-set opacity is.
+    engine.process(DocCommand::Undo);
+    assert_eq!(name_of(&engine, TOP), None);
+    engine.process(DocCommand::Redo);
+    assert_eq!(name_of(&engine, TOP), Some("Sky".to_string()));
+
+    // Clearing it is its own step rather than an undo of the rename.
+    engine.process(DocCommand::SetLayerName(TOP, None));
+    assert_eq!(name_of(&engine, TOP), None);
+    engine.process(DocCommand::Undo);
+    assert_eq!(name_of(&engine, TOP), Some("Sky".to_string()));
+}
+
+#[test]
+fn a_name_is_either_absent_or_readable() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+
+    engine.process(DocCommand::SetLayerName(TOP, Some("  Sky  ".into())));
+    assert_eq!(
+        name_of(&engine, TOP),
+        Some("Sky".to_string()),
+        "surrounding whitespace is not part of the name"
+    );
+
+    // A field emptied out clears the name rather than setting a blank one, so the
+    // row goes back to being described by its place in the stack.
+    engine.process(DocCommand::SetLayerName(TOP, Some("   ".into())));
+    assert_eq!(name_of(&engine, TOP), None);
+
+    // A name is replicated and saved, so its length is bounded — by `char`s, so the
+    // cut can never land inside one.
+    let long = "\u{1F308}".repeat(200);
+    engine.process(DocCommand::SetLayerName(TOP, Some(long)));
+    let stored = name_of(&engine, TOP).expect("named");
+    assert_eq!(stored.chars().count(), 64);
+    assert!(stored.chars().all(|c| c == '\u{1F308}'));
+}
+
+#[test]
+fn renaming_to_the_same_name_is_not_an_edit() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+
+    // Commit-on-blur means the frontend re-sends the current name whenever a field
+    // is left untouched. That must cost nothing: an undo step that appears to do
+    // nothing when reached is worse than no step at all.
+    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+    engine.process(DocCommand::SetLayerName(TOP, Some(" Sky ".into())));
+    engine.process(DocCommand::Undo);
+    assert_eq!(
+        name_of(&engine, TOP),
+        None,
+        "one undo passes the whole rename, so only one step was logged"
+    );
+}
+
+#[test]
+fn layer_names_survive_save_load() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+    let bytes = engine.save_bytes().expect("serialize");
+
+    let mut loaded = engine_or_skip_blue().expect("adapter");
+    loaded.load_bytes(&bytes).expect("load");
+    assert_eq!(name_of(&loaded, TOP), Some("Sky".to_string()));
+    assert_eq!(name_of(&loaded, ROOT), None);
+}
+
 #[test]
 fn layer_state_survives_save_load() {
     let Some(mut engine) = engine_or_skip_blue() else {

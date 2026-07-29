@@ -117,6 +117,27 @@ const MAX_PICK_RADIUS: u32 = 32;
 /// and dividing by it would amplify float noise into an arbitrary hue.
 const PICK_MIN_OPACITY: f32 = 1e-3;
 
+/// Longest layer name that will be recorded, in `char`s. Not a taste limit but a
+/// bound on the log: a name is replicated to every peer and saved with the
+/// document, and nothing about a text field stops a paste from being a megabyte.
+/// Truncated by `char` rather than by byte so the cut can never land inside one.
+const MAX_LAYER_NAME: usize = 64;
+
+/// The name to record for a layer, given what a frontend collected: surrounding
+/// whitespace trimmed, length capped, and anything that comes out empty treated as
+/// *no name* rather than as a name that happens to be blank.
+///
+/// One funnel for every source — the panel's field, a script, a peer's command —
+/// so "a layer's name is either absent or something you can read" is a property of
+/// the model rather than a habit of the UI. The logged action carries the result,
+/// so replay reproduces it without re-running these rules.
+fn normalize_layer_name(name: Option<String>) -> Option<String> {
+    let name = name?;
+    let trimmed = name.trim();
+    let capped: String = trimmed.chars().take(MAX_LAYER_NAME).collect();
+    (!capped.is_empty()).then_some(capped)
+}
+
 /// The mean **unpremultiplied** channels of a sampled patch, or `None` where there
 /// is no paint in it.
 ///
@@ -139,12 +160,21 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
 }
 
 /// A layer's presentation properties, for the UI's layer panel (DESIGN.md §11).
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// `Clone` but not `Copy` since it carries the name — an `Arc<str>` bump, so
+/// cloning one is still a handful of instructions and `observe()` stays cheap.
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayerInfo {
     pub id: LayerId,
     pub blend: crate::document::BlendMode,
     pub opacity: f32,
     pub visible: bool,
+    /// What the author called this layer, or `None` for one that has never been
+    /// named — in which case it is for the frontend to describe it, since only the
+    /// frontend knows how it presents a stack (see [`Layer::name`]).
+    ///
+    /// [`Layer::name`]: crate::document::Layer::name
+    pub name: Option<std::sync::Arc<str>>,
     /// Set when this layer is a **matte** (FRAME_DESIGN.md §2) — a frame rather
     /// than paint. `None` for an ordinary paint layer.
     ///
@@ -643,6 +673,16 @@ impl Engine {
             }
             DocCommand::SetLayerVisible(id, visible) => {
                 self.commit(ActionKind::SetLayerVisible(id, visible))
+            }
+            DocCommand::SetLayerName(id, name) => {
+                let name = normalize_layer_name(name);
+                // A rename to the name it already has is not an edit, and logging it
+                // would spend an undo step that appears to do nothing when reached.
+                // Commit-on-blur makes this the common case: leaving a field you only
+                // looked at must cost nothing.
+                if self.timeline.current().layer_name(id) != name.as_deref() {
+                    self.commit(ActionKind::SetLayerName(id, name));
+                }
             }
             DocCommand::MoveLayer { id, above } => self.commit(ActionKind::MoveLayer { id, above }),
         }
@@ -1221,6 +1261,7 @@ impl Engine {
                 blend: l.blend,
                 opacity: l.opacity,
                 visible: l.visible,
+                name: l.name.clone(),
                 matte: match &l.content {
                     LayerContent::Matte { region, color } => {
                         let (min, max) = region.rect();

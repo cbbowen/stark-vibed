@@ -120,9 +120,63 @@ pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
 ///
 /// On the window rather than on the app's root element — see
 /// [`platform::on_window_key`] for why an element cannot hold them.
+///
+/// Only the **keydown** side is withheld from a field being typed into. Keyup is
+/// what disarms `space_down` and corrects `alt_down`, and focus can move between a
+/// press and its release — a click into the rename field with space held — so a
+/// guarded keyup would leave the pan armed with nothing to release it. Nothing is
+/// given up by letting it through: on keyup there is no default action left to
+/// cancel, since a character is inserted on the press.
 pub fn bind_shortcuts(state: AppState) {
-    on_window_key("keydown", move |e| handle_keydown(state, &e));
+    on_window_key("keydown", move |e| {
+        if !typing_into_a_field(&e) {
+            handle_keydown(state, &e);
+        }
+    });
     on_window_key("keyup", move |e| handle_keyup(state, &e));
+}
+
+/// Whether `e` was typed into a control that owns its own keystrokes — a text
+/// field, a `<select>`, a contenteditable region.
+///
+/// Read off the event's target, which for a key event *is* what has focus, rather
+/// than off a flag the fields set on focus and clear on blur. A field that unmounts
+/// while focused — commit-and-close on a rename — never fires its blur, and a flag
+/// left stuck on would kill every shortcut for the rest of the session. The DOM is
+/// asked at the moment of the keystroke, so it cannot fall out of step.
+///
+/// Declining here is also what hands the field the browser's own editing bindings:
+/// Ctrl+Z undoes the *text* rather than the document, and Ctrl+A selects the text
+/// rather than the canvas, purely because nothing calls `prevent_default` on them.
+///
+/// This is the *only* place a widget can opt out. `e.stop_propagation()` in an
+/// element's own `onkeydown` will not do it: dioxus-web reads `prevent_default`
+/// off a handled event but never calls `stopPropagation` on the underlying DOM
+/// event, so propagation is halted inside the virtual tree only and the real event
+/// reaches the window regardless.
+fn typing_into_a_field(e: &web_sys::KeyboardEvent) -> bool {
+    use wasm_bindgen::JsCast;
+
+    let Some(el) = e
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return false;
+    };
+    el.is_content_editable()
+        || match el.tag_name().as_str() {
+            "TEXTAREA" | "SELECT" => true,
+            // Sliders, checkboxes and colour wells are not text entry. They want
+            // arrows and space from the browser, but Ctrl+Z over one still means
+            // the document — there is no text there for it to mean anything else.
+            "INPUT" => !matches!(
+                el.unchecked_ref::<web_sys::HtmlInputElement>()
+                    .type_()
+                    .as_str(),
+                "button" | "checkbox" | "color" | "file" | "radio" | "range" | "reset" | "submit"
+            ),
+            _ => false,
+        }
 }
 
 /// The pressed key, in the same typed vocabulary the rsx! handlers read.

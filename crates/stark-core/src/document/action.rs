@@ -352,6 +352,18 @@ pub enum ActionKind {
         layer: LayerId,
         affine: crate::geom::Affine2,
     },
+
+    /// Name a layer, or with `None` take its name away again so it falls back to
+    /// being described by its place in the stack.
+    ///
+    /// Logged like every other layer property: a name is part of the document —
+    /// it is saved, it is replicated, and taking one back is an undo step, which
+    /// is what makes a mistyped rename recoverable the same way a mis-set opacity
+    /// is. Carries a `String` rather than the `Arc<str>` the state holds, because
+    /// this is the file and wire form, where a shared pointer means nothing.
+    /// Appended last so postcard — which encodes an enum by variant *index* —
+    /// keeps decoding older files.
+    SetLayerName(LayerId, Option<String>),
 }
 
 /// A committed document mutation with its identity.
@@ -424,6 +436,9 @@ impl history::Action for Action {
             ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
             ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
             ActionKind::SetLayerVisible(id, visible) => state.set_layer_visible(*id, *visible),
+            ActionKind::SetLayerName(id, name) => {
+                state.set_layer_name(*id, name.as_deref().map(Into::into))
+            }
             ActionKind::MoveLayer { id, above } => state.move_layer(*id, *above),
             // Resolved at the timeline layer (effective-sequence filtering); an
             // `Undo` should never be materialized through `apply`. Identity, so

@@ -5,6 +5,8 @@
 //! The heavy GPU memory lives behind `TileHandle`s shared across versions, and
 //! is reclaimed when the last version referencing a tile drops (DESIGN.md §5.2).
 
+use std::sync::Arc;
+
 use rpds::{HashTrieMap, Vector};
 
 use super::action::ActorId;
@@ -170,6 +172,15 @@ impl DocState {
         self.layers.iter().position(|l| l.id == id)
     }
 
+    /// What the layer with the given id is called, or `None` if it is unnamed —
+    /// or absent, which reads the same way here: neither has a name to give.
+    pub fn layer_name(&self, id: LayerId) -> Option<&str> {
+        self.layers
+            .iter()
+            .find(|l| l.id == id)
+            .and_then(|l| l.name.as_deref())
+    }
+
     /// The layer at `index`. Panics if out of range (callers hold a valid index).
     pub fn layer_at(&self, index: usize) -> &Layer {
         self.layers.get(index).expect("layer index in range")
@@ -277,6 +288,19 @@ impl DocState {
     /// Set a layer's visibility (no-op if absent).
     pub fn set_layer_visible(&self, id: LayerId, visible: bool) -> Self {
         self.map_layer(id, |l| Layer { visible, ..l })
+    }
+
+    /// Set (or, with `None`, clear) a layer's name — no-op if absent.
+    ///
+    /// Takes whatever it is given: the name is normalized once where the action is
+    /// minted ([`Engine::process`](crate::Engine::process)), so a replay of the log
+    /// puts back exactly what was recorded rather than re-deriving it from rules
+    /// that may have changed since.
+    pub fn set_layer_name(&self, id: LayerId, name: Option<Arc<str>>) -> Self {
+        self.map_layer(id, |l| Layer {
+            name: name.clone(),
+            ..l
+        })
     }
 
     /// Move layer `id` to sit immediately above `above`, or on top if `None`.

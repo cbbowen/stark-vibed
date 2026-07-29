@@ -74,7 +74,7 @@ pub fn selected_frame(state: AppState) -> Option<(LayerInfo, MatteInfo)> {
     o.layers
         .iter()
         .find(|l| l.id == o.active_layer)
-        .and_then(|l| l.matte.map(|m| (*l, m)))
+        .and_then(|l| l.matte.map(|m| (l.clone(), m)))
 }
 
 /// Stop composing: select the topmost paint layer instead. Used by the frame bar's

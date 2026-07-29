@@ -3,6 +3,8 @@
 //! with a flat colour — plus its presentation properties. Layer compositing
 //! across blend modes arrives in step 4; for now layers stack with `Normal` over.
 
+use std::sync::Arc;
+
 use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
@@ -149,6 +151,18 @@ pub struct Layer {
     pub opacity: f32,
     /// Whether the layer contributes to the composite.
     pub visible: bool,
+    /// What the author called this layer, or `None` for one that has never been
+    /// named.
+    ///
+    /// Absent rather than pre-filled with "Layer 3", because the two are
+    /// different facts: an unnamed layer is *described* by its position in the
+    /// stack, and a frontend that spells that out should keep doing so as the
+    /// stack changes. Storing the generated text would freeze one moment's
+    /// description into the document and make it look deliberate.
+    ///
+    /// `Arc<str>` because the name is read far more often than it is written —
+    /// every `observe()` projects it — and never edited in place.
+    pub name: Option<Arc<str>>,
     pub content: LayerContent,
 }
 
@@ -160,6 +174,7 @@ impl Layer {
             blend: BlendMode::Normal,
             opacity: 1.0,
             visible: true,
+            name: None,
             content: LayerContent::Paint(HashTrieMap::new()),
         }
     }
