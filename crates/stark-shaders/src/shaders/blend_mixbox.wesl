@@ -38,7 +38,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let p = vec2<i32>(floor(frag.xy));
 
-    let cb = textureLoad(back_color, p, 0); // (concentrations · opacity, opacity)
+    let cb = textureLoad(back_color, p, 0); // (concentrations · coverage, coverage)
     let cs = textureLoad(src_color, p, 0);
     let chan_b = cb.rgb / max(cb.a, EPS);
     let chan_s = cs.rgb / max(cs.a, EPS);

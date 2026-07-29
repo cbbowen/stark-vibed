@@ -532,7 +532,8 @@ blends perceptually uniform (GOALS §1). Alpha is premultiplied against `L,a,b`.
 > present. **The amount (and presence) of paint is the `height` channel** (precisely,
 > `height − surface_height`, the paint *thickness*). The two combine only at display
 > time in the translucent-slab law `visible = 1 − exp(−K · opacity · thickness)`
-> (media pass, §6.3). Consequences that the brush dynamics must respect:
+> (per layer in compositing pass A, §6.3). Consequences that the brush dynamics must
+> respect:
 > - To **conserve paint** (move it without creating or destroying), conserve
 >   **height** — never the alpha. Alpha is per-unit and is carried as a
 >   height-weighted blend of the picked-up paint's opacity; it is not consumed.
@@ -912,6 +913,28 @@ top, into two viewport-sized offscreen targets: colour (premultiplied "over", in
 the working colour space) and the `(height)` aux (additive). Layer opacity
 rides on the instance.
 
+A layer's "over" weight is its **visible alpha** — per-unit opacity and amount
+combined by the slab law `1 − exp(−K·opacity·height)`, the same law
+`paint_common.wesl` uses to stack parcels *within* a layer — so a layer covers
+the stack below exactly as much as it shows. (Weighting by opacity alone was the
+old §6.3 defect: a film with opacity 1 and no thickness — every soft brush's
+fringe — drew as nothing over bare canvas yet replaced the colour over another
+layer's paint.) Because the slab is multiplicative in optical mass, "over" on
+these weights accumulates the *stack's* coverage in the target's alpha, and the
+media pass reads it there instead of re-deriving it from stack totals; for a
+single layer the two are algebraically identical. `tests/composite.rs` guards
+the claim.
+
+One consumer must *not* see that weighting: the dynamics loop composites base
+tiles into its working region with this same shader, and that region holds the
+tile representation itself (per-unit opacity in alpha, §6.1) — the exchange
+loop's pickup reads it and the slice writes it back to persistent tiles.
+Running the slab law there stores coverage as opacity, corrupting smeared paint
+differently on either side of a piece or freeze cut — which is precisely how an
+earlier attempt at this fix made smear previews drift from their commits. The
+screen path and the region path are therefore separate fragment entry points
+(`fs_main` / `fs_raw`, composite.wesl).
+
 A layer whose `BlendMode` is not `Normal` cannot go through that, because its mode
 is defined against *what is underneath it*. So pass A is cut into **blend groups**
 (`CompositeGroup`): a run of consecutive `Normal` layers is one group and draws
@@ -925,22 +948,6 @@ chosen by the parity of the blend count so the final result always lands where t
 caller asked. The media pass therefore keeps one bind group and the eyedropper keeps
 its own targets. The scratch pairs are allocated on first use, so an ordinary
 painting never pays for them.
-
-> **Known defect: a layer covers by its opacity, not by what it shows.** Pass A
-> weights a layer's "over" by the tile's per-unit **opacity** alone, but a tile
-> stores opacity *and* amount, and only the two together say how much of a fragment
-> is paint — which is why the media pass combines them as a translucent slab. A film
-> with opacity 1 and no thickness therefore draws as nothing over bare canvas and
-> replaces the colour outright over another layer's paint. Every soft brush has a
-> wide fringe of exactly that state (`stamp_oklab.wesl` saturates opacity as
-> `1 − exp(−op·τ)` while height stays linear in `τ`), so the symptom is a ghost of
-> the brush's whole footprint appearing on the layer below. `tests/composite.rs` is
-> an ignored repro with the full diagnosis. The fix is to weight by the layer's own
-> visible alpha — the slab law `paint_common.wesl` already uses to stack parcels
-> *within* a layer — and let the media pass read the accumulated coverage instead of
-> re-deriving it; it is the identity for a single layer, but it perturbs the
-> **smear** path in a way not yet understood, including
-> `a_smear_stroke_previews_as_it_commits`, so it is not landed.
 
 The modes themselves are the interesting part, and they are deliberately not
 Photoshop's: each is ordinary **addition of light, conjugated by a tone curve** —

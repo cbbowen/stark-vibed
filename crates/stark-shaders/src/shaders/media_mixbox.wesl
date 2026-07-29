@@ -21,9 +21,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(frag.xy));
     let dim = vec2<i32>(textureDimensions(comp_aux));
 
-    let cc = textureLoad(comp_color, p, 0);    // (concentrations · opacity, opacity)
-    let vis = paint_vis_at(p, dim);            // translucent-slab visible alpha
-    let conc = cc.rgb / max(cc.a, 1e-4);       // un-premultiply opacity → concentrations
+    let cc = textureLoad(comp_color, p, 0);    // (concentrations · coverage, coverage)
+    let vis = paint_vis_at(p, dim);            // accumulated coverage, weave-corrected
+    let conc = cc.rgb / max(cc.a, 1e-4);       // un-premultiply coverage → concentrations
     // Mixbox latent mixes linearly, so composite paint-over-substrate in latent space.
     let over = over_substrate(conc, vis);      // substrate, or a transparent cut-out
 

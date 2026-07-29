@@ -30,10 +30,13 @@ struct View {
 @group(0) @binding(0) var<uniform> view: View;
 
 // Thickness of the matte slab, in the same units as paint height. With
-// `OPACITY_K = 1` (media_common.wesl) a thickness of 8 leaves `vis > 0.999` even
-// after the canvas surface height (<= ~0.6) is subtracted, so a matte at full
-// opacity reads solid.
+// `OPACITY_K = 1` a thickness of 8 leaves the slab's visible alpha > 0.999 even
+// after the weave-sink discount (media_common.wesl), so a matte at full opacity
+// reads solid.
 const MATTE_THICKNESS: f32 = 8.0;
+
+// Opacity build-up rate; must match `composite.wesl` / `media_common.wesl`.
+const OPACITY_K: f32 = 1.0;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -96,11 +99,15 @@ fn fs_main(in: VsOut) -> FsOut {
     let a = outside_coverage(in.canvas, in.rect, in.aa) * in.opacity;
 
     // Premultiplied, for the `over` blend the pipeline declares on both targets.
-    // Colour alpha is the paint's *per-unit* opacity and the aux carries the
-    // *amount* (DESIGN.md §6.1); the matte is fully opaque paint, so its per-unit
-    // opacity is 1 and its thickness is the constant above.
+    // Colour alpha is *coverage*, like every element of pass A (composite.wesl):
+    // the matte is fully opaque paint (per-unit opacity 1) of the constant
+    // thickness above, so its slab visible alpha is `1 − exp(−K·thickness)`,
+    // scaled by how much of the fragment the matte occupies. The aux carries the
+    // *amount* (DESIGN.md §6.1) with `a` in its own alpha, so an opaque matte
+    // still erases the relief beneath it.
     var out: FsOut;
-    out.color = vec4<f32>(in.channels.rgb * a, a);
+    let w = a * (1.0 - exp(-OPACITY_K * MATTE_THICKNESS));
+    out.color = vec4<f32>(in.channels.rgb * w, w);
     out.aux = vec4<f32>(MATTE_THICKNESS * a, 0.0, 0.0, a);
     return out;
 }

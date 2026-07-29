@@ -1,34 +1,28 @@
-//! A **known, unfixed** defect in how layers composite over one another
-//! (DESIGN.md §6.3, pass A). The test is `#[ignore]`d because it fails: it is here
-//! as a repro, not as a guard.
+//! How layers cover one another (DESIGN.md §6.3, pass A).
 //!
-//! **The claim it makes.** A layer should affect what is beneath it only as much as
-//! it is visible at all. It sounds too obvious to test, and it is false today.
+//! **The claim.** A layer affects what is beneath it only as much as it is visible
+//! at all. It sounds too obvious to test, and it used to be false: pass A weighed a
+//! layer's "over" by its per-unit **opacity** alone, so a film with opacity 1 and no
+//! thickness — which the media pass draws as nothing over bare canvas — replaced the
+//! colour outright over another layer's paint. Every soft brush deposits exactly that
+//! state across its fringe (`stamp_oklab.wesl` saturates opacity as `1 − exp(−op·τ)`
+//! while height stays linear in `τ`), so the symptom was a ghost of the brush's whole
+//! footprint painted over the layer below.
 //!
-//! **Why.** A tile stores paint as a per-unit *opacity* plus an *amount* (§6.1), and
-//! neither alone says how much of a fragment is paint — the media pass rightly
-//! combines them as a translucent slab, `1 − exp(−K · opacity · amount)`. But pass A
-//! composites layers with premultiplied "over" weighted by the per-unit **opacity
-//! alone**, so a film with opacity 1 and no thickness — which the media pass draws as
-//! nothing over bare canvas — replaces the colour outright over another layer's
-//! paint.
+//! **The law now.** Pass A weighs each layer by its own visible alpha — the slab law
+//! `1 − exp(−K·opacity·height)` that `paint_common.wesl` already uses to stack
+//! parcels *within* a layer — and the media pass reads the accumulated coverage
+//! instead of re-deriving it (`composite.wesl`, `media_common.wesl`). For a single
+//! layer that is algebraically the identity.
 //!
-//! That state is not exotic. A soft tip deposits opacity as `1 − exp(−op·τ)` and
-//! height linearly in `τ` (`stamp_oklab.wesl`), so the opacity saturates long before
-//! the height does and every soft brush has a wide fringe of exactly it. The symptom
-//! is a ghost of the brush's whole footprint painted over the layer below, visible
-//! only where there is something to paint it onto.
-//!
-//! **The fix, and why it is not here.** Pass A should weigh each layer by its own
-//! visible alpha — the same slab law `paint_common.wesl` already uses to stack
-//! parcels *within* a layer — and the media pass should then read the accumulated
-//! coverage instead of re-deriving it. That was written and it does fix this test and
-//! the reported artifact, and for a single layer it is algebraically the identity. It
-//! also, unexplained, moves the **smear** path: `golden_smudge_drag`,
-//! `golden_self_smear`, `golden_selection_smear` and — the part that matters, because
-//! it is an invariant rather than a golden — `a_smear_stroke_previews_as_it_commits`.
-//! A preview that no longer matches its own commit is a worse defect than this one,
-//! so the change is not landed until that interaction is understood.
+//! **The smear interaction that stalled the first attempt**, for the record: the
+//! dynamics loop composites base tiles into its working region with the *same*
+//! `composite` shader, and that region must keep the tile representation itself —
+//! per-unit opacity in alpha — because the pickup reads it and the slice writes it
+//! back to persistent tiles. Applying the slab law there stored *coverage* as
+//! opacity, corrupting smeared paint differently on each side of a piece or freeze
+//! cut, which is why the preview stopped matching the commit. The screen path and
+//! the region path are now separate entry points (`fs_main` / `fs_raw`).
 
 mod common;
 
@@ -74,9 +68,9 @@ fn max_diff(a: [u8; 4], b: [u8; 4]) -> u32 {
 /// it did). Every texel where the second is indistinguishable from the first is a
 /// texel where the fourth must be indistinguishable from the third.
 ///
-/// Currently reports a shift of ~30 levels across the fringe.
+/// Before the coverage weighting this reported a shift of ~30 levels across the
+/// fringe.
 #[test]
-#[ignore = "known defect: pass A composites layers by per-unit opacity, not coverage"]
 fn an_invisible_layer_does_not_repaint_the_one_below() {
     let Some(mut bare) = engine_or_skip() else {
         return;

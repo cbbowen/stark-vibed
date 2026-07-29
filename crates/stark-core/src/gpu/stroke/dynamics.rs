@@ -1213,7 +1213,11 @@ pub(super) fn build_dynamics_kit(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: &composite_shader,
-            entry_point: Some("fs_main"),
+            // `fs_raw`, NOT the screen path's `fs_main`: the loop's region must
+            // hold the tile representation itself (opacity in alpha), not the
+            // coverage-weighted channels pass A shows — the pickup reads this
+            // region and the slice writes it back to persistent tiles.
+            entry_point: Some("fs_raw"),
             compilation_options: Default::default(),
             targets: &[
                 Some(wgpu::ColorTargetState {

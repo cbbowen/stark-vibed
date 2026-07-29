@@ -170,9 +170,10 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
 //
 // `cb` / `cs` are the two premultiplied samples and `cr` is the *un-premultiplied*
 // blended colour the caller derived. This is W3C compositing's source-over with a
-// blend function, in the app's own channel semantics: alpha here is the paint's
-// per-unit **opacity** (DESIGN.md §6.1), which is exactly the weight `Normal` gives
-// a layer, so a mode that changes only the colour changes only the colour.
+// blend function, in the app's own channel semantics: alpha here is the layer's
+// **coverage** — its slab visible alpha, accumulated by pass A (composite.wesl) —
+// which is exactly the weight `Normal` gives a layer, so a mode that changes only
+// the colour changes only the colour.
 //
 // The aux is summed unconditionally, mode or no mode. Aux is *amount of paint*, and
 // paint stacks whatever its colour does — height conservation is an invariant of the

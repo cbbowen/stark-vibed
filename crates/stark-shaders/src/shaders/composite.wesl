@@ -2,6 +2,26 @@
 // viewport-sized offscreen targets. Color composites with premultiplied "over",
 // the aux (paint height) accumulates additively. The media pass then lights the
 // result. Vertex setup matches the present pass: one instanced quad per tile.
+//
+// Two fragment entry points, one law each:
+//
+//   · `fs_main` — the screen path. A layer's "over" weight is its **visible
+//     alpha**: per-unit opacity and thickness combined by the translucent-slab law
+//     `1 − exp(−K·opacity·height)` — the same law `paint_common.wesl` uses to
+//     stack parcels *within* a layer, so a parcel covers the layer below exactly
+//     as much as it covers resident paint. The accumulated alpha is then the
+//     stack's coverage and the media pass reads it directly. (Weighting by
+//     opacity alone let a film with opacity 1 and no thickness — every soft
+//     brush's fringe — replace the colour beneath while drawing as nothing over
+//     bare canvas.)
+//
+//   · `fs_raw` — the passthrough. The dynamics loop composites base tiles into
+//     its working region with this same module, and that region must keep the
+//     tile representation itself (per-unit opacity in alpha, DESIGN.md §6.1):
+//     the exchange loop's pickup reads it and the slice writes it back to
+//     persistent tiles. Running the slab law here would store *coverage* as
+//     opacity — corrupting every smeared texel, differently on each side of a
+//     piece or freeze cut, which is how the preview stops matching the commit.
 
 struct View {
     st: vec4<f32>,   // scale.xy, translate.xy  (canvas px -> NDC)
@@ -47,10 +67,29 @@ fn vs_main(
     return out;
 }
 
+// Opacity build-up rate; must match `paint_common.wesl` / `media_common.wesl`.
+const OPACITY_K: f32 = 1.0;
+const EPS: f32 = 1e-5;
+
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
-    // Scaling premultiplied color (and additive aux) by layer opacity yields a
-    // correct Normal-blend "layer at opacity% over below".
+    let c = textureSample(tile_color, samp, in.uv);
+    let h = textureSample(tile_aux, samp, in.uv);
+    // The layer's visible alpha, scaled by layer opacity: coverage fades
+    // linearly with the layer slider, and the latent colour is untouched.
+    let w = (1.0 - exp(-OPACITY_K * c.a * h.x)) * in.opacity;
+    var out: FsOut;
+    // Re-premultiplied by coverage, so the fixed-function "over" both weighs the
+    // colour and accumulates the stack's total coverage in alpha.
+    out.color = vec4<f32>(c.rgb / max(c.a, EPS) * w, w);
+    out.aux = h * in.opacity;
+    return out;
+}
+
+@fragment
+fn fs_raw(in: VsOut) -> FsOut {
+    // Straight passthrough of the tile representation (× layer opacity), for the
+    // dynamics region composite — see the header.
     var out: FsOut;
     out.color = textureSample(tile_color, samp, in.uv) * in.opacity;
     out.aux = textureSample(tile_aux, samp, in.uv) * in.opacity;

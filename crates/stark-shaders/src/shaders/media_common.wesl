@@ -29,11 +29,13 @@ struct Media {
 
 const PI: f32 = 3.14159265359;
 
-// Opacity build-up rate (DESIGN.md §6.1, normalized representation). A paint texel
-// stores a per-unit *opacity* (color.a) and a *thickness* (aux.x); its visible alpha
-// is the translucent-slab law `1 − exp(−OPACITY_K · opacity · thickness)`. Calibrated
-// so a normal opaque stroke reads solid.
+// Opacity build-up rate (DESIGN.md §6.1, normalized representation): the slab law
+// `1 − exp(−OPACITY_K · opacity · thickness)`. Pass A applies it per layer
+// (composite.wesl), so the composited colour's alpha arrives here already as the
+// stack's accumulated coverage; the constant remains only for the weave-sink
+// correction below. Calibrated so a normal opaque stroke reads solid.
 const OPACITY_K: f32 = 1.0;
+const EPS: f32 = 1e-5;
 
 // Fullscreen triangle clip position from a vertex index.
 fn fullscreen_clip(vi: u32) -> vec4<f32> {
@@ -54,16 +56,33 @@ fn paint_height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
     return textureLoad(comp_aux, c, 0).x;
 }
 
-// The paint's visible alpha at `p`: its per-unit opacity (color.a) combined with its
-// thickness (aux.x) as a translucent slab. 0 on bare canvas, → 1 for thick opaque
-// paint. This is the single source of "how much paint shows", replacing the old
-// coverage × thickness-opacity double-gate (DESIGN.md §6.1).
+// The paint's visible alpha at `p`. Pass A weighs each layer by its own slab
+// visible alpha (composite.wesl), so the accumulated colour alpha *is* the stack's
+// coverage — read, not re-derived; re-deriving it from the stack totals is what
+// let one layer cover by its opacity alone (the §6.3 defect). 0 on bare canvas,
+// → 1 for thick opaque paint.
+//
+// What is still applied here is the weave sink: paint below the canvas surface
+// height doesn't show, so the coverage of the mass that filled the weave is
+// discounted by the height fraction that clears it. `1 − (1−w)^(t/h)` — for a
+// single layer this is exactly `1 − exp(−K·op·t)`, the pre-coverage law, because
+// the slab is multiplicative in mass; for a stack it charges the sink to the
+// bottom of the pile, which is where the paint that filled the weave is.
 fn paint_vis_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
     let c = clamp(p, vec2<i32>(0), dim - vec2<i32>(1));
-    let op = textureLoad(comp_color, c, 0).a;
-    // Paint thickness is paint height - surface height.
-    let t = max(textureLoad(comp_aux, c, 0).x - surface_at(p), 0);
-    return 1.0 - exp(-OPACITY_K * op * t);
+    let w = textureLoad(comp_color, c, 0).a;
+    let h = textureLoad(comp_aux, c, 0).x;
+    let t = max(h - surface_at(p), 0.0);
+    // Both guards return the limit the power law approaches; the second also
+    // dodges `pow(0, 0)` (opaque paint entirely below the surface), which WGSL
+    // leaves undefined.
+    if h <= EPS {
+        return 0.0;
+    }
+    if t <= 0.0 {
+        return 0.0;
+    }
+    return 1.0 - pow(max(1.0 - w, 0.0), t / h);
 }
 
 // The relief height for impasto normals: the canvas surface plus the paint's
