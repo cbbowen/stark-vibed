@@ -12,6 +12,9 @@ members = [
 exclude = [
     "vendor/mixbox",
     "vendor/iroh-webrtc-transport",
+    # Experimental second vendoring (anchalshivank's crate of the same name);
+    # standalone, not a dependency of anything yet. See its VENDORING.md.
+    "vendor/iroh-webrtc-transport2",
 ]
 # stark-ui is a wasm/web app (Dioxus web + WebGPU); keep it out of the native
 # default build/test so `cargo build`/`cargo test` stay host-only. Build it with
