@@ -392,6 +392,21 @@ impl history::Action for Action {
     // values, and tile allocation never fails — so applying an action is
     // genuinely infallible here (DESIGN.md §5).
     type Error = std::convert::Infallible;
+    /// An action commutes with everything its [`Footprint`] is disjoint from
+    /// (DESIGN.md §12.6) — which is what lets the history splice an undone
+    /// action out past a peer's unrelated work instead of replaying it.
+    ///
+    /// [`Footprint`]: super::footprint::Footprint
+    type Centralizer<'a> = super::footprint::Footprint;
+
+    /// Remove this action's effect by restoring what it wrote from
+    /// `previous_state` — the values under its footprint, nothing more, so the
+    /// edits of commuting actions applied after it survive. Tiles come back as
+    /// the same shared handles (copy-on-write means identity is equality), so
+    /// this re-renders nothing.
+    fn inverse(&self, previous_state: &DocState, state: &mut DocState) {
+        *state = super::patch::unapply(self, previous_state, state);
+    }
 
     fn apply(&self, state: DocState, ctx: &mut ApplyCtx) -> Result<DocState, Self::Error> {
         Ok(match &self.kind {

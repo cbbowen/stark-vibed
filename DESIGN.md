@@ -1588,11 +1588,10 @@ locally (or an `Undo` changes effectiveness mid-log), correctness requires the
 canvas reflect the reordered sequence. Because state derives from replay,
 `ReplicatedTimeline` diffs the new effective sequence against the materialized
 one, pops `history` back to the first divergence, and replays forward. The
-untouched prefix keeps its snapshots (and its tiles' `Arc`s) as-is; `history`'s
-dense snapshot retention (cheap, per §5) keeps the pops shallow. *Future
-optimization:* restrict the replay to the union of the reordered actions'
-tile footprints — v1 replays whole actions from the divergence point, which is
-correct and scales with how concurrent the editing actually is.
+untouched prefix keeps its snapshots (and their tiles' `Arc`s) as-is; `history`'s
+dense snapshot retention (cheap, per §5) keeps the pops shallow. For an undo
+the rewind rarely happens at all: when the undone action *commutes* with what
+sits above it, the history shifts it out instead of replaying — see §12.6.
 
 ### 12.3 Undo under collaboration
 
@@ -1608,6 +1607,17 @@ they return `None` (solo). The concrete rules:
   effective ordinary action, so a fresh edit clears the redo stack, matching
   solo expectations. Chains (Z Z Y Y) walk correctly because each redo
   suppresses exactly one undo.
+- **Redo-at-top:** a revived action re-materializes at the *reviving redo's*
+  slot — the top of the stack as of the redo — rather than its original
+  position (`revival_keys` in `timeline.rs`: the effective sequence orders by
+  id, except that a revived action takes its latest effective revival's id as
+  its key). Deliberately "good, not perfect": a redone stroke lands *over*
+  work that happened while it was undone rather than back underneath it — and
+  in exchange redo is a plain append for every client that is caught up,
+  instead of a mid-log insert replaying everything after the original slot.
+  Peers converge because the key is a pure function of the shared log; solo
+  sessions can't tell the difference (nothing sits above an undo when the redo
+  happens, or the redo stack would already be cleared).
 - A file saved mid-session carries the **full log**; a solo load replays the
   effective sequence (undone work flattens away), while a joining peer gets the
   full log so later redos still resolve.
@@ -1667,6 +1677,62 @@ loss (a lagged receiver warns; a re-join resnapshots), and offline-merge UX are 
 of scope for this first cut. None of them perturb the convergence model above; they
 layer on top of it. Presence used to be on this list and is now built
 ([PEER_DESIGN.md](PEER_DESIGN.md)); what that document defers in turn is its §13.
+
+### 12.6 Commutation fast paths — undo and late merges without replay
+
+§12.2's rewind is the honest fallback, but most concurrent edits don't actually
+interleave: your undo usually sits under a pile of *other people's* strokes on
+other layers or other parts of the canvas. When the changed action **commutes**
+with everything materialized after it, the reordered replay would recompute
+exactly the pixels already on screen — so the timeline doesn't run it.
+
+The mechanism lives in the `history` crate's `Action` trait, which stark
+implements in three pieces:
+
+- **Footprints** (`document/footprint.rs`). Every `ActionKind` declares the
+  resources its `apply` reads and writes: a layer's paint within a tile rect
+  (a stroke's padded control-point bbox — the B-spline stays in its hull; a
+  transform claims the whole layer), layer existence, one per-layer property,
+  the stack order (one coarse resource — concurrent reorders genuinely don't
+  commute), the author's selection, the surface, the background. Two actions
+  commute when no write overlaps the other's read or write set. This encodes
+  the intuitive cases structurally: strokes on different layers commute; same-
+  layer strokes commute when they share no tile (tile granularity is honest,
+  not lazy: removal swaps whole tile handles, so strokes sharing a tile
+  genuinely conflict even if their texels don't touch); a rename commutes with
+  everything but its own layer's rename/removal; a selection edit blocks only
+  its *own author's* later strokes. `Footprint` is the action's
+  **`Centralizer`**: the history builds it once per removal and asks it about
+  each later action. False conflicts only cost the fast path; a missed one
+  would silently diverge peers.
+- **`Action::inverse`** (`document/patch.rs`). Removes an action's effect from
+  a state by restoring what its footprint wrote from the state it was
+  originally applied to — the replaced tile *handles* (`Arc` bumps; tiles are
+  copy-on-write, so identity is change detection), the prior prop value, the
+  prior selection. Nothing is stored ahead of time and nothing re-renders: the
+  history hands `inverse` the true prior state when it needs one. The restore
+  is bounded to the footprint, and must be — the two states are not adjacent,
+  and the suffix's own work sits outside the footprint on the same layer.
+- **`History::try_remove_action_with`** (upstream `history`). Servicing an
+  undo, it shifts the target past the run of later actions it commutes with —
+  O(log n) cached-state fixes via `inverse`, no re-render at all when the whole
+  suffix commutes — and replays only what sits past the first conflict.
+  Degradation is graceful: a partially-commuting suffix replays its tail, a
+  fully-conflicting one replays like §12.2 always did.
+
+Inserts stay simple on purpose: a fresh commit, a caught-up remote arrival,
+and a redo (§12.3's redo-at-top) are all plain appends, and the rare
+concurrent arrival that lands mid-sequence takes §12.2's rewind — shallow by
+construction, because a concurrent action's Lamport slot is near the top of
+the stack.
+
+Convergence is untouched: disjoint footprints mean the shifted materialization
+computes bit-identical pixels to the canonical replay — provided every `apply`
+touches only what its footprint declares, which is now an invariant `action.rs`
+changes must maintain. `TimelineStats` (surfaced as `Engine::timeline_stats`)
+counts fast removes vs. rebuilds, because pixels *can't* show which path ran —
+`tests/commute.rs` asserts both the stats and exact pixel equality against a
+fresh peer's canonical materialization of the same log.
 
 ## 13. Suggested build order
 

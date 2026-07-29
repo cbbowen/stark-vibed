@@ -166,7 +166,13 @@ impl TransformRenderer {
         });
         let combine_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark transform combine bgl"),
-            entries: &[load_tex(2), load_tex(3), load_tex(4), load_tex(5), load_tex(6)],
+            entries: &[
+                load_tex(2),
+                load_tex(3),
+                load_tex(4),
+                load_tex(5),
+                load_tex(6),
+            ],
         });
 
         let quad_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

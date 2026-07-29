@@ -345,7 +345,10 @@ impl DocState {
     /// it would make `bounds` unbounded and break both "frame to content" and
     /// export's no-frame fallback (FRAME_DESIGN.md §6). `Layer::tiles` is empty
     /// for a matte, so this falls out rather than needing a branch.
-    fn with_layers(&self, layers: Vector<Layer>) -> Self {
+    ///
+    /// `pub(crate)` for the timeline's patch restore (DESIGN.md §12.6), which
+    /// splices layer records back into the stack.
+    pub(crate) fn with_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();
         for coord in layers
             .iter()

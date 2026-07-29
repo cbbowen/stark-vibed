@@ -106,7 +106,6 @@ fn shared_undo_skips_peer_actions() {
     let only_b = snap(&mut b);
 
     sync(&mut a, &mut b);
-    let both = snap(&mut a);
 
     // A undoes *its* stroke — B's later stroke must survive.
     a.process(DocCommand::Undo);
@@ -119,15 +118,27 @@ fn shared_undo_skips_peer_actions() {
         "undo of A's stroke should leave exactly B's stroke"
     );
 
-    // Redo brings A's stroke back on both peers.
+    // Redo brings A's stroke back on both peers — at the *top* of the stack
+    // (DESIGN.md §12.3), over B's stroke rather than back under it, so the
+    // crossing no longer matches the pre-undo image. What must hold: the peers
+    // agree, a late joiner materializing the log canonically agrees, and the
+    // redone stroke is genuinely back (the image changed from "only B").
     a.process(DocCommand::Redo);
     sync(&mut a, &mut b);
     let img_a = snap(&mut a);
     let img_b = snap(&mut b);
     assert!(images_match(&img_a, &img_b, 0), "peers diverged after redo");
     assert!(
-        images_match(&img_a, &both, 0),
-        "redo should restore both strokes"
+        !images_match(&img_a, &only_b, 0),
+        "redo should bring A's stroke back"
+    );
+    let Some(mut c) = engine_or_skip() else {
+        return;
+    };
+    c.join_collaboration(&a.document_file(), ActorId(3));
+    assert!(
+        images_match(&img_a, &snap(&mut c), 0),
+        "redo-at-top diverged from a late joiner's canonical materialization"
     );
 
     // A fresh edit clears the redo stack, like solo editing.

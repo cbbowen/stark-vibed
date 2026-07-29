@@ -14,7 +14,7 @@ use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, View
 use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
     DocState, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode,
-    StrokeRecord, Timeline, Tool, effective_actions,
+    StrokeRecord, Timeline, TimelineStats, Tool, effective_actions,
 };
 use crate::geom::{Extent2, TileCoord, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
@@ -1460,6 +1460,13 @@ impl Engine {
     /// Drain locally-committed actions awaiting broadcast (empty when solo).
     pub fn take_outbox(&mut self) -> Vec<Action> {
         std::mem::take(&mut self.outbox)
+    }
+
+    /// How the timeline has serviced materializations (DESIGN.md §12.6): the
+    /// commutation fast paths versus rewind-and-replay. Zeros when solo. For
+    /// tests and diagnostics — pixels can't tell the paths apart, by design.
+    pub fn timeline_stats(&self) -> TimelineStats {
+        self.timeline.stats()
     }
 
     // --- presence (PEER_DESIGN.md §4) -------------------------------------

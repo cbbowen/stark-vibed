@@ -12,11 +12,11 @@
 mod common;
 
 use common::*;
+use stark_core::RgbaImage;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::DocCommand;
 use stark_core::document::{LayerId, MatteRegion, SelectionMode, SelectionOp, SelectionShape};
 use stark_core::geom::{Affine2, Vec2};
-use stark_core::RgbaImage;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
@@ -108,7 +108,12 @@ fn identity_transform_is_a_noop() {
         return;
     };
     blob(&mut engine, Vec2::new(-30.0, 0.0));
-    select_rect(&mut engine, Vec2::new(-60.0, -40.0), Vec2::new(0.0, 40.0), 0.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-60.0, -40.0),
+        Vec2::new(0.0, 40.0),
+        0.0,
+    );
     let before = engine.render_to_image();
     transform(&mut engine, Affine2::IDENTITY);
     let after = engine.render_to_image();
@@ -151,7 +156,12 @@ fn identity_transform_is_a_noop_in_mixbox() {
         return;
     };
     blob(&mut engine, Vec2::new(-30.0, 0.0));
-    select_rect(&mut engine, Vec2::new(-60.0, -40.0), Vec2::new(0.0, 40.0), 4.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-60.0, -40.0),
+        Vec2::new(0.0, 40.0),
+        4.0,
+    );
     let before = engine.render_to_image();
     transform(&mut engine, Affine2::IDENTITY);
     let after = engine.render_to_image();
@@ -188,8 +198,8 @@ fn integer_translation_is_exact() {
             let ia = ((y * w + x) * 4) as usize;
             let ib = ((sy * w + sx) * 4) as usize;
             for c in 0..4 {
-                let d = (after.pixels[ia + c] as i32 - before.pixels[ib + c] as i32)
-                    .unsigned_abs() as u8;
+                let d = (after.pixels[ia + c] as i32 - before.pixels[ib + c] as i32).unsigned_abs()
+                    as u8;
                 worst = worst.max(d);
             }
         }
@@ -210,13 +220,19 @@ fn translate_there_and_back_is_identity() {
     };
     blob(&mut engine, Vec2::new(-30.0, 10.0));
     let before = engine.render_to_image();
-    transform(&mut engine, Affine2::from_translation(Vec2::new(300.0, 0.0)));
+    transform(
+        &mut engine,
+        Affine2::from_translation(Vec2::new(300.0, 0.0)),
+    );
     let away = engine.render_to_image();
     assert!(
         !is_painted(&away, Vec2::new(-30.0, 10.0)),
         "the painting should have left the viewport"
     );
-    transform(&mut engine, Affine2::from_translation(Vec2::new(-300.0, 0.0)));
+    transform(
+        &mut engine,
+        Affine2::from_translation(Vec2::new(-300.0, 0.0)),
+    );
     let back = engine.render_to_image();
     assert_identical(&before, &back, "translate there and back");
 }
@@ -234,8 +250,14 @@ fn flip_twice_is_identity() {
     let flip = Affine2::from_scale(Vec2::new(-1.0, 1.0));
     transform(&mut engine, flip);
     let flipped = engine.render_to_image();
-    assert!(is_painted(&flipped, Vec2::new(45.0, 5.0)), "flip moved the blob");
-    assert!(!is_painted(&flipped, Vec2::new(-45.0, 5.0)), "flip cleared the source");
+    assert!(
+        is_painted(&flipped, Vec2::new(45.0, 5.0)),
+        "flip moved the blob"
+    );
+    assert!(
+        !is_painted(&flipped, Vec2::new(-45.0, 5.0)),
+        "flip cleared the source"
+    );
     transform(&mut engine, flip);
     let back = engine.render_to_image();
     assert_identical(&before, &back, "flip twice");
@@ -249,11 +271,25 @@ fn transform_cuts_the_source_and_lands_at_the_destination() {
         return;
     };
     blob(&mut engine, Vec2::new(-50.0, 0.0));
-    select_rect(&mut engine, Vec2::new(-90.0, -40.0), Vec2::new(-10.0, 40.0), 0.0);
-    transform(&mut engine, Affine2::from_translation(Vec2::new(100.0, 0.0)));
+    select_rect(
+        &mut engine,
+        Vec2::new(-90.0, -40.0),
+        Vec2::new(-10.0, 40.0),
+        0.0,
+    );
+    transform(
+        &mut engine,
+        Affine2::from_translation(Vec2::new(100.0, 0.0)),
+    );
     let img = engine.render_to_image();
-    assert!(is_painted(&img, Vec2::new(50.0, 0.0)), "paint should arrive");
-    assert!(!is_painted(&img, Vec2::new(-50.0, 0.0)), "paint should leave");
+    assert!(
+        is_painted(&img, Vec2::new(50.0, 0.0)),
+        "paint should arrive"
+    );
+    assert!(
+        !is_painted(&img, Vec2::new(-50.0, 0.0)),
+        "paint should leave"
+    );
 }
 
 #[test]
@@ -269,8 +305,16 @@ fn moved_paint_stacks_over_what_it_lands_on() {
         &[Vec2::new(30.0, 0.0), Vec2::new(70.0, 0.0)],
     );
     blob(&mut engine, Vec2::new(-50.0, 0.0));
-    select_rect(&mut engine, Vec2::new(-90.0, -40.0), Vec2::new(-10.0, 40.0), 0.0);
-    transform(&mut engine, Affine2::from_translation(Vec2::new(100.0, 0.0)));
+    select_rect(
+        &mut engine,
+        Vec2::new(-90.0, -40.0),
+        Vec2::new(-10.0, 40.0),
+        0.0,
+    );
+    transform(
+        &mut engine,
+        Affine2::from_translation(Vec2::new(100.0, 0.0)),
+    );
     let img = engine.render_to_image();
     assert!(
         is_painted(&img, Vec2::new(50.0, 0.0)),
@@ -283,7 +327,12 @@ fn selection_follows_the_transform() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    select_rect(&mut engine, Vec2::new(-60.0, -40.0), Vec2::new(-20.0, 40.0), 0.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-60.0, -40.0),
+        Vec2::new(-20.0, 40.0),
+        0.0,
+    );
     transform(&mut engine, Affine2::from_translation(Vec2::new(80.0, 0.0)));
     assert!(
         engine.observe().has_selection,
@@ -378,9 +427,17 @@ fn undo_restores_the_untransformed_painting() {
         return;
     };
     blob(&mut engine, Vec2::new(-30.0, 0.0));
-    select_rect(&mut engine, Vec2::new(-70.0, -40.0), Vec2::new(10.0, 40.0), 6.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-70.0, -40.0),
+        Vec2::new(10.0, 40.0),
+        6.0,
+    );
     let before = engine.render_to_image();
-    transform(&mut engine, Affine2::from_translation(Vec2::new(90.0, 20.0)));
+    transform(
+        &mut engine,
+        Affine2::from_translation(Vec2::new(90.0, 20.0)),
+    );
     engine.process(DocCommand::Undo);
     let after = engine.render_to_image();
     assert_identical(&before, &after, "undo of a transform");
@@ -394,7 +451,12 @@ fn save_load_reproduces_a_transform() {
         return;
     };
     blob(&mut engine, Vec2::new(-40.0, -10.0));
-    select_rect(&mut engine, Vec2::new(-80.0, -50.0), Vec2::new(0.0, 30.0), 8.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-80.0, -50.0),
+        Vec2::new(0.0, 30.0),
+        8.0,
+    );
     let about = Vec2::new(-40.0, -10.0);
     let rot = Affine2::from_translation(about)
         * Affine2::from_angle(0.6)
@@ -423,7 +485,12 @@ fn preview_matches_the_commit() {
         return;
     };
     blob(&mut engine, Vec2::new(-40.0, -10.0));
-    select_rect(&mut engine, Vec2::new(-80.0, -50.0), Vec2::new(0.0, 30.0), 8.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-80.0, -50.0),
+        Vec2::new(0.0, 30.0),
+        8.0,
+    );
     let layer = engine.observe().active_layer;
     let affine = Affine2::from_translation(Vec2::new(57.0, 23.0));
 
@@ -447,7 +514,12 @@ fn selection_hull_follows_ops_and_transforms() {
         None,
         "the unrestricted selection has no hull"
     );
-    select_rect(&mut engine, Vec2::new(-60.0, -40.0), Vec2::new(-20.0, 40.0), 0.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-60.0, -40.0),
+        Vec2::new(-20.0, 40.0),
+        0.0,
+    );
     let (lo, hi) = engine.observe().selection_hull.expect("a rect has a hull");
     assert!(lo.x <= -60.0 && hi.x >= -20.0 && lo.y <= -40.0 && hi.y >= 40.0);
     assert!(lo.x > -70.0, "hull should be near the shape, got {lo:?}");
@@ -469,7 +541,12 @@ fn golden_rotate() {
         return;
     };
     blob(&mut engine, Vec2::new(-20.0, 0.0));
-    select_rect(&mut engine, Vec2::new(-60.0, -40.0), Vec2::new(20.0, 40.0), 3.0);
+    select_rect(
+        &mut engine,
+        Vec2::new(-60.0, -40.0),
+        Vec2::new(20.0, 40.0),
+        3.0,
+    );
     let about = Vec2::new(-20.0, 0.0);
     let rot = Affine2::from_translation(about)
         * Affine2::from_angle(std::f32::consts::FRAC_PI_6)

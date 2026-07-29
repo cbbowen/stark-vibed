@@ -7,11 +7,12 @@
 //! action log (a replicated-log CRDT) materialized through the very same
 //! `history::History` as a snapshot cache.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use history::{History, Version};
 
 use super::action::{Action, ActionId, ActionKind, ActorId, ApplyCtx};
+use super::footprint::footprint;
 use super::state::DocState;
 
 /// A versioned document: the source of the current [`DocState`] plus undo/redo.
@@ -56,6 +57,28 @@ pub trait Timeline {
     fn merge(&mut self, _action: Action, _ctx: &mut ApplyCtx) -> bool {
         false
     }
+
+    /// How materializations have been serviced (DESIGN.md §12.6). Solo timelines
+    /// report zeros — the counters exist for the replicated fast paths.
+    fn stats(&self) -> TimelineStats {
+        TimelineStats::default()
+    }
+}
+
+/// Counters for how the replicated timeline absorbed log changes (DESIGN.md
+/// §12.6) — the observable difference between the commutation fast path and a
+/// rewind-and-replay, which pixels alone can't show (that's the point).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TimelineStats {
+    /// Undos absorbed by shifting the target out through a fully-commuting
+    /// suffix — no replay, no re-render at all.
+    pub fast_removes: u64,
+    /// Changes that replayed something: a partially-commuting undo, a
+    /// concurrent arrival landing mid-sequence, a joining peer's whole log
+    /// (DESIGN.md §12.2).
+    pub rebuilds: u64,
+    /// Actions re-applied by those rebuilds — the work the fast path avoids.
+    pub replayed: u64,
 }
 
 /// Single-user timeline: a linear undo/redo stack over `history::History`.
@@ -149,11 +172,69 @@ fn undone_ids(log: &[Action]) -> HashSet<ActionId> {
     undone
 }
 
+/// The materialization key of every **revived** ordinary action in `log`
+/// (which must be sorted by id): the id of the latest effective redo (an
+/// `Undo` of an `Undo`) that revived it.
+///
+/// This is what implements *redo-at-top* (DESIGN.md §12.3): a redone action
+/// re-materializes at the redo's own slot — the top of the stack as of the
+/// redo — rather than its original position. For the redoing client that makes
+/// redo a plain append; peers converge because the key is a pure function of
+/// the shared log. The semantic trade is deliberate: a redone stroke lands
+/// *over* work that happened while it was undone, not under it.
+fn revival_keys(log: &[Action], undone: &HashSet<ActionId>) -> HashMap<ActionId, ActionId> {
+    let by_id = |id: ActionId| {
+        let pos = log.partition_point(|a| a.id < id);
+        log.get(pos).filter(|a| a.id == id)
+    };
+    let mut keys: HashMap<ActionId, ActionId> = HashMap::new();
+    for action in log {
+        // An effective redo: an `Undo` of an `Undo` of an ordinary action.
+        let Some(undo_id) = undo_target_of(action) else {
+            continue;
+        };
+        if undone.contains(&action.id) {
+            continue;
+        }
+        let Some(target_id) = by_id(undo_id).and_then(undo_target_of) else {
+            continue;
+        };
+        if by_id(target_id).is_none_or(|t| undo_target_of(t).is_some()) {
+            continue;
+        }
+        let key = keys.entry(target_id).or_insert(action.id);
+        *key = (*key).max(action.id);
+    }
+    keys
+}
+
+/// Indices of the effective actions of a **sorted** log, in materialization
+/// order: every ordinary action no effective `Undo` suppresses, ordered by its
+/// own id — or, once a redo has revived it, by the reviving redo's id
+/// ([`revival_keys`]).
+fn effective_indices(log: &[Action]) -> Vec<usize> {
+    let undone = undone_ids(log);
+    let keys = revival_keys(log, &undone);
+    let mut indices: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| undo_target_of(a).is_none() && !undone.contains(&a.id))
+        .map(|(i, _)| i)
+        .collect();
+    indices.sort_by_key(|&i| {
+        let id = log[i].id;
+        keys.get(&id).copied().unwrap_or(id)
+    });
+    indices
+}
+
 /// The **effective sequence** of a shared action log (DESIGN.md §12.3): the
 /// actions that actually shape the document — every non-`Undo` action that no
-/// effective `Undo` suppresses — in total order. This is what gets materialized
-/// (and what a solo load replays); the `Undo` actions themselves are resolved
-/// here and never reach [`history::Action::apply`].
+/// effective `Undo` suppresses — in materialization order (total order by id,
+/// except that a redone action sits at its reviving redo's slot, see
+/// [`revival_keys`]). This is what gets materialized (and what a solo load
+/// replays); the `Undo` actions themselves are resolved here and never reach
+/// [`history::Action::apply`].
 ///
 /// Sorts a copy of `log` by id first, so callers may pass a file's action list
 /// as-is (solo logs are already ordered; shared saves are written in total
@@ -161,10 +242,9 @@ fn undone_ids(log: &[Action]) -> HashSet<ActionId> {
 pub fn effective_actions(log: &[Action]) -> Vec<Action> {
     let mut sorted: Vec<Action> = log.to_vec();
     sorted.sort_by_key(|a| a.id);
-    let undone = undone_ids(&sorted);
-    sorted
+    effective_indices(&sorted)
         .into_iter()
-        .filter(|a| undo_target_of(a).is_none() && !undone.contains(&a.id))
+        .map(|i| sorted[i].clone())
         .collect()
 }
 
@@ -187,6 +267,7 @@ pub struct ReplicatedTimeline {
     /// Materialization of the effective sequence, in order (the initial empty
     /// document is `History`'s version 0, which pops never remove).
     history: History<Action>,
+    stats: TimelineStats,
 }
 
 impl ReplicatedTimeline {
@@ -203,6 +284,7 @@ impl ReplicatedTimeline {
             log: Vec::new(),
             ids: HashSet::new(),
             history: History::new(initial),
+            stats: TimelineStats::default(),
         };
         let mut log = log;
         log.sort_by_key(|a| a.id);
@@ -229,31 +311,86 @@ impl ReplicatedTimeline {
         true
     }
 
-    /// Make `history` match the current effective sequence: find the first
-    /// index where they diverge, pop back to it, replay forward. Untouched
-    /// prefixes keep their snapshots (and their tiles' `Arc`s) as-is.
+    /// Make `history` match the current effective sequence.
+    ///
+    /// The change is almost always a single action entering or leaving the
+    /// sequence (one call per log insert), so this classifies it (DESIGN.md
+    /// §12.6):
+    ///
+    /// - an action **removed** (an undo landed) is handed to the history's
+    ///   `remove_action_with`, which shifts it past everything it commutes with
+    ///   (via [`Footprint`], its `Centralizer`) using [`Action`]'s `inverse` —
+    ///   no re-render at all when the whole suffix commutes, and a replay only
+    ///   of what sits past the first conflict otherwise;
+    /// - an action **appended** (a fresh local commit, a causally-newest remote
+    ///   arrival, or a redo — which materializes at the *top* of the stack,
+    ///   §12.3) is just pushed;
+    /// - anything else — a concurrent arrival landing mid-sequence, a joining
+    ///   peer's whole log — rewinds to the first divergence and replays forward
+    ///   (DESIGN.md §12.2). Cheap in practice: a concurrent arrival sits near
+    ///   the top of the stack by construction, so the rewind is shallow.
+    ///
+    /// Untouched prefixes keep their snapshots (and their tiles' `Arc`s) as-is
+    /// in every case. Convergence is untouched by the fast paths: disjoint
+    /// footprints mean the shifted materialization computes the *same pixels*
+    /// the canonical replay would, because every `apply` reads only what its
+    /// footprint declares — so peers still agree state-for-state however each
+    /// one got there.
+    ///
+    /// [`Footprint`]: super::footprint::Footprint
     fn resync(&mut self, ctx: &mut ApplyCtx) {
-        let undone = undone_ids(&self.log);
-        let effective: Vec<&Action> = self
-            .log
-            .iter()
-            .filter(|a| undo_target_of(a).is_none() && !undone.contains(&a.id))
-            .collect();
-
-        let diverge = self
-            .history
-            .actions()
-            .zip(effective.iter())
-            .take_while(|(h, e)| h.id == e.id)
+        // Indices into `log`, not borrows, so the arms below can take `&mut
+        // self` and clone only what they materialize.
+        let eff = effective_indices(&self.log);
+        let mat: Vec<ActionId> = self.history.actions().map(|a| a.id).collect();
+        let diverge = (0..mat.len().min(eff.len()))
+            .take_while(|&i| mat[i] == self.log[eff[i]].id)
             .count();
 
-        let mut materialized = self.history.actions().count();
+        // The history is a prefix of the sequence (usually an exact one, or one
+        // fresh action short): append what's missing.
+        if diverge == mat.len() {
+            for &i in &eff[diverge..] {
+                let action = self.log[i].clone();
+                self.history.push_action_with(action, ctx);
+            }
+            return;
+        }
+
+        // Exactly one materialized action left the sequence (an undo landed):
+        // let the history shift it out through the commuting run after it.
+        if eff.len() + 1 == mat.len()
+            && (diverge..eff.len()).all(|i| self.log[eff[i]].id == mat[i + 1])
+        {
+            // The history doesn't report which path it took, and pixels can't
+            // show it (that's the point) — so re-derive it for the stats.
+            let commuting = {
+                let mut suffix = self.history.actions().skip(diverge);
+                let fp = footprint(suffix.next().expect("diverge < mat.len()"));
+                suffix.take_while(|a| !fp.conflicts(&footprint(a))).count()
+            };
+            let suffix = mat.len() - diverge - 1;
+            if commuting == suffix {
+                self.stats.fast_removes += 1;
+            } else {
+                self.stats.rebuilds += 1;
+                self.stats.replayed += (suffix - commuting) as u64;
+            }
+            self.history.remove_action_with(diverge, ctx);
+            return;
+        }
+
+        // Rewind to the first divergence and replay forward (DESIGN.md §12.2).
+        self.stats.rebuilds += 1;
+        let mut materialized = mat.len();
         while materialized > diverge {
             self.history.pop_action_with(ctx);
             materialized -= 1;
         }
-        for action in &effective[diverge..] {
-            self.history.push_action_with((*action).clone(), ctx);
+        for &i in &eff[diverge..] {
+            let action = self.log[i].clone();
+            self.stats.replayed += 1;
+            self.history.push_action_with(action, ctx);
         }
     }
 
@@ -354,5 +491,9 @@ impl Timeline for ReplicatedTimeline {
 
     fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
         self.insert(action, ctx)
+    }
+
+    fn stats(&self) -> TimelineStats {
+        self.stats
     }
 }

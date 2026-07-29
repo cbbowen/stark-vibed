@@ -229,7 +229,13 @@ pub fn TransformOverlay() -> Element {
             }
             DragKind::Rotate { bearing, angle } => {
                 let turned = angle + bearing_about_centre(page_xy(e)) - bearing;
-                update(state, TransformState { angle: turned, ..ts });
+                update(
+                    state,
+                    TransformState {
+                        angle: turned,
+                        ..ts
+                    },
+                );
             }
         }
     };

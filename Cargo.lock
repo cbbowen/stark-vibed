@@ -2627,7 +2627,7 @@ dependencies = [
 [[package]]
 name = "history"
 version = "0.3.0"
-source = "git+https://github.com/cbbowen/history#59937cb96dea20b4d0194e75f07ffedf7fb2ff73"
+source = "git+https://github.com/cbbowen/history#67ae8bc07f03110ce59eedabb18e0d5a32b6aa12"
 dependencies = [
  "thiserror 2.0.18",
 ]

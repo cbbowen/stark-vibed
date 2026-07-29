@@ -233,12 +233,7 @@ fn quad_intersects_rect(quad: &[Vec2; 4], min: Vec2, max: Vec2) -> bool {
     for edge in [quad[1] - quad[0], quad[2] - quad[0]] {
         let n = Vec2::new(-edge.y, edge.x);
         let (qmin, qmax) = project(quad.iter().copied(), n);
-        let rect = [
-            min,
-            Vec2::new(max.x, min.y),
-            Vec2::new(min.x, max.y),
-            max,
-        ];
+        let rect = [min, Vec2::new(max.x, min.y), Vec2::new(min.x, max.y), max];
         let (rmin, rmax) = project(rect.into_iter(), n);
         if qmax < rmin || qmin > rmax {
             return false;

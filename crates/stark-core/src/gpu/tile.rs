@@ -133,6 +133,14 @@ impl TilePairHandle {
     pub fn aux_view(&self) -> &wgpu::TextureView {
         self.0.aux.view()
     }
+
+    /// Whether two handles are the same allocation. A tile's texels are never
+    /// rewritten once a commit lands — copy-on-write hands out a fresh tile
+    /// instead (DESIGN.md §5.2) — so identity doubles as "unchanged", which is
+    /// what the timeline's patch capture diffs by (§12.6).
+    pub fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// A handle to one pooled **selection mask** tile (DESIGN.md §6.8). Cloning is an
