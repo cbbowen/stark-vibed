@@ -38,6 +38,26 @@ does not need — stark signals over iroh QUIC streams). `browser-iroh/`,
 binary-only deps (nym-sdk, nym-noise-keys, axum, tower-http, tracing-subscriber)
 were dropped with them.
 
+## Local additions
+
+**`src/web_peer.rs` (2026-07-29, NOT upstream): the wasm implementation of the
+custom transport.** Upstream's browser story stops at signaling — its demo
+keeps the data channel in JavaScript and never bridges it into iroh. This
+module is the browser twin of `str0m_peer.rs`: the browser's own
+`RTCPeerConnection` + data channel (web-sys), negotiated with the same
+two-message `SignalEnvelope` offer/answer over any `Signaling` impl (ICE rides
+inside the SDP: the browser waits for gathering to complete — "vanilla ICE" —
+which interoperates with str0m's candidate-in-SDP on native), then attached to
+the same `WebRtcTunnel` via a wasm `WebRtcTransport::attach_data_channel`
+(inbound: `onmessage` → bounded queue → `poll_recv`, drops when full — QUIC
+handles loss; outbound: `spawn_local` pump with `bufferedamountlow`
+backpressure at 1 MiB/256 KiB water marks; the pump owns the
+`RtcPeerConnection` so it is not GC'd). Event-handling patterns follow the
+browser-verified code in `vendor/iroh-webrtc-transport`. `Signaling` and its
+impls are `#[async_trait(?Send)]` on wasm (single-threaded; iroh's wasm stream
+types are not `Send`). Compile-checked for `wasm32-unknown-unknown`; NOT yet
+run in a browser.
+
 ## Local changes (delta from upstream)
 
 1. **iroh 0.97 → 1.0** (same delta as the sibling crate's port, recorded in its
@@ -106,8 +126,7 @@ fallback (dead custom addr) is unaffected.
 - Native negotiation gathers **host ICE candidates only** (no STUN/TURN), so
   cross-NAT native↔native won't punch. Irrelevant for stark: native iroh
   already hole-punches; WebRTC is for browsers, where the browser does ICE.
-- No wasm/browser implementation of the custom transport yet. That would be
-  the real prize (one wasm endpoint, gossip/blobs/docs work in the browser)
-  and would mean writing a `web-sys` `RtcPeerConnection`-backed twin of
-  `str0m_peer.rs` + the UDP-socket-free bridge — plus confirming iroh's wasm
-  build accepts custom transports at all.
+- ~~No wasm/browser implementation of the custom transport yet.~~ RESOLVED by
+  `src/web_peer.rs` (see Local additions) — though real-browser verification
+  is still pending. That iroh's wasm build accepts custom transports is
+  already proven in production by the sibling crate's facade.

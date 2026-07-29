@@ -5,8 +5,11 @@ use iroh::endpoint::transports::{CustomEndpoint, CustomTransport};
 use iroh_base::CustomAddr;
 use n0_watcher::Watchable;
 
-use crate::bridge::{AttachOptions, WebRtcTunnel};
+use crate::bridge::WebRtcTunnel;
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use crate::bridge::AttachOptions;
 use crate::endpoint::WebRtcEndpoint;
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use crate::str0m_peer::Str0mPeer;
 
 pub use crate::bridge::WEBRTC_TRANSPORT_ID;
@@ -43,6 +46,10 @@ impl WebRtcTransport {
     ///
     /// Call from an async context (Tokio runtime). `remote_custom_addr` must match the peer's advertised
     /// [`CustomAddr`] data (same bytes they passed to [`WebRtcTransport::new`]).
+    ///
+    /// The wasm counterpart (same name, [`crate::WebRtcPeer`] argument) is
+    /// defined in `web_peer.rs`.
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     pub fn attach_data_channel(
         &self,
         peer: Str0mPeer,

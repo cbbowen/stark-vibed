@@ -42,7 +42,11 @@ impl QuicSignaling {
     }
 }
 
-#[async_trait]
+#[cfg_attr(
+    not(all(target_family = "wasm", target_os = "unknown")),
+    async_trait
+)]
+#[cfg_attr(all(target_family = "wasm", target_os = "unknown"), async_trait(?Send))]
 impl Signaling for QuicSignaling {
     async fn send_envelope(&mut self, env: &SignalEnvelope) -> anyhow::Result<()> {
         let mut line = serde_json::to_string(env).context("serialize signaling")?;
