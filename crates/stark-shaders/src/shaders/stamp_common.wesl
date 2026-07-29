@@ -99,9 +99,7 @@ fn sweep_vertex(
 // carries the same colour variation wherever it is drawn. Both coordinates are
 // still functions of the fragment's canvas position and the segment, so the
 // deposit remains a pure function of the two and tile aprons stay bit-consistent
-// (§6.4). The arc is clamped to the segment body, which makes it *continuous*
-// across the overlapping quads of consecutive segments (a trailing margin's arc
-// equals the next segment's start).
+// (§6.4).
 fn brush_color(in: VsOut) -> vec3<f32> {
     if all(xf.noise_amp.xyz == vec3<f32>(0.0, 0.0, 0.0)) {
         return xf.color.xyz;
@@ -110,7 +108,7 @@ fn brush_color(in: VsOut) -> vec3<f32> {
     // Brush-local y is in radius units; the noise domain is px on both axes, so
     // the pattern keeps one scale whatever size the tip is.
     let lateral = in.local.y * radius;
-    let arc = in.sinfo.x + clamp(in.local.x, 0.0, in.lr) * radius;
+    let arc = in.sinfo.x + in.local.x * radius;
     let jitter = color_jitter(
         noise_tex, noise_samp, vec2<f32>(lateral, arc),
         xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xy,

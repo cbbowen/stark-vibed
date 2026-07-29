@@ -533,12 +533,11 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The brush's own colour at this texel: the stroke colour offset by the
     // colour-dynamics field, sampled at the same stroke-local (lateral, arc)
     // domain as the fast path — both in canvas px (the travel frame's y is in
-    // radius units, so it scales by the radius), the arc clamped to the segment
-    // body so it stays continuous across overlapping quads.
+    // radius units, so it scales by the radius).
     var own_lat = st.c.xyz;
     if any(st.g.xyz != vec3<f32>(0.0, 0.0, 0.0)) {
         let lateral = yl * st.b.x;
-        let arc = st.g.w + clamp(xl, 0.0, st.b.y) * st.b.x;
+        let arc = st.g.w + xl * st.b.x;
         own_lat += color_jitter(
             dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
             st.f, st.g.xyz, st.h.xy,
