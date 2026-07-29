@@ -56,19 +56,6 @@ pub fn get() -> ClientIdentity {
     RESOLVED.with(|slot| slot.borrow_mut().get_or_insert_with(resolve).clone())
 }
 
-/// Discard the stored identity, so the next run is a different author.
-///
-/// Deliberately does *not* change the identity of the running process: the actor id
-/// is already written into actions in the shared log, and rewriting who authored them
-/// mid-session is exactly the kind of thing the log's append-only discipline exists to
-/// prevent. Takes effect on reload.
-pub fn reset() {
-    if let Some(store) = storage() {
-        let _ = store.remove_item(KEY_SECRET);
-        let _ = store.remove_item(KEY_BOOT);
-    }
-}
-
 fn resolve() -> ClientIdentity {
     let Some(store) = storage() else {
         // No storage to be durable in. A fresh key per run is the old behaviour, and

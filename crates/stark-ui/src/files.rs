@@ -162,7 +162,7 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
                     }
                 }
 
-                if let Some(message) = plan_error.clone().or_else(|| error()) {
+                if let Some(message) = plan_error.clone().or_else(|| error.cloned()) {
                     div { class: "export-error", "{message}" }
                 }
 

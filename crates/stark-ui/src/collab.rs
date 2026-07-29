@@ -333,7 +333,7 @@ fn start_presence_pump(state: AppState) {
                 // moves no cursor. On the first tick too, so the dialog isn't
                 // blank for the poll interval after sharing starts. Write only
                 // on change: the signal re-renders the session dialog.
-                if ticks % LINK_POLL_TICKS == 0 {
+                if ticks.is_multiple_of(LINK_POLL_TICKS) {
                     let links = tx.links().await;
                     let mut links_sig = state.collab.links;
                     if *links_sig.peek() != links {

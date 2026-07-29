@@ -145,6 +145,12 @@ pub fn LayerRow(info: LayerInfo) -> Element {
         (false, false) => "layer-row",
     };
 
+    let title = if matte {
+        "Compose this frame — double-click to rename"
+    } else {
+        "Paint on this layer — double-click to rename"
+    };
+
     // A row is now one line — visibility, then the name that selects it. The
     // per-layer opacity slider moved to the panel's single set of controls for
     // whatever is selected, so the inner flex wrapper it needed is gone too.
@@ -210,11 +216,7 @@ pub fn LayerRow(info: LayerInfo) -> Element {
             } else {
                 button {
                     class: if matte { "layer-name layer-name-matte" } else { "layer-name" },
-                    title: if matte {
-                        "Compose this frame — double-click to rename"
-                    } else {
-                        "Paint on this layer — double-click to rename"
-                    },
+                    title,
                     onclick: move |_| dispatch(state, PeerCommand::SetActiveLayer(id)),
                     ondoubleclick: move |_| draft.set(Some(seed.clone())),
                     "{label}"
