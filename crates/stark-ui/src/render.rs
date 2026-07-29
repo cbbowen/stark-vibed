@@ -271,8 +271,9 @@ impl Renderer {
     }
 
     /// Drain this client's presence latch, and expire peers gone quiet
-    /// (PEER_DESIGN.md §5.1). `None` when there is nothing new to say.
-    pub fn take_presence(&mut self, now: f64) -> Option<stark_core::PeerFrame> {
+    /// (PEER_DESIGN.md §5.1). The frame is `None` when there is nothing new to
+    /// say; `repaint` reports that the expiry took paint off the canvas.
+    pub fn take_presence(&mut self, now: f64) -> stark_core::PresenceTick {
         self.engine.take_presence(now)
     }
 
@@ -285,12 +286,15 @@ impl Renderer {
     ///
     /// Narrower than "anything changed": a moved cursor or a switched layer is
     /// chrome, picked up from [`peers_revision`](Self::peers_revision) instead.
+    /// `now` dates the frame for expiry — the caller's clock, because the engine's
+    /// own only advances when the presence pump has something to drain.
     pub fn merge_presence(
         &mut self,
         actor: stark_core::document::ActorId,
         frame: stark_core::PeerFrame,
+        now: f64,
     ) -> bool {
-        self.engine.merge_presence(actor, frame)
+        self.engine.merge_presence(actor, frame, now)
     }
 
     /// Everyone else in the session, for the peer chrome (PEER_DESIGN.md §4).

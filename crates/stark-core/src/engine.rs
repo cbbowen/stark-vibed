@@ -312,6 +312,22 @@ struct FrozenHead {
     dirty: BTreeSet<TileCoord>,
 }
 
+/// What one presence-pump tick moved ([`Engine::take_presence`]).
+///
+/// The two halves reach different places: `frame` is owed to the wire, `repaint`
+/// to the compositor. They travel together because the pump is the engine's only
+/// clock, so the expiry that produces `repaint` can only run on its cadence.
+#[derive(Debug)]
+pub struct PresenceTick {
+    /// This client's presence, if anything a peer would care about has changed
+    /// since the last drain — `None` when solo or when nothing moved.
+    pub frame: Option<PeerFrame>,
+    /// Expiry took something off the canvas — a stalled gesture or a departed
+    /// peer — so a repaint is owed. Without it the last composite, stale stroke
+    /// and all, stays on screen until something else forces a paint.
+    pub repaint: bool,
+}
+
 pub struct Engine {
     gpu: GpuContext,
     target_format: wgpu::TextureFormat,
@@ -1526,16 +1542,21 @@ impl Engine {
     /// since this is called on the frontend's publish cadence — the only clock
     /// `stark-core` has, because it deliberately owns none.
     ///
-    /// Returns `None` when solo: presence with nobody to read it is pure cost.
-    pub fn take_presence(&mut self, now: f64) -> Option<PeerFrame> {
+    /// `frame` is `None` when solo: presence with nobody to read it is pure cost.
+    /// `repaint` reports whether the expiry changed the canvas — a stalled gesture
+    /// or a departed peer takes paint off it, and a caller that drops that bit
+    /// leaves the stale stroke on screen until something else forces a paint.
+    pub fn take_presence(&mut self, now: f64) -> PresenceTick {
         self.now = now.max(self.now);
-        if self.peers.tick(self.now).canvas {
+        let repaint = self.peers.tick(self.now).canvas;
+        if repaint {
             self.refresh_live();
         }
-        if !self.outbox_enabled {
-            return None;
-        }
-        self.session.publish(self.now)
+        let frame = self
+            .outbox_enabled
+            .then(|| self.session.publish(self.now))
+            .flatten();
+        PresenceTick { frame, repaint }
     }
 
     /// The farewell frame, so peers drop this client at once instead of waiting out
@@ -1556,11 +1577,17 @@ impl Engine {
     /// rate from every peer at once, so the difference between the two questions is
     /// the difference between a compositor pass per remote pointer move and none.
     ///
-    /// Dated by the engine's own clock rather than by a fresh sample from the caller:
-    /// a frame is timestamped with the same instant the expiry that will judge it
-    /// used ([`Self::now`]). The lag is one tick of the caller's cadence, against a
-    /// `PEER_TIMEOUT` of seconds.
-    pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame) -> bool {
+    /// Dated by `now`, the **caller's** clock — the same one it hands
+    /// [`take_presence`](Self::take_presence) — folded into [`Self::now`] so the
+    /// engine's clock stays monotonic. It used to be dated by `self.now` alone, on
+    /// the assumption the pump advanced it every tick; but the pump skips
+    /// `take_presence` on a tick with nothing to publish, so on a client that was
+    /// only *watching* the clock advanced per [`HEARTBEAT`](crate::peer::HEARTBEAT)
+    /// — and every frame merged in between aged a whole heartbeat at once when the
+    /// expiry finally ran, which took down live gestures whose frames were arriving
+    /// thirty times a second.
+    pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
+        self.now = now.max(self.now);
         let now = self.now;
         if actor == self.actor {
             // Our own frame, echoed back by a flood transport. The local session is

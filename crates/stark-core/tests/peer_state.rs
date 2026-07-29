@@ -340,8 +340,8 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
     let mut now = 0.0;
     let pump = |a: &mut Engine, b: &mut Engine, now: &mut f64| {
         *now += 0.05;
-        if let Some(frame) = a.take_presence(*now) {
-            b.merge_presence(ActorId(1), frame);
+        if let Some(frame) = a.take_presence(*now).frame {
+            b.merge_presence(ActorId(1), frame, *now);
         }
     };
     pump(&mut a, &mut b, &mut now);
@@ -367,6 +367,76 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
     assert!(
         images_match(&committed, &snap(&mut a), 0),
         "the commit must land the same pixels on both peers"
+    );
+}
+
+/// A receiver whose pump ticks *slowly* keeps showing a peer's stroke for its whole
+/// length. The pump skips [`Engine::take_presence`] on an idle tick, and a browser
+/// throttles the tick itself in a background tab — so the engine's own clock can
+/// stand still for seconds at a time while frames keep arriving. When merges were
+/// dated by that clock, every frame that arrived between pump ticks aged the whole
+/// gap at once when the expiry finally ran, which took down live gestures whose
+/// frames were arriving thirty times a second. Dating merges with the *caller's*
+/// clock is what this test pins down: the gap here is longer than
+/// `GESTURE_TIMEOUT`, so a stale stamp expires the gesture and an honest one does
+/// not.
+#[test]
+fn a_slow_receiver_pump_keeps_a_live_stroke_alive() {
+    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+    a.start_collaboration(ActorId(1));
+    b.join_collaboration(&a.document_file(), ActorId(2));
+
+    a.process(ViewCommand::SetBrush(common::brush(RED, 12.0)));
+    a.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(CROSSING[0]),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+
+    // One long stroke, drawn well past B's pump gap. Wavy, so the fitter keeps
+    // emitting control points — a straight line fits in two knots forever and
+    // could not show whether the reassembled path is still growing.
+    let mut now = 0.0;
+    let mut halfway_len = 0;
+    let steps = 240u32;
+    // B's pump runs this often — throttled past GESTURE_TIMEOUT, as a background
+    // tab's timers are. The incoming merges keep flowing regardless: they ride
+    // the event stream, not the tick.
+    let pump_every = 105u32; // × 0.033 s ≈ 3.5 s
+    b.take_presence(now);
+    for i in 1..=steps {
+        now += 0.033;
+        let t = i as f32 / steps as f32;
+        let along = CROSSING[0] + (CROSSING[1] - CROSSING[0]) * t;
+        a.process(GestureCommand::To {
+            sample: InputSample::at(along + Vec2::new(0.0, (t * 25.0).sin() * 15.0)),
+        });
+        if let Some(frame) = a.take_presence(now).frame {
+            b.merge_presence(ActorId(1), frame, now);
+        }
+        if i.is_multiple_of(pump_every) {
+            b.take_presence(now);
+        }
+        if i == steps / 2 {
+            halfway_len = b
+                .peers()
+                .next()
+                .and_then(|p| p.live_stroke())
+                .map_or(0, |s| s.path.len());
+        }
+    }
+    assert!(halfway_len > 0, "the preview was live at the halfway mark");
+    let peer = b.peers().next().expect("A is on the roster");
+    let shown = peer
+        .live_stroke()
+        .expect("the stroke must survive B's pump gap — its frames never stopped");
+    assert!(
+        shown.path.len() > halfway_len,
+        "the preview must keep growing past the pump gap \
+         ({halfway_len} control points then, {} now)",
+        shown.path.len()
     );
 }
 
@@ -401,20 +471,24 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
         }),
         leaving: false,
     };
-    assert!(engine.merge_presence(ActorId(2), frame));
+    assert!(engine.merge_presence(ActorId(2), frame, 0.0));
     assert!(
         is_painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
         "a peer's live stroke should be visible"
     );
 
-    // Silence: the gesture expires first, then the peer.
-    engine.take_presence(stark_core::peer::GESTURE_TIMEOUT + 0.1);
+    // Silence: the gesture expires first, then the peer — and each expiry owes a
+    // repaint, or the dead stroke stays on screen exactly as long as the bug it
+    // is being taken down to avoid.
+    let tick = engine.take_presence(stark_core::peer::GESTURE_TIMEOUT + 0.1);
+    assert!(tick.repaint, "expiring a gesture changes the canvas");
     assert_eq!(engine.peers().count(), 1, "still on the roster");
     assert!(
         !is_painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
         "a stalled gesture must stop being drawn"
     );
-    engine.take_presence(stark_core::peer::PEER_TIMEOUT + 0.1);
+    let tick = engine.take_presence(stark_core::peer::PEER_TIMEOUT + 0.1);
+    assert!(tick.repaint, "a departing peer changes the canvas");
     assert_eq!(engine.peers().count(), 0, "the peer left");
 }
 
@@ -447,6 +521,7 @@ fn peer_selection_outlines_are_opt_in() {
             gesture: None,
             leaving: false,
         },
+        0.0,
     );
 
     let hidden = snap(&mut a);
@@ -496,9 +571,9 @@ fn presence_due_never_hides_a_frame() {
     let step = |engine: &mut Engine, now: &mut f64, idle: &mut u32| {
         *now += 0.033;
         let due = engine.presence_due(*now);
-        let frame = engine.take_presence(*now);
+        let tick = engine.take_presence(*now);
         assert!(
-            due || frame.is_none(),
+            due || tick.frame.is_none(),
             "presence_due said no at t={now} but a frame was produced"
         );
         if !due {
@@ -538,7 +613,7 @@ fn presence_due_never_hides_a_frame() {
     now += stark_core::peer::HEARTBEAT;
     let due = engine.presence_due(now);
     assert!(due, "the heartbeat must come due");
-    assert!(engine.take_presence(now).is_some(), "heartbeat frame");
+    assert!(engine.take_presence(now).frame.is_some(), "heartbeat frame");
 
     assert!(
         idle_ticks > 20,
@@ -574,7 +649,7 @@ fn presence_never_reaches_the_save_file() {
         }),
         leaving: false,
     };
-    a.merge_presence(ActorId(2), frame);
+    a.merge_presence(ActorId(2), frame, 0.0);
     b.load_bytes(&a.save_bytes().expect("save")).expect("load");
 
     assert_eq!(

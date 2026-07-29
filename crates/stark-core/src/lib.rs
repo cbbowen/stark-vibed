@@ -63,7 +63,7 @@ pub use command::{InputCommand, InputSample};
 pub use document::{LayerId, Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use engine::{
     Background, Engine, ExportPlan, ExportScale, LayerInfo, MatteInfo, ObservableState,
-    PickOptions, PickSource,
+    PickOptions, PickSource, PresenceTick,
 };
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};

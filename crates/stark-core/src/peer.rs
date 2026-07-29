@@ -45,8 +45,12 @@ pub const HEARTBEAT: f64 = 2.0;
 
 /// How long a live gesture survives without an update before it is dropped
 /// (seconds). Shorter than [`PEER_TIMEOUT`]: a peer that crashes mid-stroke should
-/// stop smearing paint well before it leaves the roster.
-pub const GESTURE_TIMEOUT: f64 = 2.0;
+/// stop smearing paint well before it leaves the roster. Strictly *longer* than
+/// [`HEARTBEAT`]: the expiry clock advances at least per heartbeat but no faster
+/// than the pump bothers to tick it, so a timeout inside that window sat on a
+/// knife edge — equal to it, every live stroke on an idle receiver died at the
+/// first heartbeat boundary.
+pub const GESTURE_TIMEOUT: f64 = HEARTBEAT + 1.0;
 
 /// How often the sender re-sends a gesture's invariant head and its whole path
 /// (seconds), repairing any receiver that missed a delta and priming any client

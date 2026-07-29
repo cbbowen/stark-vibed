@@ -267,7 +267,13 @@ fn install(state: AppState, mut session: CollabSession) {
                     // from, and refreshing it at pointer rate would re-run the whole
                     // component tree.
                     RemoteEvent::Presence { actor, frame } => {
-                        (None, r.merge_presence(actor, frame))
+                        // Dated here, with the same clock the presence pump ticks
+                        // the expiry with. The engine's own clock is no substitute:
+                        // it advances only when that pump has something to drain,
+                        // which on a client that is just watching is the heartbeat
+                        // — and a frame stamped a whole heartbeat stale is what
+                        // used to trip `GESTURE_TIMEOUT` mid-stroke.
+                        (None, r.merge_presence(actor, frame, now_seconds()))
                     }
                 }
             };
@@ -356,12 +362,16 @@ fn start_presence_pump(state: AppState) {
                     break 'tick;
                 }
 
-                let (frame, roster) = {
+                let (frame, repaint, roster) = {
                     let mut renderer = state.renderer;
                     let mut guard = renderer.write();
                     match guard.as_mut() {
                         Some(r) => {
-                            let frame = due.then(|| r.take_presence(now)).flatten();
+                            let tick = due.then(|| r.take_presence(now));
+                            let (frame, repaint) = match tick {
+                                Some(t) => (t.frame, t.repaint),
+                                None => (None, false),
+                            };
                             // Re-read the revision *after* the drain, which may itself
                             // have expired a peer — and compare against what was last
                             // handed to the signal, so a change made here is not
@@ -369,11 +379,19 @@ fn start_presence_pump(state: AppState) {
                             let revision = r.peers_revision();
                             let stale = revision != sent_revision;
                             sent_revision = revision;
-                            (frame, stale.then(|| r.peers()))
+                            (frame, repaint, stale.then(|| r.peers()))
                         }
                         None => break 'tick,
                     }
                 };
+                // The drain's expiry may have taken a stalled gesture or a departed
+                // peer's paint off the canvas. Nothing else notices: the incoming
+                // pump repaints only for frames that *arrive*, and expiry is exactly
+                // the case where they stopped — skip this and the dead stroke stays
+                // on screen, frozen, until something unrelated forces a paint.
+                if repaint {
+                    crate::state::request_paint(state);
+                }
                 if let Some(roster) = roster {
                     let mut peers = state.collab.peers;
                     peers.set(roster);

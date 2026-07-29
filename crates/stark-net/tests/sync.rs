@@ -66,7 +66,9 @@ fn drain_events(events: &mut UnboundedReceiver<RemoteEvent>, engine: &mut Engine
                 applied += 1;
             }
             RemoteEvent::Presence { actor, frame } => {
-                engine.merge_presence(actor, frame);
+                // A fixed clock is fine here: nothing in these tests waits out an
+                // expiry, and 0.0 keeps them deterministic.
+                engine.merge_presence(actor, frame, 0.0);
             }
         }
     }
