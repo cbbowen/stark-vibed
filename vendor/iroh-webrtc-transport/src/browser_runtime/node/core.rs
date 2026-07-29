@@ -259,6 +259,34 @@ impl BrowserRuntimeNode {
         Ok(())
     }
 
+    /// The node's WebRTC endpoint, binding it only if it has not been started
+    /// (or was torn down) — never restarting a live one.
+    ///
+    /// Every WebRTC application connection this node has — dialed *and*
+    /// accepted, across all peers and ALPNs — rides the one `webrtc_endpoint`,
+    /// so restarting it closes them all. Dials must therefore reuse the live
+    /// endpoint: restarting per dial means any second connection (a different
+    /// protocol to the same peer, a redial after a drop, a new peer joining)
+    /// kills every connection that came before it.
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    pub(in crate::browser_runtime) async fn ensure_webrtc_endpoint(
+        &self,
+    ) -> BrowserRuntimeResult<Endpoint> {
+        {
+            let inner = self
+                .inner
+                .lock()
+                .expect("browser runtime node mutex poisoned");
+            if inner.closed {
+                return Err(BrowserRuntimeError::closed());
+            }
+            if let Some(endpoint) = inner.webrtc_endpoint.clone() {
+                return Ok(endpoint);
+            }
+        }
+        self.restart_webrtc_endpoint().await
+    }
+
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     pub(in crate::browser_runtime) async fn restart_webrtc_endpoint(
         &self,
@@ -485,7 +513,15 @@ impl BrowserRuntimeNode {
             WebRtcAddr::session(session.remote, session.dial_id.0).to_custom_addr();
         let remote_addr =
             EndpointAddr::from_parts(session.remote, [TransportAddr::Custom(remote_custom_addr)]);
-        let endpoint = self.restart_webrtc_endpoint().await?;
+        // Reuse, never restart: a restart here closes every established WebRTC
+        // connection on this node (see `ensure_webrtc_endpoint`). Upstream
+        // restarted per dial, which is invisible with one connection per node
+        // pair but fatal for a mesh — the second dial (or any redial) killed
+        // the connections before it, and each kill triggered a redial, forever.
+        // A consequence of reuse is that this connection may select an EARLIER
+        // session's channel instead of the one just negotiated; the lookup
+        // after connect resolves which live session actually carries it.
+        let endpoint = self.ensure_webrtc_endpoint().await?;
         tracing::trace!(
             target: "iroh_webrtc_transport::browser_runtime::connection",
             session_key = %session_key.as_str(),
@@ -527,22 +563,32 @@ impl BrowserRuntimeNode {
             None,
             &connection,
         );
-        if let Err(err) = require_webrtc_selected_path(&connection, session.remote, session.dial_id)
-        {
-            connection.close(0u32.into(), b"WebRTC custom path was not selected");
-            tracing::debug!(
-                target: "iroh_webrtc_transport::browser_runtime::connection",
-                session_key = %session_key.as_str(),
-                %err,
-                "rejecting mislabeled WebRTC application connection"
-            );
-            return Err(err);
-        }
+        // Which session actually carries this connection? Iroh prefers an
+        // already-validated channel to the peer over the one this dial just
+        // negotiated, so the selected path may belong to an EARLIER session —
+        // that is fine, a channel is just a wire. Only a path that maps to no
+        // live session at all is an error.
+        let carrying_session_key = match self.accept_webrtc_connection(&connection) {
+            Ok(key) => key,
+            Err(err) => {
+                connection.close(0u32.into(), b"WebRTC custom path was not selected");
+                tracing::debug!(
+                    target: "iroh_webrtc_transport::browser_runtime::connection",
+                    session_key = %session_key.as_str(),
+                    %err,
+                    "rejecting mislabeled WebRTC application connection"
+                );
+                return Err(err);
+            }
+        };
+        // The dialed session's bookkeeping still completes (its dial future
+        // resolved), even when its channel went unused because the connection
+        // rides an earlier one.
         self.complete_dial(session_key, BrowserResolvedTransport::WebRtc)?;
         self.admit_iroh_application_connection(
             connection,
             BrowserResolvedTransport::WebRtc,
-            Some(session_key.clone()),
+            carrying_session_key.or_else(|| Some(session_key.clone())),
             false,
         )
     }
@@ -709,7 +755,13 @@ impl BrowserRuntimeNode {
         connection: &Connection,
     ) -> BrowserRuntimeResult<Option<BrowserSessionKey>> {
         let remote = connection.remote_id();
-        let alpn = String::from_utf8_lossy(connection.alpn()).to_string();
+        // The connection's selected custom path names the session whose data
+        // channel actually carries it. Look the session up by *that* — not by
+        // ALPN or freshness. A channel is just a wire: several connections
+        // (different ALPNs, later dials, either direction) share the first
+        // validated channel to a peer, because iroh prefers a known-good path
+        // over a freshly negotiated one.
+        let selected = selected_webrtc_session_addr(connection)?;
         let mut inner = self
             .inner
             .lock()
@@ -717,39 +769,36 @@ impl BrowserRuntimeNode {
         if inner.closed {
             return Err(BrowserRuntimeError::closed());
         }
-        let Some((session_key, remote, dial_id)) =
-            inner.sessions.values_mut().find_map(|session| {
-                if session.role == BrowserSessionRole::Acceptor
-                    && session.remote == remote
-                    && session.alpn == alpn
-                    && session.transport_intent.uses_webrtc()
-                    && session.resolved_transport.is_none()
-                    && session.channel_attachment == DataChannelAttachmentState::Open
-                    && matches!(
-                        session.lifecycle,
-                        BrowserSessionLifecycle::WebRtcNegotiating
-                            | BrowserSessionLifecycle::ApplicationReady
-                    )
-                {
-                    Some((session.session_key.clone(), session.remote, session.dial_id))
-                } else {
-                    None
-                }
-            })
-        else {
+        let Some(session_key) = inner.sessions.values().find_map(|session| {
+            (session.remote == remote
+                && session.transport_intent.uses_webrtc()
+                && session.resolved_transport != Some(BrowserResolvedTransport::IrohRelay)
+                && session.channel_attachment == DataChannelAttachmentState::Open
+                && matches!(
+                    session.lifecycle,
+                    BrowserSessionLifecycle::WebRtcNegotiating
+                        | BrowserSessionLifecycle::ApplicationReady
+                )
+                && WebRtcAddr::session(session.remote, session.dial_id.0) == selected)
+                .then(|| session.session_key.clone())
+        }) else {
             return Err(BrowserRuntimeError::new(
                 BrowserRuntimeErrorCode::WebRtcFailed,
-                "custom app connection did not match WebRTC session",
+                format!(
+                    "custom app connection did not match a live WebRTC session: {selected:?}"
+                ),
             ));
         };
-        require_webrtc_selected_path(connection, remote, dial_id)?;
         let session = inner
             .sessions
             .get_mut(&session_key)
             .expect("session was selected above");
-        validate_transport_resolution(session, BrowserResolvedTransport::WebRtc)?;
-        session.resolve_transport(BrowserResolvedTransport::WebRtc)?;
-        inner.refresh_webrtc_transport_addrs();
+        // First connection on this channel resolves the session; later ones
+        // just ride it.
+        if session.resolved_transport.is_none() {
+            session.resolve_transport(BrowserResolvedTransport::WebRtc)?;
+            inner.refresh_webrtc_transport_addrs();
+        }
         Ok(Some(session_key))
     }
 }

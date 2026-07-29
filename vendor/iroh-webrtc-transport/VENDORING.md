@@ -20,6 +20,32 @@ is pulled in only behind `stark-net`'s `webrtc` feature.
 - **wasm-bindgen pin relaxed** from `=0.2.118` to `0.2` so it unifies with the
   version `stark-ui` (Dioxus) resolves.
 - `publish = false`.
+- **WebRTC application dials no longer restart the WebRTC endpoint.**
+  Upstream's `dial_webrtc_application_connection` called
+  `restart_webrtc_endpoint()` on every dial, closing the node's single WebRTC
+  endpoint — and with it **every established WebRTC connection the node had**
+  (dialed and accepted, all peers, all ALPNs). Invisible when a node makes one
+  connection ever; fatal for stark-net, where a join dials twice (catch-up +
+  mesh) and the mesh redials on every drop: each dial killed the connections
+  before it, each kill triggered a redial, and the swarm flapped forever.
+  Dials now go through `ensure_webrtc_endpoint()`, which reuses the live
+  endpoint and only binds when none exists.
+- **Connections share a peer's live channel (browser runtime).** Reusing the
+  endpoint surfaced why upstream restarted it: iroh's remote map prefers an
+  already-validated path, so every later connection to a peer selects the
+  *first* session's channel — and upstream's per-session guards
+  (`require_webrtc_selected_path` exact-match, one-shot acceptor sessions)
+  rejected them ("selected WebRTC custom path does not match session").
+  A channel is just a wire, so the model is now: a connection belongs to
+  whichever **live** session's address its selected path names.
+  `accept_webrtc_connection` looks sessions up by that address (dropping the
+  role/ALPN/unresolved conditions), the dial path resolves the carrying
+  session the same way and admits the connection under it, and
+  `connection_close` only closes a session once **no other open connection
+  rides it** (previously: first close killed the shared channel).
+  Redundant cost that remains: each dial still negotiates a fresh
+  RTCPeerConnection that goes unused when an existing channel is selected;
+  skipping bootstrap when a live channel exists is a possible follow-up.
 - **`BrowserResolvedTransport` made public and exposed on connections.** The
   runtime already records whether each facade connection resolved to direct
   WebRTC or the iroh relay fallback (`BrowserConnectionInfo.transport`), but the

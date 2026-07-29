@@ -297,13 +297,16 @@ fn describe_iroh_path(connection: &Connection, path: &iroh::endpoint::Path<'_>) 
     )
 }
 
-fn require_webrtc_selected_path(
-    connection: &Connection,
-    expected_remote: EndpointId,
-    expected_dial_id: DialId,
-) -> BrowserRuntimeResult<()> {
-    let expected = WebRtcAddr::session(expected_remote, expected_dial_id.0);
-
+/// The WebRTC session address the connection actually selected for
+/// transmission — the identity of the data channel carrying its bytes.
+///
+/// This is the ground truth for which session a connection belongs to.
+/// It need *not* be the session that was freshly negotiated for the dial:
+/// once one channel to a peer has a validated path, iroh prefers it for
+/// every later connection to that peer, so connections routinely share an
+/// earlier session's channel. Callers must therefore look sessions up by
+/// this address rather than demanding it equal a particular dial's.
+fn selected_webrtc_session_addr(connection: &Connection) -> BrowserRuntimeResult<WebRtcAddr> {
     for path in connection.paths().into_iter() {
         if !path.is_selected() {
             continue;
@@ -317,22 +320,12 @@ fn require_webrtc_selected_path(
                 ),
             ));
         };
-        let actual = WebRtcAddr::from_custom_addr(custom_addr).map_err(|err| {
+        return WebRtcAddr::from_custom_addr(custom_addr).map_err(|err| {
             BrowserRuntimeError::new(
                 BrowserRuntimeErrorCode::WebRtcFailed,
                 format!("selected custom path is not a WebRTC session address: {err}"),
             )
-        })?;
-        if actual == expected {
-            return Ok(());
-        }
-        return Err(BrowserRuntimeError::new(
-            BrowserRuntimeErrorCode::WebRtcFailed,
-            format!(
-                "selected WebRTC custom path does not match session: expected {:?}, got {:?}",
-                expected, actual
-            ),
-        ));
+        });
     }
 
     Err(BrowserRuntimeError::new(

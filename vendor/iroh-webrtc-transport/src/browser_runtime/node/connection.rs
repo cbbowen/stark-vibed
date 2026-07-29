@@ -223,11 +223,22 @@ impl BrowserRuntimeNode {
         }
         if transport == BrowserResolvedTransport::WebRtc {
             if let Some(session_key) = session_key.as_ref() {
-                if let Some(session) = inner.sessions.get_mut(session_key) {
-                    session.close();
+                // A channel is shared by every connection that selected it, so
+                // it must outlive all of them: closing the session here while a
+                // sibling connection still rides it would cut that connection's
+                // wire. (This one is already marked closed above, so it does
+                // not count itself.)
+                let still_in_use = inner
+                    .connections
+                    .values()
+                    .any(|c| !c.closed && c.session_key.as_ref() == Some(session_key));
+                if !still_in_use {
+                    if let Some(session) = inner.sessions.get_mut(session_key) {
+                        session.close();
+                    }
+                    inner.refresh_webrtc_transport_addrs();
                 }
             }
-            inner.refresh_webrtc_transport_addrs();
         }
         Ok(BrowserCloseOutcome {
             closed: true,
@@ -306,7 +317,19 @@ impl BrowserRuntimeNode {
                     "WebRTC connection admission has no matching session",
                 )
             })?;
-            require_webrtc_selected_path(&iroh_connection, session.remote, session.dial_id)?;
+            // Internal consistency: the session a WebRTC connection is admitted
+            // under must be the one whose channel actually carries it (callers
+            // resolve that via `accept_webrtc_connection`).
+            let expected = WebRtcAddr::session(session.remote, session.dial_id.0);
+            let actual = selected_webrtc_session_addr(&iroh_connection)?;
+            if actual != expected {
+                return Err(BrowserRuntimeError::new(
+                    BrowserRuntimeErrorCode::WebRtcFailed,
+                    format!(
+                        "WebRTC connection admitted under the wrong session: expected {expected:?}, got {actual:?}"
+                    ),
+                ));
+            }
         }
 
         let key = inner.allocate_connection_key();
