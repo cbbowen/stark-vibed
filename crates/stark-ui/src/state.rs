@@ -11,7 +11,7 @@ use crate::collab;
 use crate::render::Renderer;
 use stark_core::command::ViewCommand;
 use stark_core::document::{BrushParams, LayerId};
-use stark_core::geom::{Affine2, Vec2};
+use stark_core::geom::{Affine2, Mat2, Vec2};
 use stark_core::{InputCommand, ObservableState};
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
@@ -114,87 +114,287 @@ impl AppState {
     }
 }
 
-/// The transform gesture being composed (TRANSFORM_DESIGN.md §6): the rect the
-/// handles started from, the rect they have dragged it to, and the flips applied
-/// inside it. The affine the engine sees is *derived* from these on every change,
-/// always mapping the original `hull` to the current `rect` — so a long drag is
-/// one accumulated transform, never a chain of them, and the preview resamples the
-/// committed tiles exactly once ("lossless" until "Done").
+/// Where a pointer stands relative to the transform widget's ellipse — which
+/// decides what a drag starting there does (TRANSFORM_DESIGN.md §6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TransformRegion {
+    /// Strictly inside: dragging translates.
+    Inside,
+    /// On the rim: dragging turns and scales uniformly — tangential motion is
+    /// pure rotation, radial motion pure scale, anything between blends the two.
+    Rim,
+    /// Outside: dragging stretches and shears along the grab direction, pinning
+    /// the perpendicular diameter.
+    Outside,
+}
+
+/// The transform gesture being composed (TRANSFORM_DESIGN.md §6). The widget is
+/// an **ellipse**: the image of a reference ellipse (inscribed in the selection
+/// hull at entry) under the accumulated linear map, so the widget's shape *is*
+/// the transform. The affine the engine sees is derived on every change —
+/// `x ↦ center + linear·(x − anchor)` — so a long drag is one accumulated
+/// transform, never a chain of them, and the preview resamples the committed
+/// tiles exactly once ("lossless" until "Done").
+///
+/// Every shaping gesture left-composes a world-space factor onto `linear`, each
+/// solved so that **the grabbed point follows the pointer** within its family:
+/// a similarity for the rim, a rank-1 stretch/shear for the outside. Gestures
+/// that were never used leave their factors out entirely — a pure move keeps
+/// `linear` bit-exactly the identity, which is what keeps it a pure translation
+/// through the engine's exactness invariants (TRANSFORM_DESIGN.md §4).
 #[derive(Clone, Copy, PartialEq)]
 pub struct TransformState {
     /// The layer whose selected paint is being transformed.
     pub layer: LayerId,
-    /// The canvas-space box the handles were mounted around — the selection hull
-    /// at entry (or the painted content's bounds for an unbounded selection).
-    pub hull: (Vec2, Vec2),
-    /// Where the drags have taken that box, canvas space, normalized min/max.
-    /// Kept in the box's own (unrotated) frame: `angle` turns the whole box
-    /// afterwards, about its centre.
-    pub rect: (Vec2, Vec2),
-    /// Mirrors applied within the box: (horizontal, vertical) — i.e. flip.0
-    /// mirrors left↔right, flip.1 top↔bottom.
-    pub flip: (bool, bool),
-    /// Rotation about `rect`'s centre, radians, clockwise on screen (canvas y is
-    /// down, so `Affine2::from_angle`, the CSS `rotate()` the box is drawn with,
-    /// and the pointer's `atan2` all agree on the sign).
-    pub angle: f32,
+    /// The reference ellipse's centre — the hull's — in canvas px. Fixed for the
+    /// mode's life; the affine pivots here.
+    pub anchor: Vec2,
+    /// The reference ellipse's radii, canvas px (the hull's half-extent, floored
+    /// so a hairline selection still mounts a grabbable widget).
+    pub radii: Vec2,
+    /// Where the gesture has carried the centre.
+    pub center: Vec2,
+    /// The accumulated linear map, applied about the centre.
+    pub linear: Mat2,
 }
 
 impl TransformState {
-    pub fn begin(layer: LayerId, hull: (Vec2, Vec2)) -> Self {
+    pub fn begin(layer: LayerId, hull: (Vec2, Vec2), min_radius: f32) -> Self {
+        let anchor = (hull.0 + hull.1) * 0.5;
         Self {
             layer,
-            hull,
-            rect: hull,
-            flip: (false, false),
-            angle: 0.0,
+            anchor,
+            radii: ((hull.1 - hull.0) * 0.5).max(Vec2::splat(min_radius)),
+            center: anchor,
+            linear: Mat2::IDENTITY,
         }
     }
 
     /// Whether committing would change nothing — "Done" then skips the commit
     /// rather than spending an undo step on a no-op.
     pub fn is_identity(&self) -> bool {
-        self.rect == self.hull && !self.flip.0 && !self.flip.1 && self.angle == 0.0
+        self.center == self.anchor && self.linear == Mat2::IDENTITY
     }
 
-    /// The affine mapping `hull` onto `rect` with the flips applied — what the
-    /// preview shows and "Done" commits.
+    /// The affine this gesture stands for — what the preview shows and "Done"
+    /// commits.
     pub fn affine(&self) -> Affine2 {
-        let (hmin, hmax) = self.hull;
-        let (rmin, rmax) = self.rect;
-        // One axis of the map: hull span → rect span, mirrored if flipped. A drag
-        // that only *moved* the box leaves the spans equal up to float noise, and
-        // the scale is snapped to exactly 1 there — a pure move must be a pure
-        // translation, which resamples losslessly on the integer grid
-        // (TRANSFORM_DESIGN.md §4) instead of softening under a 1±ε scale.
-        let axis = |h0: f32, h1: f32, r0: f32, r1: f32, flipped: bool| {
-            let hw = (h1 - h0).max(1e-3);
-            let mut s = (r1 - r0) / hw;
-            if (s - 1.0).abs() < 1e-4 {
-                s = 1.0;
-            }
-            if flipped {
-                (-s, r1 + h0 * s)
-            } else {
-                (s, r0 - h0 * s)
-            }
-        };
-        let (sx, tx) = axis(hmin.x, hmax.x, rmin.x, rmax.x, self.flip.0);
-        let (sy, ty) = axis(hmin.y, hmax.y, rmin.y, rmax.y, self.flip.1);
-        let mut a = Affine2::from_scale(Vec2::new(sx, sy));
-        a.translation = Vec2::new(tx, ty);
-        if self.angle == 0.0 {
-            return a;
+        if self.linear == Mat2::IDENTITY {
+            // The untouched-linear case stays a *pure* translation, not a
+            // translation reconstituted through matrix arithmetic.
+            return Affine2::from_translation(self.center - self.anchor);
         }
-        // The rotation turns the finished box about its own centre, after the
-        // scale/flip map — matching what the rotated chrome shows. Gated on
-        // exactly zero so an unrotated gesture keeps the pure scale/translate
-        // form the exactness invariants rely on (TRANSFORM_DESIGN.md §4).
-        let c = (rmin + rmax) * 0.5;
-        Affine2::from_translation(c)
-            * Affine2::from_angle(self.angle)
-            * Affine2::from_translation(-c)
-            * a
+        Affine2::from_mat2_translation(self.linear, self.center - self.linear * self.anchor)
+    }
+
+    /// Classify a canvas-space pointer against the widget (TRANSFORM_DESIGN.md
+    /// §6): pull it back through the linear map into the reference ellipse's own
+    /// space, where the widget is a unit circle and the test is a radius. `band`
+    /// is the rim's grab half-width in canvas px, converted to circle units by
+    /// the widget's local radius along the pointer's direction.
+    pub fn region(&self, pointer: Vec2, band: f32) -> TransformRegion {
+        let det = self.linear.determinant();
+        if det.abs() < 1e-6 {
+            // Collapsed to a sliver: everything reads as inside, so the widget
+            // can still be moved (the shaping clamps keep this unreachable in
+            // practice).
+            return TransformRegion::Inside;
+        }
+        let u = (self.linear.inverse() * (pointer - self.center)) / self.radii;
+        let rho = u.length();
+        if rho < 1e-6 {
+            return TransformRegion::Inside;
+        }
+        let local_radius = (self.linear * (self.radii * (u / rho))).length();
+        let band = band / local_radius.max(1e-3);
+        if rho < 1.0 - band {
+            TransformRegion::Inside
+        } else if rho <= 1.0 + band {
+            TransformRegion::Rim
+        } else {
+            TransformRegion::Outside
+        }
+    }
+
+    /// An inside drag: translate. `eps` (canvas px) snaps a jiggle back to the
+    /// start, so touching the widget without meaning to never resamples.
+    pub fn translated(self, from: Vec2, to: Vec2, eps: f32) -> Self {
+        if to.distance(from) < eps {
+            return self;
+        }
+        Self {
+            center: self.center + (to - from),
+            ..self
+        }
+    }
+
+    /// A rim drag: the similarity (rotation + uniform scale about the centre)
+    /// that carries the grabbed point `from` exactly to the pointer `to` — the
+    /// complex ratio `(to − c)/(from − c)`. Tangential motion is thereby pure
+    /// rotation and radial motion pure scale, with no mode to pick.
+    pub fn turned_scaled(self, from: Vec2, to: Vec2, eps: f32) -> Self {
+        if to.distance(from) < eps {
+            return self;
+        }
+        let v0 = from - self.center;
+        let v = to - self.center;
+        let n = v0.length_squared();
+        if n < 1e-6 {
+            return self;
+        }
+        // Keep the widget grabbable: never scale below 5% in one gesture.
+        let v = clamp_len(v, 0.05 * n.sqrt());
+        let (a, b) = (v.dot(v0) / n, v0.perp_dot(v) / n);
+        Self {
+            linear: Mat2::from_cols(Vec2::new(a, b), Vec2::new(-b, a)) * self.linear,
+            ..self
+        }
+    }
+
+    /// An outside drag: the rank-1 update `I + (Δ ⊗ d̂)/λ` that carries the
+    /// grabbed point exactly to the pointer while **pinning the diameter
+    /// perpendicular to the grab** — radial pull scales along the grab
+    /// direction, tangential drag shears, and everything on the pinned axis
+    /// stays put, which is what makes the gesture predictable.
+    pub fn stretched(self, from: Vec2, to: Vec2, eps: f32) -> Self {
+        if to.distance(from) < eps {
+            return self;
+        }
+        let v0 = from - self.center;
+        let lambda = v0.length();
+        if lambda < 1e-3 {
+            return self;
+        }
+        let dir = v0 / lambda;
+        let mut delta = to - from;
+        // Pulling in past the pinned axis would run the determinant through
+        // zero (the paint would vanish into a line, and the engine would refuse
+        // the commit); floor the radial component at 90% pulled-in.
+        let radial = delta.dot(dir) / lambda;
+        if radial < -0.9 {
+            delta += dir * ((-0.9 - radial) * lambda);
+        }
+        let g = Mat2::from_cols(
+            Vec2::new(1.0 + delta.x * dir.x / lambda, delta.y * dir.x / lambda),
+            Vec2::new(delta.x * dir.y / lambda, 1.0 + delta.y * dir.y / lambda),
+        );
+        Self {
+            linear: g * self.linear,
+            ..self
+        }
+    }
+
+    /// Mirror left↔right, about the vertical axis through the centre.
+    pub fn flipped_h(self) -> Self {
+        Self {
+            linear: Mat2::from_diagonal(Vec2::new(-1.0, 1.0)) * self.linear,
+            ..self
+        }
+    }
+
+    /// Mirror top↕bottom, about the horizontal axis through the centre.
+    pub fn flipped_v(self) -> Self {
+        Self {
+            linear: Mat2::from_diagonal(Vec2::new(1.0, -1.0)) * self.linear,
+            ..self
+        }
+    }
+}
+
+/// `v`, no shorter than `min` (direction kept; zero stays zero).
+fn clamp_len(v: Vec2, min: f32) -> Vec2 {
+    let len = v.length();
+    if len < min && len > 1e-9 {
+        v * (min / len)
+    } else {
+        v
+    }
+}
+
+#[cfg(test)]
+mod transform_tests {
+    use super::*;
+
+    fn state() -> TransformState {
+        TransformState::begin(
+            LayerId(0),
+            (Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0)),
+            10.0,
+        )
+    }
+
+    #[test]
+    fn untouched_gesture_is_the_identity() {
+        let ts = state();
+        assert!(ts.is_identity());
+        assert_eq!(ts.affine(), Affine2::IDENTITY);
+    }
+
+    #[test]
+    fn translation_alone_keeps_the_linear_part_exact() {
+        let ts = state().translated(Vec2::ZERO, Vec2::new(37.5, -12.0), 0.5);
+        assert_eq!(ts.linear, Mat2::IDENTITY);
+        let a = ts.affine();
+        assert_eq!(a.matrix2, Mat2::IDENTITY);
+        assert_eq!(a.translation, Vec2::new(37.5, -12.0));
+    }
+
+    #[test]
+    fn a_sub_epsilon_jiggle_changes_nothing() {
+        let ts = state();
+        let from = Vec2::new(100.0, 0.0);
+        assert!(ts.turned_scaled(from, from + Vec2::splat(0.1), 0.5) == ts);
+        assert!(ts.stretched(from, from + Vec2::splat(0.1), 0.5) == ts);
+        assert!(ts.translated(from, from + Vec2::splat(0.1), 0.5) == ts);
+    }
+
+    #[test]
+    fn rim_drag_carries_the_grab_point_to_the_pointer() {
+        // Grab east, drag to twice-north: a quarter turn plus a 2× scale.
+        let ts = state();
+        let from = ts.center + Vec2::new(100.0, 0.0);
+        let to = ts.center + Vec2::new(0.0, 200.0);
+        let turned = ts.turned_scaled(from, to, 0.5);
+        let moved = turned.linear * (from - ts.center);
+        assert!((moved - (to - ts.center)).length() < 1e-3, "got {moved:?}");
+        assert!(turned.linear.determinant() > 0.0);
+    }
+
+    #[test]
+    fn outside_drag_pins_the_perpendicular_diameter() {
+        // Grab east of the widget and drag: the north–south diameter must not move.
+        let ts = state();
+        let from = ts.center + Vec2::new(300.0, 0.0);
+        let to = from + Vec2::new(80.0, 55.0);
+        let stretched = ts.stretched(from, to, 0.5);
+        let moved = stretched.linear * (from - ts.center);
+        assert!((moved - (to - ts.center)).length() < 1e-3, "got {moved:?}");
+        let pinned = stretched.linear * Vec2::new(0.0, 1.0);
+        assert!((pinned - Vec2::new(0.0, 1.0)).length() < 1e-6, "got {pinned:?}");
+    }
+
+    #[test]
+    fn flips_are_involutions() {
+        let ts = state().flipped_h().flipped_v();
+        assert!(!ts.is_identity());
+        let back = ts.flipped_v().flipped_h();
+        assert!(back.is_identity(), "four mirrors must cancel bit-exactly");
+    }
+
+    #[test]
+    fn regions_classify_by_the_deformed_ellipse() {
+        let ts = state(); // radii (100, 50)
+        let c = ts.center;
+        assert_eq!(ts.region(c, 4.0), TransformRegion::Inside);
+        assert_eq!(ts.region(c + Vec2::new(60.0, 0.0), 4.0), TransformRegion::Inside);
+        assert_eq!(ts.region(c + Vec2::new(100.0, 0.0), 4.0), TransformRegion::Rim);
+        assert_eq!(ts.region(c + Vec2::new(0.0, -50.0), 4.0), TransformRegion::Rim);
+        assert_eq!(ts.region(c + Vec2::new(160.0, 0.0), 4.0), TransformRegion::Outside);
+
+        // Stretch the widget to 2× along x: the rim moves with it.
+        let wide = ts.stretched(c + Vec2::new(100.0, 0.0), c + Vec2::new(200.0, 0.0), 0.5);
+        assert_eq!(wide.region(c + Vec2::new(200.0, 0.0), 4.0), TransformRegion::Rim);
+        assert_eq!(wide.region(c + Vec2::new(100.0, 0.0), 4.0), TransformRegion::Inside);
     }
 }
 

@@ -163,53 +163,78 @@ partial / fully-selected), build the quad list, intersect transformed quads with
 tile rects (exact convex test, not AABB — a loose test would mint empty tiles),
 and enforce the caps.
 
-## 6. The gesture (first cut — built)
+## 6. The gesture: an ellipse, not a box of handles
 
-Entered from the selection bar's **Transform** button; a box with the frame's
-resize grips mounts around the selection, a **rotate knob** sits where the frame
-keeps its move pill (dragging the box interior *is* the translation here, which
-is what freed that spot), and a bar carries **Flip ↔ / Flip ↕ / Done**.
-Everything before Done is a **lossless preview**: the drags accumulate into one
-frontend `TransformState { hull, rect, flip, angle }` whose affine always maps
-the *original* box onto the current one — scale/flip into the rect, then the
-rotation about the rect's centre — and every change runs
-`ViewCommand::PreviewTransform`: the same renderer as the commit, over the
-committed tiles, into the `doc_preview` slot the frame drag uses. So the screen
+Most software shows a rectangle with resize grips, tacks rotation on as a knob,
+and either hides skew behind a modifier or doesn't offer it. This widget is an
+**ellipse** — the image of a reference ellipse (inscribed in the selection hull
+at entry) under the accumulated linear map — so the widget's own shape *shows*
+the transform, and one surface carries the whole affine group with three
+gestures, chosen by where the drag starts:
+
+| Region | Gesture | Family |
+|---|---|---|
+| inside | translate | `x ↦ x + Δ` |
+| on the rim | rotate + uniform scale | similarity about the centre |
+| outside | directional scale + skew | rank-1: `I + (Δ ⊗ d̂)/λ` |
+
+Each shaping gesture is solved so that **the grabbed point follows the pointer
+exactly** within its family — the hand feels attached to the paint, and the two
+degrees of freedom of the pointer are always fully spent:
+
+- **Rim.** The unique similarity carrying the grab to the pointer is the complex
+  ratio `(p − c)/(p₀ − c)`. Its differential behaviour is exactly the spec:
+  motion *tangent* to the ellipse is pure rotation, motion *normal* to it is
+  pure uniform scale, anything between blends — no mode to pick, no knob.
+- **Outside.** The rank-1 map `G = I + (Δ ⊗ d̂)/λ` (with `d̂` the grab
+  direction, `λ` its distance) also carries the grab exactly to the pointer,
+  while **pinning the diameter perpendicular to the grab**: radial pull is a
+  scale along `d̂`, tangential drag is a shear, and the pinned axis is what
+  makes the gesture predictable. Composing these from different directions
+  (with the rim's rotations) reaches every orientation-preserving linear map —
+  skew and non-axis-aligned scaling are not a bolted-on mode but the same
+  vocabulary. Pulling in past the pinned axis is floored at 90% so the
+  determinant cannot run through zero mid-drag.
+- Hit-testing pulls the pointer back through the linear map into the reference
+  space, where the widget is a unit circle and every region test is a radius —
+  exact at any deformation; the rim band stays a constant *screen* width by
+  scaling with the widget's local radius. The gesture is locked at the press
+  (crossing the rim mid-drag must not change what the hand is doing), a north
+  dot marks the reference "up" (a rotated circle otherwise hides its rotation),
+  and the cursor announces the region under the resting pointer.
+
+State is `TransformState { anchor, radii, center, linear: Mat2 }`, affine
+`x ↦ center + linear·(x − anchor)`; gestures left-compose world-space factors
+onto `linear`, always recomputed from the drag's start (nothing accumulates
+per-move). Untouched factors are simply absent: a pure move keeps `linear`
+bit-exactly the identity — the pure-translation exactness of §4 with no snapping
+heuristics — and a sub-2-screen-px jiggle in any gesture snaps back to its
+start, so touching the widget never resamples by accident. The bar carries
+**Flip ↔ / Flip ↕ / Done** (flips are world-axis mirrors folded into `linear`;
+four mirrors cancel bit-exactly).
+
+Everything before Done is a **lossless preview**: every change runs
+`ViewCommand::PreviewTransform` — the same renderer as the commit, over the
+committed tiles, into the `doc_preview` slot the frame drag uses — so the screen
 shows exactly what Done will produce, a long drag resamples once, and Done
-commits a single action (one undo step per gesture). A pure move snaps its scale
-to exactly 1 and an unrotated gesture skips the rotation factor entirely, so
-dragging the box around never softens the paint (§4).
+commits a single action (one undo step per gesture). The widget anchors to the
+conservative analytic **hull** the selection carries through its op algebra
+(`Selection::hull`, `ObservableState::selection_hull`); an unbounded selection
+falls back to the painted content's bounds — which is also how "move the whole
+layer" arrives for free. While the mode is active a full-viewport catcher owns
+the pointer (composing, not painting) but **navigation survives**: middle-drag
+and space-drag pan and the wheel zooms, with the canvas's exact bindings; all
+gesture maths lives in canvas space, so panning or zooming mid-gesture cannot
+corrupt it.
 
-Rotation mechanics, because rotated boxes are where transform chrome usually
-goes wrong: the box is laid out from the unrotated rect and turned by CSS about
-its centre — the same composition the affine applies to the paint, so chrome and
-preview cannot disagree. The knob tracks the pointer's *bearing* about the box
-centre (the box turns with the hand, not by an abstract delta); a resize maps
-the pointer delta back into the box's own frame, then re-pins the un-dragged
-side by the `(I − R)·(c₀ − c₁)` shift that recentring the rotation would
-otherwise cause.
-
-The handle box anchors to a conservative analytic **hull** the selection now
-carries through its op algebra (`Selection::hull`,
-`ObservableState::selection_hull`); an unbounded selection falls back to the
-painted content's bounds — which is also how "move the whole layer" arrives for
-free. While the mode is active a full-viewport catcher blocks canvas *painting*
-— the pointer is composing, not painting — but **navigation survives**:
-middle-drag and space-drag pan and the wheel zooms, with the canvas's exact
-bindings, from anywhere — the catcher, the box, a grip, the knob all divert to
-them first. Composing a transform should not cost the view, any more than
-holding a brush does.
-
-Known rough edges for the UI experiments: no skew chrome, no angle snapping
-(shift-for-15° is the convention), the resize cursors keep their unrotated
-compass directions, there is no cancel affordance other than Done at identity,
-and the keyboard selection shortcuts (Ctrl+D / invert) still fire mid-mode and
-change what Done would cut.
+Known rough edges for the UI experiments: no rotation/angle snapping
+(shift-for-15° is the convention), no cancel affordance other than Done at
+identity, and the keyboard selection shortcuts (Ctrl+D / invert) still fire
+mid-mode and change what Done would cut.
 
 ## 7. What this deliberately defers
 
 - **Cut / copy / paste** across layers and documents — the parcel machinery is
   the ingredient, the clipboard policy is not designed here.
 - **Better minification** (EWA / mips) — a parcel-shader-local upgrade.
-- **Skew chrome and angle snapping** — six floats already carry any affine; the
-  handles don't ask for it yet.
+- **Snapping** (angles, integer translations) — a gesture-layer refinement.
