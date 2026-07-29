@@ -160,6 +160,11 @@ pub enum NoiseKind {
     /// Cellular (Worley F1) noise on a seamlessly tiling jittered grid — mottled
     /// patches with creases where cells meet, like pigment settling in clumps.
     Voronoi,
+    /// The discrete form of [`Self::Voronoi`]: each cell one flat colour offset,
+    /// with a hard edge to its neighbours — crystalline facets rather than a
+    /// gradient. All three channels share the same cells, so the facets are
+    /// whole polygons of one colour.
+    Mosaic,
 }
 
 /// Colour dynamics (colour jitter): lets the applied colour vary **across the

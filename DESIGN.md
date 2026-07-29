@@ -870,10 +870,15 @@ but not along the axes a tileable texture needs), or `Voronoi` (Worley F1 on a
 jittered grid of `P` cells per side, feature points hashed from the cell index
 `mod P`; the usual 3×3 cell search is *exact* here rather than approximate,
 because every feature outside that ring is more than one cell away and the
-shaping flattens the field past 0.8 cells, so no missed feature can ever show)
-— is baked **once on the CPU with fixed constants** (`noise.rs`, `Rgba8Snorm`
-64², only correctly-rounded ops, no transcendentals ⇒ bit-reproducible across
-platforms) and sampled with a repeat sampler.
+shaping flattens the field past 0.8 cells, so no missed feature can ever show),
+or `Mosaic` (the same cells read discretely — one flat value per cell, shared by
+all three channels so the facets are whole polygons with hard edges; its owner
+search widens to 5×5, since a flat field has no clamp behind which a mis-picked
+owner could hide) — is baked **once on the CPU with fixed constants**
+(`noise.rs`, `Rgba8Snorm` 64², or 256² for `Mosaic`, whose walls are steps and
+so are only as sharp as the tile is fine; only correctly-rounded ops, no
+transcendentals ⇒ bit-reproducible across platforms) and sampled with a repeat
+sampler.
 
 The lookup domain is **stroke-local**: `(lateral·f₀, arc·f₁)/NOISE_TILE_PX` plus
 a per-stroke translation derived from the stroke `seed`, where `lateral` is the

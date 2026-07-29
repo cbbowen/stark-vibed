@@ -37,12 +37,22 @@
 //!   not an approximation: every feature outside that ring is more than one cell
 //!   away, so the search is exact wherever the true `F1 ≤ 1`, and the shaping
 //!   flattens everything past 0.8 cells anyway (see [`VORONOI_MEAN`]).
+//! - **Mosaic** noise is the same cell grid read discretely — each cell's own
+//!   constant value, so the tile is flat polygons with hard edges — and inherits
+//!   the same exact wrap: the value, like the site, is hashed from the cell index
+//!   modulo `PERIOD`.
 
 use crate::document::NoiseKind;
 use crate::gpu::context::GpuContext;
 
-/// Texels per side of the baked 2-D noise tile.
+/// Texels per side of a baked 2-D noise tile. Enough for fields that vary
+/// smoothly across a cell; [`NoiseKind::Mosaic`] needs more (see [`MOSAIC_RES`]).
 pub const NOISE_RES: u32 = 64;
+/// Texels per side of the mosaic tile. Its cell walls are *steps*, and a step
+/// is only ever as sharp as the tile is fine — at [`NOISE_RES`] a wall would be
+/// a staircase of 4 canvas px treads at frequency 1. Baking it 4× finer puts the
+/// wall inside one canvas pixel, where the sampler's own filtering hides it.
+const MOSAIC_RES: u32 = 256;
 /// Stroke-local pixels (across the stroke and along its arc) spanned by one
 /// noise tile at frequency 1. The shader lookup is
 /// `coord · frequency / NOISE_TILE_PX`.
@@ -64,14 +74,28 @@ const VORONOI_MEAN: f32 = 0.4;
 const VORONOI_GAIN: f32 = 2.5;
 /// Fixed bake seeds, one per colour channel.
 const CHANNEL_SEEDS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
+/// Fixed mosaic bake seeds: one places the cell sites, one draws each cell's
+/// value. Both are shared by the three channels on purpose — one set of cells in
+/// every channel is what makes a facet a facet.
+const MOSAIC_SITE_SEED: u32 = 0x51ab_1e11;
+const MOSAIC_VALUE_SEED: u32 = 0x51ab_1e12;
 
 /// Bake `kind` and upload it as an `Rgba8Snorm` 2-D texture.
 pub fn build_noise_texture(
     ctx: &GpuContext,
     kind: NoiseKind,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let bytes = bake(kind, NOISE_RES);
-    upload_2d(ctx, NOISE_RES, &bytes, "stark noise field")
+    let res = tile_res(kind);
+    let bytes = bake(kind, res);
+    upload_2d(ctx, res, &bytes, "stark noise field")
+}
+
+/// Texels per side of `kind`'s tile.
+fn tile_res(kind: NoiseKind) -> u32 {
+    match kind {
+        NoiseKind::Mosaic => MOSAIC_RES,
+        _ => NOISE_RES,
+    }
 }
 
 /// A 1×1 zero tile: sampled offset is exactly 0, so binding it makes the
@@ -145,6 +169,13 @@ fn bake(kind: NoiseKind, res: u32) -> Vec<u8> {
                         periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[1]),
                         periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[2]),
                     ]
+                }
+                NoiseKind::Mosaic => {
+                    // Same cells as `Voronoi`, read flat: all three channels come
+                    // from the owning cell, so the facets are whole polygons.
+                    let s = VORONOI_PERIOD as f32 / res as f32;
+                    let p = [(x as f32 + 0.5) * s, (y as f32 + 0.5) * s];
+                    periodic_mosaic(p, VORONOI_PERIOD)
                 }
             };
             for (c, val) in v.iter().enumerate() {
@@ -314,6 +345,43 @@ fn periodic_voronoi(p: [f32; 2], period: i32, seed: u32) -> f32 {
     ((VORONOI_MEAN - nearest2.sqrt()) * VORONOI_GAIN).clamp(-1.0, 1.0)
 }
 
+/// The flat value of the Voronoi cell owning `p` — three channels from one hash
+/// of the owning cell, so all three share the *same* polygons (three
+/// independently celled channels would read as overlapping patchwork, not
+/// facets). Exactly periodic with `period` on both axes; output in [-1, 1].
+///
+/// The search covers 5×5 cells where [`periodic_voronoi`] needs only 3×3: this
+/// field has no clamp behind which a missed feature could hide — picking the
+/// wrong owner would draw a wrong polygon, in full contrast. A sample's own cell
+/// always holds a site, so the true nearest is at most √2 cells away, while
+/// every site outside the 5×5 ring is more than 2 cells away: the owner is
+/// always found.
+fn periodic_mosaic(p: [f32; 2], period: i32) -> [f32; 3] {
+    let (cx, cy) = (p[0].floor(), p[1].floor());
+    let (mut nearest2, mut owner) = (f32::INFINITY, (0i64, 0i64));
+    for dj in -2..=2i64 {
+        for di in -2..=2i64 {
+            let (i, j) = (cx as i64 + di, cy as i64 + dj);
+            let f = voronoi_feature(i, j, period, MOSAIC_SITE_SEED);
+            let dx = (i as f32 + f[0]) - p[0];
+            let dy = (j as f32 + f[1]) - p[1];
+            let d2 = dx * dx + dy * dy;
+            if d2 < nearest2 {
+                nearest2 = d2;
+                owner = (i, j);
+            }
+        }
+    }
+    let m = period as i64;
+    let h = pcg4d([
+        owner.0.rem_euclid(m) as u32,
+        owner.1.rem_euclid(m) as u32,
+        0,
+        MOSAIC_VALUE_SEED,
+    ]);
+    [unit(h[0]), unit(h[1]), unit(h[2])].map(|u| u * 2.0 - 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,11 +484,54 @@ mod tests {
         }
     }
 
+    /// The mosaic field must repeat exactly every `VORONOI_PERIOD` along each
+    /// axis — including the *owner* it picks, since a wrapped cell that resolved
+    /// to a different owner would put a facet edge on the seam.
+    #[test]
+    fn mosaic_is_periodic() {
+        let p = VORONOI_PERIOD as f32;
+        for n in 0..256 {
+            let h = pcg4d([n, 7, 11, MOSAIC_SITE_SEED]);
+            let base = [unit(h[0]) * p, unit(h[1]) * p];
+            let v0 = periodic_mosaic(base, VORONOI_PERIOD);
+            for axis in 0..2 {
+                let mut q = base;
+                q[axis] += p;
+                let v1 = periodic_mosaic(q, VORONOI_PERIOD);
+                assert_eq!(v0, v1, "axis {axis} at {base:?}");
+            }
+        }
+    }
+
+    /// The mosaic must be *flat polygons with hard edges*: exactly one value per
+    /// cell, the same cells in all three channels. A baked tile therefore holds
+    /// exactly as many distinct texel values as the grid has cells — more would
+    /// mean a channel celled on its own grid, or a wall smeared into a ramp of
+    /// in-between values; fewer, a cell the sample grid never reaches.
+    #[test]
+    fn mosaic_is_one_flat_value_per_cell() {
+        let n = MOSAIC_RES as usize;
+        let a = bake(NoiseKind::Mosaic, n as u32);
+        let facets: std::collections::HashSet<[u8; 3]> = a
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        let cells = (VORONOI_PERIOD * VORONOI_PERIOD) as usize;
+        assert_eq!(facets.len(), cells, "distinct values vs {cells} cells");
+    }
+
     /// The bake must be deterministic (replay/peers depend on it) and in range,
     /// with real variation in every channel.
     #[test]
     fn bake_is_deterministic_and_varied() {
-        for kind in [NoiseKind::White, NoiseKind::Simplex, NoiseKind::Voronoi] {
+        for kind in [
+            NoiseKind::White,
+            NoiseKind::Simplex,
+            NoiseKind::Voronoi,
+            NoiseKind::Mosaic,
+        ] {
             let a = bake(kind, 16);
             let b = bake(kind, 16);
             assert_eq!(a, b);

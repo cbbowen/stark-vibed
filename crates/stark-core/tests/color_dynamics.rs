@@ -77,6 +77,19 @@ fn golden_color_jitter_voronoi() {
     assert_golden("color_jitter_voronoi", &img, 6);
 }
 
+#[test]
+fn golden_color_jitter_mosaic() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // The discrete cousin of the above: flat facets of colour meeting at hard
+    // edges, at the same scale so the two goldens are readable side by side.
+    let b = jitter_brush(NoiseKind::Mosaic, [2.0, 1.0], [0.18, 0.14, 0.14]);
+    stroke_with(&mut engine, b, &S_CURVE);
+    let img = engine.render_to_image();
+    assert_golden("color_jitter_mosaic", &img, 6);
+}
+
 /// Along-stroke-only jitter (`frequency = [0, f]`): the colour drifts along
 /// the arc but is uniform across the footprint at any point of the stroke.
 #[test]
