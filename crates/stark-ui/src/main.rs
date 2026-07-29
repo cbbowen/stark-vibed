@@ -36,9 +36,7 @@ use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
-use input::{
-    Nav, end_interaction, handle_keydown, handle_keyup, input_tolerance, pick_color, sample,
-};
+use input::{Nav, bind_shortcuts, end_interaction, input_tolerance, pick_color, sample};
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
@@ -84,6 +82,11 @@ fn app() -> Element {
         refs: use_signal(HashMap::new),
     };
     use_context_provider(|| panels);
+
+    // The keyboard shortcuts live on the window, not on the root element below, so
+    // they answer whatever has focus — including `document.body`, where the browser
+    // leaves it after a clicked button unmounts itself (see `platform::on_window_key`).
+    use_hook(|| bind_shortcuts(state));
 
     use_hook(|| {
         let mut renderer = renderer;
@@ -133,10 +136,6 @@ fn app() -> Element {
 
         div {
             class: "app-root",
-            tabindex: "0",
-            autofocus: true,
-            onkeydown: move |e| handle_keydown(state, &e),
-            onkeyup: move |e| handle_keyup(state, &e),
             // A panel drag is driven here (events bubble up even over the canvas), so it
             // keeps tracking wherever the pointer goes. No-op unless a drag is active;
             // leaving the window commits it so it can't get stuck.

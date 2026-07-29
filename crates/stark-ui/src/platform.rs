@@ -18,6 +18,33 @@ pub async fn sleep_ms(ms: i32) {
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn sleep_ms(_ms: i32) {}
 
+/// Route the window's `kind` events ("keydown" / "keyup") to `handler`.
+///
+/// The shortcuts hang off the **window** rather than off an element, so they keep
+/// working whatever has focus. Bound to an element they go quiet the moment a
+/// clicked button is unmounted by its own command — "Deselect", the brush editor's
+/// "Done" — because the browser then falls focus back to `document.body`, which is
+/// *outside* the app's tree, so nothing reaches the handler until something inside
+/// takes focus again.
+///
+/// Registered once for the life of the page (see [`crate::input::bind_shortcuts`]),
+/// so the closure is `forget`ten rather than kept around for removal — the same
+/// bargain [`pick_file`] makes.
+#[cfg(target_arch = "wasm32")]
+pub fn on_window_key(kind: &str, handler: impl FnMut(web_sys::KeyboardEvent) + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(handler);
+    let _ = window.add_event_listener_with_callback(kind, cb.as_ref().unchecked_ref());
+    cb.forget();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_window_key(_kind: &str, _handler: impl FnMut(web_sys::KeyboardEvent) + 'static) {}
+
 /// Capture the pointer for the element under `e`, so the in-progress drag keeps
 /// streaming move/up events to it while the button is held — even after the pointer
 /// leaves the element. The capture releases automatically on pointer-up, which is

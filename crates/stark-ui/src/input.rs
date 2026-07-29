@@ -2,13 +2,15 @@
 //! [`InputCommand`](stark_core::InputCommand)s
 //! (DESIGN.md §4).
 
+use std::str::FromStr;
+
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
-use crate::platform::capture_pointer;
+use crate::platform::{capture_pointer, on_window_key};
 use crate::state::{AppState, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
@@ -114,8 +116,40 @@ pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
     Vec2::new(p.x as f32, p.y as f32)
 }
 
-pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
-    match e.key() {
+/// Bind the app's keyboard shortcuts, once, for the life of the page.
+///
+/// On the window rather than on the app's root element — see
+/// [`platform::on_window_key`] for why an element cannot hold them.
+pub fn bind_shortcuts(state: AppState) {
+    on_window_key("keydown", move |e| handle_keydown(state, &e));
+    on_window_key("keyup", move |e| handle_keyup(state, &e));
+}
+
+/// The pressed key, in the same typed vocabulary the rsx! handlers read.
+fn key_of(e: &web_sys::KeyboardEvent) -> Key {
+    Key::from_str(&e.key()).unwrap_or(Key::Unidentified)
+}
+
+/// The modifier set held during `e`.
+fn modifiers_of(e: &web_sys::KeyboardEvent) -> Modifiers {
+    let mut m = Modifiers::empty();
+    if e.alt_key() {
+        m.insert(Modifiers::ALT);
+    }
+    if e.ctrl_key() {
+        m.insert(Modifiers::CONTROL);
+    }
+    if e.meta_key() {
+        m.insert(Modifiers::META);
+    }
+    if e.shift_key() {
+        m.insert(Modifiers::SHIFT);
+    }
+    m
+}
+
+fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
+    match key_of(e) {
         Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
             state.space_down.set(true);
             e.prevent_default();
@@ -126,12 +160,12 @@ pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
         _ => {}
     }
 
-    let m = e.modifiers();
+    let m = modifiers_of(e);
     track_alt(state, m);
     if !(m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)) {
         return;
     }
-    match e.key() {
+    match key_of(e) {
         Key::Character(c) if c.eq_ignore_ascii_case("z") => {
             let cmd = if m.contains(Modifiers::SHIFT) {
                 DocCommand::Redo
@@ -157,15 +191,15 @@ pub fn handle_keydown(mut state: AppState, e: &Event<KeyboardData>) {
     }
 }
 
-pub fn handle_keyup(mut state: AppState, e: &Event<KeyboardData>) {
-    match e.key() {
+fn handle_keyup(mut state: AppState, e: &web_sys::KeyboardEvent) {
+    match key_of(e) {
         Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
             state.space_down.set(false);
             e.prevent_default();
         }
         _ => {}
     }
-    track_alt(state, e.modifiers());
+    track_alt(state, modifiers_of(e));
 }
 
 /// Record whether Alt is held, so the canvas can wear the eyedropper cursor while it
