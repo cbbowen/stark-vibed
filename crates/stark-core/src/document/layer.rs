@@ -69,11 +69,11 @@ fn mix32(x: u64) -> u32 {
 
 /// How a layer combines with the layers below it (MISSING_FEATURES.md §0.4).
 ///
-/// Everything past `Normal` is a **light-combining** mode — the family every other
-/// app spells "Screen" — and deliberately not Screen. Screen is `a + b − ab`, which
-/// is what falls out of inverting a multiply; it describes no physical process, and
-/// it crushes the top of the range into a flat, chalky white that is the giveaway of
-/// a digital glow.
+/// Everything past `Normal` combines the two layers' **light** rather than covering
+/// one with the other — and none of it is Screen. Screen is `a + b − ab`, which is
+/// what falls out of inverting a multiply; it describes no physical process, and it
+/// crushes the top of the range into a flat, chalky white that is the giveaway of a
+/// digital glow.
 ///
 /// Ours are derived the other way round. Two lights *add* — that is the only thing
 /// light does — but the numbers in a layer are not light, they are light that has
@@ -86,16 +86,22 @@ fn mix32(x: u64) -> u32 {
 /// ```
 ///
 /// Being a conjugation of addition is not a technicality — it is the whole
-/// guarantee. Each mode is commutative, associative, and has black as its identity,
-/// so three glowing layers give the same result in any order and regrouping them
+/// guarantee. Each mode is commutative and associative with a neutral element, so
+/// three glowing layers give the same result in any order and regrouping them
 /// changes nothing, exactly as three real lamps would. Screen happens to share those
 /// properties (it is addition conjugated by `1 − e^{-x}`'s cousin), which is *why*
 /// it survived; these are what you get when the curve is chosen for how light
 /// actually rolls off instead of for algebraic convenience.
 ///
+/// [`Reinhard`](Self::Reinhard) and [`Drago`](Self::Drago) are the emissive half:
+/// they add light and their identity is black. [`Multiply`](Self::Multiply) is the
+/// subtractive half — the same construction with `T(x) = e^{-x}`, which makes the
+/// added quantity optical density and the identity white. That is the *whole* of
+/// what changes between the two halves; the family is one idea, not two.
+///
 /// The combination happens in **CIE XYZ normalized to the display white**, not in
 /// the working colour space and not in RGB: XYZ is linear in light, its components
-/// are non-negative for every real colour (which is what makes both curves
+/// are non-negative for every real colour (which is what makes the curves
 /// well-defined), and normalizing by the white point puts an in-gamut colour's
 /// components in `[0,1]` — so "1" means the same thing on all three axes. Blending
 /// in RGB instead would make the result depend on the display's primaries; blending
@@ -141,6 +147,40 @@ pub enum BlendMode {
     /// per-layer blend parameters are the seam a future mapping UI lands on, and
     /// DESIGN's precedent is that no knob appears before something turns it.
     Drago,
+    /// **Multiply** — the same construction read the other way round, with
+    /// `T(x) = e^{-x}`, which collapses to
+    ///
+    /// ```text
+    ///     f(a, b) = a·b
+    /// ```
+    ///
+    /// The quantity being added is **optical density**, so this is Beer-Lambert:
+    /// what two stacked filters, two glazes, or two sheets of stained glass do to
+    /// the light passing through them. It is the mode Screen is an inversion *of* —
+    /// and of the two it is the one that describes something real, which is why this
+    /// is here and Screen is not.
+    ///
+    /// Everything the emissive modes guarantee still holds, dualised: commutative
+    /// and associative, so a stack of glazes is order-independent, but the neutral
+    /// element is **white** rather than black. Glaze over bare paper and nothing
+    /// happens; glaze over black and nothing shows. Because it runs in normalized
+    /// XYZ rather than in RGB, the darkening is a statement about light rather than
+    /// about the display's primaries — two saturated glazes cross without the dead
+    /// channel that an RGB multiply produces when one primary happens to be near
+    /// zero.
+    ///
+    /// The one mode here that *removes* light, and so the one that never reaches the
+    /// media pass's highlight roll-off: its output is in `[0,1]` by construction.
+    ///
+    /// One consequence to know about. The blend sees the layer stack, not the
+    /// **substrate** — the paper is composited in pass B, after all blending
+    /// (`media_common.wesl`) — so a glaze laid on bare canvas leaves the paper's own
+    /// colour untouched instead of tinting it. On white paper that is exactly right,
+    /// white being multiply's identity, and it is why the mode reads correctly to a
+    /// painter by default. On a toned ground it is a divergence from what a real
+    /// glaze would do, and the fix is not here: it is for the substrate to become the
+    /// bottom of the stack rather than a step of the media pass.
+    Multiply,
 }
 
 /// The bend of [`BlendMode::Drago`]'s log curve, in units of display white. Large
@@ -157,16 +197,22 @@ pub const DRAGO_K: f32 = 0.6;
 
 impl BlendMode {
     /// Every mode, in the order a frontend should offer them: `Normal` first, then
-    /// increasingly emphatic light.
-    pub const ALL: [BlendMode; 3] = [Self::Normal, Self::Reinhard, Self::Drago];
+    /// increasingly emphatic light, then the one that takes light away.
+    pub const ALL: [BlendMode; 4] = [Self::Normal, Self::Reinhard, Self::Drago, Self::Multiply];
 
     /// What this mode is called. The painter-facing name, not the tonemap's — the
     /// curve is how it is *built*, not what it is *for*.
+    ///
+    /// `Multiply` is the exception that proves it: there the operation's name and the
+    /// painter's name are the same word, and it has been that word in every paint
+    /// program for thirty years. Renaming it "Glaze" to match its neighbours would be
+    /// inventing a synonym for a term of art nobody needs translated.
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
             Self::Reinhard => "Glow",
             Self::Drago => "Radiance",
+            Self::Multiply => "Multiply",
         }
     }
 

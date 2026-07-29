@@ -14,6 +14,14 @@
 // `BlendMode::Drago`) clips at white here instead of surviving into the media pass's
 // highlight roll-off the way it does in an Oklab document. That is not a bug being
 // tolerated; it is what the medium says. Paint does not glow.
+//
+// `Multiply` is the one the medium has no complaint about — a glaze *is* a pigment
+// operation — but it still takes the same road out to light and back, and that is
+// deliberate rather than a missed shortcut. Multiplying the concentrations directly
+// would be cheaper and would mean nothing: `c` is how much of a pigment is present,
+// not how much light gets through, so their product is not a quantity. Two glazes
+// attenuate the light passing through them, which is a statement about light, so it
+// is settled in light and the LUT is asked which mixture ended up that colour.
 
 import package::color::{srgb_to_linear, linear_to_srgb};
 import package::mixbox_poly::{mixbox_eval_polynomial};

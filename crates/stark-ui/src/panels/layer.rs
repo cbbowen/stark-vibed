@@ -120,6 +120,10 @@ fn blend_hint(mode: BlendMode) -> &'static str {
             "Combines light on a log curve \u{2014} hotter, and where two lights coincide \
              it pushes past white into the highlight roll-off. For flame and speculars."
         }
+        BlendMode::Multiply => {
+            "Takes light away instead of adding it, the way stacked glazes do \u{2014} \
+             white leaves the layer below alone, black hides it. For shadows and tinting."
+        }
     }
 }
 

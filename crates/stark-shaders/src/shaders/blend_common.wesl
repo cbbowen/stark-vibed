@@ -24,10 +24,26 @@
 //
 // Every mode below is that sentence with a different `T`. Writing them as
 // conjugations of `+` is what buys the properties that matter in practice:
-// commutativity, associativity, and black as an identity — so stacking three glow
+// commutativity, associativity, and a neutral element — so stacking three glow
 // layers is order-independent and regrouping them changes nothing, which is what
 // real lamps do and what a blend mode has to do if a painting is going to survive
 // being reordered.
+//
+// `multiply` is the same sentence read the other way round, and it is the reason the
+// paragraph above can be so rude about Screen. Take `T(x) = e^{-x}`, so `T⁻¹(y) =
+// −log y`. Then the conjugation collapses to plain `f(a,b) = ab`, and the quantity
+// that adds is **optical density** — which is Beer-Lambert, exactly what two stacked
+// filters, two glazes, or two sheets of stained glass do to the light passing
+// through them. Screen is this function conjugated *again* by `x ↦ 1−x`, and that
+// second conjugation is the step with no physical referent: nothing in optics
+// complements a transmittance. So of the two, multiply is the real one and Screen is
+// the shadow it casts, which is why one is here and the other is not.
+//
+// The dual runs all the way down. The emissive modes add light and have **black** as
+// their identity; multiply adds density and has **white** as its identity, black
+// being an annihilator instead. Both are still commutative and associative, so the
+// stack-reordering guarantee is unchanged — a glaze does not care what order it was
+// laid down in either.
 //
 //
 // WHY NORMALIZED XYZ
@@ -46,7 +62,10 @@
 //   · **White is 1 on all three axes.** The sRGB→XYZ rows sum to the white point, so
 //     dividing each row by its own sum makes an in-gamut colour land in `[0,1]³` and
 //     makes "1" mean the same thing on X, Y and Z. Without it, Z tops out at 1.089
-//     and Reinhard's `1 − ab` changes sign.
+//     and Reinhard's `1 − ab` changes sign. Multiply needs it even more directly:
+//     white is its *identity*, and in raw XYZ multiplying by white would scale a
+//     colour by `(0.9505, 1.0, 1.089)` — every glaze over white paper coming back
+//     dimmer and colder than it went in.
 //   · **Primary-independent.** Blending in RGB makes the result a function of the
 //     display's primaries. Two apps with different working primaries would disagree
 //     about what "glow" means; XYZ does not have an opinion.
@@ -58,6 +77,7 @@ const EPS: f32 = 1e-4;
 // enum, which has no business knowing a `u32`.
 const MODE_REINHARD: u32 = 1u;
 const MODE_DRAGO: u32 = 2u;
+const MODE_MULTIPLY: u32 = 3u;
 
 struct Blend {
     // Which mode (see the codes above).
@@ -154,12 +174,20 @@ fn drago(a: f32, bb: f32, k: f32) -> f32 {
 //
 // Inputs are clamped into `[0,1]` first: the curves are defined on light between
 // black and display white, and a channel outside that came from a colour outside the
-// gamut, not from light that is really there. The *output* is deliberately not
-// clamped — Drago's overshoot is the feature, and the half-float composite target
-// carries it into the media pass's highlight roll-off.
+// gamut, not from light that is really there. Multiply wants the clamp for a blunter
+// reason — two negative channels multiply to a *positive* one, so an out-of-gamut
+// pair would come back brighter from the one mode that only ever darkens. The
+// *output* is deliberately not clamped — Drago's overshoot is the feature, and the
+// half-float composite target carries it into the media pass's highlight roll-off.
 fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
     let x = clamp(back, vec3<f32>(0.0), vec3<f32>(1.0));
     let y = clamp(src, vec3<f32>(0.0), vec3<f32>(1.0));
+    // Multiply is `T(T⁻¹(a) + T⁻¹(b))` for `T(x) = e^{-x}` — adding optical density,
+    // which is what a glaze does. No helper: unlike the emissive curves there is
+    // nothing to rearrange for stability, because there is nothing to be unstable.
+    if b.mode == MODE_MULTIPLY {
+        return x * y;
+    }
     if b.mode == MODE_DRAGO {
         return vec3<f32>(drago(x.x, y.x, b.k), drago(x.y, y.y, b.k), drago(x.z, y.z, b.k));
     }

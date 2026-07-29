@@ -956,9 +956,13 @@ white, which is the only space in play that is linear in light, non-negative for
 every real colour, and free of an opinion about the display's primaries. `Glow`
 takes Reinhard's `x/(1+x)`, whose asymptote means no stack of layers can ever clip;
 `Radiance` takes Drago's `k·log(1 + x/k)`, which has no asymptote and pushes past
-white into pass B's highlight roll-off on purpose. Being conjugations of `+` makes
-both commutative, associative and black-identity, so reordering a stack of them is
-not a colour decision. See `document::BlendMode` and `blend_common.wesl`; each colour
+white into pass B's highlight roll-off on purpose. `Multiply` takes `e^{-x}`, which
+collapses the conjugation to plain `ab` and makes the added quantity **optical
+density** — Beer-Lambert, what stacked glazes do — so the same construction covers
+the subtractive side, with white as its neutral element instead of black. Being
+conjugations of `+` makes all three commutative and associative, so reordering a
+stack of them is not a colour decision. See `document::BlendMode` and
+`blend_common.wesl`; each colour
 space supplies only its channels ↔ light conversion, which for Mixbox is the pigment
 polynomial and its inverse LUT (`mixbox_lut.wesl`), the one place the engine inverts
 Mixbox on the GPU.

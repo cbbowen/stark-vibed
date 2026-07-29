@@ -75,12 +75,12 @@ non-axis-aligned scaling are the same vocabulary rather than a bolted-on mode,
 previewing losslessly through the same renderer and committing once. Remaining:
 snapping, and the cut/copy/paste clipboard, which reuses the parcel machinery.
 
-### 0.4 Fill, gradient, and blend modes — **light modes built**
+### 0.4 Fill, gradient, and blend modes — **blend modes built**
 
 Combining light is *how* digital painters glaze, and losing it costs more finished
-work than any brush feature gains. The two light-combining modes are **built**, and
-so is the per-layer isolation they needed — the same prerequisite as groups and
-adjustment layers, so it is one investment paying three ways.
+work than any brush feature gains. The light-combining modes and **Multiply** are
+**built**, and so is the per-layer isolation they needed — the same prerequisite as
+groups and adjustment layers, so it is one investment paying three ways.
 
 What shipped is deliberately not Screen. Screen (`a + b − ab`) is what falls out of
 inverting a multiply; it describes no optical process, and it flattens the top of the
@@ -88,7 +88,7 @@ range into the chalky white that reads as "digital glow" at a glance. Light does
 exactly one thing when combined — it adds — but the numbers in a layer are light that
 has *already* been through a tone curve, so the honest operation is to undo the curve,
 add, and put it back: `f(a,b) = T(T⁻¹(a) + T⁻¹(b))`, evaluated in CIE XYZ normalized
-to the display white. Two curves ship:
+to the display white. Three curves ship:
 
 - **Glow** (Reinhard, `T(x) = x/(1+x)`) → `f = (a + b − 2ab)/(1 − ab)`. The curve is
   asymptotic, so this **cannot blow out**: stack a hundred glow layers and the result
@@ -98,15 +98,27 @@ to the display white. Two curves ship:
   A log curve has no asymptote, so this one *does* push past display white — and that
   overflow is the point, because the half-float targets carry it into the media pass's
   highlight roll-off (DESIGN §6.3) as a bloom with a filmic shoulder instead of a clip.
+- **Multiply** (`T(x) = e^{-x}`) → `f = ab`. The same construction read the other way
+  round: the quantity that adds is **optical density**, so this is Beer-Lambert — what
+  two stacked filters or two glazes do to the light passing through them. It is the
+  mode Screen is an inversion *of*, and of the two it is the one describing something
+  real, which is the argument above finally cashed. In normalized XYZ rather than RGB,
+  so two saturated glazes cross without the dead channel an RGB multiply produces when
+  one primary happens to sit near zero.
 
-Being conjugations of `+` makes both commutative, associative, and black-identity, so
-reordering a stack of them is not a colour decision — `tests/blend.rs` pins that, along
-with the identity (a mode over an empty stack is bit-for-bit the `Normal` render).
-Mixbox documents get the same algebra through the pigment polynomial and its inverse
-LUT, which is the first time Mixbox has had to run *backwards* on the GPU.
+Being conjugations of `+` makes all three commutative and associative with a neutral
+element, so reordering a stack of them is not a colour decision — `tests/blend.rs` pins
+that, along with the identity (a mode over an empty stack is bit-for-bit the `Normal`
+render). The neutral element is where the family splits and where the tests split with
+it: black for the emissive pair, **white** for multiply, with black an annihilator
+instead. Mixbox documents get the same algebra through the pigment polynomial and its
+inverse LUT, which is the first time Mixbox has had to run *backwards* on the GPU.
 
-Multiply and the darkening family are the obvious next pair, and they attach at the
-same seam: one more `T`, one more variant, no new machinery.
+The rest of the darkening family attaches at the same seam — one more `T`, one more
+variant, no new machinery. The one thing that is *not* free: a glaze sees the layer
+stack but not the substrate, which pass B composites underneath afterwards, so multiply
+over bare paper leaves the paper alone. Correct on white paper (its identity), wrong on
+a toned ground, and the fix is to make the substrate the bottom of the stack.
 
 Fill and gradient remain, and are how anyone blocks in. Both hit an infinite-canvas
 wrinkle worth deciding once: a flood fill of an unbounded region is undefined, so fill

@@ -139,6 +139,7 @@ fn blend_code(mode: BlendMode) -> u32 {
         BlendMode::Normal => 0,
         BlendMode::Reinhard => 1,
         BlendMode::Drago => 2,
+        BlendMode::Multiply => 3,
     }
 }
 
