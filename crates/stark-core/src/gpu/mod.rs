@@ -4,6 +4,7 @@
 pub mod composite;
 pub mod context;
 pub mod environment;
+pub mod pigment;
 pub mod readback;
 pub mod registry;
 pub mod selection;
@@ -12,7 +13,9 @@ pub mod surface;
 pub mod tile;
 pub mod transform;
 
-pub use composite::{CompositeItem, Compositor, MatteDraw, MediaParams, SelectionOutline};
+pub use composite::{
+    CompositeGroup, CompositeItem, Compositor, MatteDraw, MediaParams, SelectionOutline,
+};
 pub use context::GpuContext;
 pub use environment::{Environment, EnvironmentId};
 pub use registry::{Registry, Resource};

@@ -10,6 +10,7 @@ use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch};
 use stark_core::LayerInfo;
 use stark_core::command::{DocCommand, PeerCommand};
+use stark_core::document::BlendMode;
 
 #[component]
 pub fn LayerPanel() -> Element {
@@ -72,10 +73,52 @@ pub fn LayerPanel() -> Element {
                     },
                 }
             }
+            div { class: "slider-row",
+                div { class: "slider-label", "Blend" }
+                select {
+                    class: "select",
+                    // The mode's own description, so the difference between the two
+                    // light modes is readable without painting a test stroke.
+                    title: "{blend_hint(l.blend)}",
+                    onchange: move |e| {
+                        if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
+                            dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
+                        }
+                    },
+                    for mode in BlendMode::ALL {
+                        option {
+                            value: "{mode.label()}",
+                            selected: mode == l.blend,
+                            "{mode.label()}"
+                        }
+                    }
+                }
+            }
         }
 
         for info in layers.iter().rev().cloned() {
             LayerRow { info }
+        }
+    }
+}
+
+/// What a blend mode does, in one line, for the picker's tooltip.
+///
+/// Here rather than beside [`BlendMode`] for the same reason [`layer_label`] is: the
+/// mode's *name* is part of what it is and travels with the document, but how you
+/// explain it to someone hovering a drop-down is a frontend's business. The core
+/// says "Glow"; deciding that a painter wants to hear "cannot blow out" rather than
+/// "conjugate of addition under `x/(1+x)`" is a presentation call.
+fn blend_hint(mode: BlendMode) -> &'static str {
+    match mode {
+        BlendMode::Normal => "The layer sits on top of what is below it.",
+        BlendMode::Reinhard => {
+            "Combines light instead of covering it \u{2014} softer than Screen, and it \
+             cannot blow out however deep you stack it. For glazes, mist and rim light."
+        }
+        BlendMode::Drago => {
+            "Combines light on a log curve \u{2014} hotter, and where two lights coincide \
+             it pushes past white into the highlight roll-off. For flame and speculars."
         }
     }
 }

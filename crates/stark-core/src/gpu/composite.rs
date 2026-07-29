@@ -3,7 +3,8 @@
 //! Two passes:
 //!   A. Composite every visible tile's channels into viewport-sized offscreen
 //!      targets — Oklab color (premultiplied "over") and the `(height)` aux
-//!      (additive).
+//!      (additive). Layers whose [`BlendMode`] is not `Normal` are isolated and
+//!      merged through a blend pass; see [`CompositeGroup`].
 //!   B. A fullscreen media pass that derives normals from the height field,
 //!      lights the impasto, adds the paint film's gloss, converts Oklab →
 //!      display, and composites over the background into the final target.
@@ -16,11 +17,13 @@ use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
+use crate::document::{BlendMode, DRAGO_K};
 use crate::geom::{
     Extent2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, ViewTransform,
 };
 use crate::gpu::context::GpuContext;
 use crate::gpu::environment::Environment;
+use crate::gpu::pigment::PigmentLut;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 use crate::gpu::tile::TilePairHandle;
 
@@ -99,6 +102,92 @@ pub enum CompositeItem {
     Matte(MatteDraw),
 }
 
+/// One **blend group** of pass A: a run of the stack that composites internally
+/// under premultiplied "over", and the mode by which its result merges into
+/// everything below it (MISSING_FEATURES.md §0.4).
+///
+/// A `Normal` group is a whole run of consecutive `Normal` layers. They compose
+/// correctly against each other *and* against the accumulator with no isolation, so
+/// a document that uses no blend modes is one group and costs exactly what the flat
+/// tile list cost before blend modes existed.
+///
+/// Anything else is a single layer on its own, because a blend mode is defined
+/// against *what is underneath the layer* — which means the layer has to be
+/// composited alone, on nothing, before it can be merged. That is the per-layer
+/// isolation DESIGN §6.3 names as the prerequisite for richer modes, and it is the
+/// same investment groups and adjustment layers need.
+#[derive(Clone)]
+pub struct CompositeGroup {
+    pub blend: BlendMode,
+    pub items: Vec<CompositeItem>,
+}
+
+/// Mirrors `Blend` in `blend_common.wesl` (16 bytes).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct BlendUniform {
+    mode: u32,
+    k: f32,
+    _pad: [f32; 2],
+}
+
+/// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
+/// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
+/// `Normal` never reaches the pass — it is the absence of one.
+fn blend_code(mode: BlendMode) -> u32 {
+    match mode {
+        BlendMode::Normal => 0,
+        BlendMode::Reinhard => 1,
+        BlendMode::Drago => 2,
+    }
+}
+
+/// One dynamic-offset slot of the blend uniform, padded to the alignment every
+/// backend accepts (`min_uniform_buffer_offset_alignment` is 256 on the strictest).
+///
+/// A slot per blend group rather than one buffer rewritten per pass: `write_buffer`
+/// is a *queue* operation, so N rewrites before a single submit would leave every
+/// pass reading the last mode written. Two blend layers in one document is not an
+/// edge case, so the buffer holds them all and each pass binds its own offset.
+const BLEND_SLOT: u64 = 256;
+
+/// The extra viewport-sized targets a non-`Normal` layer needs (MISSING_FEATURES
+/// §0.4).
+///
+/// Two pairs, not one. `iso` is where a layer composites alone; `swap` is the other
+/// half of a ping-pong, because the blend pass reads the accumulator and writes the
+/// merged result and a texture cannot be both. They are allocated only when a
+/// document actually contains a non-`Normal` layer — an ordinary painting never pays
+/// the ~40 MB.
+struct ScratchTargets {
+    size: Extent2,
+    swap_color: wgpu::TextureView,
+    swap_aux: wgpu::TextureView,
+    iso_color: wgpu::TextureView,
+    iso_aux: wgpu::TextureView,
+}
+
+impl ScratchTargets {
+    fn new(
+        device: &wgpu::Device,
+        size: Extent2,
+        color_format: wgpu::TextureFormat,
+        aux_format: wgpu::TextureFormat,
+    ) -> Self {
+        let make = |format, label| offscreen_view(device, size, format, label);
+        Self {
+            size,
+            swap_color: make(color_format, "stark blend swap color"),
+            swap_aux: make(aux_format, "stark blend swap aux"),
+            iso_color: make(color_format, "stark blend iso color"),
+            iso_aux: make(aux_format, "stark blend iso aux"),
+        }
+    }
+}
+
+/// A color + aux target pair, as pass A hands one around.
+type Targets<'a> = (&'a wgpu::TextureView, &'a wgpu::TextureView);
+
 /// Mirrors `Media` in `media_common.wesl` (80 bytes).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -160,6 +249,17 @@ pub struct Compositor {
     matte_pipeline: wgpu::RenderPipeline,
     matte_instances: wgpu::Buffer,
     matte_cap: usize,
+
+    // Per-layer blend modes, inside pass A (MISSING_FEATURES.md §0.4). One
+    // fullscreen draw merging an isolated layer into the accumulator.
+    blend_pipeline: wgpu::RenderPipeline,
+    blend_bgl: wgpu::BindGroupLayout,
+    blend_buf: wgpu::Buffer,
+    blend_slots: usize,
+    pigment: PigmentLut,
+    // Allocated on first use and kept: only a document with a non-`Normal` layer
+    // ever pays for them.
+    scratch: Option<ScratchTargets>,
 
     // Pass C: the selection outline, drawn over the lit result (DESIGN.md §6.8).
     // One instanced quad per mask tile, in the same canvas→NDC frame as pass A.
@@ -377,6 +477,95 @@ impl Compositor {
             mapped_at_creation: false,
         });
 
+        // ---- Per-layer blend, inside pass A (MISSING_FEATURES.md §0.4) ----
+        //
+        // A fullscreen pass reading the accumulator and one isolated layer, writing
+        // the merge to the *other* accumulator. Its own bind group layout: every
+        // texture here is read with `textureLoad` at the fragment's own coordinate,
+        // so nothing needs filtering — except the pigment LUT, which is a table
+        // Mixbox interpolates in hardware (`mixbox_lut.wesl`).
+        let blend_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stark blend"),
+            source: wgpu::ShaderSource::Wgsl(color_space.blend_shader().into()),
+        });
+        let blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark blend bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        // One slot per blend group in the frame; see `BLEND_SLOT`.
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<BlendUniform>() as u64,
+                        ),
+                    },
+                    count: None,
+                },
+                load_tex_entry(1), // accumulator color
+                load_tex_entry(2), // accumulator aux
+                load_tex_entry(3), // isolated layer color
+                load_tex_entry(4), // isolated layer aux
+                tex_entry(5),      // pigment LUT (filtered)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let blend_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("stark blend layout"),
+            bind_group_layouts: &[Some(&blend_bgl)],
+            immediate_size: 0,
+        });
+        let blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark blend pipeline"),
+            layout: Some(&blend_layout),
+            vertex: wgpu::VertexState {
+                module: &blend_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &blend_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                // No fixed-function blend on either target: the pass computes the
+                // whole merge — backdrop included — and *replaces* what it writes.
+                // That is the point of the ping-pong.
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: aux_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let blend_buf = alloc_blend(device, 1);
+        // Decoded only where it is read from: an Oklab document gets a 1×1 stand-in
+        // so the one bind group layout still has something to bind.
+        let pigment = if color_space.needs_pigment_lut() {
+            PigmentLut::load(ctx)
+        } else {
+            PigmentLut::placeholder(ctx)
+        };
+
         // ---- Pass C: selection outline (DESIGN.md §6.8) ----
         //
         // Its own view bind group rather than pass A's: the fragment stage needs the
@@ -561,6 +750,12 @@ impl Compositor {
             matte_pipeline,
             matte_instances,
             matte_cap: 1,
+            blend_pipeline,
+            blend_bgl,
+            blend_buf,
+            blend_slots: 1,
+            pigment,
+            scratch: None,
             overlay_pipeline,
             overlay_view_bg,
             overlay_tile_bgl,
@@ -631,7 +826,7 @@ impl Compositor {
         (self.color_format, self.aux_format)
     }
 
-    /// Write the view uniform and upload pass A's instance streams for `items`,
+    /// Write the view uniform and upload pass A's instance streams for `groups`,
     /// returning the per-tile bind groups that pass draws with.
     ///
     /// Split out of [`Self::render`] so [`Self::composite_channels`] runs the *same*
@@ -641,7 +836,7 @@ impl Compositor {
     fn prepare_composite(
         &mut self,
         view: ViewTransform,
-        items: &[CompositeItem],
+        groups: &[CompositeGroup],
     ) -> Vec<wgpu::BindGroup> {
         let device = &self.ctx.device;
 
@@ -664,14 +859,15 @@ impl Compositor {
         );
 
         // Split the ordered item list into the two instance streams, remembering
-        // for each item which stream slot it draws from. The *order* of `items` is
+        // for each item which stream slot it draws from. The *order* of the items is
         // what has to survive — a matte must composite over the tiles below it and
-        // under the tiles above — so the draw loop in `encode_composite` walks
-        // `items`, not these.
+        // under the tiles above — so the draw loop in `encode_composite` walks the
+        // groups, not these. The streams are flat across every group, so a blend
+        // group costs no extra buffer and the instance index keeps running.
         let mut instances: Vec<Instance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
         let mut mattes: Vec<MatteInstance> = Vec::new();
-        for item in items {
+        for item in groups.iter().flat_map(|g| g.items.iter()) {
             match item {
                 CompositeItem::Tile {
                     coord,
@@ -728,35 +924,153 @@ impl Compositor {
                 .queue
                 .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
         }
+
+        // One uniform slot per blend group, all written before the single submit —
+        // see `BLEND_SLOT` for why they cannot share one.
+        let modes: Vec<BlendMode> = groups
+            .iter()
+            .map(|g| g.blend)
+            .filter(|b| !b.is_normal())
+            .collect();
+        if !modes.is_empty() {
+            if modes.len() > self.blend_slots {
+                self.blend_buf = alloc_blend(device, modes.len());
+                self.blend_slots = modes.len();
+            }
+            for (i, mode) in modes.iter().enumerate() {
+                self.ctx.queue.write_buffer(
+                    &self.blend_buf,
+                    i as u64 * BLEND_SLOT,
+                    bytemuck::bytes_of(&BlendUniform {
+                        mode: blend_code(*mode),
+                        k: DRAGO_K,
+                        _pad: [0.0; 2],
+                    }),
+                );
+            }
+        }
         tile_bgs
     }
 
-    /// Encode pass A: every item composited into `color` + `aux`, in stack order.
-    /// Requires a preceding [`Self::prepare_composite`] for the same `items`.
+    /// Encode pass A: every group composited into `color` + `aux`, in stack order.
+    /// Requires a preceding [`Self::prepare_composite`] for the same `groups`.
+    ///
+    /// `scratch` is the extra target pair set a non-`Normal` group needs, sized to
+    /// match `color`/`aux`. It may be `None` only when every group is `Normal`.
+    ///
+    /// **The ping-pong, and why the caller's targets always win.** A blend pass reads
+    /// the accumulator and writes the merge, so it needs somewhere else to write; the
+    /// accumulator therefore alternates between the caller's pair and `scratch.swap`.
+    /// Rather than copy at the end, the *start* is chosen by parity: with an odd
+    /// number of blend groups the stack begins in `swap`, and every flip lands the
+    /// final result exactly where the caller asked for it. That is what lets the
+    /// media pass keep one bind group and the eyedropper keep its own targets.
     fn encode_composite(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
         aux: &wgpu::TextureView,
+        groups: &[CompositeGroup],
+        tile_bgs: &[wgpu::BindGroup],
+        scratch: Option<&ScratchTargets>,
+    ) {
+        let blends = groups.iter().filter(|g| !g.blend.is_normal()).count();
+        let target: Targets<'_> = (color, aux);
+        let swap: Targets<'_> = match scratch {
+            Some(s) => (&s.swap_color, &s.swap_aux),
+            // Unreachable while `blends == 0`, which is the only case `None` is legal
+            // in; `alt` is never read then.
+            None => target,
+        };
+        let (mut cur, mut alt) = if blends % 2 == 1 {
+            (swap, target)
+        } else {
+            (target, swap)
+        };
+
+        // Whether `cur` holds a real accumulator yet. The first group's draw clears
+        // as it goes; a blend group cannot, because the pass *reads* what is under
+        // it, so a stack that opens with one needs the clear encoded on its own.
+        let mut written = false;
+        let (mut tile_i, mut matte_i) = (0u32, 0u32);
+        let mut blend_i = 0u32;
+
+        for group in groups {
+            if group.blend.is_normal() {
+                self.encode_items(
+                    encoder,
+                    cur,
+                    &group.items,
+                    tile_bgs,
+                    &mut tile_i,
+                    &mut matte_i,
+                    !written,
+                );
+                written = true;
+                continue;
+            }
+            let s = scratch.expect("blend group without scratch targets");
+            if !written {
+                clear_targets(encoder, cur);
+                written = true;
+            }
+            // The layer, alone on nothing — the isolation the mode is defined against.
+            let iso: Targets<'_> = (&s.iso_color, &s.iso_aux);
+            self.encode_items(
+                encoder,
+                iso,
+                &group.items,
+                tile_bgs,
+                &mut tile_i,
+                &mut matte_i,
+                true,
+            );
+            self.encode_blend(encoder, cur, iso, alt, blend_i);
+            blend_i += 1;
+            // `alt` now holds the merged stack and becomes the accumulator; what was
+            // `cur` is stale, and the next blend pass overwrites all of it.
+            std::mem::swap(&mut cur, &mut alt);
+        }
+        // An empty stack still has to leave the caller a cleared accumulator.
+        if !written {
+            clear_targets(encoder, cur);
+        }
+    }
+
+    /// Draw one group's items into `into`, in stack order, switching pipelines where
+    /// a matte sits between runs of tiles. Both pipelines share group 0 (the view
+    /// uniform), so only the vertex buffer and pipeline change.
+    ///
+    /// The instance indices are `&mut` because the streams are flat across every
+    /// group: a group draws the next run of them and hands the cursor on.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_items(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        into: Targets<'_>,
         items: &[CompositeItem],
         tile_bgs: &[wgpu::BindGroup],
+        tile_i: &mut u32,
+        matte_i: &mut u32,
+        clear: bool,
     ) {
+        let load = if clear {
+            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+        } else {
+            wgpu::LoadOp::Load
+        };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark composite pass"),
             color_attachments: &[
-                Some(clear_attachment(color, wgpu::Color::TRANSPARENT)),
-                Some(clear_attachment(aux, wgpu::Color::TRANSPARENT)),
+                Some(load_attachment(into.0, load)),
+                Some(load_attachment(into.1, load)),
             ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        // Walk the stack in order, switching pipelines where a matte sits
-        // between runs of tiles. Both pipelines share group 0 (the view
-        // uniform), so only the vertex buffer and pipeline change.
         pass.set_bind_group(0, &self.view_bg, &[]);
-        let (mut tile_i, mut matte_i) = (0u32, 0u32);
         let mut pipeline_is_matte = None;
         for item in items {
             match item {
@@ -766,9 +1080,9 @@ impl Compositor {
                         pass.set_vertex_buffer(0, self.instances.slice(..));
                         pipeline_is_matte = Some(false);
                     }
-                    pass.set_bind_group(1, &tile_bgs[tile_i as usize], &[]);
-                    pass.draw(0..4, tile_i..tile_i + 1);
-                    tile_i += 1;
+                    pass.set_bind_group(1, &tile_bgs[*tile_i as usize], &[]);
+                    pass.draw(0..4, *tile_i..*tile_i + 1);
+                    *tile_i += 1;
                 }
                 CompositeItem::Matte(_) => {
                     if pipeline_is_matte != Some(true) {
@@ -776,11 +1090,89 @@ impl Compositor {
                         pass.set_vertex_buffer(0, self.matte_instances.slice(..));
                         pipeline_is_matte = Some(true);
                     }
-                    pass.draw(0..4, matte_i..matte_i + 1);
-                    matte_i += 1;
+                    pass.draw(0..4, *matte_i..*matte_i + 1);
+                    *matte_i += 1;
                 }
             }
         }
+    }
+
+    /// Merge the isolated layer `src` into the accumulator `back` through blend slot
+    /// `slot`, writing the result to `out` (MISSING_FEATURES.md §0.4).
+    fn encode_blend(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        back: Targets<'_>,
+        src: Targets<'_>,
+        out: Targets<'_>,
+        slot: u32,
+    ) {
+        let bg = self
+            .ctx
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark blend bg"),
+                layout: &self.blend_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.blend_buf,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
+                        }),
+                    },
+                    view_entry(1, back.0),
+                    view_entry(2, back.1),
+                    view_entry(3, src.0),
+                    view_entry(4, src.1),
+                    view_entry(5, &self.pigment.view),
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(&self.pigment.sampler),
+                    },
+                ],
+            });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark blend pass"),
+            // The pass covers every texel and reads nothing from `out`, so the load
+            // is a don't-care; clearing states that rather than implying the previous
+            // contents matter.
+            color_attachments: &[
+                Some(clear_attachment(out.0, wgpu::Color::TRANSPARENT)),
+                Some(clear_attachment(out.1, wgpu::Color::TRANSPARENT)),
+            ],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.blend_pipeline);
+        pass.set_bind_group(0, &bg, &[slot * BLEND_SLOT as u32]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Make sure the cached scratch targets match `size`, if `groups` needs any, and
+    /// say whether they are wanted. `false` when every group is `Normal` — the common
+    /// case, which never allocates.
+    ///
+    /// The cache belongs to the *render* path, whose size changes only on a window
+    /// resize. [`Self::composite_channels`] deliberately does not use it: a pick
+    /// viewport is a handful of texels, and letting the two share one cache would
+    /// reallocate a viewport-sized pair twice a frame for the whole of an Alt-drag.
+    fn ensure_scratch(&mut self, size: Extent2, groups: &[CompositeGroup]) -> bool {
+        if groups.iter().all(|g| g.blend.is_normal()) {
+            return false;
+        }
+        if self.scratch.as_ref().is_none_or(|s| s.size != size) {
+            self.scratch = Some(ScratchTargets::new(
+                &self.ctx.device,
+                size,
+                self.color_format,
+                self.aux_format,
+            ));
+        }
+        true
     }
 
     /// Composite `items` into caller-supplied targets and **stop there** — pass A
@@ -803,20 +1195,40 @@ impl Compositor {
         color: &wgpu::TextureView,
         aux: &wgpu::TextureView,
         view: ViewTransform,
-        items: &[CompositeItem],
+        groups: &[CompositeGroup],
     ) {
-        let tile_bgs = self.prepare_composite(view, items);
+        let tile_bgs = self.prepare_composite(view, groups);
+        // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
+        // square, so this is a few kilobytes; sharing the render path's cache would
+        // trade that for reallocating the *window* twice a frame (see
+        // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
+        // eyedropper would report a colour the screen never showed.
+        let scratch = groups.iter().any(|g| !g.blend.is_normal()).then(|| {
+            ScratchTargets::new(
+                &self.ctx.device,
+                view.viewport,
+                self.color_format,
+                self.aux_format,
+            )
+        });
         let mut encoder = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stark pick encoder"),
             });
-        self.encode_composite(&mut encoder, color, aux, items, &tile_bgs);
+        self.encode_composite(
+            &mut encoder,
+            color,
+            aux,
+            groups,
+            &tile_bgs,
+            scratch.as_ref(),
+        );
         self.ctx.queue.submit([encoder.finish()]);
     }
 
-    /// Composite `tiles`, light the result into `target` under `view`, and outline
+    /// Composite `groups`, light the result into `target` under `view`, and outline
     /// each of `outlines` over it (DESIGN.md §6.8 — a universal selection draws
     /// nothing, so an unmasked document costs one skipped iteration).
     pub fn render(
@@ -824,7 +1236,7 @@ impl Compositor {
         target: &wgpu::TextureView,
         view: ViewTransform,
         bg_channels: [f32; 4],
-        items: &[CompositeItem],
+        groups: &[CompositeGroup],
         outlines: &[SelectionOutline<'_>],
         transparent: bool,
     ) {
@@ -832,7 +1244,8 @@ impl Compositor {
             self.size = view.viewport;
             self.rebuild_offscreen();
         }
-        let tile_bgs = self.prepare_composite(view, items);
+        let tile_bgs = self.prepare_composite(view, groups);
+        let want_scratch = self.ensure_scratch(self.size, groups);
         // Bound after everything that needs `&mut self`.
         let device = &self.ctx.device;
 
@@ -884,13 +1297,20 @@ impl Compositor {
             label: Some("stark composite encoder"),
         });
 
-        // Pass A: composite tiles into offscreen color + aux.
+        // Pass A: composite tiles into offscreen color + aux. The parity trick in
+        // `encode_composite` guarantees the result lands in these two views however
+        // many blend passes ran, so the media bind group never has to be rebuilt.
         self.encode_composite(
             &mut encoder,
             &self.comp_color_view,
             &self.comp_aux_view,
-            items,
+            groups,
             &tile_bgs,
+            if want_scratch {
+                self.scratch.as_ref()
+            } else {
+                None
+            },
         );
 
         // Pass B: media/lighting → target.
@@ -1024,15 +1444,81 @@ fn clear_attachment(
     view: &wgpu::TextureView,
     color: wgpu::Color,
 ) -> wgpu::RenderPassColorAttachment<'_> {
+    load_attachment(view, wgpu::LoadOp::Clear(color))
+}
+
+fn load_attachment(
+    view: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+) -> wgpu::RenderPassColorAttachment<'_> {
     wgpu::RenderPassColorAttachment {
         view,
         resolve_target: None,
         depth_slice: None,
         ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(color),
+            load,
             store: wgpu::StoreOp::Store,
         },
     }
+}
+
+/// A render pass that only clears. Encoded when the bottom of the stack is a blend
+/// group: that pass *reads* the accumulator, so unlike a run of tiles it cannot
+/// fold the clear into its own load op.
+fn clear_targets(encoder: &mut wgpu::CommandEncoder, into: Targets<'_>) {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("stark composite clear"),
+        color_attachments: &[
+            Some(clear_attachment(into.0, wgpu::Color::TRANSPARENT)),
+            Some(clear_attachment(into.1, wgpu::Color::TRANSPARENT)),
+        ],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+}
+
+fn view_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+    wgpu::BindGroupEntry {
+        binding,
+        resource: wgpu::BindingResource::TextureView(view),
+    }
+}
+
+/// A viewport-sized offscreen render target, as pass A and the blend pass use.
+fn offscreen_view(
+    device: &wgpu::Device,
+    size: Extent2,
+    format: wgpu::TextureFormat,
+    label: &str,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: size.width.max(1),
+                height: size.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// The blend uniform buffer: `count` dynamic-offset slots (see [`BLEND_SLOT`]).
+fn alloc_blend(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark blend uniform"),
+        size: BLEND_SLOT * count.max(1) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 /// How strongly another actor's selection outline reads against the artwork. Well
@@ -1094,28 +1580,8 @@ fn make_offscreen(d: OffscreenDesc<'_>) -> (wgpu::TextureView, wgpu::TextureView
         surface,
         environment,
     } = d;
-    let extent = wgpu::Extent3d {
-        width: size.width.max(1),
-        height: size.height.max(1),
-        depth_or_array_layers: 1,
-    };
-    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-    let make = |format, label| {
-        device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: extent,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default())
-    };
-    let comp_color_view = make(color_format, "stark comp color");
-    let comp_aux_view = make(aux_format, "stark comp aux");
+    let comp_color_view = offscreen_view(device, size, color_format, "stark comp color");
+    let comp_aux_view = offscreen_view(device, size, aux_format, "stark comp aux");
 
     let media_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("stark media bg"),

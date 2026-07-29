@@ -19,9 +19,9 @@ use crate::document::{
 use crate::geom::{Extent2, TileCoord, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
-    CompositeItem, Compositor, Environment, EnvironmentId, GpuContext, MatteDraw, Registry,
-    SelectionOutline, SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
-    TransformRenderer,
+    CompositeGroup, CompositeItem, Compositor, Environment, EnvironmentId, GpuContext, MatteDraw,
+    Registry, SelectionOutline, SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId,
+    TilePool, TransformRenderer,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -806,7 +806,7 @@ impl Engine {
         chrome: Chrome,
     ) {
         let doc = self.presented();
-        let items = self.composite_items(doc, None);
+        let groups = self.composite_groups(doc, None);
 
         // The substrate is document state now (FRAME_DESIGN.md §5), so the ground a
         // piece was painted on travels with it instead of living in whichever
@@ -834,7 +834,7 @@ impl Engine {
             target,
             view,
             bg_channels,
-            &items,
+            &groups,
             &outlines,
             background == Background::Transparent,
         );
@@ -974,25 +974,32 @@ impl Engine {
     }
 
     /// The compositor's draw list for `doc`, bottom-to-top: every visible layer's
-    /// tiles and mattes, each tagged with its layer opacity. Normal-blend layers
-    /// compose correctly under premultiplied "over"; richer blend modes (which need
-    /// per-layer isolation) are a follow-up.
+    /// tiles and mattes, each tagged with its layer opacity, cut into blend groups.
     ///
-    /// This is an *ordered* item list rather than a flat tile list because a matte
-    /// has to composite at its own place in the stack — a frame over the painting, a
-    /// ground under it (FRAME_DESIGN.md §4.4). The compositor re-batches consecutive
-    /// tiles into one instanced draw, so an all-paint document costs nothing for it.
+    /// Consecutive `Normal` layers share one group — they compose correctly against
+    /// each other and against everything below under premultiplied "over", so a
+    /// document that uses no blend modes produces exactly one group and the
+    /// compositor's work is unchanged. Every other layer becomes a group of its own,
+    /// because its mode is defined against *what is underneath it*, which means it
+    /// has to be composited in isolation first (MISSING_FEATURES §0.4).
+    ///
+    /// Within a group this is an *ordered* item list rather than a flat tile list
+    /// because a matte has to composite at its own place in the stack — a frame over
+    /// the painting, a ground under it (FRAME_DESIGN.md §4.4). The compositor
+    /// re-batches consecutive tiles into one instanced draw, so an all-paint document
+    /// costs nothing for it.
     ///
     /// `only` restricts the list to a single layer — the eyedropper's
     /// sample-one-layer option (MISSING_FEATURES §0.2). Sharing this with rendering
     /// is what makes a sample come off the same stack the screen draws, hidden
-    /// layers and layer opacity included.
-    fn composite_items(&self, doc: &DocState, only: Option<LayerId>) -> Vec<CompositeItem> {
-        let mut items: Vec<CompositeItem> = Vec::new();
+    /// layers, layer opacity and blend modes included.
+    fn composite_groups(&self, doc: &DocState, only: Option<LayerId>) -> Vec<CompositeGroup> {
+        let mut groups: Vec<CompositeGroup> = Vec::new();
         for layer in doc.layers.iter() {
             if !layer.visible || layer.opacity <= 0.0 || only.is_some_and(|id| id != layer.id) {
                 continue;
             }
+            let mut items: Vec<CompositeItem> = Vec::new();
             match &layer.content {
                 LayerContent::Paint(tiles) => {
                     items.extend(tiles.iter().map(|(coord, handle)| CompositeItem::Tile {
@@ -1013,8 +1020,24 @@ impl Engine {
                     }));
                 }
             }
+            // An empty layer is dropped rather than given a group. For `Normal` that
+            // only saves a loop; for a blend mode it saves two render passes that
+            // provably compute the identity, which is what keeps a stack of empty
+            // glow layers free.
+            if items.is_empty() {
+                continue;
+            }
+            match groups.last_mut() {
+                Some(last) if last.blend.is_normal() && layer.blend.is_normal() => {
+                    last.items.append(&mut items)
+                }
+                _ => groups.push(CompositeGroup {
+                    blend: layer.blend,
+                    items,
+                }),
+            }
         }
-        items
+        groups
     }
 
     /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).
@@ -1058,13 +1081,13 @@ impl Engine {
         };
         // The *presented* document, so a sample agrees with what is on screen —
         // including a collaborator's stroke that has not committed yet.
-        let items = {
+        let groups = {
             let doc = self.presented();
             let only = match options.source {
                 PickSource::Composite => None,
                 PickSource::Layer(id) => Some(id),
             };
-            self.composite_items(doc, only)
+            self.composite_groups(doc, only)
         };
 
         let (color_format, aux_format) = self.compositor.channel_formats();
@@ -1091,7 +1114,7 @@ impl Engine {
             &color.create_view(&wgpu::TextureViewDescriptor::default()),
             &aux.create_view(&wgpu::TextureViewDescriptor::default()),
             view,
-            &items,
+            &groups,
         );
 
         // Captured, not read through `self`: the future deliberately does not borrow

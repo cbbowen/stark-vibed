@@ -75,19 +75,43 @@ non-axis-aligned scaling are the same vocabulary rather than a bolted-on mode,
 previewing losslessly through the same renderer and committing once. Remaining:
 snapping, and the cut/copy/paste clipboard, which reuses the parcel machinery.
 
-### 0.4 Fill, gradient, and blend modes
+### 0.4 Fill, gradient, and blend modes — **light modes built**
 
-[`BlendMode`](crates/stark-core/src/document/layer.rs#L17) has exactly one
-variant, `Normal`. Multiply / Screen / Overlay is *how* digital painters shade
-and glaze; losing them costs more finished work than any brush feature gains.
-DESIGN §6.3 already notes richer modes need per-layer isolation — the same
-prerequisite as groups and adjustment layers, so it is one investment paying
-three ways.
+Combining light is *how* digital painters glaze, and losing it costs more finished
+work than any brush feature gains. The two light-combining modes are **built**, and
+so is the per-layer isolation they needed — the same prerequisite as groups and
+adjustment layers, so it is one investment paying three ways.
 
-Fill and gradient are how anyone blocks in. Both hit an infinite-canvas wrinkle
-worth deciding once: a flood fill of an unbounded region is undefined, so fill
-must be bounded by the selection, the layer's populated bounds
-(`DocState::bounds`), or the frame — another argument for §0.1's frame.
+What shipped is deliberately not Screen. Screen (`a + b − ab`) is what falls out of
+inverting a multiply; it describes no optical process, and it flattens the top of the
+range into the chalky white that reads as "digital glow" at a glance. Light does
+exactly one thing when combined — it adds — but the numbers in a layer are light that
+has *already* been through a tone curve, so the honest operation is to undo the curve,
+add, and put it back: `f(a,b) = T(T⁻¹(a) + T⁻¹(b))`, evaluated in CIE XYZ normalized
+to the display white. Two curves ship:
+
+- **Glow** (Reinhard, `T(x) = x/(1+x)`) → `f = (a + b − 2ab)/(1 − ab)`. The curve is
+  asymptotic, so this **cannot blow out**: stack a hundred glow layers and the result
+  approaches white without ever clipping. The mode for glazes, mist and rim light,
+  where Screen's flat white is exactly the failure.
+- **Radiance** (Drago, `T(x) = k·log(1 + x/k)`) → `f = k·log(e^{a/k} + e^{b/k} − 1)`.
+  A log curve has no asymptote, so this one *does* push past display white — and that
+  overflow is the point, because the half-float targets carry it into the media pass's
+  highlight roll-off (DESIGN §6.3) as a bloom with a filmic shoulder instead of a clip.
+
+Being conjugations of `+` makes both commutative, associative, and black-identity, so
+reordering a stack of them is not a colour decision — `tests/blend.rs` pins that, along
+with the identity (a mode over an empty stack is bit-for-bit the `Normal` render).
+Mixbox documents get the same algebra through the pigment polynomial and its inverse
+LUT, which is the first time Mixbox has had to run *backwards* on the GPU.
+
+Multiply and the darkening family are the obvious next pair, and they attach at the
+same seam: one more `T`, one more variant, no new machinery.
+
+Fill and gradient remain, and are how anyone blocks in. Both hit an infinite-canvas
+wrinkle worth deciding once: a flood fill of an unbounded region is undefined, so fill
+must be bounded by the selection, the layer's populated bounds (`DocState::bounds`),
+or the frame — another argument for §0.1's frame.
 
 ---
 

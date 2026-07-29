@@ -29,6 +29,11 @@ fn main() {
     // Mixbox color space: latent→RGB polynomial in the media pass (DESIGN.md §6.7).
     compiler.build_artifact(&"package::media_mixbox".parse().unwrap(), "media_mixbox");
 
+    // Per-layer blend modes: the isolated layer merged into the accumulator through
+    // a light-combining mode, one variant per color space (MISSING_FEATURES §0.4).
+    compiler.build_artifact(&"package::blend_oklab".parse().unwrap(), "blend_oklab");
+    compiler.build_artifact(&"package::blend_mixbox".parse().unwrap(), "blend_mixbox");
+
     // Stroke integrate pass: merge a stroke's scratch slab into the layer (§6.2/§6.1).
     compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
 

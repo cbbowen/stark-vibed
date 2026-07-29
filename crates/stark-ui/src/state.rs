@@ -377,7 +377,10 @@ mod transform_tests {
         let moved = stretched.linear * (from - ts.center);
         assert!((moved - (to - ts.center)).length() < 1e-3, "got {moved:?}");
         let pinned = stretched.linear * Vec2::new(0.0, 1.0);
-        assert!((pinned - Vec2::new(0.0, 1.0)).length() < 1e-6, "got {pinned:?}");
+        assert!(
+            (pinned - Vec2::new(0.0, 1.0)).length() < 1e-6,
+            "got {pinned:?}"
+        );
     }
 
     #[test]
@@ -402,15 +405,27 @@ mod transform_tests {
         let ts = state();
         let (c, r) = (ts.center, ts.radius);
         assert_eq!(ts.region(c, 4.0), TransformRegion::Inside);
-        assert_eq!(ts.region(c + Vec2::new(0.6 * r, 0.0), 4.0), TransformRegion::Inside);
+        assert_eq!(
+            ts.region(c + Vec2::new(0.6 * r, 0.0), 4.0),
+            TransformRegion::Inside
+        );
         assert_eq!(ts.region(c + Vec2::new(r, 0.0), 4.0), TransformRegion::Rim);
         assert_eq!(ts.region(c + Vec2::new(0.0, -r), 4.0), TransformRegion::Rim);
-        assert_eq!(ts.region(c + Vec2::new(1.6 * r, 0.0), 4.0), TransformRegion::Outside);
+        assert_eq!(
+            ts.region(c + Vec2::new(1.6 * r, 0.0), 4.0),
+            TransformRegion::Outside
+        );
 
         // Stretch the widget to 2× along x: the rim moves with it.
         let wide = ts.stretched(c + Vec2::new(r, 0.0), c + Vec2::new(2.0 * r, 0.0), 0.5);
-        assert_eq!(wide.region(c + Vec2::new(2.0 * r, 0.0), 4.0), TransformRegion::Rim);
-        assert_eq!(wide.region(c + Vec2::new(r, 0.0), 4.0), TransformRegion::Inside);
+        assert_eq!(
+            wide.region(c + Vec2::new(2.0 * r, 0.0), 4.0),
+            TransformRegion::Rim
+        );
+        assert_eq!(
+            wide.region(c + Vec2::new(r, 0.0), 4.0),
+            TransformRegion::Inside
+        );
     }
 }
 

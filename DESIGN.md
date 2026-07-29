@@ -910,8 +910,35 @@ is chrome.
 **A — composite.** Every visible tile of every visible layer is drawn, bottom to
 top, into two viewport-sized offscreen targets: colour (premultiplied "over", in
 the working colour space) and the `(height)` aux (additive). Layer opacity
-rides on the instance. Normal-blend layers compose correctly under premultiplied
-over; richer blend modes need per-layer isolation and are a follow-up.
+rides on the instance.
+
+A layer whose `BlendMode` is not `Normal` cannot go through that, because its mode
+is defined against *what is underneath it*. So pass A is cut into **blend groups**
+(`CompositeGroup`): a run of consecutive `Normal` layers is one group and draws
+straight into the accumulator — a document that uses no blend modes is a single
+group and costs exactly what the flat tile list always did — while every other layer
+is a group of its own, composited alone into an isolation target and then merged by
+a fullscreen blend pass. That pass reads the accumulator and writes the merge, so it
+needs somewhere else to write; rather than copy back, the accumulator ping-pongs
+between the caller's target pair and a scratch pair, and the *starting* side is
+chosen by the parity of the blend count so the final result always lands where the
+caller asked. The media pass therefore keeps one bind group and the eyedropper keeps
+its own targets. The scratch pairs are allocated on first use, so an ordinary
+painting never pays for them.
+
+The modes themselves are the interesting part, and they are deliberately not
+Photoshop's: each is ordinary **addition of light, conjugated by a tone curve** —
+`f(a,b) = T(T⁻¹(a) + T⁻¹(b))` — evaluated in CIE XYZ normalized to the display
+white, which is the only space in play that is linear in light, non-negative for
+every real colour, and free of an opinion about the display's primaries. `Glow`
+takes Reinhard's `x/(1+x)`, whose asymptote means no stack of layers can ever clip;
+`Radiance` takes Drago's `k·log(1 + x/k)`, which has no asymptote and pushes past
+white into pass B's highlight roll-off on purpose. Being conjugations of `+` makes
+both commutative, associative and black-identity, so reordering a stack of them is
+not a colour decision. See `document::BlendMode` and `blend_common.wesl`; each colour
+space supplies only its channels ↔ light conversion, which for Mixbox is the pigment
+polynomial and its inverse LUT (`mixbox_lut.wesl`), the one place the engine inverts
+Mixbox on the GPU.
 
 **B — media / lighting.** One fullscreen pass turns those two buffers into the
 painterly result, and it is where the "old masters" look lives:

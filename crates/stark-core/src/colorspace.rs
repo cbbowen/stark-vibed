@@ -52,6 +52,24 @@ pub trait ColorSpace {
     fn stamp_shader(&self) -> &'static str;
     /// WGSL for the media/lighting + present pass — DESIGN §6.3.
     fn media_shader(&self) -> &'static str;
+    /// WGSL for the per-layer blend pass — MISSING_FEATURES §0.4. One isolated
+    /// layer merged into the accumulator through a light-combining mode.
+    ///
+    /// A space needs its own variant because blending happens in *light* (normalized
+    /// CIE XYZ) while the targets hold channels, so the pass is bracketed by this
+    /// space's conversion out and back. The algebra between them is shared.
+    fn blend_shader(&self) -> &'static str;
+
+    /// Whether [`blend_shader`](Self::blend_shader) needs Mixbox's pigment LUT bound
+    /// (`mixbox_lut.wesl`).
+    ///
+    /// A property of the space rather than a flag on the pass: coming *back* from
+    /// light is a closed-form matrix in a colorimetric space and a table lookup in a
+    /// pigment one, and only the pigment case pays for the texture. Everything else
+    /// binds a 1×1 placeholder, so there is one bind group layout.
+    fn needs_pigment_lut(&self) -> bool {
+        false
+    }
 }
 
 /// Premultiplied "over" — the standard alpha compositing blend.
@@ -118,6 +136,9 @@ impl ColorSpace for OkLabColorSpace {
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_oklab()
     }
+    fn blend_shader(&self) -> &'static str {
+        stark_shaders::blend_oklab()
+    }
 }
 
 /// Experimental **Mixbox** pigment-mixing space (DESIGN.md §6.7). Colors are
@@ -168,5 +189,14 @@ impl ColorSpace for MixboxColorSpace {
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_mixbox()
+    }
+    fn blend_shader(&self) -> &'static str {
+        stark_shaders::blend_mixbox()
+    }
+    /// The one space that needs it: expressing combined *light* back as a pigment
+    /// mixture is Mixbox's LUT, the inverse of the polynomial the media pass runs
+    /// forward (MISSING_FEATURES §0.4).
+    fn needs_pigment_lut(&self) -> bool {
+        true
     }
 }

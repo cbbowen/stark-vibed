@@ -13,7 +13,7 @@ pub use action::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
     ColorDynamics, NoiseKind, OrientationSource, StrokeRecord, Tool,
 };
-pub use layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
+pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState};
 pub use timeline::{

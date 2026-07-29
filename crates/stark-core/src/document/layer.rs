@@ -1,7 +1,8 @@
 //! Layers (DESIGN.md §5.1, FRAME_DESIGN.md §2). A layer is either a sparse,
 //! persistent map of painted tiles or a **matte** — a procedural region filled
-//! with a flat colour — plus its presentation properties. Layer compositing
-//! across blend modes arrives in step 4; for now layers stack with `Normal` over.
+//! with a flat colour — plus its presentation properties. A layer stacks with
+//! premultiplied "over" unless its [`BlendMode`] says otherwise, in which case the
+//! compositor isolates it and merges it through the mode (MISSING_FEATURES.md §0.4).
 
 use std::sync::Arc;
 
@@ -66,10 +67,117 @@ fn mix32(x: u64) -> u32 {
     ((z ^ (z >> 31)) >> 32) as u32
 }
 
-/// How a layer combines with the layers below it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// How a layer combines with the layers below it (MISSING_FEATURES.md §0.4).
+///
+/// Everything past `Normal` is a **light-combining** mode — the family every other
+/// app spells "Screen" — and deliberately not Screen. Screen is `a + b − ab`, which
+/// is what falls out of inverting a multiply; it describes no physical process, and
+/// it crushes the top of the range into a flat, chalky white that is the giveaway of
+/// a digital glow.
+///
+/// Ours are derived the other way round. Two lights *add* — that is the only thing
+/// light does — but the numbers in a layer are not light, they are light that has
+/// already been through a tone curve on its way to being displayable. So the honest
+/// combination is: undo the curve, add, re-apply it. Every mode here is that same
+/// sentence with a different curve `T`:
+///
+/// ```text
+///     f(a, b) = T(T⁻¹(a) + T⁻¹(b))
+/// ```
+///
+/// Being a conjugation of addition is not a technicality — it is the whole
+/// guarantee. Each mode is commutative, associative, and has black as its identity,
+/// so three glowing layers give the same result in any order and regrouping them
+/// changes nothing, exactly as three real lamps would. Screen happens to share those
+/// properties (it is addition conjugated by `1 − e^{-x}`'s cousin), which is *why*
+/// it survived; these are what you get when the curve is chosen for how light
+/// actually rolls off instead of for algebraic convenience.
+///
+/// The combination happens in **CIE XYZ normalized to the display white**, not in
+/// the working colour space and not in RGB: XYZ is linear in light, its components
+/// are non-negative for every real colour (which is what makes both curves
+/// well-defined), and normalizing by the white point puts an in-gamut colour's
+/// components in `[0,1]` — so "1" means the same thing on all three axes. Blending
+/// in RGB instead would make the result depend on the display's primaries; blending
+/// in Oklab or in pigment concentrations would be adding things that are not light.
+///
+/// See `blend_common.wesl` for the derivations and `Compositor` for the isolation
+/// pass that makes per-layer blending possible at all.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlendMode {
+    /// Premultiplied "over": the layer sits on top of what is below it.
+    #[default]
     Normal,
+    /// **Glow** — addition conjugated by the Reinhard tonemap `T(x) = x/(1+x)`,
+    /// which collapses to
+    ///
+    /// ```text
+    ///     f(a, b) = (a + b − 2ab) / (1 − ab)
+    /// ```
+    ///
+    /// Reinhard's curve is asymptotic: no finite amount of light reaches 1. So this
+    /// mode **cannot blow out** — stack a hundred glow layers and the result
+    /// approaches white without ever clipping, and detail survives everywhere. That
+    /// makes it the one to reach for on glazes, mist, rim light and bloom, where
+    /// Screen's flat white is exactly the failure.
+    Reinhard,
+    /// **Radiance** — addition conjugated by Drago's log curve
+    /// `T(x) = k·log(1 + x/k)`, which collapses to
+    ///
+    /// ```text
+    ///     f(a, b) = k·log(e^{a/k} + e^{b/k} − 1)
+    /// ```
+    ///
+    /// A log curve has no asymptote, so unlike [`Reinhard`](Self::Reinhard) this one
+    /// *does* push past display white where two strong lights coincide — and that
+    /// overflow is the point. The composite targets are half-float, so the excess
+    /// survives into the media pass and comes back through its highlight roll-off
+    /// (DESIGN.md §6.3) as a genuine bloom with a filmic shoulder, rather than being
+    /// clipped at the blend. Reach for it on flame, specular hits, anything meant to
+    /// read as *brighter than the paper*.
+    ///
+    /// `k` sets how quickly the curve bends: large `k` tends to plain addition,
+    /// small `k` tends to `max`. It is fixed at [`DRAGO_K`] rather than exposed —
+    /// per-layer blend parameters are the seam a future mapping UI lands on, and
+    /// DESIGN's precedent is that no knob appears before something turns it.
+    Drago,
+}
+
+/// The bend of [`BlendMode::Drago`]'s log curve, in units of display white. Large
+/// `k` tends to plain addition, small `k` tends to `max`.
+///
+/// Chosen so the two light modes are a genuine choice rather than two settings of
+/// one. Take two half-lit layers: [`BlendMode::Reinhard`] gives 0.667, Screen gives
+/// 0.75, plain addition gives 1.0 (clipped), and this gives 0.769. So Glow reads
+/// distinctly softer than the mode everyone already knows and Radiance reads
+/// distinctly hotter, across the whole range instead of only at the extremes — which
+/// is what a value near 0.35 gave, and the reason it is not that. At the top, two
+/// whites come out at ≈1.36, well into the media pass's highlight roll-off.
+pub const DRAGO_K: f32 = 0.6;
+
+impl BlendMode {
+    /// Every mode, in the order a frontend should offer them: `Normal` first, then
+    /// increasingly emphatic light.
+    pub const ALL: [BlendMode; 3] = [Self::Normal, Self::Reinhard, Self::Drago];
+
+    /// What this mode is called. The painter-facing name, not the tonemap's — the
+    /// curve is how it is *built*, not what it is *for*.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Reinhard => "Glow",
+            Self::Drago => "Radiance",
+        }
+    }
+
+    /// Whether this mode composites under plain premultiplied "over".
+    ///
+    /// The compositor's fast path: a run of consecutive `Normal` layers needs no
+    /// isolation and draws straight into the accumulator, so an ordinary document
+    /// costs exactly what it did before blend modes existed (DESIGN.md §6.3).
+    pub fn is_normal(self) -> bool {
+        matches!(self, Self::Normal)
+    }
 }
 
 /// The region a matte layer fills (FRAME_DESIGN.md §2).

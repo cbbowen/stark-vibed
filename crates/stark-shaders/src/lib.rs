@@ -31,6 +31,19 @@ pub fn media_mixbox() -> &'static str {
     include_wesl!("media_mixbox")
 }
 
+/// WGSL layer-blend pass for the Oklab color space: an isolated layer merged into
+/// the accumulator through a light-combining mode — MISSING_FEATURES §0.4.
+pub fn blend_oklab() -> &'static str {
+    include_wesl!("blend_oklab")
+}
+
+/// WGSL layer-blend pass for the Mixbox color space — MISSING_FEATURES §0.4. Same
+/// light algebra as [`blend_oklab`]; the round trip runs through Mixbox's pigment
+/// polynomial and its inverse LUT.
+pub fn blend_mixbox() -> &'static str {
+    include_wesl!("blend_mixbox")
+}
+
 /// WGSL stroke integrate pass: merge a stroke's scratch slab into the layer over
 /// the base — DESIGN §6.2/§6.1.
 pub fn integrate() -> &'static str {
