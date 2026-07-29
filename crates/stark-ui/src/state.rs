@@ -129,9 +129,10 @@ pub enum TransformRegion {
 }
 
 /// The transform gesture being composed (TRANSFORM_DESIGN.md §6). The widget is
-/// an **ellipse**: the image of a reference ellipse (inscribed in the selection
-/// hull at entry) under the accumulated linear map, so the widget's shape *is*
-/// the transform. The affine the engine sees is derived on every change —
+/// an **ellipse**: the image of a reference **circle** under the accumulated
+/// linear map, so the widget's shape *is* the transform — it stays a circle
+/// exactly as long as the transform is a similarity, and any distortion shows
+/// as eccentricity. The affine the engine sees is derived on every change —
 /// `x ↦ center + linear·(x − anchor)` — so a long drag is one accumulated
 /// transform, never a chain of them, and the preview resamples the committed
 /// tiles exactly once ("lossless" until "Done").
@@ -149,9 +150,14 @@ pub struct TransformState {
     /// The reference ellipse's centre — the hull's — in canvas px. Fixed for the
     /// mode's life; the affine pivots here.
     pub anchor: Vec2,
-    /// The reference ellipse's radii, canvas px (the hull's half-extent, floored
-    /// so a hairline selection still mounts a grabbable widget).
-    pub radii: Vec2,
+    /// The reference **circle**'s radius, canvas px. A circle, not the hull's
+    /// own aspect: the widget's shape carries meaning — a circle says the
+    /// accumulated transform is a similarity (rotation, uniform scale,
+    /// translation), and any other shape says distortion has been applied. The
+    /// geometric mean of the hull's half-extents, so the widget matches the
+    /// area of the hull's inscribed ellipse whatever its proportions; floored
+    /// so a hairline selection still mounts a grabbable widget.
+    pub radius: f32,
     /// Where the gesture has carried the centre.
     pub center: Vec2,
     /// The accumulated linear map, applied about the centre.
@@ -161,10 +167,11 @@ pub struct TransformState {
 impl TransformState {
     pub fn begin(layer: LayerId, hull: (Vec2, Vec2), min_radius: f32) -> Self {
         let anchor = (hull.0 + hull.1) * 0.5;
+        let half = (hull.1 - hull.0) * 0.5;
         Self {
             layer,
             anchor,
-            radii: ((hull.1 - hull.0) * 0.5).max(Vec2::splat(min_radius)),
+            radius: (half.x.max(0.0) * half.y.max(0.0)).sqrt().max(min_radius),
             center: anchor,
             linear: Mat2::IDENTITY,
         }
@@ -188,10 +195,10 @@ impl TransformState {
     }
 
     /// Classify a canvas-space pointer against the widget (TRANSFORM_DESIGN.md
-    /// §6): pull it back through the linear map into the reference ellipse's own
-    /// space, where the widget is a unit circle and the test is a radius. `band`
-    /// is the rim's grab half-width in canvas px, converted to circle units by
-    /// the widget's local radius along the pointer's direction.
+    /// §6): pull it back through the linear map into the reference circle's own
+    /// space, where the test is a radius. `band` is the rim's grab half-width in
+    /// canvas px, converted to circle units by the widget's local radius along
+    /// the pointer's direction.
     pub fn region(&self, pointer: Vec2, band: f32) -> TransformRegion {
         let det = self.linear.determinant();
         if det.abs() < 1e-6 {
@@ -200,12 +207,12 @@ impl TransformState {
             // practice).
             return TransformRegion::Inside;
         }
-        let u = (self.linear.inverse() * (pointer - self.center)) / self.radii;
+        let u = (self.linear.inverse() * (pointer - self.center)) / self.radius;
         let rho = u.length();
         if rho < 1e-6 {
             return TransformRegion::Inside;
         }
-        let local_radius = (self.linear * (self.radii * (u / rho))).length();
+        let local_radius = (self.linear * (self.radius * (u / rho))).length();
         let band = band / local_radius.max(1e-3);
         if rho < 1.0 - band {
             TransformRegion::Inside
@@ -382,19 +389,28 @@ mod transform_tests {
     }
 
     #[test]
-    fn regions_classify_by_the_deformed_ellipse() {
-        let ts = state(); // radii (100, 50)
-        let c = ts.center;
+    fn the_reference_is_a_circle_matching_the_hull_ellipses_area() {
+        // A 200×100 hull: the circle's area equals the inscribed ellipse's
+        // (π·100·50), i.e. r = √(100·50) — not the ellipse itself, because a
+        // circle is what says "no distortion yet" (TRANSFORM_DESIGN.md §6).
+        let r = state().radius;
+        assert!((r - 5000.0_f32.sqrt()).abs() < 1e-3, "got {r}");
+    }
+
+    #[test]
+    fn regions_classify_by_the_deformed_circle() {
+        let ts = state();
+        let (c, r) = (ts.center, ts.radius);
         assert_eq!(ts.region(c, 4.0), TransformRegion::Inside);
-        assert_eq!(ts.region(c + Vec2::new(60.0, 0.0), 4.0), TransformRegion::Inside);
-        assert_eq!(ts.region(c + Vec2::new(100.0, 0.0), 4.0), TransformRegion::Rim);
-        assert_eq!(ts.region(c + Vec2::new(0.0, -50.0), 4.0), TransformRegion::Rim);
-        assert_eq!(ts.region(c + Vec2::new(160.0, 0.0), 4.0), TransformRegion::Outside);
+        assert_eq!(ts.region(c + Vec2::new(0.6 * r, 0.0), 4.0), TransformRegion::Inside);
+        assert_eq!(ts.region(c + Vec2::new(r, 0.0), 4.0), TransformRegion::Rim);
+        assert_eq!(ts.region(c + Vec2::new(0.0, -r), 4.0), TransformRegion::Rim);
+        assert_eq!(ts.region(c + Vec2::new(1.6 * r, 0.0), 4.0), TransformRegion::Outside);
 
         // Stretch the widget to 2× along x: the rim moves with it.
-        let wide = ts.stretched(c + Vec2::new(100.0, 0.0), c + Vec2::new(200.0, 0.0), 0.5);
-        assert_eq!(wide.region(c + Vec2::new(200.0, 0.0), 4.0), TransformRegion::Rim);
-        assert_eq!(wide.region(c + Vec2::new(100.0, 0.0), 4.0), TransformRegion::Inside);
+        let wide = ts.stretched(c + Vec2::new(r, 0.0), c + Vec2::new(2.0 * r, 0.0), 0.5);
+        assert_eq!(wide.region(c + Vec2::new(2.0 * r, 0.0), 4.0), TransformRegion::Rim);
+        assert_eq!(wide.region(c + Vec2::new(r, 0.0), 4.0), TransformRegion::Inside);
     }
 }
 

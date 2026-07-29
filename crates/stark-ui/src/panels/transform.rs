@@ -47,8 +47,8 @@ use stark_core::geom::Vec2;
 /// zoom, so the rim is equally grabbable at any magnification.
 const RIM_BAND_PX: f32 = 10.0;
 
-/// Screen-px floor for the widget's radii at entry, so a hairline selection
-/// still mounts an ellipse with an inside to translate by.
+/// Screen-px floor for the widget's radius at entry, so a hairline selection
+/// still mounts a circle with an inside to translate by.
 const MIN_RADIUS_PX: f32 = 28.0;
 
 /// Pointer travel below which a gesture reads as a jiggle and snaps back to its
@@ -180,20 +180,21 @@ pub fn TransformOverlay() -> Element {
         None => return rsx! {},
     };
 
-    // The ellipse: a circle-cornered div of the reference ellipse's screen size,
-    // deformed by the linear map via CSS about its centre — the same
-    // composition the affine applies to the paint, so the widget and the
-    // preview cannot disagree.
+    // The widget: a circle of the reference radius, deformed by the linear map
+    // via CSS about its centre — the same composition the affine applies to the
+    // paint, so the widget and the preview cannot disagree. It stays a circle
+    // exactly as long as the transform is a similarity; eccentricity *is* the
+    // distortion.
     let cs = view.canvas_to_screen(ts.center);
-    let r = ts.radii * view.zoom;
+    let r = ts.radius * view.zoom;
     let l = ts.linear;
     let ellipse_style = format!(
         "left: {}px; top: {}px; width: {}px; height: {}px; \
          transform: matrix({}, {}, {}, {}, 0, 0);",
-        cs.x - r.x,
-        cs.y - r.y,
-        2.0 * r.x,
-        2.0 * r.y,
+        cs.x - r,
+        cs.y - r,
+        2.0 * r,
+        2.0 * r,
         l.x_axis.x,
         l.x_axis.y,
         l.y_axis.x,

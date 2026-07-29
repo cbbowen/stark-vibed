@@ -167,10 +167,16 @@ and enforce the caps.
 
 Most software shows a rectangle with resize grips, tacks rotation on as a knob,
 and either hides skew behind a modifier or doesn't offer it. This widget is an
-**ellipse** — the image of a reference ellipse (inscribed in the selection hull
-at entry) under the accumulated linear map — so the widget's own shape *shows*
-the transform, and one surface carries the whole affine group with three
-gestures, chosen by where the drag starts:
+**ellipse** — the image of a reference **circle** under the accumulated linear
+map — so the widget's own shape *shows* the transform: it stays a circle
+exactly as long as the transform is a similarity (move, turn, uniform scale),
+and any eccentricity *is* the distortion. A circle rather than the hull's own
+aspect, precisely for that reading — a rectangle-shaped reference would start a
+rectangular selection's widget as an ellipse and the shape would say
+"distorted" before anything happened. Its radius is the geometric mean of the
+hull's half-extents (the area of the hull's inscribed ellipse), so it stays
+proportionate for elongated selections. One surface carries the whole affine
+group with three gestures, chosen by where the drag starts:
 
 | Region | Gesture | Family |
 |---|---|---|
@@ -196,14 +202,14 @@ degrees of freedom of the pointer are always fully spent:
   vocabulary. Pulling in past the pinned axis is floored at 90% so the
   determinant cannot run through zero mid-drag.
 - Hit-testing pulls the pointer back through the linear map into the reference
-  space, where the widget is a unit circle and every region test is a radius —
-  exact at any deformation; the rim band stays a constant *screen* width by
-  scaling with the widget's local radius. The gesture is locked at the press
-  (crossing the rim mid-drag must not change what the hand is doing), a north
-  dot marks the reference "up" (a rotated circle otherwise hides its rotation),
-  and the cursor announces the region under the resting pointer.
+  circle's space, where every region test is a radius — exact at any
+  deformation; the rim band stays a constant *screen* width by scaling with the
+  widget's local radius. The gesture is locked at the press (crossing the rim
+  mid-drag must not change what the hand is doing), a north dot marks the
+  reference "up" (a rotated circle otherwise hides its rotation), and the
+  cursor announces the region under the resting pointer.
 
-State is `TransformState { anchor, radii, center, linear: Mat2 }`, affine
+State is `TransformState { anchor, radius, center, linear: Mat2 }`, affine
 `x ↦ center + linear·(x − anchor)`; gestures left-compose world-space factors
 onto `linear`, always recomputed from the drag's start (nothing accumulates
 per-move). Untouched factors are simply absent: a pure move keeps `linear`
