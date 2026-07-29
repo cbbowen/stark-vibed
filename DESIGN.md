@@ -860,15 +860,20 @@ layer**, which composites as if dry, so no drying model is needed.
 brush and along the stroke**: `BrushParams.color_dynamics` (historized — it
 changes stored pixels) holds a noise kind plus two per-axis **frequency** and
 three per-channel **amplitude** factors. A 3-channel, exactly **tileable 2-D
-noise tile** — `White` (per-texel hash) or `Simplex` (a periodic simplex
+noise tile** — `White` (per-texel hash), `Simplex` (a periodic simplex
 lattice: gradients hashed from `q = 6·(i,j,k) − (i+j+k)·𝟙 mod 6·P`, which is
 invariant under input translation by the period `P`, a multiple of 3; the
 lattice stays 3-D and the bake takes its `z = 0` plane, because only `G3 = 1/6`
 makes the unskewed lattice positions integral — the 2-D skew constant is
 irrational, so a 2-D lattice can be made periodic along its own skewed vectors
-but not along the axes a tileable texture needs) — is baked **once on the CPU
-with fixed constants** (`noise.rs`, `Rgba8Snorm` 64², no transcendentals ⇒
-bit-reproducible across platforms) and sampled with a repeat sampler.
+but not along the axes a tileable texture needs), or `Voronoi` (Worley F1 on a
+jittered grid of `P` cells per side, feature points hashed from the cell index
+`mod P`; the usual 3×3 cell search is *exact* here rather than approximate,
+because every feature outside that ring is more than one cell away and the
+shaping flattens the field past 0.8 cells, so no missed feature can ever show)
+— is baked **once on the CPU with fixed constants** (`noise.rs`, `Rgba8Snorm`
+64², only correctly-rounded ops, no transcendentals ⇒ bit-reproducible across
+platforms) and sampled with a repeat sampler.
 
 The lookup domain is **stroke-local**: `(lateral·f₀, arc·f₁)/NOISE_TILE_PX` plus
 a per-stroke translation derived from the stroke `seed`, where `lateral` is the

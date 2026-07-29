@@ -5,8 +5,9 @@
 //! independent signed channels; alpha unused) and sampled in the stamp shaders
 //! with a repeat sampler. Baking on the CPU keeps the field bit-identical across
 //! GPUs, runs, and peers — the same determinism contract as the sRGB↔Oklab
-//! constants (§6.5) — and the bake uses only IEEE add/mul/floor (no
-//! transcendentals), so the bytes are reproducible across platforms.
+//! constants (§6.5) — and the bake uses only IEEE add/mul/floor/sqrt (all
+//! correctly rounded, no transcendentals), so the bytes are reproducible across
+//! platforms.
 //!
 //! Two axes are enough because the lookup is **stroke-local** — across the
 //! stroke and along it — so the field never has to resolve a third, canvas
@@ -29,6 +30,13 @@
 //!   along its own skewed lattice vectors, but not along the axes, which is
 //!   exactly what a tileable texture needs. So the field is the 3-D one
 //!   restricted to `z = 0`: still smooth, still exactly axis-periodic.
+//! - **Voronoi** (Worley F1) noise puts one feature point per grid cell, placed
+//!   by hashing the cell index reduced modulo `PERIOD`, so translating the input
+//!   by `PERIOD` lands on cells with identical hashes and the field repeats
+//!   exactly. Only the 3×3 cells around the sample are searched, which here is
+//!   not an approximation: every feature outside that ring is more than one cell
+//!   away, so the search is exact wherever the true `F1 ≤ 1`, and the shaping
+//!   flattens everything past 0.8 cells anyway (see [`VORONOI_MEAN`]).
 
 use crate::document::NoiseKind;
 use crate::gpu::context::GpuContext;
@@ -42,6 +50,18 @@ pub const NOISE_TILE_PX: f32 = 256.0;
 /// Simplex lattice units per noise tile — the tile holds this many noise
 /// "features" per side. Must be a multiple of 3 (see the module docs).
 const SIMPLEX_PERIOD: i32 = 6;
+/// Voronoi cells per noise tile per side — matched to [`SIMPLEX_PERIOD`] so the
+/// frequency knobs mean the same thing whichever kind is chosen.
+const VORONOI_PERIOD: i32 = 6;
+/// Nearest-feature distance (in cell units) that the Voronoi field maps to 0 —
+/// roughly its mean, so the field wanders both ways about the brush colour
+/// instead of only darkening or only lightening it.
+const VORONOI_MEAN: f32 = 0.4;
+/// Value per cell unit of nearest-feature distance: the field peaks at +1 on a
+/// feature point and bottoms out at −1 at `VORONOI_MEAN + 1/VORONOI_GAIN` = 0.8
+/// cells — inside the radius where the 3×3 search is exact (module docs), so the
+/// clamp can never expose a missed feature.
+const VORONOI_GAIN: f32 = 2.5;
 /// Fixed bake seeds, one per colour channel.
 const CHANNEL_SEEDS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
 
@@ -114,6 +134,16 @@ fn bake(kind: NoiseKind, res: u32) -> Vec<u8> {
                         periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[0]),
                         periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[1]),
                         periodic_simplex(p, SIMPLEX_PERIOD, CHANNEL_SEEDS[2]),
+                    ]
+                }
+                NoiseKind::Voronoi => {
+                    // Texel centres over `VORONOI_PERIOD` cells per side.
+                    let s = VORONOI_PERIOD as f32 / res as f32;
+                    let p = [(x as f32 + 0.5) * s, (y as f32 + 0.5) * s];
+                    [
+                        periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[0]),
+                        periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[1]),
+                        periodic_voronoi(p, VORONOI_PERIOD, CHANNEL_SEEDS[2]),
                     ]
                 }
             };
@@ -247,6 +277,43 @@ fn periodic_simplex(p: [f32; 3], period: i32, seed: u32) -> f32 {
     32.0 * total
 }
 
+/// Feature point of the cell with integer coords `(i, j)`, as an offset in
+/// [0, 1]² from the cell's corner, periodic with `period`: the hash reads the
+/// cell index reduced modulo the period, so cells a whole period apart carry the
+/// same point.
+fn voronoi_feature(i: i64, j: i64, period: i32, seed: u32) -> [f32; 2] {
+    let m = period as i64;
+    let h = pcg4d([i.rem_euclid(m) as u32, j.rem_euclid(m) as u32, 0, seed]);
+    [unit(h[0]), unit(h[1])]
+}
+
+/// Voronoi (Worley F1) cellular noise on a periodic jittered grid, exactly
+/// periodic with `period` along both axes. Output in [-1, 1]: +1 on a feature
+/// point, falling off with distance to the nearest one, with a crease where two
+/// cells meet.
+fn periodic_voronoi(p: [f32; 2], period: i32, seed: u32) -> f32 {
+    // Shift the grid per seed so the three channels' cell walls don't all land
+    // on the same lines. A constant translation keeps the field periodic.
+    let o = pcg4d([seed, 0, 0, 0x9e37_79b9]);
+    let p = [
+        p[0] + unit(o[0]) * period as f32,
+        p[1] + unit(o[1]) * period as f32,
+    ];
+
+    let (cx, cy) = (p[0].floor(), p[1].floor());
+    let mut nearest2 = f32::INFINITY;
+    for dj in -1..=1i64 {
+        for di in -1..=1i64 {
+            let (i, j) = (cx as i64 + di, cy as i64 + dj);
+            let f = voronoi_feature(i, j, period, seed);
+            let dx = (i as f32 + f[0]) - p[0];
+            let dy = (j as f32 + f[1]) - p[1];
+            nearest2 = nearest2.min(dx * dx + dy * dy);
+        }
+    }
+    ((VORONOI_MEAN - nearest2.sqrt()) * VORONOI_GAIN).clamp(-1.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,11 +341,86 @@ mod tests {
         }
     }
 
+    /// The Voronoi field must repeat exactly every `VORONOI_PERIOD` along each
+    /// axis — same tileability contract as the simplex field.
+    #[test]
+    fn voronoi_is_periodic() {
+        let p = VORONOI_PERIOD as f32;
+        for seed in CHANNEL_SEEDS {
+            for n in 0..64 {
+                let h = pcg4d([n, 7, 11, seed]);
+                let base = [unit(h[0]) * p, unit(h[1]) * p];
+                let v0 = periodic_voronoi(base, VORONOI_PERIOD, seed);
+                for axis in 0..2 {
+                    let mut q = base;
+                    q[axis] += p;
+                    let v1 = periodic_voronoi(q, VORONOI_PERIOD, seed);
+                    assert!(
+                        (v0 - v1).abs() < 1e-3,
+                        "seed {seed:#x} axis {axis} at {base:?}: {v0} vs {v1}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The Voronoi field is a distance field: continuous everywhere (creases are
+    /// kinks, not jumps) and never steeper than `VORONOI_GAIN` per cell unit. A
+    /// jump would mean the 3×3 search missed a feature the neighbouring sample
+    /// found — the failure mode the search bound rules out.
+    #[test]
+    fn voronoi_is_continuous() {
+        let seed = CHANNEL_SEEDS[0];
+        let n = 4000;
+        let step = VORONOI_PERIOD as f32 / n as f32;
+        for axis in 0..2 {
+            for line in 0..8u32 {
+                let h = pcg4d([line, 3, 5, 77]);
+                let mut p = [
+                    unit(h[0]) * VORONOI_PERIOD as f32,
+                    unit(h[1]) * VORONOI_PERIOD as f32,
+                ];
+                p[axis] = 0.0;
+                let mut prev = periodic_voronoi(p, VORONOI_PERIOD, seed);
+                for i in 0..n {
+                    p[axis] = (i as f32 + 1.0) * step;
+                    let v = periodic_voronoi(p, VORONOI_PERIOD, seed);
+                    assert!(
+                        (v - prev).abs() < 1.01 * VORONOI_GAIN * step,
+                        "discontinuity at {p:?} (axis {axis}): {prev} -> {v}"
+                    );
+                    prev = v;
+                }
+            }
+        }
+    }
+
+    /// The Voronoi shaping constants must keep the field centred and using its
+    /// range: a field biased to one side would tint every stroke rather than let
+    /// the colour wander both ways.
+    #[test]
+    fn voronoi_is_centred_and_uses_its_range() {
+        let n = 64usize;
+        let a = bake(NoiseKind::Voronoi, n as u32);
+        for c in 0..3 {
+            let vals: Vec<f32> = a[c..]
+                .iter()
+                .step_by(4)
+                .map(|&b| b as i8 as f32 / 127.0)
+                .collect();
+            let mean = vals.iter().sum::<f32>() / vals.len() as f32;
+            let lo = vals.iter().cloned().fold(f32::INFINITY, f32::min);
+            let hi = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            assert!(mean.abs() < 0.15, "channel {c} biased: mean {mean}");
+            assert!(lo < -0.8 && hi > 0.8, "channel {c} range: [{lo}, {hi}]");
+        }
+    }
+
     /// The bake must be deterministic (replay/peers depend on it) and in range,
     /// with real variation in every channel.
     #[test]
     fn bake_is_deterministic_and_varied() {
-        for kind in [NoiseKind::White, NoiseKind::Simplex] {
+        for kind in [NoiseKind::White, NoiseKind::Simplex, NoiseKind::Voronoi] {
             let a = bake(kind, 16);
             let b = bake(kind, 16);
             assert_eq!(a, b);
@@ -325,35 +467,39 @@ mod tests {
 
     /// Tileability of the *baked* tile: stepping across the wrap seam
     /// (texel N−1 → texel 0) must look exactly like stepping anywhere in the
-    /// interior — a broken wrap shows up as an outsized seam step.
+    /// interior — a broken wrap shows up as an outsized seam step. White noise is
+    /// excluded: it is discontinuous by construction, so seam and interior steps
+    /// are equally large and the comparison says nothing.
     #[test]
-    fn simplex_bake_seam_matches_interior() {
+    fn smooth_bake_seams_match_interior() {
         let n = 64usize;
-        let a = bake(NoiseKind::Simplex, n as u32);
-        let texel = |x: usize, y: usize| a[(y * n + x) * 4] as i8 as i32;
-        let (mut interior_max, mut seam_max) = (0, 0);
-        for y in 0..n {
-            for x in 0..n {
-                for (d, on_seam) in [
-                    ((texel(x, y) - texel((x + 1) % n, y)).abs(), x + 1 == n),
-                    ((texel(x, y) - texel(x, (y + 1) % n)).abs(), y + 1 == n),
-                ] {
-                    if on_seam {
-                        seam_max = seam_max.max(d);
-                    } else {
-                        interior_max = interior_max.max(d);
+        for kind in [NoiseKind::Simplex, NoiseKind::Voronoi] {
+            let a = bake(kind, n as u32);
+            let texel = |x: usize, y: usize| a[(y * n + x) * 4] as i8 as i32;
+            let (mut interior_max, mut seam_max) = (0, 0);
+            for y in 0..n {
+                for x in 0..n {
+                    for (d, on_seam) in [
+                        ((texel(x, y) - texel((x + 1) % n, y)).abs(), x + 1 == n),
+                        ((texel(x, y) - texel(x, (y + 1) % n)).abs(), y + 1 == n),
+                    ] {
+                        if on_seam {
+                            seam_max = seam_max.max(d);
+                        } else {
+                            interior_max = interior_max.max(d);
+                        }
                     }
                 }
             }
+            assert!(
+                seam_max <= interior_max,
+                "{kind:?} wrap seam steps ({seam_max}) exceed interior steps ({interior_max})"
+            );
+            // And the field resolves its features: steps stay well under full range.
+            assert!(
+                interior_max < 100,
+                "{kind:?} field under-resolved: step {interior_max}"
+            );
         }
-        assert!(
-            seam_max <= interior_max,
-            "wrap seam steps ({seam_max}) exceed interior steps ({interior_max})"
-        );
-        // And the field resolves its features: steps stay well under full range.
-        assert!(
-            interior_max < 100,
-            "field under-resolved: step {interior_max}"
-        );
     }
 }

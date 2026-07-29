@@ -157,6 +157,9 @@ pub enum NoiseKind {
     /// soft, flowing variation.
     #[default]
     Simplex,
+    /// Cellular (Worley F1) noise on a seamlessly tiling jittered grid — mottled
+    /// patches with creases where cells meet, like pigment settling in clumps.
+    Voronoi,
 }
 
 /// Colour dynamics (colour jitter): lets the applied colour vary **across the

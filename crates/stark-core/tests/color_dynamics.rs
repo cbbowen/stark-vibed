@@ -64,6 +64,19 @@ fn golden_color_jitter_white() {
     assert_golden("color_jitter_white", &img, 6);
 }
 
+#[test]
+fn golden_color_jitter_voronoi() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // Cellular mottling: patches of colour with creases where cells meet, at a
+    // scale that fits a few cells across the footprint.
+    let b = jitter_brush(NoiseKind::Voronoi, [2.0, 1.0], [0.18, 0.14, 0.14]);
+    stroke_with(&mut engine, b, &S_CURVE);
+    let img = engine.render_to_image();
+    assert_golden("color_jitter_voronoi", &img, 6);
+}
+
 /// Along-stroke-only jitter (`frequency = [0, f]`): the colour drifts along
 /// the arc but is uniform across the footprint at any point of the stroke.
 #[test]

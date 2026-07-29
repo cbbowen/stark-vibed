@@ -245,6 +245,9 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             button { class: chip(cd.noise == NoiseKind::White),
                                 onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::White),
                                 "White" }
+                            button { class: chip(cd.noise == NoiseKind::Voronoi),
+                                onclick: move |_| edit(state, preview, |b| b.color_dynamics.noise = NoiseKind::Voronoi),
+                                "Voronoi" }
                         }
                         // How far each colour channel wanders (± in the channel's units).
                         for i in 0..3 {
