@@ -89,7 +89,7 @@ const ADD_GAIN: f32 = 2.0;
 /// nothing about a shape's coverage mask should change it. It also caps the
 /// flattened segment length on the dynamics path, since a pickup can only land
 /// *between* segments (see [`flatten_tolerance`]).
-const RESERVOIR_CADENCE: f32 = 0.25;
+const RESERVOIR_CADENCE: f32 = 0.5;
 
 #[derive(Clone)]
 pub struct StrokeRenderer {
