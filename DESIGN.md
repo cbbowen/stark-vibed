@@ -115,7 +115,7 @@ stark/
 ├── vendor/                     # third-party, excluded from the workspace
 │   ├── mixbox/                 # pigment mixing (submodule, CC BY-NC)
 │   ├── iroh/                   # iroh 1.0 + custom-path-opening patch (§12.4)
-│   └── iroh-webrtc-transport2/ # WebRTC as an iroh custom transport (§12.4)
+│   └── iroh-webrtc-transport/ # WebRTC as an iroh custom transport (§12.4)
 └── DESIGN.md
 ```
 

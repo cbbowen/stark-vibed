@@ -10,22 +10,22 @@ publish = false
 
 [features]
 # Direct peer connections on ONE ordinary iroh endpoint via a WebRTC custom
-# transport (vendor/iroh-webrtc-transport2 + the patched vendor/iroh). The
+# transport (vendor/iroh-webrtc-transport + the patched vendor/iroh). The
 # default iroh backend gains a custom transport, a JSEP signaling ALPN, and a
 # per-mesh-link bootstrap (transport/direct.rs). Connections establish over
 # whatever works (relay on the web) and MIGRATE onto the WebRTC path once a
 # data channel attaches — with the relay path kept open as fallback. Works
 # identically on native (str0m) and wasm (RTCPeerConnection), so the whole
 # flow is testable in `cargo test`.
-webrtc2 = ["dep:iroh-webrtc-transport2", "dep:iroh-base", "dep:anyhow", "iroh/unstable-custom-transports"]
-default = ["webrtc2"]
+webrtc = ["dep:iroh-webrtc-transport", "dep:iroh-base", "dep:anyhow", "iroh/unstable-custom-transports"]
+default = ["webrtc"]
 
 [dependencies]
 stark-core = { path = "../stark-core" }
 iroh = "1"
 # The upstream package kept the name of an unrelated earlier project (see
-# vendor/iroh-webrtc-transport2/VENDORING.md); the `2` disambiguates in code.
-iroh-webrtc-transport2 = { package = "iroh-webrtc-transport", path = "../../vendor/iroh-webrtc-transport2", optional = true }
+# vendor/iroh-webrtc-transport/VENDORING.md); the `2` disambiguates in code.
+iroh-webrtc-transport = { path = "../../vendor/iroh-webrtc-transport", optional = true }
 # For naming CustomAddr (iroh does not re-export it).
 iroh-base = { version = "1", optional = true }
 # The vendored transport's negotiation API speaks anyhow.
@@ -39,7 +39,7 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 data-encoding = "2"
 
 [dev-dependencies]
-# `test-utils` provides the local relay server for the webrtc2 mesh test.
+# `test-utils` provides the local relay server for the webrtc mesh test.
 iroh = { version = "1", features = ["test-utils"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 pollster = { workspace = true }

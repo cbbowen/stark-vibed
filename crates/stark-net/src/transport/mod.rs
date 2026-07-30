@@ -26,8 +26,8 @@ pub(crate) fn to_endpoint_id(peer: PeerId) -> Option<EndpointId> {
 
 pub(crate) mod iroh;
 
-// WebRTC on the single endpoint (`webrtc2`): not a transport of its own — the
+// WebRTC on the single endpoint (`webrtc`): not a transport of its own — the
 // mesh still rides `iroh` above — just the bootstrap that gives the endpoint
 // direct WebRTC paths.
-#[cfg(feature = "webrtc2")]
+#[cfg(feature = "webrtc")]
 pub(crate) mod direct;

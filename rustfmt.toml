@@ -1,5 +1,5 @@
 # `cargo fmt --all` walks path dependencies too, and `vendor/` holds third-party
-# code (mixbox as a submodule; iroh and iroh-webrtc-transport2 vendored in-tree).
+# code (mixbox as a submodule; iroh and iroh-webrtc-transport vendored in-tree).
 # Formatting it would churn files we want to diff against upstream — see the
 # VENDORING.md in each tree.
 #

@@ -7,7 +7,7 @@
 //!
 //! The backend is an ordinary iroh [`Endpoint`](iroh::Endpoint) and
 //! [`Router`](iroh::protocol::Router) on every target; in the browser iroh
-//! rides its relay (WebSocket) transport. With the **`webrtc2`** feature the
+//! rides its relay (WebSocket) transport. With the **`webrtc`** feature the
 //! endpoint additionally carries a WebRTC custom transport: connections
 //! establish over whatever works and migrate onto a WebRTC path once a data
 //! channel is bootstrapped (see [`transport::direct`](crate::transport::direct))
@@ -46,7 +46,7 @@ mod imp {
         let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
         // The WebRTC custom transport rides the same endpoint; peers derive
         // its addr from our endpoint id (see transport::direct).
-        #[cfg(feature = "webrtc2")]
+        #[cfg(feature = "webrtc")]
         let webrtc = crate::transport::direct::make_transport(secret.public());
 
         let builder = if opts.local_only {
@@ -54,18 +54,18 @@ mod imp {
         } else {
             Endpoint::builder(presets::N0).secret_key(secret)
         };
-        #[cfg(feature = "webrtc2")]
+        #[cfg(feature = "webrtc")]
         let builder = builder.add_custom_transport(webrtc.clone());
         let endpoint = builder.bind().await?;
 
         let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
-        #[cfg(feature = "webrtc2")]
+        #[cfg(feature = "webrtc")]
         let transport = transport.with_direct(webrtc.clone());
 
         let router = Router::builder(endpoint.clone())
             .accept(crate::transport::MESH_ALPN, mesh_proto)
             .accept(proto::ALPN, CollabProto { mirror });
-        #[cfg(feature = "webrtc2")]
+        #[cfg(feature = "webrtc")]
         let router = router.accept(
             crate::transport::direct::SIGNALING_ALPN,
             crate::transport::direct::JsepProto::new(webrtc),
@@ -96,7 +96,7 @@ mod imp {
         pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {
             // Teach iroh the peer's (derived) WebRTC addr from first contact,
             // so this connection migrates too once a channel attaches.
-            #[cfg(feature = "webrtc2")]
+            #[cfg(feature = "webrtc")]
             let addr = crate::transport::direct::with_custom_addr(addr);
             let conn = self.endpoint.connect(addr, proto::ALPN).await?;
             Ok(Catchup { conn })

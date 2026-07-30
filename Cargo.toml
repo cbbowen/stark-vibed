@@ -13,7 +13,7 @@ exclude = [
     "vendor/mixbox",
     # WebRTC as an iroh custom transport (anchalshivank's crate; the `2` is
     # historical — an unrelated earlier project shared the name).
-    "vendor/iroh-webrtc-transport2",
+    "vendor/iroh-webrtc-transport",
     # iroh 1.0.3 + the custom-transport path-opening patch (see its
     # VENDORING.md); substituted for the crates.io version via [patch] below.
     "vendor/iroh",

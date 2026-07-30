@@ -4,7 +4,7 @@ iroh `1.0.3`, copied verbatim from the crates.io source
 (`registry/src/.../iroh-1.0.3`, upstream commit in `.cargo_vcs_info.json`),
 plus one local patch. Substituted for the crates.io crate via
 `[patch.crates-io]` in the root workspace manifest AND in
-`vendor/iroh-webrtc-transport2/Cargo.toml` (that crate is workspace-excluded,
+`vendor/iroh-webrtc-transport/Cargo.toml` (that crate is workspace-excluded,
 so the root patch does not reach it). License: BSD-3 (`LICENSE-BSD3`, kept).
 
 ## The patch (all sites marked `STARK PATCH`)
@@ -38,7 +38,7 @@ peer holds the sticky `selected_path`, and otherwise decided by raw latency —
 can never migrate onto WebRTC. With the patch, custom paths open post-handshake,
 validate over the custom transport, and the selector (even the DEFAULT one:
 custom = Primary, relay = Backup) migrates traffic onto them. Proven by
-`vendor/iroh-webrtc-transport2/tests/single_endpoint_direct_and_fallback.rs`.
+`vendor/iroh-webrtc-transport/tests/single_endpoint_direct_and_fallback.rs`.
 
 Dead custom addrs (advertised but no channel attached) are harmless: their
 paths never validate, gain no stats, and are never selected; relay fallback is

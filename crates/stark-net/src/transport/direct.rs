@@ -1,8 +1,8 @@
-//! WebRTC bootstrap for the single-endpoint backend (`webrtc2` feature).
+//! WebRTC bootstrap for the single-endpoint backend (`webrtc` feature).
 //!
 //! The session's ordinary iroh endpoint carries a WebRTC
 //! [`CustomTransport`](::iroh::endpoint::transports::CustomTransport)
-//! (vendor/iroh-webrtc-transport2). This module owns everything around it:
+//! (vendor/iroh-webrtc-transport). This module owns everything around it:
 //!
 //! - **Addressing.** A peer's WebRTC [`CustomAddr`] is derived from its
 //!   [`EndpointId`] ([`custom_addr_for`]), so no ticket or wire format carries
@@ -35,7 +35,7 @@ use ::iroh::endpoint::Connection;
 use ::iroh::protocol::{AcceptError, ProtocolHandler};
 use ::iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use iroh_base::CustomAddr;
-use iroh_webrtc_transport2::{
+use iroh_webrtc_transport::{
     AttachOptions, QuicSignaling, WebRtcTransport, custom_addr_from_opaque_data,
 };
 
@@ -43,7 +43,7 @@ use iroh_webrtc_transport2::{
 /// and catch-up ALPNs.
 pub(crate) const SIGNALING_ALPN: &[u8] = b"stark/webrtc-sig/0";
 
-const DC_LABEL: &str = "stark/webrtc2";
+const DC_LABEL: &str = "stark/webrtc";
 
 /// Give up on one bootstrap attempt after this long (covers the QUIC dial,
 /// SDP exchange, ICE, and the channel opening).
@@ -80,25 +80,25 @@ pub(crate) fn with_custom_addr(mut addr: EndpointAddr) -> EndpointAddr {
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 async fn negotiate_offer(
     sig: &mut QuicSignaling,
-) -> anyhow::Result<iroh_webrtc_transport2::Str0mPeer> {
-    iroh_webrtc_transport2::negotiate_dc_as_offerer(sig, DC_LABEL).await
+) -> anyhow::Result<iroh_webrtc_transport::Str0mPeer> {
+    iroh_webrtc_transport::negotiate_dc_as_offerer(sig, DC_LABEL).await
 }
 
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 async fn negotiate_answer(
     sig: &mut QuicSignaling,
-) -> anyhow::Result<iroh_webrtc_transport2::Str0mPeer> {
-    iroh_webrtc_transport2::negotiate_dc_as_answerer(sig).await
+) -> anyhow::Result<iroh_webrtc_transport::Str0mPeer> {
+    iroh_webrtc_transport::negotiate_dc_as_answerer(sig).await
 }
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 async fn negotiate_offer(
     sig: &mut QuicSignaling,
-) -> anyhow::Result<iroh_webrtc_transport2::WebRtcPeer> {
-    iroh_webrtc_transport2::negotiate_dc_as_offerer(
+) -> anyhow::Result<iroh_webrtc_transport::WebRtcPeer> {
+    iroh_webrtc_transport::negotiate_dc_as_offerer(
         sig,
         DC_LABEL,
-        &iroh_webrtc_transport2::WebPeerConfig::default(),
+        &iroh_webrtc_transport::WebPeerConfig::default(),
     )
     .await
 }
@@ -106,10 +106,10 @@ async fn negotiate_offer(
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 async fn negotiate_answer(
     sig: &mut QuicSignaling,
-) -> anyhow::Result<iroh_webrtc_transport2::WebRtcPeer> {
-    iroh_webrtc_transport2::negotiate_dc_as_answerer(
+) -> anyhow::Result<iroh_webrtc_transport::WebRtcPeer> {
+    iroh_webrtc_transport::negotiate_dc_as_answerer(
         sig,
-        &iroh_webrtc_transport2::WebPeerConfig::default(),
+        &iroh_webrtc_transport::WebPeerConfig::default(),
     )
     .await
 }

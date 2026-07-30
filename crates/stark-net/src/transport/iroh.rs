@@ -34,8 +34,8 @@ pub(crate) struct IrohMeshTransport {
     inbound: Mutex<mpsc::UnboundedReceiver<IrohConn>>,
     /// When set, every mesh link (dialed or accepted) also bootstraps a WebRTC
     /// channel to the peer; established connections then migrate onto it.
-    #[cfg(feature = "webrtc2")]
-    direct: Option<std::sync::Arc<iroh_webrtc_transport2::WebRtcTransport>>,
+    #[cfg(feature = "webrtc")]
+    direct: Option<std::sync::Arc<iroh_webrtc_transport::WebRtcTransport>>,
 }
 
 impl IrohMeshTransport {
@@ -47,7 +47,7 @@ impl IrohMeshTransport {
             Self {
                 endpoint,
                 inbound: Mutex::new(inbound_rx),
-                #[cfg(feature = "webrtc2")]
+                #[cfg(feature = "webrtc")]
                 direct: None,
             },
             MeshProto {
@@ -56,11 +56,11 @@ impl IrohMeshTransport {
         )
     }
 
-    /// Enable WebRTC bootstrap for every mesh link (`webrtc2` backends).
-    #[cfg(feature = "webrtc2")]
+    /// Enable WebRTC bootstrap for every mesh link (`webrtc` backends).
+    #[cfg(feature = "webrtc")]
     pub fn with_direct(
         mut self,
-        transport: std::sync::Arc<iroh_webrtc_transport2::WebRtcTransport>,
+        transport: std::sync::Arc<iroh_webrtc_transport::WebRtcTransport>,
     ) -> Self {
         self.direct = Some(transport);
         self
@@ -69,11 +69,11 @@ impl IrohMeshTransport {
     /// Kick off (or skip, if already attached) the WebRTC bootstrap for a peer
     /// this mesh now has a link with.
     fn ensure_direct(&self, id: EndpointId) {
-        #[cfg(feature = "webrtc2")]
+        #[cfg(feature = "webrtc")]
         if let Some(direct) = &self.direct {
             super::direct::ensure_direct(&self.endpoint, direct, id);
         }
-        #[cfg(not(feature = "webrtc2"))]
+        #[cfg(not(feature = "webrtc"))]
         let _ = id;
     }
 }
@@ -95,7 +95,7 @@ impl MeshTransport for IrohMeshTransport {
         // With WebRTC enabled, dial with the peer's (derived) custom addr too:
         // if a data channel already exists — mesh redial with the channel
         // surviving — the new connection opens its WebRTC path immediately.
-        #[cfg(feature = "webrtc2")]
+        #[cfg(feature = "webrtc")]
         let addr = if self.direct.is_some() {
             super::direct::with_custom_addr(addr)
         } else {
@@ -455,12 +455,12 @@ mod tests {
     }
 }
 
-/// The full `webrtc2` flow over the real stack: mesh links establish over a
+/// The full `webrtc` flow over the real stack: mesh links establish over a
 /// (local) relay, the per-link bootstrap negotiates a WebRTC channel through
 /// JSEP-over-QUIC, and the patched iroh migrates the live mesh connection onto
 /// the WebRTC path — exactly what a browser session does, minus the browser
 /// (str0m stands in for RTCPeerConnection; the protocol is the same).
-#[cfg(all(test, feature = "webrtc2"))]
+#[cfg(all(test, feature = "webrtc"))]
 mod webrtc_migration_tests {
     use std::time::Duration;
 
