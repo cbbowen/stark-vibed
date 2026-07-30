@@ -1,9 +1,10 @@
 name: ci
 
 on:
-  push:
-    branches: ['master']
-  pull_request:
+  # Automatic runs disabled for now because the build is slow.
+  # push:
+  #   branches: ['master']
+  # pull_request:
   workflow_dispatch:
 
 concurrency:
