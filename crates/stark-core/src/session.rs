@@ -8,8 +8,7 @@
 
 use crate::command::InputSample;
 use crate::document::{
-    ActorId, BrushDynamics, BrushParams, BrushShape, ColorDynamics, LayerId, NoiseKind,
-    SelectionMode, SelectionOp, SelectionShape, StrokeRecord, Tool,
+    ActorId, BrushParams, LayerId, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
@@ -180,31 +179,12 @@ pub struct Session {
     tx: GestureTx,
 }
 
-fn hard_round_brush_params() -> BrushParams {
-    BrushParams {
-        radius: 100.0,
-        shape: BrushShape::Round { hardness: 0.95 },
-        dynamics: BrushDynamics {
-            add: 0.4,
-            lift: 0.6,
-            deposit: 0.95,
-            ..BrushDynamics::default()
-        },
-        color_dynamics: ColorDynamics {
-            noise: NoiseKind::Simplex,
-            frequency: [0.05, 0.1],
-            amplitude: [0.0, 0.025, 0.05],
-        },
-        ..BrushParams::default()
-    }
-}
-
 impl Session {
     pub fn new(view: ViewTransform, active_layer: LayerId) -> Self {
         Self {
             view,
             tool: Tool::Brush,
-            brush: hard_round_brush_params(),
+            brush: BrushParams::default(),
             active_layer,
             selection_mode: SelectionMode::default(),
             selection_feather: 0.0,

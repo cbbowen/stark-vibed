@@ -49,7 +49,7 @@ use render::CANVAS_ID;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use stark_core::document::{DEFAULT_SURFACE, SelectionMode, SelectionOp};
 use stark_core::{ColorSpaceId, SurfaceId};
-use state::{AppState, dispatch, dispatch_quiet, resize};
+use state::{AppState, dispatch, dispatch_quiet, resize, update_brush};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -130,6 +130,20 @@ fn app() -> Element {
             r.paint();
             obs.set(Some(r.observe()));
             renderer.set(Some(r));
+
+            // The brush this app start begins on: the library's first preset (an
+            // empty library leaves the engine's default brush), and then the
+            // colour the Color panel is already showing — the panel mounted
+            // before the engine existed, so it seeded its picker from
+            // `INITIAL_COLOR` alone, and pushing the same colour here is what
+            // keeps the engine from painting black under a red marker. Both go
+            // through `ViewCommand::SetBrush`, which is session state, so
+            // neither leaves a step in the undo history. Once per app start, not
+            // per document: a new document keeps the brush the user is holding.
+            presets::apply_first(state);
+            update_brush(state, |b| {
+                b.color[..3].copy_from_slice(&panels::color::INITIAL_COLOR)
+            });
 
             // A `#stark…` fragment in the page URL is a session invitation:
             // join it now that the engine is up (DESIGN.md §12.4).

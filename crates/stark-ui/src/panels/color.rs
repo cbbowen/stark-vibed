@@ -12,6 +12,12 @@ use crate::platform::capture_pointer;
 use crate::state::{AppState, update_brush};
 use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 
+/// The colour a session starts on. The panel mounts before the engine exists, so
+/// this is both the picker's fallback seed *and* what `main`'s startup seeding
+/// pushes into the engine — the two have to agree, or the picker would show a
+/// colour the brush does not have and the first stroke would come out black.
+pub const INITIAL_COLOR: [f32; 3] = [0.85, 0.15, 0.1];
+
 #[component]
 pub fn ColorPanel() -> Element {
     let state = use_context::<AppState>();
@@ -20,15 +26,15 @@ pub fn ColorPanel() -> Element {
         .obs
         .peek()
         .as_ref()
-        .map(|o| o.brush.color)
-        .unwrap_or([0.85, 0.15, 0.1, 1.0]);
+        .map(|o| [o.brush.color[0], o.brush.color[1], o.brush.color[2]])
+        .unwrap_or(INITIAL_COLOR);
     // Read reactively, unlike the colour: this is how a pick — which sets the colour
     // from outside the picker — gets the markers to move (see `AppState::color_epoch`).
     let seed = (state.color_epoch)();
 
     rsx! {
         OklabPicker {
-            init: [init[0], init[1], init[2]],
+            init,
             seed,
             onchange: move |rgb: [f32; 3]| {
                 update_brush(state, move |br| {

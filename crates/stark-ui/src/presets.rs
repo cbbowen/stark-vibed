@@ -100,6 +100,18 @@ pub fn apply(state: AppState, name: &str) {
     });
 }
 
+/// Put the app on its startup brush: the first preset in the library, or — for a
+/// browser whose library is empty — nothing at all, leaving the engine's own
+/// default brush in place. Called once the renderer is up, unlike [`load`]: the
+/// library is frontend state, but applying one is a command, and there is no
+/// engine to take one before then.
+pub fn apply_first(state: AppState) {
+    let first = state.presets.peek().first().map(|e| e.name.clone());
+    if let Some(name) = first {
+        apply(state, &name);
+    }
+}
+
 /// Snapshot the live brush under `name` and persist. Saving under a name the
 /// library already has overwrites that preset in place — updating, not
 /// duplicating, which keeps names unique and rows stable.
