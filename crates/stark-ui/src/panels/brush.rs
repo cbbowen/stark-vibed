@@ -15,6 +15,12 @@ pub const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
 /// The maximum brush radius (`BrushParams::radius`).
 pub const MAX_RADIUS: f32 = 500.0;
 
+/// The longest taper the editor offers, in brush radii
+/// (`BrushParams::start_taper_length`). Twenty radii is ten stroke widths of run-in
+/// — a dramatic inker's entry, and well past where a longer one reads as different
+/// rather than more.
+pub const MAX_TAPER: f32 = 20.0;
+
 /// The floating Brush panel: the everyday quick controls (size, amount).
 /// Everything else — the full grouped parameter set with a live test
 /// stroke — lives in the brush editor dialog ("Edit brush…").

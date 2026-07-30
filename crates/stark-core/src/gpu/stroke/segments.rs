@@ -71,13 +71,157 @@ pub(super) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// The taper's radius profile: the fraction of the brush's radius in force `t` of
+/// the way through a taper (DESIGN.md §6.2).
+///
+/// `f(t) = t(3 − t²)/2` — the cubic pinned by `f(0) = 0`, `f(1) = 1`, `f'(1) = 0`,
+/// monotone on `[0, 1]`, and within 2% of `sin(πt/2)` everywhere. Both end
+/// conditions are the point:
+///
+/// * `f'(1) = 0` is what makes the taper *smooth*. The taper meets the stroke's
+///   full-width body there, and any profile with a slope left at the join (`√t`,
+///   plain `t`) puts a visible crease across the stroke where the two meet — the
+///   one artifact that would give the trick away.
+/// * `f'(0) = 3/2` is what makes it a **point** rather than a blunt cap or a
+///   hairline. The outline leaves the tip as a straight wedge, which is what an
+///   inked entry stroke looks like; `smoothstep`'s `f'(0) = 0` instead holds the
+///   width near zero for a tenth of the taper and reads as a whisker with a bulge
+///   behind it.
+///
+/// A polynomial rather than the sine it approximates because it has to be
+/// bit-identical across platforms: the taper decides stored pixels, so replay,
+/// goldens and peers all have to agree on it (DESIGN.md §12.1), and `sin` is not
+/// specified to the last bit.
+fn taper_profile(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    0.5 * t * (3.0 - t * t)
+}
+
+/// The largest `d/dt` [`taper_profile`] reaches, at `t = 0`. Used to bound how far
+/// the radius can move across one swept segment.
+const TAPER_MAX_SLOPE: f32 = 1.5;
+
+/// Max change in the taper's radius factor across one swept segment.
+///
+/// The same 2% step [`crate::path::FLATTEN_TOLERANCE`] holds a *pen attribute* to,
+/// and for exactly the same reason: pressure and the taper both scale the radius,
+/// and a segment sweeps at a constant one, so a coarser step draws a taper as a
+/// staircase of shrinking dabs rather than a smooth point.
+const TAPER_STEP: f32 = 0.02;
+
+/// Cap on the pieces one flattened edge is cut into for the taper. Well above what
+/// the step above ever asks for (a whole taper costs ~`TAPER_MAX_SLOPE / TAPER_STEP`
+/// = 75 pieces, however long it is), so this is a backstop on a pathological brush
+/// rather than a quality knob.
+const TAPER_MAX_PIECES: usize = 128;
+
+/// A stroke's taper, resolved for one span range (DESIGN.md §6.2).
+///
+/// Both lengths are in canvas px here, already scaled out of
+/// [`BrushParams::taper_px`] and — crucially — already **fitted to the stroke**: if
+/// the two zones together are longer than the stroke, both are scaled down in
+/// proportion so they exactly meet. The stroke then reaches full width at one point
+/// instead of never reaching it, which is what keeps a quick flick a small pointed
+/// mark rather than a sliver, continuously as the stroke grows.
+#[derive(Copy, Clone, Debug)]
+struct Taper {
+    /// Leading taper length (canvas px); 0 = none.
+    start: f32,
+    /// Trailing taper length (canvas px); 0 = none.
+    end: f32,
+    /// Arc length of the whole stroke, for measuring back from its end. Only read
+    /// when `end > 0`.
+    total: f32,
+}
+
+impl Taper {
+    /// The taper in force for a range, given the stroke's total arc length — or
+    /// `None` if this range stops short of the stroke's end and so cannot know it.
+    ///
+    /// A range that does not reach the end gets the **leading taper alone,
+    /// uncompressed**. That is not a guess: the engine refuses to freeze any span
+    /// that is within the trailing taper's reach of the live end, or that could
+    /// still be compressed ([`taper_safe_frozen`](super::taper_safe_frozen)), so a
+    /// partial range is one where both of those factors are exactly 1 — and the
+    /// commit, which sees the whole stroke, computes the same 1 for it.
+    fn resolve(b: &BrushParams, total: Option<f32>) -> Self {
+        let (start, end) = b.taper_px();
+        match total {
+            Some(total) if start + end > total => {
+                // Scaled in proportion, so the two zones meet at one point.
+                let k = total / (start + end);
+                Self {
+                    start: start * k,
+                    end: end * k,
+                    total,
+                }
+            }
+            Some(total) => Self { start, end, total },
+            None => Self {
+                start,
+                end: 0.0,
+                total: f32::INFINITY,
+            },
+        }
+    }
+
+    /// The fraction of the brush's radius in force at arc length `dist`.
+    fn factor(&self, dist: f32) -> f32 {
+        let mut f = 1.0;
+        if self.start > 0.0 {
+            f *= taper_profile(dist / self.start);
+        }
+        if self.end > 0.0 {
+            f *= taper_profile((self.total - dist) / self.end);
+        }
+        f
+    }
+
+    /// A bound on `|d factor / d dist|` anywhere in `[dist, dist + len]`.
+    ///
+    /// Each zone contributes at most `TAPER_MAX_SLOPE / length`, and the product
+    /// rule bounds the two together by their sum (both factors are ≤ 1). Zones the
+    /// interval cannot reach contribute nothing, which is what keeps the extra
+    /// subdivision below paid only near the ends of the stroke.
+    fn slope_bound(&self, dist: f32, len: f32) -> f32 {
+        let mut slope = 0.0;
+        if self.start > 0.0 && dist < self.start {
+            slope += TAPER_MAX_SLOPE / self.start;
+        }
+        if self.end > 0.0 && self.total - (dist + len) < self.end {
+            slope += TAPER_MAX_SLOPE / self.end;
+        }
+        slope
+    }
+
+    /// How many swept segments a flattened edge of length `len` starting at `dist`
+    /// has to be cut into to keep the radius stepping smoothly (see [`TAPER_STEP`]).
+    /// 1 — no cut at all — wherever the taper is flat, which is everywhere on an
+    /// untapered brush, so this path is bit-identical to having no taper code.
+    fn pieces(&self, dist: f32, len: f32) -> usize {
+        let slope = self.slope_bound(dist, len);
+        if slope <= 0.0 {
+            return 1;
+        }
+        // Float → int casts saturate in Rust, so a nonsense length cannot wrap here.
+        ((slope * len / TAPER_STEP).ceil() as usize).clamp(1, TAPER_MAX_PIECES)
+    }
+}
+
 /// Build swept segments from the fitted control points (DESIGN.md §6.2): flatten
 /// the curve adaptively, then make each polyline edge a segment. The one-way load
-/// reservoir (`drain`) depletes with arc distance; radius follows pressure.
+/// reservoir (`drain`) depletes with arc distance; radius follows pressure and the
+/// stroke's start/end tapers.
 ///
 /// Returns the range's segments plus the arc length at its end — measured on the
 /// emitted polyline rather than recomputed, so the range that resumes from it starts
 /// on the exact accumulator these segments were built with.
+///
+/// The **trailing** taper needs the stroke's whole length, which only a range that
+/// reaches its final span has; a range that stops short takes the leading taper
+/// alone. That is sound rather than approximate, and
+/// [`taper_safe_frozen`](super::taper_safe_frozen) is what makes it so — see
+/// [`Taper::resolve`].
 pub(super) fn generate_segments_in(
     rec: &StrokeRecord,
     tol: crate::path::FlattenTolerance,
@@ -85,24 +229,30 @@ pub(super) fn generate_segments_in(
 ) -> (Vec<Segment>, f32) {
     let b = &rec.brush;
     let dist0 = spans.dist;
+    let reaches_end = spans.range.end >= crate::path::span_count(rec.path.len());
     let pts = crate::path::flatten_spans(&rec.path, spans.range, dist0, tol);
     let end_dist = pts.last().map_or(dist0, |p| p.dist);
     let mut segs = Vec::new();
     if pts.is_empty() {
         return (segs, end_dist);
     }
+    let taper = Taper::resolve(b, reaches_end.then_some(end_dist));
 
     // Attributes are constant across a swept segment, so they are taken at its
     // *midpoint* rather than its start — with adaptive flattening a segment can be
     // long, and start-sampling would lag every ramp by half a segment. `dist` is
     // the exception: it is the segment start's arc length because the shader adds
     // the fragment's own offset along the travel to it (stamp_common.wesl).
-    let make = |pos: Vec2, pressure: f32, tilt: Vec2, dir: Vec2, len: f32, dist: f32| {
+    let make = |pos: Vec2, pressure: f32, tilt: Vec2, dir: Vec2, len: f32, dist: f32, tap: f32| {
         let drain = (1.0 - b.drain * (dist + len * 0.5)).max(0.0);
         Segment {
             start: pos,
             dir,
-            radius: (b.radius * pressure).max(0.5),
+            // Pressure and the taper both scale the tip; the floor keeps a tapered
+            // tip a hairline at its very point rather than a degenerate zero-width
+            // sweep (which would also divide by zero in the dynamics loop's
+            // reservoir cadence).
+            radius: (b.radius * pressure * tap).max(0.5),
             length: len,
             // The `add` source is the one amount knob; the brush's opacity (color[3])
             // rides the separate opacity channel (DESIGN.md §6.1).
@@ -120,13 +270,37 @@ pub(super) fn generate_segments_in(
         if len < 1e-5 {
             continue;
         }
-        let pressure = (a.pressure + c.pressure) * 0.5;
-        let tilt = (a.tilt + c.tilt) * 0.5;
-        segs.push(make(a.pos, pressure, tilt, v / len, len, a.dist));
+        let dir = v / len;
+        // One flattened edge is one segment wherever the taper is flat — which is
+        // everywhere on an untapered brush, so nothing below changes those strokes
+        // by a bit. Inside a taper it is cut into pieces fine enough that the radius
+        // steps smoothly, the same length bound `drain` and the reservoir cadence
+        // ask of the *fitter* (`flatten_tolerance`), except paid only near the ends
+        // instead of over the whole stroke.
+        let n = taper.pieces(a.dist, len);
+        let step = len / n as f32;
+        for k in 0..n {
+            let mid = (k as f32 + 0.5) / n as f32;
+            let pressure = a.pressure + (c.pressure - a.pressure) * mid;
+            let tilt = a.tilt + (c.tilt - a.tilt) * mid;
+            let along = step * k as f32;
+            let dist = a.dist + along;
+            segs.push(make(
+                a.pos + dir * along,
+                pressure,
+                tilt,
+                dir,
+                step,
+                dist,
+                taper.factor(dist + step * 0.5),
+            ));
+        }
     }
 
     if segs.is_empty() {
-        // A click: sweep a fraction of a radius so it deposits a soft blob.
+        // A click: sweep a fraction of a radius so it deposits a soft blob. Untapered
+        // whatever the brush says — a dot has no ends to taper *between*, so a tapered
+        // brush still dots at full size instead of leaving an invisible speck.
         let p = pts[0];
         let r = (b.radius * p.pressure).max(0.5);
         segs.push(make(
@@ -136,6 +310,7 @@ pub(super) fn generate_segments_in(
             Vec2::new(1.0, 0.0),
             r * 0.6,
             0.0,
+            1.0,
         ));
     }
     (segs, end_dist)
@@ -353,6 +528,212 @@ pub(super) fn region_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- tapers ----------------------------------------------------------
+
+    /// A straight stroke `len` px long with a tapered brush of `radius`.
+    fn tapered_record(radius: f32, start: f32, end: f32, len: f32) -> StrokeRecord {
+        // Enough control points that the curve has spans to freeze part of, and
+        // straight so arc length is the chord and the taper zones are easy to reason
+        // about.
+        let path: Vec<crate::path::ControlPoint> = (0..=12)
+            .map(|i| crate::path::ControlPoint::at(Vec2::new(i as f32 / 12.0 * len, 0.0)))
+            .collect();
+        StrokeRecord {
+            layer: crate::document::LayerId(0),
+            tool: crate::document::Tool::Brush,
+            brush: BrushParams {
+                radius,
+                drain: 0.0,
+                start_taper_length: start,
+                end_taper_length: end,
+                ..BrushParams::default()
+            },
+            path,
+            seed: 0,
+        }
+    }
+
+    fn whole(rec: &StrokeRecord) -> Vec<Segment> {
+        generate_segments_in(
+            rec,
+            super::super::flatten_tolerance(&rec.brush),
+            StrokeSpans::whole(rec),
+        )
+        .0
+    }
+
+    /// The profile's two end conditions are the whole design (see [`taper_profile`]),
+    /// so they are asserted rather than left to the formula: pinned at both ends,
+    /// monotone in between, and *flat* where it meets the stroke's full-width body —
+    /// which is what makes the join invisible.
+    #[test]
+    fn the_taper_profile_is_pinned_flat_at_the_join_and_monotone() {
+        assert_eq!(taper_profile(0.0), 0.0, "the tip is a point");
+        assert_eq!(taper_profile(1.0), 1.0, "the join is full width");
+        assert_eq!(taper_profile(2.0), 1.0, "past the join it stays full width");
+
+        let mut prev = 0.0;
+        for i in 1..=200 {
+            let f = taper_profile(i as f32 / 200.0);
+            assert!(f > prev, "not monotone at t = {}", i as f32 / 200.0);
+            prev = f;
+        }
+        // Numerical slope over the last 1% of the taper, as a multiple of the
+        // average: ~0 means the curve arrives flat. (Exactly `f'(1) = 0`.)
+        let slope = (taper_profile(1.0) - taper_profile(0.99)) / 0.01;
+        assert!(slope < 0.05, "the taper meets the body with slope {slope}");
+        // And leaves the tip as a wedge, not a whisker: a `smoothstep`-shaped profile
+        // would be under 0.03 here.
+        let tip_slope = (taper_profile(0.01) - taper_profile(0.0)) / 0.01;
+        assert!(tip_slope > 1.0, "the tip is blunt, slope {tip_slope}");
+    }
+
+    /// What the taper does to a stroke: pointed at both ends, full width in between,
+    /// and — because a segment sweeps at one radius — stepping finely enough through
+    /// the taper that it reads as a point rather than a staircase of dabs.
+    #[test]
+    fn a_tapered_stroke_narrows_at_both_ends() {
+        let radius = 20.0;
+        let rec = tapered_record(radius, 4.0, 6.0, 900.0);
+        let segs = whole(&rec);
+        let first = segs.first().expect("segments");
+        let last = segs.last().expect("segments");
+        let widest = segs.iter().fold(0.0f32, |m, s| m.max(s.radius));
+
+        assert!(
+            first.radius < 0.1 * radius,
+            "the start is not a point: {}",
+            first.radius
+        );
+        assert!(
+            last.radius < 0.1 * radius,
+            "the end is not a point: {}",
+            last.radius
+        );
+        assert!(
+            (widest - radius).abs() < 1e-3,
+            "the body should reach full radius, got {widest}"
+        );
+        // Every consecutive pair steps by at most the tolerance the subdivision is
+        // sized for (with slack for the pressure/flattening interaction).
+        for w in segs.windows(2) {
+            let step = (w[1].radius - w[0].radius).abs();
+            assert!(
+                step <= TAPER_STEP * radius * 2.0,
+                "radius jumps {step} between segments — the taper is a staircase"
+            );
+        }
+    }
+
+    /// A stroke shorter than its own two tapers still reaches full width, at one
+    /// point in the middle: the zones are scaled down in proportion rather than
+    /// clamped, so a quick flick is a small pointed mark and not an invisible sliver.
+    /// And the behaviour is continuous in length — the whole reason to compress
+    /// rather than clamp.
+    #[test]
+    fn short_strokes_compress_their_tapers_instead_of_vanishing() {
+        let radius = 16.0;
+        for len in [4.0f32, 20.0, 60.0, 160.0, 400.0] {
+            let rec = tapered_record(radius, 6.0, 6.0, len);
+            let widest = whole(&rec).iter().fold(0.0f32, |m, s| m.max(s.radius));
+            assert!(
+                widest > 0.9 * radius,
+                "a {len}px stroke only reached radius {widest} of {radius}"
+            );
+        }
+        // A click has no length for a taper to run along at all, and still dots at
+        // full size (`generate_segments_in`'s degenerate case).
+        let mut dot = tapered_record(radius, 6.0, 6.0, 0.0);
+        dot.path.truncate(1);
+        let segs = whole(&dot);
+        assert_eq!(segs.len(), 1, "a click is one swept blob");
+        assert_eq!(segs[0].radius, radius, "a tapered brush should still dot");
+    }
+
+    /// The load-bearing claim behind [`super::taper_safe_frozen`]: for any prefix it
+    /// admits, rendering the stroke as *head + tail* produces the very same swept
+    /// segments as rendering it in one pass.
+    ///
+    /// That is what the live == committed invariant (§1.3) reduces to here. A frozen
+    /// head is never redrawn, so if the head's segments differed from the commit's by
+    /// even a radius the stroke would visibly change under the pointer at release —
+    /// and the taper is exactly the kind of parameter that invites it, being measured
+    /// from an end of the stroke that has not been drawn yet.
+    #[test]
+    fn a_taper_safe_head_plus_tail_is_the_single_pass_stroke() {
+        let rec = tapered_record(18.0, 5.0, 9.0, 1200.0);
+        let tol = super::super::flatten_tolerance(&rec.brush);
+        let all = crate::path::span_count(rec.path.len());
+        let frozen = super::super::taper_safe_frozen(&rec, all);
+        assert!(frozen > 0, "nothing could be frozen at all");
+        assert!(
+            frozen < all,
+            "the trailing taper must hold the last spans back"
+        );
+
+        let (head, dist) = generate_segments_in(
+            &rec,
+            tol,
+            StrokeSpans {
+                range: 0..frozen,
+                dist: 0.0,
+            },
+        );
+        let (tail, _) = generate_segments_in(
+            &rec,
+            tol,
+            StrokeSpans {
+                range: frozen..all,
+                dist,
+            },
+        );
+        let split: Vec<Segment> = head.into_iter().chain(tail).collect();
+        let one_pass = whole(&rec);
+
+        assert_eq!(
+            split.len(),
+            one_pass.len(),
+            "the split stroke has a different number of segments"
+        );
+        for (i, (a, b)) in split.iter().zip(&one_pass).enumerate() {
+            assert_eq!(a.radius, b.radius, "segment {i}: radius differs (taper)");
+            assert_eq!(a.dist, b.dist, "segment {i}: arc length differs");
+            assert_eq!(a.length, b.length, "segment {i}: length differs");
+            assert_eq!(a.start, b.start, "segment {i}: start differs");
+        }
+    }
+
+    /// An untapered brush is untouched by any of the above, to the bit: the taper's
+    /// subdivision has to be a no-op where the taper is flat, or it would re-cut
+    /// every stroke ever drawn and invalidate every golden.
+    #[test]
+    fn an_untapered_stroke_is_not_subdivided() {
+        let rec = tapered_record(18.0, 0.0, 0.0, 900.0);
+        let segs = whole(&rec);
+        let pts = crate::path::flatten_spans(
+            &rec.path,
+            0..crate::path::span_count(rec.path.len()),
+            0.0,
+            super::super::flatten_tolerance(&rec.brush),
+        );
+        assert_eq!(
+            segs.len(),
+            pts.len() - 1,
+            "one segment per flattened edge, with no taper subdivision"
+        );
+        assert!(
+            segs.iter().all(|s| s.radius == 18.0),
+            "an untapered stroke is full width throughout"
+        );
+        assert_eq!(
+            super::super::taper_safe_frozen(&rec, 7),
+            7,
+            "an untapered brush holds nothing back from freezing"
+        );
+    }
+
+    // --- region measurement ----------------------------------------------
 
     /// A segment carrying only what the region measurements read.
     fn seg(start: Vec2, end: Vec2, radius: f32) -> Segment {

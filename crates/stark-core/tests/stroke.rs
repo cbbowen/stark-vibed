@@ -530,6 +530,270 @@ fn an_oversized_smear_stroke_previews_as_it_commits() {
     );
 }
 
+// --- tapered ends (DESIGN.md §6.2) ---------------------------------------
+
+/// A hard, opaque inking brush with the given taper lengths (in radii). Hard on
+/// purpose: the tests below *measure the stroke's width* off the rendered image, and
+/// a soft tip's falloff would put the edge wherever the dominance threshold happens
+/// to cut rather than where the brush is. `drain` off, so nothing but the taper
+/// varies along the stroke.
+fn inking_brush(start: f32, end: f32) -> BrushParams {
+    let mut b = brush(RED, 16.0);
+    b.shape = stark_core::document::BrushShape::Round { hardness: 0.9 };
+    b.drain = 0.0;
+    b.dynamics.add = 1.0;
+    b.start_taper_length = start;
+    b.end_taper_length = end;
+    b
+}
+
+/// A dense straight run across the canvas, the shape a taper is easiest to read on.
+fn straight_run() -> Vec<Vec2> {
+    (0..=40)
+        .map(|i| Vec2::new(i as f32 / 40.0 * 200.0 - 100.0, 0.0))
+        .collect()
+}
+
+/// The stroke's rendered width where it crosses screen column `x`: how many rows
+/// there read as paint.
+fn painted_height(img: &stark_core::RgbaImage, x: u32) -> u32 {
+    (0..img.height).filter(|&y| is_red(img.pixel(x, y))).count() as u32
+}
+
+/// The taper's whole point: the stroke leaves and enters as a point while its body
+/// stays full width. Held against the *same* stroke drawn untapered, so the claim is
+/// about the taper rather than about where a soft edge happens to read as paint.
+///
+/// Canvas x maps to screen x + 128 at the default 1:1 view, so the run from -100 to
+/// 100 spans columns 28..228 and its two 80px tapers (5 radii of a 16px tip) cover
+/// 28..108 and 148..228.
+#[test]
+fn a_tapered_brush_draws_a_stroke_pointed_at_both_ends() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let run = straight_run();
+
+    stroke_with(&mut engine, inking_brush(0.0, 0.0), &run);
+    let plain = engine.render_to_image();
+    engine.process(DocCommand::Undo);
+    stroke_with(&mut engine, inking_brush(5.0, 5.0), &run);
+    let tapered = engine.render_to_image();
+
+    // Mid-stroke both are clear of either taper, so the taper must cost nothing there
+    // — a taper that thinned the whole stroke would be a width knob, not a taper.
+    let (mid_plain, mid_taper) = (painted_height(&plain, 128), painted_height(&tapered, 128));
+    assert!(
+        mid_plain > 20,
+        "the control stroke did not land ({mid_plain}px)"
+    );
+    assert!(
+        mid_taper >= mid_plain,
+        "the taper thinned the body of the stroke: {mid_taper}px vs {mid_plain}px"
+    );
+
+    // A quarter of the way into each taper the stroke must be markedly narrower...
+    for (what, x) in [("start", 48u32), ("end", 208)] {
+        let (p, t) = (painted_height(&plain, x), painted_height(&tapered, x));
+        assert!(p > 20, "the control stroke is not full width at the {what}");
+        assert!(
+            (t as f32) < 0.6 * p as f32,
+            "the {what} taper barely narrows the stroke: {t}px of {p}px"
+        );
+    }
+    // ...and at the very tips, all but gone.
+    for (what, x) in [("start", 30u32), ("end", 226)] {
+        let t = painted_height(&tapered, x);
+        assert!(t <= 4, "the {what} of the stroke is not a point: {t}px");
+    }
+    // The taper is a *shape*, not an erasure: the stroke still reaches its extremes.
+    assert!(
+        (28..40).any(|x| painted_height(&tapered, x) > 0),
+        "the tapered stroke does not start where it was drawn"
+    );
+    assert!(
+        (216..228).any(|x| painted_height(&tapered, x) > 0),
+        "the tapered stroke does not reach its end"
+    );
+}
+
+/// The taper widens smoothly — no step where it meets the stroke's full-width body,
+/// which is the artifact a profile with a slope left at the join would leave, and the
+/// one thing that would give the whole effect away.
+#[test]
+fn the_taper_widens_without_a_step() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    // One long taper over the whole run, so every column is inside it and the width
+    // profile can be walked end to end.
+    stroke_with(&mut engine, inking_brush(12.5, 0.0), &straight_run());
+    let img = engine.render_to_image();
+
+    let widths: Vec<u32> = (30..226).map(|x| painted_height(&img, x)).collect();
+    // Monotone up to the body (within the ±1 a rasterized edge rounds by), and never
+    // jumping more than a couple of px between adjacent columns.
+    for (i, w) in widths.windows(2).enumerate() {
+        assert!(
+            w[1] + 1 >= w[0],
+            "the taper narrows again at column {}: {} then {}",
+            30 + i,
+            w[0],
+            w[1]
+        );
+        assert!(
+            w[1].abs_diff(w[0]) <= 3,
+            "the taper steps {} px at column {} — a visible crease",
+            w[1].abs_diff(w[0]),
+            30 + i
+        );
+    }
+}
+
+/// A tapered stroke's incremental preview must equal a from-scratch render at
+/// **every point** during the stroke — the §1.3 invariant, on the one parameter that
+/// most invites breaking it.
+///
+/// A taper is measured from the ends of the whole stroke, and while the pointer is
+/// down the far end has not been drawn yet. Bake the trailing taper into a frozen
+/// span too early and the stroke keeps a pinch in its middle that the commit does not
+/// draw — permanently, because a frozen head is never redrawn. So freezing is held
+/// back (`gpu::stroke::taper_safe_frozen`), and this is what checks it: re-setting the
+/// brush drops the head, so the very next repaint renders the whole stroke in one
+/// pass and any prematurely-baked taper shows as a difference.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn the_incremental_tapered_preview_matches_a_fresh_one_throughout() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let path: Vec<Vec2> = stark_testdata::LOOP_STROKE
+        .iter()
+        .map(|&[x, y]| Vec2::new(x, y))
+        .collect();
+    // A taper long enough to reach well behind where the fitter would otherwise have
+    // frozen — the case the hold-back exists for.
+    let taper = || inking_brush(4.0, 9.0);
+    engine.process(ViewCommand::SetBrush(taper()));
+    let mut it = path.iter();
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    for (i, &p) in it.enumerate() {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+        if i % 40 != 0 {
+            continue;
+        }
+        let incremental = engine.render_to_image();
+        engine.process(ViewCommand::SetBrush(taper()));
+        let fresh = engine.render_to_image();
+        assert_eq!(
+            frac_exceeding(&incremental, &fresh, 8),
+            0.0,
+            "at sample {i}: the incremental tapered preview differs from a fresh render \
+             ({:.4}% of px over tol 2)",
+            frac_exceeding(&incremental, &fresh, 2) * 100.0,
+        );
+    }
+
+    // And the release changes nothing either: the last frame previewed is what lands.
+    let preview = engine.render_to_image();
+    engine.process(GestureCommand::End);
+    let committed = engine.render_to_image();
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 8),
+        0.0,
+        "a tapered stroke commits differently than it previewed ({:.4}% of px over tol 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}
+
+/// A tapered brush still **dots**: a click has no length for a taper to run along, so
+/// tapping with an inking brush has to leave a full-size mark rather than the
+/// invisible speck a taper read literally would give.
+#[test]
+fn a_tapered_brush_still_dots() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    engine.process(ViewCommand::SetBrush(inking_brush(6.0, 6.0)));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::ZERO),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    engine.process(GestureCommand::End);
+
+    let img = engine.render_to_image();
+    assert!(is_red(center(&img)), "a tapered brush left no dot at all");
+    assert!(
+        painted_height(&img, 128) > 20,
+        "the dot is a speck, not the brush's own size ({}px)",
+        painted_height(&img, 128)
+    );
+}
+
+/// [`the_incremental_tapered_preview_matches_a_fresh_one_throughout`] for the **stamp
+/// loop**, where the claim is much stronger: that path is sequential, and the taper
+/// reaches it twice over.
+///
+/// The taper cuts flattened edges into finer segments near the ends, and the loop's
+/// reservoir reloads every `RESERVOIR_CADENCE · radius` of travel — a radius the taper
+/// is shrinking — so both *how many* segments the loop walks and *how often* it
+/// exchanges with the canvas change inside a taper. Head and commit must still walk
+/// exactly the same sequence, or the tail resumes with a tool that has picked up a
+/// different amount of paint than the commit's would have.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn the_incremental_tapered_smear_preview_matches_a_fresh_one_throughout() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    undercoat(&mut engine);
+
+    let taper = || {
+        let mut b = smear_brush(RED, 15.0);
+        b.start_taper_length = 4.0;
+        b.end_taper_length = 9.0;
+        b
+    };
+    let path: Vec<Vec2> = stark_testdata::C_STROKE
+        .iter()
+        .map(|&[x, y]| Vec2::new(x - 160.0, y - 160.0))
+        .collect();
+    engine.process(ViewCommand::SetBrush(taper()));
+    let mut it = path.iter();
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().unwrap()),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    for (i, &p) in it.enumerate() {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+        if i % 30 != 0 {
+            continue;
+        }
+        let incremental = engine.render_to_image();
+        // The brush it is already using — but re-setting it drops the frozen head, so
+        // this repaint runs the whole loop in one pass.
+        engine.process(ViewCommand::SetBrush(taper()));
+        let fresh = engine.render_to_image();
+        assert_eq!(
+            frac_exceeding(&incremental, &fresh, 8),
+            0.0,
+            "at sample {i}: the incremental tapered smear preview differs from a fresh \
+             render ({:.4}% of px over tol 2)",
+            frac_exceeding(&incremental, &fresh, 2) * 100.0,
+        );
+    }
+}
+
 #[test]
 fn stroke_commit_undo_redo() {
     let Some(mut engine) = engine_or_skip_blue() else {

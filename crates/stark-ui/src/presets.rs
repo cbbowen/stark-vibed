@@ -4,10 +4,10 @@
 //! Like the shape library (`crate::shapes`), the presets are frontend state that
 //! follows this browser across documents via `localStorage` — and degrade to a
 //! per-session library where storage is unavailable. A browser that has never
-//! stored a library is seeded with the two built-in tools that used to be
-//! hard-coded chips in the brush editor: the everyday brush and the palette
-//! knife. Deleting them is respected — only a browser with *no* stored library
-//! (not an emptied one) is re-seeded.
+//! stored a library is seeded with the built-in tools that used to be hard-coded
+//! chips in the brush editor: the everyday brush, and a tapered inking pen.
+//! Deleting them is respected — only a browser with *no* stored library (not an
+//! emptied one) is re-seeded.
 //!
 //! A preset is a whole brush **except the painting colour**: applying one keeps
 //! the current RGB (colour belongs to the Color panel) while everything else —
@@ -33,7 +33,8 @@ pub struct PresetEntry {
     pub brush: BrushParams,
 }
 
-/// The library a fresh browser starts with the default brush that was previously hard-coded.
+/// The library a fresh browser starts with. The first entry is also the brush the
+/// app opens on ([`apply_first`]), so it leads with the everyday one.
 fn default_presets() -> Vec<PresetEntry> {
     vec![
         PresetEntry {
@@ -53,7 +54,25 @@ fn default_presets() -> Vec<PresetEntry> {
                     amplitude: [0.0, 0.025, 0.05],
                 },
                 ..BrushParams::default()
-            }
+            },
+        },
+        // An inking pen: hard, opaque, never runs dry, and pointed at both ends —
+        // a short entry taper and a longer exit, which is the asymmetry a hand
+        // makes when it lands a line and flicks off it.
+        PresetEntry {
+            name: "Pen".to_string(),
+            brush: BrushParams {
+                radius: 18.0,
+                shape: BrushShape::Round { hardness: 0.92 },
+                drain: 0.0,
+                start_taper_length: 5.0,
+                end_taper_length: 11.0,
+                dynamics: BrushDynamics {
+                    add: 1.0,
+                    ..BrushDynamics::default()
+                },
+                ..BrushParams::default()
+            },
         },
     ]
 }

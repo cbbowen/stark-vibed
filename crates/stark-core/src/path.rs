@@ -822,6 +822,20 @@ pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
     frozen.saturating_sub(1).min(span_count(total))
 }
 
+/// The curve point at the **end** of span `k` — where span `k + 1` picks up. `k`
+/// past the last span gives the stroke's own end point.
+///
+/// One Bézier conversion and one evaluation, with no subdivision at all, which is
+/// what lets a caller walk spans back from the live end of a stroke measuring chords
+/// without paying for the polyline (see `gpu::stroke::taper_safe_frozen`).
+pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
+    match span_count(knots.len()) {
+        // Fewer than two control points is not a curve: one is a click, zero nothing.
+        0 => knots.first().map_or(Vec2::ZERO, |k| k.pos),
+        last => span(knots, k.min(last - 1)).eval(1.0).pos,
+    }
+}
+
 /// Expand `knots` into a polyline, subdividing only where the error budget
 /// requires it (DESIGN.md §6.2).
 pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<IntermediateSample> {

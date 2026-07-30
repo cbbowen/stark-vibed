@@ -28,7 +28,9 @@ use stark_core::{ColorSpaceId, InputSample};
 
 use dioxus::html::HasFileData;
 
-use crate::panels::brush::{BRISTLE_BRUSH, MAX_RADIUS, set_bristles, set_orientation, set_shape};
+use crate::panels::brush::{
+    BRISTLE_BRUSH, MAX_RADIUS, MAX_TAPER, set_bristles, set_orientation, set_shape,
+};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::{self, Renderer};
 use crate::state::{AppState, update_brush};
@@ -217,6 +219,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                                     }
                                 }) }
                         }
+                        // The two tapers — the run over which the tip widens from a
+                        // point (§6.2). In *radii*, so a taper keeps its shape as the
+                        // brush is resized, which is why the labels say so.
+                        Slider { label: "Start taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.start_taper_length,
+                            oninput: move |v| edit(state, preview, move |b| b.start_taper_length = v) }
+                        Slider { label: "End taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.end_taper_length,
+                            oninput: move |v| edit(state, preview, move |b| b.end_taper_length = v) }
                     }
 
                     Section {

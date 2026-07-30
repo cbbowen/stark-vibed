@@ -643,6 +643,35 @@ deposit below). Anything a segment applies *per segment* rather than per fragmen
 length, which the renderer supplies as a length bound rather than the fitter
 assuming one (`gpu::stroke::flatten_tolerance`).
 
+**Tapered ends.** `start_taper_length` / `end_taper_length` scale the tip down to a
+point over a run at each end of the stroke, which is what turns an even-width digital
+line into an inker's stroke. Both are quoted in **brush radii**, not canvas px, so a
+brush keeps its look as it is resized — the whole mark scales together instead of a
+taper that shaped the stroke at radius 8 becoming a nub at radius 80. The profile is
+`f(t) = t(3 − t²)/2`: `f'(1) = 0`, so the taper meets the full-width body with no
+crease (the artifact that gives a taper away), and `f'(0) = 3/2`, so it leaves the tip
+as a wedge rather than a blunt cap or a whisker-with-a-bulge. It is a polynomial, not
+the sine it approximates, because the taper decides stored pixels and replay, goldens
+and peers all have to agree on it bit for bit.
+
+Two consequences worth naming, because both are places the obvious implementation is
+wrong:
+
+- The taper varies the radius *with distance travelled* while a segment sweeps at a
+  constant one — the same constraint `drain` is under (above). It is paid the same
+  way, by cutting segments finer, but **locally**: only edges that actually lie inside
+  a taper are subdivided, so a long stroke pays ~75 extra segments at each end instead
+  of flattening its whole length at the taper's step.
+- A taper is measured from the ends of the **whole** stroke, and while the pointer is
+  down the far end has not happened yet. So freezing is held back: a span is only
+  settled once it is a trailing-taper's length clear of the live end *and* a leading
+  taper's length past the start — which together also prove the stroke has outgrown
+  the "scale both zones to fit" compression that keeps a short flick a small pointed
+  mark rather than a sliver. Both tests use chords, which under-estimate arc length, so
+  what they admit is genuinely final; and an admitted prefix stays admitted however the
+  stroke continues, so a kept head is never invalidated
+  (`gpu::stroke::taper_safe_frozen`).
+
 **Incremental repaint.** Freezing is what keeps a long stroke responsive. Drawing
 a live stroke costs (segments × tiles covered), both of which grow with its
 length, so re-rendering the whole thing on every pointer move gets quadratically

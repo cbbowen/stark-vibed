@@ -2005,6 +2005,14 @@ impl Engine {
         head: Option<FrozenHead>,
         ordinal: u64,
     ) -> (FrozenHead, DocState) {
+        // A tapered brush cannot freeze a span the taper has not finished with: the
+        // taper is measured from the *ends* of the whole stroke, and the far end is
+        // still under the pointer. Held back here rather than in the fitter because
+        // it is a fact about the brush, not about the curve — the same control points
+        // freeze at the same place for every other brush (see `taper_safe_frozen`).
+        // An already-kept head is unaffected: a prefix this admitted once stays
+        // admissible, so the clamp can only slow the head down, never invalidate it.
+        let frozen = crate::gpu::stroke::taper_safe_frozen(rec, frozen);
         // Nothing cached, or the fit went backwards (a new stroke): start over from
         // the committed document, with a fresh (uncharged) brush.
         let mut head = head.unwrap_or_else(|| FrozenHead {

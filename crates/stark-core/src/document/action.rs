@@ -255,6 +255,26 @@ pub struct BrushParams {
     /// pixels); the default (amplitude 0) is the historical constant colour.
     #[serde(default)]
     pub color_dynamics: ColorDynamics,
+    /// Length of the stroke's **leading taper** — the run over which the tip widens
+    /// from a point to its full [`radius`](Self::radius) — in *units of `radius`*,
+    /// so 4.0 means four brush radii of taper (DESIGN.md §6.2). 0 = no taper: the
+    /// stroke starts at full width, which is the historical behaviour.
+    ///
+    /// In radii rather than canvas px so a brush keeps its *look* as it is resized:
+    /// scale the tip up and the whole mark scales with it, instead of a taper that
+    /// was the shape of the stroke at radius 8 becoming a blunt nub at radius 80.
+    /// This is what lets a brush mimic an inker's entry stroke.
+    #[serde(default)]
+    pub start_taper_length: f32,
+    /// Length of the stroke's **trailing taper**, in units of
+    /// [`radius`](Self::radius) — [`start_taper_length`](Self::start_taper_length)
+    /// measured back from the end of the stroke, for the exit of an inked line.
+    ///
+    /// Together the two are held to the stroke's own length: if they would overlap
+    /// they are scaled down in proportion, so a short flick is a small pointed mark
+    /// rather than a sliver (see `gpu::stroke::segments::Taper`).
+    #[serde(default)]
+    pub end_taper_length: f32,
 }
 
 impl Default for BrushParams {
@@ -267,7 +287,30 @@ impl Default for BrushParams {
             orientation: OrientationSource::default(),
             dynamics: BrushDynamics::default(),
             color_dynamics: ColorDynamics::default(),
+            start_taper_length: 0.0,
+            end_taper_length: 0.0,
         }
+    }
+}
+
+impl BrushParams {
+    /// The two taper lengths in **canvas px**: the stored lengths (in radii) scaled
+    /// by [`radius`](Self::radius). Negative or non-finite lengths read as 0 — the
+    /// fields arrive from files, presets and peers, and a taper is a length.
+    pub fn taper_px(&self) -> (f32, f32) {
+        // `f32::max` returns the non-NaN operand, so this also normalizes NaN to 0.
+        let r = self.radius.max(0.0);
+        let px = |len: f32| {
+            let px = len.max(0.0) * r;
+            if px.is_finite() { px } else { 0.0 }
+        };
+        (px(self.start_taper_length), px(self.end_taper_length))
+    }
+
+    /// Whether either end of a stroke with this brush tapers.
+    pub fn tapers(&self) -> bool {
+        let (start, end) = self.taper_px();
+        start > 0.0 || end > 0.0
     }
 }
 

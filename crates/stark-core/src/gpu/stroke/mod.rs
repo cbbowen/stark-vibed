@@ -606,6 +606,53 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     tol
 }
 
+/// How many leading spans of a *live* stroke may be rendered once and kept, given
+/// that the fitter has settled `frozen` of them (DESIGN.md §6.2).
+///
+/// Freezing is what makes a long live stroke cost its tail rather than its length
+/// ([`StrokeRenderer::render_range`]), and it rests on a frozen span's pixels being
+/// final. A taper breaks that on its own terms: it is measured from the ends of the
+/// **whole** stroke, and while the pointer is down the far end has not happened yet.
+/// Bake the trailing taper into a span too early and the stroke would carry a pinch
+/// in its middle that the commit does not — the live == committed invariant (§1.3),
+/// failing in the one place it cannot be repainted.
+///
+/// So a span is held back unless both of the taper's inputs are already settled for
+/// it:
+///
+/// * it is at least the trailing taper's length before the stroke's end, so its
+///   trailing factor is 1 — and stays 1, since the stroke only gets longer;
+/// * it is at least the leading taper's length past the start, which together with
+///   the first condition proves the stroke is already longer than the two zones
+///   together, so the "scale both to fit" compression ([`segments::Taper`]) is 1 and
+///   likewise stays 1.
+///
+/// Both are tested on **chords**, which under-estimate arc length — so a span this
+/// admits genuinely satisfies them, and a stroke that doubles back near its own
+/// start or end merely re-renders a little more than it had to. Only the last span
+/// in the candidate prefix is tested: arc length increases monotonically along the
+/// stroke, so it is the hardest case, and once a prefix is admitted it stays
+/// admissible however the stroke continues (which is what lets a kept head survive
+/// this shrinking under it).
+pub fn taper_safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
+    let (start_px, end_px) = rec.brush.taper_px();
+    let last = crate::path::span_count(rec.path.len());
+    if (start_px <= 0.0 && end_px <= 0.0) || last == 0 {
+        return frozen;
+    }
+    let head = rec.path[0].pos;
+    let tip = crate::path::span_end(&rec.path, last - 1);
+    let mut spans = frozen.min(last);
+    while spans > 0 {
+        let cut = crate::path::span_end(&rec.path, spans - 1);
+        if (tip - cut).length() >= end_px && (cut - head).length() >= start_px {
+            break;
+        }
+        spans -= 1;
+    }
+    spans
+}
+
 /// Which part of a stroke to build segments for, and the arc length its first
 /// sample carries.
 ///
