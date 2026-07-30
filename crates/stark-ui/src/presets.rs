@@ -41,6 +41,7 @@ fn default_presets() -> Vec<PresetEntry> {
             name: "Hard Round".to_string(),
             brush: BrushParams {
                 radius: 100.0,
+                drain: 0.0015,
                 shape: BrushShape::Round { hardness: 0.95 },
                 dynamics: BrushDynamics {
                     add: 1.0,
@@ -64,7 +65,6 @@ fn default_presets() -> Vec<PresetEntry> {
             brush: BrushParams {
                 radius: 18.0,
                 shape: BrushShape::Round { hardness: 0.92 },
-                drain: 0.0,
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
                 dynamics: BrushDynamics {

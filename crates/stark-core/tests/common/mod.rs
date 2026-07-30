@@ -151,6 +151,7 @@ pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
     BrushParams {
         color,
         radius,
+        drain: 0.0015,
         ..BrushParams::default()
     }
 }

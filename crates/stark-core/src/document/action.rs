@@ -282,7 +282,7 @@ impl Default for BrushParams {
         Self {
             color: [0.0, 0.0, 0.0, 1.0],
             radius: 16.0,
-            drain: 0.0015,
+            drain: 0.0,
             shape: BrushShape::default(),
             orientation: OrientationSource::default(),
             dynamics: BrushDynamics::default(),
