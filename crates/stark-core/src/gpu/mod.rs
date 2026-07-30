@@ -15,7 +15,8 @@ pub mod tile;
 pub mod transform;
 
 pub use composite::{
-    CompositeGroup, CompositeItem, Compositor, MatteDraw, MediaParams, SelectionOutline,
+    CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, MatteDraw,
+    MediaParams, Offscreen, SelectionOutline,
 };
 pub use context::GpuContext;
 pub use environment::{Environment, EnvironmentId};

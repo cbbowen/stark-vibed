@@ -68,8 +68,8 @@ pub use engine::{
 pub use error::{EngineError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2, ViewTransform};
 pub use gpu::{
-    Compositor, EnvironmentId, GpuContext, MediaParams, StrokeRenderer, SurfaceId, TilePairHandle,
-    TilePool,
+    Compositor, CompositorPipeline, EnvironmentId, GpuContext, MediaParams, Offscreen,
+    StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
 };
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};

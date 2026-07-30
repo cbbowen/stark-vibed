@@ -11,6 +11,24 @@
 //!
 //! This replaces the step-1 `Presenter` for engine rendering; the height/normal
 //! lighting is the "old masters" payoff.
+//!
+//! # Two types, split along one line: does it depend on the target?
+//!
+//! [`CompositorPipeline`] is everything that does not — the five pipelines, the
+//! layouts, the pigment LUT, and the view settings the media pass reads. A
+//! [`Compositor`] is one target's worth of what does: pass A's offscreen
+//! attachments, the media bind group over them, the blend scratch, and the instance
+//! streams.
+//!
+//! The split exists because more than one thing gets drawn from the same document,
+//! at different sizes: the surface every frame, and beside it an export or the
+//! navigator's miniature. One `Compositor` shared between them spends a rebuild of
+//! *both* sizes' attachments per alternation — which is affordable for a file export
+//! and not for a miniature refreshed on every edit. So each keeps its own, and they
+//! share the expensive half by reference. What they must not each keep a copy of is
+//! the view settings: two consumers disagreeing about the canvas weave or the
+//! lighting would be a bug visible only in the smaller picture, so those live in the
+//! pipeline behind a generation counter that each `Compositor` notices.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -189,6 +207,28 @@ impl ScratchTargets {
 /// A color + aux target pair, as pass A hands one around.
 type Targets<'a> = (&'a wgpu::TextureView, &'a wgpu::TextureView);
 
+/// What one render draws, as against *where and how* it draws it (the target and the
+/// view, which stay separate parameters).
+///
+/// These four travel together because they are one description of the document at an
+/// instant, assembled in one place — [`Engine::render_view`](crate::Engine) — and
+/// meaningless apart: the ground belongs under the stack, the outlines over it, and
+/// `transparent` says whether the ground is drawn at all.
+pub struct CompositeScene<'a> {
+    /// The substrate colour in the document's working channels — the ground under
+    /// the paint (FRAME_DESIGN.md §5).
+    pub background: [f32; 4],
+    /// The visible layers, bottom-to-top, cut into blend groups.
+    pub groups: &'a [CompositeGroup],
+    /// Selection outlines to draw over the lit result: the local actor's and each
+    /// present peer's (PEER_DESIGN.md §3). Empty for anything that is not the screen
+    /// — chrome is a thing to draw *with* (FRAME_DESIGN.md §6).
+    pub outlines: &'a [SelectionOutline<'a>],
+    /// Leave the substrate out and carry the paint's own alpha to the target, for a
+    /// cut-out export.
+    pub transparent: bool,
+}
+
 /// Mirrors `Media` in `media_common.wesl` (80 bytes).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -232,7 +272,22 @@ impl Default for MediaParams {
     }
 }
 
-pub struct Compositor {
+/// Everything about compositing that does not depend on *what is being drawn into*:
+/// the pipelines and layouts, the uniform buffers whose identity never changes, the
+/// pigment LUT, and the view settings the media pass reads.
+///
+/// Split from [`Compositor`] so several of them can share one of these. Each renders
+/// into a target of its own size and therefore keeps its own attachments; what they
+/// must *not* keep their own of is anything on this side of the line — the pipelines
+/// because they are expensive (five of them, plus a decoded Mixbox LUT), and the view
+/// settings because two consumers disagreeing about the canvas weave or the lighting
+/// would be a bug that shows only in the smaller picture.
+///
+/// Not immutable: the view settings change. It is immutable *during a render*, which
+/// is what lets every consumer hold it by shared reference. The uniform buffers are
+/// written through the queue rather than through `&mut`, and renders are sequential
+/// on one queue, so those writes stay ordered with the submits that read them.
+pub struct CompositorPipeline {
     ctx: GpuContext,
 
     // Pass A: composite tiles into offscreen targets.
@@ -240,35 +295,24 @@ pub struct Compositor {
     view_buf: wgpu::Buffer,
     view_bg: wgpu::BindGroup,
     tile_bgl: wgpu::BindGroupLayout,
-    instances: wgpu::Buffer,
-    instance_cap: usize,
 
     // Matte layers, drawn inside pass A at their place in the stack
     // (FRAME_DESIGN.md §4). Its own pipeline because its blend state differs from
     // the color space's: `over` on *both* targets, so an opaque matte erases the
     // relief beneath it rather than letting underlying impasto emboss through.
     matte_pipeline: wgpu::RenderPipeline,
-    matte_instances: wgpu::Buffer,
-    matte_cap: usize,
 
     // Per-layer blend modes, inside pass A (MISSING_FEATURES.md §0.4). One
     // fullscreen draw merging an isolated layer into the accumulator.
     blend_pipeline: wgpu::RenderPipeline,
     blend_bgl: wgpu::BindGroupLayout,
-    blend_buf: wgpu::Buffer,
-    blend_slots: usize,
     pigment: PigmentLut,
-    // Allocated on first use and kept: only a document with a non-`Normal` layer
-    // ever pays for them.
-    scratch: Option<ScratchTargets>,
 
     // Pass C: the selection outline, drawn over the lit result (DESIGN.md §6.8).
     // One instanced quad per mask tile, in the same canvas→NDC frame as pass A.
     overlay_pipeline: wgpu::RenderPipeline,
     overlay_view_bg: wgpu::BindGroup,
     overlay_tile_bgl: wgpu::BindGroupLayout,
-    overlay_instances: wgpu::Buffer,
-    overlay_cap: usize,
 
     // Pass B: media/lighting → final target.
     media_pipeline: wgpu::RenderPipeline,
@@ -276,7 +320,7 @@ pub struct Compositor {
     media_bgl: wgpu::BindGroupLayout,
     media: MediaParams,
 
-    // Offscreen channel formats (from the color space), for resize.
+    // Offscreen channel formats (from the color space).
     color_format: wgpu::TextureFormat,
     aux_format: wgpu::TextureFormat,
 
@@ -284,19 +328,99 @@ pub struct Compositor {
     surface: Surface,
     // The HDR lighting environment sampled by the media pass (DESIGN.md §6.3).
     environment: Environment,
+    /// A stamp for "the state a media bind group would be built against". Moved
+    /// whenever `surface` or `environment` is swapped: both are bound *into* each
+    /// consumer's bind group, so each has to notice and rebuild — and a stamp is what
+    /// makes noticing structural rather than a fan-out of notifications that a new
+    /// consumer could be left out of.
+    ///
+    /// Drawn from a **process-wide** counter rather than counted per pipeline, so no
+    /// two states anywhere ever share a value: "same stamp" then implies "same
+    /// pipeline, same settings", and a consumer's decision to reuse cannot be wrong.
+    ///
+    /// The case that needs that is a colour-space rebuild (DESIGN.md §6.7), which does
+    /// not mutate a pipeline but *replaces* it. A per-pipeline counter would start the
+    /// replacement back at its initial value — the very value a consumer that had
+    /// rendered against the old pipeline is holding — so a kept [`Compositor`] would
+    /// see "no change" and keep attachments belonging to the pipeline that is gone.
+    /// Today both colour spaces happen to use the same channel formats, so that would
+    /// come out *harmless*; but which formats a space wants is a decision the
+    /// `ColorSpace` trait deliberately leaves open ([`ColorSpace::color_format`]), and
+    /// "correct because two implementations coincide" is not a property to build on.
+    generation: u64,
+}
 
-    // Viewport-sized offscreen targets (recreated on resize).
+/// The next value for [`CompositorPipeline::generation`] — see there for why this is
+/// process-wide.
+fn next_generation() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// One consumer's worth of compositing state: the offscreen attachments pass A
+/// writes, the media bind group over them, the scratch the blend passes bounce
+/// through, and the instance streams. Everything here is sized either by the target
+/// or by how much there is to draw.
+///
+/// One per thing being drawn into — the surface, and (with its own) anything that
+/// renders beside it: an export, the navigator's miniature. Sharing one across
+/// targets of different sizes means each render resizes the attachments the other
+/// just built, so the cost is paid twice per alternation rather than once ever.
+pub struct Compositor {
+    // Target-sized offscreen attachments, and the media bind group over them.
     size: Extent2,
     comp_color_view: wgpu::TextureView,
     comp_aux_view: wgpu::TextureView,
     media_bg: wgpu::BindGroup,
+    /// The [`CompositorPipeline::generation`] `media_bg` was built against.
+    generation: u64,
+
+    // Allocated on first use and kept: only a document with a non-`Normal` layer
+    // ever pays for them.
+    scratch: Option<ScratchTargets>,
+
+    // Pass A's instance streams, grown to the frame's tile and matte counts.
+    instances: wgpu::Buffer,
+    instance_cap: usize,
+    matte_instances: wgpu::Buffer,
+    matte_cap: usize,
+    // One dynamic-offset slot per blend group in the frame.
+    blend_buf: wgpu::Buffer,
+    blend_slots: usize,
+    // Pass C's, grown to the outlined mask-tile count.
+    overlay_instances: wgpu::Buffer,
+    overlay_cap: usize,
 }
 
-impl Compositor {
+/// Somewhere for a render that is **not** the surface's to keep its attachments
+/// between calls — a [`Compositor`], built on first use.
+///
+/// Whether they are worth keeping is the caller's to know, not the engine's, and it
+/// turns entirely on whether the render repeats:
+///
+/// - A **one-shot** — writing a PNG — makes one of these locally and drops it, so an
+///   8192-px export does not leave half a gigabyte of attachments parked for the rest
+///   of the session waiting for a render that may never come.
+/// - A **repeating** render at a steady size — the navigator's miniature, refreshed
+///   on every edit — holds one for its lifetime and pays the allocation once.
+///
+/// Empty is the valid initial state, so nothing needs a size or a pipeline to make
+/// one; the first render fills it in and later renders reuse or resize it.
+#[derive(Default)]
+pub struct Offscreen(Option<Compositor>);
+
+impl Offscreen {
+    /// The compositor, built against `p` at `size` if this is the first use.
+    pub(crate) fn get(&mut self, p: &CompositorPipeline, size: Extent2) -> &mut Compositor {
+        self.0.get_or_insert_with(|| Compositor::new(p, size))
+    }
+}
+
+impl CompositorPipeline {
     pub fn new(
         ctx: &GpuContext,
         target_format: wgpu::TextureFormat,
-        size: Extent2,
         color_space: &dyn ColorSpace,
         surface: Surface,
         environment: Environment,
@@ -471,13 +595,6 @@ impl Compositor {
             multiview_mask: None,
             cache: None,
         });
-        let matte_instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark matte instances"),
-            size: std::mem::size_of::<MatteInstance>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         // ---- Per-layer blend, inside pass A (MISSING_FEATURES.md §0.4) ----
         //
         // A fullscreen pass reading the accumulator and one isolated layer, writing
@@ -558,7 +675,6 @@ impl Compositor {
             multiview_mask: None,
             cache: None,
         });
-        let blend_buf = alloc_blend(device, 1);
         // Decoded only where it is read from: an Oklab document gets a 1×1 stand-in
         // so the one bind group layout still has something to bind.
         let pigment = if color_space.needs_pigment_lut() {
@@ -728,40 +844,19 @@ impl Compositor {
             mapped_at_creation: false,
         });
 
-        let instances = alloc_instances(device, 1);
-        let (comp_color_view, comp_aux_view, media_bg) = make_offscreen(OffscreenDesc {
-            device,
-            size,
-            color_format,
-            aux_format,
-            media_bgl: &media_bgl,
-            media_buf: &media_buf,
-            surface: &surface,
-            environment: &environment,
-        });
-
         Self {
             ctx: ctx.clone(),
             composite_pipeline,
             view_buf,
             view_bg,
             tile_bgl,
-            instances,
-            instance_cap: 1,
             matte_pipeline,
-            matte_instances,
-            matte_cap: 1,
             blend_pipeline,
             blend_bgl,
-            blend_buf,
-            blend_slots: 1,
             pigment,
-            scratch: None,
             overlay_pipeline,
             overlay_view_bg,
             overlay_tile_bgl,
-            overlay_instances: alloc_overlay(device, 1),
-            overlay_cap: 1,
             media_pipeline,
             media_buf,
             media_bgl,
@@ -770,10 +865,7 @@ impl Compositor {
             aux_format,
             surface,
             environment,
-            size,
-            comp_color_view,
-            comp_aux_view,
-            media_bg,
+            generation: next_generation(),
         }
     }
 
@@ -787,44 +879,103 @@ impl Compositor {
         self.media = media;
     }
 
-    /// Rebuild the offscreen composite targets and the media bind group from the
-    /// compositor's current state. Every caller previously spelled out the same eight
-    /// fields and the same three assignments.
-    fn rebuild_offscreen(&mut self) {
+    /// Swap the canvas surface (bump) so the next render shades against it
+    /// (DESIGN.md §6.4). A view-time swap — the composited tiles are untouched.
+    ///
+    /// Each [`Compositor`] rebuilds its media bind group when it next notices the
+    /// generation moved, rather than being told: a swap has to reach every consumer,
+    /// and the one that would be forgotten is exactly the one nobody is looking at.
+    pub fn set_surface(&mut self, surface: Surface) {
+        self.surface = surface;
+        self.generation = next_generation();
+    }
+
+    /// Swap the HDR lighting environment so the next render samples it (§6.3).
+    pub fn set_environment(&mut self, environment: Environment) {
+        self.environment = environment;
+        self.generation = next_generation();
+    }
+
+    /// The raw channel formats pass A writes: `(color, aux)`. A caller supplying its
+    /// own targets to [`Compositor::composite_channels`] has to match them.
+    pub fn channel_formats(&self) -> (wgpu::TextureFormat, wgpu::TextureFormat) {
+        (self.color_format, self.aux_format)
+    }
+}
+
+impl Compositor {
+    /// Attachments and instance streams for one target of `size`, against the shared
+    /// `pipeline`. Cheap — everything expensive (five pipelines, the layouts, the
+    /// decoded pigment LUT) lives in the pipeline and is only borrowed.
+    pub fn new(pipeline: &CompositorPipeline, size: Extent2) -> Self {
+        let device = &pipeline.ctx.device;
+        let (comp_color_view, comp_aux_view, media_bg) = make_offscreen(OffscreenDesc {
+            device,
+            size,
+            color_format: pipeline.color_format,
+            aux_format: pipeline.aux_format,
+            media_bgl: &pipeline.media_bgl,
+            media_buf: &pipeline.media_buf,
+            surface: &pipeline.surface,
+            environment: &pipeline.environment,
+        });
+        Self {
+            size,
+            comp_color_view,
+            comp_aux_view,
+            media_bg,
+            generation: pipeline.generation,
+            scratch: None,
+            instances: alloc_instances(device, 1),
+            instance_cap: 1,
+            matte_instances: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stark matte instances"),
+                size: std::mem::size_of::<MatteInstance>() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            matte_cap: 1,
+            blend_buf: alloc_blend(device, 1),
+            blend_slots: 1,
+            overlay_instances: alloc_overlay(device, 1),
+            overlay_cap: 1,
+        }
+    }
+
+    /// Bring the attachments in line with what is about to be drawn: `size`, and the
+    /// pipeline's current surface/environment.
+    ///
+    /// Called at the top of every render, so a resized target, a swapped canvas
+    /// weave, a swapped light and a whole rebuilt pipeline (a colour-space change,
+    /// which changes the channel *formats*) all land without anyone having to be
+    /// notified — see [`CompositorPipeline::generation`].
+    ///
+    /// The blend scratch is dropped rather than kept through any of it: it is sized
+    /// like the attachments and carries their formats, so "everything that depends on
+    /// the target or the pipeline is rebuilt together" holds by construction instead
+    /// of by a second condition that could disagree with this one. It costs one
+    /// reallocation on the next blended render, and only a document with a
+    /// non-`Normal` layer has one at all.
+    fn ensure_targets(&mut self, p: &CompositorPipeline, size: Extent2) {
+        if size == self.size && self.generation == p.generation {
+            return;
+        }
+        self.size = size;
+        self.generation = p.generation;
+        self.scratch = None;
         let (c, a, bg) = make_offscreen(OffscreenDesc {
-            device: &self.ctx.device,
+            device: &p.ctx.device,
             size: self.size,
-            color_format: self.color_format,
-            aux_format: self.aux_format,
-            media_bgl: &self.media_bgl,
-            media_buf: &self.media_buf,
-            surface: &self.surface,
-            environment: &self.environment,
+            color_format: p.color_format,
+            aux_format: p.aux_format,
+            media_bgl: &p.media_bgl,
+            media_buf: &p.media_buf,
+            surface: &p.surface,
+            environment: &p.environment,
         });
         self.comp_color_view = c;
         self.comp_aux_view = a;
         self.media_bg = bg;
-    }
-
-    /// Swap the canvas surface (bump), rebuilding the media bind group so the next
-    /// render shades against it (DESIGN.md §6.4). A view-time swap — the composited
-    /// tiles are untouched.
-    pub fn set_surface(&mut self, surface: Surface) {
-        self.surface = surface;
-        self.rebuild_offscreen();
-    }
-
-    /// Swap the HDR lighting environment, rebuilding the media bind group so the
-    /// next render samples it (DESIGN.md §6.3).
-    pub fn set_environment(&mut self, environment: Environment) {
-        self.environment = environment;
-        self.rebuild_offscreen();
-    }
-
-    /// The raw channel formats pass A writes: `(color, aux)`. A caller supplying its
-    /// own targets to [`Self::composite_channels`] has to match them.
-    pub fn channel_formats(&self) -> (wgpu::TextureFormat, wgpu::TextureFormat) {
-        (self.color_format, self.aux_format)
     }
 
     /// Write the view uniform and upload pass A's instance streams for `groups`,
@@ -836,15 +987,16 @@ impl Compositor {
     /// through the compositor at all.
     fn prepare_composite(
         &mut self,
+        p: &CompositorPipeline,
         view: ViewTransform,
         groups: &[CompositeGroup],
     ) -> Vec<wgpu::BindGroup> {
-        let device = &self.ctx.device;
+        let device = &p.ctx.device;
 
         // View uniform (canvas px -> NDC).
         let (scale, translate) = view.canvas_to_ndc();
-        self.ctx.queue.write_buffer(
-            &self.view_buf,
+        p.ctx.queue.write_buffer(
+            &p.view_buf,
             0,
             bytemuck::bytes_of(&ViewUniform {
                 st: [scale.x, scale.y, translate.x, translate.y],
@@ -881,7 +1033,7 @@ impl Compositor {
                     });
                     tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("stark composite tile bg"),
-                        layout: &self.tile_bgl,
+                        layout: &p.tile_bgl,
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
@@ -907,7 +1059,7 @@ impl Compositor {
                 self.instances = alloc_instances(device, instances.len());
                 self.instance_cap = instances.len();
             }
-            self.ctx
+            p.ctx
                 .queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(&instances));
         }
@@ -921,7 +1073,7 @@ impl Compositor {
                 });
                 self.matte_cap = mattes.len();
             }
-            self.ctx
+            p.ctx
                 .queue
                 .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
         }
@@ -939,7 +1091,7 @@ impl Compositor {
                 self.blend_slots = modes.len();
             }
             for (i, mode) in modes.iter().enumerate() {
-                self.ctx.queue.write_buffer(
+                p.ctx.queue.write_buffer(
                     &self.blend_buf,
                     i as u64 * BLEND_SLOT,
                     bytemuck::bytes_of(&BlendUniform {
@@ -968,15 +1120,14 @@ impl Compositor {
     /// media pass keep one bind group and the eyedropper keep its own targets.
     fn encode_composite(
         &self,
+        p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
-        aux: &wgpu::TextureView,
+        target: Targets<'_>,
         groups: &[CompositeGroup],
         tile_bgs: &[wgpu::BindGroup],
         scratch: Option<&ScratchTargets>,
     ) {
         let blends = groups.iter().filter(|g| !g.blend.is_normal()).count();
-        let target: Targets<'_> = (color, aux);
         let swap: Targets<'_> = match scratch {
             Some(s) => (&s.swap_color, &s.swap_aux),
             // Unreachable while `blends == 0`, which is the only case `None` is legal
@@ -999,6 +1150,7 @@ impl Compositor {
         for group in groups {
             if group.blend.is_normal() {
                 self.encode_items(
+                    p,
                     encoder,
                     cur,
                     &group.items,
@@ -1018,6 +1170,7 @@ impl Compositor {
             // The layer, alone on nothing — the isolation the mode is defined against.
             let iso: Targets<'_> = (&s.iso_color, &s.iso_aux);
             self.encode_items(
+                p,
                 encoder,
                 iso,
                 &group.items,
@@ -1026,7 +1179,7 @@ impl Compositor {
                 &mut matte_i,
                 true,
             );
-            self.encode_blend(encoder, cur, iso, alt, blend_i);
+            self.encode_blend(p, encoder, cur, iso, alt, blend_i);
             blend_i += 1;
             // `alt` now holds the merged stack and becomes the accumulator; what was
             // `cur` is stale, and the next blend pass overwrites all of it.
@@ -1047,6 +1200,7 @@ impl Compositor {
     #[allow(clippy::too_many_arguments)]
     fn encode_items(
         &self,
+        p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
         into: Targets<'_>,
         items: &[CompositeItem],
@@ -1071,13 +1225,13 @@ impl Compositor {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_bind_group(0, &self.view_bg, &[]);
+        pass.set_bind_group(0, &p.view_bg, &[]);
         let mut pipeline_is_matte = None;
         for item in items {
             match item {
                 CompositeItem::Tile { .. } => {
                     if pipeline_is_matte != Some(false) {
-                        pass.set_pipeline(&self.composite_pipeline);
+                        pass.set_pipeline(&p.composite_pipeline);
                         pass.set_vertex_buffer(0, self.instances.slice(..));
                         pipeline_is_matte = Some(false);
                     }
@@ -1087,7 +1241,7 @@ impl Compositor {
                 }
                 CompositeItem::Matte(_) => {
                     if pipeline_is_matte != Some(true) {
-                        pass.set_pipeline(&self.matte_pipeline);
+                        pass.set_pipeline(&p.matte_pipeline);
                         pass.set_vertex_buffer(0, self.matte_instances.slice(..));
                         pipeline_is_matte = Some(true);
                     }
@@ -1102,38 +1256,36 @@ impl Compositor {
     /// `slot`, writing the result to `out` (MISSING_FEATURES.md §0.4).
     fn encode_blend(
         &self,
+        p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
         back: Targets<'_>,
         src: Targets<'_>,
         out: Targets<'_>,
         slot: u32,
     ) {
-        let bg = self
-            .ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark blend bg"),
-                layout: &self.blend_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.blend_buf,
-                            offset: 0,
-                            size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
-                        }),
-                    },
-                    view_entry(1, back.0),
-                    view_entry(2, back.1),
-                    view_entry(3, src.0),
-                    view_entry(4, src.1),
-                    view_entry(5, &self.pigment.view),
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::Sampler(&self.pigment.sampler),
-                    },
-                ],
-            });
+        let bg = p.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark blend bg"),
+            layout: &p.blend_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.blend_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
+                    }),
+                },
+                view_entry(1, back.0),
+                view_entry(2, back.1),
+                view_entry(3, src.0),
+                view_entry(4, src.1),
+                view_entry(5, &p.pigment.view),
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&p.pigment.sampler),
+                },
+            ],
+        });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark blend pass"),
             // The pass covers every texel and reads nothing from `out`, so the load
@@ -1148,7 +1300,7 @@ impl Compositor {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.blend_pipeline);
+        pass.set_pipeline(&p.blend_pipeline);
         pass.set_bind_group(0, &bg, &[slot * BLEND_SLOT as u32]);
         pass.draw(0..3, 0..1);
     }
@@ -1157,20 +1309,26 @@ impl Compositor {
     /// say whether they are wanted. `false` when every group is `Normal` — the common
     /// case, which never allocates.
     ///
-    /// The cache belongs to the *render* path, whose size changes only on a window
-    /// resize. [`Self::composite_channels`] deliberately does not use it: a pick
-    /// viewport is a handful of texels, and letting the two share one cache would
-    /// reallocate a viewport-sized pair twice a frame for the whole of an Alt-drag.
-    fn ensure_scratch(&mut self, size: Extent2, groups: &[CompositeGroup]) -> bool {
+    /// The cache belongs to the *render* path, whose size changes only when this
+    /// compositor's target does. [`Self::composite_channels`] deliberately does not
+    /// use it: a pick viewport is a handful of texels, and letting the two share one
+    /// cache would reallocate a target-sized pair twice a frame for the whole of an
+    /// Alt-drag.
+    fn ensure_scratch(
+        &mut self,
+        p: &CompositorPipeline,
+        size: Extent2,
+        groups: &[CompositeGroup],
+    ) -> bool {
         if groups.iter().all(|g| g.blend.is_normal()) {
             return false;
         }
         if self.scratch.as_ref().is_none_or(|s| s.size != size) {
             self.scratch = Some(ScratchTargets::new(
-                &self.ctx.device,
+                &p.ctx.device,
                 size,
-                self.color_format,
-                self.aux_format,
+                p.color_format,
+                p.aux_format,
             ));
         }
         true
@@ -1187,68 +1345,80 @@ impl Compositor {
     /// pigment mixture that cannot be picked back up, which is the point of mixing
     /// in pigment space at all.
     ///
-    /// `color` and `aux` must carry the formats [`Self::channel_formats`] reports,
-    /// and be `view.viewport` in size. The compositor's own offscreen targets are
-    /// left alone, unlike in [`Self::render`], which resizes them to whatever view
-    /// it is given — so a sample never disturbs what is on screen.
+    /// `color` and `aux` must carry the formats
+    /// [`CompositorPipeline::channel_formats`] reports, and be `view.viewport` in
+    /// size. They are the caller's, not this compositor's: a sample is taken through
+    /// the compositor that belongs to the screen, so it must leave the screen's own
+    /// attachments — a few hundred texels wide against the window's millions —
+    /// exactly where they were. That is why this does not go through
+    /// [`Self::ensure_targets`], and why the blend scratch below is its own too.
     pub fn composite_channels(
         &mut self,
+        p: &CompositorPipeline,
         color: &wgpu::TextureView,
         aux: &wgpu::TextureView,
         view: ViewTransform,
         groups: &[CompositeGroup],
     ) {
-        let tile_bgs = self.prepare_composite(view, groups);
+        let tile_bgs = self.prepare_composite(p, view, groups);
         // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
         // square, so this is a few kilobytes; sharing the render path's cache would
         // trade that for reallocating the *window* twice a frame (see
         // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
         // eyedropper would report a colour the screen never showed.
         let scratch = groups.iter().any(|g| !g.blend.is_normal()).then(|| {
-            ScratchTargets::new(
-                &self.ctx.device,
-                view.viewport,
-                self.color_format,
-                self.aux_format,
-            )
+            ScratchTargets::new(&p.ctx.device, view.viewport, p.color_format, p.aux_format)
         });
-        let mut encoder = self
+        let mut encoder = p
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stark pick encoder"),
             });
         self.encode_composite(
+            p,
             &mut encoder,
-            color,
-            aux,
+            (color, aux),
             groups,
             &tile_bgs,
             scratch.as_ref(),
         );
-        self.ctx.queue.submit([encoder.finish()]);
+        p.ctx.queue.submit([encoder.finish()]);
     }
 
-    /// Composite `groups`, light the result into `target` under `view`, and outline
-    /// each of `outlines` over it (DESIGN.md §6.8 — a universal selection draws
-    /// nothing, so an unmasked document costs one skipped iteration).
+    /// Composite `scene`'s layers, light the result into `target` under `view`, and
+    /// outline each of its selections over it (DESIGN.md §6.8 — a universal selection
+    /// draws nothing, so an unmasked document costs one skipped iteration).
     pub fn render(
         &mut self,
+        p: &CompositorPipeline,
         target: &wgpu::TextureView,
         view: ViewTransform,
-        bg_channels: [f32; 4],
-        groups: &[CompositeGroup],
-        outlines: &[SelectionOutline<'_>],
-        transparent: bool,
+        scene: CompositeScene<'_>,
     ) {
-        if view.viewport != self.size {
-            self.size = view.viewport;
-            self.rebuild_offscreen();
-        }
-        let tile_bgs = self.prepare_composite(view, groups);
-        let want_scratch = self.ensure_scratch(self.size, groups);
+        let CompositeScene {
+            background: bg_channels,
+            groups,
+            outlines,
+            transparent,
+        } = scene;
+        // This compositor's attachments, brought in line with what is about to be
+        // drawn. Nobody else's: a render into something other than this target — an
+        // export, the navigator's miniature — goes through a `Compositor` of its own,
+        // so the surface's attachments (and the frame already presented from them)
+        // are never resized out from under it and rebuilt on the next frame.
+        self.ensure_targets(p, view.viewport);
+        let tile_bgs = self.prepare_composite(p, view, groups);
+        let want_scratch = self.ensure_scratch(p, self.size, groups);
         // Bound after everything that needs `&mut self`.
-        let device = &self.ctx.device;
+        let device = &p.ctx.device;
+        let scratch = if want_scratch {
+            self.scratch.as_ref()
+        } else {
+            None
+        };
+        let (comp_color_view, comp_aux_view, media_bg) =
+            (&self.comp_color_view, &self.comp_aux_view, &self.media_bg);
 
         // Screen→canvas mapping for sampling the surface bump in canvas space, so
         // the weave stays attached to the canvas as it pans/zooms (DESIGN.md §6.4).
@@ -1262,21 +1432,21 @@ impl Compositor {
         // reading exactly the texels the shader will. The Cook–Torrance specular picks
         // its own mip from roughness, spanning the whole chain (roughness 0 → mip 0
         // sharp; roughness 1 → the diffuse level, the hemispherical average).
-        let diffuse_lod = self.environment.diffuse_lod as f32;
+        let diffuse_lod = p.environment.diffuse_lod as f32;
         // Exposure belongs to the light, not to a knob beside it: each environment is
         // shown at the value it was judged at (DESIGN.md §6.3). Normalized by the
         // irradiance a *flat* canvas receives, so `1.0` means the same thing in every
         // environment — an unrelieved patch of paint comes back out its own colour.
-        let exposure = self.environment.exposure / self.environment.flat_irradiance;
+        let exposure = p.environment.exposure / p.environment.flat_irradiance;
 
         // Media uniform.
-        self.ctx.queue.write_buffer(
-            &self.media_buf,
+        p.ctx.queue.write_buffer(
+            &p.media_buf,
             0,
             bytemuck::bytes_of(&MediaUniform {
-                light: [0.0, 0.0, 0.0, self.media.height_strength],
+                light: [0.0, 0.0, 0.0, p.media.height_strength],
                 bg: bg_channels,
-                shade: [exposure, diffuse_lod, self.media.specular, 0.0],
+                shade: [exposure, diffuse_lod, p.media.specular, 0.0],
                 surf_a: [
                     canvas_origin.x,
                     canvas_origin.y,
@@ -1284,7 +1454,7 @@ impl Compositor {
                     1.0 / SURFACE_TILE_PX,
                 ],
                 surf_b: [
-                    self.media.surface_strength,
+                    p.media.surface_strength,
                     // Transparent export: the media pass skips the substrate and
                     // carries the paint's visible alpha out (FRAME_DESIGN.md §6).
                     if transparent { 1.0 } else { 0.0 },
@@ -1302,16 +1472,12 @@ impl Compositor {
         // `encode_composite` guarantees the result lands in these two views however
         // many blend passes ran, so the media bind group never has to be rebuilt.
         self.encode_composite(
+            p,
             &mut encoder,
-            &self.comp_color_view,
-            &self.comp_aux_view,
+            (comp_color_view, comp_aux_view),
             groups,
             &tile_bgs,
-            if want_scratch {
-                self.scratch.as_ref()
-            } else {
-                None
-            },
+            scratch,
         );
 
         // Pass B: media/lighting → target.
@@ -1339,8 +1505,8 @@ impl Compositor {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.media_pipeline);
-            pass.set_bind_group(0, &self.media_bg, &[]);
+            pass.set_pipeline(&p.media_pipeline);
+            pass.set_bind_group(0, media_bg, &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -1365,7 +1531,7 @@ impl Compositor {
                 });
                 mask_tiles.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark overlay tile bg"),
-                    layout: &self.overlay_tile_bgl,
+                    layout: &p.overlay_tile_bgl,
                     entries: &[wgpu::BindGroupEntry {
                         binding: 0,
                         resource: wgpu::BindingResource::TextureView(handle.view()),
@@ -1378,7 +1544,7 @@ impl Compositor {
                 self.overlay_instances = alloc_overlay(device, overlay_instances.len());
                 self.overlay_cap = overlay_instances.len();
             }
-            self.ctx.queue.write_buffer(
+            p.ctx.queue.write_buffer(
                 &self.overlay_instances,
                 0,
                 bytemuck::cast_slice(&overlay_instances),
@@ -1400,8 +1566,8 @@ impl Compositor {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.overlay_pipeline);
-            pass.set_bind_group(0, &self.overlay_view_bg, &[]);
+            pass.set_pipeline(&p.overlay_pipeline);
+            pass.set_bind_group(0, &p.overlay_view_bg, &[]);
             pass.set_vertex_buffer(0, self.overlay_instances.slice(..));
             for (i, bg) in mask_tiles.iter().enumerate() {
                 let idx = i as u32;
@@ -1410,7 +1576,7 @@ impl Compositor {
             }
         }
 
-        self.ctx.queue.submit([encoder.finish()]);
+        p.ctx.queue.submit([encoder.finish()]);
     }
 }
 
@@ -1555,9 +1721,10 @@ fn alloc_instances(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
     })
 }
 
-/// The inputs to [`make_offscreen`]. Every field is a `Compositor` field, which is
-/// why [`Compositor::rebuild_offscreen`] exists — only the constructor, which has no
-/// `self` yet, fills one in by hand.
+/// The inputs to [`make_offscreen`]: one field from the [`Compositor`] being built or
+/// rebuilt (`size`) and the rest read off the shared [`CompositorPipeline`]. Grouped
+/// because the two callers — [`Compositor::new`] and [`Compositor::ensure_targets`] —
+/// would otherwise each spell out the same eight fields.
 struct OffscreenDesc<'a> {
     device: &'a wgpu::Device,
     size: Extent2,

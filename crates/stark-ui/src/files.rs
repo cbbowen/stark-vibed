@@ -223,19 +223,17 @@ async fn export_png(
         let r = guard.as_mut().ok_or("the canvas is not ready yet")?;
         // What the artist is looking at, in-flight gesture and all — a picture of
         // the canvas as it stands, not of the last commit.
-        let readback = r
-            .export(
-                frame,
-                ExportScale::Factor(scale),
-                background,
-                Rendered::Live,
-            )
-            .map_err(|e| e.to_string())?;
-        // Export renders through its own view into the compositor's offscreen
-        // buffers, resizing them to the export size — so the on-screen surface has
-        // to be repainted before anyone sees it again.
-        r.paint();
-        readback
+        // No repaint afterwards: the export renders through its own view into its
+        // own target, and a render at any size but the surface's builds its own
+        // attachments (`Compositor::render`) — so the frame already on screen, and
+        // everything it was composited from, is left exactly as it was.
+        r.export(
+            frame,
+            ExportScale::Factor(scale),
+            background,
+            Rendered::Live,
+        )
+        .map_err(|e| e.to_string())?
     };
     let png = readback.await.to_png().map_err(|e| e.to_string())?;
     download_bytes(&png, "painting.png", "image/png")

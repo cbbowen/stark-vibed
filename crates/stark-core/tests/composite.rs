@@ -111,3 +111,206 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
         "a layer invisible over bare canvas moved the paint beneath it by {worst}"
     );
 }
+
+/// A render at a size other than the **surface's** builds its own pass-A
+/// attachments instead of resizing the cached pair (`Compositor::render`) — which is
+/// what keeps an export, or the navigator's per-edit miniature, from evicting the
+/// screen's set and forcing it to be rebuilt on the very next frame.
+///
+/// The two paths therefore have to be equivalent, or what a file gets would depend
+/// on how large the window happened to be when it was written. Both engines here
+/// export the same 320×224 view of the same painting; only the surface they were
+/// built on differs, so one goes through its own attachments and the other through
+/// the cached ones. The **Multiply** layer is deliberate: a non-normal blend mode is
+/// what brings the scratch pair the blend passes bounce through into it, and that
+/// pair is transient for the same reason the targets are.
+#[test]
+fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
+    use stark_core::command::ViewCommand;
+    use stark_core::document::{BlendMode, MatteRegion};
+    use stark_core::geom::Extent2;
+    use stark_core::{Background, ExportScale, Offscreen, Rendered};
+
+    // The piece: a frame whose rect is exactly the exported size, centred on the
+    // canvas origin, so both exports render the identical view.
+    const HALF: Vec2 = Vec2::new(160.0, 112.0);
+    let exported = Extent2::new(320, 224);
+
+    let built = |viewport| -> Option<_> {
+        let mut engine = engine_or_skip_sized(viewport)?;
+        paint(
+            &mut engine,
+            RED,
+            18.0,
+            &[
+                Vec2::new(-90.0, -60.0),
+                Vec2::new(70.0, 20.0),
+                Vec2::new(-40.0, 80.0),
+            ],
+        );
+        // A second layer, multiplied over the first.
+        engine.process(DocCommand::AddLayer { above: None });
+        let top = engine.observe().active_layer;
+        engine.process(DocCommand::SetLayerBlend(top, BlendMode::Multiply));
+        paint(
+            &mut engine,
+            BLUE,
+            26.0,
+            &[Vec2::new(-80.0, 40.0), Vec2::new(90.0, -30.0)],
+        );
+        engine.process(DocCommand::AddMatte {
+            above: None,
+            region: MatteRegion::OutsideRect {
+                min: -HALF,
+                max: HALF,
+            },
+            color: [0.0, 0.0, 0.0],
+        });
+        let frame = engine.observe().layers.last().expect("matte").id;
+        // The view is the export's, so nothing about the surface's size can reach
+        // the picture other than through the attachments this is testing.
+        engine.process(ViewCommand::CenterOn(Vec2::ZERO));
+        let image = pollster::block_on(
+            engine
+                .export(
+                    &mut Offscreen::default(),
+                    Some(frame),
+                    ExportScale::Factor(1.0),
+                    Background::Substrate,
+                    Rendered::Committed,
+                )
+                .expect("export"),
+        );
+        Some(image)
+    };
+
+    // Its own attachments (the surface is smaller than the export)…
+    let Some(transient) = built(Extent2::new(140, 100)) else {
+        return;
+    };
+    // …and the cached ones (the surface *is* the export's size).
+    let Some(cached) = built(exported) else {
+        return;
+    };
+
+    assert_eq!((transient.width, transient.height), (320, 224));
+    let (frac, worst) = diff_fraction(&transient, &cached);
+    assert!(
+        worst <= 2,
+        "an off-size render came out differently from one at the surface's own size \
+         ({frac:.4} of pixels differ, worst {worst})"
+    );
+}
+
+/// A **kept** [`Offscreen`] renders the same picture a fresh one would, across
+/// everything that changes what it was built against: a new size, a swapped
+/// environment, and a colour-space rebuild — which does not mutate the compositing
+/// pipeline but replaces it (DESIGN.md §6.7).
+///
+/// This is the navigator's arrangement: one slot, reused for the life of the app,
+/// one render per edit. So "reused" has to mean "reused *or rebuilt*", and the
+/// comparison against a fresh slot is what tells the two apart — a kept slot that
+/// failed to notice a change would composite through attachments of the wrong size or
+/// belonging to a pipeline that is gone, and a fresh one never can.
+#[test]
+fn a_kept_offscreen_renders_what_a_fresh_one_would() {
+    use stark_core::command::ViewCommand;
+    use stark_core::document::MatteRegion;
+    use stark_core::geom::Extent2;
+    use stark_core::{Background, ColorSpaceId, EnvironmentId, ExportScale, Offscreen, Rendered};
+
+    let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
+        return;
+    };
+    // The one slot, reused by every `kept` render below.
+    let mut kept = Offscreen::default();
+
+    // Paint something with edges at an angle — what a composite through
+    // wrong-sized attachments would resample and soften — and frame it, so the
+    // export renders a fixed rect rather than the window.
+    let framed = |engine: &mut stark_core::Engine| {
+        paint(
+            engine,
+            RED,
+            16.0,
+            &[
+                Vec2::new(-70.0, -45.0),
+                Vec2::new(60.0, 15.0),
+                Vec2::new(-30.0, 50.0),
+            ],
+        );
+        engine.process(DocCommand::AddMatte {
+            above: None,
+            region: MatteRegion::OutsideRect {
+                min: Vec2::new(-80.0, -60.0),
+                max: Vec2::new(80.0, 60.0),
+            },
+            color: [0.0, 0.0, 0.0],
+        });
+    };
+    let shot = |engine: &mut stark_core::Engine, into: &mut Offscreen, scale: f32| {
+        let frame = engine.observe().layers.last().expect("matte").id;
+        pollster::block_on(
+            engine
+                .export(
+                    into,
+                    Some(frame),
+                    ExportScale::Factor(scale),
+                    Background::Substrate,
+                    Rendered::Committed,
+                )
+                .expect("export"),
+        )
+    };
+    let same = |a: &stark_core::RgbaImage, b: &stark_core::RgbaImage, what: &str| {
+        assert_eq!((a.width, a.height), (b.width, b.height), "{what}: size");
+        let (frac, worst) = diff_fraction(a, b);
+        assert!(
+            worst <= 2,
+            "{what}: a kept slot drew differently from a fresh one \
+             ({frac:.4} of pixels differ, worst {worst})"
+        );
+    };
+
+    framed(&mut engine);
+    let first = shot(&mut engine, &mut kept, 1.0);
+    assert_eq!((first.width, first.height), (160, 120));
+
+    // A second size through the same slot: its attachments have to follow, or the
+    // composite comes back resampled through the first size.
+    let grown = shot(&mut engine, &mut kept, 2.0);
+    assert_eq!((grown.width, grown.height), (320, 240));
+    same(
+        &grown,
+        &shot(&mut engine, &mut Offscreen::default(), 2.0),
+        "resized",
+    );
+
+    // Back down again — the same slot, shrinking.
+    same(
+        &shot(&mut engine, &mut kept, 1.0),
+        &first,
+        "back to the first size",
+    );
+
+    // The lighting is bound *into* the media bind group the slot is holding. The
+    // harness starts on the studio HDR, so switching to the procedural reference
+    // light is a real swap.
+    engine.process(ViewCommand::SetEnvironment(EnvironmentId::Neutral));
+    same(
+        &shot(&mut engine, &mut kept, 1.0),
+        &shot(&mut engine, &mut Offscreen::default(), 1.0),
+        "after a lighting swap",
+    );
+
+    // And a new document in the other colour space, which rebuilds the pipeline the
+    // slot's attachments belong to. Same surface, so nothing else moves with it.
+    let surface = engine.surface();
+    engine.new_document(ColorSpaceId::Mixbox, surface);
+    framed(&mut engine);
+    same(
+        &shot(&mut engine, &mut kept, 1.0),
+        &shot(&mut engine, &mut Offscreen::default(), 1.0),
+        "after a colour-space rebuild",
+    );
+}

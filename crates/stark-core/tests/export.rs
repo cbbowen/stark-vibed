@@ -13,7 +13,7 @@ use stark_core::command::{DocCommand, GestureCommand, InputSample, PeerCommand, 
 use stark_core::document::{MatteRegion, SelectionOp, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
-use stark_core::{Background, Engine, ExportScale, LayerId, Rendered, RgbaImage};
+use stark_core::{Background, Engine, ExportScale, LayerId, Offscreen, Rendered, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
@@ -69,6 +69,7 @@ fn exports_the_frame_rect_without_its_own_matte() {
     let img = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -103,6 +104,7 @@ fn scale_changes_resolution_not_framing() {
     let one = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -113,6 +115,7 @@ fn scale_changes_resolution_not_framing() {
     let two = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(2.0),
                 Background::Substrate,
@@ -140,6 +143,7 @@ fn scale_changes_resolution_not_framing() {
     let by_width = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Width(240),
                 Background::Substrate,
@@ -171,6 +175,7 @@ fn transparent_export_cuts_out_the_paint() {
     let cut = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Transparent,
@@ -181,6 +186,7 @@ fn transparent_export_cuts_out_the_paint() {
     let opaque = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -218,6 +224,7 @@ fn export_uses_the_documents_ground() {
     let paper = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -231,6 +238,7 @@ fn export_uses_the_documents_ground() {
     let ink = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -250,6 +258,7 @@ fn export_uses_the_documents_ground() {
         pollster::block_on(
             engine
                 .export(
+                    &mut Offscreen::default(),
                     Some(frame),
                     ExportScale::Factor(1.0),
                     Background::Substrate,
@@ -272,6 +281,7 @@ fn export_omits_the_selection_outline() {
     let clean = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -298,6 +308,7 @@ fn export_omits_the_selection_outline() {
     let selected = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -326,6 +337,7 @@ fn export_without_a_frame_falls_back() {
     let empty = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 None,
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -411,6 +423,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
     }
     let a = pollster::block_on(
         rgba.export(
+            &mut Offscreen::default(),
             Some(LayerId(1)),
             ExportScale::Factor(1.0),
             Background::Substrate,
@@ -420,6 +433,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
     );
     let b = pollster::block_on(
         bgra.export(
+            &mut Offscreen::default(),
             Some(LayerId(1)),
             ExportScale::Factor(1.0),
             Background::Substrate,
@@ -464,6 +478,7 @@ fn export_plan_reports_the_size_it_will_produce() {
     let img = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(2.0),
                 Background::Substrate,
@@ -496,6 +511,7 @@ fn committed_renders_omit_the_in_flight_stroke() {
     let bare = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -518,6 +534,7 @@ fn committed_renders_omit_the_in_flight_stroke() {
     let live = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -528,6 +545,7 @@ fn committed_renders_omit_the_in_flight_stroke() {
     let committed = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,
@@ -550,6 +568,7 @@ fn committed_renders_omit_the_in_flight_stroke() {
     let after = pollster::block_on(
         engine
             .export(
+                &mut Offscreen::default(),
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Substrate,

@@ -19,9 +19,10 @@ use crate::document::{
 use crate::geom::{Extent2, TileCoord, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
-    CompositeGroup, CompositeItem, Compositor, Environment, EnvironmentId, FillRenderer,
-    GpuContext, MatteDraw, Registry, SelectionOutline, SelectionRenderer, StrokeRenderer,
-    StrokeSpans, Surface, SurfaceId, TilePool, TransformRenderer,
+    CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, Environment,
+    EnvironmentId, FillRenderer, GpuContext, MatteDraw, Offscreen, Registry, SelectionOutline,
+    SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
+    TransformRenderer,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
@@ -53,6 +54,24 @@ pub enum Background {
 enum Chrome {
     Shown,
     Hidden,
+}
+
+/// Which [`Compositor`] a render's offscreen attachments come from.
+///
+/// Compositing runs through pass-A attachments the size of the target, so *whose*
+/// they are decides who pays for a resize. The surface's are kept from frame to
+/// frame; anything rendered beside them is a different size and brings its own, so
+/// the screen's are never resized out from under it — and never rebuilt on the next
+/// frame to recover. That mattered as soon as something rendered off-screen
+/// *repeatedly*: the navigator's miniature is one render per edit, and sharing the
+/// surface's attachments made it two rebuilds of window-sized textures and a full
+/// recomposite per edit.
+enum Attachments<'a> {
+    /// The surface's own, cached across frames ([`Engine::compositor`]).
+    Surface,
+    /// The caller's, so whether they outlive the call is decided by whoever knows
+    /// whether the render repeats — see [`Offscreen`].
+    Offscreen(&'a mut Offscreen),
 }
 
 /// Which document a render draws: the one being *shown*, or the committed one
@@ -97,6 +116,23 @@ pub struct ExportPlan {
     pub size: Extent2,
     /// Image px per canvas px.
     pub zoom: f32,
+}
+
+impl ExportPlan {
+    /// The view this plan renders through: centred on the rect, at `zoom` = its scale,
+    /// with the plan's pixel size as the viewport.
+    ///
+    /// The plan *is* the view, in other words, which is why both things that render a
+    /// planned rect — writing a file ([`Engine::export`]) and drawing the navigator's
+    /// miniature ([`Engine::render_into`]) — derive it here rather than each spelling
+    /// out the same three lines and drifting.
+    pub fn view(&self) -> ViewTransform {
+        ViewTransform {
+            center: (self.min + self.max) * 0.5,
+            zoom: self.zoom,
+            viewport: self.size,
+        }
+    }
 }
 
 /// Largest exported edge, in px. Guards against a stray zero-ish frame or a huge
@@ -386,7 +422,17 @@ pub struct Engine {
     /// whatever the paint is), so unlike the pool and the stroke renderer it
     /// survives a rebuild.
     apply: ApplyCtx,
+    /// Compositing state for the **surface**: the attachments a screen frame is
+    /// built through, kept from frame to frame (`gpu::composite`). Anything drawn
+    /// beside the screen — an export, the navigator's miniature — gets a
+    /// [`Compositor`] of its own for the call, so it never resizes these.
     compositor: Compositor,
+    /// The pipelines, layouts and view settings every `Compositor` shares. Held
+    /// beside the one above rather than inside it because a second one borrows it:
+    /// the expensive half of compositing is built once, and the view settings the
+    /// media pass reads have one owner, so two consumers cannot disagree about the
+    /// canvas weave or the lighting.
+    compositor_pipeline: CompositorPipeline,
     /// The physical canvas surface (relief) and the bytes registered for
     /// it. Colour-space-independent, so it survives colour-space rebuilds. Which
     /// surface is in use is a *cache* of `document().surface`, kept in step by
@@ -492,15 +538,16 @@ impl Engine {
         let _environment_id = EnvironmentId::default();
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
-        let (pool, stroke, compositor, transform, fill) = build_gpu(GpuBuild {
-            gpu: &gpu,
-            target_format,
-            viewport,
-            cs: &color_space,
-            surface: surface.current(),
-            environment: environment.current(),
-            selection: &selection,
-        });
+        let (pool, stroke, compositor_pipeline, compositor, transform, fill) =
+            build_gpu(GpuBuild {
+                gpu: &gpu,
+                target_format,
+                viewport,
+                cs: &color_space,
+                surface: surface.current(),
+                environment: environment.current(),
+                selection: &selection,
+            });
         let assets = AssetStore::new(gpu.clone());
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -521,6 +568,7 @@ impl Engine {
                 fill,
             },
             compositor,
+            compositor_pipeline,
             initial_surface,
             surface,
             environment,
@@ -810,7 +858,7 @@ impl Engine {
                 let preview = t.and_then(|(layer, affine)| self.preview_transform(layer, affine));
                 self.set_doc_preview(preview);
             }
-            ViewCommand::SetMediaParams(params) => self.compositor.set_media(params),
+            ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
         }
     }
@@ -861,7 +909,49 @@ impl Engine {
             Background::Substrate,
             Chrome::Shown,
             Rendered::Live,
+            Attachments::Surface,
         );
+    }
+
+    /// Render the document through `view` into a target that is **not** the engine's
+    /// own surface — a second surface showing the same document (DESIGN.md §11).
+    ///
+    /// The navigator's miniature is the consumer: an overview of the whole piece is a
+    /// second view of the canvas, and once it has somewhere to draw there is no reason
+    /// for it to travel through the CPU. It used to be an [`export`](Self::export) —
+    /// render, copy back, hand the browser a `<canvas>` full of bytes — and this is
+    /// the same render with the copy deleted, which also deletes the frame of latency
+    /// the copy cost and the megabyte the pixels occupied on the way through.
+    ///
+    /// `into` holds the pass-A attachments (see [`Offscreen`]); a consumer drawing
+    /// repeatedly keeps them, so a refresh allocates nothing at all. `target` must
+    /// carry the format [`target_format`](Self::target_format) reports and be
+    /// `view.viewport` in size — a surface texture configured to match.
+    ///
+    /// No chrome: a selection outline belongs to the surface you are painting on, not
+    /// to a thumbnail of the piece.
+    pub fn render_into(
+        &mut self,
+        into: &mut Offscreen,
+        target: &wgpu::TextureView,
+        view: ViewTransform,
+        background: Background,
+        content: Rendered,
+    ) {
+        self.render_view(
+            target,
+            view,
+            background,
+            Chrome::Hidden,
+            content,
+            Attachments::Offscreen(into),
+        );
+    }
+
+    /// The texture format this engine's pipelines render to. A frontend configuring a
+    /// second surface for [`render_into`](Self::render_into) has to match it.
+    pub fn target_format(&self) -> wgpu::TextureFormat {
+        self.target_format
     }
 
     /// Render through an **explicit** view rather than the session's, choosing what
@@ -874,9 +964,10 @@ impl Engine {
     /// `session.view` instead of taking one is exactly what made "export" a
     /// screenshot of the viewport.
     ///
-    /// Private: the screen has no reason to render through anything but the
-    /// session's own view, and a public knob with no caller is the kind of thing
-    /// this codebase deletes. `export` is the consumer.
+    /// Private, with [`Engine::export`] and [`Engine::render_into`] as the two
+    /// consumers: what a caller may choose is a view, a ground and where the
+    /// attachments live, never whether chrome is drawn (it is, for the screen alone)
+    /// nor how the two are wired together.
     fn render_view(
         &mut self,
         target: &wgpu::TextureView,
@@ -884,6 +975,7 @@ impl Engine {
         background: Background,
         chrome: Chrome,
         content: Rendered,
+        attachments: Attachments,
     ) {
         let doc = match content {
             Rendered::Live => self.presented(),
@@ -913,14 +1005,21 @@ impl Engine {
                 tint: *tint,
             })
             .collect();
-        self.compositor.render(
-            target,
-            view,
-            bg_channels,
-            &groups,
-            &outlines,
-            background == Background::Transparent,
-        );
+        let scene = CompositeScene {
+            background: bg_channels,
+            groups: &groups,
+            outlines: &outlines,
+            transparent: background == Background::Transparent,
+        };
+        match attachments {
+            Attachments::Surface => {
+                self.compositor
+                    .render(&self.compositor_pipeline, target, view, scene)
+            }
+            Attachments::Offscreen(into) => into
+                .get(&self.compositor_pipeline, view.viewport)
+                .render(&self.compositor_pipeline, target, view, scene),
+        }
     }
 
     /// Render the current canvas to a CPU-side image at the viewport size
@@ -931,7 +1030,10 @@ impl Engine {
     /// [`export`](Self::export), which awaits the map.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_to_image(&mut self) -> RgbaImage {
+        // One render per call, so nothing is kept: the attachments are allocated here
+        // and dropped with this `Offscreen`.
         let (target, size) = self.render_offscreen(
+            &mut Offscreen::default(),
             self.session.view,
             Background::Substrate,
             Chrome::Shown,
@@ -946,6 +1048,7 @@ impl Engine {
     /// the wait.
     fn render_offscreen(
         &mut self,
+        into: &mut Offscreen,
         view: ViewTransform,
         background: Background,
         chrome: Chrome,
@@ -967,7 +1070,15 @@ impl Engine {
             view_formats: &[],
         });
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        self.render_view(&target_view, view, background, chrome, content);
+        // The caller's attachments, not the surface's — see [`Attachments`].
+        self.render_view(
+            &target_view,
+            view,
+            background,
+            chrome,
+            content,
+            Attachments::Offscreen(into),
+        );
         (target, size)
     }
 
@@ -1032,31 +1143,35 @@ impl Engine {
     /// cloned [`GpuContext`] (cheap — the handles are reference-counted) and the
     /// target texture, and touches the engine not at all.
     ///
-    /// `content` chooses whether the in-flight gesture is in the picture. A file
-    /// export takes [`Rendered::Live`] — it is what the artist is looking at — while
-    /// a miniature refreshed per committed change takes [`Rendered::Committed`], so
-    /// it never has to keep up with a stroke being drawn.
+    /// `content` chooses whether the in-flight gesture is in the picture: a file
+    /// export takes [`Rendered::Live`], since that is what the artist is looking at.
+    /// (Anything refreshed per *committed* change wants [`Rendered::Committed`]
+    /// instead — see [`render_into`](Self::render_into), which is the shape that
+    /// suits a render repeated on a cadence rather than written to a file.)
+    ///
+    /// `into` is where the render's attachments live. It renders **beside** the
+    /// surface rather than into it, so it never touches the screen's; whether its own
+    /// outlive the call is the caller's call, and the caller is the only one who knows
+    /// (see [`Offscreen`]) — a `&mut Offscreen::default()` for a one-shot, a held one
+    /// for a render that repeats.
     ///
     /// ```ignore
-    /// let readback = { engine.write().export(frame, scale, bg, content)? }; // borrow ends
+    /// let readback = { engine.write().export(&mut own, frame, scale, bg, content)? }; // borrow ends
     /// let image = readback.await;
     /// ```
     pub fn export(
         &mut self,
+        into: &mut Offscreen,
         frame: Option<LayerId>,
         scale: ExportScale,
         background: Background,
         content: Rendered,
     ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
         let plan = self.export_plan(frame, scale)?;
-        let view = ViewTransform {
-            center: (plan.min + plan.max) * 0.5,
-            zoom: plan.zoom,
-            viewport: plan.size,
-        };
+        let view = plan.view();
         // No chrome: a selection outline or any other on-canvas affordance is a
         // thing to draw *with*, never a thing to ship.
-        let (target, size) = self.render_offscreen(view, background, Chrome::Hidden, content);
+        let (target, size) = self.render_offscreen(into, view, background, Chrome::Hidden, content);
         let gpu = self.gpu.clone();
         // Captured, not read through `self`: the future deliberately does not
         // borrow the engine.
@@ -1184,7 +1299,7 @@ impl Engine {
             self.composite_groups(doc, only)
         };
 
-        let (color_format, aux_format) = self.compositor.channel_formats();
+        let (color_format, aux_format) = self.compositor_pipeline.channel_formats();
         // `read_rgba16f` decodes four halves per texel. Both colour spaces store the
         // colour channels that way (DESIGN.md §6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
@@ -1205,6 +1320,7 @@ impl Engine {
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
         self.compositor.composite_channels(
+            &self.compositor_pipeline,
             &color.create_view(&wgpu::TextureViewDescriptor::default()),
             &aux.create_view(&wgpu::TextureViewDescriptor::default()),
             view,
@@ -1408,7 +1524,7 @@ impl Engine {
             shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather,
             show_peer_selections: self.session.show_peer_selections,
-            media: self.compositor.media(),
+            media: self.compositor_pipeline.media(),
             environment: self.environment.id(),
             color_space: self.color_space.id(),
             surface: doc.surface,
@@ -1433,7 +1549,7 @@ impl Engine {
 
     /// The current media/lighting parameters (DESIGN.md §6.3).
     pub fn media_params(&self) -> crate::gpu::MediaParams {
-        self.compositor.media()
+        self.compositor_pipeline.media()
     }
 
     /// Import a brush-shape image (PNG bytes), returning its content id for use
@@ -1828,7 +1944,8 @@ impl Engine {
     /// Rebind the current surface in the media pass — the only thing that samples
     /// it. No pipeline or pool rebuild, no document reset.
     fn apply_surface(&mut self) {
-        self.compositor.set_surface(self.surface.current().clone());
+        self.compositor_pipeline
+            .set_surface(self.surface.current().clone());
     }
 
     /// The current lighting environment (DESIGN.md §6.3).
@@ -1864,7 +1981,7 @@ impl Engine {
 
     /// Rebind the current environment in the media pass.
     fn apply_environment(&mut self) {
-        self.compositor
+        self.compositor_pipeline
             .set_environment(self.environment.current().clone());
     }
 
@@ -1872,21 +1989,23 @@ impl Engine {
     /// document is already empty (no tiles of the old format are referenced).
     fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
         let cs = id.make();
-        let (pool, stroke, compositor, transform, fill) = build_gpu(GpuBuild {
-            gpu: &self.gpu,
-            target_format: self.target_format,
-            viewport: self.session.view.viewport,
-            cs: &cs,
-            surface: self.surface.current(),
-            environment: self.environment.current(),
-            selection: &self.apply.selection,
-        });
+        let (pool, stroke, compositor_pipeline, compositor, transform, fill) =
+            build_gpu(GpuBuild {
+                gpu: &self.gpu,
+                target_format: self.target_format,
+                viewport: self.session.view.viewport,
+                cs: &cs,
+                surface: self.surface.current(),
+                environment: self.environment.current(),
+                selection: &self.apply.selection,
+            });
         self.color_space = cs;
         self.apply.pool = pool;
         self.apply.stroke = stroke;
         self.apply.transform = transform;
         self.apply.fill = fill;
         self.compositor = compositor;
+        self.compositor_pipeline = compositor_pipeline;
     }
 
     /// Reset to an empty document (one root layer) before a load/replay. Also
@@ -2344,6 +2463,7 @@ fn build_gpu(
 ) -> (
     TilePool,
     StrokeRenderer,
+    CompositorPipeline,
     Compositor,
     TransformRenderer,
     FillRenderer,
@@ -2364,17 +2484,24 @@ fn build_gpu(
         [cs.color_format(), cs.aux_format(), MASK_FORMAT],
     );
     let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone());
-    let compositor = Compositor::new(
+    let compositor_pipeline = CompositorPipeline::new(
         gpu,
         target_format,
-        viewport,
         cs.as_ref(),
         surface.clone(),
         environment.clone(),
     );
+    let compositor = Compositor::new(&compositor_pipeline, viewport);
     let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone());
     let fill = FillRenderer::new(gpu, cs.clone(), selection.clone());
-    (pool, stroke, compositor, transform, fill)
+    (
+        pool,
+        stroke,
+        compositor_pipeline,
+        compositor,
+        transform,
+        fill,
+    )
 }
 
 /// Convenience for tests/tools: build an engine on a headless device.

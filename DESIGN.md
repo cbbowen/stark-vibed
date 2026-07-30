@@ -1643,20 +1643,47 @@ undo/redo, layer panel) surrounds it.
   (`get_current_texture` → `engine.render(view)` → `present`) — no readback, no
   encode. The frontend supplies the GPU handles via `GpuContext::from_parts`
   (GOALS §Inputs); core needs no change to compile to wasm.
-- **The navigator's miniature is a render, so it is driven by the document's
-  revision rather than by the canvas.** An overview of the whole piece is the one
-  piece of chrome that cannot be derived from `ObservableState` — it is pixels — so
-  the Navigator panel (`panels/navigator.rs`) asks the engine for a small `export`
-  of the same rect a file export would frame (FRAME_DESIGN.md §6), which is a GPU
-  render plus a readback and resizes the compositor's offscreen targets on the way
-  through. That is affordable per *edit* and ruinous per pointer sample, so what it
-  subscribes to is `ObservableState::doc_revision` — a counter that moves when the
-  committed document does and deliberately not when an in-flight gesture or an
-  unlogged drag preview changes what the canvas shows. `Rendered::Committed` is the
+- **The navigator's miniature is a second surface, not an image the UI carries.** An
+  overview of the whole piece is the one piece of chrome that cannot be derived from
+  `ObservableState` — it is pixels — so the Navigator panel
+  (`panels/navigator.rs`) mounts its own `<canvas>`, the frontend binds a second
+  `wgpu::Surface` to it on the app's existing device, and the engine renders the
+  document straight into it (`Engine::render_into`). One document, two surfaces: the
+  same bargain the painting canvas makes. It framed itself against the rect a file
+  export would use — `Engine::export_plan`, whose returned plan *is* the view it
+  renders through (`ExportPlan::view`), so the overview cannot come to disagree with
+  the picture a file would hold.
+- **What it subscribes to is the document's revision, not the canvas.** A refresh
+  composites every tile, which is affordable per *edit* and ruinous per pointer
+  sample, so the panel watches `ObservableState::doc_revision` — a counter that moves
+  when the committed document does and deliberately not when an in-flight gesture or
+  an unlogged drag preview changes what the canvas shows. `Rendered::Committed` is the
   matching half on the engine side: the picture is of the last commit, so a render
-  that lands mid-stroke is still the picture its revision promised. The viewport
-  rectangle over the top is a positioned `<div>` read from the live view, so pan and
-  zoom move it for free.
+  that lands mid-stroke is still the picture its revision promised. A settle delay
+  collapses bursts, and a refresh due mid-gesture waits for the hand to lift. The
+  viewport rectangle over the top is a positioned `<div>` read from the live view, so
+  pan and zoom move it for free.
+  - This began as an `export` — render offscreen, read the pixels back, hand them to a
+    2D canvas through `ImageData` — and every part of it after "render" existed only
+    because the miniature had nowhere of its own to draw. Giving it a surface deleted
+    the GPU→CPU copy and its frame of latency, the pixel buffer held in a signal, the
+    `putImageData` helper, and the imperative repaint that had to be re-run whenever
+    the element remounted. What is left is one render and a present, synchronously.
+- **Compositing splits along "does it depend on the target?", so a second view of the
+  document costs only its own attachments.** `CompositorPipeline` holds the pipelines,
+  layouts, pigment LUT and the view settings the media pass reads; a `Compositor` holds
+  one target's offscreen attachments, blend scratch and instance streams
+  (`gpu::composite`). The surface keeps one across frames; anything rendered beside it
+  brings its own through an `Offscreen` slot, so an off-screen render never resizes the
+  screen's attachments out from under it. Whether a slot outlives its call is the
+  *caller's* to state, because only the caller knows whether the render repeats: the
+  navigator holds one for the app's life (one render per edit, forever), while a file
+  export uses a local one so a 4× export of a large frame does not park its
+  several-hundred-megabyte pair for the rest of the session. The view settings stay
+  single-owned behind a process-wide generation stamp, so a swapped canvas weave or
+  light — or a whole rebuilt pipeline, as a colour-space change makes — reaches every
+  consumer by being *noticed* rather than by a notification a new consumer could be
+  left out of.
 - **Settings are one dialog, not a control tucked into whichever panel it came
   from.** The panels hold what you are painting *with* and change constantly
   mid-stroke; the document dialogs hold what the drawing *is*. A standing

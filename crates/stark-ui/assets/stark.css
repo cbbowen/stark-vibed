@@ -490,13 +490,13 @@
 }
 
 /* --- navigator panel (panels/navigator.rs) ---
-   The miniature is presented 1:1 — its element carries the pixel size the export
-   came back at (set imperatively, see `platform::draw_rgba`), so nothing here may
-   give the canvas a width or a height: a CSS size would stretch a portrait piece to
-   the panel's proportions, and the viewport marker — positioned in percentages of
-   this box — would then sit over a picture it does not describe. The row centres it
-   instead, and `.nav-frame` shrink-wraps it to become the marker's containing
-   block. */
+   The miniature is a second WebGPU surface presented 1:1: the canvas carries the
+   pixel size its plan was rendered at, set on the element together with the surface
+   configuration (`Renderer::paint_overview`). So nothing here may give the canvas a
+   width or a height — a CSS size would stretch a portrait piece to the panel's
+   proportions, and the viewport marker, positioned in percentages of this box, would
+   then sit over a picture it does not describe. The row centres it instead, and
+   `.nav-frame` shrink-wraps it to become the marker's containing block. */
 .nav-thumb-row {
   text-align: center;
 }
@@ -511,16 +511,27 @@
      stay the miniature's pixels. */
   outline: 1px solid rgba(255, 255, 255, 0.14);
   /* The viewport marker is drawn where it truly falls, so panning off the piece has
-     to *show* as the marker leaving — which means the box has to clip it. */
+     to *show* as the marker leaving — which means the box has to clip it. The
+     max-width rides along on that: a canvas awaiting its first render still has the
+     browser's intrinsic 300x150, and clipping it is better than letting it push the
+     panel wider. */
   overflow: hidden;
+  max-width: 100%;
   cursor: pointer;
   touch-action: none;
 }
 
 /* `block` kills the inline baseline gap that would otherwise leave a few px of
-   panel showing under the picture inside the shrink-wrapping frame. */
+   panel showing under the picture inside the shrink-wrapping frame.
+
+   Pointer-transparent for the same reason `.nav-view` is: the click-to-go-there
+   handler sits on `.nav-frame` and reads the pointer's position within *its own*
+   element, so the frame has to be what a press lands on. The canvas's box coincides
+   with the frame's today, which would make it work either way — but that coincidence
+   is not something the mapping should depend on. */
 .nav-thumb {
   display: block;
+  pointer-events: none;
 }
 
 /* What the window is showing, over the overview. Pointer-transparent, so a click

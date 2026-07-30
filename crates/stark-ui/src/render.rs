@@ -26,6 +26,36 @@ pub struct Renderer {
     engine: Engine,
     /// The built-in bristle brush, imported once its bytes are fetched (§6.6).
     bristle: Option<stark_core::AssetId>,
+    /// The Navigator panel's canvas and everything that draws into it — `None` until
+    /// the panel mounts one ([`Renderer::attach_overview`]).
+    overview: Option<Overview>,
+}
+
+/// A second WebGPU surface showing the same document: the Navigator panel's canvas,
+/// the surface bound to it, and the compositing attachments the miniature renders
+/// through (`panels::navigator`).
+///
+/// The miniature is a *rendered surface*, not an image the UI carries — the same
+/// bargain the painting canvas makes (DESIGN.md §11). It began as an `export`: render
+/// to an offscreen texture, copy the pixels back to the CPU, hand them to a 2D canvas
+/// through `ImageData`. Every part of that after "render" existed only because the
+/// miniature had nowhere of its own to draw, and giving it a surface deleted all of
+/// it — the GPU→CPU copy and its frame of latency, the pixel buffer held in a signal,
+/// and the imperative repaint that had to be re-run whenever the element remounted.
+///
+/// One document, two surfaces, on one device: exactly what the brush editor's preview
+/// canvas already does ([`init_shared`]), except that this one shares the *engine*
+/// too, so it is a second view of the real painting rather than a second painting.
+struct Overview {
+    /// Kept so the drawing buffer can be resized with the surface: the miniature's
+    /// pixel size follows the piece's aspect, not the window's.
+    canvas: web_sys::HtmlCanvasElement,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    /// Pass A's attachments, kept between refreshes — see [`stark_core::Offscreen`].
+    /// This render repeats for as long as the panel is open, so it is the one that has
+    /// to reuse them; step 2 of this design is what makes a refresh allocate nothing.
+    targets: stark_core::Offscreen,
 }
 
 /// A collaborator, as the chrome draws them (PEER_DESIGN.md §4).
@@ -194,6 +224,10 @@ impl Renderer {
     /// The future does **not** borrow the renderer, which is the whole point: the
     /// caller can drop its write guard before awaiting, so the UI is free to
     /// re-render (and read the renderer) while the GPU→CPU copy is in flight.
+    ///
+    /// A one-shot: the attachments are allocated for this render and dropped with it,
+    /// which is what keeps a 4× export of a large frame from parking its
+    /// several-hundred-megabyte pair for the rest of the session.
     pub fn export(
         &mut self,
         frame: Option<stark_core::LayerId>,
@@ -201,7 +235,102 @@ impl Renderer {
         background: stark_core::Background,
         content: stark_core::Rendered,
     ) -> stark_core::Result<impl std::future::Future<Output = stark_core::RgbaImage> + use<>> {
-        self.engine.export(frame, scale, background, content)
+        self.engine.export(
+            &mut stark_core::Offscreen::default(),
+            frame,
+            scale,
+            background,
+            content,
+        )
+    }
+
+    /// Bind the Navigator panel's `<canvas>` as a second surface onto this engine's
+    /// device, ready for [`paint_overview`](Self::paint_overview).
+    ///
+    /// Called from the panel's `onmounted`, and again on every remount: a closed panel
+    /// takes its element with it, and the element is what a surface is bound to, so
+    /// the old one is dropped here rather than reused. Nothing is measured — the
+    /// miniature's size comes from the piece's proportions, not from layout, so the
+    /// drawing buffer is sized on the first paint instead.
+    ///
+    /// Configured to the engine's own target format, not to a format picked from this
+    /// surface's capabilities: the engine's pipelines are built for one format, and a
+    /// second surface that chose differently would fail validation rather than merely
+    /// look wrong. The format the main canvas settled on is available here (both
+    /// surfaces are canvases on the same adapter, so it is in this one's caps too).
+    pub fn attach_overview(&mut self, canvas: web_sys::HtmlCanvasElement) {
+        let gpu = self.engine.gpu();
+        let surface = match gpu.instance.create_surface(canvas_target(canvas.clone())) {
+            Ok(surface) => surface,
+            Err(e) => {
+                tracing::warn!("navigator surface unavailable: {e}");
+                return;
+            }
+        };
+        let caps = surface.get_capabilities(&gpu.adapter);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: self.engine.target_format(),
+            // Zero says "not configured yet", and cannot collide with a real plan
+            // size (a plan's edges are floored at 1), so the first paint always
+            // configures before it asks for a texture.
+            width: 0,
+            height: 0,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::default(),
+        };
+        self.overview = Some(Overview {
+            canvas,
+            surface,
+            config,
+            targets: stark_core::Offscreen::default(),
+        });
+    }
+
+    /// Draw the miniature `plan` describes straight into the Navigator's surface and
+    /// present it. `false` if no canvas is attached (the panel is closed).
+    ///
+    /// The committed document, over the substrate: an overview is a picture of the
+    /// piece as it stands, and it is refreshed per commit, so following the stroke in
+    /// hand would mean re-rendering at pointer rate to show what the canvas beside it
+    /// is already showing full size.
+    ///
+    /// Synchronous, which is the whole point of the surface: there is no readback to
+    /// await, so a refresh is one render and a present.
+    pub fn paint_overview(&mut self, plan: &stark_core::ExportPlan) -> bool {
+        use wgpu::CurrentSurfaceTexture::{Suboptimal, Success};
+        let Some(ov) = self.overview.as_mut() else {
+            return false;
+        };
+        let size = plan.size;
+        if (ov.config.width, ov.config.height) != (size.width, size.height) {
+            ov.canvas.set_width(size.width);
+            ov.canvas.set_height(size.height);
+            ov.config.width = size.width;
+            ov.config.height = size.height;
+            ov.surface.configure(&self.engine.gpu().device, &ov.config);
+        }
+        let frame = match ov.surface.get_current_texture() {
+            Success(frame) | Suboptimal(frame) => frame,
+            // Timeout/Outdated/Lost: skip it. The next committed edit repaints, and a
+            // miniature one revision stale is not worth a retry loop.
+            _ => return false,
+        };
+        let target = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.engine.render_into(
+            &mut ov.targets,
+            &target,
+            plan.view(),
+            stark_core::Background::Substrate,
+            stark_core::Rendered::Committed,
+        );
+        self.engine.gpu().queue.present(frame);
+        true
     }
 
     /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).
@@ -531,5 +660,6 @@ async fn finish_init(
         config,
         engine,
         bristle: None,
+        overview: None,
     }
 }

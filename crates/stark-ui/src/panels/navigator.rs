@@ -4,44 +4,49 @@
 //! # What "the whole piece" means
 //!
 //! Exactly what an export would write (FRAME_DESIGN.md §6): the topmost frame's
-//! rect, or — with no frame — the painted bounds, or on an empty canvas the
-//! viewport. That is not a coincidence to be maintained but the *same call*:
-//! [`Engine::export_plan`] answers the rect and [`Engine::export`] renders it, so
-//! the miniature cannot come to disagree with the picture the file would hold. It
-//! is also the only sensible answer on an unbounded canvas, which has no extent of
-//! its own to show.
+//! rect, or — with no frame — the painted bounds, or on an empty canvas nothing at
+//! all. That is not a coincidence to be maintained but the *same call*:
+//! [`Engine::export_plan`] answers the rect, and the plan it returns *is* the view the
+//! miniature renders through ([`ExportPlan::view`]), so the overview cannot come to
+//! disagree with the picture a file would hold.
 //!
 //! [`Engine::export_plan`]: stark_core::Engine::export_plan
-//! [`Engine::export`]: stark_core::Engine::export
+//! [`ExportPlan::view`]: stark_core::ExportPlan::view
+//!
+//! # It is a surface, not an image
+//!
+//! The miniature is a second WebGPU surface bound to the panel's own `<canvas>`, and
+//! the engine renders the document straight into it
+//! ([`Renderer::paint_overview`](crate::render::Renderer::paint_overview)) — the same
+//! arrangement as the painting canvas, one document seen twice. So this module holds
+//! **no pixels**: a refresh is one render and a present, synchronously, and what the
+//! component keeps is four numbers describing where the picture sits in canvas space.
 //!
 //! # Why it does not simply track the canvas
 //!
-//! One miniature is a GPU render plus a readback, and the render resizes the
-//! compositor's viewport-sized offscreen targets to the thumbnail and back
-//! (`gpu::composite`), so it costs a repaint of the real canvas too. That is
-//! nothing on an edit and ruinous per pointer sample — a navigator that redrew with
-//! the canvas would tax every stroke to show, in 250 px, what the canvas is already
-//! showing full size.
+//! One refresh composites every tile in the document. That is nothing on an edit and
+//! ruinous per pointer sample — a navigator that redrew with the canvas would tax
+//! every stroke to show, in 250 px, what the canvas is already showing full size.
 //!
 //! So the miniature is a picture of the **committed document**, refreshed when that
 //! changes and not otherwise. `ObservableState::doc_revision` is the whole
-//! subscription: it moves on a commit, an undo, a merged remote action or a load,
-//! and deliberately not on the in-flight stroke or the unlogged drag preview. A
-//! short settle delay then collapses a burst of edits — a held Ctrl+Z, a peer's
-//! stream of arriving actions — into one render, and a render that would land
-//! mid-gesture waits for the hand to lift rather than stealing frames from it.
+//! subscription: it moves on a commit, an undo, a merged remote action or a load, and
+//! deliberately not on the in-flight stroke or the unlogged drag preview. A short
+//! settle delay then collapses a burst of edits — a held Ctrl+Z, a peer's stream of
+//! arriving actions — into one render, and a render that would land mid-gesture waits
+//! for the hand to lift rather than stealing frames from it.
 //!
-//! The viewport rectangle over the top is *not* rendered: it is a positioned
+//! The viewport rectangle over the top is not rendered either: it is a positioned
 //! `<div>` read from the live view, so panning and zooming move it at no cost.
 
 use dioxus::prelude::*;
 
 use crate::input::elem_xy;
-use crate::platform::{capture_pointer, draw_rgba, sleep_ms};
+use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
 use stark_core::command::ViewCommand;
 use stark_core::geom::Vec2;
-use stark_core::{Background, ExportScale, LayerId, ObservableState, Rendered};
+use stark_core::{ExportScale, LayerId, ObservableState};
 
 /// The largest miniature, in CSS px. The width is the panel's inner width (see
 /// `.panel-stack` / `.panel` in `stark.css`), so a landscape piece reaches both
@@ -56,30 +61,21 @@ const MAX_HEIGHT: u32 = 176;
 /// overview appears while the artist is still looking at where it landed.
 const SETTLE_MS: i32 = 180;
 
-/// The DOM id of the miniature's canvas. One panel, so one id: the pixels arrive
-/// from an async readback and are drawn imperatively (see
-/// [`crate::platform::draw_rgba`]), which needs something to look the element up
-/// by.
-const THUMB_ID: &str = "stark-navigator-thumb";
-
-/// A rendered miniature: the canvas-space rect it covers, and the pixels covering
-/// it. The rect travels *with* the pixels rather than being read from the engine at
-/// draw time, so the viewport marker cannot be placed against a crop the image on
-/// screen was not rendered at.
+/// Where the miniature sits in canvas space, and how large it is drawn.
 ///
-/// Deliberately not `Clone` and not `PartialEq`: it is written once per refresh and
-/// read by reference, and either impl would put an O(pixels) operation within easy
-/// reach of a component that re-renders on every engine write.
-struct Miniature {
-    /// Canvas-space rect, as the export plan reported it.
+/// All the panel keeps: the picture itself lives on the GPU, in the surface bound to
+/// the panel's canvas. `Copy`, and four numbers wide, so the component that
+/// re-renders on every engine write can read it freely — where the old readback path
+/// kept a ~150 KB pixel buffer here and had to be careful never to clone it.
+#[derive(Clone, Copy, PartialEq)]
+struct Overview {
+    /// The canvas-space rect the miniature covers.
     min: Vec2,
     max: Vec2,
-    /// Image size in px, which is also its CSS size — the canvas is presented 1:1
-    /// (like the painting canvas itself, which ignores `devicePixelRatio` too).
+    /// Its size in px, which is also its CSS size — the surface is presented 1:1,
+    /// like the painting canvas, which ignores `devicePixelRatio` too.
     width: u32,
     height: u32,
-    /// Straight-alpha RGBA8, `width * height * 4`.
-    pixels: Vec<u8>,
 }
 
 /// The frame the overview is taken against: the **topmost** matte layer, or `None`
@@ -112,48 +108,36 @@ fn fit_scale(width: u32, height: u32) -> f32 {
     by_width.min(by_height)
 }
 
-/// Render the miniature: one export of the committed document, scaled to the
-/// panel's box. `None` before the engine exists, or when the overview rect has no
-/// area to render (a frame dragged to nothing — [`ExportPlan`] refuses it, and the
-/// panel keeps whatever it last had rather than blinking).
+/// Draw the miniature: one render of the committed document into the panel's own
+/// surface, scaled to fit the panel's box.
 ///
-/// [`ExportPlan`]: stark_core::ExportPlan
-async fn render_miniature(state: AppState, frame: Option<LayerId>) -> Option<Miniature> {
-    // Render, then **drop the guard before awaiting** — the readback future owns
-    // everything it needs, and the UI re-renders (reading the renderer) while the
-    // browser's event loop runs the copy. The same bargain `files::export_png` and
-    // the eyedropper make.
-    let (plan, readback) = {
-        let mut renderer = state.renderer;
-        let mut guard = renderer.write();
-        let r = guard.as_mut()?;
-        // The rect at 1:1 first, because the scale that fits the panel is a
-        // property of the rect; the plan is then asked again *at that scale* rather
-        // than scaled here, so the size the pixels come back at and the size the
-        // canvas is given are one number from one source.
-        let rect = r.export_plan(frame, ExportScale::Factor(1.0)).ok()?;
-        let factor = ExportScale::Factor(fit_scale(rect.size.width, rect.size.height));
-        let plan = r.export_plan(frame, factor).ok()?;
-        let readback = r
-            .export(frame, factor, Background::Substrate, Rendered::Committed)
-            .ok()?;
-        // Export renders through its own view into the compositor's offscreen
-        // buffers, resizing them to the export size — so the on-screen surface has
-        // to be repainted before anyone sees it again.
-        r.paint();
-        (plan, readback)
-    };
-    let image = readback.await;
-    Some(Miniature {
+/// `None` before the engine exists, before the panel's canvas has been attached to
+/// it, or when the overview rect has no area to render — a frame dragged to nothing,
+/// which [`export_plan`](stark_core::Engine::export_plan) refuses; the panel then
+/// keeps showing whatever it last drew rather than blinking.
+///
+/// Synchronous throughout: there is no readback, so nothing here awaits and nothing
+/// has to survive an await.
+fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
+    let mut renderer = state.renderer;
+    let mut guard = renderer.write();
+    let r = guard.as_mut()?;
+    // The rect at 1:1 first, because the scale that fits the panel is a property of
+    // the rect; the plan is then asked again *at that scale* rather than scaled here,
+    // so the size the surface is configured to and the size the picture is rendered at
+    // are one number from one source.
+    let rect = r.export_plan(frame, ExportScale::Factor(1.0)).ok()?;
+    let factor = ExportScale::Factor(fit_scale(rect.size.width, rect.size.height));
+    let plan = r.export_plan(frame, factor).ok()?;
+    r.paint_overview(&plan).then_some(Overview {
         min: plan.min,
         max: plan.max,
-        width: image.width,
-        height: image.height,
-        pixels: image.pixels,
+        width: plan.size.width,
+        height: plan.size.height,
     })
 }
 
-/// A CSS `left/top/width/height` for the part of `mini` the viewport covers, in
+/// A CSS `left/top/width/height` for the part of `over` the viewport covers, in
 /// percentages of the miniature.
 ///
 /// Not clamped: the rect is placed where it truly falls and the miniature's box
@@ -161,11 +145,11 @@ async fn render_miniature(state: AppState, frame: Option<LayerId>) -> Option<Min
 /// rather than sticking to an edge and claiming you are still on the painting. What
 /// the stylesheet contributes is a minimum size, so a viewport that is a fraction
 /// of a percent of a large canvas is still something you can see.
-fn viewport_style(mini: &Miniature, view: stark_core::ViewTransform) -> String {
+fn viewport_style(over: Overview, view: stark_core::ViewTransform) -> String {
     let half =
         Vec2::new(view.viewport.width as f32, view.viewport.height as f32) * (0.5 / view.zoom);
-    let span = (mini.max - mini.min).max(Vec2::splat(1e-3));
-    let lo = (view.center - half - mini.min) / span * 100.0;
+    let span = (over.max - over.min).max(Vec2::splat(1e-3));
+    let lo = (view.center - half - over.min) / span * 100.0;
     let size = (2.0 * half) / span * 100.0;
     format!(
         "left: {:.3}%; top: {:.3}%; width: {:.3}%; height: {:.3}%;",
@@ -177,9 +161,9 @@ fn viewport_style(mini: &Miniature, view: stark_core::ViewTransform) -> String {
 #[component]
 pub fn NavigatorPanel() -> Element {
     let state = use_context::<AppState>();
-    // The miniature on screen. Component-owned: it is worth nothing once the panel
-    // is closed, and a fresh one is rendered on reopening.
-    let mut mini = use_signal(|| None::<Miniature>);
+    // Where the miniature currently sits in canvas space. Component-owned, and
+    // meaningless once the panel closes — the surface it describes goes with it.
+    let mut over = use_signal(|| None::<Overview>);
     // Which refresh is the current one. A burst of edits arms several, and each
     // checks this after its settle delay so all but the last stand down — the
     // debounce, in one integer.
@@ -226,34 +210,11 @@ pub fn NavigatorPanel() -> Element {
                     break;
                 }
             }
-            if let Some(next) = render_miniature(state, frame).await {
-                mini.set(Some(next));
+            if let Some(next) = draw_overview(state, frame) {
+                over.set(Some(next));
             }
         });
     });
-
-    // Draw the pixels when they land. Keyed on `mini` alone, so an ordinary
-    // re-render — the marker moving as the canvas pans — costs nothing, and the
-    // canvas element keeps what was last drawn on it because nothing in the virtual
-    // tree touches its size (see `platform::draw_rgba`).
-    use_effect(move || {
-        let mini = mini.read();
-        if let Some(m) = mini.as_ref() {
-            draw_rgba(THUMB_ID, m.width, m.height, &m.pixels);
-        }
-    });
-    // The other half: draw when the *element* appears rather than when the pixels
-    // do. A fresh `<canvas>` starts blank, and it can appear with a miniature
-    // already in hand — undoing back to an empty document swaps in the empty state
-    // and redoing swaps the canvas back, with no write to `mini` in between to wake
-    // the effect above. Between the two, "there is a canvas and there are pixels"
-    // always ends with the pixels on it.
-    let draw_on_mount = move |_: Event<MountedData>| {
-        let mini = mini.peek();
-        if let Some(m) = mini.as_ref() {
-            draw_rgba(THUMB_ID, m.width, m.height, &m.pixels);
-        }
-    };
 
     if subject().is_none() {
         return rsx! {
@@ -261,26 +222,19 @@ pub fn NavigatorPanel() -> Element {
         };
     }
 
-    // The marker and the miniature's size, without cloning the pixels: this
-    // component re-renders on every engine write, and what it needs from a
-    // ~150 KB image is six floats.
-    let view = state.obs.read().as_ref().map(|o| o.view);
-    let placed = mini
-        .read()
-        .as_ref()
-        .zip(view)
-        .map(|(m, v)| (viewport_style(m, v), m.width, m.height));
-    let Some((marker, width, height)) = placed else {
-        return rsx! {
-            div { class: "nav-empty", "Rendering the overview\u{2026}" }
-        };
-    };
+    // The canvas is mounted whatever state the picture is in, because it *is* the
+    // picture — there is nothing to show it with before it exists. Until the first
+    // render lands the marker is simply absent.
+    let placed = over()
+        .zip(state.obs.read().as_ref().map(|o| o.view))
+        .map(|(o, v)| (viewport_style(o, v), o.width, o.height));
 
-    // Where a press in the miniature points, in canvas space. The pixels are shown
-    // 1:1, so the element's own coordinates are the image's.
+    // Where a press in the miniature points, in canvas space. The surface is
+    // presented 1:1, so the element's own coordinates are the picture's.
     let target = move |e: &Event<PointerData>| {
-        let f = elem_xy(e) / Vec2::new(width.max(1) as f32, height.max(1) as f32);
-        mini.peek().as_ref().map(|m| m.min + (m.max - m.min) * f)
+        let o = over.peek().as_ref().copied()?;
+        let f = elem_xy(e) / Vec2::new(o.width.max(1) as f32, o.height.max(1) as f32);
+        Some(o.min + (o.max - o.min) * f)
     };
 
     rsx! {
@@ -310,8 +264,29 @@ pub fn NavigatorPanel() -> Element {
                 onpointerup: move |_| dragging.set(false),
                 onpointercancel: move |_| dragging.set(false),
 
-                canvas { id: "{THUMB_ID}", class: "nav-thumb", onmounted: draw_on_mount }
-                div { class: "nav-view", style: "{marker}" }
+                canvas {
+                    class: "nav-thumb",
+                    // The panel's canvas *is* the render target, so mounting it is
+                    // what gives the engine somewhere to draw — and every remount
+                    // needs a fresh surface, since the element the old one was bound
+                    // to went with the panel. Drawing in the same handler is what
+                    // fills it before anyone sees it: the element is in the DOM by
+                    // now, and nothing here measures layout.
+                    onmounted: move |e: Event<MountedData>| {
+                        if let Some(canvas) = crate::platform::canvas_of(&e) {
+                            let mut renderer = state.renderer;
+                            if let Some(r) = renderer.write().as_mut() {
+                                r.attach_overview(canvas);
+                            }
+                        }
+                        if let Some(next) = subject().and_then(|(_, f)| draw_overview(state, f)) {
+                            over.set(Some(next));
+                        }
+                    },
+                }
+                if let Some((marker, _, _)) = placed {
+                    div { class: "nav-view", style: "{marker}" }
+                }
             }
         }
     }
