@@ -1,30 +1,27 @@
 //! The wire: message formats and the catch-up/asset protocol.
 //!
-//! Two channels, one vocabulary (DESIGN.md §12.4):
+//! Three channels, one vocabulary (DESIGN.md §12.4):
 //!
 //! - **Gossip** carries [`Stamped`] messages — one committed action or
 //!   presence frame each, postcard-encoded. Actions are small (fitted control
 //!   points, ids, params); pixels and image bytes never ride gossip.
 //! - **The `stark/collab/0` ALPN** answers [`Request`]s over one bi-stream per
 //!   request: the full session [`Snapshot`](Request::Snapshot) (the save-format
-//!   container, assets bundled) for joins, and individual content-addressed
-//!   [`Asset`](Request::Asset) blobs for strokes that reference a brush image
-//!   the peer hasn't seen.
-//!
-//! [`answer`] is the whole protocol; each backend supplies only the plumbing
-//! that carries the bytes.
+//!   container, assets bundled) for joins.
+//! - **The `iroh-blobs` ALPN** serves individual brush images to peers that
+//!   see a stroke referencing one they don't hold — hash-verified, addressed
+//!   by the blob hash a [`Stamped`] message carries alongside such a stroke.
 
 use std::sync::Mutex;
 
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
-use stark_core::AssetId;
 use stark_core::document::Action;
 use stark_core::peer::PeerFrame;
 
 use crate::mirror::Mirror;
 
-/// The catch-up / asset-fetch protocol.
+/// The catch-up (snapshot) protocol.
 pub const ALPN: &[u8] = b"stark/collab/0";
 
 /// One gossip broadcast: the payload plus who authored it. Postcard-encoded.
@@ -39,6 +36,12 @@ pub(crate) struct Stamped {
     /// Who produced the message — the authoritative source for anything it
     /// references (a presence frame's author, a stroke's brush asset).
     pub origin: EndpointId,
+    /// The blob hash of the brush image the payload references, if any. An
+    /// [`AssetId`] names the *decoded coverage* (encoding-independent), so it
+    /// is not itself fetchable over blobs — the author, who holds the bytes,
+    /// supplies the transfer hash here. Trusted like the rest of the payload;
+    /// the engine re-derives the real `AssetId` from the fetched bytes.
+    pub asset: Option<iroh_blobs::Hash>,
     pub wire: Wire,
 }
 
@@ -64,13 +67,7 @@ pub enum Wire {
 pub enum Request {
     /// The whole session: a [`DocumentFile`](stark_core::DocumentFile) container.
     Snapshot,
-    /// One content-addressed brush image (canonical grayscale PNG bytes).
-    Asset(AssetId),
 }
-
-/// Response to [`Request::Asset`]: the bytes, if this peer has them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssetResponse(pub Option<Vec<u8>>);
 
 /// Answer one request from the shared [`Mirror`] — every peer is a provider, so
 /// the session survives the original sharer leaving.
@@ -81,10 +78,6 @@ pub(crate) fn answer(mirror: &Mutex<Mirror>, req: Request) -> crate::Result<Vec<
         Request::Snapshot => {
             let file = mirror.lock().expect("mirror poisoned").document_file();
             file.to_bytes()?
-        }
-        Request::Asset(id) => {
-            let bytes = mirror.lock().expect("mirror poisoned").asset(id);
-            postcard::to_allocvec(&AssetResponse(bytes))?
         }
     })
 }
@@ -106,7 +99,7 @@ mod iroh_wire {
     use super::{Request, answer, decode_request};
     use crate::mirror::Mirror;
 
-    /// Upper bound on an encoded request (a tag + a 32-byte asset id).
+    /// Upper bound on an encoded request (a variant tag).
     const MAX_REQUEST: usize = 256;
     /// Upper bound on a response: a whole session snapshot (log + brush PNGs).
     const MAX_RESPONSE: usize = 64 * 1024 * 1024;

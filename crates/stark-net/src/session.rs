@@ -16,11 +16,12 @@
 //! direct paths (each new gossip neighbor triggers a channel bootstrap; see
 //! [`transport::direct`](crate::transport)).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
+use iroh_blobs::Hash;
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
 pub use iroh_gossip::proto::TopicId;
 use n0_future::{StreamExt, task};
@@ -32,8 +33,14 @@ use tokio::sync::mpsc;
 use crate::Result;
 use crate::backend::{self, Dialer, Shutdown};
 use crate::mirror::Mirror;
-use crate::proto::{AssetResponse, Request, Stamped, Wire};
+use crate::proto::{Request, Stamped, Wire};
 use crate::ticket::SessionTicket;
+
+/// [`AssetId`] → the blob hash its canonical bytes transfer under. An asset id
+/// names the *decoded coverage* (encoding-independent), so it is not directly
+/// fetchable over blobs; whoever holds the bytes knows both names and carries
+/// the translation in [`Stamped`].
+type AssetHashes = Arc<Mutex<HashMap<AssetId, Hash>>>;
 
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -132,6 +139,7 @@ pub struct CollabSession {
     dialer: Dialer,
     sender: GossipSender,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    asset_hashes: AssetHashes,
     mirror: Arc<Mutex<Mirror>>,
     events: Option<mpsc::UnboundedReceiver<RemoteEvent>>,
     ticket_addr: EndpointAddr,
@@ -232,6 +240,19 @@ impl CollabSession {
             dialer.ensure_direct(peer);
         }
         let neighbors = Arc::new(Mutex::new(neighbors));
+        // Every asset already known (the hosted document's, or the joiner's
+        // snapshot's) enters the blob store so this peer can serve it, and the
+        // hash map so this peer's own strokes referencing it can broadcast the
+        // transfer hash.
+        let asset_hashes: AssetHashes = Arc::new(Mutex::new(
+            mirror
+                .lock()
+                .expect("mirror poisoned")
+                .assets()
+                .into_iter()
+                .map(|(id, bytes)| (id, dialer.add_blob(bytes)))
+                .collect(),
+        ));
         let (tx, rx) = mpsc::unbounded_channel();
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
@@ -239,6 +260,7 @@ impl CollabSession {
             dialer.clone(),
             receiver,
             neighbors.clone(),
+            asset_hashes.clone(),
             mirror.clone(),
             tx,
         ));
@@ -249,6 +271,7 @@ impl CollabSession {
             dialer,
             sender,
             neighbors,
+            asset_hashes,
             mirror,
             events: Some(rx),
             ticket_addr,
@@ -282,6 +305,7 @@ impl CollabSession {
             sender: self.sender.clone(),
             dialer: self.dialer.clone(),
             neighbors: self.neighbors.clone(),
+            asset_hashes: self.asset_hashes.clone(),
             mirror: self.mirror.clone(),
         }
     }
@@ -292,13 +316,10 @@ impl CollabSession {
         self.broadcaster().broadcast(action).await
     }
 
-    /// Register a brush image so joiners and asset requests can be served
+    /// Register a brush image so joiners can be served and peers can fetch it
     /// (call alongside [`Engine::import_brush`](stark_core::Engine::import_brush)).
     pub fn add_asset(&self, id: AssetId, bytes: Vec<u8>) {
-        self.mirror
-            .lock()
-            .expect("mirror poisoned")
-            .insert_asset(id, bytes);
+        self.broadcaster().add_asset(id, bytes);
     }
 
     /// See [`Broadcaster::links`].
@@ -321,6 +342,7 @@ pub struct Broadcaster {
     sender: GossipSender,
     dialer: Dialer,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    asset_hashes: AssetHashes,
     mirror: Arc<Mutex<Mirror>>,
 }
 
@@ -331,7 +353,8 @@ impl Broadcaster {
             .lock()
             .expect("mirror poisoned")
             .insert(action.clone());
-        self.publish_wire(Wire::Action(action)).await
+        let asset = referenced_asset(&action);
+        self.publish_wire(Wire::Action(action), asset).await
     }
 
     /// Publish this client's presence (PEER_DESIGN.md §4).
@@ -341,12 +364,25 @@ impl Broadcaster {
     /// best-effort — a frame that cannot be sent is dropped rather than retried,
     /// because the next one supersedes it anyway.
     pub async fn publish(&self, frame: PeerFrame) -> Result<()> {
-        self.publish_wire(Wire::Presence(frame)).await
+        let asset = referenced_presence_asset(&frame);
+        self.publish_wire(Wire::Presence(frame), asset).await
     }
 
-    async fn publish_wire(&self, wire: Wire) -> Result<()> {
+    async fn publish_wire(&self, wire: Wire, asset: Option<AssetId>) -> Result<()> {
+        // Attach the blob hash for the referenced brush image, so receivers
+        // that lack it know what to fetch. Registered before the stroke could
+        // have been drawn (add_asset accompanies the import), so the lookup
+        // only misses for the round tip (no asset at all).
+        let asset = asset.and_then(|id| {
+            self.asset_hashes
+                .lock()
+                .expect("asset hashes poisoned")
+                .get(&id)
+                .copied()
+        });
         let stamped = Stamped {
             origin: self.local_id,
+            asset,
             wire,
         };
         let bytes = postcard::to_allocvec(&stamped)?;
@@ -361,7 +397,12 @@ impl Broadcaster {
         self.mirror
             .lock()
             .expect("mirror poisoned")
-            .insert_asset(id, bytes);
+            .insert_asset(id, bytes.clone());
+        let hash = self.dialer.add_blob(bytes);
+        self.asset_hashes
+            .lock()
+            .expect("asset hashes poisoned")
+            .insert(id, hash);
     }
 
     /// How each gossip-neighbor session member is reached right now — direct
@@ -400,6 +441,7 @@ async fn recv_loop(
     dialer: Dialer,
     mut gossip: GossipReceiver,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    asset_hashes: AssetHashes,
     mirror: Arc<Mutex<Mirror>>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
@@ -431,7 +473,11 @@ async fn recv_loop(
             }
         };
 
-        let Stamped { origin, wire } = match postcard::from_bytes(&message.content) {
+        let Stamped {
+            origin,
+            asset: asset_hash,
+            wire,
+        } = match postcard::from_bytes(&message.content) {
             Ok(stamped) => stamped,
             Err(e) => {
                 tracing::warn!("undecodable gossip payload: {e}");
@@ -452,11 +498,14 @@ async fn recv_loop(
                 // the receiver's preview degrades to the round tip.
                 if let Some(asset) = referenced_presence_asset(&frame)
                     && !mirror.lock().expect("mirror poisoned").has_asset(asset)
+                    && let Some(hash) = require_hash(asset, asset_hash)
                 {
                     task::spawn(resolve_asset(
                         dialer.clone(),
                         asset_sources(origin, from),
                         asset,
+                        hash,
+                        asset_hashes.clone(),
                         mirror.clone(),
                         tx.clone(),
                     ));
@@ -478,6 +527,7 @@ async fn recv_loop(
         // definitely has the asset; the neighbour that forwarded it may not.
         if let Some(id) = referenced_asset(&action)
             && !mirror.lock().expect("mirror poisoned").has_asset(id)
+            && let Some(hash) = require_hash(id, asset_hash)
         {
             // Awaited (not spawned): the Asset event must reach the engine
             // before the Action that references it.
@@ -485,6 +535,8 @@ async fn recv_loop(
                 dialer.clone(),
                 asset_sources(origin, from),
                 id,
+                hash,
+                asset_hashes.clone(),
                 mirror.clone(),
                 tx.clone(),
             )
@@ -511,6 +563,16 @@ fn asset_sources(origin: EndpointId, from: EndpointId) -> Vec<EndpointId> {
     ids
 }
 
+/// The transfer hash for a referenced-but-missing asset, or a warning: without
+/// it the image cannot be fetched (a sender from before its own import
+/// completed — which `add_asset` ordering prevents — or a version mismatch).
+fn require_hash(id: AssetId, hash: Option<Hash>) -> Option<Hash> {
+    if hash.is_none() {
+        tracing::warn!("missing brush asset {id:?} arrived without a transfer hash");
+    }
+    hash
+}
+
 /// The brush image a *live* remote gesture depends on, if any: a stroke's head
 /// frame carries the full `BrushParams` (PEER_DESIGN.md §5). Only head/resync
 /// frames name it — delta frames extend the path of a head already seen.
@@ -526,24 +588,31 @@ fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetId> {
     }
 }
 
-/// Fetch a missing brush image, mirror it (so this peer can serve it onward),
-/// and surface it to the engine. The action path awaits this — assets must
-/// precede the action that references them — while the presence path runs it
-/// detached. Two concurrent resolvers are harmless: the blob is
-/// content-addressed, so the second insert and import are idempotent.
+/// Fetch a missing brush image over blobs, mirror it and record its transfer
+/// hash (so this peer can serve and announce it onward), and surface it to
+/// the engine. The action path awaits this — assets must precede the action
+/// that references them — while the presence path runs it detached. Two
+/// concurrent resolvers are harmless: the blob is content-addressed, so the
+/// second insert and import are idempotent.
 async fn resolve_asset(
     dialer: Dialer,
     sources: Vec<EndpointId>,
     id: AssetId,
+    hash: Hash,
+    asset_hashes: AssetHashes,
     mirror: Arc<Mutex<Mirror>>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
-    match fetch_asset(&dialer, &sources, id).await {
+    match fetch_asset(&dialer, &sources, hash).await {
         Some(bytes) => {
             mirror
                 .lock()
                 .expect("mirror poisoned")
                 .insert_asset(id, bytes.clone());
+            asset_hashes
+                .lock()
+                .expect("asset hashes poisoned")
+                .insert(id, hash);
             let _ = tx.send(RemoteEvent::Asset { bytes });
         }
         None => tracing::warn!("brush asset {id:?} unavailable; stroke will fall back"),
@@ -561,34 +630,21 @@ fn referenced_asset(action: &Action) -> Option<AssetId> {
     }
 }
 
-/// Fetch a content-addressed brush image, trying each source in turn and
-/// retrying (a peer may still be fetching it itself).
-async fn fetch_asset(dialer: &Dialer, sources: &[EndpointId], id: AssetId) -> Option<Vec<u8>> {
+/// Fetch a brush image blob, trying each source in turn and retrying (a peer
+/// may still be fetching it itself). The transfer is hash-verified by blobs.
+async fn fetch_asset(dialer: &Dialer, sources: &[EndpointId], hash: Hash) -> Option<Vec<u8>> {
     for attempt in 0..ASSET_RETRIES {
         if attempt > 0 {
             n0_future::time::sleep(ASSET_RETRY_DELAY).await;
         }
         for &source in sources {
-            match try_fetch_asset(dialer, source, id).await {
-                Ok(Some(bytes)) => return Some(bytes),
-                Ok(None) => continue,
+            match dialer.fetch_blob(source, hash).await {
+                Ok(bytes) => return Some(bytes),
                 Err(e) => tracing::debug!("asset fetch attempt {attempt} failed: {e}"),
             }
         }
     }
     None
-}
-
-async fn try_fetch_asset(
-    dialer: &Dialer,
-    from: EndpointId,
-    id: AssetId,
-) -> Result<Option<Vec<u8>>> {
-    let catchup = dialer.open(EndpointAddr::new(from)).await?;
-    let response = catchup.request(Request::Asset(id)).await?;
-    catchup.close().await;
-    let AssetResponse(bytes) = postcard::from_bytes(&response)?;
-    Ok(bytes)
 }
 
 impl std::fmt::Debug for CollabSession {

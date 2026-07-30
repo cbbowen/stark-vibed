@@ -23,6 +23,8 @@ mod imp {
     use iroh::endpoint::{Connection, presets};
     use iroh::protocol::Router;
     use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
+    use iroh_blobs::store::mem::MemStore;
+    use iroh_blobs::{BlobsProtocol, Hash};
     use iroh_gossip::net::Gossip;
 
     use crate::Result;
@@ -63,9 +65,13 @@ mod imp {
         let gossip = Gossip::builder()
             .max_message_size(MAX_MESSAGE_SIZE)
             .spawn(endpoint.clone());
+        // Brush assets: an in-memory blob store served over the blobs ALPN.
+        // The store actor lives as long as any client handle (the Dialer's).
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
 
         let router = Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
+            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
             .accept(proto::ALPN, CollabProto { mirror });
         #[cfg(feature = "webrtc")]
         let router = router.accept(
@@ -77,6 +83,7 @@ mod imp {
         Ok(Bound {
             dialer: Dialer {
                 endpoint: endpoint.clone(),
+                blobs,
                 #[cfg(feature = "webrtc")]
                 webrtc,
             },
@@ -88,6 +95,7 @@ mod imp {
     #[derive(Clone)]
     pub(crate) struct Dialer {
         endpoint: Endpoint,
+        blobs: iroh_blobs::api::Store,
         #[cfg(feature = "webrtc")]
         webrtc: Arc<iroh_webrtc_transport::WebRtcTransport>,
     }
@@ -118,25 +126,65 @@ mod imp {
                 .cloned()
         }
 
-        /// Connecting also teaches the endpoint how to reach `addr`, which is
-        /// what later lets gossip dial the same peer by bare id.
-        pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {
-            // If a WebRTC channel to this peer is already attached, dial with
-            // its (derived) custom addr so the connection starts direct. Never
-            // before it attaches: a custom path opened against an unattached
-            // channel fails validation and blocks the later real open (see
-            // transport::direct::bootstrap).
+        /// If a WebRTC channel to this peer is already attached, add its
+        /// (derived) custom addr so the connection starts direct. Never before
+        /// it attaches: a custom path opened against an unattached channel
+        /// fails validation and blocks the later real open (see
+        /// transport::direct::bootstrap).
+        fn dial_addr(&self, addr: EndpointAddr) -> EndpointAddr {
             #[cfg(feature = "webrtc")]
-            let addr = if self
+            if self
                 .webrtc
                 .is_attached(&crate::transport::direct::custom_addr_for(addr.id))
             {
-                crate::transport::direct::with_custom_addr(addr)
-            } else {
-                addr
-            };
-            let conn = self.endpoint.connect(addr, proto::ALPN).await?;
+                return crate::transport::direct::with_custom_addr(addr);
+            }
+            addr
+        }
+
+        /// Connecting also teaches the endpoint how to reach `addr`, which is
+        /// what later lets gossip dial the same peer by bare id.
+        pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {
+            let conn = self
+                .endpoint
+                .connect(self.dial_addr(addr), proto::ALPN)
+                .await?;
             Ok(Catchup { conn })
+        }
+
+        /// Store `bytes` in the local blob store so peers can fetch them.
+        /// Returns immediately with the content hash (computed synchronously —
+        /// broadcasts referencing it need not wait); the store insert runs
+        /// detached.
+        pub fn add_blob(&self, bytes: Vec<u8>) -> Hash {
+            let hash = Hash::new(&bytes);
+            let blobs = self.blobs.clone();
+            n0_future::task::spawn(async move {
+                if let Err(e) = blobs.add_bytes(bytes).await {
+                    tracing::warn!("storing a blob failed: {e}");
+                }
+            });
+            hash
+        }
+
+        /// Fetch one blob from `provider`, hash-verified into the local store
+        /// (so this peer can serve it onward), and return its bytes.
+        pub async fn fetch_blob(&self, provider: EndpointId, hash: Hash) -> Result<Vec<u8>> {
+            let net_err = |e: &dyn std::fmt::Display| crate::NetError::Other(e.to_string());
+            let conn = self
+                .endpoint
+                .connect(
+                    self.dial_addr(EndpointAddr::new(provider)),
+                    iroh_blobs::ALPN,
+                )
+                .await?;
+            self.blobs
+                .remote()
+                .fetch(conn, hash)
+                .await
+                .map_err(|e| net_err(&e))?;
+            let bytes = self.blobs.get_bytes(hash).await.map_err(|e| net_err(&e))?;
+            Ok(bytes.to_vec())
         }
 
         /// With public infrastructure, wait (bounded) for the relay handshake so

@@ -1,6 +1,7 @@
 //! The session mirror: a CPU-side copy of the shared log + assets, so the
-//! transport can serve joining peers and asset requests without touching the
-//! engine (which lives on the UI thread and owns the GPU).
+//! transport can serve joining peers without touching the engine (which lives
+//! on the UI thread and owns the GPU). Assets also live in the blob store for
+//! peer fetches; the mirror's copy is what snapshots bundle.
 //!
 //! The mirror sees every action exactly once — the initial snapshot, local
 //! commits via [`CollabSession::broadcast`](crate::CollabSession::broadcast),
@@ -53,7 +54,8 @@ impl Mirror {
         self.assets.contains_key(&id)
     }
 
-    pub fn asset(&self, id: AssetId) -> Option<Vec<u8>> {
-        self.assets.get(&id).cloned()
+    /// Snapshot of every asset, for seeding the blob store at session start.
+    pub fn assets(&self) -> Vec<(AssetId, Vec<u8>)> {
+        self.assets.iter().map(|(id, b)| (*id, b.clone())).collect()
     }
 }

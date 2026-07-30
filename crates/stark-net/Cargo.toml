@@ -27,6 +27,9 @@ iroh = "1"
 # endpoint as everything else — which is what the WebRTC custom-transport
 # design (see the `webrtc` feature) exists to allow.
 iroh-gossip = { version = "0.101", default-features = false, features = ["net"] }
+# Brush-asset transfer: content-addressed, hash-verified blob fetches on the
+# same endpoint. No fs-store — assets are small PNGs, kept in memory.
+iroh-blobs = { version = "0.103", default-features = false }
 # Gossip broadcast takes `Bytes`.
 bytes = "1"
 # The upstream package kept the name of an unrelated earlier project (see
