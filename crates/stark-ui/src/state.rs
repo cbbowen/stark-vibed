@@ -56,6 +56,11 @@ pub struct AppState {
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,
+    /// Whether the "Save preset" dialog is open. At the app root for the same reason
+    /// as the editor above: a panel is a `backdrop-filter` containing block, so a
+    /// dialog rendered inside one would be trapped in its box rather than covering
+    /// the window.
+    pub preset_save_open: Signal<bool>,
     /// Bumped whenever the brush colour is set from **outside** the colour picker —
     /// today only by the eyedropper.
     ///
@@ -107,6 +112,7 @@ impl AppState {
             space_down: root_signal(|| false),
             canvas_active: root_signal(|| false),
             brush_editor_open: root_signal(|| false),
+            preset_save_open: root_signal(|| false),
             color_epoch: root_signal(|| 0),
             pick: PickState {
                 all_layers: root_signal(|| true),

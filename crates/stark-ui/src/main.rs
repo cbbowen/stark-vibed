@@ -43,8 +43,10 @@ use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
 use input::{Nav, bind_shortcuts, end_interaction, input_tolerance, pick_color, sample};
-use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
-use panels::brush::BRISTLE_BRUSH;
+use layout::{
+    PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move, resize_end, resize_move,
+};
+use panels::brush::{BRISTLE_BRUSH, PresetSaveModal};
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{FrameBar, FrameOverlay, PickBar, SelectionBar, TransformBar, TransformOverlay};
@@ -87,6 +89,8 @@ fn app() -> Element {
         hidden: use_signal(|| HashSet::from(PanelId::CLOSED_BY_DEFAULT)),
         drag: use_signal(|| None),
         refs: use_signal(HashMap::new),
+        heights: use_signal(PanelLayout::default_heights),
+        resize: use_signal(|| None),
     };
     use_context_provider(|| panels);
 
@@ -164,12 +168,22 @@ fn app() -> Element {
 
         div {
             class: "app-root",
-            // A panel drag is driven here (events bubble up even over the canvas), so it
-            // keeps tracking wherever the pointer goes. No-op unless a drag is active;
-            // leaving the window commits it so it can't get stuck.
-            onpointermove: move |e| drag_move(panels, &e),
-            onpointerup: move |_| drag_end(panels),
-            onpointerleave: move |_| drag_end(panels),
+            // A panel drag — a reorder by the title bar, or a resize by the bottom-edge
+            // grip — is driven here (events bubble up even over the canvas), so it keeps
+            // tracking wherever the pointer goes. Both are no-ops unless armed; leaving
+            // the window ends them so neither can get stuck.
+            onpointermove: move |e| {
+                drag_move(panels, &e);
+                resize_move(panels, &e);
+            },
+            onpointerup: move |_| {
+                drag_end(panels);
+                resize_end(panels);
+            },
+            onpointerleave: move |_| {
+                drag_end(panels);
+                resize_end(panels);
+            },
 
             Canvas {}
 
@@ -219,6 +233,17 @@ fn app() -> Element {
                 BrushEditorModal {
                     on_close: move |_| {
                         let mut open = state.brush_editor_open;
+                        open.set(false);
+                    }
+                }
+            }
+
+            // "Save preset", asked for by the Brush panel. Mounted only while open, so
+            // each open proposes a fresh name for the library as it stands now.
+            if (state.preset_save_open)() {
+                PresetSaveModal {
+                    on_close: move |_| {
+                        let mut open = state.preset_save_open;
                         open.set(false);
                     }
                 }

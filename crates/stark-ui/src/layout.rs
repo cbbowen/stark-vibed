@@ -58,7 +58,33 @@ impl PanelId {
             PanelId::Lighting => "Lighting",
         }
     }
+
+    /// The height a panel opens at, in px — and, by being `Some`, that it is
+    /// **vertically resizable**: it gets a grip on its bottom edge and its content
+    /// is laid out to fill whatever height the user leaves it at.
+    ///
+    /// One method rather than a `resizable()` flag beside a `default_height()`,
+    /// because a panel that can be resized is exactly a panel whose height the
+    /// layout owns; two sources for that would be one to get out of step.
+    ///
+    /// Everything else hugs its controls, which is the right answer for a fixed set
+    /// of knobs — there is nothing to give the extra room to. Only a panel holding a
+    /// list the user grows (Brush, via its presets) has an appetite for height.
+    pub fn default_height(self) -> Option<f32> {
+        match self {
+            // Tall enough for the quick controls plus four or five presets — a library
+            // worth scrolling rather than a slot — and no taller, because the panel
+            // stack is a column and every pixel here is one the panels under it lose.
+            PanelId::Brush => Some(340.0),
+            _ => None,
+        }
+    }
 }
+
+/// The shortest a resizable panel may be dragged: enough for the Brush panel's fixed
+/// controls plus a row of the list under them, so the grip cannot fold a panel into a
+/// sliver that shows nothing and is hard to grab back.
+const MIN_PANEL_HEIGHT: f32 = 260.0;
 
 /// Shared `Copy` layout state for the floating panels: their display order, which are
 /// hidden, the in-flight title-bar drag, and each panel's mounted node (for measuring).
@@ -71,6 +97,37 @@ pub struct PanelLayout {
     pub drag: Signal<Option<DragState>>,
     /// Each visible panel's mounted node, so a drag can measure their positions.
     pub refs: Signal<HashMap<PanelId, Rc<MountedData>>>,
+    /// The current height of each resizable panel ([`PanelId::default_height`]),
+    /// seeded with those defaults by [`PanelLayout::default_heights`]. A panel that
+    /// is not resizable never appears here and never gets a height at all.
+    pub heights: Signal<HashMap<PanelId, f32>>,
+    /// The in-flight bottom-edge resize, if any.
+    pub resize: Signal<Option<ResizeState>>,
+}
+
+impl PanelLayout {
+    /// The starting heights: every resizable panel at its default. Seeded up front
+    /// rather than measured on first drag, so a resize is pure arithmetic on a number
+    /// the layout already knows (and the grip responds on the first pixel of the
+    /// drag, with no async measurement to wait for).
+    pub fn default_heights() -> HashMap<PanelId, f32> {
+        PanelId::ALL
+            .iter()
+            .filter_map(|id| id.default_height().map(|h| (*id, h)))
+            .collect()
+    }
+}
+
+/// An in-flight resize of a panel's bottom edge. Like [`DragState`], the height is
+/// derived from where the pointer started rather than from the panel's live box, so
+/// the element being resized can never feed back into the size being computed.
+#[derive(Clone, Copy, PartialEq)]
+pub struct ResizeState {
+    id: PanelId,
+    /// Pointer Y at grab (client px).
+    anchor_y: f32,
+    /// The panel's height at grab.
+    start_h: f32,
 }
 
 /// An in-flight title-bar drag. `panels` is the visible panels' `(id, top, height)`
@@ -218,27 +275,52 @@ pub fn PanelStack() -> Element {
 /// dragged panel follows the pointer and the others slide to open its landing slot; the
 /// slide transition is applied inline *only while dragging*, so on release every panel
 /// snaps straight to the freshly-reordered layout with no transition glitch.
+///
+/// A panel with a [`PanelId::default_height`] also gets an explicit height and a grip on
+/// its bottom edge. The height is set here rather than in the stylesheet because it is
+/// live state; what the stylesheet owns is what the panel does with it — see
+/// `.panel.resizable`, which turns the panel into a column so its list can take the slack.
 #[component]
 pub fn Panel(id: PanelId, children: Element) -> Element {
     let layout = use_context::<PanelLayout>();
     let drag = (layout.drag)();
     let dragging = drag.as_ref().is_some_and(|d| d.id == id);
     let dy = drag.as_ref().map_or(0.0, |d| d.offset(id));
-    let class = if dragging { "panel dragging" } else { "panel" };
-    let style = match &drag {
-        None => String::new(),
-        Some(d) => {
-            // Track the pointer 1:1 only while actively dragging this panel; the sliding
-            // neighbours — and the dragged panel as it settles on release — transition.
-            let tracking = d.id == id && d.release.is_none();
-            let trans = if tracking {
-                "none"
-            } else {
-                "transform 180ms ease"
-            };
-            format!("transform: translateY({dy}px); transition: {trans};")
-        }
-    };
+    // `map` on the default, so a panel that is not resizable never reads either signal
+    // and so never re-renders for someone else's resize.
+    let height = id
+        .default_height()
+        .map(|d| layout.heights.read().get(&id).copied().unwrap_or(d));
+    let resizing = height.is_some() && layout.resize.read().is_some_and(|r| r.id == id);
+
+    let mut class = String::from("panel");
+    if height.is_some() {
+        class.push_str(" resizable");
+    }
+    if dragging {
+        class.push_str(" dragging");
+    }
+    if resizing {
+        class.push_str(" resizing");
+    }
+
+    let mut style = String::new();
+    if let Some(h) = height {
+        style.push_str(&format!("height: {h}px;"));
+    }
+    if let Some(d) = &drag {
+        // Track the pointer 1:1 only while actively dragging this panel; the sliding
+        // neighbours — and the dragged panel as it settles on release — transition.
+        let tracking = d.id == id && d.release.is_none();
+        let trans = if tracking {
+            "none"
+        } else {
+            "transform 180ms ease"
+        };
+        style.push_str(&format!(
+            "transform: translateY({dy}px); transition: {trans};"
+        ));
+    }
     rsx! {
         div {
             class,
@@ -264,8 +346,55 @@ pub fn Panel(id: PanelId, children: Element) -> Element {
                 }
             }
             {children}
+            if height.is_some() {
+                // Sits in the panel's own bottom padding, so it costs no layout: the
+                // grip is a place to press, and the bar it draws only appears once the
+                // pointer is over the panel that owns it.
+                div {
+                    class: "panel-resize",
+                    title: "Drag to resize",
+                    onpointerdown: move |e| start_resize(layout, id, &e),
+                }
+            }
         }
     }
+}
+
+/// Begin resizing panel `id` from its bottom edge. Unlike a reorder drag there is
+/// nothing to measure — the layout already holds the height — so the grip answers on
+/// the first pixel of movement.
+pub fn start_resize(layout: PanelLayout, id: PanelId, e: &Event<PointerData>) {
+    let Some(default) = id.default_height() else {
+        return;
+    };
+    let start_h = layout.heights.peek().get(&id).copied().unwrap_or(default);
+    let mut resize = layout.resize;
+    resize.set(Some(ResizeState {
+        id,
+        anchor_y: e.client_coordinates().y as f32,
+        start_h,
+    }));
+}
+
+/// Track the pointer for an in-flight panel resize (no-op when idle). Writes only the
+/// resized panel's height, so nothing else in the stack re-renders as it grows.
+pub fn resize_move(layout: PanelLayout, e: &Event<PointerData>) {
+    let Some(r) = *layout.resize.peek() else {
+        return;
+    };
+    let h = (r.start_h + (e.client_coordinates().y as f32 - r.anchor_y)).max(MIN_PANEL_HEIGHT);
+    let mut heights = layout.heights;
+    heights.write().insert(r.id, h);
+}
+
+/// End a panel resize. The height is already committed (every move wrote it), so this
+/// only disarms — there is nothing to settle and nothing to undo.
+pub fn resize_end(layout: PanelLayout) {
+    if layout.resize.peek().is_none() {
+        return;
+    }
+    let mut resize = layout.resize;
+    resize.set(None);
 }
 
 /// Begin dragging panel `id` by its title bar. Measures the visible panels' positions

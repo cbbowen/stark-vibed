@@ -97,6 +97,79 @@
   touch-action: none;
 }
 
+/* A panel the user can set the height of (`PanelId::default_height`). The height
+   itself is inline — it is live state — and this is what the panel does with it: a
+   column whose fixed controls keep their size and whose one growable part (a list,
+   marked `flex: 1` by the panel's own rules) takes whatever is left and scrolls the
+   rest. `border-box` so the number the grip computes is the height you see; the
+   `max-height` only matters if the window is shrunk under a panel already taller than
+   it, since a drag cannot put the pointer outside the viewport in the first place. */
+.panel.resizable {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 28px);
+  /* Room under the content for the grip to live in without taking layout. */
+  padding-bottom: 14px;
+}
+
+/* In a short panel the controls keep their size and the one part that opted in gives
+   or takes the difference. Without this, flex's default shrink would squash the
+   sliders — every one of them a little wrong — to protect a list that is the very
+   thing that should be absorbing the change. */
+.panel.resizable > * {
+  flex: none;
+}
+
+.panel.resizable > .panel-grow {
+  flex: 1;
+  /* `auto` (the default) refuses to shrink below the content's own height, which is
+     what would otherwise stop the list inside from ever scrolling. */
+  min-height: 0;
+}
+
+/* The bottom-edge resize grip: a full-width press target in the panel's own bottom
+   padding, drawing a short bar only once the pointer is over the panel — the panel
+   stays quiet until you go looking, and then the handle is exactly where you reached. */
+.panel-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 12px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.panel-resize::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 34px;
+  height: 3px;
+  margin-left: -17px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.panel:hover .panel-resize::after {
+  background: #ffffff33;
+}
+
+.panel-resize:hover::after,
+.panel.resizing .panel-resize::after {
+  background: #ffffff8c;
+}
+
+/* Mid-resize the pointer is dragging over the panel's own text; without this it would
+   select it, which is never what a drag on a grip meant. */
+.panel.resizing {
+  user-select: none;
+}
+
 /* The panel being dragged lifts above the others and tracks the pointer. */
 .panel.dragging {
   z-index: 50;
@@ -318,17 +391,81 @@
 }
 
 
-/* --- brush panel: the preset library, folded at the panel's foot --- */
+/* --- brush panel: the preset library at the panel's foot ---
+   The section is the Brush panel's growable part (it carries `panel-grow`, which is
+   what hands it the panel's spare height); a column of its own so the list under the
+   header can take that height in turn. */
 .preset-section {
+  display: flex;
+  flex-direction: column;
   margin-top: 10px;
   border-top: 1px solid #ffffff14;
 }
 
+/* Section title with Save on the same line: the button costs no row of its own, and
+   it sits where the thing it acts on begins. */
+.preset-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 2px;
+}
+
+.preset-header-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preset-save {
+  flex: none;
+  padding: 3px 12px;
+  font-size: 12px;
+}
+
+/* The list takes the rest of the section and scrolls its own overflow. The scrollbar
+   is drawn thin and dim so a full library does not put a bright rail down the side of
+   a panel that floats over the painting. */
 .preset-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-bottom: 8px;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #ffffff33 transparent;
+}
+
+.preset-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+/* No stepper arrows: they are a pair of bright chevrons on a dark panel, for a
+   list that is scrolled with the wheel. */
+.preset-list::-webkit-scrollbar-button {
+  display: none;
+}
+
+.preset-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: #ffffff33;
+  background-clip: content-box;
+}
+
+.preset-list::-webkit-scrollbar-thumb:hover {
+  background: #ffffff59;
+  background-clip: content-box;
+}
+
+/* An empty library says what fills it, rather than leaving the panel's largest
+   area blank and unexplained. */
+.preset-empty {
+  padding: 6px 2px;
+  font-size: 12px;
+  opacity: 0.5;
 }
 
 /* One preset: the whole row applies it; the ✕ is hover-revealed like a shape
@@ -382,35 +519,6 @@
 .preset-remove:hover {
   background: #a53a3a;
   opacity: 1;
-}
-
-/* The save row: name field + Save chip (the chip sizes to its label). */
-.preset-save {
-  display: flex;
-  gap: 6px;
-}
-
-.preset-save .chip {
-  flex: none;
-  padding: 4px 12px;
-  font-size: 12px;
-}
-
-.preset-name {
-  flex: 1;
-  min-width: 0;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 5px;
-  background: #26262c;
-  color: #eee;
-  font: inherit;
-  font-size: 12px;
-  outline: none;
-}
-
-.preset-name::placeholder {
-  color: #eeeeee59;
 }
 
 /* Rows of chips in the Select panel (tool, combine mode). */
@@ -732,6 +840,40 @@
   margin-top: 18px;
 }
 
+/* A dialog's single text field (the preset name). Full width — a dialog asking for
+   one thing has no reason to ask for it in a narrow box — and lit on focus, which it
+   has from the moment it appears. */
+.modal-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #ffffff14;
+  border-radius: 8px;
+  background: #26262c;
+  color: #eee;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+
+.modal-input:focus {
+  border-color: #3a6ea5;
+}
+
+.modal-input::placeholder {
+  color: #eeeeee59;
+}
+
+/* A line under a dialog's field for what the entry will do (e.g. replace an existing
+   preset). Always present so the dialog keeps its height as the note comes and goes. */
+.modal-hint {
+  min-height: 16px;
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
 /* A dialog whose content sets its own width — currently only Credits, which holds
    licence text with line breaks of its own to respect. Still capped to the viewport by
    `.modal-dialog`'s `max-width`. */
@@ -1008,8 +1150,7 @@
   border-top: 1px solid #ffffff14;
 }
 
-/* The chevroned fold header — shared with the Brush panel's Presets section,
-   which is the same interaction in a different home. */
+/* The chevroned fold header, for the editor's parameter groups. */
 .be-section-header {
   width: 100%;
   display: flex;
