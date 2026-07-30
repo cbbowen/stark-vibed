@@ -101,7 +101,14 @@ pub fn SelectPanel() -> Element {
         // side, five chips of icon-plus-word do not fit the panel's width and the words
         // would be the thing to give — and a word is the half of each chip that is
         // unambiguous, so it is not the half to drop.
-        div { class: "tool-row stacked",
+        //
+        // `segmented`: both rows are one question each — which tool, and what the shape
+        // does — so both are drawn as one control with a lit region rather than as three
+        // and five switches that happen to be adjacent. The rows differ in that at most
+        // one tool chip is lit and exactly one action chip always is, but that difference
+        // is about arming, not about combining; neither row can ever have two lit at
+        // once, which is the thing the shape is claiming.
+        div { class: "tool-row stacked segmented",
             for (t, glyph, label) in TOOLS {
                 button {
                     class: chip(tool == t),
@@ -117,7 +124,7 @@ pub fn SelectPanel() -> Element {
                 }
             }
         }
-        div { class: "tool-row stacked",
+        div { class: "tool-row stacked segmented",
             for (a, glyph, label, hint) in ACTIONS {
                 button {
                     class: chip(action == a),
