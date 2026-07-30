@@ -81,6 +81,9 @@ pub struct AppState {
     pub collab: CollabState,
     /// The custom brush-shape library (DESIGN.md §6.6; `crate::shapes`).
     pub shapes: ShapesState,
+    /// The brush preset library (`crate::presets`), loaded from `localStorage`
+    /// at startup like the shape library.
+    pub presets: Signal<Vec<crate::presets::PresetEntry>>,
 }
 
 /// The custom brush-shape library's signals (`crate::shapes`). Root-owned:
@@ -128,6 +131,7 @@ impl AppState {
                 entries: root_signal(Vec::new),
                 notice: root_signal(|| None),
             },
+            presets: root_signal(Vec::new),
         }
     }
 }

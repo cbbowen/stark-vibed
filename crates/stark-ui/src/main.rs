@@ -23,6 +23,7 @@ mod input;
 mod layout;
 mod panels;
 mod platform;
+mod presets;
 mod render;
 mod shapes;
 mod state;
@@ -90,8 +91,11 @@ fn app() -> Element {
     use_hook(|| bind_shortcuts(state));
 
     // The shape library follows the browser, not the document — load it before
-    // the renderer exists so the gallery is populated on first open.
+    // the renderer exists so the gallery is populated on first open. The brush
+    // presets follow the browser the same way (seeded with the built-ins on a
+    // browser that has never stored any).
     use_hook(|| shapes::load(state));
+    use_hook(|| presets::load(state));
 
     use_hook(|| {
         let mut renderer = renderer;

@@ -171,8 +171,10 @@ tilt, azimuth, velocity, stroke-relative position, random) driving any parameter
 
 Every other axis of our brush model is more sophisticated than theirs. This one
 is what makes a brush feel *authored* rather than configured — and it is what
-makes a brush **library** (named presets, previews, import/export) worth
-shipping, which is the thing users actually shop for.
+makes a brush **library** worth shipping, which is the thing users actually
+shop for. (The library's skeleton exists: named per-user presets persist in
+`localStorage` and apply from the Brush panel — `crates/stark-ui/src/presets.rs`.
+Previews and import/export still don't.)
 
 ### 1.5 A mixing palette
 

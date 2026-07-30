@@ -139,30 +139,49 @@ pub fn id_hex(id: AssetId) -> String {
 /// engine first when this document hasn't seen it yet (content-addressing
 /// makes a repeat import free).
 pub fn select(state: AppState, id: AssetId) {
+    if let Some(actual) = ensure(state, id) {
+        update_brush(state, |b| b.shape = BrushShape::Stamp(actual));
+    }
+}
+
+/// Make sure `id` is usable as a stamp: its bytes in this document's engine and
+/// seeded to any live session, returning the id to reference it by — healed
+/// when the stored id predates a canonicalization change. `None` when the bytes
+/// are nowhere to be found (neither the engine nor the library has them), the
+/// canvas isn't up yet, or the import failed. Shared by the gallery's [`select`]
+/// and by preset application (`crate::presets`), which resurrects stamp shapes
+/// from snapshots taken in earlier documents.
+pub fn ensure(state: AppState, id: AssetId) -> Option<AssetId> {
+    // Already in this document's engine (imported here, or arrived with a loaded
+    // file): just make sure a live session can serve it.
+    let engine_bytes = {
+        let renderer = state.renderer;
+        let guard = renderer.read();
+        guard.as_ref().and_then(|r| r.asset_bytes(id))
+    };
+    if let Some(bytes) = engine_bytes {
+        seed_session(state, id, bytes);
+        return Some(id);
+    }
+
     let entry = state
         .shapes
         .entries
         .read()
         .iter()
         .find(|e| e.id == id)
-        .cloned();
-    let Some(entry) = entry else { return };
-
+        .cloned()?;
     let imported = {
         let renderer = state.renderer;
         let guard = renderer.read();
-        match guard.as_ref() {
-            Some(r) if r.has_asset(entry.id) => Ok(entry.id),
-            Some(r) => r.import_brush_id(&entry.png),
-            None => return,
-        }
+        guard.as_ref()?.import_brush_id(&entry.png)
     };
     let actual = match imported {
         Ok(actual) => actual,
         Err(e) => {
             let mut notice = state.shapes.notice;
             notice.set(Some(format!("“{}” failed to load: {e}.", entry.name)));
-            return;
+            return None;
         }
     };
     if actual != entry.id {
@@ -174,7 +193,7 @@ pub fn select(state: AppState, id: AssetId) {
         persist(&entries.read());
     }
     seed_session(state, actual, entry.png);
-    update_brush(state, |b| b.shape = BrushShape::Stamp(actual));
+    Some(actual)
 }
 
 /// Drop an entry from the library. Paint already on canvases is untouched —

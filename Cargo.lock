@@ -6455,6 +6455,7 @@ dependencies = [
  "dioxus",
  "dioxus-primitives",
  "js-sys",
+ "serde_json",
  "stark-core",
  "stark-net",
  "tracing",

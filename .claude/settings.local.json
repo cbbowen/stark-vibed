@@ -19,9 +19,6 @@
       "Bash(git --no-pager diff *)",
       "Bash(git --no-pager log *)",
       "Bash(git --no-pager grep *)"
-    ],
-    "additionalDirectories": [
-      "c:\\Users\\chris\\Desktop\\Ideas\\stark-vibed\\crates\\stark-core\\tests\\golden"
     ]
   }
 }

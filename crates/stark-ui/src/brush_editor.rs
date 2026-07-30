@@ -28,10 +28,7 @@ use stark_core::{ColorSpaceId, InputSample};
 
 use dioxus::html::HasFileData;
 
-use crate::panels::brush::{
-    BRISTLE_BRUSH, MAX_RADIUS, set_bristles, set_brush_preset, set_knife, set_orientation,
-    set_shape,
-};
+use crate::panels::brush::{BRISTLE_BRUSH, MAX_RADIUS, set_bristles, set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::{self, Renderer};
 use crate::state::{AppState, update_brush};
@@ -190,13 +187,6 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         onclick: move |_| reset_stroke(state, preview),
                         "\u{21BA}"
                     }
-                }
-
-                // One-click starting points (DESIGN §6.2); every knob below stays live.
-                div { class: "be-presets",
-                    div { class: "be-presets-label", "Preset" }
-                    button { class: "chip", onclick: move |_| { set_brush_preset(state); restroke(state, preview); }, "Brush" }
-                    button { class: "chip", onclick: move |_| { set_knife(state); restroke(state, preview); }, "Palette Knife" }
                 }
 
                 div { class: "be-sections",
