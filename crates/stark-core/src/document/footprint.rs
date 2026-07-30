@@ -232,7 +232,27 @@ pub fn footprint(action: &Action) -> Footprint {
                 Resource::Selection(actor),
             ],
         },
+        // A fill reads the mask that bounds it and writes the paint its region
+        // reaches — the same shape of footprint a stroke has. A fill bounded only
+        // by the selection has no analytic box, so it claims the whole layer, the
+        // conservative answer a transform gives for the same reason.
+        ActionKind::Fill { layer, op } => Footprint {
+            reads: vec![Resource::Existence(*layer), Resource::Selection(actor)],
+            writes: vec![Resource::Paint(*layer, fill_rect(op))],
+        },
         ActionKind::Undo(_) => Footprint::default(),
+    }
+}
+
+/// The tile-aligned reach of a fill: everything its pass may read or write.
+fn fill_rect(op: &super::fill::FillOp) -> TileRect {
+    let Some((lo, hi)) = super::fill::fill_bounds(op) else {
+        return TileRect::ALL;
+    };
+    let tile = |v: f32| ((v / TILE_SIZE as f32).floor().clamp(-1e9, 1e9)) as i32;
+    TileRect {
+        min: (tile(lo.x), tile(lo.y)),
+        max: (tile(hi.x), tile(hi.y)),
     }
 }
 

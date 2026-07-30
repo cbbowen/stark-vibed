@@ -59,6 +59,8 @@ pub enum AllocSource {
     TransformDestination,
     /// A selection mask tile carried under a transform's affine.
     TransformMask,
+    /// A tile rewritten by a region fill (MISSING_FEATURES §0.4).
+    FillDestination,
 }
 
 /// One pooled GPU texture (`TILE_TEX` square). `Option` only so [`Drop`] can move it

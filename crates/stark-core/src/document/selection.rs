@@ -398,7 +398,7 @@ pub(crate) struct SelectionPlan {
 
 /// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
 /// expanded by `ring` tiles on every side.
-fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32) -> Vec<TileCoord> {
+pub(crate) fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32) -> Vec<TileCoord> {
     let tile = TILE_SIZE as f32;
     // A tile's texture starts one apron before its interior, so a box that reaches
     // into the apron band still touches the neighbour.

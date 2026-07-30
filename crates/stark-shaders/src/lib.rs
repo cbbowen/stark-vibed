@@ -67,6 +67,12 @@ pub fn transform() -> &'static str {
     include_wesl!("transform")
 }
 
+/// WGSL region fill: a parcel of paint laid through a coverage mask, stacked by
+/// the shared parcel law — MISSING_FEATURES §0.4.
+pub fn fill() -> &'static str {
+    include_wesl!("fill")
+}
+
 /// WGSL selection-mask rasterization: one op's shape combined into a mask tile —
 /// DESIGN §6.8.
 pub fn selection() -> &'static str {

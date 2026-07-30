@@ -1,5 +1,5 @@
-//! The floating Select panel: selection tool, combine mode, and feather
-//! (DESIGN.md §6.8).
+//! The floating Select panel: shape tool, what the shape *does*, and feather
+//! (DESIGN.md §6.8, MISSING_FEATURES §0.4).
 
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
@@ -8,36 +8,51 @@ use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
 use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::document::{SelectionMode, SelectionOp, Tool};
+use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
 
-/// Selection tools (DESIGN.md §6.8): rect / ellipse / lasso, how the next gesture
-/// combines with the current selection, and the feather applied to it.
+/// Shape tools (DESIGN.md §6.8): rect / ellipse / lasso, what the next gesture does
+/// with the region they enclose, and the feather applied to its edge.
 ///
 /// The tool chips **arm** a tool rather than selecting a mode to stay in: one of
-/// them is lit only while a selection gesture is pending, and drawing a selection
-/// disarms it ([`Session::end_selection`](stark_core::session::Session::end_selection)).
+/// them is lit only while a shape gesture is pending, and drawing a selection
+/// disarms it ([`Session::end_shape`](stark_core::session::Session::end_shape)).
 /// Clicking the lit one disarms it too, so the escape hatch from an armed tool is the
 /// same control that armed it. Painting is therefore the resting state and needs no
 /// chip of its own — no chip lit *is* the brush.
 ///
-/// The mode chips set a *default*; holding shift / alt while starting a drag
-/// overrides it for that gesture (see [`modifier_mode`]), which is how this is
-/// reached in practice once the tool is in hand.
+/// The **action** row is five answers to one question — *what does this shape do?* —
+/// rather than four ways of combining plus an odd one out. Rect, ellipse and lasso
+/// never produced selections; they produce **coverage**, and the four combine modes
+/// are only the four ways that coverage can land on the mask. `Fill` lands it on the
+/// paint instead (MISSING_FEATURES §0.4), and everything the row already had comes
+/// with it: the same shapes, the same rasterizer, the same feather slider below.
+///
+/// Two consequences the row does not have to explain, because they follow:
+///
+/// - a fill is still **clipped by the selection**, since the mask gates every tool;
+/// - and unlike the four selecting actions, Fill **stays armed** after a gesture.
+///   The momentary rule is about a gesture that is a step *towards* painting; a fill
+///   *is* painting, and blocking in is done many times in a row.
+///
+/// The four selecting actions also set a *default* that shift / alt override for one
+/// gesture (see [`modifier_mode`]) — the modifiers are inert under Fill, which has
+/// no combining to do.
 #[component]
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();
     let obs = state.obs.read();
-    let (tool, mode, feather, show_peers) = obs
+    let (tool, action, feather, show_peers, brush_color) = obs
         .as_ref()
         .map(|o| {
             (
                 o.tool,
-                o.selection_mode,
+                o.shape_action,
                 o.selection_feather,
                 o.show_peer_selections,
+                o.brush.color,
             )
         })
-        .unwrap_or((Tool::Brush, SelectionMode::Replace, 0.0, false));
+        .unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, false, [0.0; 4]));
     drop(obs);
     // The peer-outline toggle is mounted only in a shared session, on the same
     // argument the selection bar is mounted only while a selection is in force
@@ -53,11 +68,37 @@ pub fn SelectPanel() -> Element {
         (Tool::SelectEllipse, "Ellipse"),
         (Tool::SelectLasso, "Lasso"),
     ];
-    const MODES: [(SelectionMode, &str); 4] = [
-        (SelectionMode::Replace, "New"),
-        (SelectionMode::Union, "Add"),
-        (SelectionMode::Subtract, "Sub"),
-        (SelectionMode::Intersect, "\u{2229}"),
+    // Five words, no glyph: `∩` was the weak link in this row when it had four
+    // entries, and it could not survive being one of five — a symbol reads as a
+    // different *kind* of control from its neighbours, which is exactly the wrong
+    // signal here, where the whole point is that all five answer one question.
+    const ACTIONS: [(ShapeAction, &str, &str); 5] = [
+        (
+            ShapeAction::Select(SelectionMode::Replace),
+            "New",
+            "Select this region, replacing the current selection",
+        ),
+        (
+            ShapeAction::Select(SelectionMode::Union),
+            "Add",
+            "Add this region to the selection (or hold shift)",
+        ),
+        (
+            ShapeAction::Select(SelectionMode::Subtract),
+            "Sub",
+            "Cut this region out of the selection (or hold alt)",
+        ),
+        (
+            ShapeAction::Select(SelectionMode::Intersect),
+            "Isect",
+            "Keep only the overlap with the selection (or hold shift+alt)",
+        ),
+        (
+            ShapeAction::Fill,
+            "Fill",
+            "Fill this region with the brush's paint instead of selecting it. \
+             Stays armed, so you can keep blocking in",
+        ),
     ];
 
     rsx! {
@@ -77,11 +118,18 @@ pub fn SelectPanel() -> Element {
             }
         }
         div { class: "tool-row",
-            for (m, label) in MODES {
+            for (a, label, hint) in ACTIONS {
                 button {
-                    class: chip(mode == m),
-                    title: "Hold shift to add, alt to subtract, both to intersect",
-                    onclick: move |_| dispatch(state, ViewCommand::SetSelectionMode(m)),
+                    // Fill carries a swatch of the colour it would lay, so the row
+                    // itself says what the gesture will deposit — the one thing
+                    // that distinguishes this action from its four neighbours and
+                    // the one thing a word cannot carry.
+                    class: chip(action == a),
+                    title: "{hint}",
+                    onclick: move |_| dispatch(state, ViewCommand::SetShapeAction(a)),
+                    if a == ShapeAction::Fill {
+                        span { class: "chip-swatch", style: swatch_style(brush_color) }
+                    }
                     "{label}"
                 }
             }
@@ -140,6 +188,17 @@ pub fn SelectionBar() -> Element {
                     onclick: move |_| crate::panels::transform::begin_transform(state),
                     "Transform"
                 }
+                // The other reach for the same word. With a selection in force the
+                // region is already drawn, so a fill needs no gesture at all —
+                // which is also the one case `FillOp::of_selection` is defined for:
+                // the mask is what bounds it, and this bar exists only when there
+                // is one.
+                button {
+                    class: "chip",
+                    title: "Fill the selection with the brush's paint",
+                    onclick: move |_| fill_selection(state),
+                    "Fill"
+                }
                 button {
                     class: "chip",
                     title: "Deselect (Ctrl+D)",
@@ -159,8 +218,43 @@ pub fn SelectionBar() -> Element {
     }
 }
 
+/// Fill whatever is selected, on the active layer, with the brush's paint
+/// (MISSING_FEATURES §0.4).
+///
+/// Reads the colour and the amount off the brush rather than off controls of its
+/// own, which is the same choice [`ShapeAction::Fill`] makes: a fill lays the paint
+/// you have in hand, so the Color and Brush panels are already its settings.
+pub fn fill_selection(state: AppState) {
+    let Some((layer, brush)) = state.obs.peek().as_ref().map(|o| (o.active_layer, o.brush)) else {
+        return;
+    };
+    dispatch(
+        state,
+        DocCommand::Fill {
+            layer,
+            op: FillOp::of_selection(brush.color, brush.dynamics.add),
+        },
+    );
+}
+
+/// The inline swatch on the Fill chip: the colour the gesture would lay, at the
+/// opacity it would lay it — a thin wash reads as a thin wash here too.
+///
+/// A `background-image` rather than a `background-color`, so it paints *over* the
+/// white base the stylesheet gives the swatch and the alpha reads against white
+/// instead of against the chip's dark ground.
+fn swatch_style(color: [f32; 4]) -> String {
+    let c = |i: usize| (color[i] * 255.0).round().clamp(0.0, 255.0) as u8;
+    let paint = format!("rgba({}, {}, {}, {})", c(0), c(1), c(2), color[3]);
+    format!("background-image: linear-gradient({paint}, {paint})")
+}
+
 /// The selection mode a gesture's modifier keys ask for, or `None` to keep the
 /// panel's default. Mirrors the conventional marquee modifiers.
+///
+/// Consulted only when the panel's action is a *selecting* one
+/// ([`ShapeAction::is_select`]): under Fill there is nothing to combine, so shift
+/// and alt mean nothing rather than silently turning a fill back into a selection.
 pub fn modifier_mode(m: Modifiers) -> Option<SelectionMode> {
     match (m.contains(Modifiers::SHIFT), m.contains(Modifiers::ALT)) {
         (true, true) => Some(SelectionMode::Intersect),
@@ -175,12 +269,12 @@ pub fn current_tool(state: AppState) -> Tool {
     state.obs.peek().as_ref().map_or(Tool::Brush, |o| o.tool)
 }
 
-/// The selection mode the panel currently has set (the base a gesture's modifiers
-/// override).
-pub fn current_mode(state: AppState) -> SelectionMode {
+/// What the panel currently has the next shape gesture set to do (the base a
+/// gesture's modifiers override).
+pub fn current_action(state: AppState) -> ShapeAction {
     state
         .obs
         .peek()
         .as_ref()
-        .map_or(SelectionMode::Replace, |o| o.selection_mode)
+        .map_or(ShapeAction::default(), |o| o.shape_action)
 }

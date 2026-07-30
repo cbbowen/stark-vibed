@@ -46,6 +46,10 @@ fn main() {
     // (TRANSFORM_DESIGN.md).
     compiler.build_artifact(&"package::transform".parse().unwrap(), "transform");
 
+    // Region fill: one parcel of paint laid through the coverage `selection` just
+    // rasterized (MISSING_FEATURES §0.4).
+    compiler.build_artifact(&"package::fill".parse().unwrap(), "fill");
+
     // Selections: mask rasterization, the stamp loop's region gather, and the
     // on-screen outline — DESIGN §6.8.
     compiler.build_artifact(&"package::selection".parse().unwrap(), "selection");

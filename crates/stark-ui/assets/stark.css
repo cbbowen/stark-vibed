@@ -274,6 +274,24 @@
   cursor: default;
 }
 
+/* The Fill action chip's inline swatch: the colour the gesture would lay. The four
+   selecting actions carry no swatch — they deposit nothing, and that absence is
+   what tells the fifth chip apart from them at a glance.
+
+   White base here, paint as an inline `background-image` over it (an image layer
+   paints above the colour layer), so a low-opacity paint reads as the pale wash it
+   is rather than going dark against the chip. */
+.chip-swatch {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-radius: 2px;
+  vertical-align: baseline;
+  background-color: #fff;
+  box-shadow: 0 0 0 1px #0006;
+}
+
 /* --- brush panel: the preset library, folded at the panel's foot --- */
 .preset-section {
   margin-top: 10px;

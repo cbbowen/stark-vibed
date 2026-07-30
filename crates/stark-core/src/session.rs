@@ -8,7 +8,8 @@
 
 use crate::command::InputSample;
 use crate::document::{
-    ActorId, BrushParams, LayerId, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, Tool,
+    ActorId, BrushParams, FillOp, LayerId, SelectionOp, SelectionShape, ShapeAction, StrokeRecord,
+    Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
@@ -37,14 +38,34 @@ struct StrokeBuilder {
     fitter: PathFitter,
 }
 
-/// The selection gesture currently being dragged out (DESIGN.md §6.8). Like a
-/// stroke it is ephemeral: only the [`SelectionOp`] it resolves to on release is
-/// committed, and the shape is derived from the drag on demand so a live preview and
-/// the committed op come from exactly the same code.
-struct SelectionDrag {
+/// What a finished shape gesture resolves to (DESIGN.md §6.8, MISSING_FEATURES
+/// §0.4): an edit to the selection, or a fill.
+///
+/// The two travel together because they are one gesture with one preview — the
+/// [`ShapeAction`] chosen when the drag started decides which of them the release
+/// commits, and nothing downstream has to ask what tool was in hand.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShapeResult {
+    Select(SelectionOp),
+    Fill(FillOp),
+}
+
+/// The shape gesture currently being dragged out (DESIGN.md §6.8). Like a stroke it
+/// is ephemeral: only the [`ShapeResult`] it resolves to on release is committed,
+/// and the shape is derived from the drag on demand so a live preview and the
+/// committed op come from exactly the same code.
+struct ShapeDrag {
     tool: Tool,
-    mode: SelectionMode,
+    /// What the release will do with the region — captured at the *start* of the
+    /// drag, like the feather, so re-picking a chip mid-gesture cannot change what
+    /// the gesture already looks like it is doing.
+    action: ShapeAction,
     feather: f32,
+    /// The paint a fill will lay, taken off the brush when the drag began. Carried
+    /// even for a selecting gesture (it costs five floats and keeps one shape for
+    /// both cases), and unused there.
+    color: [f32; 4],
+    height: f32,
     /// Where the drag started; for the marquees this is one corner of the box.
     start: Vec2,
     /// The lasso's decimated outline (empty for the marquees).
@@ -53,7 +74,7 @@ struct SelectionDrag {
     current: Vec2,
 }
 
-impl SelectionDrag {
+impl ShapeDrag {
     fn push(&mut self, pos: Vec2) {
         self.current = pos;
         if self.tool == Tool::SelectLasso
@@ -66,9 +87,9 @@ impl SelectionDrag {
         }
     }
 
-    /// The op this drag currently stands for — `None` for a gesture that encloses
+    /// The region this drag currently encloses — `None` for a gesture that encloses
     /// nothing (a click with a marquee, a lasso too short to have an interior).
-    fn to_op(&self) -> Option<SelectionOp> {
+    fn to_shape(&self) -> Option<SelectionShape> {
         let shape = match self.tool {
             Tool::SelectRect => {
                 let (min, max) = (self.start.min(self.current), self.start.max(self.current));
@@ -105,7 +126,21 @@ impl SelectionDrag {
             }
             Tool::Brush => return None,
         };
-        Some(SelectionOp::new(self.mode, shape, self.feather))
+        Some(shape)
+    }
+
+    /// The action this drag currently stands for — what a release right now would
+    /// commit, and equally what the preview fold draws.
+    fn to_result(&self) -> Option<ShapeResult> {
+        let shape = self.to_shape()?;
+        Some(match self.action {
+            ShapeAction::Select(mode) => {
+                ShapeResult::Select(SelectionOp::new(mode, shape, self.feather))
+            }
+            ShapeAction::Fill => {
+                ShapeResult::Fill(FillOp::new(shape, self.feather, self.color, self.height))
+            }
+        })
     }
 }
 
@@ -128,9 +163,13 @@ pub struct Session {
     pub tool: Tool,
     pub brush: BrushParams,
     pub active_layer: LayerId,
-    /// How the next selection gesture combines with the selection in force (§6.8).
-    pub selection_mode: SelectionMode,
-    /// Edge softness (canvas px) applied by the next selection gesture.
+    /// What the next shape gesture does with the region it encloses (§6.8,
+    /// MISSING_FEATURES §0.4) — one of the four ways to combine it into the
+    /// selection, or fill it.
+    pub shape_action: ShapeAction,
+    /// Edge softness (canvas px) applied by the next shape gesture, whichever
+    /// action it takes: a feathered fill and a feathered selection are the same
+    /// ramp, rasterized by the same shader.
     pub selection_feather: f32,
     /// Whether collaborators' selection outlines are drawn (PEER_DESIGN.md §3).
     ///
@@ -161,7 +200,7 @@ pub struct Session {
     pub cursor: Option<Vec2>,
 
     in_flight: Option<StrokeBuilder>,
-    selecting: Option<SelectionDrag>,
+    selecting: Option<ShapeDrag>,
     /// Bumped on every gesture start, so a peer can tell a restart from a
     /// continuation without a clock.
     gesture_ordinal: u64,
@@ -186,7 +225,7 @@ impl Session {
             tool: Tool::Brush,
             brush: BrushParams::default(),
             active_layer,
-            selection_mode: SelectionMode::default(),
+            shape_action: ShapeAction::default(),
             selection_feather: 0.0,
             show_peer_selections: false,
             name: String::new(),
@@ -357,7 +396,10 @@ impl Session {
                 path: b.fitter.path(),
                 frozen: b.fitter.frozen_points(),
             }),
-            None => self.preview_selection().map(GestureSource::Selection),
+            None => self.preview_shape().map(|r| match r {
+                ShapeResult::Select(op) => GestureSource::Selection(op),
+                ShapeResult::Fill(op) => GestureSource::Fill(op),
+            }),
         }
     }
 
@@ -371,58 +413,72 @@ impl Session {
         self.gesture_ordinal
     }
 
-    /// Whether a selection gesture is being dragged out (DESIGN.md §6.8).
+    /// Whether a shape gesture is being dragged out (DESIGN.md §6.8).
     pub fn is_selecting(&self) -> bool {
         self.selecting.is_some()
     }
 
-    /// Begin a selection gesture with the session's current mode and feather. Any
-    /// in-flight stroke or earlier gesture is abandoned.
+    /// Begin a shape gesture with the session's current action, feather and brush.
+    /// Any in-flight stroke or earlier gesture is abandoned.
     pub fn start_selection(&mut self, tool: Tool, pos: Vec2) {
         self.tool = tool;
         self.in_flight = None;
         self.gesture_ordinal += 1;
-        self.selecting = Some(SelectionDrag {
+        self.selecting = Some(ShapeDrag {
             tool,
-            mode: self.selection_mode,
+            action: self.shape_action,
             feather: self.selection_feather,
+            color: self.brush.color,
+            // A fill lays the brush's own paint, so the amount is the brush's own
+            // source rate (DESIGN.md §6.2) — which is what makes a fill and a very
+            // slow brush over the same area agree, and means Fill needs no control
+            // of its own.
+            height: self.brush.dynamics.add,
             start: pos,
             points: vec![pos],
             current: pos,
         });
     }
 
-    /// Extend the in-flight selection gesture.
+    /// Extend the in-flight shape gesture.
     pub fn selection_to(&mut self, pos: Vec2) {
         if let Some(drag) = self.selecting.as_mut() {
             drag.push(pos);
         }
     }
 
-    /// The op the in-flight gesture currently stands for, for live preview — the very
-    /// same call [`Self::end_selection`] commits, so preview == committed.
-    pub fn preview_selection(&self) -> Option<SelectionOp> {
-        self.selecting.as_ref().and_then(SelectionDrag::to_op)
+    /// What the in-flight gesture currently stands for, for live preview — the very
+    /// same call [`Self::end_shape`] commits, so preview == committed.
+    pub fn preview_shape(&self) -> Option<ShapeResult> {
+        self.selecting.as_ref().and_then(ShapeDrag::to_result)
     }
 
-    /// Finish the gesture, returning the op to commit (`None` if it encloses nothing).
+    /// Finish the gesture, returning what to commit (`None` if it encloses nothing).
     ///
-    /// The selection tools are **momentary**: having drawn a selection, the session
+    /// The **selecting** actions are momentary: having drawn a selection, the session
     /// hands the canvas straight back to the brush. Selecting is a step *towards*
     /// painting, essentially never something you do twice in a row, so making it
     /// modal costs a deliberate switch-back on the overwhelmingly common path — and
     /// leaves a brush gesture silently redefining the selection when the user forgets.
-    /// A gesture that enclosed nothing (a stray click) is not a selection and leaves
-    /// the tool armed, so a mis-click doesn't disarm it.
-    pub fn end_selection(&mut self) -> Option<SelectionOp> {
-        let op = self.selecting.take().and_then(|d| d.to_op());
-        if op.is_some() {
+    ///
+    /// **Fill** stays armed, because that argument is about a gesture that is a step
+    /// towards painting, and a fill *is* painting. Blocking in is done many times in
+    /// a row, and being handed the brush back after each one would be the same cost
+    /// the momentary rule exists to avoid, paid in the other direction. So the rule
+    /// is one sentence rather than a special case: the tool disarms when the gesture
+    /// was a step towards painting, and stays armed when the gesture was painting.
+    ///
+    /// A gesture that enclosed nothing (a stray click) leaves the tool armed either
+    /// way, so a mis-click doesn't disarm it.
+    pub fn end_shape(&mut self) -> Option<ShapeResult> {
+        let result = self.selecting.take().and_then(|d| d.to_result());
+        if matches!(result, Some(ShapeResult::Select(_))) {
             self.tool = Tool::Brush;
         }
-        op
+        result
     }
 
-    /// Discard the in-flight selection gesture without committing.
+    /// Discard the in-flight shape gesture without committing.
     pub fn cancel_selection(&mut self) {
         self.selecting = None;
     }
@@ -462,7 +518,16 @@ impl Session {
             Some(rec) => (LiveGesture::Stroke(rec), self.frozen_spans()),
             // A marquee has no settled prefix to retire: its closing edge follows the
             // cursor, so every part of it can still move.
-            None => (LiveGesture::Selection(self.preview_selection()?), 0),
+            None => match self.preview_shape()? {
+                ShapeResult::Select(op) => (LiveGesture::Selection(op), 0),
+                ShapeResult::Fill(op) => (
+                    LiveGesture::Fill {
+                        layer: self.active_layer,
+                        op,
+                    },
+                    0,
+                ),
+            },
         };
         Some(GestureView {
             actor,

@@ -428,6 +428,24 @@ pub enum ActionKind {
     /// Appended last so postcard — which encodes an enum by variant *index* —
     /// keeps decoding older files.
     SetLayerName(LayerId, Option<String>),
+
+    /// Fill a region of `layer` with paint (MISSING_FEATURES §0.4).
+    ///
+    /// The fifth thing a shape gesture can do, alongside the four ways it can
+    /// combine into the selection — see [`ShapeAction`](super::fill::ShapeAction).
+    /// Gated and keyed exactly as a stroke is: the **author's** mask, taken off the
+    /// state being folded over, bounds the fill, and the actor comes from the
+    /// action's own id. A matte or absent layer refuses it, like a stroke.
+    ///
+    /// Deterministically **rejected** (the document is left unchanged) when the fill
+    /// would be unbounded — [`SelectionShape::All`] with nothing selected — or would
+    /// exceed [`MAX_FILL_TILES`](super::fill::MAX_FILL_TILES). Appended last so
+    /// postcard, which encodes an enum by variant *index*, keeps decoding older
+    /// files.
+    Fill {
+        layer: LayerId,
+        op: super::fill::FillOp,
+    },
 }
 
 /// A committed document mutation with its identity.
@@ -447,6 +465,7 @@ pub struct ApplyCtx {
     pub assets: crate::assets::AssetStore,
     pub selection: SelectionRenderer,
     pub transform: crate::gpu::transform::TransformRenderer,
+    pub fill: crate::gpu::fill::FillRenderer,
 }
 
 impl history::Action for Action {
@@ -578,6 +597,35 @@ impl history::Action for Action {
                             None => {
                                 tracing::warn!(
                                     "transform rejected (unusable affine or too many tiles); ignored"
+                                );
+                                state
+                            }
+                        }
+                    }
+                    None => state,
+                }
+            }
+            // Lay a parcel of paint through the region's coverage, gated by the
+            // author's selection — the same gate a stroke passes through, so a fill
+            // is clipped by a selection exactly as a brush is (MISSING_FEATURES
+            // §0.4). Refused on a matte or absent layer like a stroke; refused
+            // deterministically when unbounded or oversized, so peers and replays
+            // agree about a log that contains one.
+            ActionKind::Fill { layer, op } => {
+                match state
+                    .layer_index(*layer)
+                    .and_then(|idx| state.layer_at(idx).tiles().map(|base| (idx, base)))
+                {
+                    Some((idx, base)) => {
+                        let selection = state.selection_of(self.id.actor);
+                        match ctx.fill.apply(&ctx.pool, base, &selection, op) {
+                            Some(tiles) => {
+                                let layer = state.layer_at(idx).with_tiles(tiles);
+                                state.with_layer_at(idx, layer)
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "fill rejected (unbounded region or too many tiles); ignored"
                                 );
                                 state
                             }

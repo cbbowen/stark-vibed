@@ -13,19 +13,20 @@ use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, ViewCommand};
 use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
-    DocState, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline, SelectionMode,
-    StrokeRecord, Timeline, TimelineStats, Tool, effective_actions,
+    DocState, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline, ShapeAction, StrokeRecord,
+    Timeline, TimelineStats, Tool, effective_actions,
 };
 use crate::geom::{Extent2, TileCoord, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
-    CompositeGroup, CompositeItem, Compositor, Environment, EnvironmentId, GpuContext, MatteDraw,
-    Registry, SelectionOutline, SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId,
-    TilePool, TransformRenderer,
+    CompositeGroup, CompositeItem, Compositor, Environment, EnvironmentId, FillRenderer,
+    GpuContext, MatteDraw, Registry, SelectionOutline, SelectionRenderer, StrokeRenderer,
+    StrokeSpans, Surface, SurfaceId, TilePool, TransformRenderer,
 };
 use crate::image::RgbaImage;
 use crate::io::DocumentFile;
 use crate::peer::{GestureView, Identity, LiveGesture, Peer, PeerFrame, Peers};
+use crate::session::ShapeResult;
 use crate::{EngineError, Result};
 
 /// The starting layer present in every new document.
@@ -237,9 +238,10 @@ pub struct ObservableState {
     /// transform chrome hangs its handles on; committed-only, like
     /// `has_selection`.
     pub selection_hull: Option<(crate::geom::Vec2, crate::geom::Vec2)>,
-    /// How the next selection gesture will combine with the current selection.
-    pub selection_mode: SelectionMode,
-    /// Edge softness (canvas px) the next selection gesture will apply.
+    /// What the next shape gesture will do with the region it encloses — combine
+    /// it into the selection one of four ways, or fill it (MISSING_FEATURES §0.4).
+    pub shape_action: ShapeAction,
+    /// Edge softness (canvas px) the next shape gesture will apply.
     pub selection_feather: f32,
     /// Whether collaborators' selection outlines are drawn (PEER_DESIGN.md §3).
     pub show_peer_selections: bool,
@@ -443,7 +445,7 @@ impl Engine {
         let _environment_id = EnvironmentId::default();
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
-        let (pool, stroke, compositor, transform) = build_gpu(GpuBuild {
+        let (pool, stroke, compositor, transform, fill) = build_gpu(GpuBuild {
             gpu: &gpu,
             target_format,
             viewport,
@@ -469,6 +471,7 @@ impl Engine {
                 assets,
                 selection,
                 transform,
+                fill,
             },
             compositor,
             initial_surface,
@@ -546,8 +549,15 @@ impl Engine {
             // The one edge that produces document state.
             GestureCommand::End => {
                 if self.session.is_selecting() {
-                    if let Some(op) = self.session.end_selection() {
-                        self.commit(ActionKind::Select(op));
+                    // One gesture, two things it can commit — which one was decided
+                    // when the drag started (MISSING_FEATURES §0.4).
+                    match self.session.end_shape() {
+                        Some(ShapeResult::Select(op)) => self.commit(ActionKind::Select(op)),
+                        Some(ShapeResult::Fill(op)) => self.commit(ActionKind::Fill {
+                            layer: self.session.active_layer,
+                            op,
+                        }),
+                        None => {}
                     }
                 } else if let Some(rec) = self.session.end_stroke() {
                     self.log_debug_samples();
@@ -621,6 +631,7 @@ impl Engine {
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
+            DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
             DocCommand::Transform { layer, affine } => {
                 // The commit supersedes whatever the gesture was previewing, for
                 // the same reason `SetMatteRect` drops its preview.
@@ -730,7 +741,7 @@ impl Engine {
             ViewCommand::Resize(viewport) => {
                 self.session.view.viewport = viewport;
             }
-            ViewCommand::SetSelectionMode(mode) => self.session.selection_mode = mode,
+            ViewCommand::SetShapeAction(action) => self.session.shape_action = action,
             ViewCommand::SetSelectionFeather(feather) => {
                 self.session.selection_feather = feather.max(0.0)
             }
@@ -1326,7 +1337,7 @@ impl Engine {
             layers,
             has_selection: doc.has_selection(self.actor),
             selection_hull: doc.selection_of(self.actor).hull(),
-            selection_mode: self.session.selection_mode,
+            shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather,
             show_peer_selections: self.session.show_peer_selections,
             media: self.compositor.media(),
@@ -1777,7 +1788,7 @@ impl Engine {
     /// document is already empty (no tiles of the old format are referenced).
     fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
         let cs = id.make();
-        let (pool, stroke, compositor, transform) = build_gpu(GpuBuild {
+        let (pool, stroke, compositor, transform, fill) = build_gpu(GpuBuild {
             gpu: &self.gpu,
             target_format: self.target_format,
             viewport: self.session.view.viewport,
@@ -1790,6 +1801,7 @@ impl Engine {
         self.apply.pool = pool;
         self.apply.stroke = stroke;
         self.apply.transform = transform;
+        self.apply.fill = fill;
         self.compositor = compositor;
     }
 
@@ -1959,6 +1971,27 @@ impl Engine {
                         self.apply.selection.apply(&self.apply.pool, &prev, &op)
                     {
                         out = out.with_selection(actor, selection);
+                    }
+                    heads.remove(&actor);
+                }
+                // A fill previews as the paint it will lay, not as an outline of
+                // where it would go — the same `FillRenderer::apply` the commit
+                // makes, over the same base, so what is on screen mid-drag is
+                // literally the result. Losslessly, and thrown away and redone on
+                // each move rather than accumulated, which is what keeps dragging a
+                // rectangle out from stacking a hundred glazes.
+                LiveGesture::Fill { layer, op } => {
+                    if let Some((idx, tiles)) = out
+                        .layer_index(layer)
+                        .and_then(|i| out.layer_at(i).tiles().map(|t| (i, t.clone())))
+                    {
+                        let gate = base.selection_of(actor);
+                        if let Some(filled) =
+                            self.apply.fill.apply(&self.apply.pool, &tiles, &gate, &op)
+                        {
+                            let record = out.layer_at(idx).with_tiles(filled);
+                            out = out.with_layer_at(idx, record);
+                        }
                     }
                     heads.remove(&actor);
                 }
@@ -2222,7 +2255,15 @@ struct GpuBuild<'a> {
     selection: &'a SelectionRenderer,
 }
 
-fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor, TransformRenderer) {
+fn build_gpu(
+    b: GpuBuild<'_>,
+) -> (
+    TilePool,
+    StrokeRenderer,
+    Compositor,
+    TransformRenderer,
+    FillRenderer,
+) {
     let GpuBuild {
         gpu,
         target_format,
@@ -2248,7 +2289,8 @@ fn build_gpu(b: GpuBuild<'_>) -> (TilePool, StrokeRenderer, Compositor, Transfor
         environment.clone(),
     );
     let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone());
-    (pool, stroke, compositor, transform)
+    let fill = FillRenderer::new(gpu, cs.clone(), selection.clone());
+    (pool, stroke, compositor, transform, fill)
 }
 
 /// Convenience for tests/tools: build an engine on a headless device.

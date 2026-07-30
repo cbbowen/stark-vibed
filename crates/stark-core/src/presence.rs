@@ -28,7 +28,7 @@
 //! The wire *types* stay in [`crate::peer`], which is the public surface. What lives
 //! here is the state that interprets them.
 
-use crate::document::{SelectionOp, StrokeRecord};
+use crate::document::{FillOp, LayerId, SelectionOp, StrokeRecord};
 use crate::path::{ControlPoint, frozen_spans_for};
 use crate::peer::{GESTURE_RESYNC, GestureFrame, LiveGesture, StrokeHead};
 
@@ -46,6 +46,10 @@ pub(crate) enum GestureSource {
         frozen: usize,
     },
     Selection(SelectionOp),
+    /// A region being dragged out to fill (MISSING_FEATURES §0.4). No layer: the
+    /// frame's own [`active_layer`](crate::peer::PeerFrame::active_layer) is it, and
+    /// a second copy could disagree with that one.
+    Fill(FillOp),
 }
 
 /// The sending half: what this client has told the wire about its gesture.
@@ -111,6 +115,13 @@ impl GestureTx {
                 self.sent_id = Some(id);
                 self.sent = 0;
                 Some(GestureFrame::Selection { id, op })
+            }
+            // A fill's region is a shape, sent whole for exactly the reasons a
+            // selection's is. The layer rides `PeerFrame::active_layer`.
+            GestureSource::Fill(op) => {
+                self.sent_id = Some(id);
+                self.sent = 0;
+                Some(GestureFrame::Fill { id, op })
             }
             GestureSource::Stroke { head, path, frozen } => {
                 let frozen = frozen.min(path.len());
@@ -210,7 +221,7 @@ impl GestureRx {
 
     /// Integrate one frame, carrying the [`PeerFrame::seq`](crate::peer::PeerFrame::seq)
     /// it arrived under. Returns whether what is *drawn* changed.
-    pub(crate) fn apply(&mut self, frame: GestureFrame, seq: u64) -> bool {
+    pub(crate) fn apply(&mut self, frame: GestureFrame, seq: u64, active_layer: LayerId) -> bool {
         // A new ordinal is a different gesture: drop whatever was being drawn or
         // assembled rather than splicing two of them together.
         //
@@ -228,6 +239,15 @@ impl GestureRx {
                 self.stroke = None;
                 self.last_seq = Some(seq);
                 self.drawn = Some(LiveGesture::Selection(op));
+                true
+            }
+            GestureFrame::Fill { op, .. } => {
+                self.stroke = None;
+                self.last_seq = Some(seq);
+                self.drawn = Some(LiveGesture::Fill {
+                    layer: active_layer,
+                    op,
+                });
                 true
             }
             GestureFrame::Stroke {

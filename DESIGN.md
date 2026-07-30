@@ -61,6 +61,7 @@ stark/
 │   │   │   │   ├── state.rs     # DocState: layers, per-actor selections, surface
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
 │   │   │   │   ├── selection.rs # Selection soft mask + ops (§6.8)
+│   │   │   │   ├── fill.rs      # FillOp + ShapeAction: what a shape does (§6.8)
 │   │   │   │   └── layer.rs
 │   │   │   ├── color.rs        # Oklab working space, conversions, mixing (§6.5)
 │   │   │   ├── colorspace.rs   # ColorSpace trait; Oklab + Mixbox impls (§6.7)
@@ -81,6 +82,7 @@ stark/
 │   │   │   │   ├── environment.rs # HDR environment maps for IBL (§6.3)
 │   │   │   │   ├── surface.rs   # canvas surface: the weave's relief (§6.4)
 │   │   │   │   ├── selection.rs # selection-mask rasterization (§6.8)
+│   │   │   │   ├── fill.rs      # region fill: a paint parcel through a mask (§6.8)
 │   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
 │   │   │   ├── geom.rs         # tile coords, view transform, AABB
 │   │   │   ├── path.rs         # streaming B-spline stroke fit + adaptive flatten (§6.2)
@@ -1431,23 +1433,39 @@ with the gradient taken at one canvas pixel, converted to screen px by the zoom 
 so it stays a constant on-screen width at any zoom, stays thin over a feathered
 edge, and needs no bookkeeping to survive union/subtract/intersect.
 
-**The selection tools are momentary.** `Session::end_selection` hands the canvas
-back to `Tool::Brush` the moment a gesture actually encloses something. Selecting
-is a step *towards* painting and is essentially never done twice in a row, so a
-modal selection tool charges a deliberate switch-back on the overwhelmingly common
-path — and when the user forgets, their next brush gesture silently redefines the
-selection instead of painting. A gesture that enclosed nothing (a stray click) is
-not a selection, so it leaves the tool armed rather than punishing a mis-click.
+**The shape tools do not only select.** Rect, ellipse and lasso never produced
+selections; they produce **coverage**, and the four modes above are only the four
+ways that coverage can land on the mask. Landing it on the *paint* instead is a
+fifth `ShapeAction` — `Fill` — sharing the shapes, the rasterizer and the feather
+outright (MISSING_FEATURES §0.4). Two things follow rather than needing rules: the
+mask still gates a fill, exactly as it gates a brush, which is what makes a fill of
+an unbounded canvas well-defined at all; and the modifiers, which override the
+*combine mode*, are inert under `Fill`, which has no combining to do.
+
+**Selecting is momentary; filling is not.** `Session::end_shape` hands the canvas
+back to `Tool::Brush` the moment a *selecting* gesture actually encloses something.
+Selecting is a step *towards* painting and is essentially never done twice in a
+row, so a modal selection tool charges a deliberate switch-back on the
+overwhelmingly common path — and when the user forgets, their next brush gesture
+silently redefines the selection instead of painting. A fill *is* painting, and
+blocking in is done many times in a row, so it leaves the tool armed: the rule is
+one sentence rather than two cases — the tool disarms when the gesture was a step
+towards painting, and stays armed when the gesture was painting. A gesture that
+enclosed nothing (a stray click) leaves the tool armed either way, rather than
+punishing a mis-click.
 
 This is engine-side, not chrome: the session owns `tool`, so every frontend gets
 the same behaviour and `observe().tool` reports it in the same update that
 committed the op. The frontend then needs no "Paint" tool chip at all — *no chip
 lit* is the brush, and clicking the lit chip disarms it, so the control that armed
-a tool is the one that takes it back. The two commands that act on a whole
-selection (deselect, invert) live in a small floating bar mounted only while a
-selection is in force: they are meaningless without one, and a bar that is present
+a tool is the one that takes it back. The commands that act on a whole selection
+(transform, fill, deselect, invert) live in a small floating bar mounted only while
+a selection is in force: they are meaningless without one, and a bar that is present
 or absent indicates the canvas is masked more directly than permanently-visible
-buttons that happen to be greyed out.
+buttons that happen to be greyed out. Fill appears in both places — as the fifth
+action chip and as a button on that bar — which is not a duplicate but the same word
+answering the two ways a region can already exist: one you are drawing now, and one
+you drew earlier and kept.
 
 ## 7. The engine actor (async backend)
 
@@ -1585,7 +1603,8 @@ assert_golden!("oil_blend_01", png, tolerance);
 | A new blend mode | `BlendMode` enum + compositor shader branch |
 | A new media/lighting model | the media pass shader in `gpu/composite.rs` |
 | A different frontend (native, CLI exporter) | new consumer of `Engine`; core untouched |
-| Another selection producer (by colour, painted quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; the mask representation, ops, history and masking sites are unchanged (§6.8) |
+| Another selection producer (by colour, painted quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; the mask representation, ops, history and masking sites are unchanged (§6.8) — and it becomes a *fill* producer in the same move, since fill runs on the same coverage |
+| A gradient (or any position-varying fill) | the parcel in `fill.wesl` reads its latent from position rather than a uniform; the region, the gate, the stacking law, the action and its footprint are unchanged (MISSING_FEATURES §0.4) |
 | A richer frame / comic gutters / a solid ground | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing are unchanged (FRAME_DESIGN.md) |
 | Text | a new `ActionKind` + optionally new channels; the action-log model already supports it (transforms landed exactly this way — [TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md)) |
 | A wider-gamut / spectral color pipeline | `color.rs` + `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
@@ -1852,6 +1871,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 | 11 | Brush file upload | done — custom shape library (import/normalize UI, localStorage persistence, mid-session peer replication) |
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |
+| — | Fill (MISSING_FEATURES §0.4) | done — the fifth `ShapeAction`; one pass of `fill.wesl` over the coverage `selection.wesl` already rasterizes |
 | 13 | Per-client state: owned selections + presence ([PEER_DESIGN.md](PEER_DESIGN.md)) | done — its own build order is PEER_DESIGN §14 |
 | — | Transform ([TRANSFORM_DESIGN.md](TRANSFORM_DESIGN.md)) | **done (first cut)** — `ActionKind::Transform`, the parcel/combine/mask GPU passes, exactness + replay tests, and the ellipse gesture UI (inside = move, rim = rotate/scale, outside = stretch/skew; lossless preview through the same renderer); snapping + clipboard remain |
 

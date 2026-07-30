@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{ActorId, BrushParams, LayerId, SelectionOp, StrokeRecord, Tool};
+use crate::document::{ActorId, BrushParams, FillOp, LayerId, SelectionOp, StrokeRecord, Tool};
 use crate::geom::Vec2;
 use crate::path::ControlPoint;
 use crate::presence::GestureRx;
@@ -100,6 +100,13 @@ impl From<ActorId> for Identity {
 pub enum LiveGesture {
     Stroke(StrokeRecord),
     Selection(SelectionOp),
+    /// A region being dragged out to fill (MISSING_FEATURES §0.4). Carries its
+    /// layer, because unlike a [`StrokeRecord`] a [`FillOp`] is the *region*, not
+    /// the whole edit — the layer is the author's active one at the time.
+    Fill {
+        layer: LayerId,
+        op: FillOp,
+    },
 }
 
 /// One gesture in flight, from whoever is making it — the shape the preview fold
@@ -157,13 +164,18 @@ pub enum GestureFrame {
     /// (`LASSO_MIN_STEP`), and unlike a stroke path its tail is not append-only —
     /// the closing edge moves with the cursor.
     Selection { id: u64, op: SelectionOp },
+    /// A region being dragged out to fill — sent whole for the same reason a
+    /// selection is (MISSING_FEATURES §0.4). The layer is not in the payload:
+    /// [`PeerFrame::active_layer`] already carries it, and a second copy could
+    /// disagree with it.
+    Fill { id: u64, op: FillOp },
 }
 
 impl GestureFrame {
     /// The gesture's per-actor ordinal.
     pub fn id(&self) -> u64 {
         match self {
-            Self::Stroke { id, .. } | Self::Selection { id, .. } => *id,
+            Self::Stroke { id, .. } | Self::Selection { id, .. } | Self::Fill { id, .. } => *id,
         }
     }
 }
@@ -309,7 +321,10 @@ impl Peer {
             None => self.rx.clear(),
             Some(gesture) => {
                 self.gesture_seen = now;
-                self.rx.apply(gesture, frame.seq)
+                // `active_layer` is set just above, so a fill frame is paired with
+                // the layer from the very frame that carried it rather than from
+                // whichever one happened to arrive last.
+                self.rx.apply(gesture, frame.seq, self.active_layer)
             }
         }
     }

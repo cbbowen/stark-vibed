@@ -79,6 +79,11 @@ impl StatePatch {
             ActionKind::CommitStroke(rec) => {
                 tile_diff(rec.layer, paint_rect(action, rec.layer), to, from, &mut ops);
             }
+            // A fill writes only paint (it carries no mask along, unlike a
+            // transform), so restoring it is the stroke's own diff over its rect.
+            ActionKind::Fill { layer, .. } => {
+                tile_diff(*layer, paint_rect(action, *layer), to, from, &mut ops);
+            }
             ActionKind::Transform { layer, .. } => {
                 tile_diff(*layer, paint_rect(action, *layer), to, from, &mut ops);
                 ops.push(PatchOp::Selection(actor, to.selection_of(actor)));

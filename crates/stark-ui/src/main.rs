@@ -42,12 +42,12 @@ use input::{Nav, bind_shortcuts, end_interaction, input_tolerance, pick_color, s
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
-use panels::select::{current_mode, current_tool, modifier_mode};
+use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{FrameBar, FrameOverlay, PickBar, SelectionBar, TransformBar, TransformOverlay};
 use platform::capture_pointer;
 use render::CANVAS_ID;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
-use stark_core::document::{DEFAULT_SURFACE, SelectionMode, SelectionOp};
+use stark_core::document::{DEFAULT_SURFACE, SelectionOp, ShapeAction};
 use stark_core::{ColorSpaceId, SurfaceId};
 use state::{AppState, dispatch, dispatch_quiet, resize, update_brush};
 
@@ -236,7 +236,7 @@ fn Canvas() -> Element {
     let mut picking = state.pick.dragging;
     // The panel's selection mode, stashed while a gesture's modifier keys override it
     // (DESIGN.md §6.8) and restored when the gesture ends.
-    let mut mode_restore = use_signal(|| None::<SelectionMode>);
+    let mut action_restore = use_signal(|| None::<ShapeAction>);
     // Set for as long as the canvas is the thing being used, which fades the floating
     // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
     let mut canvas_active = state.canvas_active;
@@ -322,11 +322,18 @@ fn Canvas() -> Element {
                     if let Some(sample) = sample(state, &e)
                         && let Some(tolerance) = input_tolerance(state, &e)
                     {
+                        // The marquee modifiers override the *combine mode*, so
+                        // they apply only while the panel's action is a selecting
+                        // one: under Fill there is nothing to combine, and letting
+                        // shift quietly turn a fill into a union-select would be
+                        // the worst kind of surprise (MISSING_FEATURES §0.4).
+                        let action = current_action(state);
                         if tool.is_selection()
+                            && action.is_select()
                             && let Some(m) = modifier_mode(e.modifiers())
                         {
-                            mode_restore.set(Some(current_mode(state)));
-                            dispatch(state, ViewCommand::SetSelectionMode(m));
+                            action_restore.set(Some(action));
+                            dispatch(state, ViewCommand::SetShapeAction(ShapeAction::Select(m)));
                         }
                         dispatch(state, GestureCommand::Start {
                             tool,
@@ -363,8 +370,8 @@ fn Canvas() -> Element {
                 }
             },
             onpointerleave: move |_| dispatch_quiet(state, PeerCommand::SetCursor(None)),
-            onpointerup: move |_| end_interaction(state, &mut drawing, nav, &mut mode_restore),
-            onpointercancel: move |_| end_interaction(state, &mut drawing, nav, &mut mode_restore),
+            onpointerup: move |_| end_interaction(state, &mut drawing, nav, &mut action_restore),
+            onpointercancel: move |_| end_interaction(state, &mut drawing, nav, &mut action_restore),
             onwheel: move |e| nav.wheel(e),
         }
     }

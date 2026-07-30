@@ -75,7 +75,7 @@ non-axis-aligned scaling are the same vocabulary rather than a bolted-on mode,
 previewing losslessly through the same renderer and committing once. Remaining:
 snapping, and the cut/copy/paste clipboard, which reuses the parcel machinery.
 
-### 0.4 Fill, gradient, and blend modes — **blend modes built**
+### 0.4 Fill, gradient, and blend modes — **fill and blend modes built**
 
 Combining light is *how* digital painters glaze, and losing it costs more finished
 work than any brush feature gains. The light-combining modes and **Multiply** are
@@ -120,10 +120,48 @@ stack but not the substrate, which pass B composites underneath afterwards, so m
 over bare paper leaves the paper alone. Correct on white paper (its identity), wrong on
 a toned ground, and the fix is to make the substrate the bottom of the stack.
 
-Fill and gradient remain, and are how anyone blocks in. Both hit an infinite-canvas
-wrinkle worth deciding once: a flood fill of an unbounded region is undefined, so fill
-must be bounded by the selection, the layer's populated bounds (`DocState::bounds`),
-or the frame — another argument for §0.1's frame.
+**Fill is built**, and it cost almost nothing, because it turned out not to be a tool.
+The Select panel had four "actions" — New / Add / Sub / Isect — and reading them as
+four *combine modes* was the mistake: rect, ellipse and lasso never produced
+selections, they produce **coverage**, and those four are only the four ways coverage
+can land on the mask. `Fill` is the fifth answer to the same question, landing it on
+the paint instead. The row stops being "how does this combine?" and becomes "what does
+this shape do?", and the shapes, the analytic rasterizer and the feather slider all
+transfer as they stand — a feathered fill is not a new feature, it is the existing one
+pointed somewhere else.
+
+Three things then follow rather than needing to be decided:
+
+- **The infinite-canvas wrinkle answers itself.** A flood fill of an unbounded region
+  is undefined, and §6.8 already makes the selection the gate *every* tool acts
+  through — so a fill is clipped by the selection exactly as a brush stroke is, with
+  no new rule and no dependence on §0.1's frame. The one genuinely unbounded case
+  (fill the selection, with nothing selected) is **refused**, deterministically, so
+  peers and replays agree; inventing a boundary would be a different fill on every
+  client.
+- **A fill deposits paint, not colour.** Its parcel carries the brush's own `add` as
+  its height and stacks by the shared parcel law (`paint_common.wesl`) — the very law
+  a stroke deposits through, so a fill cannot drift from a very slow brush over the
+  same area. A filled region therefore has real thickness: it takes the light, it can
+  be glazed over, and a lift brush scrapes it back off (`tests/fill.rs` pins that last
+  one, because it is the whole difference from a paint bucket). Coverage scales the
+  *height*, never the per-unit opacity, so a feathered edge is a thinning of the
+  deposit rather than a fade of its colour.
+- **It is not momentary.** The other four actions hand the canvas back to the brush,
+  on the argument that selecting is a step *towards* painting. A fill *is* painting,
+  and blocking in is done many times in a row — so the rule generalizes to one
+  sentence instead of gaining a special case: the tool disarms when the gesture was a
+  step towards painting, and stays armed when the gesture was painting.
+
+Reached two ways for the two ways a region can already exist: the fifth chip, for one
+you are drawing now, and a **Fill** button on the selection bar, for one you drew
+earlier and kept. The drag previews as the *paint* rather than as an outline of where
+the paint would go — the same `FillRenderer::apply` the commit makes, over the same
+base, so `preview == committed` holds as it does for a stroke.
+
+**Gradient remains**, and attaches at the same seam: one more way to fill a coverage
+field, which is a `FillOp` whose parcel varies with position rather than a new
+pipeline.
 
 ---
 
@@ -244,8 +282,9 @@ Naming these is part of not becoming Photoshop.
 
 ## Sequencing
 
-1. **Now** — framing/export, save/open, ~~eyedropper~~, blend modes, fill. The
-   difference between a tech demo and something a finished piece comes out of.
+1. **Now** — framing/export, save/open, ~~eyedropper~~, ~~blend modes~~, ~~fill~~,
+   gradient. The difference between a tech demo and something a finished piece comes
+   out of.
 2. **Next** — transform (engine done; the gesture UI remains); layer masks /
    clipping / alpha lock / merge; view mirror and rotate.
 3. **Then, in parallel** — brush parameter mapping and the brush library

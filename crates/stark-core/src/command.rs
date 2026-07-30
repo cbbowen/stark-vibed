@@ -36,7 +36,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::document::{
-    BlendMode, BrushParams, LayerId, MatteRegion, SelectionMode, SelectionOp, Tool,
+    BlendMode, BrushParams, FillOp, LayerId, MatteRegion, SelectionOp, ShapeAction, Tool,
 };
 use crate::geom::{Affine2, Extent2, Vec2};
 use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
@@ -149,6 +149,20 @@ pub enum DocCommand {
     /// Swap selected for unselected everywhere.
     InvertSelection,
 
+    /// Fill a region of `layer` with paint (MISSING_FEATURES §0.4) — the direct
+    /// path, next to `Select`: the selection bar's Fill button and any frontend
+    /// that has its own geometry. The gesture path goes through
+    /// [`ShapeAction::Fill`](crate::document::ShapeAction) instead, and commits the
+    /// identical action.
+    ///
+    /// A fill whose region is [`SelectionShape::All`](crate::document::SelectionShape)
+    /// means "the selection", and is refused when there is none — the canvas is
+    /// unbounded, and inventing a boundary would be a different fill on every client.
+    Fill {
+        layer: LayerId,
+        op: FillOp,
+    },
+
     /// Add a **matte** layer — a region filled with a flat colour
     /// (FRAME_DESIGN.md §2). A frame is one of these on top of the stack. The
     /// engine mints the id, as it does for `AddLayer`; unlike `AddLayer` it does
@@ -207,10 +221,13 @@ pub enum ViewCommand {
     /// The viewport changed size (window/canvas resize).
     Resize(Extent2),
 
-    /// How the next selection gesture combines with the current selection. Shapes
-    /// the *next* op; the op itself is what gets logged (DESIGN.md §6.8).
-    SetSelectionMode(SelectionMode),
-    /// Edge softness (canvas px) for the next selection gesture.
+    /// What the next shape gesture does with the region it encloses: combine it
+    /// into the selection one of four ways, or fill it (DESIGN.md §6.8,
+    /// MISSING_FEATURES §0.4). Shapes the *next* op; the op itself is what gets
+    /// logged.
+    SetShapeAction(ShapeAction),
+    /// Edge softness (canvas px) for the next shape gesture — the same ramp whether
+    /// it selects or fills.
     SetSelectionFeather(f32),
 
     /// Whether collaborators' selection outlines are drawn over the canvas

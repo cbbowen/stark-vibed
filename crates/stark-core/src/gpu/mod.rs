@@ -4,6 +4,7 @@
 pub mod composite;
 pub mod context;
 pub mod environment;
+pub mod fill;
 pub mod pigment;
 pub mod readback;
 pub mod registry;
@@ -18,6 +19,7 @@ pub use composite::{
 };
 pub use context::GpuContext;
 pub use environment::{Environment, EnvironmentId};
+pub use fill::FillRenderer;
 pub use registry::{Registry, Resource};
 pub use selection::SelectionRenderer;
 pub use stroke::{StrokeRenderer, StrokeSpans};

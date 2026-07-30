@@ -14,8 +14,8 @@ use crate::platform::{capture_pointer, on_window_key};
 use crate::state::{AppState, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
-use stark_core::document::SelectionMode;
 use stark_core::document::SelectionOp;
+use stark_core::document::ShapeAction;
 use stark_core::geom::{Vec2, ViewTransform};
 use stark_core::{PickOptions, PickSource};
 
@@ -394,22 +394,22 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
     })
 }
 
-/// End any in-progress stroke, selection gesture, pan, or eyedropper drag, and put
-/// back the selection mode a modifier key overrode for the gesture (DESIGN.md §6.8).
-/// The canvas is no longer in hand once this returns, so the floating chrome fades
-/// back in.
+/// End any in-progress stroke, shape gesture, pan, or eyedropper drag, and put back
+/// the shape action a modifier key overrode for the gesture (DESIGN.md §6.8). The
+/// canvas is no longer in hand once this returns, so the floating chrome fades back
+/// in.
 pub fn end_interaction(
     mut state: AppState,
     drawing: &mut Signal<bool>,
     nav: Nav,
-    mode_restore: &mut Signal<Option<SelectionMode>>,
+    action_restore: &mut Signal<Option<ShapeAction>>,
 ) {
     if drawing() {
         dispatch(state, GestureCommand::End);
         drawing.set(false);
     }
-    if let Some(base) = mode_restore.take() {
-        dispatch(state, ViewCommand::SetSelectionMode(base));
+    if let Some(base) = action_restore.take() {
+        dispatch(state, ViewCommand::SetShapeAction(base));
     }
     nav.stop();
     // Not a parameter like the two above because the eyedropper's drag flag is shared

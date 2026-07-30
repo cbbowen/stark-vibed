@@ -1,6 +1,7 @@
 //! The document: versioned state and the actions that produce it (DESIGN.md §4, §5).
 
 pub mod action;
+pub mod fill;
 pub mod footprint;
 pub mod layer;
 pub mod patch;
@@ -13,6 +14,7 @@ pub use action::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
     ColorDynamics, NoiseKind, OrientationSource, StrokeRecord, Tool,
 };
+pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
 pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState};
