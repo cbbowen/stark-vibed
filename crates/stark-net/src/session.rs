@@ -1,25 +1,29 @@
 //! A live shared-drawing session over iroh (DESIGN.md §12.4).
 //!
 //! One [`CollabSession`] per shared document. The engine stays on the UI
-//! thread; the session runs the network side (the mesh receive loop, catch-up
+//! thread; the session runs the network side (the gossip receive loop, catch-up
 //! server) on spawned tasks and talks to the engine through two thin streams:
 //!
 //! ```text
-//! engine.take_outbox() ──────────► session.broadcast(action) ──► mesh
-//! mesh/ALPN ──► RemoteEvent ──► engine.merge_remote / import_brush
+//! engine.take_outbox() ──────────► session.broadcast(action) ──► gossip
+//! gossip/ALPN ──► RemoteEvent ──► engine.merge_remote / import_brush
 //! ```
 //!
-//! Live actions ride the [`mesh`](crate::mesh) — a flood-with-deduplication
-//! broadcast over explicit peer connections. It replaces `iroh-gossip`, whose
-//! self-dialing swarm cannot run over WebRTC (see `crate::mesh` for why), while
-//! keeping the properties that matter: every peer receives every action, once,
-//! even without a direct connection to its author.
+//! Live actions ride `iroh-gossip` on the session's topic: every peer receives
+//! every action, once, even without a direct connection to its author. Gossip
+//! shares the session's one endpoint with the catch-up ALPN — and, with the
+//! `webrtc` feature, with the WebRTC custom transport that gives browsers
+//! direct paths (each new gossip neighbor triggers a channel bootstrap; see
+//! [`transport::direct`](crate::transport)).
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iroh::{EndpointAddr, EndpointId, SecretKey};
-use n0_future::task;
+use iroh::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
+use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
+pub use iroh_gossip::proto::TopicId;
+use n0_future::{StreamExt, task};
 use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
 use stark_core::peer::{GestureFrame, PeerFrame};
 use stark_core::{AssetId, DocumentFile};
@@ -27,20 +31,12 @@ use tokio::sync::mpsc;
 
 use crate::Result;
 use crate::backend::{self, Dialer, Shutdown};
-use crate::mesh::{LinkKind, Mesh, MeshConfig, MeshEvent, TopicId};
 use crate::mirror::Mirror;
-use crate::proto::{AssetResponse, Request, Wire};
+use crate::proto::{AssetResponse, Request, Stamped, Wire};
 use crate::ticket::SessionTicket;
-use crate::transport::to_peer_id;
-
-/// A long stroke's fitted control points can be sizeable, so the ceiling sits
-/// well past any plausible single action (paths are RDP-simplified; pixels
-/// never ride the mesh).
-const MAX_MESH_FRAME: usize = 256 * 1024;
 
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
-const JOIN_POLL: Duration = Duration::from_millis(50);
 
 /// Attempts (with delay) to fetch a brush asset from a peer — it may still be
 /// fetching the blob itself.
@@ -77,12 +73,28 @@ pub enum RemoteEvent {
     Presence { actor: ActorId, frame: PeerFrame },
 }
 
+/// How a direct connection to a session member currently travels. Gossip
+/// links may migrate (relay first, then direct once hole punching or a WebRTC
+/// bootstrap lands), so this is sampled at query time rather than recorded at
+/// connection time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// A peer-to-peer WebRTC data channel (the browser's direct path).
+    WebRtc,
+    /// A hole-punched UDP path (native iroh's direct path).
+    Direct,
+    /// Via an iroh relay server.
+    Relay,
+    /// No path selected yet.
+    Unknown,
+}
+
 /// How this client's connection to one session member currently travels —
 /// the answer to "are we peer-to-peer or riding a relay?".
 ///
 /// Keyed by the member's [`ActorId`] so the UI can join it against the
-/// presence roster. Members with no entry have no *direct* connection to this
-/// client; their traffic is forwarded through the mesh by whoever does.
+/// presence roster. Members with no entry are not gossip neighbors of this
+/// client; their traffic is forwarded by whoever is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerLink {
     /// The author id the peer's endpoint identity maps to.
@@ -117,7 +129,9 @@ pub struct CollabSession {
     local_id: EndpointId,
     shutdown: Shutdown,
     topic: TopicId,
-    mesh: Mesh,
+    dialer: Dialer,
+    sender: GossipSender,
+    neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     mirror: Arc<Mutex<Mirror>>,
     events: Option<mpsc::UnboundedReceiver<RemoteEvent>>,
     ticket_addr: EndpointAddr,
@@ -136,14 +150,17 @@ impl CollabSession {
         // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
         let topic = TopicId::from_bytes(SecretKey::generate().to_bytes());
         // The first member starts the swarm alone; joiners bootstrap from it.
-        let (mesh, events) = Mesh::spawn(bound.transport, mesh_config(topic), []);
+        let sub = bound
+            .gossip
+            .subscribe(topic, Vec::new())
+            .await
+            .map_err(|e| crate::NetError::Other(e.to_string()))?;
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
         Self::finish(
             bound.dialer,
             bound.shutdown,
             topic,
-            mesh,
-            events,
+            sub,
             mirror,
             ticket_addr,
         )
@@ -159,20 +176,27 @@ impl CollabSession {
         )));
         let bound = backend::bind(mirror.clone(), &opts).await?;
 
-        // Open the catch-up connection first: on iroh this also teaches the
-        // endpoint the peer's address, so the mesh can dial it by bare id below.
+        // Open the catch-up connection first: this also teaches the endpoint
+        // the peer's address, so gossip can dial it by bare id below.
         let catchup = bound.dialer.open(ticket.addr.clone()).await?;
 
         // Enter the live swarm *before* fetching the snapshot: everything
-        // before the join is in the snapshot, everything after rides the mesh,
+        // before the join is in the snapshot, everything after rides gossip,
         // and the overlap deduplicates by action id. The ticket's peer is our
-        // one contact; the rest of the swarm arrives through peer exchange.
-        let (mesh, events) = Mesh::spawn(
-            bound.transport,
-            mesh_config(ticket.topic),
-            [to_peer_id(ticket.addr.id)],
-        );
-        wait_for_swarm(&mesh).await;
+        // one bootstrap; the rest of the swarm arrives through gossip's
+        // membership exchange. Best effort: joining still proceeds if the
+        // swarm is slow, since the snapshot plus later traffic still converges.
+        let mut sub = bound
+            .gossip
+            .subscribe(ticket.topic, vec![ticket.addr.id])
+            .await
+            .map_err(|e| crate::NetError::Other(e.to_string()))?;
+        if n0_future::time::timeout(JOIN_TIMEOUT, sub.joined())
+            .await
+            .is_err()
+        {
+            tracing::warn!("joined without meeting a peer yet; relying on catch-up");
+        }
 
         let snapshot = catchup.request(Request::Snapshot).await?;
         catchup.close().await;
@@ -184,8 +208,7 @@ impl CollabSession {
             bound.dialer,
             bound.shutdown,
             ticket.topic,
-            mesh,
-            events,
+            sub,
             mirror,
             ticket_addr,
         )?;
@@ -196,21 +219,36 @@ impl CollabSession {
         dialer: Dialer,
         shutdown: Shutdown,
         topic: TopicId,
-        mesh: Mesh,
-        mesh_events: mpsc::UnboundedReceiver<MeshEvent>,
+        sub: iroh_gossip::api::GossipTopic,
         mirror: Arc<Mutex<Mirror>>,
         ticket_addr: EndpointAddr,
     ) -> Result<Self> {
         let local_id = dialer.local_id()?;
+        let (sender, receiver) = sub.split();
+        // Seed with the neighbors met before the receive loop takes over
+        // (typically the bootstrap peer a joiner already awaited).
+        let neighbors: HashSet<EndpointId> = receiver.neighbors().collect();
+        for &peer in &neighbors {
+            dialer.ensure_direct(peer);
+        }
+        let neighbors = Arc::new(Mutex::new(neighbors));
         let (tx, rx) = mpsc::unbounded_channel();
         // The receive loop is the only thing that dials afterwards (to fetch
-        // brush assets), so it takes the dialer with it.
-        task::spawn(recv_loop(dialer, mesh_events, mirror.clone(), tx));
+        // brush assets and bootstrap WebRTC), so it takes the dialer with it.
+        task::spawn(recv_loop(
+            dialer.clone(),
+            receiver,
+            neighbors.clone(),
+            mirror.clone(),
+            tx,
+        ));
         Ok(Self {
             local_id,
             shutdown,
             topic,
-            mesh,
+            dialer,
+            sender,
+            neighbors,
             mirror,
             events: Some(rx),
             ticket_addr,
@@ -240,7 +278,10 @@ impl CollabSession {
     /// UI task that can't borrow the session across an `await`).
     pub fn broadcaster(&self) -> Broadcaster {
         Broadcaster {
-            mesh: self.mesh.clone(),
+            local_id: self.local_id,
+            sender: self.sender.clone(),
+            dialer: self.dialer.clone(),
+            neighbors: self.neighbors.clone(),
             mirror: self.mirror.clone(),
         }
     }
@@ -267,17 +308,19 @@ impl CollabSession {
 
     /// Leave the session gracefully.
     pub async fn shutdown(self) {
-        self.mesh.shutdown();
         self.shutdown.run().await;
     }
 }
 
 /// A detached publishing handle onto a [`CollabSession`]: broadcast actions and
 /// register assets without holding the session itself. All clones share the
-/// same mesh and mirror.
+/// same gossip topic and mirror.
 #[derive(Clone)]
 pub struct Broadcaster {
-    mesh: Mesh,
+    local_id: EndpointId,
+    sender: GossipSender,
+    dialer: Dialer,
+    neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     mirror: Arc<Mutex<Mirror>>,
 }
 
@@ -288,12 +331,7 @@ impl Broadcaster {
             .lock()
             .expect("mirror poisoned")
             .insert(action.clone());
-        let bytes = postcard::to_allocvec(&Wire::Action(action))?;
-        self.mesh
-            .broadcast(bytes)
-            .await
-            .map_err(|e| crate::NetError::Other(e.to_string()))?;
-        Ok(())
+        self.publish_wire(Wire::Action(action)).await
     }
 
     /// Publish this client's presence (PEER_DESIGN.md §4).
@@ -303,12 +341,19 @@ impl Broadcaster {
     /// best-effort — a frame that cannot be sent is dropped rather than retried,
     /// because the next one supersedes it anyway.
     pub async fn publish(&self, frame: PeerFrame) -> Result<()> {
-        let bytes = postcard::to_allocvec(&Wire::Presence(frame))?;
-        self.mesh
-            .broadcast(bytes)
+        self.publish_wire(Wire::Presence(frame)).await
+    }
+
+    async fn publish_wire(&self, wire: Wire) -> Result<()> {
+        let stamped = Stamped {
+            origin: self.local_id,
+            wire,
+        };
+        let bytes = postcard::to_allocvec(&stamped)?;
+        self.sender
+            .broadcast(bytes.into())
             .await
-            .map_err(|e| crate::NetError::Other(e.to_string()))?;
-        Ok(())
+            .map_err(|e| crate::NetError::Other(e.to_string()))
     }
 
     /// See [`CollabSession::add_asset`].
@@ -319,101 +364,87 @@ impl Broadcaster {
             .insert_asset(id, bytes);
     }
 
-    /// How each directly-connected session member is reached right now —
-    /// direct (WebRTC or hole-punched UDP) or via a relay. Sampled per call;
-    /// an iroh link upgrades from relay to direct when hole punching lands, so
-    /// poll rather than cache. Empty once the mesh is gone.
+    /// How each gossip-neighbor session member is reached right now — direct
+    /// (WebRTC or hole-punched UDP) or via a relay. Sampled per call; a link
+    /// migrates from relay to direct when hole punching or a WebRTC bootstrap
+    /// lands, so poll rather than cache.
     pub async fn links(&self) -> Vec<PeerLink> {
-        let Ok(links) = self.mesh.links().await else {
-            return Vec::new();
-        };
-        links
-            .into_iter()
-            .filter_map(|(peer, kind)| {
-                let id = crate::transport::to_endpoint_id(peer)?;
-                Some(PeerLink {
-                    actor: actor_from_endpoint_id(id),
-                    kind,
-                })
-            })
-            .collect()
-    }
-}
-
-fn mesh_config(topic: TopicId) -> MeshConfig {
-    MeshConfig {
-        max_frame: MAX_MESH_FRAME,
-        ..MeshConfig::new(topic)
-    }
-}
-
-/// Wait (bounded) until the mesh has met at least one peer, so a joiner does
-/// not miss the actions committed while it was fetching the snapshot. Best
-/// effort: joining still proceeds if the swarm is slow, since the snapshot plus
-/// later mesh traffic still converges.
-async fn wait_for_swarm(mesh: &Mesh) {
-    let deadline = JOIN_TIMEOUT.as_millis() / JOIN_POLL.as_millis().max(1);
-    for _ in 0..deadline {
-        match mesh.neighbors().await {
-            Ok(neighbors) if !neighbors.is_empty() => return,
-            Ok(_) => {}
-            Err(_) => return,
+        let neighbors: Vec<EndpointId> = self
+            .neighbors
+            .lock()
+            .expect("neighbors poisoned")
+            .iter()
+            .copied()
+            .collect();
+        let mut links = Vec::with_capacity(neighbors.len());
+        for id in neighbors {
+            let kind = match self.dialer.selected_addr(id).await {
+                Some(TransportAddr::Custom(_)) => LinkKind::WebRtc,
+                Some(TransportAddr::Ip(_)) => LinkKind::Direct,
+                Some(TransportAddr::Relay(_)) => LinkKind::Relay,
+                _ => LinkKind::Unknown,
+            };
+            links.push(PeerLink {
+                actor: actor_from_endpoint_id(id),
+                kind,
+            });
         }
-        n0_future::time::sleep(JOIN_POLL).await;
+        links
     }
-    tracing::warn!("joined without meeting a peer yet; relying on catch-up");
 }
 
-/// The mesh receive loop: decode, resolve asset dependencies, mirror, forward
-/// to the engine.
+/// The gossip receive loop: decode, resolve asset dependencies, mirror,
+/// forward to the engine. Also maintains the neighbor set and kicks off the
+/// WebRTC bootstrap for every new neighbor.
 async fn recv_loop(
     dialer: Dialer,
-    mut events: mpsc::UnboundedReceiver<MeshEvent>,
+    mut gossip: GossipReceiver,
+    neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     mirror: Arc<Mutex<Mirror>>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
-    while let Some(event) = events.recv().await {
-        let (origin, from, payload) = match event {
-            MeshEvent::Received {
-                origin,
-                from,
-                payload,
-            } => (origin, from, payload),
-            MeshEvent::Lagged { origin } => {
+    while let Some(event) = gossip.next().await {
+        let message = match event {
+            Ok(GossipEvent::Received(message)) => message,
+            Ok(GossipEvent::Lagged) => {
                 // Dropped messages: peers converge again on the next snapshot
                 // fetch; flag it loudly for now (DESIGN.md §12.5). A lagged
                 // *presence* stream needs no recovery at all — the author re-sends
                 // its whole gesture on the next resync frame (PEER_DESIGN.md §5).
-                tracing::warn!(%origin, "mesh lagged; some remote actions may be missing");
+                tracing::warn!("gossip lagged; some remote actions may be missing");
                 continue;
             }
-            MeshEvent::NeighborUp(peer) => {
-                tracing::debug!(%peer, "peer joined the session");
+            Ok(GossipEvent::NeighborUp(peer)) => {
+                tracing::debug!(%peer, "gossip neighbor up");
+                neighbors.lock().expect("neighbors poisoned").insert(peer);
+                dialer.ensure_direct(peer);
                 continue;
             }
-            MeshEvent::NeighborDown(peer) => {
-                tracing::debug!(%peer, "peer left the session");
+            Ok(GossipEvent::NeighborDown(peer)) => {
+                tracing::debug!(%peer, "gossip neighbor down");
+                neighbors.lock().expect("neighbors poisoned").remove(&peer);
                 continue;
+            }
+            Err(e) => {
+                tracing::debug!("gossip receiver closed: {e}");
+                return;
             }
         };
 
-        let wire: Wire = match postcard::from_bytes(&payload) {
-            Ok(w) => w,
+        let Stamped { origin, wire } = match postcard::from_bytes(&message.content) {
+            Ok(stamped) => stamped,
             Err(e) => {
-                tracing::warn!("undecodable mesh payload: {e}");
+                tracing::warn!("undecodable gossip payload: {e}");
                 continue;
             }
         };
+        let from = message.delivered_from;
+
         let action = match wire {
             Wire::Action(action) => action,
             // Presence bypasses the mirror entirely: it is not part of the document,
-            // so it is never served to a joiner and never reaches a file. The author
-            // is the mesh's `origin`, never anything in the payload — a peer can
-            // publish its own presence and nobody else's (PEER_DESIGN.md §7).
+            // so it is never served to a joiner and never reaches a file.
             Wire::Presence(frame) => {
-                let Some(id) = crate::transport::to_endpoint_id(origin) else {
-                    continue;
-                };
                 // A live stroke's head names its brush image just like the
                 // eventual commit will. Resolve it detached — presence must
                 // never wait on a fetch — so the rest of the gesture renders
@@ -431,7 +462,7 @@ async fn recv_loop(
                     ));
                 }
                 let event = RemoteEvent::Presence {
-                    actor: actor_from_endpoint_id(id),
+                    actor: actor_from_endpoint_id(origin),
                     frame,
                 };
                 if tx.send(event).is_err() {
@@ -472,14 +503,10 @@ async fn recv_loop(
 
 /// Who to ask for a brush image: its author first, then whoever delivered the
 /// action (which may have it cached, and is known to be reachable).
-fn asset_sources(origin: crate::mesh::PeerId, from: crate::mesh::PeerId) -> Vec<EndpointId> {
-    let mut ids = Vec::with_capacity(2);
-    for peer in [origin, from] {
-        if let Some(id) = crate::transport::to_endpoint_id(peer)
-            && !ids.contains(&id)
-        {
-            ids.push(id);
-        }
+fn asset_sources(origin: EndpointId, from: EndpointId) -> Vec<EndpointId> {
+    let mut ids = vec![origin];
+    if from != origin {
+        ids.push(from);
     }
     ids
 }

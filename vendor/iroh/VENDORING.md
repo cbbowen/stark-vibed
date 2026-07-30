@@ -2,7 +2,7 @@
 
 iroh `1.0.3`, copied verbatim from the crates.io source
 (`registry/src/.../iroh-1.0.3`, upstream commit in `.cargo_vcs_info.json`),
-plus one local patch. Substituted for the crates.io crate via
+plus local patches. Substituted for the crates.io crate via
 `[patch.crates-io]` in the root workspace manifest AND in
 `vendor/iroh-webrtc-transport/Cargo.toml` (that crate is workspace-excluded,
 so the root patch does not reach it). License: BSD-3 (`LICENSE-BSD3`, kept).
@@ -26,6 +26,15 @@ remote *without* connecting, by feeding the existing `ResolveRemote` path.
 Combined with (2), this is the app-side trigger for "the WebRTC channel is now
 attached; open the custom path on the live connections". Best-effort by
 design.
+
+`src/socket/remote_map/remote_state/remote_info.rs` +
+`remote_state.rs` (`RemoteInfo` message arm): `RemoteInfo` gains
+`selected: Option<TransportAddr>` and a `selected_addr()` accessor — the
+remote map's current `selected_path`, i.e. the address new traffic to that
+remote actually travels over. Upstream exposes only per-address Open/Inactive
+usage, which cannot distinguish "WebRTC selected, relay kept as backup" (both
+are open). stark-net's per-peer link badges need the selected one, and gossip
+owns its connections so `Connection::paths()` is unreachable from the app.
 
 ## Why
 

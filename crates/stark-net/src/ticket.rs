@@ -4,16 +4,16 @@
 //! Displayed as `stark…` + base32 of the postcard encoding, so it survives
 //! chat clients and clipboards.
 //!
-//! One member is enough: the joiner connects to it and the [`mesh`](crate::mesh)
-//! introduces it to everyone else, so any member can hand out a ticket.
+//! One member is enough: the joiner bootstraps gossip from it and the swarm's
+//! membership exchange introduces everyone else, so any member can hand out a
+//! ticket.
 
 use std::fmt;
 use std::str::FromStr;
 
 use iroh::EndpointAddr;
+use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
-
-use crate::mesh::TopicId;
 
 /// Human-pasteable prefix so tickets are recognizable in the wild.
 const PREFIX: &str = "stark";

@@ -8,11 +8,12 @@
 //!   to the engine's [`ActorId`](stark_core::document::ActorId) via
 //!   [`actor_from_endpoint_id`].
 //! - **Live edits**: each committed [`Action`](stark_core::document::Action) is
-//!   broadcast over the [`mesh`] — a sampled path, never pixels.
+//!   broadcast over `iroh-gossip` on the session's topic — a sampled path,
+//!   never pixels.
 //! - **Join / catch-up**: a joining peer fetches the session snapshot — the
 //!   save-format [`DocumentFile`](stark_core::DocumentFile), which already
 //!   bundles referenced brush assets — over a dedicated ALPN, then rides the
-//!   mesh tail. Brush blobs a later stroke references are fetched over the
+//!   gossip tail. Brush blobs a later stroke references are fetched over the
 //!   same ALPN on demand (content-addressed, DESIGN.md §6.6).
 //!
 //! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_core::Engine::take_outbox)
@@ -21,16 +22,14 @@
 //! [`Engine::import_brush`](stark_core::Engine::import_brush).
 
 mod backend;
-pub mod mesh;
 mod mirror;
 mod proto;
 mod session;
 mod ticket;
 mod transport;
 
-pub use mesh::LinkKind;
 pub use session::{
-    Broadcaster, CollabSession, NetOptions, PeerLink, RemoteEvent, actor_from_endpoint_id,
+    Broadcaster, CollabSession, LinkKind, NetOptions, PeerLink, RemoteEvent, actor_from_endpoint_id,
 };
 pub use ticket::SessionTicket;
 

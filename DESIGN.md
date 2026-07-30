@@ -95,8 +95,7 @@ stark/
 │   ├── stark-net/              # iroh transport ↔ Replicated timeline (§12)
 │   │   └── src/
 │   │       ├── session.rs      # CollabSession: the frontend-facing API
-│   │       ├── mesh/           # the live broadcast wire
-│   │       ├── transport/      # iroh, plus the WebRTC path bootstrap
+│   │       ├── transport/      # the WebRTC path bootstrap
 │   │       ├── mirror.rs       # CPU copy of the log, to serve joiners
 │   │       └── ticket.rs       # shareable session tickets
 │   └── stark-ui/               # Dioxus 0.7 frontend (§11)

@@ -1,9 +1,8 @@
 //! How a session binds to the network and reaches its peers.
 //!
-//! Binding the stack, opening a catch-up connection, minting the ticket
-//! address, and shutting down — one seam so [`session`](crate::session) never
-//! touches iroh types directly, and the live wire above it — the
-//! [`mesh`](crate::mesh) — stays network-agnostic.
+//! Binding the stack — the endpoint, the router, gossip — plus opening
+//! catch-up connections, minting the ticket address, and shutting down.
+//! [`session`](crate::session) drives it and owns the protocol above it.
 //!
 //! The backend is an ordinary iroh [`Endpoint`](iroh::Endpoint) and
 //! [`Router`](iroh::protocol::Router) on every target; in the browser iroh
@@ -14,7 +13,7 @@
 //! — which is what gives the *web* direct connections.
 
 mod imp {
-    //! Plain iroh: an endpoint and a router.
+    //! Plain iroh: an endpoint, a router, and gossip.
 
     #[cfg(not(target_arch = "wasm32"))]
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -23,22 +22,25 @@ mod imp {
 
     use iroh::endpoint::{Connection, presets};
     use iroh::protocol::Router;
-    use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+    use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
+    use iroh_gossip::net::Gossip;
 
     use crate::Result;
     use crate::mirror::Mirror;
     use crate::proto::{self, CollabProto, Request};
     use crate::session::NetOptions;
-    use crate::transport::iroh::IrohMeshTransport;
-
-    pub(crate) type SessionTransport = IrohMeshTransport;
 
     /// How long to wait for relay/publish readiness before minting a ticket.
     const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 
+    /// A long stroke's fitted control points can be sizeable, so the gossip
+    /// message ceiling sits well past any plausible single action (paths are
+    /// RDP-simplified; pixels never ride gossip).
+    const MAX_MESSAGE_SIZE: usize = 256 * 1024;
+
     pub(crate) struct Bound {
         pub dialer: Dialer,
-        pub transport: SessionTransport,
+        pub gossip: Gossip,
         pub shutdown: Shutdown,
     }
 
@@ -58,25 +60,27 @@ mod imp {
         let builder = builder.add_custom_transport(webrtc.clone());
         let endpoint = builder.bind().await?;
 
-        let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
-        #[cfg(feature = "webrtc")]
-        let transport = transport.with_direct(webrtc.clone());
+        let gossip = Gossip::builder()
+            .max_message_size(MAX_MESSAGE_SIZE)
+            .spawn(endpoint.clone());
 
         let router = Router::builder(endpoint.clone())
-            .accept(crate::transport::MESH_ALPN, mesh_proto)
+            .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(proto::ALPN, CollabProto { mirror });
         #[cfg(feature = "webrtc")]
         let router = router.accept(
             crate::transport::direct::SIGNALING_ALPN,
-            crate::transport::direct::JsepProto::new(webrtc),
+            crate::transport::direct::JsepProto::new(endpoint.clone(), webrtc.clone()),
         );
         let router = router.spawn();
 
         Ok(Bound {
             dialer: Dialer {
                 endpoint: endpoint.clone(),
+                #[cfg(feature = "webrtc")]
+                webrtc,
             },
-            transport,
+            gossip,
             shutdown: Shutdown { endpoint, router },
         })
     }
@@ -84,6 +88,8 @@ mod imp {
     #[derive(Clone)]
     pub(crate) struct Dialer {
         endpoint: Endpoint,
+        #[cfg(feature = "webrtc")]
+        webrtc: Arc<iroh_webrtc_transport::WebRtcTransport>,
     }
 
     impl Dialer {
@@ -91,13 +97,44 @@ mod imp {
             Ok(self.endpoint.id())
         }
 
-        /// Connecting also teaches the endpoint how to reach `addr`, which is
-        /// what later lets the mesh dial the same peer by bare id.
-        pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {
-            // Teach iroh the peer's (derived) WebRTC addr from first contact,
-            // so this connection migrates too once a channel attaches.
+        /// Fire-and-forget: bootstrap a WebRTC channel to `remote` unless one
+        /// exists (or we are the answering side). Called on every gossip
+        /// neighbor; connections migrate onto the channel once it attaches.
+        pub fn ensure_direct(&self, remote: EndpointId) {
             #[cfg(feature = "webrtc")]
-            let addr = crate::transport::direct::with_custom_addr(addr);
+            crate::transport::direct::ensure_direct(&self.endpoint, &self.webrtc, remote);
+            #[cfg(not(feature = "webrtc"))]
+            let _ = remote;
+        }
+
+        /// The address traffic to `remote` currently travels over — the remote
+        /// map's selected path. `None` when no path selection exists (no live
+        /// connection). Sampled per call; paths migrate.
+        pub async fn selected_addr(&self, remote: EndpointId) -> Option<TransportAddr> {
+            self.endpoint
+                .remote_info(remote)
+                .await?
+                .selected_addr()
+                .cloned()
+        }
+
+        /// Connecting also teaches the endpoint how to reach `addr`, which is
+        /// what later lets gossip dial the same peer by bare id.
+        pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {
+            // If a WebRTC channel to this peer is already attached, dial with
+            // its (derived) custom addr so the connection starts direct. Never
+            // before it attaches: a custom path opened against an unattached
+            // channel fails validation and blocks the later real open (see
+            // transport::direct::bootstrap).
+            #[cfg(feature = "webrtc")]
+            let addr = if self
+                .webrtc
+                .is_attached(&crate::transport::direct::custom_addr_for(addr.id))
+            {
+                crate::transport::direct::with_custom_addr(addr)
+            } else {
+                addr
+            };
             let conn = self.endpoint.connect(addr, proto::ALPN).await?;
             Ok(Catchup { conn })
         }

@@ -15,14 +15,14 @@
 //!   bi-stream on [`SIGNALING_ALPN`] — which rides the relay on the web, and
 //!   whatever exists natively. [`JsepProto`] is the answering side, registered
 //!   on the session router.
-//! - **Bootstrap.** [`ensure_direct`] is called for every mesh link (both
-//!   ends, dial and accept). The side with the smaller endpoint id offers; the
-//!   other side answers via [`JsepProto`]. After the channel attaches, the
-//!   offerer re-announces the peer's custom addr with
-//!   `Endpoint::add_addr` (a patched-iroh API), which opens the custom path on
-//!   every live connection to that peer — mesh and catch-up conns *migrate*
-//!   onto WebRTC, keeping their relay paths as fallback. Path opening is
-//!   mutual, so the answerer needs no announcement of its own.
+//! - **Bootstrap.** [`ensure_direct`] is called for every gossip neighbor
+//!   (both ends). The side with the smaller endpoint id offers; the other
+//!   side answers via [`JsepProto`]. Once the channel attaches, *both* sides
+//!   [`announce`] the peer's custom addr with `Endpoint::add_addr` (a
+//!   patched-iroh API), which opens the custom path on every live connection
+//!   to that peer — gossip and catch-up conns *migrate* onto WebRTC, keeping
+//!   their relay paths as fallback. Crucially the addr is introduced only
+//!   *after* the channel attaches, and never at dial time; see [`bootstrap`].
 //!
 //! Nothing here is in the dial or data path: if bootstrap fails (no WebRTC,
 //! peer without the feature, handshake failure), connections simply stay on
@@ -39,7 +39,7 @@ use iroh_webrtc_transport::{
     AttachOptions, QuicSignaling, WebRtcTransport, custom_addr_from_opaque_data,
 };
 
-/// JSEP signaling for the session's WebRTC channels, distinct from the mesh
+/// JSEP signaling for the session's WebRTC channels, distinct from the gossip
 /// and catch-up ALPNs.
 pub(crate) const SIGNALING_ALPN: &[u8] = b"stark/webrtc-sig/0";
 
@@ -115,13 +115,23 @@ async fn negotiate_answer(
 }
 
 /// Answer one JSEP offer arriving on `conn` and attach the channel.
-async fn answer_one(transport: &Arc<WebRtcTransport>, conn: &Connection) -> anyhow::Result<()> {
+///
+/// The answerer announces too (not just the offerer): path opening is only
+/// initiated by the QUIC *client* of each connection, so whichever end dialed
+/// a given connection must know the peer's custom addr for that connection to
+/// migrate.
+async fn answer_one(
+    endpoint: &Endpoint,
+    transport: &Arc<WebRtcTransport>,
+    conn: &Connection,
+) -> anyhow::Result<()> {
     let remote = conn.remote_id();
     let (send, recv) = conn.accept_bi().await?;
     let mut sig = QuicSignaling::new(send, recv);
     let peer = negotiate_answer(&mut sig).await?;
     transport.attach_data_channel(peer, custom_addr_for(remote), AttachOptions::default())?;
     tracing::debug!(remote = %remote.fmt_short(), "webrtc channel attached (answerer)");
+    announce(endpoint.clone(), remote);
     Ok(())
 }
 
@@ -130,20 +140,24 @@ async fn answer_one(transport: &Arc<WebRtcTransport>, conn: &Connection) -> anyh
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 #[derive(Debug, Clone)]
 pub(crate) struct JsepProto {
+    endpoint: Endpoint,
     transport: Arc<WebRtcTransport>,
 }
 
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 impl JsepProto {
-    pub fn new(transport: Arc<WebRtcTransport>) -> Self {
-        Self { transport }
+    pub fn new(endpoint: Endpoint, transport: Arc<WebRtcTransport>) -> Self {
+        Self {
+            endpoint,
+            transport,
+        }
     }
 }
 
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 impl ProtocolHandler for JsepProto {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        answer_one(&self.transport, &conn)
+        answer_one(&self.endpoint, &self.transport, &conn)
             .await
             .map_err(|e| AcceptError::from_boxed(e.into()))?;
         // Hold the signaling connection open until the offerer closes it; it
@@ -165,13 +179,13 @@ pub(crate) struct JsepProto {
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 impl JsepProto {
-    pub fn new(transport: Arc<WebRtcTransport>) -> Self {
+    pub fn new(endpoint: Endpoint, transport: Arc<WebRtcTransport>) -> Self {
         let (worker, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Arc<Connection>>();
         // Exits when the router (and with it every JsepProto clone) is
         // dropped. Sequential is fine: one channel per peer, rarely.
         n0_future::task::spawn(async move {
             while let Some(conn) = inbox.recv().await {
-                if let Err(e) = answer_one(&transport, &conn).await {
+                if let Err(e) = answer_one(&endpoint, &transport, &conn).await {
                     tracing::debug!("webrtc answer failed: {e:#}");
                 }
             }
@@ -195,16 +209,16 @@ impl ProtocolHandler for JsepProto {
 }
 
 /// Fire-and-forget: make sure a WebRTC channel to `remote` exists or is being
-/// bootstrapped. Called on every mesh link, both ends, as often as links come
-/// and go — cheap when the channel already exists.
+/// bootstrapped. Called on every gossip neighbor, both ends, as often as
+/// neighbors come and go — cheap when the channel already exists.
 pub(crate) fn ensure_direct(
     endpoint: &Endpoint,
     transport: &Arc<WebRtcTransport>,
     remote: EndpointId,
 ) {
     // Exactly one side offers — the smaller endpoint id — the other answers
-    // via [`JsepProto`]. Mesh links are mutual, so the offerer always learns
-    // of the peer.
+    // via [`JsepProto`]. Gossip neighbor links are mutual, so the offerer
+    // always learns of the peer.
     if endpoint.id().as_bytes() >= remote.as_bytes() {
         return;
     }
@@ -248,19 +262,250 @@ async fn bootstrap(
     transport: &Arc<WebRtcTransport>,
     remote: EndpointId,
 ) -> anyhow::Result<()> {
-    // Dialing with the custom addr also records it in iroh's remote map; the
-    // dial itself rides whatever paths already work (relay on the web).
-    let mixed = with_custom_addr(EndpointAddr::new(remote));
-    let conn = endpoint.connect(mixed.clone(), SIGNALING_ALPN).await?;
+    // Deliberately dialed WITHOUT the custom addr: introducing it before the
+    // channel is attached makes iroh open the path immediately, whose
+    // validation then fails against the unattached transport — and a path
+    // mid-validation blocks the post-attach open (it is "already open"),
+    // leaving the connection stuck on the relay. The dial rides whatever
+    // paths already work (relay on the web).
+    let conn = endpoint
+        .connect(EndpointAddr::new(remote), SIGNALING_ALPN)
+        .await?;
     let (send, recv) = conn.open_bi().await?;
     let mut sig = QuicSignaling::new(send, recv);
     let peer = negotiate_offer(&mut sig).await?;
     transport.attach_data_channel(peer, custom_addr_for(remote), AttachOptions::default())?;
     conn.close(0u32.into(), b"signaling done");
-    // Now that the channel exists, re-announce the custom addr: the patched
-    // iroh opens it as a path on every live connection to this peer, and the
-    // path selector migrates traffic onto it once it validates. Path opening
-    // is mutual, so this one call serves both ends.
-    endpoint.add_addr(mixed).await;
+    announce(endpoint.clone(), remote);
     Ok(())
+}
+
+/// How long to keep re-announcing before concluding migration won't happen.
+const ANNOUNCE_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+    Duration::from_secs(9),
+];
+
+/// Announce `remote`'s (derived) custom addr now that its channel is
+/// attached: the patched iroh opens it as a path on every live connection to
+/// the peer, and the path selector migrates traffic onto it once it
+/// validates. Path opening is only initiated by each connection's QUIC
+/// client, so *both* ends announce after attaching.
+///
+/// Re-announces (bounded) until the selected path is the custom one: a
+/// connection that had opened the path *before* the channel attached (its
+/// addr can be known from an earlier session) ignores the first announcement
+/// while that stale path is still failing validation, and accepts a re-open
+/// only after it is abandoned.
+fn announce(endpoint: Endpoint, remote: EndpointId) {
+    n0_future::task::spawn(async move {
+        let mixed = with_custom_addr(EndpointAddr::new(remote));
+        endpoint.add_addr(mixed.clone()).await;
+        for delay in ANNOUNCE_RETRY_DELAYS {
+            n0_future::time::sleep(delay).await;
+            let selected = endpoint
+                .remote_info(remote)
+                .await
+                .and_then(|info| info.selected_addr().cloned());
+            if matches!(selected, Some(::iroh::TransportAddr::Custom(_))) {
+                return;
+            }
+            endpoint.add_addr(mixed.clone()).await;
+        }
+    });
+}
+
+/// The full production flow, natively: two peers with relay + WebRTC custom
+/// transport only (IP cleared, like a browser), gossip between them over the
+/// relay, JSEP-over-QUIC on each new neighbor, and the patched iroh migrates
+/// the live gossip connection onto the WebRTC path — exactly what a browser
+/// session does, minus the browser (str0m stands in for RTCPeerConnection;
+/// the protocol is the same).
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use ::iroh::address_lookup::MemoryLookup;
+    use ::iroh::endpoint::presets;
+    use ::iroh::protocol::Router;
+    use ::iroh::test_utils::run_relay_server;
+    use ::iroh::tls::CaTlsConfig;
+    use ::iroh::{RelayMap, RelayMode, SecretKey, Watcher};
+    use iroh_gossip::api::{Event as GossipEvent, GossipSender};
+    use iroh_gossip::net::Gossip;
+    use iroh_gossip::proto::TopicId;
+    use n0_future::StreamExt;
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    const TOPIC: TopicId = TopicId::from_bytes([7u8; 32]);
+
+    struct TestPeer {
+        endpoint: Endpoint,
+        webrtc: Arc<WebRtcTransport>,
+        lookup: MemoryLookup,
+        router: Router,
+        gossip: Gossip,
+    }
+
+    /// Relay + WebRTC only (IP transports cleared): on loopback a direct UDP
+    /// path would always win selection and the migration would be invisible.
+    /// This mirrors the browser, which has no IP transport at all.
+    async fn bind_peer(relay: RelayMap) -> TestPeer {
+        let secret = SecretKey::generate();
+        let webrtc = make_transport(secret.public());
+        let lookup = MemoryLookup::new();
+        let endpoint = Endpoint::builder(presets::N0)
+            .secret_key(secret)
+            .relay_mode(RelayMode::Custom(relay))
+            .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+            .clear_address_lookup()
+            .address_lookup(lookup.clone())
+            .clear_ip_transports()
+            .add_custom_transport(webrtc.clone())
+            .bind()
+            .await
+            .expect("bind endpoint");
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .accept(
+                SIGNALING_ALPN,
+                JsepProto::new(endpoint.clone(), webrtc.clone()),
+            )
+            .spawn();
+        TestPeer {
+            endpoint,
+            webrtc,
+            lookup,
+            router,
+            gossip,
+        }
+    }
+
+    /// Wait until the endpoint has published a relay address, and return it.
+    async fn relay_addr(peer: &TestPeer) -> EndpointAddr {
+        let mut w = peer.endpoint.watch_addr();
+        for _ in 0..300 {
+            let a = w.get();
+            if a.addrs.iter().any(|x| x.is_relay()) {
+                return a;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for a relay addr");
+    }
+
+    /// Subscribe and run the session's receive-loop shape: bootstrap WebRTC
+    /// on every new neighbor, forward received payloads. The returned oneshot
+    /// fires on the first neighbor — the "joined" moment.
+    async fn join(
+        peer: &TestPeer,
+        bootstrap: &[&TestPeer],
+    ) -> (
+        GossipSender,
+        mpsc::UnboundedReceiver<Vec<u8>>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let bootstrap = bootstrap.iter().map(|p| p.endpoint.id()).collect();
+        let sub = peer
+            .gossip
+            .subscribe(TOPIC, bootstrap)
+            .await
+            .expect("subscribe");
+        let (sender, mut receiver) = sub.split();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (joined_tx, joined_rx) = tokio::sync::oneshot::channel();
+        let mut joined_tx = Some(joined_tx);
+        let endpoint = peer.endpoint.clone();
+        let webrtc = peer.webrtc.clone();
+        tokio::spawn(async move {
+            while let Some(Ok(event)) = receiver.next().await {
+                match event {
+                    GossipEvent::NeighborUp(id) => {
+                        ensure_direct(&endpoint, &webrtc, id);
+                        if let Some(joined) = joined_tx.take() {
+                            let _ = joined.send(());
+                        }
+                    }
+                    GossipEvent::Received(message) => {
+                        // Best effort: the test may have finished with the rx.
+                        let _ = tx.send(message.content.to_vec());
+                    }
+                    _ => {}
+                }
+            }
+        });
+        (sender, rx, joined_rx)
+    }
+
+    /// Wait until traffic to every live remote travels over the WebRTC path
+    /// (the remote map's *selected* path — relay stays open as backup).
+    async fn wait_for_webrtc_selected(peer: &TestPeer, remote: EndpointId) {
+        for _ in 0..600 {
+            let selected = peer
+                .endpoint
+                .remote_info(remote)
+                .await
+                .and_then(|info| info.selected_addr().cloned());
+            if matches!(selected, Some(TransportAddr::Custom(_))) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for the WebRTC path to be selected");
+    }
+
+    async fn next_payload(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<u8> {
+        tokio::time::timeout(Duration::from_secs(20), rx.recv())
+            .await
+            .expect("timed out waiting for a payload")
+            .expect("gossip event stream ended")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gossip_links_migrate_from_relay_to_webrtc() {
+        let (relay_map, _url, _relay_guard) = run_relay_server().await.expect("local relay server");
+
+        let a = bind_peer(relay_map.clone()).await;
+        let b = bind_peer(relay_map.clone()).await;
+        let a_addr = relay_addr(&a).await;
+        let b_addr = relay_addr(&b).await;
+        a.lookup.add_endpoint_info(b_addr);
+        b.lookup.add_endpoint_info(a_addr);
+
+        let (a_send, mut a_recv, a_joined) = join(&a, &[]).await;
+        let (b_send, mut b_recv, b_joined) = join(&b, &[&a]).await;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            a_joined.await.expect("a receive loop died");
+            b_joined.await.expect("b receive loop died");
+        })
+        .await
+        .expect("timed out waiting for the swarm to form");
+
+        // The topic works from the start (over the relay)...
+        a_send
+            .broadcast(bytes::Bytes::from_static(b"over the relay, probably"))
+            .await
+            .expect("broadcast");
+        assert_eq!(next_payload(&mut b_recv).await, b"over the relay, probably");
+
+        // ...and migrates onto WebRTC without any reconnect, on BOTH ends.
+        wait_for_webrtc_selected(&a, b.endpoint.id()).await;
+        wait_for_webrtc_selected(&b, a.endpoint.id()).await;
+
+        // Still the same connection, now direct: traffic keeps flowing.
+        b_send
+            .broadcast(bytes::Bytes::from_static(b"over webrtc"))
+            .await
+            .expect("broadcast");
+        assert_eq!(next_payload(&mut a_recv).await, b"over webrtc");
+
+        let _ = a.router.shutdown().await;
+        let _ = b.router.shutdown().await;
+        a.endpoint.close().await;
+        b.endpoint.close().await;
+    }
 }

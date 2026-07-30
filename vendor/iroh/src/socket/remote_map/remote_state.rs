@@ -376,6 +376,12 @@ impl RemoteStateActor {
                 let info = RemoteInfo {
                     endpoint_id: self.state.endpoint_id,
                     addrs,
+                    // STARK PATCH: expose the selected path's address.
+                    selected: self
+                        .state
+                        .selected_path
+                        .as_ref()
+                        .map(|path| path.remote().into()),
                 };
                 tx.send(info).ok();
             }

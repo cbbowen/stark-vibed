@@ -1,5 +1,5 @@
 # iroh transport for shared multi-user drawings (DESIGN.md §12.4). Adapts the
-# wire (mesh-broadcast live actions + a catch-up/asset ALPN) to stark-core's
+# wire (gossip-broadcast live actions + a catch-up/asset ALPN) to stark-core's
 # network-agnostic ReplicatedTimeline; pulled in by the frontend, or omitted.
 [package]
 name = "stark-net"
@@ -12,7 +12,7 @@ publish = false
 # Direct peer connections on ONE ordinary iroh endpoint via a WebRTC custom
 # transport (vendor/iroh-webrtc-transport + the patched vendor/iroh). The
 # default iroh backend gains a custom transport, a JSEP signaling ALPN, and a
-# per-mesh-link bootstrap (transport/direct.rs). Connections establish over
+# per-gossip-neighbor bootstrap (transport/direct.rs). Connections establish over
 # whatever works (relay on the web) and MIGRATE onto the WebRTC path once a
 # data channel attaches — with the relay path kept open as fallback. Works
 # identically on native (str0m) and wasm (RTCPeerConnection), so the whole
@@ -23,6 +23,12 @@ default = ["webrtc"]
 [dependencies]
 stark-core = { path = "../stark-core" }
 iroh = "1"
+# The live-edit wire: epidemic broadcast on the session topic. Rides the same
+# endpoint as everything else — which is what the WebRTC custom-transport
+# design (see the `webrtc` feature) exists to allow.
+iroh-gossip = { version = "0.101", default-features = false, features = ["net"] }
+# Gossip broadcast takes `Bytes`.
+bytes = "1"
 # The upstream package kept the name of an unrelated earlier project (see
 # vendor/iroh-webrtc-transport/VENDORING.md); the `2` disambiguates in code.
 iroh-webrtc-transport = { path = "../../vendor/iroh-webrtc-transport", optional = true }
@@ -39,7 +45,7 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 data-encoding = "2"
 
 [dev-dependencies]
-# `test-utils` provides the local relay server for the webrtc mesh test.
+# `test-utils` provides the local relay server for the webrtc migration test.
 iroh = { version = "1", features = ["test-utils"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 pollster = { workspace = true }

@@ -2,9 +2,9 @@
 //!
 //! Two channels, one vocabulary (DESIGN.md §12.4):
 //!
-//! - **The [`mesh`](crate::mesh)** carries [`Wire`] messages — one committed
-//!   action each, postcard-encoded. Actions are small (fitted control points,
-//!   ids, params); pixels and image bytes never ride the mesh.
+//! - **Gossip** carries [`Stamped`] messages — one committed action or
+//!   presence frame each, postcard-encoded. Actions are small (fitted control
+//!   points, ids, params); pixels and image bytes never ride gossip.
 //! - **The `stark/collab/0` ALPN** answers [`Request`]s over one bi-stream per
 //!   request: the full session [`Snapshot`](Request::Snapshot) (the save-format
 //!   container, assets bundled) for joins, and individual content-addressed
@@ -16,6 +16,7 @@
 
 use std::sync::Mutex;
 
+use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 use stark_core::AssetId;
 use stark_core::document::Action;
@@ -26,7 +27,22 @@ use crate::mirror::Mirror;
 /// The catch-up / asset-fetch protocol.
 pub const ALPN: &[u8] = b"stark/collab/0";
 
-/// A mesh broadcast. Postcard-encoded.
+/// One gossip broadcast: the payload plus who authored it. Postcard-encoded.
+///
+/// Gossip forwards messages through intermediate peers and reports only the
+/// *delivering* neighbor, so the author travels in the payload. It is
+/// self-declared — the same trust already placed in the payload itself, since
+/// anyone holding the ticket can write anything (DESIGN.md §12.5 defers
+/// authentication).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Stamped {
+    /// Who produced the message — the authoritative source for anything it
+    /// references (a presence frame's author, a stroke's brush asset).
+    pub origin: EndpointId,
+    pub wire: Wire,
+}
+
+/// A live-wire message. Postcard-encoded, inside [`Stamped`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Wire {
     /// A freshly committed action for the shared log.
@@ -36,8 +52,8 @@ pub enum Wire {
     /// part of the document, and nothing in the log refers to it, which is the whole
     /// reason it may be dropped, coalesced or delayed without affecting convergence.
     ///
-    /// The author is not in the payload: the receiver takes it from the mesh's
-    /// `origin`, so a peer can publish its own presence and nobody else's
+    /// The author is not in the frame: the receiver takes it from the
+    /// [`Stamped`] envelope, whose `origin` names exactly one author
     /// (PEER_DESIGN.md §7).
     Presence(PeerFrame),
 }

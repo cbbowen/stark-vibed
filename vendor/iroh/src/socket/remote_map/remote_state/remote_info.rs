@@ -11,12 +11,21 @@ use iroh_base::{EndpointId, TransportAddr};
 pub struct RemoteInfo {
     pub(super) endpoint_id: EndpointId,
     pub(super) addrs: Vec<TransportAddrInfo>,
+    // STARK PATCH: the address of the currently selected path, if any.
+    pub(super) selected: Option<TransportAddr>,
 }
 
 impl RemoteInfo {
     /// Returns the remote's endpoint id.
     pub fn id(&self) -> EndpointId {
         self.endpoint_id
+    }
+
+    /// STARK PATCH: Returns the address of the currently selected path — the
+    /// one new traffic to this remote is sent over — if a path selection has
+    /// been made (which requires at least one live connection).
+    pub fn selected_addr(&self) -> Option<&TransportAddr> {
+        self.selected.as_ref()
     }
 
     /// Returns an iterator over known all addresses for this remote.
