@@ -16,7 +16,7 @@ use stark_core::color::{oklab_to_srgb, srgb_to_oklab};
 /// this is both the picker's fallback seed *and* what `main`'s startup seeding
 /// pushes into the engine — the two have to agree, or the picker would show a
 /// colour the brush does not have and the first stroke would come out black.
-pub const INITIAL_COLOR: [f32; 3] = [0.85, 0.15, 0.1];
+pub const INITIAL_COLOR: [f32; 3] = [0.61, 0.04, 0.02];
 
 #[component]
 pub fn ColorPanel() -> Element {

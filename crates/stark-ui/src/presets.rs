@@ -42,7 +42,7 @@ fn default_presets() -> Vec<PresetEntry> {
                 radius: 100.0,
                 shape: BrushShape::Round { hardness: 0.95 },
                 dynamics: BrushDynamics {
-                    add: 0.4,
+                    add: 1.0,
                     lift: 0.6,
                     deposit: 0.95,
                     ..BrushDynamics::default()
