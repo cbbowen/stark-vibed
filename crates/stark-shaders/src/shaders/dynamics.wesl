@@ -167,6 +167,11 @@ struct Stamp {
 
 const TAU: f32 = 6.283185307179586;
 
+// Deplete a bit slower than the math would indicate to account for error. Depleting
+// too slowly feels better than depleting too quickly.
+// TODO: Compute the right value for this from the current parameters.
+const DEPLETE_FACTOR: f32 = 0.75;
+
 // How much of a *constant deposition rate* survives on the canvas at the end of a
 // segment of exposure `e`: `∫₀ᵉ exp(λ_lift·(e−s)) ds`, the amount laid at each
 // point of the pass discounted by the lift still acting on it for the rest of the
@@ -371,7 +376,6 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
     let lift = (1.0 - exp(st.b.z * e))
         * textureSampleLevel(sel_mask, samp, world / rdim, 0.0).r;
 
-
     let rc = textureSampleLevel(region_color, samp, world / rdim, 0.0);
     let ra = textureSampleLevel(region_aux, samp, world / rdim, 0.0);
 
@@ -425,7 +429,7 @@ fn deplete(@builtin(global_invocation_id) gid: vec3<u32>) {
     // tool's decay over the canvas-side exposure, which is the prefix-τ integral, so
     // a tool draining in bare coverage would disagree with it by a factor that grows
     // with segment length — the very partition dependence this dispatch removes.
-    let keep = exp(st.b.w * tau_at(local) * st.b.y);
+    let keep = exp(DEPLETE_FACTOR * st.b.w * tau_at(local) * st.b.y);
     let b_c = textureLoad(brush_src_color, t, 0);
     let b_a = textureLoad(brush_src_aux, t, 0);
     textureStore(brush_dst_color_w, t, b_c);
