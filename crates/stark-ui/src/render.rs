@@ -321,7 +321,9 @@ impl Renderer {
     /// Import a user's brush-shape image, returning its content id — the
     /// error surfaces to the import UI rather than a log line.
     pub fn import_brush_id(&self, png_bytes: &[u8]) -> Result<stark_core::AssetId, String> {
-        self.engine.import_brush(png_bytes).map_err(|e| e.to_string())
+        self.engine
+            .import_brush(png_bytes)
+            .map_err(|e| e.to_string())
     }
 
     /// The canonical PNG bytes of one imported brush asset, if loaded.

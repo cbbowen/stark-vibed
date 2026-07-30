@@ -1,13 +1,9 @@
 //! Bindings from the [`mesh`](crate::mesh) onto real networks.
 //!
 //! The mesh owns the protocol and knows nothing about iroh or WebRTC; these
-//! modules are the only place the two meet. Each supplies a
+//! modules are the only place the two meet. [`iroh`] supplies the
 //! [`MeshTransport`](crate::mesh::MeshTransport) — dial a peer, accept peers,
 //! move framed bytes — and nothing else.
-//!
-//! Exactly one is compiled, chosen by the same condition as
-//! [`backend`](crate::backend): the WebRTC facade on wasm with the `webrtc`
-//! feature, plain iroh otherwise.
 
 // `::iroh` — inside this module the bare name `iroh` is the child module below.
 use ::iroh::EndpointId;
@@ -28,18 +24,10 @@ pub(crate) fn to_endpoint_id(peer: PeerId) -> Option<EndpointId> {
     EndpointId::from_bytes(peer.as_bytes()).ok()
 }
 
-#[cfg(not(all(feature = "webrtc", target_family = "wasm", target_os = "unknown")))]
 pub(crate) mod iroh;
-
-#[cfg(all(feature = "webrtc", target_family = "wasm", target_os = "unknown"))]
-pub(crate) mod webrtc;
 
 // WebRTC on the single endpoint (`webrtc2`): not a transport of its own — the
 // mesh still rides `iroh` above — just the bootstrap that gives the endpoint
-// direct WebRTC paths. Compiled out entirely when the facade backend is
-// active.
-#[cfg(all(
-    feature = "webrtc2",
-    not(all(feature = "webrtc", target_family = "wasm", target_os = "unknown"))
-))]
+// direct WebRTC paths.
+#[cfg(feature = "webrtc2")]
 pub(crate) mod direct;

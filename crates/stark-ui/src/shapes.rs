@@ -101,7 +101,9 @@ pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
         seed_session(state, id, canonical);
         update_brush(state, |b| b.shape = BrushShape::Stamp(id));
         notice.set(match (known, inverted) {
-            (true, _) => Some(format!("“{name}” is already in your library — selected it.")),
+            (true, _) => Some(format!(
+                "“{name}” is already in your library — selected it."
+            )),
             (false, true) => Some(format!(
                 "“{name}” read as dark ink on light paper, so it was inverted — white now paints."
             )),

@@ -4,16 +4,15 @@ resolver = "3"
 members = [
     "crates/*",
 ]
-# Both vendored trees are path dependencies, and cargo makes an unexcluded path
+# The vendored trees are path dependencies, and cargo makes an unexcluded path
 # dependency a workspace *member* — which put third-party code in the blast radius
 # of `cargo fmt --all` and `cargo clippy --workspace` (mixbox alone raises 45
 # warnings we must not "fix"). They still build as dependencies; they are just not
-# ours to lint. See vendor/iroh-webrtc-transport/VENDORING.md.
+# ours to lint. Each has a VENDORING.md.
 exclude = [
     "vendor/mixbox",
-    "vendor/iroh-webrtc-transport",
-    # Experimental second vendoring (anchalshivank's crate of the same name);
-    # standalone, not a dependency of anything yet. See its VENDORING.md.
+    # WebRTC as an iroh custom transport (anchalshivank's crate; the `2` is
+    # historical — an unrelated earlier project shared the name).
     "vendor/iroh-webrtc-transport2",
     # iroh 1.0.3 + the custom-transport path-opening patch (see its
     # VENDORING.md); substituted for the crates.io version via [patch] below.

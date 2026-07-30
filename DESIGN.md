@@ -96,7 +96,7 @@ stark/
 │   │   └── src/
 │   │       ├── session.rs      # CollabSession: the frontend-facing API
 │   │       ├── mesh/           # the live broadcast wire
-│   │       ├── transport/      # iroh, and the vendored WebRTC facade
+│   │       ├── transport/      # iroh, plus the WebRTC path bootstrap
 │   │       ├── mirror.rs       # CPU copy of the log, to serve joiners
 │   │       └── ticket.rs       # shareable session tickets
 │   └── stark-ui/               # Dioxus 0.7 frontend (§11)
@@ -114,7 +114,8 @@ stark/
 │           └── collab.rs       # session lifecycle glue
 ├── vendor/                     # third-party, excluded from the workspace
 │   ├── mixbox/                 # pigment mixing (submodule, CC BY-NC)
-│   └── iroh-webrtc-transport/  # browser WebRTC facade for iroh (§12.4)
+│   ├── iroh/                   # iroh 1.0 + custom-path-opening patch (§12.4)
+│   └── iroh-webrtc-transport2/ # WebRTC as an iroh custom transport (§12.4)
 └── DESIGN.md
 ```
 

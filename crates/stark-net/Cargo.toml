@@ -9,48 +9,22 @@ license.workspace = true
 publish = false
 
 [features]
-# Direct peer connections on the web target via the vendored WebRTC facade
-# (vendor/iroh-webrtc-transport). On the web iroh cannot hole-punch, so all
-# traffic otherwise crosses n0's relays; WebRTC gives lower-latency direct paths
-# with automatic relay fallback per connection.
-#
-# This is only possible because the live wire is `crate::mesh`, built on explicit
-# dial/accept — iroh-gossip could not use the facade, being a self-dialing swarm.
-#
-# On **wasm** the feature swaps the whole session backend (`crate::backend`):
-# both wires — mesh live actions and the catch-up/asset ALPN — ride facade
-# connections dialed `webrtc_preferred`, so each falls back to relay on its own
-# if the WebRTC handshake fails. `CollabSession`'s public API is unchanged.
-#
-# On **native** it changes nothing at the session level: iroh already hole-punches,
-# so peers get direct connections without WebRTC. The feature only pulls the
-# crate in there so it builds and can be tested.
-#
-# NOT verified end-to-end: the wasm path compiles and its protocol is shared with
-# the (well-tested) iroh path, but exercising real browser WebRTC needs a browser.
-# See vendor/iroh-webrtc-transport/VENDORING.md.
-webrtc = ["dep:iroh-webrtc-transport"]
 # Direct peer connections on ONE ordinary iroh endpoint via a WebRTC custom
-# transport (vendor/iroh-webrtc-transport2 + the patched vendor/iroh). Unlike
-# `webrtc`, this does not swap the backend: the default iroh backend gains a
-# custom transport, a JSEP signaling ALPN, and a per-mesh-link bootstrap
-# (transport/direct.rs). Connections establish over whatever works (relay on
-# the web) and MIGRATE onto the WebRTC path once a data channel attaches —
-# with the relay path kept open as fallback. Works identically on native
-# (str0m) and wasm (RTCPeerConnection), so the whole flow is testable in
-# `cargo test`.
-#
-# If both `webrtc` and `webrtc2` are enabled, `webrtc` wins on wasm (it swaps
-# the whole backend) and `webrtc2` is dead code there.
+# transport (vendor/iroh-webrtc-transport2 + the patched vendor/iroh). The
+# default iroh backend gains a custom transport, a JSEP signaling ALPN, and a
+# per-mesh-link bootstrap (transport/direct.rs). Connections establish over
+# whatever works (relay on the web) and MIGRATE onto the WebRTC path once a
+# data channel attaches — with the relay path kept open as fallback. Works
+# identically on native (str0m) and wasm (RTCPeerConnection), so the whole
+# flow is testable in `cargo test`.
 webrtc2 = ["dep:iroh-webrtc-transport2", "dep:iroh-base", "dep:anyhow", "iroh/unstable-custom-transports"]
 default = ["webrtc2"]
 
 [dependencies]
 stark-core = { path = "../stark-core" }
 iroh = "1"
-# Same package name as the `webrtc` facade dep below — a different project
-# that shares the name (see vendor/iroh-webrtc-transport2/VENDORING.md);
-# cargo tells them apart by version.
+# The upstream package kept the name of an unrelated earlier project (see
+# vendor/iroh-webrtc-transport2/VENDORING.md); the `2` disambiguates in code.
 iroh-webrtc-transport2 = { package = "iroh-webrtc-transport", path = "../../vendor/iroh-webrtc-transport2", optional = true }
 # For naming CustomAddr (iroh does not re-export it).
 iroh-base = { version = "1", optional = true }
@@ -63,22 +37,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["sync"] }
 data-encoding = "2"
-
-# The web target is what WebRTC is for; pull in the browser facade there.
-[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.iroh-webrtc-transport]
-path = "../../vendor/iroh-webrtc-transport"
-optional = true
-default-features = false
-features = ["browser"]
-
-# Native iroh already establishes direct connections, so WebRTC isn't needed
-# host-side; build the native backend anyway so the feature compiles for
-# tests/dev.
-[target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies.iroh-webrtc-transport]
-path = "../../vendor/iroh-webrtc-transport"
-optional = true
-default-features = false
-features = ["native"]
 
 [dev-dependencies]
 # `test-utils` provides the local relay server for the webrtc2 mesh test.

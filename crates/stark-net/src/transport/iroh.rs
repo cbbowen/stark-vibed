@@ -464,12 +464,12 @@ mod tests {
 mod webrtc_migration_tests {
     use std::time::Duration;
 
+    use iroh::address_lookup::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
     use iroh::test_utils::run_relay_server;
     use iroh::tls::CaTlsConfig;
     use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, SecretKey, Watcher};
-    use iroh::address_lookup::MemoryLookup;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -585,8 +585,7 @@ mod webrtc_migration_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mesh_links_migrate_from_relay_to_webrtc() {
-        let (relay_map, _url, _relay_guard) =
-            run_relay_server().await.expect("local relay server");
+        let (relay_map, _url, _relay_guard) = run_relay_server().await.expect("local relay server");
 
         let mut a = bind_peer(relay_map.clone()).await;
         let mut b = bind_peer(relay_map.clone()).await;
@@ -602,8 +601,14 @@ mod webrtc_migration_tests {
         wait_for_neighbors(&b_mesh, 1).await;
 
         // The link works from the start (over the relay)...
-        a_mesh.broadcast(b"over the relay, probably".to_vec()).await.unwrap();
-        assert_eq!(next_payload(&mut b_events).await, b"over the relay, probably");
+        a_mesh
+            .broadcast(b"over the relay, probably".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            next_payload(&mut b_events).await,
+            b"over the relay, probably"
+        );
 
         // ...and migrates onto WebRTC without any reconnect, on BOTH ends.
         wait_for_link_kind(&a_mesh, LinkKind::WebRtc).await;

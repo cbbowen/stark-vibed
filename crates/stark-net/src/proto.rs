@@ -78,12 +78,9 @@ pub(crate) fn decode_request(bytes: &[u8]) -> crate::Result<Request> {
     Ok(postcard::from_bytes(bytes)?)
 }
 
-/// The iroh plumbing. Compiled only when the iroh backend is active; the WebRTC
-/// backend carries the same protocol over facade streams instead.
-#[cfg(not(all(feature = "webrtc", target_family = "wasm", target_os = "unknown")))]
+/// The iroh plumbing: the protocol handler and the client-side request call.
 pub(crate) use iroh_wire::{CollabProto, request};
 
-#[cfg(not(all(feature = "webrtc", target_family = "wasm", target_os = "unknown")))]
 mod iroh_wire {
     use std::sync::{Arc, Mutex};
 

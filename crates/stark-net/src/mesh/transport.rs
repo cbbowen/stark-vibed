@@ -3,15 +3,15 @@
 //! The mesh is deliberately ignorant of iroh, WebRTC, and relays: it asks only
 //! for *framed, ordered, bidirectional channels to peers, addressed by 32-byte
 //! id*. That keeps the protocol (membership, flooding, dedup, healing) testable
-//! against an in-memory transport, and lets the same code run over plain iroh
-//! connections or the WebRTC facade's connections.
+//! against an in-memory transport, independent of what the real connections
+//! ride on.
 //!
 //! ## `MaybeSend`
 //!
-//! Native transports are `Send` (tokio moves tasks between threads); the browser
-//! WebRTC facade is `Rc`-based and is *not*. Rather than fork the mesh, bounds
-//! are written against [`MaybeSend`]/[`MaybeSync`], which are `Send`/`Sync` off
-//! wasm and vacuous on it — the standard idiom for single-threaded wasm runtimes.
+//! Native transports are `Send` (tokio moves tasks between threads); browser
+//! transports need not be. Rather than fork the mesh, bounds are written
+//! against [`MaybeSend`]/[`MaybeSync`], which are `Send`/`Sync` off wasm and
+//! vacuous on it — the standard idiom for single-threaded wasm runtimes.
 
 use std::fmt;
 use std::future::Future;

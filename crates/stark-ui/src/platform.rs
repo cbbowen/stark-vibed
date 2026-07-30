@@ -275,12 +275,9 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
             let inv = 255 - lum;
             (p[0], p[1], p[2]) = (inv, inv, inv);
         }
-        let data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-            wasm_bindgen::Clamped(&px),
-            w,
-            h,
-        )
-        .map_err(|_| "could not rebuild the pixels".to_string())?;
+        let data =
+            web_sys::ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&px), w, h)
+                .map_err(|_| "could not rebuild the pixels".to_string())?;
         ctx.put_image_data(&data, 0.0, 0.0)
             .map_err(|_| "could not write the pixels".to_string())?;
     }

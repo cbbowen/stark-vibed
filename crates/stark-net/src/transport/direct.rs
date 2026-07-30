@@ -35,7 +35,9 @@ use ::iroh::endpoint::Connection;
 use ::iroh::protocol::{AcceptError, ProtocolHandler};
 use ::iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use iroh_base::CustomAddr;
-use iroh_webrtc_transport2::{AttachOptions, QuicSignaling, WebRtcTransport, custom_addr_from_opaque_data};
+use iroh_webrtc_transport2::{
+    AttachOptions, QuicSignaling, WebRtcTransport, custom_addr_from_opaque_data,
+};
 
 /// JSEP signaling for the session's WebRTC channels, distinct from the mesh
 /// and catch-up ALPNs.
@@ -76,17 +78,23 @@ pub(crate) fn with_custom_addr(mut addr: EndpointAddr) -> EndpointAddr {
 // native, the browser's RTCPeerConnection on wasm); the protocol is identical.
 
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
-async fn negotiate_offer(sig: &mut QuicSignaling) -> anyhow::Result<iroh_webrtc_transport2::Str0mPeer> {
+async fn negotiate_offer(
+    sig: &mut QuicSignaling,
+) -> anyhow::Result<iroh_webrtc_transport2::Str0mPeer> {
     iroh_webrtc_transport2::negotiate_dc_as_offerer(sig, DC_LABEL).await
 }
 
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
-async fn negotiate_answer(sig: &mut QuicSignaling) -> anyhow::Result<iroh_webrtc_transport2::Str0mPeer> {
+async fn negotiate_answer(
+    sig: &mut QuicSignaling,
+) -> anyhow::Result<iroh_webrtc_transport2::Str0mPeer> {
     iroh_webrtc_transport2::negotiate_dc_as_answerer(sig).await
 }
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
-async fn negotiate_offer(sig: &mut QuicSignaling) -> anyhow::Result<iroh_webrtc_transport2::WebRtcPeer> {
+async fn negotiate_offer(
+    sig: &mut QuicSignaling,
+) -> anyhow::Result<iroh_webrtc_transport2::WebRtcPeer> {
     iroh_webrtc_transport2::negotiate_dc_as_offerer(
         sig,
         DC_LABEL,
@@ -96,7 +104,9 @@ async fn negotiate_offer(sig: &mut QuicSignaling) -> anyhow::Result<iroh_webrtc_
 }
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
-async fn negotiate_answer(sig: &mut QuicSignaling) -> anyhow::Result<iroh_webrtc_transport2::WebRtcPeer> {
+async fn negotiate_answer(
+    sig: &mut QuicSignaling,
+) -> anyhow::Result<iroh_webrtc_transport2::WebRtcPeer> {
     iroh_webrtc_transport2::negotiate_dc_as_answerer(
         sig,
         &iroh_webrtc_transport2::WebPeerConfig::default(),
