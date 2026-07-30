@@ -1557,6 +1557,12 @@ it with a peer all use the same records. A solo file simply has a single actor.
   whole undo timeline is immediately available — undo-after-load, for free.
 - **Timelapse** = replay actions in order, presenting after each (or each Nth)
   `CommitStroke`. Sample timing comes from `InputSample.time`.
+  Shipped as **Timeline mode** (MISSING_FEATURES §2.4), and *not* as a separate
+  replay path: `Timeline::seek` moves the applied/withheld boundary the undo
+  stack already has, so the timelapse is the document's own history being walked
+  rather than a second machine that reproduces it. Backwards uses the history
+  crate's bulk `pop_actions_with`, which rebuilds the snapshot cache for the
+  shorter history once instead of once per step crossed (§5.3).
 - **Compactness** = a path of samples is far smaller than the painted pixels.
 - **Fidelity across builds:** replay determinism holds *within* a build. Because
   shader/algorithm changes could alter pixels across builds, the file records

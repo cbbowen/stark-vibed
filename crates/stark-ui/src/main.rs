@@ -49,7 +49,9 @@ use layout::{
 use panels::brush::{BRISTLE_BRUSH, PresetSaveModal};
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
-use panels::{FrameBar, FrameOverlay, PickBar, SelectionBar, TransformBar, TransformOverlay};
+use panels::{
+    FrameBar, FrameOverlay, PickBar, SelectionBar, TimelineBar, TransformBar, TransformOverlay,
+};
 use platform::capture_pointer;
 use render::CANVAS_ID;
 use settings::SettingsModal;
@@ -163,11 +165,20 @@ fn app() -> Element {
         });
     });
 
+    // Timeline mode reserves the foot of the window for its bar, so the class rides
+    // the root and the stylesheet lifts the bottom-bars column clear of it — one
+    // rule, rather than every bar in that column learning about a sibling.
+    let root_class = if (state.timeline.open)() {
+        "app-root timeline-mode"
+    } else {
+        "app-root"
+    };
+
     rsx! {
         document::Stylesheet { href: STARK_CSS }
 
         div {
-            class: "app-root",
+            class: root_class,
             // A panel drag — a reorder by the title bar, or a resize by the bottom-edge
             // grip — is driven here (events bubble up even over the canvas), so it keeps
             // tracking wherever the pointer goes. Both are no-ops unless armed; leaving
@@ -225,6 +236,17 @@ fn app() -> Element {
                 // (MISSING_FEATURES §0.2). Last in the column, so it comes up
                 // nearest the canvas — it is the most transient of the three.
                 PickBar {}
+            }
+
+            // Timeline mode's own bar, below the bottom-bars column and spanning
+            // the window rather than hugging its contents: the others are commands
+            // that happen to apply right now, while this is a *mode* the whole
+            // canvas is in, and a scrubber wants every pixel of width it can get
+            // (MISSING_FEATURES §2.4). Mounted from here rather than gated inside
+            // itself, because it owns hooks — a component may not gain or lose
+            // those between renders.
+            if (state.timeline.open)() {
+                TimelineBar {}
             }
 
             // The brush editor dialog (mounted only while open, so each open
@@ -317,6 +339,15 @@ fn Canvas() -> Element {
                 // space+Alt panning rather than sampling.
                 if nav.start_pan(&e) {
                     canvas_active.set(true);
+                    return;
+                }
+                // Nothing may be *committed* while the playhead is moving: a
+                // commit clears the withheld half of the timeline, so a stroke
+                // laid under a running playback would delete the rest of the
+                // piece (`panels::timeline`). Panning is taken above and stays
+                // available — looking around during playback costs the document
+                // nothing.
+                if panels::timeline::is_playing(state) {
                     return;
                 }
                 if e.trigger_button() == Some(MouseButton::Primary) {
@@ -474,6 +505,7 @@ fn CommandRail() -> Element {
         .map(|o| (o.can_undo, o.can_redo, o.has_selection))
         .unwrap_or((false, false, false));
     let hidden = (layout.hidden)();
+    let timeline_open = (state.timeline.open)();
 
     rsx! {
         div { class: chrome_class(state, "command-rail"),
@@ -552,10 +584,25 @@ fn CommandRail() -> Element {
                             span { "Invert selection" }
                             span { class: "menu-shortcut", "Ctrl+Shift+I" }
                         }
+                        // A mode rather than a command, so it carries a check like
+                        // the Panels menu's entries do — the menu says whether you
+                        // are in it, not only how to get there
+                        // (MISSING_FEATURES §2.4).
+                        MenubarItem {
+                            index: 9usize,
+                            value: "timeline".to_string(),
+                            on_select: move |_| {
+                                panels::timeline::set_open(state, !timeline_open)
+                            },
+                            span { "Timeline" }
+                            span { class: "menu-check",
+                                if timeline_open { "\u{2713}" } else { "" }
+                            }
+                        }
                         // Last, and last for a reason: it is the only entry here that
                         // is not a thing to *do* to the drawing.
                         MenubarItem {
-                            index: 9usize,
+                            index: 10usize,
                             value: "credits".to_string(),
                             on_select: move |_| show_credits.set(true),
                             span { "Credits\u{2026}" }

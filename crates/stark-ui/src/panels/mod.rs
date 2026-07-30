@@ -9,6 +9,7 @@ pub mod lighting;
 pub mod navigator;
 pub mod pick;
 pub mod select;
+pub mod timeline;
 pub mod transform;
 
 pub use brush::BrushPanel;
@@ -19,4 +20,5 @@ pub use lighting::LightingPanel;
 pub use navigator::NavigatorPanel;
 pub use pick::PickBar;
 pub use select::{SelectPanel, SelectionBar};
+pub use timeline::TimelineBar;
 pub use transform::{TransformBar, TransformOverlay};

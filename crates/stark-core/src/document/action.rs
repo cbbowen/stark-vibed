@@ -448,6 +448,38 @@ pub enum ActionKind {
     },
 }
 
+impl ActionKind {
+    /// What this action *is*, in two or three words — the caption a history
+    /// scrubber puts on the step it is about to cross (MISSING_FEATURES §2.4).
+    ///
+    /// A `&'static str` and nothing more: a timeline showing a hundred steps needs
+    /// them by the hundred, and the point of the caption is to tell a stroke from a
+    /// layer change at a glance, not to describe either. Anything richer — which
+    /// layer, what colour — is what the canvas beside it is for.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ActionKind::CommitStroke(_) => "Stroke",
+            ActionKind::Fill { .. } => "Fill",
+            ActionKind::Transform { .. } => "Transform",
+            ActionKind::Select(_) => "Select",
+            ActionKind::InvertSelection => "Invert selection",
+            ActionKind::AddLayer { .. } => "Add layer",
+            ActionKind::RemoveLayer(_) => "Remove layer",
+            ActionKind::MoveLayer { .. } => "Reorder layer",
+            ActionKind::SetLayerBlend(..) => "Blend mode",
+            ActionKind::SetLayerOpacity(..) => "Layer opacity",
+            ActionKind::SetLayerVisible(..) => "Layer visibility",
+            ActionKind::SetLayerName(..) => "Rename layer",
+            ActionKind::AddMatte { .. } => "Add frame",
+            ActionKind::SetMatteRect(..) => "Move frame",
+            ActionKind::SetMatteColor(..) => "Frame colour",
+            ActionKind::SetBackground(_) => "Canvas colour",
+            ActionKind::SetSurface(_) => "Canvas surface",
+            ActionKind::Undo(_) => "Undo",
+        }
+    }
+}
+
 /// A committed document mutation with its identity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Action {

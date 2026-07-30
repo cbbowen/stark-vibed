@@ -1786,3 +1786,211 @@
   opacity: 0.45;
   font-style: italic;
 }
+
+/* --- Timeline mode (MISSING_FEATURES §2.4) ---------------------------------
+
+   A bar across the foot of the window, inset like the rail and the panel stack so
+   it reads as a member of the same chrome. Full-width where the other bars hug
+   their contents, because the other bars are commands that happen to apply right
+   now while this is a *mode* the canvas is in — and because a scrubber is worth
+   every pixel of width it can be given: the whole point is landing on one stroke
+   out of hundreds. */
+.timeline-bar {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  /* Above the panel stack and the bars: it is the frame the mode puts around
+     everything else, and nothing should be able to sit on top of it. */
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  color: #e8e8ea;
+}
+
+/* The bottom-centre column shares this edge, so it moves up out of the way for as
+   long as the mode is on. */
+.app-root.timeline-mode .bottom-bars {
+  bottom: 84px;
+}
+
+/* Transport: square rather than pill, so the glyph sits in the middle of a button
+   that is obviously one control rather than a word-shaped chip that lost its word. */
+.timeline-bar .chip {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.timeline-bar .timeline-play {
+  width: 34px;
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* The track: a ruler of per-action ticks, a fill showing how far the playhead has
+   come, and a transparent range input over both taking every pointer and key. The
+   three are stacked rather than composed because only the last of them can be a
+   native control, and only a native control is width-independent without measuring
+   the DOM. */
+.timeline-track {
+  position: relative;
+  flex: 1;
+  height: 26px;
+  min-width: 120px;
+  border-radius: 5px;
+  background: #00000047;
+  box-shadow: inset 0 0 0 1px #ffffff12;
+  overflow: hidden;
+}
+
+.timeline-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #3a6ea540;
+  border-right: 1px solid #6ea3d8;
+  pointer-events: none;
+}
+
+.timeline-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* A hairline, inset top and bottom so the run of them reads as a ruler rather than
+   as a fence. Behind the playhead they take the fill's ink, which is what makes the
+   travelled part of the track legible at a glance. */
+.timeline-tick {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  margin-left: -1px;
+  background: #ffffff2e;
+}
+
+.timeline-tick.past {
+  background: #cfe3fa73;
+}
+
+/* The interactive layer. Its own track and thumb are drawn by the two elements
+   underneath, so both are stripped here — except the thumb, which stays as a
+   visible grip because a scrubber with nothing to take hold of is a progress bar. */
+.timeline-range {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+
+/* Drawn *inside* the control: the track clips its children so the fill and the
+   ticks stay in their box, and an outline offset outward would be clipped with
+   them — the one focus ring that has to survive is this one. */
+.timeline-range:focus-visible {
+  outline: 2px solid #6ea3d8;
+  outline-offset: -2px;
+}
+
+.timeline-range::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 100%;
+}
+
+.timeline-range::-moz-range-track {
+  background: transparent;
+  height: 100%;
+}
+
+.timeline-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 10px;
+  height: 22px;
+  margin-top: 2px;
+  border: none;
+  border-radius: 3px;
+  background: #e8eef6;
+  box-shadow: 0 0 4px #000000a6;
+}
+
+.timeline-range::-moz-range-thumb {
+  width: 10px;
+  height: 22px;
+  border: none;
+  border-radius: 3px;
+  background: #e8eef6;
+  box-shadow: 0 0 4px #000000a6;
+}
+
+/* Where the playhead is, over what it is standing on. Two lines because they are
+   two different questions — how far through, and what this step *is* — and a fixed
+   width so the bar does not twitch as the numbers and the captions change under a
+   drag. */
+.timeline-count {
+  flex: none;
+  width: 108px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+  line-height: 1.25;
+  color: #e8e8ea;
+}
+
+.timeline-position {
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-caption {
+  font-size: 11px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Standing anywhere but the newest step means there is work ahead of the playhead
+   that the next stroke would discard. That is exactly what an undo leaves too, so
+   it is a state to *notice* rather than to warn about: the numbers warm up, and the
+   title says what would happen. */
+.timeline-count.behind .timeline-position {
+  color: #e8b46a;
+}
+
+.timeline-speed {
+  flex: none;
+  width: 180px;
+  margin-bottom: 0;
+}
+
+.timeline-speed .chip {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+/* The one thing the bar says when there is no playhead to move (a shared session). */
+.timeline-note {
+  flex: 1;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.timeline-close {
+  margin-left: auto;
+}

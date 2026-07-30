@@ -58,6 +58,39 @@ pub trait Timeline {
         false
     }
 
+    /// Where the playhead stands and how far it can travel — `(applied, total)`,
+    /// both counted in actions — or `None` for a timeline that cannot be scrubbed
+    /// (MISSING_FEATURES §2.4).
+    ///
+    /// `None` rather than `(n, n)` because the two say different things: a
+    /// timeline with nowhere to go is still a timeline, while a
+    /// [`ReplicatedTimeline`] has no single playhead to move at all — its
+    /// materialization is a function of a log that peers are still appending to,
+    /// so a scrub would be undone by the next arrival. The frontend needs to tell
+    /// "there is no history yet" from "this document's history is not yours alone
+    /// to walk", and only the second is a reason to say so.
+    fn scrub_range(&self) -> Option<(usize, usize)> {
+        None
+    }
+
+    /// Move the playhead to `to` (clamped to the range), applying or withdrawing
+    /// whatever lies between. Returns whether the document changed.
+    ///
+    /// The withdrawn actions are *kept*, in the same place undo keeps them, which
+    /// is the whole reason this is navigation rather than deletion: scrubbing back
+    /// and forward is lossless, and committing a fresh edit at a scrubbed-back
+    /// position truncates the future exactly as painting after an undo does.
+    fn seek(&mut self, _to: usize, _ctx: &mut ApplyCtx) -> bool {
+        false
+    }
+
+    /// A caption per action, oldest first and spanning the **whole** range
+    /// [`scrub_range`](Self::scrub_range) reports — the withdrawn ones included,
+    /// since a scrubber has to label the steps it can travel *to*.
+    fn scrub_labels(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
     /// How materializations have been serviced (DESIGN.md §12.6). Solo timelines
     /// report zeros — the counters exist for the replicated fast paths.
     fn stats(&self) -> TimelineStats {
@@ -98,6 +131,16 @@ impl LinearTimeline {
 
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
         self.history.actions()
+    }
+
+    /// How many actions are currently applied — the playhead's position.
+    ///
+    /// A count rather than a stored counter: `history` reports its length only as
+    /// an opaque [`Version`], and a second copy of a number the history already
+    /// knows is a number that can disagree with it. The walk is over a `Vec` and
+    /// happens when a scrubber asks, not per commit.
+    fn applied(&self) -> usize {
+        self.history.actions().count()
     }
 }
 
@@ -142,6 +185,66 @@ impl Timeline for LinearTimeline {
 
     fn clone_actions(&self) -> Vec<Action> {
         self.actions().cloned().collect()
+    }
+
+    fn scrub_range(&self) -> Option<(usize, usize)> {
+        let applied = self.applied();
+        Some((applied, applied + self.redo.len()))
+    }
+
+    /// Scrubbing **is** the undo/redo split, moved in bulk rather than one step at
+    /// a time (MISSING_FEATURES §2.4). Nothing new is stored: the applied prefix
+    /// and the withheld suffix are the two halves this type already had, so a
+    /// scrub leaves the timeline in a state undo could equally have produced —
+    /// which is what makes it safe to paint from wherever the playhead was left.
+    ///
+    /// Backwards goes through `pop_actions_with`, which rebuilds the snapshot
+    /// cache for the shorter history *once* instead of computing and discarding
+    /// the intermediate cache states of `k` successive pops. That is the
+    /// difference between a drag to the start of a long session being one rebuild
+    /// and being one per stroke crossed.
+    ///
+    /// Forwards has no such shortcut and wants none: re-applying an action is
+    /// re-rendering its stroke on the GPU, which is the work itself rather than
+    /// bookkeeping around it.
+    fn seek(&mut self, to: usize, ctx: &mut ApplyCtx) -> bool {
+        let applied = self.applied();
+        let to = to.min(applied + self.redo.len());
+        match to.cmp(&applied) {
+            std::cmp::Ordering::Less => {
+                // `pop_actions_with` yields newest-first, which is exactly the
+                // order successive `undo`s push onto `redo` — so the stack stays
+                // one thing however it was filled.
+                let popped = self.history.pop_actions_with(applied - to, ctx);
+                self.redo.extend(popped);
+                true
+            }
+            std::cmp::Ordering::Greater => {
+                // The oldest withheld action sits at the *end* of `redo` (it is
+                // the next one `redo()` would pop), so the batch to re-apply is
+                // the tail, taken in reverse.
+                let batch: Vec<Action> = self
+                    .redo
+                    .drain(self.redo.len() - (to - applied)..)
+                    .rev()
+                    .collect();
+                for action in batch {
+                    self.history.push_action_with(action, ctx);
+                }
+                true
+            }
+            std::cmp::Ordering::Equal => false,
+        }
+    }
+
+    fn scrub_labels(&self) -> Vec<&'static str> {
+        self.history
+            .actions()
+            .map(|a| a.kind.label())
+            // The withheld half is stored newest-first; the scrubber reads
+            // oldest-first throughout.
+            .chain(self.redo.iter().rev().map(|a| a.kind.label()))
+            .collect()
     }
 }
 

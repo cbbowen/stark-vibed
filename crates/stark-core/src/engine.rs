@@ -731,6 +731,20 @@ impl Engine {
                 }
                 self.apply_document_surface();
             }
+            DocCommand::Seek(to) => {
+                self.doc_preview = None;
+                if self.timeline.seek(to, &mut self.apply) {
+                    self.committed_changed();
+                    self.apply_document_surface();
+                    // A scrub crosses layer additions wholesale — dragging to the
+                    // start of the log withdraws every one of them — so the
+                    // selected layer routinely stops existing here, where an undo
+                    // has to be aimed at exactly the right step to manage it. A
+                    // playhead left somewhere the brush has nowhere to go is a
+                    // canvas that silently swallows the next stroke.
+                    self.repoint_active_layer();
+                }
+            }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
             DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
@@ -1551,6 +1565,25 @@ impl Engine {
     /// The current committed document state.
     pub fn document(&self) -> &DocState {
         self.timeline.current()
+    }
+
+    /// Where the history playhead stands and how far it can travel, in actions —
+    /// or `None` for a document whose history is not this client's alone to walk
+    /// (a shared session). See
+    /// [`Timeline::scrub_range`](crate::document::Timeline::scrub_range).
+    ///
+    /// A **request** rather than a field of [`ObservableState`]: it is asked for
+    /// only while a scrubber is on screen, and putting it in the projection would
+    /// have every command — every pointer sample of every stroke — pay for a
+    /// number nothing else reads.
+    pub fn scrub_range(&self) -> Option<(usize, usize)> {
+        self.timeline.scrub_range()
+    }
+
+    /// A caption per action across the whole scrub range, oldest first — what a
+    /// scrubber labels its ticks with.
+    pub fn scrub_labels(&self) -> Vec<&'static str> {
+        self.timeline.scrub_labels()
     }
 
     /// The GPU context this engine renders with (for surface/readback setup).

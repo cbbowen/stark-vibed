@@ -200,6 +200,18 @@ impl Renderer {
         (self.config.width, self.config.height)
     }
 
+    /// Where the history playhead stands and how far it can travel, in actions —
+    /// `None` when the history is not this client's alone to walk
+    /// (MISSING_FEATURES §2.4).
+    pub fn scrub_range(&self) -> Option<(usize, usize)> {
+        self.engine.scrub_range()
+    }
+
+    /// A caption per action across the whole scrub range, oldest first.
+    pub fn scrub_labels(&self) -> Vec<&'static str> {
+        self.engine.scrub_labels()
+    }
+
     /// Serialize the document — the action log, not the pixels (DESIGN.md §8).
     pub fn save_bytes(&self) -> stark_core::Result<Vec<u8>> {
         self.engine.save_bytes()

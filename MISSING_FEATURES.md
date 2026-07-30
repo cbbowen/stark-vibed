@@ -291,11 +291,36 @@ branch is a second effective-sequence over the same log.
 `ActionKind::Undo(ActionId)` already means "derive the document as if `target`
 were absent." The hard part is built and only "undo the last thing" is exposed.
 
-### 2.4 Timelapse as a tool, not an export
+### 2.4 ~~Timelapse as a tool, not an export~~ — shipped
 
 DESIGN §8 designs timelapse replay. Exposed as a **scrubber the artist can drag
 while working**, it is a real critique tool — seeing your own process is how you
 find the moment a piece went wrong — rather than a novelty output.
+
+Shipped as **Timeline mode** (☰ → Timeline; `stark-ui/src/panels/timeline.rs`): a
+bar carrying a transport, a per-action scrubber and a speed control, over
+`Timeline::seek` in the engine.
+
+The whole feature is one observation: `LinearTimeline` already holds an *applied
+prefix* and a *withheld suffix*, and undo and redo already move the boundary
+between them one step at a time. A scrubber is that boundary with a handle on it,
+so the mode stores no playhead of its own — and the two behaviours that would
+otherwise need designing fall out instead. Leaving the mode scrubbed back **is**
+being undone by that many steps (Redo is the way forward); painting there
+truncates the future exactly as painting after an undo does. Playback is the only
+thing that has to be guarded, and only against commits: a stroke laid under a
+moving playhead would clear the withheld half and take the rest of the piece with
+it, so the canvas refuses paint while the transport runs (panning still works).
+
+Two limits worth stating:
+
+- **Solo only.** A shared document's state is a function of a log peers are still
+  appending to, so a scrub would be silently undone by the next arrival;
+  `Timeline::scrub_range` answers `None` there and the bar says why (§12.1).
+- **Steps, not seconds.** Playback is paced in actions per second, not by the
+  `InputSample.time` stamps the log carries. Wall-clock pacing wants an idle-gap
+  policy — an hour away from the easel is one action apart — and that is a
+  decision to make deliberately rather than to fall into.
 
 ---
 

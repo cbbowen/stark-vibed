@@ -284,3 +284,32 @@ fn merge_is_idempotent() {
         "duplicate merge changed pixels"
     );
 }
+
+/// A shared document has no single playhead to scrub (MISSING_FEATURES §2.4).
+///
+/// Not a gap: the state is a function of a log peers are still appending to, so a
+/// scrub would be silently undone by the next arrival. Answering `None` is what
+/// lets the frontend say *why* the mode is unavailable instead of offering a
+/// control that quietly does nothing.
+#[test]
+fn a_shared_timeline_reports_no_scrub_range() {
+    let Some(mut a) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+    assert!(a.scrub_range().is_some(), "solo, the history is walkable");
+
+    a.start_collaboration(ActorId(1));
+    assert_eq!(a.scrub_range(), None);
+    assert!(a.scrub_labels().is_empty());
+
+    // And a seek there is inert rather than destructive.
+    let before = snap(&mut a);
+    a.process(DocCommand::Seek(0));
+    assert!(images_match(&before, &snap(&mut a), 0));
+}

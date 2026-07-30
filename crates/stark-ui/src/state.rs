@@ -84,6 +84,9 @@ pub struct AppState {
     pub paint_queued: Signal<bool>,
     /// Everything to do with a shared drawing (DESIGN.md §12).
     pub collab: CollabState,
+    /// Timeline mode: scrubbing and playing back the history
+    /// (MISSING_FEATURES §2.4; `crate::panels::timeline`).
+    pub timeline: TimelineState,
     /// The custom brush-shape library (DESIGN.md §6.6; `crate::shapes`).
     pub shapes: ShapesState,
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
@@ -132,6 +135,12 @@ impl AppState {
                 links: root_signal(Vec::new),
                 pump: root_signal(|| None),
                 presence: root_signal(|| None),
+            },
+            timeline: TimelineState {
+                open: root_signal(|| false),
+                playing: root_signal(|| false),
+                speed: root_signal(|| 1.0),
+                task: root_signal(|| None),
             },
             shapes: ShapesState {
                 entries: root_signal(Vec::new),
@@ -454,6 +463,32 @@ mod transform_tests {
             TransformRegion::Inside
         );
     }
+}
+
+/// Timeline mode's signals (MISSING_FEATURES §2.4), grouped because they are one
+/// mode's worth of view state: the mode itself, whether it is playing, and how fast.
+///
+/// None of this is the *playhead* — that lives in the engine's timeline, where undo
+/// and redo already move it, and is read back through
+/// [`Engine::scrub_range`](stark_core::Engine::scrub_range). A copy here is exactly
+/// the copy that would go stale the moment a stroke, an undo or a load moved the
+/// history underneath it.
+#[derive(Clone, Copy)]
+pub struct TimelineState {
+    /// Whether the mode is on — which is to say whether the bar is mounted.
+    pub open: Signal<bool>,
+    /// Whether playback is running. The source of truth for the transport button;
+    /// the loop below reads it every tick and stops when it goes false, so anything
+    /// that wants playback to end only has to clear this.
+    pub playing: Signal<bool>,
+    /// Playback rate, as a multiple of
+    /// [`BASE_RATE`](crate::panels::timeline::BASE_RATE).
+    pub speed: Signal<f32>,
+    /// The playback loop, so a second Play cannot start a second one and closing
+    /// the mode can cancel it. Root-owned like everything here: the loop outlives
+    /// the bar that started it (the bar unmounts when the mode closes), which is
+    /// the case `spawn_forever` exists for.
+    pub task: Signal<Option<Task>>,
 }
 
 /// The eyedropper's signals (MISSING_FEATURES §0.2), grouped because they are one

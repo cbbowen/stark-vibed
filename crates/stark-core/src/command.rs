@@ -123,6 +123,21 @@ pub enum GestureCommand {
 pub enum DocCommand {
     Undo,
     Redo,
+    /// Move the history playhead to an absolute position, in actions from the
+    /// start of the log — the scrubber's command (MISSING_FEATURES §2.4).
+    ///
+    /// Navigation, exactly like [`Undo`](Self::Undo) and [`Redo`](Self::Redo),
+    /// and it lives beside them for that reason: it moves the same applied /
+    /// withheld split those two move one step at a time, so nothing is logged and
+    /// nothing is sent. Absolute rather than a delta because a scrubber knows
+    /// exactly where it wants the playhead and nothing about where it was — the
+    /// same argument [`ViewCommand::CenterOn`] makes against expressing a jump as
+    /// a drag.
+    ///
+    /// Clamped to the range the timeline reports, and a no-op on a timeline that
+    /// has no single playhead to move (a shared session — see
+    /// [`Timeline::scrub_range`](crate::document::Timeline::scrub_range)).
+    Seek(usize),
 
     AddLayer {
         above: Option<LayerId>,
