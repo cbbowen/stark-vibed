@@ -28,6 +28,11 @@
 //!    [`established_connection_migrates_to_webrtc`] proves this WITHOUT even
 //!    closing the signaling connection, and shows the migration also pulls
 //!    other live connections (the signaling one) onto WebRTC.
+//! 5. **One transport routes to many peers** (local multi-peer rework of the
+//!    tunnel; upstream was one channel per transport):
+//!    [`one_endpoint_reaches_two_webrtc_peers`] holds simultaneous WebRTC
+//!    channels to two peers on a single endpoint and, with the relay down,
+//!    runs both connections over their own channels.
 //!
 //! These tests build against the patched `vendor/iroh` via `[patch.crates-io]`
 //! in this crate's manifest.
@@ -360,6 +365,103 @@ async fn webrtc_carries_the_connection_when_the_relay_is_down() -> Result<()> {
     conn.close(0u32.into(), b"done");
     peers.client.close().await;
     peers.server.close().await;
+    Ok(())
+}
+
+/// Finding 5 (POSITIVE, requires the multi-peer tunnel rework): ONE endpoint —
+/// one `WebRtcTransport` — holds WebRTC channels to TWO peers at once. Hub A
+/// bootstraps channels to B and to C over the relay, the relay is shut down,
+/// and A's connections to B and C each ride their own data channel, routed by
+/// destination `CustomAddr`.
+#[tokio::test]
+async fn one_endpoint_reaches_two_webrtc_peers() -> Result<()> {
+    const A_OPAQUE: [u8; 16] = [0xAAu8; 16];
+    const B_OPAQUE: [u8; 16] = [0xBBu8; 16];
+    const C_OPAQUE: [u8; 16] = [0xCCu8; 16];
+
+    init_logging();
+    let (relay_map, _url, relay_guard) = run_relay_server().await.context("local relay")?;
+
+    let (hub, hub_transport, hub_lookup) = bind_peer(relay_map.clone(), A_OPAQUE).await?;
+
+    // B and C: each answers A's JSEP and serves the echo ALPN.
+    let mut spokes = Vec::new();
+    for opaque in [B_OPAQUE, C_OPAQUE] {
+        let (ep, transport, lookup) = bind_peer(relay_map.clone(), opaque).await?;
+        let router = Router::builder(ep.clone())
+            .accept(
+                SIGNAL_ALPN,
+                JsepAnswerer {
+                    transport,
+                    remote_opaque: A_OPAQUE,
+                },
+            )
+            .accept(ECHO_ALPN, Echo)
+            .spawn();
+        let relay = relay_addr(&ep).await?;
+        lookup.add_endpoint_info(mixed_addr(hub.id(), &relay_addr(&hub).await?, &A_OPAQUE));
+        hub_lookup.add_endpoint_info(mixed_addr(ep.id(), &relay, &opaque));
+        spokes.push((ep, relay, opaque, router));
+    }
+
+    // Bootstrap one WebRTC channel per spoke — TWO attaches on A's transport.
+    for (ep, relay, opaque, _router) in &spokes {
+        let sig_conn = timeout(
+            STEP,
+            hub.connect(mixed_addr(ep.id(), relay, opaque), SIGNAL_ALPN),
+        )
+        .await
+        .map_err(|_| anyhow!("signaling connect timed out"))??;
+        let (send, recv) = sig_conn.open_bi().await?;
+        let mut sig = QuicSignaling::new(send, recv);
+        let peer = timeout(STEP, negotiate_dc_as_offerer(&mut sig, "stark-spike"))
+            .await
+            .map_err(|_| anyhow!("JSEP negotiation timed out"))??;
+        hub_transport.attach_data_channel(
+            peer,
+            custom_addr_from_opaque_data(opaque),
+            AttachOptions::default(),
+        )?;
+        sig_conn.close(0u32.into(), b"signaling done");
+    }
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    // Kill the relay: both app connections can only work over WebRTC now.
+    relay_guard
+        .shutdown()
+        .await
+        .map_err(|e| anyhow!("relay shutdown: {e}"))?;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let mut conns = Vec::new();
+    for (ep, relay, opaque, _router) in &spokes {
+        let conn = timeout(
+            STEP,
+            hub.connect(mixed_addr(ep.id(), relay, opaque), ECHO_ALPN),
+        )
+        .await
+        .map_err(|_| anyhow!("connect over WebRTC timed out"))??;
+        run_echo(&conn, format!("hello {opaque:?}").as_bytes()).await?;
+        wait_selected(&conn, "custom").await?;
+        conns.push(conn);
+    }
+
+    // Interleave traffic on both connections to exercise dst routing + the
+    // shared inbound queue's source_custom demux.
+    for round in 0..3 {
+        for (i, conn) in conns.iter().enumerate() {
+            run_echo(conn, format!("round {round} spoke {i}").as_bytes()).await?;
+        }
+    }
+    for conn in &conns {
+        eprintln!("hub conn paths: [{}]", describe_paths(conn));
+        conn.close(0u32.into(), b"done");
+    }
+
+    hub.close().await;
+    for (ep, _, _, _) in spokes {
+        ep.close().await;
+    }
     Ok(())
 }
 

@@ -45,10 +45,7 @@ impl CustomEndpoint for WebRtcEndpoint {
     }
 
     fn create_sender(&self) -> Arc<dyn CustomSender> {
-        Arc::new(WebRtcSender::new(
-            self.tunnel.out_sender(),
-            self.tunnel.clone(),
-        ))
+        Arc::new(WebRtcSender::new(self.tunnel.clone()))
     }
 
     fn poll_recv(

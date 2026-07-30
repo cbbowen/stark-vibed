@@ -118,11 +118,19 @@ fallback (dead custom addr) is unaffected.
 
 ## Known limitations (upstream design, unchanged)
 
-- One `WebRtcTransport` = one WebRTC peer: `bind()` and `attach_data_channel`
-  are both once-only. A stark session with N peers needs either N transports
-  (iroh supports several custom transports... with the same transport id?) or —
-  more likely — extending `WebRtcTunnel` to route by `CustomAddr` (poll_send
-  already receives `dst`; inbound packets already carry `source_custom`).
+- ~~One `WebRtcTransport` = one WebRTC peer.~~ RESOLVED (2026-07-29, local
+  rework; upstream remains single-channel): the tunnel now holds a
+  `CustomAddr -> outbound queue` routing table. `attach_data_channel` may be
+  called once per remote peer; `poll_send` routes by `dst`, inbound demuxes by
+  each packet's `source_custom`, `is_valid_send_addr` answers from the table.
+  Re-attaching an addr REPLACES its route (old pump drains out and exits; its
+  cleanup is generation-guarded so it cannot tear down the successor) — safe
+  re-negotiation after a dead channel. A dead channel's pump removes its route
+  on exit, flipping `is_valid_send_addr` back to false. Proven by the
+  `one_endpoint_reaches_two_webrtc_peers` test (one endpoint, two live
+  channels, relay down, interleaved traffic). `bind()` is still once-only
+  (iroh binds a transport once per endpoint). The demo-oriented
+  `webrtc_out_sender()` accessor was removed with the single queue.
 - Native negotiation gathers **host ICE candidates only** (no STUN/TURN), so
   cross-NAT native↔native won't punch. Irrelevant for stark: native iroh
   already hole-punches; WebRTC is for browsers, where the browser does ICE.

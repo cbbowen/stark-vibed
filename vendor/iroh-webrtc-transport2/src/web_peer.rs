@@ -353,15 +353,13 @@ impl WebRtcTunnel {
         remote_custom: CustomAddr,
         opts: AttachOptions,
     ) -> anyhow::Result<()> {
-        self.try_mark_attached()
-            .map_err(|e| anyhow!("{e}"))?;
-        self.set_remote_custom(remote_custom.clone())
-            .map_err(|e| anyhow!("{e}"))?;
-        let mut out_rx = self
-            .take_outbound_receiver()
+        let (route_id, mut out_rx) = self
+            .add_route(remote_custom.clone())
             .map_err(|e| anyhow!("{e}"))?;
         let in_tx = self.inbound_sender();
         let wake = Arc::clone(self);
+        let cleanup_tunnel = Arc::clone(self);
+        let cleanup_remote = remote_custom.clone();
 
         let WebRtcPeer { pc, dc } = peer;
         dc.set_buffered_amount_low_threshold(BUFFERED_LOW_WATER);
@@ -398,43 +396,52 @@ impl WebRtcTunnel {
             }) as Box<dyn FnMut(_)>)
         };
         dc.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-        // One channel per transport, attached once: let the handler live for
-        // the page's lifetime rather than threading teardown plumbing through.
+        // One handler per channel, alive for the page's lifetime rather than
+        // threading teardown plumbing through. After the route is removed a
+        // late message still enqueues an inbound packet; iroh ignores
+        // datagrams from paths it no longer uses.
         on_message.forget();
 
-        // Outbound pump: iroh poll_send -> tunnel outbound queue -> data
-        // channel. Owns `pc` so the peer connection is not GC'd while active.
+        // Outbound pump: iroh poll_send -> route queue -> data channel. Owns
+        // `pc` so the peer connection is not GC'd while active. The pump is an
+        // inner async block so its `return`s fall through to the route
+        // cleanup (route removal makes `is_valid_send_addr` false again, so
+        // iroh stops using the path).
         spawn_local(async move {
             let _pc = pc;
-            loop {
-                let Some(bytes) = out_rx.recv().await else {
-                    tracing::debug!("tunnel outbound queue closed; stopping WebRTC pump");
-                    return;
-                };
-                if bytes.is_empty() {
-                    continue;
+            let pump = async {
+                loop {
+                    let Some(bytes) = out_rx.recv().await else {
+                        tracing::debug!("route replaced or transport dropped; stopping WebRTC pump");
+                        return;
+                    };
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    if matches!(
+                        dc.ready_state(),
+                        RtcDataChannelState::Closing | RtcDataChannelState::Closed
+                    ) {
+                        tracing::debug!("data channel closed; stopping WebRTC pump");
+                        return;
+                    }
+                    if dc
+                        .buffered_amount()
+                        .saturating_add(bytes.len() as u32)
+                        > BUFFERED_HIGH_WATER
+                        && !wait_send_capacity(&dc).await
+                    {
+                        tracing::debug!("data channel closed while draining; stopping WebRTC pump");
+                        return;
+                    }
+                    if let Err(error) = dc.send_with_u8_array(&bytes) {
+                        tracing::debug!(?error, "data channel send failed; stopping WebRTC pump");
+                        return;
+                    }
                 }
-                if matches!(
-                    dc.ready_state(),
-                    RtcDataChannelState::Closing | RtcDataChannelState::Closed
-                ) {
-                    tracing::debug!("data channel closed; stopping WebRTC pump");
-                    return;
-                }
-                if dc
-                    .buffered_amount()
-                    .saturating_add(bytes.len() as u32)
-                    > BUFFERED_HIGH_WATER
-                    && !wait_send_capacity(&dc).await
-                {
-                    tracing::debug!("data channel closed while draining; stopping WebRTC pump");
-                    return;
-                }
-                if let Err(error) = dc.send_with_u8_array(&bytes) {
-                    tracing::debug!(?error, "data channel send failed; stopping WebRTC pump");
-                    return;
-                }
-            }
+            };
+            pump.await;
+            cleanup_tunnel.remove_route(&cleanup_remote, route_id);
         });
 
         Ok(())

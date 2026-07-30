@@ -36,12 +36,6 @@ impl WebRtcTransport {
         CustomAddr::from_parts(WEBRTC_TRANSPORT_ID, &self.local_addr_bytes)
     }
 
-    /// Queue that feeds the str0m SCTP data channel after [`WebRtcTransport::attach_data_channel`].
-    /// Use for tests or direct SCTP injection (same path as iroh `poll_send`).
-    pub fn webrtc_out_sender(&self) -> tokio::sync::mpsc::UnboundedSender<Vec<u8>> {
-        self.tunnel.out_sender()
-    }
-
     /// Wire a negotiated SCTP data channel into this transport so iroh can send/receive QUIC datagrams on it.
     ///
     /// Call from an async context (Tokio runtime). `remote_custom_addr` must match the peer's advertised

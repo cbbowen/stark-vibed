@@ -320,17 +320,14 @@ impl WebRtcTunnel {
         remote_custom: CustomAddr,
         opts: AttachOptions,
     ) -> anyhow::Result<()> {
-        self.try_mark_attached()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.set_remote_custom(remote_custom.clone())
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        let mut out_rx = self
-            .take_outbound_receiver()
+        let (route_id, mut out_rx) = self
+            .add_route(remote_custom.clone())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let in_tx = self.inbound_sender();
         let wake = Arc::clone(self);
+        let cleanup_tunnel = Arc::clone(self);
+        let cleanup_remote = remote_custom.clone();
         let tap = opts.tap_inbound_to.clone();
         let mirror = opts.mirror_sctp_echo;
 
@@ -342,10 +339,20 @@ impl WebRtcTunnel {
         } = peer;
 
         tokio::spawn(async move {
+            // The pump is an inner async block so its `return`s fall through
+            // to the route cleanup below (route removal makes
+            // `is_valid_send_addr` false again, so iroh stops using the path).
+            let pump = async move {
             let mut buf = vec![0u8; 2000];
             let mut next_wake = Instant::now();
             loop {
-                while let Ok(bytes) = out_rx.try_recv() {
+                loop {
+                    let bytes = match out_rx.try_recv() {
+                        Ok(bytes) => bytes,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        // Route replaced or transport dropped.
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
+                    };
                     if bytes.is_empty() {
                         continue;
                     }
@@ -430,6 +437,9 @@ impl WebRtcTunnel {
                     }
                 }
             }
+            };
+            pump.await;
+            cleanup_tunnel.remove_route(&cleanup_remote, route_id);
         });
 
         Ok(())
