@@ -14,6 +14,12 @@ struct Media {
     shade: vec4<f32>,  // exposure, diffuse_lod, gloss, _
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _
+    // The screen→canvas linear map, column-major: `surf_m.xy` is the first column,
+    // `surf_m.zw` the second. What carries a fragment into canvas space when the view
+    // is turned or mirrored (MISSING_FEATURES §1.2). `surf_a.z` is the same map's
+    // length scale — rotation and mirroring leave lengths alone — which is what the
+    // relief slope below wants, and what it would be wrong to take from this matrix.
+    surf_m: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> m: Media;
@@ -46,7 +52,12 @@ fn fullscreen_clip(vi: u32) -> vec4<f32> {
 // Absolute canvas surface height at screen pixel `p` (sampled in canvas space, so
 // the weave is fixed to the canvas). `Flat` is height 0, so it adds no relief.
 fn surface_at(p: vec2<i32>) -> f32 {
-    let canvas = m.surf_a.xy + vec2<f32>(p) * m.surf_a.z; // surf_a.z = canvas px / screen px
+    // The weave belongs to the canvas, so it pans, zooms, turns and mirrors with it.
+    let inv = mat2x2<f32>(m.surf_m.xy, m.surf_m.zw);
+    // The fragment's *centre*, like every other sample: at the corner the weave
+    // sits half a texel up-and-left of the pixel it shades, which is invisible on
+    // its own and stops the view's mirror being an exact reflection.
+    let canvas = m.surf_a.xy + inv * (vec2<f32>(p) + 0.5);
     let hs = textureSampleLevel(surface, surface_samp, canvas * m.surf_a.w, 0.0).r;
     return m.surf_b.x * hs; // surf_b.x = surface_strength
 }

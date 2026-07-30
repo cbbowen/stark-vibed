@@ -187,7 +187,11 @@ pub fn TransformOverlay() -> Element {
     // distortion.
     let cs = view.canvas_to_screen(ts.center);
     let r = ts.radius * view.zoom;
-    let l = ts.linear;
+    // The gesture's linear map is canvas-space; what CSS draws is on screen, so the
+    // view's own orientation composes onto it. The zoom is already in `r`, and the
+    // orientation carries no scale, so this is the whole difference — a turned or
+    // mirrored canvas turns and mirrors the widget with the paint it stands for.
+    let l = view.orientation() * ts.linear;
     let ellipse_style = format!(
         "left: {}px; top: {}px; width: {}px; height: {}px; \
          transform: matrix({}, {}, {}, {}, 0, 0);",

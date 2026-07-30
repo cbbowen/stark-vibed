@@ -33,13 +33,20 @@ struct TileXform {
     noise_off: [f32; 4],  // per-stroke noise lookup translation (2), _, _
 }
 
-/// Mirrors `View` in `composite.wesl`: canvas→region NDC + tile/apron uv mapping.
+/// Mirrors `View` in `composite.wesl` — **exactly**, including the members this
+/// path has no use for: it binds its own buffer to the same shader, so a mismatch is
+/// a wgpu validation error rather than anything the type system would catch.
+///
 /// Used to composite the base into a 1:1 region texture for the stamp loop.
+/// `st` is the canvas→region-NDC linear map, column-major; the screen view can be
+/// turned and mirrored (MISSING_FEATURES §1.2), but this region never is — it is a
+/// working buffer aligned to the canvas, so the map stays diagonal.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub(super) struct ViewUniform {
-    pub(super) st: [f32; 4],   // scale.xy, translate.xy
-    pub(super) misc: [f32; 4], // tile_size, uv_scale, uv_bias, _
+    pub(super) st: [f32; 4],    // column-major 2x2: (m00, m01), (m10, m11)
+    pub(super) xlate: [f32; 4], // translate.xy, unused zw
+    pub(super) misc: [f32; 4],  // tile_size, uv_scale, uv_bias, _
 }
 
 /// Per-tile instance for the region composite: canvas origin + layer opacity.

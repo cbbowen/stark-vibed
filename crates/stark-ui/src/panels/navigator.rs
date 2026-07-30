@@ -39,6 +39,7 @@
 //! The viewport rectangle over the top is not rendered either: it is a positioned
 //! `<div>` read from the live view, so panning and zooming move it at no cost.
 
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::input::elem_xy;
@@ -137,8 +138,16 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
     })
 }
 
-/// A CSS `left/top/width/height` for the part of `over` the viewport covers, in
-/// percentages of the miniature.
+/// A CSS box for the part of `over` the viewport covers, in percentages of the
+/// miniature, turned to match the view.
+///
+/// The miniature itself is always upright — it is a picture of the *piece*, and an
+/// overview that turned with the easel would answer "where am I?" with a moving
+/// frame of reference. So the turn shows in the marker instead: the viewport is a
+/// screen-aligned rectangle, which in canvas space is a rectangle rotated the other
+/// way, and handing CSS the inverse orientation draws exactly that. A mirrored view
+/// mirrors the marker too, which for a rectangle is invisible — as it should be,
+/// since the region really is the same region.
 ///
 /// Not clamped: the rect is placed where it truly falls and the miniature's box
 /// clips it, so panning off the piece shows the marker sliding out of the frame
@@ -146,15 +155,86 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
 /// the stylesheet contributes is a minimum size, so a viewport that is a fraction
 /// of a percent of a large canvas is still something you can see.
 fn viewport_style(over: Overview, view: stark_core::ViewTransform) -> String {
-    let half =
-        Vec2::new(view.viewport.width as f32, view.viewport.height as f32) * (0.5 / view.zoom);
     let span = (over.max - over.min).max(Vec2::splat(1e-3));
-    let lo = (view.center - half - over.min) / span * 100.0;
-    let size = (2.0 * half) / span * 100.0;
+    // The viewport's own size in canvas px — the rect *before* it is turned, so this
+    // is the screen rectangle over the zoom rather than the bound it sweeps.
+    let size = Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
+        / view.zoom.max(1e-6)
+        / span
+        * 100.0;
+    let at = (view.center - over.min) / span * 100.0;
+    let o = view.orientation().transpose();
     format!(
-        "left: {:.3}%; top: {:.3}%; width: {:.3}%; height: {:.3}%;",
-        lo.x, lo.y, size.x, size.y
+        "left: {:.3}%; top: {:.3}%; width: {:.3}%; height: {:.3}%; \
+         transform: translate(-50%, -50%) matrix({}, {}, {}, {}, 0, 0);",
+        at.x, at.y, size.x, size.y, o.x_axis.x, o.x_axis.y, o.y_axis.x, o.y_axis.y,
     )
+}
+
+/// What a press in the miniature started. The two buttons do different things, and
+/// which one is held has to survive until the release.
+#[derive(Clone, Copy, PartialEq)]
+enum Drag {
+    /// Left: the view follows the pointer around the piece.
+    Center,
+    /// Right: the drag is a vector, and it says which way is up. Carries where the
+    /// press landed (miniature px) and the angle the canvas was at when it did —
+    /// both, because the turn is measured *from* the press rather than accumulated
+    /// move by move, so the same pointer position always means the same angle however
+    /// it was arrived at.
+    Turn { from: Vec2, was: f32 },
+}
+
+/// How far the turn-drag has to be pulled before the canvas follows the pointer
+/// exactly, in miniature px.
+///
+/// Short of it the canvas eases toward where the drag points, in proportion to how
+/// far it has been pulled — because near the press the *direction* of a two-pixel
+/// vector is almost pure noise, and following it exactly makes the canvas snap to a
+/// wild angle the instant the button goes down. Easing in means the first few pixels
+/// barely move it, and by the time the pointer is a thumb's width out it is doing
+/// exactly what it is told.
+const TURN_FOLLOW_PX: f32 = 64.0;
+
+/// How close to a quarter turn a turn-drag has to land to be pulled onto it, radians
+/// (about 5°).
+///
+/// The frontend's to decide, like the fitting tolerance: it is a property of dragging
+/// with a hand rather than of the view. Without it a canvas that has been turned could
+/// only be *approximately* straightened, and a piece left a degree off square reads as
+/// an accident rather than as a choice.
+const TURN_SNAP: f32 = 0.09;
+
+/// The angle a turn-drag of `v` (miniature px, measured from the press) asks the
+/// canvas to be at, having started the drag at `was`.
+///
+/// `None` when the drag has gone nowhere, which asks for nothing. The snap is applied
+/// to the *target* rather than to the eased result, so a long pull lands exactly
+/// square while a short one still eases smoothly toward that.
+fn turn_to(view: stark_core::ViewTransform, v: Vec2, was: f32) -> Option<f32> {
+    // The miniature is an upright, uniformly scaled picture of canvas space, so a
+    // direction in its pixels *is* a direction in canvas px — no mapping needed, and
+    // the pull length stays in the screen units the feel constants are written in.
+    let target = snap_quarter(view.rotation_for_up(v)?);
+    let ease = (v.length() / TURN_FOLLOW_PX).clamp(0.0, 1.0);
+    Some(was + ease * shortest_turn(was, target))
+}
+
+/// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
+fn snap_quarter(to: f32) -> f32 {
+    let quarter = (to / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2;
+    if (to - quarter).abs() <= TURN_SNAP {
+        quarter
+    } else {
+        to
+    }
+}
+
+/// The signed turn from `from` to `to`, the short way round — so easing between two
+/// angles never takes the long way about, and 1° short of a full circle is 1°.
+fn shortest_turn(from: f32, to: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    (to - from + PI).rem_euclid(TAU) - PI
 }
 
 /// The Navigator panel (see the module docs).
@@ -168,9 +248,9 @@ pub fn NavigatorPanel() -> Element {
     // checks this after its settle delay so all but the last stand down — the
     // debounce, in one integer.
     let mut ticket = use_signal(|| 0u64);
-    // Whether a press in the miniature is still held. Declared here, above every
-    // early return, because hooks are positional.
-    let mut dragging = use_signal(|| false);
+    // The press in flight, if any. Declared here, above every early return, because
+    // hooks are positional.
+    let mut dragging = use_signal(|| None::<Drag>);
 
     // What the miniature is a picture *of*: the committed document's revision and
     // the frame that crops it, or `None` when there is nothing to overview.
@@ -222,12 +302,16 @@ pub fn NavigatorPanel() -> Element {
         };
     }
 
+    // The live view: where the marker goes, and what a turn-drag measures from.
+    let Some(view) = state.obs.read().as_ref().map(|o| o.view) else {
+        return rsx! {
+            div { class: "nav-empty", "Rendering the overview\u{2026}" }
+        };
+    };
     // The canvas is mounted whatever state the picture is in, because it *is* the
     // picture — there is nothing to show it with before it exists. Until the first
     // render lands the marker is simply absent.
-    let placed = over()
-        .zip(state.obs.read().as_ref().map(|o| o.view))
-        .map(|(o, v)| (viewport_style(o, v), o.width, o.height));
+    let placed = over().map(|o| (viewport_style(o, view), o.width, o.height));
 
     // Where a press in the miniature points, in canvas space. The surface is
     // presented 1:1, so the element's own coordinates are the picture's.
@@ -241,28 +325,56 @@ pub fn NavigatorPanel() -> Element {
         div { class: "nav-thumb-row",
             div {
                 class: "nav-frame",
-                title: "Click to go there \u{2014} or drag to move the view around the piece",
+                title: "Click to go there, or drag to move the view around the piece. \
+                        Right-drag to turn the canvas: the direction you drag becomes up. \
+                        H mirrors it.",
                 // Deliberately *not* `canvas_active`: the chrome fade exists to hand
                 // the screen back to the painting mid-gesture, and fading this out
                 // would take away the very thing being dragged.
                 onpointerdown: move |e| {
                     capture_pointer(&e);
-                    dragging.set(true);
-                    if let Some(p) = target(&e) {
-                        dispatch(state, ViewCommand::CenterOn(p));
+                    match e.trigger_button() {
+                        // The right button turns the canvas. Nothing happens on the
+                        // press itself: a turn is a *direction*, and one point does
+                        // not have one — so the gesture says nothing until it has
+                        // been dragged somewhere.
+                        Some(MouseButton::Secondary) => dragging.set(Some(Drag::Turn {
+                            from: elem_xy(&e),
+                            was: view.rotation,
+                        })),
+                        Some(MouseButton::Primary) => {
+                            dragging.set(Some(Drag::Center));
+                            if let Some(p) = target(&e) {
+                                dispatch(state, ViewCommand::CenterOn(p));
+                            }
+                        }
+                        _ => {}
                     }
                 },
-                // Held-and-dragged is one continuous "show me here", which is also
-                // what makes the marker follow the pointer instead of jumping to it.
+                // Held-and-dragged is one continuous request in both cases — "show me
+                // here", or "this way up" — which is what makes the view follow the
+                // pointer instead of jumping to wherever it is let go.
                 onpointermove: move |e| {
-                    if dragging()
-                        && let Some(p) = target(&e)
-                    {
-                        dispatch(state, ViewCommand::CenterOn(p));
+                    let Some(d) = dragging() else { return };
+                    match d {
+                        Drag::Center => {
+                            if let Some(p) = target(&e) {
+                                dispatch(state, ViewCommand::CenterOn(p));
+                            }
+                        }
+                        Drag::Turn { from, was } => {
+                            if let Some(to) = turn_to(view, elem_xy(&e) - from, was) {
+                                dispatch(state, ViewCommand::SetRotation(to));
+                            }
+                        }
                     }
                 },
-                onpointerup: move |_| dragging.set(false),
-                onpointercancel: move |_| dragging.set(false),
+                onpointerup: move |_| dragging.set(None),
+                onpointercancel: move |_| dragging.set(None),
+                // The right button is a tool here, so the browser's menu would be in
+                // the way of it — and would arrive mid-drag, which is worse than
+                // useless.
+                oncontextmenu: move |e| e.prevent_default(),
 
                 canvas {
                     class: "nav-thumb",

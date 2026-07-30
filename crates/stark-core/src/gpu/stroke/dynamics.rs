@@ -435,11 +435,14 @@ impl<'a> DynamicsRun<'a> {
         // Composite pass: base tiles → region, 1:1 with canvas px.
         let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
         let view = ViewUniform {
-            st: [
-                sx,
-                sy,
+            // Diagonal: the region is axis-aligned with the canvas whatever angle the
+            // *screen* view happens to be at.
+            st: [sx, 0.0, 0.0, sy],
+            xlate: [
                 -region_origin.x * sx - 1.0,
                 -region_origin.y * sy + 1.0,
+                0.0,
+                0.0,
             ],
             misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
         };

@@ -1091,12 +1091,23 @@ impl Engine {
     pub fn render(&mut self, target: &wgpu::TextureView, view: ViewTransform);
 }
 
-pub struct ViewTransform {  // session-owned; pan/zoom never historized
+pub struct ViewTransform {  // session-owned; never historized, never sent
     pub center: Vec2,       // canvas-space point at viewport center
     pub zoom: f32,
+    pub rotation: f32,      // clockwise, radians (MISSING_FEATURES §1.2)
+    pub flip_h: bool,       // mirrored left-right
     pub viewport: Extent2,  // target size in px
 }
 ```
+
+The canvas→screen linear map is therefore a 2×2 rather than a scale pair
+(`ViewTransform::orientation`), and it is stored as an *angle plus a mirror flag*
+rather than as a free matrix: that keeps it a rigid motion by construction, makes its
+transpose its inverse, and leaves nothing that can drift into a skew. Three shaders
+consume it — the composite's canvas→NDC, the matte's inverse of the same, and the
+media pass's screen→canvas for the canvas weave — and upright it is diagonal and
+computes bit-for-bit what the scale pair did, which is what keeps the goldens blessed
+against it valid.
 
 The `Compositor` (§6.3) composites the visible tiles into a viewport-sized
 offscreen under the transform — all of them, not just those intersecting the view

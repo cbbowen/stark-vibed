@@ -130,6 +130,12 @@ impl ExportPlan {
         ViewTransform {
             center: (self.min + self.max) * 0.5,
             zoom: self.zoom,
+            // Upright and unmirrored, whatever angle the artist has the canvas at:
+            // turning the easel is a way of *looking* at the piece, and a file — or
+            // the navigator's overview, which frames itself the same way — shows the
+            // piece rather than the easel (MISSING_FEATURES §1.2).
+            rotation: 0.0,
+            flip_h: false,
             viewport: self.size,
         }
     }
@@ -827,10 +833,15 @@ impl Engine {
                 self.refresh_live();
             }
             ViewCommand::Pan { delta } => {
-                // Grab-and-drag: content follows the cursor, so the view center
-                // moves opposite by the drag delta (converted to canvas units).
-                self.session.view.center -= delta / self.session.view.zoom;
+                // Grab-and-drag: content follows the cursor, so the view center moves
+                // opposite by the drag delta, carried into canvas units — through the
+                // whole map, since a turned or mirrored canvas sends a screen-space
+                // drag somewhere else entirely.
+                let delta = self.session.view.canvas_delta(delta);
+                self.session.view.center -= delta;
             }
+            ViewCommand::SetRotation(radians) => self.session.view.set_rotation(radians),
+            ViewCommand::MirrorH => self.session.view.mirror_screen_h(),
             ViewCommand::CenterOn(point) => {
                 self.session.view.center = point;
             }
@@ -1286,6 +1297,11 @@ impl Engine {
         let view = ViewTransform {
             center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
             zoom: 1.0,
+            // Axis-aligned with the *canvas*: the sampled square is a patch of the
+            // painting, so which way the easel is turned cannot change which texels
+            // fall in it.
+            rotation: 0.0,
+            flip_h: false,
             viewport: size,
         };
         // The *presented* document, so a sample agrees with what is on screen —
@@ -1379,10 +1395,10 @@ impl Engine {
                 crate::geom::Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
             );
         }
-        let v = self.session.view;
-        let half = crate::geom::Vec2::new(v.viewport.width as f32, v.viewport.height as f32)
-            * (0.5 / v.zoom);
-        (v.center - half, v.center + half)
+        // Everything the viewport shows — a *bound* under rotation, which is the
+        // safe direction: an export with nothing painted and no frame should not
+        // crop tighter than what the artist is looking at.
+        self.session.view.visible_bounds()
     }
 
     /// Snapshot the document as a saveable [`DocumentFile`] (DESIGN.md §8),

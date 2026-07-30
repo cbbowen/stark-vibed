@@ -218,6 +218,28 @@ pub enum ViewCommand {
         anchor: Vec2,
         factor: f32,
     },
+    /// Turn the canvas to this angle (radians, clockwise) — the navigator's
+    /// right-drag (MISSING_FEATURES §1.2).
+    ///
+    /// Absolute, like [`CenterOn`](Self::CenterOn) and for the same reason: the
+    /// gesture knows exactly where it wants the canvas, and an incremental command
+    /// would have the frontend keep a copy of the angle to add to. What the *drag*
+    /// gives is a direction, which
+    /// [`ViewTransform::rotation_for_up`](crate::geom::ViewTransform::rotation_for_up)
+    /// turns into an angle; the easing and the snap-to-square between the two are the
+    /// frontend's, because they are properties of dragging with a hand.
+    SetRotation(f32),
+    /// Mirror what is on screen, left↔right — the oldest way of catching a drawing
+    /// error, since the eye stops recognising what it expected and starts seeing what
+    /// is there.
+    ///
+    /// A toggle rather than a setting, and **screen-relative**: it swaps the left of
+    /// the screen with the right at any angle, so the check means the same thing
+    /// however the easel is turned (see
+    /// [`ViewTransform::mirror_screen_h`](crate::geom::ViewTransform::mirror_screen_h)).
+    /// View state, so it changes nothing about the painting and nobody else sees it.
+    MirrorH,
+
     /// Show this canvas-space point at the centre of the viewport, leaving the zoom
     /// alone — a jump rather than a drag.
     ///

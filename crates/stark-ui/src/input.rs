@@ -217,6 +217,17 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
     let m = modifiers_of(e);
     track_alt(state, m);
     if !(m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)) {
+        // Unmodified letters: the view bindings. Checked here, after the modifier set
+        // is known, so `Ctrl+H` stays the browser's and only a bare press is ours.
+        if !m.contains(Modifiers::ALT)
+            && let Key::Character(c) = key_of(e)
+            && c.eq_ignore_ascii_case("h")
+        {
+            // Screen-relative, so it swaps the left of the screen with the right
+            // whatever angle the canvas is at (`ViewTransform::mirror_screen_h`).
+            dispatch(state, ViewCommand::MirrorH);
+            e.prevent_default();
+        }
         return;
     }
     match key_of(e) {

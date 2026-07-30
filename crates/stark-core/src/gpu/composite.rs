@@ -49,7 +49,14 @@ use crate::gpu::tile::TilePairHandle;
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct ViewUniform {
-    st: [f32; 4],   // scale.xy, translate.xy
+    // The canvas px -> NDC linear map, column-major (`mat2x2` in the shaders). A
+    // full 2x2 rather than a scale pair because the view can be turned and mirrored
+    // (MISSING_FEATURES §1.2); upright and unmirrored it is diagonal, and every
+    // shader that reads it multiplies the same way either way.
+    st: [f32; 4],
+    // translate.xy, then padding to the 16-byte stride a uniform member takes
+    // anyway.
+    xlate: [f32; 4],
     misc: [f32; 4], // tile_size, interior uv scale, interior uv bias, zoom
 }
 
@@ -238,7 +245,12 @@ struct MediaUniform {
     shade: [f32; 4], // exposure, diffuse_lod, gloss, _
     // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
     surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
-    surf_b: [f32; 4], // surface_strength, _, _, _
+    surf_b: [f32; 4], // surface_strength, transparent (0/1), _, _
+    // The screen→canvas linear map, column-major: what carries a fragment's position
+    // into canvas space so the weave stays attached to the canvas however the view is
+    // turned or mirrored. `surf_a.z` is the same map's *length* scale, which rotation
+    // and mirroring leave alone, and which the relief slope still wants as a scalar.
+    surf_m: [f32; 4],
 }
 
 /// Lighting parameters for the media pass (DESIGN.md §6.3). The painting is lit by
@@ -994,12 +1006,13 @@ impl Compositor {
         let device = &p.ctx.device;
 
         // View uniform (canvas px -> NDC).
-        let (scale, translate) = view.canvas_to_ndc();
+        let (m, translate) = view.canvas_to_ndc();
         p.ctx.queue.write_buffer(
             &p.view_buf,
             0,
             bytemuck::bytes_of(&ViewUniform {
-                st: [scale.x, scale.y, translate.x, translate.y],
+                st: m.to_cols_array(),
+                xlate: [translate.x, translate.y, 0.0, 0.0],
                 // `zoom` rides in `.w` for the outline pass, which measures its width
                 // in screen px from a canvas-space distance (§6.8).
                 misc: [
@@ -1420,12 +1433,12 @@ impl Compositor {
         let (comp_color_view, comp_aux_view, media_bg) =
             (&self.comp_color_view, &self.comp_aux_view, &self.media_bg);
 
-        // Screen→canvas mapping for sampling the surface bump in canvas space, so
-        // the weave stays attached to the canvas as it pans/zooms (DESIGN.md §6.4).
+        // Screen→canvas mapping for sampling the surface bump in canvas space, so the
+        // weave stays attached to the canvas as it pans, zooms, turns and mirrors
+        // (DESIGN.md §6.4, MISSING_FEATURES §1.2).
         let inv_zoom = 1.0 / view.zoom;
-        let canvas_origin = view.center
-            - crate::geom::Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
-                * (0.5 * inv_zoom);
+        let inv_linear = view.inverse_linear();
+        let canvas_origin = view.screen_to_canvas(crate::geom::Vec2::ZERO);
 
         // Diffuse samples a heavily-blurred high mip ≈ hemispherical irradiance; the
         // level is the environment's own, so the CPU-side normalization below is
@@ -1453,6 +1466,7 @@ impl Compositor {
                     inv_zoom,
                     1.0 / SURFACE_TILE_PX,
                 ],
+                surf_m: inv_linear.to_cols_array(),
                 surf_b: [
                     p.media.surface_strength,
                     // Transparent export: the media pass skips the substrate and

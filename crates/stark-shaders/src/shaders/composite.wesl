@@ -24,7 +24,12 @@
 //     piece or freeze cut, which is how the preview stops matching the commit.
 
 struct View {
-    st: vec4<f32>,   // scale.xy, translate.xy  (canvas px -> NDC)
+    // The canvas px -> NDC linear map, column-major: `st.xy` is the first column and
+    // `st.zw` the second. A full 2x2 because the view can be turned and mirrored
+    // (MISSING_FEATURES §1.2); upright and unmirrored it is diagonal, and this is the
+    // scale pair it always was.
+    st: vec4<f32>,
+    xlate: vec4<f32>, // translate.xy, unused zw
     // misc.x = tile_size (interior, canvas px). The tile texture carries an apron
     // around the interior, so we sample only the interior sub-rect and let the
     // bilinear filter reach into the apron at the edges (kills tile seams):
@@ -55,10 +60,9 @@ fn vs_main(
     @location(1) opacity: f32,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
-    let scale = view.st.xy;
-    let translate = view.st.zw;
+    let m = mat2x2<f32>(view.st.xy, view.st.zw);
     let canvas_pos = origin + corner * view.misc.x;
-    let ndc = canvas_pos * scale + translate;
+    let ndc = m * canvas_pos + view.xlate.xy;
 
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);

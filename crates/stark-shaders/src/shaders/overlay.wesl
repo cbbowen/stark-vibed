@@ -11,7 +11,11 @@
 // the contour are already far in these units) instead of smearing across the ramp.
 
 struct View {
-    st: vec4<f32>,   // scale.xy, translate.xy (canvas px → NDC)
+    // Canvas px → NDC, column-major: `st.xy` is the first column, `st.zw` the
+    // second. A 2x2 because the view can be turned and mirrored — the outline
+    // follows the canvas, so it turns with it.
+    st: vec4<f32>,
+    xlate: vec4<f32>, // translate.xy, unused zw
     misc: vec4<f32>, // tile_size (interior, canvas px), uv_scale, uv_bias, zoom
 }
 
@@ -40,7 +44,8 @@ fn vs_main(
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let canvas_pos = origin + corner * view.misc.x;
     var out: VsOut;
-    out.clip = vec4<f32>(canvas_pos * view.st.xy + view.st.zw, 0.0, 1.0);
+    let m = mat2x2<f32>(view.st.xy, view.st.zw);
+    out.clip = vec4<f32>(m * canvas_pos + view.xlate.xy, 0.0, 1.0);
     // Interior sub-rect of the apron'd mask texture, exactly as the compositor maps
     // a colour tile — so the taps below reach into the apron (the neighbour's real
     // coverage) at the tile edge rather than clamping.

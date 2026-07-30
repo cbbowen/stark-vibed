@@ -178,13 +178,45 @@ Layers also lack names, thumbnails, duplicate, and merge/flatten. Merge is
 load-bearing twice: it is a workflow staple *and* it is how an append-only
 action log stops growing forever.
 
-### 1.2 Mirror and rotate the canvas view
+### 1.2 Mirror and rotate the canvas view — **built**
 
-`ViewTransform` carries center and zoom but no rotation or flip
-([geom.rs](crates/stark-core/src/geom.rs)). Flipping horizontally to catch
-drawing errors is universal across all four apps and costs essentially nothing —
-pure view state, never logged, never sent. Rotating the canvas to get a
-comfortable stroke direction is the same argument and the same change.
+`ViewTransform` carries `rotation` and `flip_h` beside center and zoom
+([geom.rs](crates/stark-core/src/geom.rs)), and they are view state exactly as
+predicted: never logged, never sent, invisible to replay, and absent from what a
+file or the navigator's overview shows — those frame the *piece*, not the easel.
+
+The canvas→screen map became a 2×2 (`ViewTransform::orientation`, kept as an angle
+plus a mirror flag so it is always a rigid motion and its transpose is its inverse),
+which the composite, matte and media shaders each consume; upright and unmirrored it
+is diagonal and computes bit-for-bit what the old scale pair did.
+
+- **Mirror**: `H` (`ViewCommand::MirrorH`). A toggle, and **screen-relative**: it
+  swaps the left of the screen with the right at any angle, so the check means the
+  same thing however the easel is turned. Reflecting the result keeps the view a
+  rotation-and-a-mirror rather than a free matrix, because a reflection pushes back
+  through a rotation (`M·R(θ) = R(−θ)·M`) — so the whole operation is "negate the
+  angle, toggle the mirror", and twice is exactly the identity.
+- **Rotate**: right-drag in the Navigator — the direction you drag becomes up. The
+  core answers only the question (`ViewTransform::rotation_for_up`) and the frontend
+  sends an absolute `ViewCommand::SetRotation`, because everything between the two is
+  gesture feel: the drag *eases* toward the angle it points at in proportion to how far
+  it has been pulled (near the press, a two-pixel vector's direction is almost pure
+  noise, and following it exactly makes the canvas snap to a wild angle the instant the
+  button goes down), and the target snaps to a quarter turn within ~5° so upright is
+  reachable by hand.
+
+The chrome that sits over the canvas turns with it: the frame's box and handles and
+the transform widget compose the view's orientation into the CSS matrix they already
+carried, and pointer deltas come back through the full inverse rather than over the
+zoom.
+
+**The light stays in the room.** Relief shading is computed from the height field as
+it falls on the *screen*, so turning or mirroring the canvas changes how impasto and
+the canvas weave catch the light — a real ~130-level difference on a woven canvas,
+and the same thing that happens when you turn a real canvas under a fixed lamp. That
+is the behaviour painters use rotation for; the alternative (the light turning with
+the canvas, so a mirrored view is a pure mirror image) is a one-line change to the
+environment lookup if the mirror ever wants to be exact.
 
 ### 1.3 Symmetry and drawing guides
 

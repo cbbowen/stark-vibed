@@ -117,10 +117,12 @@ pub(crate) fn content_rect(o: &stark_core::ObservableState) -> Option<(Vec2, Vec
 /// What the viewport currently shows, in canvas px, inset a little so a frame made
 /// from it is visibly a frame rather than flush with the window edge.
 pub(crate) fn view_rect(o: &stark_core::ObservableState) -> (Vec2, Vec2) {
-    let v = o.view;
-    let half = Vec2::new(v.viewport.width as f32, v.viewport.height as f32) * (0.5 / v.zoom);
-    let inset = half * 0.12;
-    (v.center - half + inset, v.center + half - inset)
+    // The canvas-space bound of what is on screen — which under a turned canvas
+    // covers a little more than the window really shows, and that is the right way
+    // round for "frame what I am looking at".
+    let (min, max) = o.view.visible_bounds();
+    let inset = (max - min) * 0.06;
+    (min + inset, max - inset)
 }
 
 /// Reshape `rect` to `aspect` about its centre, preserving its area so switching
@@ -419,18 +421,35 @@ pub fn FrameOverlay() -> Element {
         None => return rsx! {},
     };
 
-    // Canvas → screen for the box itself. Handles are placed as percentages of it,
-    // so nothing else needs measuring.
-    let tl = view.canvas_to_screen(matte.min);
-    let br = view.canvas_to_screen(matte.max);
-    let (w, h) = (br.x - tl.x, br.y - tl.y);
+    // The box is laid out around the frame's *centre* and then turned, rather than
+    // pinned by its top-left corner: the canvas can be rotated and mirrored
+    // (MISSING_FEATURES §1.2), and a rect described by two opposite corners only
+    // stays a rect while it is axis-aligned. Handles are placed as percentages of the
+    // box, so they ride the turn with it and nothing else needs measuring.
+    let center = view.canvas_to_screen((matte.min + matte.max) * 0.5);
+    let (w, h) = (
+        (matte.max.x - matte.min.x) * view.zoom,
+        (matte.max.y - matte.min.y) * view.zoom,
+    );
+    // `transform-origin` is the box's centre by default, which is exactly the pivot
+    // the canvas turns about. A mirrored view has determinant −1 here, so the grips
+    // mirror too — the north-west handle really is at the north-west of the picture.
+    let o = view.orientation();
     let box_style = format!(
-        "left: {}px; top: {}px; width: {}px; height: {}px;",
-        tl.x, tl.y, w, h
+        "left: {}px; top: {}px; width: {}px; height: {}px;          transform: matrix({}, {}, {}, {}, 0, 0);",
+        center.x - 0.5 * w,
+        center.y - 0.5 * h,
+        w,
+        h,
+        o.x_axis.x,
+        o.x_axis.y,
+        o.y_axis.x,
+        o.y_axis.y,
     );
 
-    // A pointer delta in screen px is a canvas delta over the zoom.
-    let to_canvas = move |screen: Vec2, origin: Vec2| (screen - origin) / view.zoom;
+    // A pointer delta in screen px, carried back through the whole view — a turned
+    // canvas sends a drag to the right somewhere other than +x.
+    let to_canvas = move |screen: Vec2, origin: Vec2| view.canvas_delta(screen - origin);
 
     rsx! {
         div {

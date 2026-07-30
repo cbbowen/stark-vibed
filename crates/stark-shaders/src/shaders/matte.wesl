@@ -23,7 +23,11 @@
 // invariant, for free).
 
 struct View {
-    st: vec4<f32>,   // scale.xy, translate.xy  (canvas px -> NDC)
+    // Canvas px -> NDC, column-major: `st.xy` is the first column, `st.zw` the
+    // second. A 2x2 because the view can be turned and mirrored; the matte is a
+    // canvas-space rect, so it turns with the canvas.
+    st: vec4<f32>,
+    xlate: vec4<f32>, // translate.xy, unused zw
     misc: vec4<f32>, // tile_size, interior uv scale, interior uv bias, zoom
 }
 
@@ -72,7 +76,16 @@ fn vs_main(
 
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
-    out.canvas = (ndc - view.st.zw) / view.st.xy;
+    // Back through the view: the map is affine, so inverting it at the corners and
+    // interpolating is exact. The 2x2 inverse is four vertices' worth of arithmetic
+    // per matte, against carrying a second matrix in the uniform.
+    let m = mat2x2<f32>(view.st.xy, view.st.zw);
+    let det = m[0][0] * m[1][1] - m[1][0] * m[0][1];
+    let inv = mat2x2<f32>(
+        vec2<f32>(m[1][1], -m[0][1]),
+        vec2<f32>(-m[1][0], m[0][0]),
+    ) * (1.0 / det);
+    out.canvas = inv * (ndc - view.xlate.xy);
     out.rect = rect;
     out.channels = channels;
     out.opacity = opacity;
