@@ -33,3 +33,13 @@ pub(crate) mod iroh;
 
 #[cfg(all(feature = "webrtc", target_family = "wasm", target_os = "unknown"))]
 pub(crate) mod webrtc;
+
+// WebRTC on the single endpoint (`webrtc2`): not a transport of its own — the
+// mesh still rides `iroh` above — just the bootstrap that gives the endpoint
+// direct WebRTC paths. Compiled out entirely when the facade backend is
+// active.
+#[cfg(all(
+    feature = "webrtc2",
+    not(all(feature = "webrtc", target_family = "wasm", target_os = "unknown"))
+))]
+pub(crate) mod direct;

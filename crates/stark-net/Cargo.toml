@@ -30,12 +30,32 @@ publish = false
 # the (well-tested) iroh path, but exercising real browser WebRTC needs a browser.
 # See vendor/iroh-webrtc-transport/VENDORING.md.
 webrtc = ["dep:iroh-webrtc-transport"]
-# TODO: We would like to enable this by default, but it currently breaks sharing.
-default = ["webrtc"]
+# Direct peer connections on ONE ordinary iroh endpoint via a WebRTC custom
+# transport (vendor/iroh-webrtc-transport2 + the patched vendor/iroh). Unlike
+# `webrtc`, this does not swap the backend: the default iroh backend gains a
+# custom transport, a JSEP signaling ALPN, and a per-mesh-link bootstrap
+# (transport/direct.rs). Connections establish over whatever works (relay on
+# the web) and MIGRATE onto the WebRTC path once a data channel attaches —
+# with the relay path kept open as fallback. Works identically on native
+# (str0m) and wasm (RTCPeerConnection), so the whole flow is testable in
+# `cargo test`.
+#
+# If both `webrtc` and `webrtc2` are enabled, `webrtc` wins on wasm (it swaps
+# the whole backend) and `webrtc2` is dead code there.
+webrtc2 = ["dep:iroh-webrtc-transport2", "dep:iroh-base", "dep:anyhow", "iroh/unstable-custom-transports"]
+default = ["webrtc2"]
 
 [dependencies]
 stark-core = { path = "../stark-core" }
 iroh = "1"
+# Same package name as the `webrtc` facade dep below — a different project
+# that shares the name (see vendor/iroh-webrtc-transport2/VENDORING.md);
+# cargo tells them apart by version.
+iroh-webrtc-transport2 = { package = "iroh-webrtc-transport", path = "../../vendor/iroh-webrtc-transport2", optional = true }
+# For naming CustomAddr (iroh does not re-export it).
+iroh-base = { version = "1", optional = true }
+# The vendored transport's negotiation API speaks anyhow.
+anyhow = { version = "1", optional = true }
 n0-future = "0.3"
 postcard = { workspace = true }
 serde = { workspace = true }
@@ -61,6 +81,8 @@ default-features = false
 features = ["native"]
 
 [dev-dependencies]
+# `test-utils` provides the local relay server for the webrtc2 mesh test.
+iroh = { version = "1", features = ["test-utils"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 pollster = { workspace = true }
 wgpu = { workspace = true }

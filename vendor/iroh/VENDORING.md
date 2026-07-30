@@ -20,6 +20,13 @@ from three places:
    them on existing connections.
 3. the address-lookup result arm — same, for addrs arriving via lookup.
 
+`src/endpoint.rs`: new public `Endpoint::add_addr(impl Into<EndpointAddr>)`
+(gated on `unstable-custom-transports`) — teaches the endpoint addresses for a
+remote *without* connecting, by feeding the existing `ResolveRemote` path.
+Combined with (2), this is the app-side trigger for "the WebRTC channel is now
+attached; open the custom path on the live connections". Best-effort by
+design.
+
 ## Why
 
 Upstream iroh 1.0.3 only ever establishes a custom path when the custom

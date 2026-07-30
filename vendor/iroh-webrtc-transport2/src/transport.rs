@@ -36,6 +36,12 @@ impl WebRtcTransport {
         CustomAddr::from_parts(WEBRTC_TRANSPORT_ID, &self.local_addr_bytes)
     }
 
+    /// True if a data channel is currently attached for `remote` — i.e. a
+    /// bootstrap for that peer would be redundant right now.
+    pub fn is_attached(&self, remote: &CustomAddr) -> bool {
+        self.tunnel.has_route(remote)
+    }
+
     /// Wire a negotiated SCTP data channel into this transport so iroh can send/receive QUIC datagrams on it.
     ///
     /// Call from an async context (Tokio runtime). `remote_custom_addr` must match the peer's advertised

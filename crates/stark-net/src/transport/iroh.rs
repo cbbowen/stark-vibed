@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use iroh::{Endpoint, EndpointAddr};
+use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::mesh::{
@@ -32,6 +32,10 @@ const MAX_FRAME: usize = 1024 * 1024;
 pub(crate) struct IrohMeshTransport {
     endpoint: Endpoint,
     inbound: Mutex<mpsc::UnboundedReceiver<IrohConn>>,
+    /// When set, every mesh link (dialed or accepted) also bootstraps a WebRTC
+    /// channel to the peer; established connections then migrate onto it.
+    #[cfg(feature = "webrtc2")]
+    direct: Option<std::sync::Arc<iroh_webrtc_transport2::WebRtcTransport>>,
 }
 
 impl IrohMeshTransport {
@@ -43,11 +47,34 @@ impl IrohMeshTransport {
             Self {
                 endpoint,
                 inbound: Mutex::new(inbound_rx),
+                #[cfg(feature = "webrtc2")]
+                direct: None,
             },
             MeshProto {
                 inbound: inbound_tx,
             },
         )
+    }
+
+    /// Enable WebRTC bootstrap for every mesh link (`webrtc2` backends).
+    #[cfg(feature = "webrtc2")]
+    pub fn with_direct(
+        mut self,
+        transport: std::sync::Arc<iroh_webrtc_transport2::WebRtcTransport>,
+    ) -> Self {
+        self.direct = Some(transport);
+        self
+    }
+
+    /// Kick off (or skip, if already attached) the WebRTC bootstrap for a peer
+    /// this mesh now has a link with.
+    fn ensure_direct(&self, id: EndpointId) {
+        #[cfg(feature = "webrtc2")]
+        if let Some(direct) = &self.direct {
+            super::direct::ensure_direct(&self.endpoint, direct, id);
+        }
+        #[cfg(not(feature = "webrtc2"))]
+        let _ = id;
     }
 }
 
@@ -64,11 +91,22 @@ impl MeshTransport for IrohMeshTransport {
         // endpoint already learned from an earlier connection. Peers we only
         // heard about second-hand (no relay, no lookup — the local-only case)
         // may not be dialable; the mesh copes by routing around them.
+        let addr = EndpointAddr::new(id);
+        // With WebRTC enabled, dial with the peer's (derived) custom addr too:
+        // if a data channel already exists — mesh redial with the channel
+        // surviving — the new connection opens its WebRTC path immediately.
+        #[cfg(feature = "webrtc2")]
+        let addr = if self.direct.is_some() {
+            super::direct::with_custom_addr(addr)
+        } else {
+            addr
+        };
         let conn = self
             .endpoint
-            .connect(EndpointAddr::new(id), ALPN)
+            .connect(addr, ALPN)
             .await
             .map_err(MeshTransportError::new)?;
+        self.ensure_direct(id);
         let (send, recv) = conn.open_bi().await.map_err(MeshTransportError::new)?;
         Ok(IrohConn {
             peer,
@@ -79,7 +117,11 @@ impl MeshTransport for IrohMeshTransport {
     }
 
     async fn accept(&self) -> Option<IrohConn> {
-        self.inbound.lock().await.recv().await
+        let conn = self.inbound.lock().await.recv().await?;
+        if let Some(id) = to_endpoint_id(conn.peer) {
+            self.ensure_direct(id);
+        }
+        Some(conn)
     }
 }
 
@@ -168,18 +210,19 @@ impl MeshSender for IrohSender {
     }
 
     /// The *selected* path decides: iroh keeps a relay path open even after
-    /// hole punching, but application data rides only the selected one.
+    /// hole punching (and after WebRTC migration), but application data rides
+    /// only the selected one.
     fn link_kind(&self) -> LinkKind {
         let paths = self.conn.paths();
         let Some(path) = paths.iter().find(|p| p.is_selected()) else {
             return LinkKind::Unknown;
         };
-        if path.is_relay() {
-            LinkKind::Relay
-        } else if path.is_ip() {
-            LinkKind::Direct
-        } else {
-            LinkKind::Unknown
+        match path.remote_addr() {
+            TransportAddr::Relay(..) => LinkKind::Relay,
+            TransportAddr::Ip(_) => LinkKind::Direct,
+            // The only custom transport we install is the WebRTC one.
+            TransportAddr::Custom(_) => LinkKind::WebRtc,
+            _ => LinkKind::Unknown,
         }
     }
 
@@ -409,5 +452,172 @@ mod tests {
         mesh.shutdown();
         let _ = peer.router.shutdown().await;
         peer.endpoint.close().await;
+    }
+}
+
+/// The full `webrtc2` flow over the real stack: mesh links establish over a
+/// (local) relay, the per-link bootstrap negotiates a WebRTC channel through
+/// JSEP-over-QUIC, and the patched iroh migrates the live mesh connection onto
+/// the WebRTC path — exactly what a browser session does, minus the browser
+/// (str0m stands in for RTCPeerConnection; the protocol is the same).
+#[cfg(all(test, feature = "webrtc2"))]
+mod webrtc_migration_tests {
+    use std::time::Duration;
+
+    use iroh::endpoint::presets;
+    use iroh::protocol::Router;
+    use iroh::test_utils::run_relay_server;
+    use iroh::tls::CaTlsConfig;
+    use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, SecretKey, Watcher};
+    use iroh::address_lookup::MemoryLookup;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::mesh::{LinkKind, Mesh, MeshConfig, MeshEvent, TopicId};
+    use crate::transport::direct::{JsepProto, SIGNALING_ALPN, make_transport};
+
+    const TOPIC: TopicId = TopicId::from_bytes([7u8; 32]);
+
+    struct TestPeer {
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        router: Router,
+        transport: Option<IrohMeshTransport>,
+    }
+
+    /// Relay + WebRTC only (IP transports cleared): on loopback a direct UDP
+    /// path would always win selection and the migration would be invisible.
+    /// This mirrors the browser, which has no IP transport at all.
+    async fn bind_peer(relay: RelayMap) -> TestPeer {
+        let secret = SecretKey::generate();
+        let webrtc = make_transport(secret.public());
+        let lookup = MemoryLookup::new();
+        let endpoint = Endpoint::builder(presets::N0)
+            .secret_key(secret)
+            .relay_mode(RelayMode::Custom(relay))
+            .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+            .clear_address_lookup()
+            .address_lookup(lookup.clone())
+            .clear_ip_transports()
+            .add_custom_transport(webrtc.clone())
+            .bind()
+            .await
+            .expect("bind endpoint");
+        let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
+        let transport = transport.with_direct(webrtc.clone());
+        let router = Router::builder(endpoint.clone())
+            .accept(ALPN, mesh_proto)
+            .accept(SIGNALING_ALPN, JsepProto::new(webrtc))
+            .spawn();
+        TestPeer {
+            endpoint,
+            lookup,
+            router,
+            transport: Some(transport),
+        }
+    }
+
+    /// Wait until the endpoint has published a relay address, and return it.
+    async fn relay_addr(peer: &TestPeer) -> EndpointAddr {
+        let mut w = peer.endpoint.watch_addr();
+        for _ in 0..300 {
+            let a = w.get();
+            if a.addrs.iter().any(|x| x.is_relay()) {
+                return a;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for a relay addr");
+    }
+
+    fn start_mesh(
+        peer: &mut TestPeer,
+        bootstrap: &[&TestPeer],
+    ) -> (Mesh, mpsc::UnboundedReceiver<MeshEvent>) {
+        let config = MeshConfig {
+            maintenance_interval: Duration::from_millis(100),
+            ..MeshConfig::new(TOPIC)
+        };
+        let bootstrap: Vec<PeerId> = bootstrap
+            .iter()
+            .map(|p| to_peer_id(p.endpoint.id()))
+            .collect();
+        Mesh::spawn(
+            peer.transport.take().expect("one mesh per peer"),
+            config,
+            bootstrap,
+        )
+    }
+
+    async fn wait_for_neighbors(mesh: &Mesh, want: usize) {
+        for _ in 0..400 {
+            if mesh.neighbors().await.expect("mesh running").len() >= want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for {want} neighbour(s)");
+    }
+
+    async fn wait_for_link_kind(mesh: &Mesh, want: LinkKind) {
+        let mut last = Vec::new();
+        for _ in 0..600 {
+            last = mesh.links().await.expect("mesh running");
+            if !last.is_empty() && last.iter().all(|(_, kind)| *kind == want) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for links to become {want:?}; links = {last:?}");
+    }
+
+    async fn next_payload(events: &mut mpsc::UnboundedReceiver<MeshEvent>) -> Vec<u8> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            match tokio::time::timeout_at(deadline, events.recv()).await {
+                Ok(Some(MeshEvent::Received { payload, .. })) => return payload,
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("mesh event stream ended"),
+                Err(_) => panic!("timed out waiting for a payload"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mesh_links_migrate_from_relay_to_webrtc() {
+        let (relay_map, _url, _relay_guard) =
+            run_relay_server().await.expect("local relay server");
+
+        let mut a = bind_peer(relay_map.clone()).await;
+        let mut b = bind_peer(relay_map.clone()).await;
+        let a_addr = relay_addr(&a).await;
+        let b_addr = relay_addr(&b).await;
+        a.lookup.add_endpoint_info(b_addr);
+        b.lookup.add_endpoint_info(a_addr);
+
+        let (a_mesh, mut a_events) = start_mesh(&mut a, &[]);
+        let (b_mesh, mut b_events) = start_mesh(&mut b, &[&a]);
+
+        wait_for_neighbors(&a_mesh, 1).await;
+        wait_for_neighbors(&b_mesh, 1).await;
+
+        // The link works from the start (over the relay)...
+        a_mesh.broadcast(b"over the relay, probably".to_vec()).await.unwrap();
+        assert_eq!(next_payload(&mut b_events).await, b"over the relay, probably");
+
+        // ...and migrates onto WebRTC without any reconnect, on BOTH ends.
+        wait_for_link_kind(&a_mesh, LinkKind::WebRtc).await;
+        wait_for_link_kind(&b_mesh, LinkKind::WebRtc).await;
+
+        // Still the same link, now direct: traffic keeps flowing.
+        b_mesh.broadcast(b"over webrtc".to_vec()).await.unwrap();
+        assert_eq!(next_payload(&mut a_events).await, b"over webrtc");
+
+        a_mesh.shutdown();
+        b_mesh.shutdown();
+        let _ = a.router.shutdown().await;
+        let _ = b.router.shutdown().await;
+        a.endpoint.close().await;
+        b.endpoint.close().await;
     }
 }

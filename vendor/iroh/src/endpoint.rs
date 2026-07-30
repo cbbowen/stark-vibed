@@ -1154,6 +1154,37 @@ impl Endpoint {
         Ok(Connecting::new(connect, self.clone(), endpoint_id))
     }
 
+    /// STARK PATCH: teaches the endpoint addresses for a remote out of band,
+    /// without connecting.
+    ///
+    /// The addresses are merged into the remote's path state exactly as a
+    /// dial's addresses would be, and — via the patched `ResolveRemote`
+    /// handling — custom-transport addrs among them are opened as paths on any
+    /// live connections to that remote. Use case: a custom transport (e.g.
+    /// WebRTC) whose channel is bootstrapped *after* connections exist;
+    /// calling this once the channel is attached lets those connections
+    /// migrate onto it.
+    ///
+    /// Best-effort: failures (endpoint closed, address lookup produced
+    /// nothing) are logged at debug level, not returned — the addresses that
+    /// were passed in are recorded regardless.
+    #[cfg(feature = "unstable-custom-transports")]
+    pub async fn add_addr(&self, endpoint_addr: impl Into<EndpointAddr>) {
+        let endpoint_addr: EndpointAddr = endpoint_addr.into();
+        if self.is_closed() || endpoint_addr.id == self.id() {
+            return;
+        }
+        match self.inner.resolve_remote(endpoint_addr).await {
+            Ok(Ok(_mapped)) => {}
+            Ok(Err(lookup_err)) => {
+                debug!("add_addr: address lookup reported: {lookup_err}");
+            }
+            Err(stopped) => {
+                debug!("add_addr: remote state actor stopped: {stopped}");
+            }
+        }
+    }
+
     /// Accepts an incoming connection on the endpoint.
     ///
     /// Only connections with the ALPNs configured in [`Builder::alpns`] will be accepted.

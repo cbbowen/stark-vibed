@@ -13,7 +13,12 @@
 //!   not, decided per connection.
 //! - **everything else** → an ordinary iroh [`Endpoint`](iroh::Endpoint) and
 //!   [`Router`](iroh::protocol::Router). Native peers hole-punch already, so
-//!   WebRTC buys them nothing.
+//!   WebRTC buys them nothing. With the **`webrtc2`** feature this backend
+//!   additionally carries a WebRTC custom transport on the same endpoint:
+//!   connections establish over whatever works and migrate onto a WebRTC path
+//!   once a data channel is bootstrapped (see
+//!   [`transport::direct`](crate::transport::direct)) — which is what gives
+//!   the *web* direct connections without swapping the backend.
 
 #[cfg(all(feature = "webrtc", target_family = "wasm", target_os = "unknown"))]
 mod imp {
@@ -168,22 +173,33 @@ mod imp {
 
     pub(crate) async fn bind(mirror: Arc<Mutex<Mirror>>, opts: &NetOptions) -> Result<Bound> {
         let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
-        let endpoint = if opts.local_only {
-            Endpoint::builder(presets::Minimal)
-                .secret_key(secret)
-                .bind()
-                .await?
+        // The WebRTC custom transport rides the same endpoint; peers derive
+        // its addr from our endpoint id (see transport::direct).
+        #[cfg(feature = "webrtc2")]
+        let webrtc = crate::transport::direct::make_transport(secret.public());
+
+        let builder = if opts.local_only {
+            Endpoint::builder(presets::Minimal).secret_key(secret)
         } else {
-            Endpoint::builder(presets::N0)
-                .secret_key(secret)
-                .bind()
-                .await?
+            Endpoint::builder(presets::N0).secret_key(secret)
         };
+        #[cfg(feature = "webrtc2")]
+        let builder = builder.add_custom_transport(webrtc.clone());
+        let endpoint = builder.bind().await?;
+
         let (transport, mesh_proto) = IrohMeshTransport::new(endpoint.clone());
+        #[cfg(feature = "webrtc2")]
+        let transport = transport.with_direct(webrtc.clone());
+
         let router = Router::builder(endpoint.clone())
             .accept(crate::transport::MESH_ALPN, mesh_proto)
-            .accept(proto::ALPN, CollabProto { mirror })
-            .spawn();
+            .accept(proto::ALPN, CollabProto { mirror });
+        #[cfg(feature = "webrtc2")]
+        let router = router.accept(
+            crate::transport::direct::SIGNALING_ALPN,
+            crate::transport::direct::JsepProto::new(webrtc),
+        );
+        let router = router.spawn();
 
         Ok(Bound {
             dialer: Dialer {
@@ -207,6 +223,10 @@ mod imp {
         /// Connecting also teaches the endpoint how to reach `addr`, which is
         /// what later lets the mesh dial the same peer by bare id.
         pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {
+            // Teach iroh the peer's (derived) WebRTC addr from first contact,
+            // so this connection migrates too once a channel attaches.
+            #[cfg(feature = "webrtc2")]
+            let addr = crate::transport::direct::with_custom_addr(addr);
             let conn = self.endpoint.connect(addr, proto::ALPN).await?;
             Ok(Catchup { conn })
         }
