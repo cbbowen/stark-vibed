@@ -17,6 +17,7 @@
 mod brush_editor;
 mod collab;
 mod components;
+mod credits;
 mod files;
 mod icons;
 mod identity;
@@ -40,6 +41,7 @@ use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
+use credits::CreditsModal;
 use input::{Nav, bind_shortcuts, end_interaction, input_tolerance, pick_color, sample};
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move};
 use panels::brush::BRISTLE_BRUSH;
@@ -438,6 +440,7 @@ fn CommandRail() -> Element {
     let mut show_session = use_signal(|| false);
     let mut show_export = use_signal(|| false);
     let mut show_settings = use_signal(|| false);
+    let mut show_credits = use_signal(|| false);
     let live = (state.collab.phase)() == collab::CollabPhase::Shared;
     let (can_undo, can_redo, has_selection) = state
         .obs
@@ -524,6 +527,14 @@ fn CommandRail() -> Element {
                             span { "Invert selection" }
                             span { class: "menu-shortcut", "Ctrl+Shift+I" }
                         }
+                        // Last, and last for a reason: it is the only entry here that
+                        // is not a thing to *do* to the drawing.
+                        MenubarItem {
+                            index: 9usize,
+                            value: "credits".to_string(),
+                            on_select: move |_| show_credits.set(true),
+                            span { "Credits\u{2026}" }
+                        }
                     }
                 }
                 MenubarMenu { index: 1usize,
@@ -574,6 +585,9 @@ fn CommandRail() -> Element {
         }
         if show_settings() {
             SettingsModal { on_close: move |_| show_settings.set(false) }
+        }
+        if show_credits() {
+            CreditsModal { on_close: move |_| show_credits.set(false) }
         }
     }
 }
