@@ -181,10 +181,9 @@ pub struct TransformState {
     /// The reference **circle**'s radius, canvas px. A circle, not the hull's
     /// own aspect: the widget's shape carries meaning — a circle says the
     /// accumulated transform is a similarity (rotation, uniform scale,
-    /// translation), and any other shape says distortion has been applied. The
-    /// geometric mean of the hull's half-extents, so the widget matches the
-    /// area of the hull's inscribed ellipse whatever its proportions; floored
-    /// so a hairline selection still mounts a grabbable widget.
+    /// translation), and any other shape says distortion has been applied.
+    /// Encompasses the hull; floored so a hairline selection still mounts a
+    /// grabbable widget.
     pub radius: f32,
     /// Where the gesture has carried the centre.
     pub center: Vec2,
@@ -199,7 +198,7 @@ impl TransformState {
         Self {
             layer,
             anchor,
-            radius: (half.x.max(0.0) * half.y.max(0.0)).sqrt().max(min_radius),
+            radius: half.max(Vec2::ZERO).length().max(min_radius),
             center: anchor,
             linear: Mat2::IDENTITY,
         }
