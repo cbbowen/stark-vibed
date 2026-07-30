@@ -7,7 +7,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
-use stark_core::document::{BrushDynamics, BrushParams, Tool};
+use stark_core::document::{BrushDynamics, BrushParams, BrushShape, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 
@@ -458,7 +458,7 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
     );
 
     let smear = BrushParams {
-        hardness: 0.95,
+        shape: BrushShape::Round { hardness: 0.95 },
         drain: 0.0,
         ..dyn_brush(
             RED,

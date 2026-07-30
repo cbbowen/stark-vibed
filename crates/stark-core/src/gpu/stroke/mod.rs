@@ -510,8 +510,8 @@ impl StrokeRenderer {
         match brush.shape {
             BrushShape::Stamp(id) => assets
                 .prefix_view(id)
-                .unwrap_or_else(|| self.round_prefix(brush.hardness)),
-            BrushShape::Round => self.round_prefix(brush.hardness),
+                .unwrap_or_else(|| self.round_prefix(BrushShape::DEFAULT_HARDNESS)),
+            BrushShape::Round { hardness } => self.round_prefix(hardness),
         }
     }
 

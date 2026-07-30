@@ -1196,8 +1196,8 @@ the hash of its bytes; `BrushParams` references that id, never the pixels:
 pub struct AssetId([u8; 32]);   // BLAKE3 of the canonical image bytes
 
 pub enum BrushShape {
-    Round,            // procedural soft disc; `hardness` applies
-    Stamp(AssetId),   // sampled coverage mask from an imported image
+    Round { hardness: f32 },   // procedural soft disc; hardness controls the falloff
+    Stamp(AssetId),            // sampled coverage mask from an imported image
 }
 // BrushParams gains:  shape: BrushShape, orientation: OrientationSource
 ```

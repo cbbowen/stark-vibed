@@ -582,7 +582,7 @@ fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetId> {
             head: Some(head), ..
         }) => match head.brush.shape {
             BrushShape::Stamp(id) => Some(id),
-            BrushShape::Round => None,
+            BrushShape::Round { .. } => None,
         },
         _ => None,
     }
@@ -624,7 +624,7 @@ fn referenced_asset(action: &Action) -> Option<AssetId> {
     match &action.kind {
         ActionKind::CommitStroke(rec) => match rec.brush.shape {
             BrushShape::Stamp(id) => Some(id),
-            BrushShape::Round => None,
+            BrushShape::Round { .. } => None,
         },
         _ => None,
     }

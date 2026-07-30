@@ -8,8 +8,8 @@
 
 use crate::command::InputSample;
 use crate::document::{
-    ActorId, BrushDynamics, BrushParams, ColorDynamics, LayerId, NoiseKind, SelectionMode,
-    SelectionOp, SelectionShape, StrokeRecord, Tool,
+    ActorId, BrushDynamics, BrushParams, BrushShape, ColorDynamics, LayerId, NoiseKind,
+    SelectionMode, SelectionOp, SelectionShape, StrokeRecord, Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
 use crate::path::PathFitter;
@@ -183,7 +183,7 @@ pub struct Session {
 fn hard_round_brush_params() -> BrushParams {
     BrushParams {
         radius: 100.0,
-        hardness: 0.95,
+        shape: BrushShape::Round { hardness: 0.95 },
         dynamics: BrushDynamics {
             add: 0.4,
             lift: 0.6,

@@ -236,8 +236,8 @@ impl<'a> DynamicsRun<'a> {
             BrushShape::Stamp(id) => scene
                 .assets
                 .coverage_view(id)
-                .unwrap_or_else(|| r.round_coverage_view(rec.brush.hardness)),
-            BrushShape::Round => r.round_coverage_view(rec.brush.hardness),
+                .unwrap_or_else(|| r.round_coverage_view(BrushShape::DEFAULT_HARDNESS)),
+            BrushShape::Round { hardness } => r.round_coverage_view(hardness),
         };
         // Colour dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).

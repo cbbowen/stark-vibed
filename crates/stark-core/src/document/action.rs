@@ -65,13 +65,29 @@ impl Tool {
 }
 
 /// The brush tip shape (DESIGN.md §6.6).
-#[derive(Copy, Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BrushShape {
-    /// Procedural soft disc; `hardness` controls the falloff.
-    #[default]
-    Round,
+    /// Procedural soft disc. Edge softness in [0, 1): 0 = very soft, ~1 = hard
+    /// edge — meaningful only here, since it is what shapes this tip's falloff.
+    Round { hardness: f32 },
     /// A sampled coverage mask, referenced by content id (an imported image).
     Stamp(crate::assets::AssetId),
+}
+
+impl Default for BrushShape {
+    fn default() -> Self {
+        Self::Round {
+            hardness: Self::DEFAULT_HARDNESS,
+        }
+    }
+}
+
+impl BrushShape {
+    /// The round tip's hardness fallback: used both as [`Default`] and when a
+    /// `Stamp` asset fails to resolve and rendering falls back to the round tip
+    /// (DESIGN.md §6.6), which by construction has no hardness of its own to fall
+    /// back on.
+    pub const DEFAULT_HARDNESS: f32 = 0.5;
 }
 
 /// What sets the brush shape's orientation as it sweeps along the stroke (DESIGN.md
@@ -216,8 +232,6 @@ pub struct BrushParams {
     pub color: [f32; 4],
     /// Stamp radius in canvas pixels at full pressure.
     pub radius: f32,
-    /// Edge softness in [0, 1): 0 = very soft, ~1 = hard edge.
-    pub hardness: f32,
     /// Reservoir depletion per canvas pixel travelled: the stroke thins as paint
     /// runs out (DESIGN.md §6.2). 0 = inexhaustible — which is what a pen, a
     /// charcoal stick, or an ordinary digital brush wants; a physical loaded
@@ -248,7 +262,6 @@ impl Default for BrushParams {
         Self {
             color: [0.0, 0.0, 0.0, 1.0],
             radius: 16.0,
-            hardness: 0.5,
             drain: 0.0015,
             shape: BrushShape::default(),
             orientation: OrientationSource::default(),

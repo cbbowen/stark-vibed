@@ -18,7 +18,7 @@ mod common;
 use common::*;
 use stark_core::MediaParams;
 use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::document::BrushParams;
+use stark_core::document::{BrushParams, BrushShape};
 use stark_core::geom::Vec2;
 
 /// The reference configuration: no relief to tilt a normal, no weave, no gloss —
@@ -113,7 +113,7 @@ fn reference_light_reproduces_opaque_paint() {
             let brush = BrushParams {
                 color: [c[0], c[1], c[2], 1.0],
                 radius: 48.0,
-                hardness: 0.95,
+                shape: BrushShape::Round { hardness: 0.95 },
                 drain: 0.0,
                 ..BrushParams::default()
             };

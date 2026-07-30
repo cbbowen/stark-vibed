@@ -28,7 +28,7 @@ mod common;
 
 use common::*;
 use stark_core::command::DocCommand;
-use stark_core::document::{BrushDynamics, BrushParams};
+use stark_core::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_core::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.10, 0.10, 1.0];
@@ -39,7 +39,7 @@ fn soft(color: [f32; 4], radius: f32) -> BrushParams {
     BrushParams {
         color,
         radius,
-        hardness: 0.0,
+        shape: BrushShape::Round { hardness: 0.0 },
         drain: 0.0,
         dynamics: BrushDynamics {
             add: 0.6,

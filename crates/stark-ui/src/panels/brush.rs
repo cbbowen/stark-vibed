@@ -68,8 +68,7 @@ pub fn set_brush_preset(state: AppState) {
 /// (`deposit`). A hard edge so it reads as a blade riding the weave.
 pub fn set_knife(state: AppState) {
     update_brush(state, |b| {
-        b.shape = BrushShape::Round;
-        b.hardness = 0.9;
+        b.shape = BrushShape::Round { hardness: 0.9 };
         b.dynamics = BrushDynamics {
             add: 0.0,
             lift: 1.0,

@@ -193,7 +193,7 @@ pub fn remove(state: AppState, id: AssetId) {
         .map(|o| o.brush.shape == BrushShape::Stamp(id))
         .unwrap_or(false);
     if selected {
-        update_brush(state, |b| b.shape = BrushShape::Round);
+        update_brush(state, |b| b.shape = BrushShape::default());
     }
 }
 

@@ -134,7 +134,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         .as_ref()
         .map(|o| o.brush)
         .unwrap_or_default();
-    let is_round = matches!(brush.shape, BrushShape::Round);
+    let is_round = matches!(brush.shape, BrushShape::Round { .. });
     let d = brush.dynamics;
     let cd = brush.color_dynamics;
     // The jitter channels are the *colour space's* channels — label them for
@@ -219,9 +219,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         }
                         Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
                             oninput: move |v| edit(state, preview, move |b| b.radius = v) }
-                        if is_round {
-                            Slider { label: "Hardness", min: 0.0, max: 0.95, value: brush.hardness,
-                                oninput: move |v| edit(state, preview, move |b| b.hardness = v) }
+                        if let BrushShape::Round { hardness } = brush.shape {
+                            Slider { label: "Hardness", min: 0.0, max: 0.95, value: hardness,
+                                oninput: move |v| edit(state, preview, move |b| {
+                                    if let BrushShape::Round { hardness } = &mut b.shape {
+                                        *hardness = v;
+                                    }
+                                }) }
                         }
                     }
 
@@ -344,7 +348,7 @@ fn ShapeGallery() -> Element {
             "shape-card"
         }
     };
-    let is_round = matches!(brush_shape, BrushShape::Round);
+    let is_round = matches!(brush_shape, BrushShape::Round { .. });
     let is_bristles = matches!(brush_shape, BrushShape::Stamp(id) if Some(id) == bristle);
 
     rsx! {
@@ -364,7 +368,7 @@ fn ShapeGallery() -> Element {
             },
 
             div { class: card(is_round),
-                onclick: move |_| set_shape(state, BrushShape::Round),
+                onclick: move |_| set_shape(state, BrushShape::default()),
                 div { class: "shape-thumb round" }
                 div { class: "shape-name", "Round" }
             }
@@ -556,7 +560,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
     let brush = BrushParams {
         color: [0.82, 0.15, 0.12, 1.0],
         radius: 75.0,
-        hardness: 0.9,
+        shape: BrushShape::Round { hardness: 0.9 },
         drain: 0.0,
         ..BrushParams::default()
     };
@@ -590,7 +594,7 @@ fn restroke(state: AppState, mut preview: Preview) {
             .as_ref()
             .and_then(|main| main.asset_bytes(id))
             .map(|bytes| (id, bytes)),
-        BrushShape::Round => None,
+        BrushShape::Round { .. } => None,
     };
     // Force the test stroke to the fixed preview blue so it reads over the red
     // reference stroke; the brush's own alpha (Opacity) is left untouched.
