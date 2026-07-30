@@ -255,8 +255,15 @@
   background-color: #3a6ea5;
 }
 
+/* A chip is a row of its own contents (glyph, swatch, word) centred as a group, so a
+   chip that gains an icon needs no layout of its own — and a chip that is only a word
+   looks exactly as it did, since centring one item is centring text. */
 .chip {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   padding: 5px 0;
   border: none;
   border-radius: 5px;
@@ -274,23 +281,42 @@
   cursor: default;
 }
 
-/* The Fill action chip's inline swatch: the colour the gesture would lay. The four
-   selecting actions carry no swatch — they deposit nothing, and that absence is
-   what tells the fifth chip apart from them at a glance.
-
-   White base here, paint as an inline `background-image` over it (an image layer
-   paints above the colour layer), so a low-opacity paint reads as the pale wash it
-   is rather than going dark against the chip. */
-.chip-swatch {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 4px;
-  border-radius: 2px;
-  vertical-align: baseline;
-  background-color: #fff;
-  box-shadow: 0 0 0 1px #0006;
+/* An inline icon (`icons::icon`). The glyph is `fill: currentColor`, so it takes the
+   colour of the control it sits in and needs no state of its own: it goes
+   white-on-blue with a lit chip and fades with a disabled one, from the same file.
+   `flex: none` so it keeps its size while the label takes the slack, and the svg is
+   `block` so the box is the glyph rather than the glyph plus a line-box's descender
+   gap — which is what would otherwise sit a stacked icon off-centre. */
+.icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
 }
+
+.icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+/* A glyph holding a paint colour (`icons::icon_tinted`): the paint laid over an
+   untinted copy of the same path, which is what lets a low-opacity wash read as thin
+   rather than as dark — see the doc comment there, which owns this reasoning. Absolute
+   over `position: relative` and not a `background`, because the thing being tinted is a
+   glyph and only the glyph's own silhouette may take the colour. */
+.icon.tinted {
+  position: relative;
+}
+
+.icon.tinted > span {
+  display: block;
+}
+
+.icon.tinted > .icon-paint {
+  position: absolute;
+  inset: 0;
+}
+
 
 /* --- brush panel: the preset library, folded at the panel's foot --- */
 .preset-section {
@@ -394,6 +420,18 @@
   margin-bottom: 10px;
 }
 
+/* `stacked`: glyph over word. Five chips carrying both do not fit the panel side by
+   side, and this is the axis with room to give — the panel is short of width, never of
+   14 vertical pixels. The word drops to 12px with it, which is what the bars and the
+   rest of the panel chrome already use; at the UA button default the five action chips
+   would still be trying to hold "Isect" in 45px. */
+.tool-row.stacked .chip {
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 2px;
+  font-size: 12px;
+}
+
 /* Floating selection bar (DESIGN.md §6.8): the whole-selection commands, mounted
    only while a selection is in force. Bottom-centre keeps it clear of the left rail
    and the right-hand panel stack, and near the canvas it describes. It is only as
@@ -411,8 +449,13 @@
   color: #e8e8ea;
 }
 
-/* The label is the indicator; the controls beside it are the commands. */
+/* The label is the indicator; the controls beside it are the commands. A glyph may ride
+   in it (the frame bar's crop marks), and inherits the label's dim ink rather than the
+   chips' — the mark is part of the indicator, not a control you can press. */
 .bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
   color: #ffffff8c;
   padding-left: 2px;
@@ -468,12 +511,22 @@
   cursor: default;
 }
 
+/* The three header buttons: glyph then noun. 12px rather than the UA button default,
+   which is what makes the row fit — three icons and three words in 252px of panel is
+   comfortable at 12px and within a few pixels of overflowing at 13.33px, and the panel's
+   own rows are 12px anyway. `nowrap` so a squeeze breaks the row's alignment visibly
+   rather than silently wrapping a word inside its button. */
 .layer-add {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   background: #3a3a42;
   color: #eee;
   border: none;
   border-radius: 4px;
-  padding: 2px 10px;
+  padding: 3px 8px;
+  font-size: 12px;
+  white-space: nowrap;
   cursor: pointer;
 }
 

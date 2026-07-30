@@ -4,6 +4,7 @@
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon, icon_tinted};
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
@@ -48,38 +49,47 @@ pub fn SelectPanel() -> Element {
     drop(obs);
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
-    const TOOLS: [(Tool, &str); 3] = [
-        (Tool::SelectRect, "Rect"),
-        (Tool::SelectEllipse, "Ellipse"),
-        (Tool::SelectLasso, "Lasso"),
+    const TOOLS: [(Tool, &str, &str); 3] = [
+        (Tool::SelectRect, icons::RECTANGLE, "Rect"),
+        (Tool::SelectEllipse, icons::CIRCLE, "Ellipse"),
+        (Tool::SelectLasso, icons::LASSO, "Lasso"),
     ];
-    // Five words, no glyph: `∩` was the weak link in this row when it had four
-    // entries, and it could not survive being one of five — a symbol reads as a
-    // different *kind* of control from its neighbours, which is exactly the wrong
-    // signal here, where the whole point is that all five answer one question.
-    const ACTIONS: [(ShapeAction, &str, &str); 5] = [
+    // A glyph *and* its word on all five, never one without the other. `∩` was the
+    // weak link in this row when it had four entries and could not have survived
+    // being one of five: a lone symbol among words reads as a different *kind* of
+    // control from its neighbours, which is exactly the wrong signal here, where the
+    // whole point is that all five answer one question. The rule that follows from
+    // that is about evenness rather than about glyphs — five icons over five words
+    // keeps the row one row, and one entry left bare would break it the same way `∩`
+    // did.
+    const ACTIONS: [(ShapeAction, &str, &str, &str); 5] = [
         (
             ShapeAction::Select(SelectionMode::Replace),
+            icons::SELECTION_NEW,
             "New",
             "Select this region, replacing the current selection",
         ),
         (
             ShapeAction::Select(SelectionMode::Union),
+            icons::SELECTION_ADD,
             "Add",
             "Add this region to the selection (or hold shift)",
         ),
         (
             ShapeAction::Select(SelectionMode::Subtract),
+            icons::SELECTION_SUB,
             "Sub",
             "Cut this region out of the selection (or hold alt)",
         ),
         (
             ShapeAction::Select(SelectionMode::Intersect),
+            icons::SELECTION_ISECT,
             "Isect",
             "Keep only the overlap with the selection (or hold shift+alt)",
         ),
         (
             ShapeAction::Fill,
+            icons::PAINT_BUCKET,
             "Fill",
             "Fill this region with the brush's paint instead of selecting it. \
              Stays armed, so you can keep blocking in",
@@ -87,8 +97,12 @@ pub fn SelectPanel() -> Element {
     ];
 
     rsx! {
-        div { class: "tool-row",
-            for (t, label) in TOOLS {
+        // `stacked`: glyph over word, which is what buys the icons their room. Side by
+        // side, five chips of icon-plus-word do not fit the panel's width and the words
+        // would be the thing to give — and a word is the half of each chip that is
+        // unambiguous, so it is not the half to drop.
+        div { class: "tool-row stacked",
+            for (t, glyph, label) in TOOLS {
                 button {
                     class: chip(tool == t),
                     title: "Draw a selection with this tool, once",
@@ -98,22 +112,28 @@ pub fn SelectPanel() -> Element {
                         let next = if tool == t { Tool::Brush } else { t };
                         dispatch(state, ViewCommand::SetTool(next));
                     },
+                    {icon(glyph)}
                     "{label}"
                 }
             }
         }
-        div { class: "tool-row",
-            for (a, label, hint) in ACTIONS {
+        div { class: "tool-row stacked",
+            for (a, glyph, label, hint) in ACTIONS {
                 button {
-                    // Fill carries a swatch of the colour it would lay, so the row
-                    // itself says what the gesture will deposit — the one thing
-                    // that distinguishes this action from its four neighbours and
-                    // the one thing a word cannot carry.
                     class: chip(action == a),
                     title: "{hint}",
                     onclick: move |_| dispatch(state, ViewCommand::SetShapeAction(a)),
+                    // Fill's bucket is *full of* the colour it would lay, so the row
+                    // says what the gesture will deposit — the one thing that
+                    // distinguishes this action from its four neighbours, and the one
+                    // thing a word cannot carry. It used to be a separate swatch beside
+                    // the word; the bucket already draws a vessel with paint in it, so
+                    // colouring that is one mark doing both jobs instead of two marks
+                    // splitting them, and the row keeps five glyphs on one baseline.
                     if a == ShapeAction::Fill {
-                        span { class: "chip-swatch", style: swatch_style(brush_color) }
+                        {icon_tinted(glyph, brush_color)}
+                    } else {
+                        {icon(glyph)}
                     }
                     "{label}"
                 }
@@ -138,7 +158,13 @@ pub fn SelectionBar() -> Element {
     let state = use_context::<AppState>();
     // The committed selection, not the in-flight preview — so the bar does not flicker
     // in and out under a drag that has not been released yet.
-    let active = state.obs.read().as_ref().is_some_and(|o| o.has_selection);
+    let obs = state.obs.read();
+    let active = obs.as_ref().is_some_and(|o| o.has_selection);
+    // The bar's Fill lays the same paint the panel's Fill chip does, so it carries the
+    // same loaded bucket: the brush's colour is a property of the *act*, not of the
+    // panel that happens to host the control.
+    let brush_color = obs.as_ref().map_or([0.0; 4], |o| o.brush.color);
+    drop(obs);
     // While a transform gesture is composing, its bar stands in for this one: the
     // whole-selection commands would fight the gesture (deselecting mid-transform
     // would move the wrong region on "Done").
@@ -159,10 +185,14 @@ pub fn SelectionBar() -> Element {
                 // which is also the one case `FillOp::of_selection` is defined for:
                 // the mask is what bounds it, and this bar exists only when there
                 // is one.
+                // The same bucket the panel's Fill chip wears, because it is the same
+                // command with its region already drawn — one glyph for one act, wherever
+                // it is reached from.
                 button {
                     class: "chip",
                     title: "Fill the selection with the brush's paint",
                     onclick: move |_| fill_selection(state),
+                    {icon_tinted(icons::PAINT_BUCKET, brush_color)}
                     "Fill"
                 }
                 button {
@@ -171,12 +201,14 @@ pub fn SelectionBar() -> Element {
                     onclick: move |_| {
                         dispatch(state, DocCommand::Select(SelectionOp::select_all()))
                     },
+                    {icon(icons::SELECTION_NONE)}
                     "Deselect"
                 }
                 button {
                     class: "chip",
                     title: "Invert selection (Ctrl+Shift+I)",
                     onclick: move |_| dispatch(state, DocCommand::InvertSelection),
+                    {icon(icons::SELECTION_INVERT)}
                     "Invert"
                 }
             }
@@ -201,18 +233,6 @@ pub fn fill_selection(state: AppState) {
             op: FillOp::of_selection(brush.color, brush.dynamics.add),
         },
     );
-}
-
-/// The inline swatch on the Fill chip: the colour the gesture would lay, at the
-/// opacity it would lay it — a thin wash reads as a thin wash here too.
-///
-/// A `background-image` rather than a `background-color`, so it paints *over* the
-/// white base the stylesheet gives the swatch and the alpha reads against white
-/// instead of against the chip's dark ground.
-fn swatch_style(color: [f32; 4]) -> String {
-    let c = |i: usize| (color[i] * 255.0).round().clamp(0.0, 255.0) as u8;
-    let paint = format!("rgba({}, {}, {}, {})", c(0), c(1), c(2), color[3]);
-    format!("background-image: linear-gradient({paint}, {paint})")
 }
 
 /// The selection mode a gesture's modifier keys ask for, or `None` to keep the

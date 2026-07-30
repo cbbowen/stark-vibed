@@ -20,6 +20,7 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
 use crate::input::page_xy;
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
@@ -162,7 +163,10 @@ pub fn AddFrameButton() -> Element {
                     dispatch(state, PeerCommand::SetActiveLayer(id));
                 }
             },
-            "+ Frame"
+            // The glyph carries the plus the label used to, so the word is just the
+            // noun: "+ Frame" beside a bordered-square-with-a-plus said it twice.
+            {icon(icons::ADD_FRAME)}
+            "Frame"
         }
     }
 }
@@ -184,7 +188,14 @@ pub fn FrameBar() -> Element {
 
     rsx! {
         div { class: chrome_class(state, "frame-bar"),
-            span { class: "bar-label", "Frame" }
+            // The glyph rides the bar's *label*, not one of its buttons: no single
+            // control here is "crop" — sizing to an aspect, fitting to the art and
+            // fitting to the view are three ways of doing it — so what the mark
+            // identifies is the bar, and through it the mode you are in.
+            span { class: "bar-label",
+                {icon(icons::FRAME)}
+                "Frame"
+            }
             span { class: "frame-dim",
                 "{w.round() as i64} \u{00D7} {h.round() as i64}"
                 span { class: "frame-unit", " px" }

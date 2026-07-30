@@ -4,6 +4,7 @@
 use dioxus::html::Key;
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
 use crate::panels::frame::AddFrameButton;
 use crate::platform::select_all;
 use crate::render::PeerInfo;
@@ -41,7 +42,8 @@ pub fn LayerPanel() -> Element {
                 class: "layer-add",
                 title: "Add a paint layer",
                 onclick: move |_| dispatch(state, DocCommand::AddLayer { above: None }),
-                "+ Layer"
+                {icon(icons::ADD_LAYER)}
+                "Layer"
             }
             button {
                 class: "layer-add layer-remove",
@@ -53,7 +55,13 @@ pub fn LayerPanel() -> Element {
                         dispatch(state, DocCommand::RemoveLayer(id));
                     }
                 },
-                "\u{2212} Remove"
+                // The `−` this replaces was the mirror of "+ Layer" in text; the two
+                // glyphs are the same mirror, drawn — one stack gaining a member, the
+                // other losing one. Which is also why Remove wears a *stack* glyph
+                // though a frame is removable too: it takes the selected layer away,
+                // and a frame is one.
+                {icon(icons::REMOVE_LAYER)}
+                "Remove"
             }
         }
 
