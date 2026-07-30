@@ -145,11 +145,16 @@ default**. Knowing which region someone else is working inside is occasionally
 useful; a second contour over the artwork is a cost paid on every frame you look at
 it, and most of the time the answer to "what is that line?" should be "the one I
 drew". It is view state, so each client decides for itself and nothing about the
-choice is logged or sent — it changes what you look at, not what the drawing is. The
-control is mounted in the Select panel only while a session is live, on the same
-argument §6.8 makes for the selection bar: a control that is present or absent says
-whether the thing it governs exists, which a permanently-visible one greyed out does
-not.
+choice is logged or sent — it changes what you look at, not what the drawing is.
+
+That last sentence is also where the control lives. It is not a painting control and
+it is not part of the document, so it sits in the **Settings dialog** off the command
+rail (DESIGN.md §11) rather than in the Select panel: a standing per-client
+preference, set once and left alone, next to the others of its kind. It is listed
+there whether or not a session is live — a tool panel earns the opposite rule (§6.8:
+a control that is present or absent says whether the thing it governs exists), but a
+settings dialog is read as the map of what is configurable, so the row stays put and
+says in its own text that it takes effect while sharing.
 
 Note the asymmetry underneath, which is deliberate and worth stating: `DocState`
 holds a selection for every actor that ever selected, because replay needs them; the

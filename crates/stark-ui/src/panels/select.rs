@@ -41,26 +41,11 @@ use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();
     let obs = state.obs.read();
-    let (tool, action, feather, show_peers, brush_color) = obs
+    let (tool, action, feather, brush_color) = obs
         .as_ref()
-        .map(|o| {
-            (
-                o.tool,
-                o.shape_action,
-                o.selection_feather,
-                o.show_peer_selections,
-                o.brush.color,
-            )
-        })
-        .unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, false, [0.0; 4]));
+        .map(|o| (o.tool, o.shape_action, o.selection_feather, o.brush.color))
+        .unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, [0.0; 4]));
     drop(obs);
-    // The peer-outline toggle is mounted only in a shared session, on the same
-    // argument the selection bar is mounted only while a selection is in force
-    // (DESIGN.md §6.8): a control that is present or absent says whether the thing
-    // it governs exists, which a permanently-visible one greyed out does not.
-    // Keyed on the *session*, not on whether anyone is currently here, so it does
-    // not flicker as collaborators come and go.
-    let shared = (state.collab.phase)() == crate::collab::CollabPhase::Shared;
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
     const TOOLS: [(Tool, &str); 3] = [
@@ -136,25 +121,6 @@ pub fn SelectPanel() -> Element {
         }
         Slider { label: "Feather", min: 0.0, max: 64.0, value: feather,
             oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
-
-        if shared {
-            div { class: "row peer-toggle",
-                input {
-                    id: "show-peer-selections",
-                    r#type: "checkbox",
-                    checked: show_peers,
-                    onchange: move |_| {
-                        dispatch(state, ViewCommand::SetShowPeerSelections(!show_peers))
-                    },
-                }
-                label {
-                    r#for: "show-peer-selections",
-                    title: "Outline the regions your collaborators have selected, \
-                            each in their own colour",
-                    "Show others' selections"
-                }
-            }
-        }
     }
 }
 

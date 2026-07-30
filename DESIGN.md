@@ -109,6 +109,7 @@ stark/
 │           ├── input.rs        # DOM events → InputCommand
 │           ├── layout.rs       # floating panel chrome + drag
 │           ├── panels/         # one module per tool panel
+│           ├── settings.rs     # the unified settings dialog
 │           ├── widgets.rs      # shared small controls
 │           ├── platform.rs     # the two browser-only helpers
 │           ├── brush_editor.rs # the brush dialog + its preview engine
@@ -1642,12 +1643,22 @@ undo/redo, layer panel) surrounds it.
   (`get_current_texture` → `engine.render(view)` → `present`) — no readback, no
   encode. The frontend supplies the GPU handles via `GpuContext::from_parts`
   (GOALS §Inputs); core needs no change to compile to wasm.
+- **Settings are one dialog, not a control tucked into whichever panel it came
+  from.** The panels hold what you are painting *with* and change constantly
+  mid-stroke; the document dialogs hold what the drawing *is*. A standing
+  per-client preference is neither — it is set once and never part of the artwork —
+  so it lives in the ⚙ dialog off the command rail (`settings.rs`), which is also
+  the only answer to "where do I change that?" that does not depend on remembering
+  which panel a setting landed in. Its rows apply on the click (Done, no Cancel:
+  nothing is staged) and stay mounted even when currently inert, saying so in their
+  own text — the opposite of the §6.8 rule for tool panels, because a settings
+  dialog is read as the map of what is configurable.
 
 The crate is laid out by concern rather than as one file: `state` (the shared
 signals and the dispatch seam), `input` (DOM → commands), `layout` (the floating
 panel chrome and its drag), `panels/` (one module per tool panel), `widgets`,
-`platform` (the two browser-only helpers), plus `render`, `brush_editor` and
-`collab`. See §2.
+`platform` (the two browser-only helpers), plus `render`, `brush_editor`,
+`settings` and `collab`. See §2.
 
 Because the engine is frontend-agnostic, this layer stays thin. (An earlier
 interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame

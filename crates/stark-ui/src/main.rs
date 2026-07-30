@@ -25,6 +25,7 @@ mod panels;
 mod platform;
 mod presets;
 mod render;
+mod settings;
 mod shapes;
 mod state;
 mod widgets;
@@ -46,6 +47,7 @@ use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{FrameBar, FrameOverlay, PickBar, SelectionBar, TransformBar, TransformOverlay};
 use platform::capture_pointer;
 use render::CANVAS_ID;
+use settings::SettingsModal;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use stark_core::document::{DEFAULT_SURFACE, SelectionOp, ShapeAction};
 use stark_core::{ColorSpaceId, SurfaceId};
@@ -423,6 +425,10 @@ fn PeerCursors() -> Element {
 /// (DESIGN.md §11). Built on the vendored `menubar` component; the dropdown flies
 /// out to the right. Undo/Redo live here purely to advertise their Ctrl+Z / Ctrl+Y
 /// shortcuts (the everyday way to invoke them); "New document…" opens a modal.
+///
+/// The rail ends in a ⚙ that opens [`SettingsModal`] directly rather than dropping
+/// a menu: settings are a *destination*, not a list of commands to pick one from,
+/// and the one thing that menu would ever contain is the dialog itself.
 #[component]
 fn CommandRail() -> Element {
     let state = use_context::<AppState>();
@@ -430,6 +436,7 @@ fn CommandRail() -> Element {
     let mut show_new_doc = use_signal(|| false);
     let mut show_session = use_signal(|| false);
     let mut show_export = use_signal(|| false);
+    let mut show_settings = use_signal(|| false);
     let live = (state.collab.phase)() == collab::CollabPhase::Shared;
     let (can_undo, can_redo, has_selection) = state
         .obs
@@ -539,6 +546,20 @@ fn CommandRail() -> Element {
                         }
                     }
                 }
+                // ⚙ — this client's preferences. A plain button inside the rail
+                // rather than a third `MenubarMenu`: it opens a dialog on the
+                // click, so there is no dropdown for the menubar to manage.
+                button {
+                    class: "rail-button",
+                    // The menubar's own triggers carry `role="menuitem"`; matching
+                    // it keeps the rail a well-formed menubar rather than a
+                    // menubar with a stray button in it.
+                    role: "menuitem",
+                    r#type: "button",
+                    title: "Settings",
+                    onclick: move |_| show_settings.set(true),
+                    "\u{2699}"
+                }
             }
         }
         if show_new_doc() {
@@ -549,6 +570,9 @@ fn CommandRail() -> Element {
         }
         if show_export() {
             files::ExportModal { on_close: move |_| show_export.set(false) }
+        }
+        if show_settings() {
+            SettingsModal { on_close: move |_| show_settings.set(false) }
         }
     }
 }

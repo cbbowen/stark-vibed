@@ -1,0 +1,120 @@
+//! The unified Settings dialog: the client's own preferences, in one place
+//! (DESIGN.md §11).
+//!
+//! What belongs here is the third kind of state the UI carries. The panels hold
+//! what you are painting *with* — a colour, a brush, a selection — and change
+//! constantly mid-painting. The document dialogs hold what the drawing *is*. A
+//! setting is neither: it is a standing choice about how Stark behaves for **this
+//! client**, set once and then left alone, and it is never part of the artwork.
+//! Scattering those across the tool panels costs panel space on controls nobody
+//! touches twice a session, and — worse — leaves no answer to "where do I change
+//! that?" other than remembering which panel it landed in. One dialog off the
+//! command rail is that answer.
+//!
+//! Consequences worth stating, because the rest of the file follows from them:
+//!
+//! - Settings **apply on the click**, so the dialog has a Done button and no
+//!   Cancel — there is nothing staged to discard, and a preference you can see
+//!   taking effect behind the dialog is one you can judge.
+//! - Every row is **always mounted**, including ones that only bite in some
+//!   contexts. A tool panel earns the opposite rule (a control that is present or
+//!   absent says whether the thing it governs exists — DESIGN.md §6.8), but a
+//!   settings dialog is read as the *map* of what is configurable, and a map with
+//!   roads that appear only once you are already on them is not one. Rows that are
+//!   currently inert say so in their own text instead.
+
+use dioxus::prelude::*;
+
+use crate::collab::CollabPhase;
+use crate::state::{AppState, dispatch};
+use stark_core::command::ViewCommand;
+
+/// The settings dialog, opened from the command rail's ⚙ button and dismissed by
+/// Done or by clicking the backdrop (as the other dialogs are).
+#[component]
+pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
+    let state = use_context::<AppState>();
+    let show_peers = state
+        .obs
+        .read()
+        .as_ref()
+        .is_some_and(|o| o.show_peer_selections);
+    // Keyed on the *session*, not on whether anyone is currently here, so the note
+    // under the peer-outline row does not flicker as collaborators come and go.
+    let shared = (state.collab.phase)() == CollabPhase::Shared;
+
+    rsx! {
+        div {
+            class: "modal-backdrop",
+            onclick: move |_| on_close.call(()),
+            div {
+                class: "modal-dialog",
+                onclick: move |e| e.stop_propagation(),
+
+                div { class: "modal-title", "Settings" }
+                div { class: "modal-subtitle",
+                    "These apply to this browser, not to the drawing — nothing here is saved into the document or sent to anyone you share with."
+                }
+
+                div { class: "modal-section-label", "COLLABORATION" }
+                SettingToggle {
+                    id: "show-peer-selections",
+                    label: "Show others' selections",
+                    // Says what it draws *and* what it costs, which is why it is off
+                    // by default (PEER_DESIGN.md §3): a second contour over the
+                    // artwork is paid for on every frame you look at it.
+                    description: "Outline the regions your collaborators have selected, each in their own colour, alongside your own.",
+                    // A row that is inert right now explains itself rather than
+                    // vanishing — see the module comment.
+                    note: if shared { None } else { Some("Takes effect while you're sharing a session.".to_string()) },
+                    checked: show_peers,
+                    onchange: move |v| dispatch(state, ViewCommand::SetShowPeerSelections(v)),
+                }
+
+                div { class: "modal-actions",
+                    button {
+                        class: "btn btn-primary",
+                        onclick: move |_| on_close.call(()),
+                        "Done"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One on/off setting: a checkbox, its label, the sentence that says what turning
+/// it on actually does, and an optional note about when it applies.
+///
+/// The description is not optional in practice and so it is not optional here: a
+/// settings dialog is where a control meets someone who has never seen it, and a
+/// bare label leaves them to guess. The whole row is the `<label>`, so the text is
+/// as clickable as the box.
+#[component]
+fn SettingToggle(
+    id: String,
+    label: String,
+    description: String,
+    note: Option<String>,
+    checked: bool,
+    onchange: EventHandler<bool>,
+) -> Element {
+    rsx! {
+        div { class: "setting-row",
+            input {
+                id: "{id}",
+                class: "setting-check",
+                r#type: "checkbox",
+                checked,
+                onchange: move |e| onchange.call(e.checked()),
+            }
+            label { r#for: "{id}", class: "setting-text",
+                div { class: "setting-label", "{label}" }
+                div { class: "setting-desc", "{description}" }
+                if let Some(note) = note {
+                    div { class: "setting-note", "{note}" }
+                }
+            }
+        }
+    }
+}
