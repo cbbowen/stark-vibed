@@ -84,6 +84,52 @@ pub fn select_all(e: &Event<MountedData>) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn select_all(_e: &Event<MountedData>) {}
 
+/// Draw straight-alpha RGBA8 `pixels` into the 2D canvas with id `canvas_id`,
+/// sizing it to the image — the navigator's miniature (`panels::navigator`).
+///
+/// A `<canvas>` and `putImageData` rather than a PNG data URL in an `<img>`, which
+/// would be the declarative route: the miniature is re-read off the GPU, so the
+/// bytes are already exactly what a canvas takes, and the alternative spends a PNG
+/// encode plus a base64 pass and then hands the diff a ~50 KB attribute string on
+/// every re-render of a panel that re-renders per engine write. Setting the
+/// element's own `width`/`height` here — rather than binding them in `rsx!` — is
+/// part of the same bargain: assigning either one *clears* the canvas, so leaving
+/// them out of the virtual tree keeps a re-render from blanking the miniature.
+///
+/// A missing element is not an error: the panel may have been closed between the
+/// render being asked for and the pixels arriving.
+#[cfg(target_arch = "wasm32")]
+pub fn draw_rgba(canvas_id: &str, width: u32, height: u32, pixels: &[u8]) {
+    use wasm_bindgen::JsCast;
+
+    let Some(canvas) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(canvas_id))
+        .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+    else {
+        return;
+    };
+    let Some(ctx) = canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
+    else {
+        return;
+    };
+    canvas.set_width(width);
+    canvas.set_height(height);
+    if let Ok(data) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+        wasm_bindgen::Clamped(pixels),
+        width,
+        height,
+    ) {
+        let _ = ctx.put_image_data(&data, 0.0, 0.0);
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn draw_rgba(_canvas_id: &str, _width: u32, _height: u32, _pixels: &[u8]) {}
+
 /// Hand `bytes` to the browser as a file download named `filename`.
 ///
 /// A Blob behind an object URL, clicked through a synthetic `<a download>` — the

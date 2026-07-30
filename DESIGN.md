@@ -1643,6 +1643,20 @@ undo/redo, layer panel) surrounds it.
   (`get_current_texture` → `engine.render(view)` → `present`) — no readback, no
   encode. The frontend supplies the GPU handles via `GpuContext::from_parts`
   (GOALS §Inputs); core needs no change to compile to wasm.
+- **The navigator's miniature is a render, so it is driven by the document's
+  revision rather than by the canvas.** An overview of the whole piece is the one
+  piece of chrome that cannot be derived from `ObservableState` — it is pixels — so
+  the Navigator panel (`panels/navigator.rs`) asks the engine for a small `export`
+  of the same rect a file export would frame (FRAME_DESIGN.md §6), which is a GPU
+  render plus a readback and resizes the compositor's offscreen targets on the way
+  through. That is affordable per *edit* and ruinous per pointer sample, so what it
+  subscribes to is `ObservableState::doc_revision` — a counter that moves when the
+  committed document does and deliberately not when an in-flight gesture or an
+  unlogged drag preview changes what the canvas shows. `Rendered::Committed` is the
+  matching half on the engine side: the picture is of the last commit, so a render
+  that lands mid-stroke is still the picture its revision promised. The viewport
+  rectangle over the top is a positioned `<div>` read from the live view, so pan and
+  zoom move it for free.
 - **Settings are one dialog, not a control tucked into whichever panel it came
   from.** The panels hold what you are painting *with* and change constantly
   mid-stroke; the document dialogs hold what the drawing *is*. A standing

@@ -218,6 +218,17 @@ pub enum ViewCommand {
         anchor: Vec2,
         factor: f32,
     },
+    /// Show this canvas-space point at the centre of the viewport, leaving the zoom
+    /// alone — a jump rather than a drag.
+    ///
+    /// Absolute where [`Pan`](Self::Pan) is incremental, because the callers are
+    /// different in kind: a drag knows only how far the pointer moved, while a
+    /// navigator click knows exactly where it wants to be and nothing about where
+    /// the view was. Expressing the second as the first means reading the zoom back
+    /// out, dividing by it, and having the engine multiply it in again — a copy of
+    /// view state in the frontend and a round trip through it, to say something the
+    /// engine can do in one assignment.
+    CenterOn(Vec2),
     /// The viewport changed size (window/canvas resize).
     Resize(Extent2),
 

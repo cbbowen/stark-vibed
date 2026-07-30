@@ -12,7 +12,9 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 
-use crate::panels::{BrushPanel, ColorPanel, LayerPanel, LightingPanel, SelectPanel};
+use crate::panels::{
+    BrushPanel, ColorPanel, LayerPanel, LightingPanel, NavigatorPanel, SelectPanel,
+};
 use crate::platform::sleep_ms;
 use crate::state::AppState;
 
@@ -20,6 +22,7 @@ use crate::state::AppState;
 /// order and which are open (DESIGN.md §11).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PanelId {
+    Navigator,
     Color,
     Brush,
     Select,
@@ -28,8 +31,11 @@ pub enum PanelId {
 }
 
 impl PanelId {
-    /// Every panel, in the default top-to-bottom order.
-    pub const ALL: [PanelId; 5] = [
+    /// Every panel, in the default top-to-bottom order. The navigator leads: it is
+    /// the only one that says where you *are* rather than what the next stroke will
+    /// be, and it is read at a glance rather than operated.
+    pub const ALL: [PanelId; 6] = [
+        PanelId::Navigator,
         PanelId::Color,
         PanelId::Brush,
         PanelId::Select,
@@ -44,6 +50,7 @@ impl PanelId {
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
         match self {
+            PanelId::Navigator => "Navigator",
             PanelId::Color => "Color",
             PanelId::Brush => "Brush",
             PanelId::Select => "Select",
@@ -192,6 +199,7 @@ pub fn PanelStack() -> Element {
                 if !hidden.contains(&id) {
                     Panel { key: "{id:?}", id,
                         match id {
+                            PanelId::Navigator => rsx! { NavigatorPanel {} },
                             PanelId::Color => rsx! { ColorPanel {} },
                             PanelId::Brush => rsx! { BrushPanel {} },
                             PanelId::Select => rsx! { SelectPanel {} },

@@ -489,6 +489,68 @@
   color: #eee;
 }
 
+/* --- navigator panel (panels/navigator.rs) ---
+   The miniature is presented 1:1 — its element carries the pixel size the export
+   came back at (set imperatively, see `platform::draw_rgba`), so nothing here may
+   give the canvas a width or a height: a CSS size would stretch a portrait piece to
+   the panel's proportions, and the viewport marker — positioned in percentages of
+   this box — would then sit over a picture it does not describe. The row centres it
+   instead, and `.nav-frame` shrink-wraps it to become the marker's containing
+   block. */
+.nav-thumb-row {
+  text-align: center;
+}
+
+.nav-frame {
+  position: relative;
+  display: inline-block;
+  /* A frame in the literal sense: the piece's edge, so a light painting on the
+     light substrate still has a boundary against the panel's dark ground. An
+     *outline* rather than a border because this box is also the coordinate frame a
+     click is read in — an outline takes no space, so the element's own coordinates
+     stay the miniature's pixels. */
+  outline: 1px solid rgba(255, 255, 255, 0.14);
+  /* The viewport marker is drawn where it truly falls, so panning off the piece has
+     to *show* as the marker leaving — which means the box has to clip it. */
+  overflow: hidden;
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* `block` kills the inline baseline gap that would otherwise leave a few px of
+   panel showing under the picture inside the shrink-wrapping frame. */
+.nav-thumb {
+  display: block;
+}
+
+/* What the window is showing, over the overview. Pointer-transparent, so a click
+   through it is a click on the miniature: the element's own coordinates are what
+   the jump is computed from, and an intercepting child would report its own. */
+.nav-view {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  /* Zoomed deep into a large piece the view is a fraction of a percent of it; a
+     floor keeps "you are here" visible rather than sub-pixel. */
+  min-width: 5px;
+  min-height: 5px;
+  pointer-events: none;
+}
+
+/* Before the first miniature has been rendered (the engine is still starting, or a
+   frame has been dragged to nothing). Holds roughly the miniature's height so the
+   panel does not jump when the picture arrives. */
+.nav-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 96px;
+  color: rgba(232, 232, 234, 0.45);
+  font-size: 12px;
+}
+
 /* --- layer panel --- */
 .layer-header {
   display: flex;

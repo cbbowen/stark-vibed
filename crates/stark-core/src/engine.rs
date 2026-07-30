@@ -55,6 +55,26 @@ enum Chrome {
     Hidden,
 }
 
+/// Which document a render draws: the one being *shown*, or the committed one
+/// alone.
+///
+/// The distinction only exists because a render can be asked for while a gesture
+/// is in flight. The screen wants [`Rendered::Live`] — that is what makes a stroke
+/// visible as it is drawn. A render that stands in for the *state of the work*
+/// wants [`Rendered::Committed`]: it is refreshed when the document changes, so
+/// following the in-flight stroke would mean re-rendering at pointer rate to show
+/// something that is already on screen at full size.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Rendered {
+    /// The committed document with every in-flight gesture — this client's and
+    /// each peer's — and any unlogged drag preview drawn over it
+    /// (PEER_DESIGN.md §6). What the screen shows.
+    #[default]
+    Live,
+    /// The committed document alone: no in-flight stroke, no drag preview.
+    Committed,
+}
+
 /// How large an exported image is, relative to the frame's canvas-space size
 /// (FRAME_DESIGN.md §6). Resolution is a property of the *output*, not of the
 /// artwork, which is why the frame stores only a canvas-space rect.
@@ -226,6 +246,22 @@ pub struct ObservableState {
     pub brush: BrushParams,
     pub view: ViewTransform,
     pub bounds: CanvasBounds,
+    /// A counter that changes whenever the **committed** document does — a commit,
+    /// an undo, a merged remote action, a load.
+    ///
+    /// For a frontend that keeps a *rendered* stand-in for the document and has to
+    /// know when it went stale: the navigator's miniature (a small `export`) is one
+    /// GPU render plus a readback, so it cannot be redone per observation. Nothing
+    /// else in this projection answers the question — a second stroke over the same
+    /// tiles leaves the bounds, the layer list and the undo flags all exactly as
+    /// they were.
+    ///
+    /// Deliberately *not* bumped by an in-flight gesture or an unlogged drag
+    /// preview, both of which change what the canvas shows at pointer rate. Those
+    /// are already on screen at full size; a watcher keyed on them would re-render
+    /// the miniature per pointer sample to say something the canvas is saying
+    /// better. Compare `is_stroking`, which is exactly the in-flight question.
+    pub doc_revision: u64,
     pub active_layer: LayerId,
     /// Layers bottom-to-top.
     pub layers: Vec<LayerInfo>,
@@ -406,6 +442,17 @@ pub struct Engine {
     /// rules out the whole class of "drawn over a canvas that has since moved"
     /// rather than enumerating the ways it arises.
     doc_epoch: u64,
+    /// Bumped whenever the **committed** document changes — a commit, an undo, a
+    /// merged remote action, a load. Projected as
+    /// [`ObservableState::doc_revision`], where it is what a frontend showing a
+    /// rendered stand-in for the document (the navigator's miniature) watches to
+    /// know when that render is out of date.
+    ///
+    /// Strictly narrower than `doc_epoch`, which an unlogged drag preview also
+    /// bumps: a preview moves at pointer rate and is *not* a change to the
+    /// document, so a watcher keyed on the epoch would re-render for every sample
+    /// of a drag. The two advance together through [`Engine::committed_changed`].
+    doc_revision: u64,
     /// Raw pointer reports of the in-flight stroke, dumped on release under the
     /// `debug-unfrozen` feature so a misfit stroke can be replayed as a test.
     debug_samples: Vec<crate::command::InputSample>,
@@ -485,6 +532,7 @@ impl Engine {
             live: None,
             heads: BTreeMap::new(),
             doc_epoch: 0,
+            doc_revision: 0,
             debug_samples: Vec::new(),
             actor: ActorId::SOLO,
             clock: 0,
@@ -614,7 +662,7 @@ impl Engine {
                     self.commit(ActionKind::Undo(target));
                 } else {
                     self.timeline.undo(&mut self.apply);
-                    self.doc_epoch += 1;
+                    self.committed_changed();
                 }
                 self.apply_document_surface();
             }
@@ -625,7 +673,7 @@ impl Engine {
                     self.commit(ActionKind::Undo(target));
                 } else {
                     self.timeline.redo(&mut self.apply);
-                    self.doc_epoch += 1;
+                    self.committed_changed();
                 }
                 self.apply_document_surface();
             }
@@ -735,6 +783,9 @@ impl Engine {
                 // moves opposite by the drag delta (converted to canvas units).
                 self.session.view.center -= delta / self.session.view.zoom;
             }
+            ViewCommand::CenterOn(point) => {
+                self.session.view.center = point;
+            }
             ViewCommand::Zoom { anchor, factor } => {
                 self.session.view.zoom_about(anchor, factor);
             }
@@ -809,6 +860,7 @@ impl Engine {
             self.session.view,
             Background::Substrate,
             Chrome::Shown,
+            Rendered::Live,
         );
     }
 
@@ -831,8 +883,12 @@ impl Engine {
         view: ViewTransform,
         background: Background,
         chrome: Chrome,
+        content: Rendered,
     ) {
-        let doc = self.presented();
+        let doc = match content {
+            Rendered::Live => self.presented(),
+            Rendered::Committed => self.timeline.current(),
+        };
         let groups = self.composite_groups(doc, None);
 
         // The substrate is document state now (FRAME_DESIGN.md §5), so the ground a
@@ -875,8 +931,12 @@ impl Engine {
     /// [`export`](Self::export), which awaits the map.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_to_image(&mut self) -> RgbaImage {
-        let (target, size) =
-            self.render_offscreen(self.session.view, Background::Substrate, Chrome::Shown);
+        let (target, size) = self.render_offscreen(
+            self.session.view,
+            Background::Substrate,
+            Chrome::Shown,
+            Rendered::Live,
+        );
         let pixels = crate::gpu::readback::read_rgba8_blocking(&self.gpu, &target, size);
         RgbaImage::from_target_bytes(size.width, size.height, pixels, self.target_format)
     }
@@ -889,6 +949,7 @@ impl Engine {
         view: ViewTransform,
         background: Background,
         chrome: Chrome,
+        content: Rendered,
     ) -> (wgpu::Texture, Extent2) {
         let size = view.viewport;
         let target = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -906,7 +967,7 @@ impl Engine {
             view_formats: &[],
         });
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        self.render_view(&target_view, view, background, chrome);
+        self.render_view(&target_view, view, background, chrome, content);
         (target, size)
     }
 
@@ -971,8 +1032,13 @@ impl Engine {
     /// cloned [`GpuContext`] (cheap — the handles are reference-counted) and the
     /// target texture, and touches the engine not at all.
     ///
+    /// `content` chooses whether the in-flight gesture is in the picture. A file
+    /// export takes [`Rendered::Live`] — it is what the artist is looking at — while
+    /// a miniature refreshed per committed change takes [`Rendered::Committed`], so
+    /// it never has to keep up with a stroke being drawn.
+    ///
     /// ```ignore
-    /// let readback = { engine.write().export(frame, scale, bg)? }; // borrow ends
+    /// let readback = { engine.write().export(frame, scale, bg, content)? }; // borrow ends
     /// let image = readback.await;
     /// ```
     pub fn export(
@@ -980,6 +1046,7 @@ impl Engine {
         frame: Option<LayerId>,
         scale: ExportScale,
         background: Background,
+        content: Rendered,
     ) -> Result<impl std::future::Future<Output = RgbaImage> + use<>> {
         let plan = self.export_plan(frame, scale)?;
         let view = ViewTransform {
@@ -989,7 +1056,7 @@ impl Engine {
         };
         // No chrome: a selection outline or any other on-canvas affordance is a
         // thing to draw *with*, never a thing to ship.
-        let (target, size) = self.render_offscreen(view, background, Chrome::Hidden);
+        let (target, size) = self.render_offscreen(view, background, Chrome::Hidden, content);
         let gpu = self.gpu.clone();
         // Captured, not read through `self`: the future deliberately does not
         // borrow the engine.
@@ -1333,6 +1400,7 @@ impl Engine {
             brush: self.session.brush,
             view: self.session.view,
             bounds: doc.bounds,
+            doc_revision: self.doc_revision,
             active_layer: self.session.active_layer,
             layers,
             has_selection: doc.has_selection(self.actor),
@@ -1416,7 +1484,7 @@ impl Engine {
         self.session.adopt_identity(identity);
         self.outbox_enabled = true;
         self.doc_preview = None;
-        self.doc_epoch += 1;
+        self.committed_changed();
         // New actor, new layer-id space: this client's counter restarts, and the
         // pre-share layers keep the `SOLO` ids they were minted with.
         self.next_layer = 1;
@@ -1455,7 +1523,7 @@ impl Engine {
         self.outbox_enabled = true;
         // Whatever the replayed log left the document on.
         self.apply_document_surface();
-        self.doc_epoch += 1;
+        self.committed_changed();
         self.refresh_live();
     }
 
@@ -1488,7 +1556,7 @@ impl Engine {
         let merged = self.timeline.merge(action, ctx);
         if merged {
             // Replaces the document every frozen head was composited onto.
-            self.doc_epoch += 1;
+            self.committed_changed();
             // A gesture is a thing that becomes an action, so the action's arrival is
             // the end-of-gesture signal — no id to correlate, and no window in which
             // both the live copy and the committed one are drawn.
@@ -1641,6 +1709,22 @@ impl Engine {
         self.apply.assets.contains(id)
     }
 
+    /// Note that the **committed** document has been replaced: every cached
+    /// [`FrozenHead`] built against the old one is stale, and anything the frontend
+    /// derived from it is out of date.
+    ///
+    /// One call rather than two counters bumped side by side at each of seven sites
+    /// — a commit, either half of undo/redo, a merge, a share, a join, a reset —
+    /// because "these advance together" is the property that has to hold, and a
+    /// site that remembered one and forgot the other would be silent. The
+    /// preview path deliberately does *not* come through here: it moves what is
+    /// drawn without changing the document (see
+    /// [`ObservableState::doc_revision`]).
+    fn committed_changed(&mut self) {
+        self.doc_epoch += 1;
+        self.doc_revision += 1;
+    }
+
     fn commit(&mut self, kind: ActionKind) {
         let action = Action {
             id: self.next_action_id(),
@@ -1650,7 +1734,7 @@ impl Engine {
         self.timeline.push(action.clone(), ctx);
         // The committed document is what every in-flight preview is drawn over, so
         // every cached head built against the old one is now stale.
-        self.doc_epoch += 1;
+        self.committed_changed();
         if self.outbox_enabled {
             self.outbox.push(action);
         }
@@ -1816,7 +1900,7 @@ impl Engine {
         self.live = None;
         self.heads.clear();
         self.peers.clear();
-        self.doc_epoch += 1;
+        self.committed_changed();
         self.clock = 0;
         self.next_layer = 1;
         self.session.cancel_stroke();

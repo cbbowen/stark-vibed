@@ -199,8 +199,9 @@ impl Renderer {
         frame: Option<stark_core::LayerId>,
         scale: stark_core::ExportScale,
         background: stark_core::Background,
+        content: stark_core::Rendered,
     ) -> stark_core::Result<impl std::future::Future<Output = stark_core::RgbaImage> + use<>> {
-        self.engine.export(frame, scale, background)
+        self.engine.export(frame, scale, background, content)
     }
 
     /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).

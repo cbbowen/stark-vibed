@@ -18,7 +18,7 @@ use dioxus::prelude::*;
 use crate::panels::frame::selected_frame;
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
-use stark_core::{Background, ExportScale, LayerId};
+use stark_core::{Background, ExportScale, LayerId, Rendered};
 
 /// Extension for the native (replayable) document format.
 const DOC_EXT: &str = "stark";
@@ -221,8 +221,15 @@ async fn export_png(
     let readback = {
         let mut guard = renderer.write();
         let r = guard.as_mut().ok_or("the canvas is not ready yet")?;
+        // What the artist is looking at, in-flight gesture and all — a picture of
+        // the canvas as it stands, not of the last commit.
         let readback = r
-            .export(frame, ExportScale::Factor(scale), background)
+            .export(
+                frame,
+                ExportScale::Factor(scale),
+                background,
+                Rendered::Live,
+            )
             .map_err(|e| e.to_string())?;
         // Export renders through its own view into the compositor's offscreen
         // buffers, resizing them to the export size — so the on-screen surface has

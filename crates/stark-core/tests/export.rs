@@ -9,11 +9,11 @@
 mod common;
 
 use common::*;
-use stark_core::command::{DocCommand, GestureCommand, InputSample, PeerCommand};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_core::document::{MatteRegion, SelectionOp, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
-use stark_core::{Background, Engine, ExportScale, LayerId, RgbaImage};
+use stark_core::{Background, Engine, ExportScale, LayerId, Rendered, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
@@ -68,7 +68,12 @@ fn exports_the_frame_rect_without_its_own_matte() {
 
     let img = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("export"),
     );
     assert_eq!(
@@ -97,12 +102,22 @@ fn scale_changes_resolution_not_framing() {
 
     let one = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("1x"),
     );
     let two = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(2.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(2.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("2x"),
     );
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
@@ -124,7 +139,12 @@ fn scale_changes_resolution_not_framing() {
     // An explicit width is the same thing said the other way round.
     let by_width = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Width(240), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Width(240),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("by width"),
     );
     assert_eq!((by_width.width, by_width.height), (240, 160));
@@ -154,12 +174,18 @@ fn transparent_export_cuts_out_the_paint() {
                 Some(frame),
                 ExportScale::Factor(1.0),
                 Background::Transparent,
+                Rendered::Live,
             )
             .expect("transparent"),
     );
     let opaque = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("substrate"),
     );
 
@@ -191,7 +217,12 @@ fn export_uses_the_documents_ground() {
     let frame = add_frame(&mut engine);
     let paper = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("paper"),
     );
     assert!(!is_dark(paper.pixel(4, 4)), "default ground is near-white");
@@ -199,7 +230,12 @@ fn export_uses_the_documents_ground() {
     engine.process(DocCommand::SetBackground([0.02, 0.02, 0.03]));
     let ink = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("ink"),
     );
     assert!(
@@ -213,7 +249,12 @@ fn export_uses_the_documents_ground() {
     assert!(!is_dark(
         pollster::block_on(
             engine
-                .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+                .export(
+                    Some(frame),
+                    ExportScale::Factor(1.0),
+                    Background::Substrate,
+                    Rendered::Live
+                )
                 .expect("undone")
         )
         .pixel(4, 4)
@@ -230,7 +271,12 @@ fn export_omits_the_selection_outline() {
     let frame = add_frame(&mut engine);
     let clean = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("clean"),
     );
 
@@ -251,7 +297,12 @@ fn export_omits_the_selection_outline() {
 
     let selected = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("with selection"),
     );
     assert!(
@@ -274,7 +325,12 @@ fn export_without_a_frame_falls_back() {
     // Nothing painted: the viewport is the only thing left to mean.
     let empty = pollster::block_on(
         engine
-            .export(None, ExportScale::Factor(1.0), Background::Substrate)
+            .export(
+                None,
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("empty"),
     );
     assert_eq!((empty.width, empty.height), (SIZE.width, SIZE.height));
@@ -358,6 +414,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
             Some(LayerId(1)),
             ExportScale::Factor(1.0),
             Background::Substrate,
+            Rendered::Live,
         )
         .expect("rgba export"),
     );
@@ -366,6 +423,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
             Some(LayerId(1)),
             ExportScale::Factor(1.0),
             Background::Substrate,
+            Rendered::Live,
         )
         .expect("bgra export"),
     );
@@ -405,7 +463,12 @@ fn export_plan_reports_the_size_it_will_produce() {
 
     let img = pollster::block_on(
         engine
-            .export(Some(frame), ExportScale::Factor(2.0), Background::Substrate)
+            .export(
+                Some(frame),
+                ExportScale::Factor(2.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
             .expect("export"),
     );
     assert_eq!(
@@ -414,4 +477,150 @@ fn export_plan_reports_the_size_it_will_produce() {
         "the plan must describe what export actually produces"
     );
     let _ = PeerCommand::SetActiveLayer(frame);
+}
+
+/// [`Rendered::Committed`] leaves the in-flight stroke out, and
+/// [`Rendered::Live`] keeps it in.
+///
+/// This is what lets a frontend render a *stand-in* for the document — the
+/// navigator's miniature — on the cadence of the undo history rather than of the
+/// pointer: it can only refresh per committed change if what it renders is
+/// committed-only, or it would show whichever gesture happened to be in flight when
+/// its timer fired and never correct itself afterwards.
+#[test]
+fn committed_renders_omit_the_in_flight_stroke() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let frame = add_frame(&mut engine);
+    let bare = pollster::block_on(
+        engine
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Committed,
+            )
+            .expect("bare"),
+    );
+
+    // A stroke *held down* across the middle of the frame: nothing is committed yet.
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(WIDE[0]),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(WIDE[1]),
+    });
+    assert!(engine.observe().is_stroking, "the stroke should be in hand");
+
+    let live = pollster::block_on(
+        engine
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Live,
+            )
+            .expect("live"),
+    );
+    let committed = pollster::block_on(
+        engine
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Committed,
+            )
+            .expect("committed"),
+    );
+    assert!(
+        !images_match(&bare, &live, 2),
+        "the stroke in hand must show in a live render"
+    );
+    assert!(
+        images_match(&bare, &committed, 2),
+        "a committed render must not see the stroke in hand"
+    );
+
+    // And on release the two agree again: the difference is only ever "in flight",
+    // never "invisible to one of them".
+    engine.process(GestureCommand::End);
+    let after = pollster::block_on(
+        engine
+            .export(
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Committed,
+            )
+            .expect("after"),
+    );
+    assert!(
+        images_match(&live, &after, 6),
+        "the committed stroke should look like the one that was previewed"
+    );
+}
+
+/// The revision a frontend keys a rendered stand-in on: it moves when the committed
+/// document does, and — the half that decides whether a navigator is affordable —
+/// stays put through the whole of a gesture, however many samples it takes.
+#[test]
+fn doc_revision_tracks_commits_and_not_gestures() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let at_rest = engine.observe().doc_revision;
+
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(WIDE[0]),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    for i in 1..8 {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(Vec2::new(-110.0 + 30.0 * i as f32, 0.0)),
+        });
+        assert_eq!(
+            engine.observe().doc_revision,
+            at_rest,
+            "a stroke in flight is not a change to the document"
+        );
+    }
+    engine.process(GestureCommand::End);
+    let committed = engine.observe().doc_revision;
+    assert_ne!(committed, at_rest, "the commit is a change");
+
+    // Panning is not, and neither is an unlogged preview drag — but an undo is.
+    engine.process(ViewCommand::CenterOn(Vec2::new(500.0, -250.0)));
+    engine.process(ViewCommand::PreviewBackground(Some([0.1, 0.1, 0.1])));
+    assert_eq!(engine.observe().doc_revision, committed);
+    engine.process(DocCommand::Undo);
+    assert_ne!(engine.observe().doc_revision, committed);
+}
+
+/// `CenterOn` puts a canvas point at the middle of the viewport and leaves the zoom
+/// where it was — what a navigator click means.
+#[test]
+fn center_on_moves_the_view_without_zooming() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(ViewCommand::Zoom {
+        anchor: Vec2::new(10.0, 10.0),
+        factor: 2.0,
+    });
+    let zoom = engine.view().zoom;
+    let target = Vec2::new(-321.0, 654.0);
+    engine.process(ViewCommand::CenterOn(target));
+    let view = engine.view();
+    assert_eq!(view.center, target);
+    assert_eq!(view.zoom, zoom);
+    // Which is to say: the point is under the middle of the window.
+    let middle = Vec2::new(
+        view.viewport.width as f32 * 0.5,
+        view.viewport.height as f32 * 0.5,
+    );
+    assert!(view.screen_to_canvas(middle).distance(target) < 1e-3);
 }
