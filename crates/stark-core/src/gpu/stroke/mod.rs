@@ -94,7 +94,7 @@ const ADD_GAIN: f32 = 2.0;
 /// it. It was once a cadence of its own — the tool reloaded every `spacing·radius`
 /// while the canvas was stripped every segment — and the lag between the two is what
 /// left a stroke's last footprint short of paint (`dynamics.wesl`).
-const RESERVOIR_EXCHANGE_STEP: f32 = 0.25;
+const RESERVOIR_EXCHANGE_STEP: f32 = 0.5;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (DESIGN.md §6.2).
 ///
