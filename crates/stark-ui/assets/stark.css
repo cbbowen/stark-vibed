@@ -59,17 +59,63 @@
      where *any* positioned sibling with a z-index (the frame overlay) wins over it
      no matter what the DOM order is. */
   z-index: 20;
-  top: 14px;
-  right: 14px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  width: 280px;
+
+  /* Open enough panels — or grow the Brush panel's list — and the column is taller
+     than the window. Rather than run the last panel off the bottom for good, the
+     stack scrolls its own overflow: the wheel reaches it only while the pointer is
+     actually over it, and the canvas's zoom lives on the `<canvas>` element, which
+     is the stack's *sibling* rather than its ancestor — so a wheel spent here can
+     never also zoom the painting, with no handler needed to say so.
+
+     The box is inset 4px and padded 10px instead of being placed at 14px flat, so
+     the panels still sit exactly 14px off the top-right corner while the scroll
+     container's clip edge stands clear of them: overflow clips at the padding box,
+     and the 8px panel shadow would otherwise be shaved off flat against the first
+     and last panel. `100% - 8px` leaves the matching 4px at the foot. */
+  box-sizing: border-box;
+  top: 4px;
+  right: 4px;
+  padding: 10px;
+  width: 300px;
+  max-height: calc(100% - 8px);
+  overflow-y: auto;
+  /* Only the vertical axis is a scroller. Left to `visible`, the horizontal axis is
+     forced to `auto` alongside it, and a row that overruns its panel by a pixel or
+     two (the layer header is close) becomes a sideways scroll with no rail to
+     explain it. `clip` clips at the same padding box the shadows already clear. */
+  overflow-x: clip;
+  /* Nothing behind the stack scrolls, so chaining past its ends has nothing to do
+     but rubber-band the page; `contain` keeps the gesture where it was aimed. */
+  overscroll-behavior: contain;
+  /* No rail. The stack floats over a painting, and a panel visibly running past the
+     bottom edge already says there is more below — which is the same thing a
+     scrollbar would say, at the cost of a bright stripe down the side of the work. */
+  scrollbar-width: none;
+}
+
+.panel-stack::-webkit-scrollbar {
+  display: none;
+}
+
+/* Timeline mode plants a full-width bar across the foot of the window (z-index 25),
+   so the stack stops above it rather than scrolling panels underneath — the same
+   deference `.bottom-bars` pays it. */
+.app-root.timeline-mode .panel-stack {
+  max-height: calc(100% - 68px);
 }
 
 /* --- floating panel surface --- */
 .panel {
   position: relative; /* so a dragged panel's z-index lifts it above its siblings */
+  /* A panel is its own height, and the *stack* is what absorbs a column too tall for
+     the window (by scrolling). Without this, the stack's max-height turns on flex's
+     default shrink and the overflow is taken out of whichever child can give it —
+     which is the resizable panel, since it sets `min-height: 0` so its list can
+     scroll. Its height is state the user set with the grip, not slack. */
+  flex: none;
   background: var(--panel-background);
   color: #e8e8ea;
   border-radius: 12px;
@@ -430,6 +476,10 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Hitting the end of the library is not a request to move the panel it lives in:
+     without this, the last notch of a scroll through the presets chains outward and
+     slides the whole stack out from under the cursor. */
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 4px;

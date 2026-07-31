@@ -245,6 +245,13 @@ pub fn chrome_class(state: AppState, base: &str) -> String {
 /// hidden set, each wrapped in the unified [`Panel`] chrome (keyed by id so reordering
 /// moves nodes rather than recreating them — preserves per-panel state and, later,
 /// enables the drag animation).
+///
+/// A stack taller than the window scrolls, and that is the stylesheet's job alone
+/// (`.panel-stack`) — no wheel handler here. The canvas's zoom hangs off the `<canvas>`
+/// element, which is this stack's *sibling*, so a wheel spent over a panel is already
+/// unable to reach it; adding a handler to suppress a zoom that cannot happen would be
+/// a second, quieter claim about the DOM shape for the first one to fall out of step
+/// with.
 #[component]
 pub fn PanelStack() -> Element {
     let layout = use_context::<PanelLayout>();
