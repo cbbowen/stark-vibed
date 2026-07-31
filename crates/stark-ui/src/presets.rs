@@ -4,10 +4,10 @@
 //! Like the shape library (`crate::shapes`), the presets are frontend state that
 //! follows this browser across documents via `localStorage` — and degrade to a
 //! per-session library where storage is unavailable. A browser that has never
-//! stored a library is seeded with the built-in tools that used to be hard-coded
-//! chips in the brush editor: the everyday brush, and a tapered inking pen.
-//! Deleting them is respected — only a browser with *no* stored library (not an
-//! emptied one) is re-seeded.
+//! stored a library is seeded with the built-in tools: the everyday brush, a
+//! tapered inking pen, and a pencil on one of the brush shapes bundled with the
+//! app (`crate::builtins`). Deleting them is respected — only a browser with
+//! *no* stored library (not an emptied one) is re-seeded.
 //!
 //! A preset is a whole brush **except the painting colour**: applying one keeps
 //! the current RGB (colour belongs to the Color panel) while everything else —
@@ -15,8 +15,11 @@
 
 use dioxus::prelude::*;
 
-use stark_core::document::{BrushDynamics, BrushParams, BrushShape, ColorDynamics, NoiseKind};
+use stark_core::document::{
+    BrushDynamics, BrushParams, BrushShape, ColorDynamics, NoiseKind, OrientationSource,
+};
 
+use crate::builtins;
 use crate::platform::{base64_decode, base64_encode};
 use crate::state::{AppState, update_brush};
 
@@ -35,8 +38,22 @@ pub struct PresetEntry {
 
 /// The library a fresh browser starts with. The first entry is also the brush the
 /// app opens on ([`apply_first`]), so it leads with the everyday one.
-fn default_presets() -> Vec<PresetEntry> {
-    vec![
+///
+/// A preset that reaches for a shape bundled with the app names it through
+/// `stamp`, which resolves the name to the content id the engine imported the
+/// bytes under (`crate::builtins`) — the only way to write one down, since a
+/// [`BrushShape::Stamp`] *is* a content id. The returned flag reports whether
+/// every one of them resolved, which is what [`seed_defaults`] persists on.
+fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
+    let mut complete = true;
+    let mut stamp = |name: &str| match builtins::shape(state, name) {
+        Some(shape) => shape,
+        None => {
+            complete = false;
+            BrushShape::default()
+        }
+    };
+    let entries = vec![
         PresetEntry {
             name: "Hard Round".to_string(),
             brush: BrushParams {
@@ -74,21 +91,65 @@ fn default_presets() -> Vec<PresetEntry> {
                 ..BrushParams::default()
             },
         },
-    ]
+        // A pencil: a broken-edged stamp held at the pen's own angle, laying
+        // very little paint per pass so the tooth of the paper shows and a
+        // second pass over the same line reads as darker.
+        PresetEntry {
+            name: "Pencil".to_string(),
+            brush: BrushParams {
+                radius: 18.0,
+                shape: stamp(builtins::BRISTLES),
+                orientation: OrientationSource::Pen,
+                dynamics: BrushDynamics {
+                    add: 0.1,
+                    ..BrushDynamics::default()
+                },
+                color_dynamics: ColorDynamics {
+                    noise: NoiseKind::White,
+                    frequency: [0.5, 0.0],
+                    amplitude: [0.01, 0.0, 0.0],
+                },
+                ..BrushParams::default()
+            },
+        },
+    ];
+    (entries, complete)
 }
 
-/// Populate the library signal from storage, seeding the defaults into a
-/// browser that has never stored a library. Called once at app start.
+/// Populate the library signal from storage. Called once at app start, before
+/// the renderer exists, so a browser that has stored a library sees it right
+/// away. A browser that has never stored one is left empty here and seeded by
+/// [`seed_defaults`] instead.
 pub fn load(state: AppState) {
     let mut entries = state.presets;
-    match read_storage() {
-        Some(list) => entries.set(list),
-        None => {
-            let defaults = default_presets();
-            persist(&defaults);
-            entries.set(defaults);
-        }
+    if let Some(list) = read_storage() {
+        entries.set(list);
     }
+}
+
+/// Give a browser that has never stored a library the built-in one. Called once
+/// the canvas is up and the bundled brush shapes are in it, which is later than
+/// [`load`] on purpose: a default preset names one of those shapes by content
+/// id, and an id is not knowable until its bytes have been imported.
+///
+/// Deleting the built-ins is respected — an emptied library reads back as
+/// `Some(vec![])`, so only a browser with *no* stored library is seeded. That
+/// also covers the gap between [`load`] and here: a preset saved in between has
+/// written storage, and this leaves it alone.
+pub fn seed_defaults(state: AppState) {
+    if read_storage().is_some() {
+        return;
+    }
+    let mut entries = state.presets;
+    let (defaults, complete) = default_presets(state);
+    // Only *remember* a library whose stamp presets found their bundled shape.
+    // A fetch that failed this app start degrades them to the round tip, which
+    // is fine for the session in front of the user — but persisting it would
+    // make one bad start permanent, and the next one seeds properly instead.
+    if complete {
+        persist(&defaults);
+    }
+    entries.set(defaults);
 }
 
 /// Make `name`'s preset the live brush. The painting colour (RGB) stays — a

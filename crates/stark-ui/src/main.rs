@@ -15,6 +15,7 @@
 #![allow(clippy::useless_format)]
 
 mod brush_editor;
+mod builtins;
 mod collab;
 mod components;
 mod credits;
@@ -46,7 +47,7 @@ use input::{Nav, bind_shortcuts, end_interaction, input_tolerance, pick_color, s
 use layout::{
     PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move, resize_end, resize_move,
 };
-use panels::brush::{BRISTLE_BRUSH, PresetSaveModal};
+use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{
@@ -113,11 +114,11 @@ fn app() -> Element {
         let mut obs = obs;
         spawn(async move {
             let mut r = render::init(render::canvas_element(CANVAS_ID)).await;
-            // Fetch the built-in brush at runtime (kept out of the wasm binary)
-            // and import it once, so the Bristles chip is ready (DESIGN.md §6.6).
-            if let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(BRISTLE_BRUSH).await {
-                r.load_bristle(&bytes);
-            }
+            // Fetch the bundled brush shapes at runtime (kept out of the wasm
+            // binary) and import them once, so the gallery's built-in cards are
+            // ready — and so the default presets have ids to name (DESIGN.md
+            // §6.6, `crate::builtins`).
+            builtins::import_all(&mut r).await;
             // Fetch the default canvas surface's height map (DESIGN.md §6.4, §6.6).
             // The document already starts on it, so registering the bytes is all it
             // takes for the engine to swap the flat stand-in for the real weave —
@@ -141,6 +142,12 @@ fn app() -> Element {
             r.paint();
             obs.set(Some(r.observe()));
             renderer.set(Some(r));
+
+            // A browser that has never stored a preset library gets the built-in
+            // one now rather than at `presets::load`: its presets name bundled
+            // brush shapes, and a stamp is named by content id — which the
+            // imports just above are what produce.
+            presets::seed_defaults(state);
 
             // The brush this app start begins on: the library's first preset (an
             // empty library leaves the engine's default brush), and then the

@@ -2423,7 +2423,7 @@ pub mod assets {
 
     /// The built-in bristle brush shape (DESIGN.md §6.6).
     pub fn bristles() -> Vec<u8> {
-        read("shape/WornBristles.png")
+        read("shape/Worn_Bristles.png")
     }
 
     /// The built-in linen canvas weave (DESIGN.md §6.4).

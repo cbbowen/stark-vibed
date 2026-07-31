@@ -9,10 +9,6 @@ use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
 use stark_core::document::{BrushShape, OrientationSource};
 
-/// Built-in assets, bundled as static files and **fetched at runtime** so they
-/// stay out of the wasm binary (DESIGN.md §6.6). The engine is handed the bytes.
-pub const BRISTLE_BRUSH: Asset = asset!("/assets/shape/WornBristles.png");
-
 /// The maximum brush radius (`BrushParams::radius`).
 pub const MAX_RADIUS: f32 = 500.0;
 
@@ -225,12 +221,4 @@ pub fn set_shape(state: AppState, shape: BrushShape) {
 /// Set what orients the brush shape as it sweeps (DESIGN.md §6.6).
 pub fn set_orientation(state: AppState, orientation: OrientationSource) {
     update_brush(state, move |b| b.orientation = orientation);
-}
-
-/// Select the built-in bristle brush. It's fetched + imported once at startup
-/// (DESIGN.md §6.6), so this is a no-op until those bytes have loaded.
-pub fn set_bristles(state: AppState) {
-    let id = state.renderer.read().as_ref().and_then(|r| r.bristle());
-    let Some(id) = id else { return };
-    set_shape(state, BrushShape::Stamp(id));
 }

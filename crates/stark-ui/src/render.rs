@@ -24,8 +24,11 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     engine: Engine,
-    /// The built-in bristle brush, imported once its bytes are fetched (§6.6).
-    bristle: Option<stark_core::AssetId>,
+    /// The shapes bundled with the app (`crate::builtins`), each imported once
+    /// its bytes are fetched (§6.6), keyed by the name that module gives it.
+    /// A short list looked up by name a handful of times per frame at most —
+    /// a `Vec` beats a map, and keeps gallery order.
+    builtins: Vec<(&'static str, stark_core::AssetId)>,
     /// The Navigator panel's canvas and everything that draws into it — `None` until
     /// the panel mounts one ([`Renderer::attach_overview`]).
     overview: Option<Overview>,
@@ -359,9 +362,12 @@ impl Renderer {
         self.engine.pick_color(at, options)
     }
 
-    /// The built-in bristle brush's asset id, once its bytes have been imported.
-    pub fn bristle(&self) -> Option<stark_core::AssetId> {
-        self.bristle
+    /// A bundled shape's content id, once its bytes have been imported.
+    pub fn builtin(&self, name: &str) -> Option<stark_core::AssetId> {
+        self.builtins
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, id)| *id)
     }
 
     // --- collaboration (DESIGN.md §12) — thin engine delegates for the
@@ -483,11 +489,16 @@ impl Renderer {
         self.engine.all_asset_bytes()
     }
 
-    /// Import the built-in bristle brush from fetched bytes, caching its id.
-    pub fn load_bristle(&mut self, png_bytes: &[u8]) {
+    /// Import a bundled shape from its fetched bytes, caching its id under the
+    /// name `crate::builtins` gives it. Idempotent: a repeat import is free
+    /// (content-addressed) and simply refreshes the entry.
+    pub fn load_builtin(&mut self, name: &'static str, png_bytes: &[u8]) {
         match self.engine.import_brush(png_bytes) {
-            Ok(id) => self.bristle = Some(id),
-            Err(e) => tracing::warn!("bristle import failed: {e}"),
+            Ok(id) => {
+                self.builtins.retain(|(n, _)| *n != name);
+                self.builtins.push((name, id));
+            }
+            Err(e) => tracing::warn!("built-in shape “{name}” failed to import: {e}"),
         }
     }
 
@@ -671,7 +682,7 @@ async fn finish_init(
         surface,
         config,
         engine,
-        bristle: None,
+        builtins: Vec::new(),
         overview: None,
     }
 }

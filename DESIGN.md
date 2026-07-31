@@ -1228,7 +1228,7 @@ Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
 The default brush is a procedural soft disc, but natural media needs *organic*
 tips — worn bristles, chalk, a palette-knife edge. A brush shape is just a
 **coverage mask**: a grayscale image where white = full deposit and black = none
-(e.g. `crates/stark-ui/assets/shape/WornBristles.png`). The mask drives coverage and, scaled,
+(e.g. `crates/stark-ui/assets/shape/Worn_Bristles.png`). The mask drives coverage and, scaled,
 the height channel too — so a worn-bristle tip lays down *broken* impasto rather
 than a uniform slab.
 
@@ -1287,10 +1287,20 @@ bump maps) live as static files under `stark-ui/assets/` and are bundled by
 `asset!` with cache-busting URLs; the frontend fetches them on demand with
 `dioxus::asset_resolver::read_asset_bytes` (HTTP on web, filesystem on native)
 and hands the bytes to the engine (`import_brush`, `register_surface`). The
-built-in bristle brush is fetched once at startup; the large surface maps are
-fetched lazily, only when a surface is selected. This keeps multi-megabyte assets
-out of the wasm binary — shrinking it and cutting bundle time — and is the path
-that scales as the built-in brush/surface libraries grow. (Headless tests, having
+built-in brush shapes are listed in one table (`stark-ui/src/builtins.rs`) and
+fetched once at startup, which is what makes an id available to name them by:
+imported bytes are keyed by the hash of their decoded coverage, so every engine
+(main canvas, brush-editor preview, a peer's) lands on the same `AssetId`, and a
+built-in is referenced downstream exactly like a user's imported shape — a
+`BrushShape::Stamp`, with no notion of "built-in" anywhere. Adding a shape is a
+PNG plus a row: it appears in the brush editor's gallery, and the default brush
+presets (`stark-ui/src/presets.rs`) can name it. Those presets are the one thing
+that has to wait for the fetch — a preset is stored with a content id, so a
+browser with no stored library is seeded after startup rather than before it.
+The large surface maps are fetched lazily, only when a surface is
+selected. This keeps multi-megabyte assets out of the wasm binary — shrinking it
+and cutting bundle time — and is the path that scales as the built-in
+brush/surface libraries grow. (Headless tests, having
 no frontend, read the same files from disk and register them directly.)
 
 ### 6.7 Pluggable color spaces (Oklab & Mixbox pigment mixing)
@@ -1974,7 +1984,7 @@ Status lives here and nowhere else. It used to be duplicated as a checklist in
 7. **Brush shapes & assets (§6.6):** content-addressed `AssetStore`, image
    coverage masks normalized to `R8`, stamps rotated to the path tangent,
    `Engine::import_brush`. Bundle referenced assets in the save file. Golden test
-   painting with `crates/stark-ui/assets/shape/WornBristles.png`.
+   painting with `crates/stark-ui/assets/shape/Worn_Bristles.png`.
 8. **Cubic stroke interpolation (§6.2):** make `StrokeRecord.path` fitted control
    points (RDP at commit, in `path.rs`); stamp generation walks a centripetal
    Catmull–Rom spline. Kills diagonal stair-stepping, makes stamping read

@@ -28,9 +28,7 @@ use stark_core::{ColorSpaceId, InputSample};
 
 use dioxus::html::HasFileData;
 
-use crate::panels::brush::{
-    BRISTLE_BRUSH, MAX_RADIUS, MAX_TAPER, set_bristles, set_orientation, set_shape,
-};
+use crate::panels::brush::{MAX_RADIUS, MAX_TAPER, set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::{self, Renderer};
 use crate::state::{AppState, update_brush};
@@ -299,10 +297,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     }
 }
 
-/// The Tip section's shape gallery: the procedural round tip, the built-in
-/// bristle stamp, every shape in the user's library (thumbnail + name, with a
-/// hover ✕ to remove), and an import card. Images can also be dropped anywhere
-/// on the grid.
+/// The Tip section's shape gallery: the procedural round tip, every shape
+/// bundled with the app (`crate::builtins`), every shape in the user's library
+/// (thumbnail + name, with a hover ✕ to remove), and an import card. Images can
+/// also be dropped anywhere on the grid.
 ///
 /// No restroke calls here: selection and import go through the brush's `shape`,
 /// and the modal's shape effect re-strokes on any change — which is what lets
@@ -321,7 +319,16 @@ fn ShapeGallery() -> Element {
         .as_ref()
         .map(|o| o.brush.shape)
         .unwrap_or_default();
-    let bristle = state.renderer.read().as_ref().and_then(|r| r.bristle());
+    // One card per bundled shape, in table order. A built-in whose fetch is
+    // still in flight has no id yet, so it simply never reads as selected —
+    // clicking it is the same no-op, and both settle when the bytes land.
+    let builtins: Vec<(&'static str, String, bool)> = crate::builtins::resolved(state)
+        .into_iter()
+        .map(|(builtin, id)| {
+            let active = matches!(brush_shape, BrushShape::Stamp(s) if Some(s) == id);
+            (builtin.name, builtin.asset.to_string(), active)
+        })
+        .collect();
     let entries = state.shapes.entries;
     // Thumbnails are base64 data URLs of the canonical PNGs — memoized so they
     // re-encode only when the library changes, not on every obs refresh.
@@ -348,7 +355,6 @@ fn ShapeGallery() -> Element {
         }
     };
     let is_round = matches!(brush_shape, BrushShape::Round { .. });
-    let is_bristles = matches!(brush_shape, BrushShape::Stamp(id) if Some(id) == bristle);
 
     rsx! {
         div {
@@ -371,10 +377,14 @@ fn ShapeGallery() -> Element {
                 div { class: "shape-thumb round" }
                 div { class: "shape-name", "Round" }
             }
-            div { class: card(is_bristles),
-                onclick: move |_| set_bristles(state),
-                div { class: "shape-thumb", style: "background-image: url({BRISTLE_BRUSH});" }
-                div { class: "shape-name", "Bristles" }
+            for (name, url, active) in builtins {
+                div {
+                    key: "{name}",
+                    class: card(active),
+                    onclick: move |_| crate::builtins::select(state, name),
+                    div { class: "shape-thumb", style: "background-image: url({url});" }
+                    div { class: "shape-name", title: "{name}", "{name}" }
+                }
             }
             for (id, key, name, url) in thumbs() {
                 div {
@@ -455,8 +465,8 @@ fn More(open: Signal<bool>, children: Element) -> Element {
 // --- preview engine ---
 
 /// Build the preview renderer on the shared GPU device, mirror the main canvas's
-/// look (surface, environment, lighting, background), import the built-in stamp
-/// brush (same content-addressed id as the main engine's), seed the default test
+/// look (surface, environment, lighting, background), import the bundled stamp
+/// shapes (same content-addressed ids as the main engine's), seed the default test
 /// stroke, and paint it with the current brush.
 async fn init_preview(state: AppState, mut preview: Preview) {
     // Copy everything out of the main renderer before any await (no held borrows).
@@ -476,11 +486,7 @@ async fn init_preview(state: AppState, mut preview: Preview) {
 
     // The asset bytes were all fetched at app startup, so these hit the browser
     // cache; content-addressed ids make the imports line up with the main engine.
-    if let Ok(bytes) =
-        dioxus::asset_resolver::read_asset_bytes(crate::panels::brush::BRISTLE_BRUSH).await
-    {
-        r.load_bristle(&bytes);
-    }
+    crate::builtins::import_all(&mut r).await;
     if let Some(asset) = crate::panels::lighting::surface_asset(surface_id)
         && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
     {
@@ -585,7 +591,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     // A custom shape selected on the main engine may be missing from the
     // preview engine (its store is per-document). Copy the canonical bytes
     // over — content-addressing lines the ids up, the same trick the preview's
-    // `load_bristle` relies on.
+    // built-in imports rely on.
     let shape_bytes = match brush.shape {
         BrushShape::Stamp(id) => state
             .renderer
