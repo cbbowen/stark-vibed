@@ -9,6 +9,12 @@
 //!  * **commit** — the whole stroke rendered in one pass (`replay_stroke`).
 //!
 //! Run with `cargo run --release -p stark-core --example stroke_bench`.
+//!
+//! Superseded for regression work by `benches/stroke.rs`, which measures the same
+//! two paths under criterion — with confidence intervals and a saved baseline to
+//! compare against, neither of which a single run of this can give. What this still
+//! has over it is speed (seconds, not minutes) and the p95 per-move figure, so it
+//! remains the quicker way to answer "did that feel slower?" by hand.
 
 use std::time::Instant;
 

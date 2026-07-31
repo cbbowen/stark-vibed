@@ -40,8 +40,21 @@ mixbox = { path = "../../vendor/mixbox/rust" }
 # the preview-vs-commit tests are gated off when it is on (`tests/stroke.rs`).
 debug-unfrozen = []
 
+[[bench]]
+name = "path"
+harness = false
+
+[[bench]]
+name = "stroke"
+harness = false
+
 [dev-dependencies]
 pollster = { workspace = true }
+# Statistical benchmarking for the stroke path (benches/). `--save-baseline` /
+# `--baseline` is the regression gate: the GPU numbers are only comparable to
+# other runs on the *same* machine and adapter, so an absolute threshold would be
+# meaningless and only a before/after on one box means anything.
+criterion = { version = "0.8", features = ["html_reports"] }
 # Synthesizing oversized brush-shape PNGs in tests/assets.rs (already a regular dep).
 png = { workspace = true }
 # Recorded pen input for the fitter tests. A dev-dependency on purpose: as a module
