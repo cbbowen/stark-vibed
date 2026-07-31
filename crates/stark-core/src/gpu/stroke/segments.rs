@@ -21,7 +21,7 @@ use super::{MAX_REGION_DIM, MAX_STAMPS, StrokeSpans};
 /// The centreline is a **circular arc**, not a chord: `start` and `dir` give the
 /// frame it leaves in, `curvature` bends it, and `length` measures along it. A
 /// straight sweep is `curvature == 0` and is what every quantity below reduces to,
-/// exactly — see [`fit_arc`].
+/// exactly — see [`crate::path::fit_arc`].
 #[derive(Copy, Clone)]
 pub(super) struct Segment {
     pub(super) start: Vec2,
@@ -89,125 +89,12 @@ pub(super) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 
 // --- swept arcs ----------------------------------------------------------------
 //
-// A flattened edge stands in for a piece of curve, and a *chord* is a poor stand-in
-// even when it is well within the positional budget: the union of straight sweeps is
-// tangent-continuous but its curvature breaks at every joint, and on the inside of a
-// turn the outline creases. Curvature breaks along a silhouette are what the eye
-// reads as facets — so the fix is not more segments (which the reservoir cadence and
-// the per-segment dispatches make expensive) but *better* ones. An arc costs a float
-// on the instance and some fragment ALU, and nothing else (DESIGN.md §6.2).
-
-/// The least sagitta (canvas px) an arc has to buy before a segment is bent at all.
-/// Under this the arc is indistinguishable from its chord, so the segment is emitted
-/// straight — which keeps a straight or barely-curved stroke on exactly the code path
-/// (and exactly the floats) it had before arcs existed.
-const MIN_SAGITTA: f32 = 0.01;
-
-/// Cap on `sin(θ/2)` for the turn `θ` one segment may bend through — ~23°, far past
-/// the ~5.7° [`crate::path::FLATTEN_TOLERANCE`]'s `angle` bound admits. A backstop on
-/// a pathological edge (a cusp, or a span that bottomed out `MAX_SUBDIVISION_DEPTH`)
-/// rather than a quality knob: past it both the series below and the shader's
-/// annular-sector geometry stop being the right approximation, so the segment goes
-/// back to being straight.
-const MAX_HALF_TURN_SIN: f32 = 0.2;
-
-/// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
-/// sweeping through.
-///
-/// The shaders rasterize a curved sweep as an **annular sector** about the centre of
-/// curvature, which stays a simple polygon only while the tip's inner edge clears
-/// that centre — `radius < |R|`. Past it the sector folds over itself, and since the
-/// two paths accumulate optical depth additively, a fold would deposit twice. Half is
-/// the margin. A tip this fat relative to the curve hides the faceting in its own
-/// width anyway, so falling back to a straight sweep costs nothing visible.
-const MAX_TIP_TURN: f32 = 0.5;
-
-/// `sin(x)`, `1 − cos(x)` and `asin(u)/u` as **polynomials**, for the same reason
-/// [`taper_profile`] is one: these decide stored pixels, so replay, goldens and peers
-/// have to agree on them to the last bit, and the transcendental library functions are
-/// not specified that far. Each is a truncated Maclaurin series, accurate to better
-/// than 1e-7 relative over the range its caller is guarded to
-/// ([`MAX_HALF_TURN_SIN`]) — well inside the f32 the result is stored in.
-///
-/// `versin` is `1 − cos(x)` evaluated *directly* rather than by subtraction: it is
-/// used where `x` is small and the difference would cancel away most of its digits.
-fn sin_small(x: f32) -> f32 {
-    let x2 = x * x;
-    x * (1.0 - x2 * (1.0 / 6.0 - x2 * (1.0 / 120.0 - x2 / 5040.0)))
-}
-
-fn versin_small(x: f32) -> f32 {
-    let x2 = x * x;
-    x2 * (0.5 - x2 * (1.0 / 24.0 - x2 / 720.0))
-}
-
-fn asin_over_x(u: f32) -> f32 {
-    let u2 = u * u;
-    1.0 + u2 * (1.0 / 6.0 + u2 * (3.0 / 40.0 + u2 * (15.0 / 336.0)))
-}
-
-/// The circular arc standing in for one flattened edge: the arc that leaves the
-/// edge's start along the **curve's own tangent** there and passes through its end.
-///
-/// Returns `(start tangent, signed curvature, arc length)`; a curvature of exactly 0
-/// means "sweep this one straight", and then the other two are the chord's own
-/// direction and length — bit-identical to what this function replaced.
-///
-/// Fitting from the start tangent rather than from both is what makes it cheap: with
-/// `t̂` the unit tangent and `n̂` its left normal, an arc leaving along `t̂` reaches
-/// chord `v` iff `κ = 2 (v·n̂)/|v|²`, and `sin(θ/2) = κ|v|/2` falls straight out of
-/// the same identity. No angle is ever formed, so nothing here needs a transcendental
-/// beyond the series above.
-///
-/// The end tangent is then *not* pinned to the curve's tangent there, so consecutive
-/// arcs still meet with a small kink — but it is second order in the turn where the
-/// chord's was first order, which is the whole point: the joints stop being the
-/// dominant error and the flattening budget becomes the dominant one again.
-fn fit_arc(vel: Vec2, v: Vec2, chord: f32, tip_radius: f32) -> (Vec2, f32, f32) {
-    let straight = (v / chord, 0.0, chord);
-    let speed = vel.length();
-    if speed < 1e-12 {
-        // A stationary derivative names no tangent (`path::turn` declines the same
-        // case): there is nothing to bend towards.
-        return straight;
-    }
-    let t = vel / speed;
-    let n = Vec2::new(-t.y, t.x);
-    let kappa = 2.0 * v.dot(n) / (chord * chord);
-    if !kappa.is_finite() || kappa == 0.0 {
-        return straight;
-    }
-    // Half the turn, as its sine — the arc is `chord = 2 sin(θ/2)/κ` by construction.
-    let u = 0.5 * kappa * chord;
-    if u.abs() > MAX_HALF_TURN_SIN || v.dot(t) <= 0.0 {
-        return straight;
-    }
-    // Sagitta = |R|(1 − cos(θ/2)), rearranged to avoid cancelling two large radii.
-    let cos_half = (1.0 - u * u).max(0.0).sqrt();
-    let sagitta = kappa.abs() * chord * chord / (4.0 * (1.0 + cos_half));
-    if sagitta < MIN_SAGITTA || tip_radius * kappa.abs() > MAX_TIP_TURN {
-        return straight;
-    }
-    (t, kappa, chord * asin_over_x(u))
-}
-
-/// Where an arc leaving `start` along `dir` with signed `kappa` has got to after `s`
-/// of arc length, and the unit tangent it is travelling along there. The straight case
-/// is the exact limit and is taken as one, so a `kappa == 0` segment is stepped by
-/// plain addition.
-fn arc_at(start: Vec2, dir: Vec2, kappa: f32, s: f32) -> (Vec2, Vec2) {
-    if kappa == 0.0 {
-        return (start + dir * s, dir);
-    }
-    let turn = kappa * s;
-    let sn = sin_small(turn);
-    let vs = versin_small(turn);
-    let perp = Vec2::new(-dir.y, dir.x);
-    (
-        start + dir * (sn / kappa) + perp * (vs / kappa),
-        dir * (1.0 - vs) + perp * sn,
-    )
-}
+// The arc a flattened edge stands for is [`crate::path::fit_arc`]'s, called here with
+// the very cap the flattener called it with (`FlattenTolerance::max_arc_curvature`,
+// set by [`flatten_tolerance`](super::flatten_tolerance) from
+// [`MAX_TIP_TURN`](super::MAX_TIP_TURN)). One function, one rule, so the geometry the
+// flattener priced is the geometry that gets swept — and neither can spend the
+// positional budget on a primitive the other does not use.
 
 /// The taper's radius profile: the fraction of the brush's radius in force `t` of
 /// the way through a taper (DESIGN.md §6.2).
@@ -423,11 +310,15 @@ pub(super) fn generate_segments_in(
         if chord < 1e-5 {
             continue;
         }
-        // The edge as an arc rather than a chord (see [`fit_arc`]): same endpoints,
-        // but leaving along the curve's own tangent, so the swept outline no longer
-        // breaks its curvature at every joint. `kappa == 0` comes back for a straight
-        // or barely-curved edge and everything below reduces to what it was.
-        let (dir, kappa, len) = fit_arc(a.vel, v, chord, b.radius);
+        // The edge as an arc rather than a chord (see [`segment_arc`]): same
+        // endpoints, but leaving along the curve's own tangent, so the swept outline
+        // no longer breaks its curvature at every joint. Curvature 0 comes back for a
+        // straight or barely-curved edge and everything below reduces to what it was.
+        let crate::path::Arc {
+            dir,
+            curvature: kappa,
+            length: len,
+        } = crate::path::fit_arc(a.vel, v, tol.max_arc_curvature);
         // One flattened edge is one segment wherever the taper is flat — which is
         // everywhere on an untapered brush, so nothing below changes those strokes
         // by a bit. Inside a taper it is cut into pieces fine enough that the radius
@@ -444,8 +335,8 @@ pub(super) fn generate_segments_in(
             let tilt = a.tilt + (c.tilt - a.tilt) * mid;
             let along = step * k as f32;
             let dist = a.dist + along;
-            let (pos, tan) = arc_at(a.pos, dir, kappa, along);
-            let (_, mid_tan) = arc_at(a.pos, dir, kappa, along + step * 0.5);
+            let (pos, tan) = crate::path::arc_at(a.pos, dir, kappa, along);
+            let (_, mid_tan) = crate::path::arc_at(a.pos, dir, kappa, along + step * 0.5);
             segs.push(make(
                 pos,
                 pressure,
@@ -561,17 +452,7 @@ pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
 
 /// Where a segment's centreline ends — along the arc, not along the chord.
 pub(super) fn segment_end(s: &Segment) -> Vec2 {
-    arc_at(s.start, s.dir, s.curvature, s.length).0
-}
-
-/// How far a segment's centreline bows away from its own chord: `|R|(1 − cos(θ/2))`
-/// for a turn of `θ`, and 0 for a straight sweep. Every box below adds it, since the
-/// two endpoints alone no longer bound the arc between them.
-fn segment_sagitta(s: &Segment) -> f32 {
-    if s.curvature == 0.0 {
-        return 0.0;
-    }
-    versin_small(0.5 * s.curvature * s.length) / s.curvature.abs()
+    crate::path::arc_at(s.start, s.dir, s.curvature, s.length).0
 }
 
 /// The canvas box one segment's swept coverage occupies — the arc, grown by the tip
@@ -583,7 +464,7 @@ fn segment_sagitta(s: &Segment) -> f32 {
 /// has to contain is where the deposit *lands*, which is within one radius of the arc.
 pub(super) fn coverage_bounds(s: &Segment) -> (Vec2, Vec2) {
     let end = segment_end(s);
-    let reach = Vec2::splat(s.radius + segment_sagitta(s));
+    let reach = Vec2::splat(s.radius + crate::path::arc_sagitta(s.curvature, s.length));
     (s.start.min(end) - reach, s.start.max(end) + reach)
 }
 
@@ -1003,8 +884,11 @@ mod tests {
             let start_dir = Vec2::new(1.0, 0.0);
             let end = Vec2::new((r * theta.sin()) as f32, (r * (1.0 - theta.cos())) as f32);
             let (r, theta) = (r as f32, theta as f32);
-            let chord = end.length();
-            let (dir, kappa, len) = fit_arc(start_dir, end, chord, 1.0);
+            let crate::path::Arc {
+                dir,
+                curvature: kappa,
+                length: len,
+            } = crate::path::fit_arc(start_dir, end, f32::INFINITY);
             assert!(kappa != 0.0, "r={r} θ={theta}: fitted straight");
             assert!(
                 (kappa - 1.0 / r).abs() < 1e-4 / r,
@@ -1017,7 +901,7 @@ mod tests {
             );
             // And walking it lands exactly on the far end, which is what makes
             // consecutive segments meet.
-            let (landed, _) = arc_at(Vec2::ZERO, dir, kappa, len);
+            let (landed, _) = crate::path::arc_at(Vec2::ZERO, dir, kappa, len);
             assert!(
                 (landed - end).length() < 1e-3,
                 "r={r}: the arc ends at {landed:?}, not {end:?}"
@@ -1060,7 +944,15 @@ mod tests {
             let mut arcs = Vec::new();
             for s in &segs {
                 for i in 0..16 {
-                    arcs.push(arc_at(s.start, s.dir, s.curvature, s.length * i as f32 / 16.0).0);
+                    arcs.push(
+                        crate::path::arc_at(
+                            s.start,
+                            s.dir,
+                            s.curvature,
+                            s.length * i as f32 / 16.0,
+                        )
+                        .0,
+                    );
                 }
             }
             arcs.extend(segs.last().map(segment_end));
@@ -1114,18 +1006,17 @@ mod tests {
 
     /// A tip too fat for the turn it is sweeping falls back to a straight segment.
     ///
-    /// This is the invariant the shaders' geometry rests on: they rasterize a curved
-    /// sweep as an annular sector about the centre of curvature, and that stays a
-    /// simple polygon only while the tip's inner rim clears that centre. A segment
-    /// past the bound would fold the sector over itself, and since both paths
-    /// accumulate optical depth additively, the fold would deposit twice.
+    /// The bound exists because both shaders sweep a curved segment by unrolling the
+    /// annulus about its centre of curvature, and that approximation degrades as the
+    /// tip grows against the curve's own radius — see
+    /// [`MAX_TIP_TURN`](super::super::MAX_TIP_TURN).
     #[test]
     fn a_fat_tip_on_a_tight_turn_sweeps_straight() {
         let curve_radius = 60.0;
-        let fat = 50.0; // well over half the curve's radius
+        let fat = 50.0;
         for s in whole(&curved_record(fat, curve_radius, 1.5)) {
             assert!(
-                s.radius * s.curvature.abs() <= MAX_TIP_TURN,
+                s.radius * s.curvature.abs() <= super::super::MAX_TIP_TURN,
                 "a segment sweeps an arc of radius {} under a {} tip",
                 1.0 / s.curvature.abs(),
                 s.radius
@@ -1136,9 +1027,56 @@ mod tests {
         // the assertion above would pass on any straight line.
         let fine = whole(&curved_record(2.0, curve_radius, 1.5));
         assert!(
-            fine.iter().any(|s| fat * s.curvature.abs() > MAX_TIP_TURN),
+            fine.iter()
+                .any(|s| fat * s.curvature.abs() > super::super::MAX_TIP_TURN),
             "the test curve is too gentle to exercise the guard"
         );
+    }
+
+    /// The flattener and the segment generator agree, edge for edge, on whether a
+    /// piece of curve is swept as an arc or as a chord.
+    ///
+    /// This is what makes the positional budget mean anything. `path::within` prices
+    /// an edge against whatever `fit_arc` returns for it, and the sweep is built from
+    /// whatever `fit_arc` returns for it — so if the two ever called it with different
+    /// caps, an edge could be *measured* as a well-tracked arc and then *drawn* as a
+    /// chord that misses the curve by several times the allowance. Routing both through
+    /// one function with one cap is what rules that out; this pins that they do.
+    #[test]
+    fn the_flattener_and_the_sweep_agree_on_which_edges_bend() {
+        for radius in [2.0f32, 18.0, 50.0, 120.0] {
+            for curve_radius in [80.0f32, 300.0, 1200.0, 5000.0] {
+                let rec = curved_record(radius, curve_radius, 1.4);
+                let tol = super::super::flatten_tolerance(&rec.brush);
+                let pts = crate::path::flatten(&rec.path, tol);
+                let segs = whole(&rec);
+                // Untapered, so it is one segment per flattened edge — except the
+                // degenerate ones the generator drops, which the clamped end condition
+                // always produces a few of (its outermost spans are squashed to nearly
+                // nothing).
+                let edges: Vec<_> = pts
+                    .windows(2)
+                    .filter(|w| (w[1].pos - w[0].pos).length() >= 1e-5)
+                    .collect();
+                assert_eq!(segs.len(), edges.len(), "r={radius} R={curve_radius}");
+                for (i, (w, s)) in edges.iter().zip(&segs).enumerate() {
+                    let want =
+                        crate::path::fit_arc(w[0].vel, w[1].pos - w[0].pos, tol.max_arc_curvature);
+                    assert_eq!(
+                        want.curvature, s.curvature,
+                        "r={radius} R={curve_radius} edge {i}: the flattener priced \
+                         curvature {} and the sweep drew {}",
+                        want.curvature, s.curvature
+                    );
+                }
+                // And the cap really is enforced, not merely never reached.
+                assert!(
+                    segs.iter()
+                        .all(|s| s.curvature.abs() <= tol.max_arc_curvature + 1e-9),
+                    "r={radius} R={curve_radius}: a segment bends past the sweepable cap"
+                );
+            }
+        }
     }
 
     /// Every box a segment is measured by contains its whole arc, not just its two
@@ -1153,7 +1091,8 @@ mod tests {
         for (i, s) in segs.iter().enumerate() {
             let (lo, hi) = coverage_bounds(s);
             for k in 0..=32 {
-                let (p, _) = arc_at(s.start, s.dir, s.curvature, s.length * k as f32 / 32.0);
+                let (p, _) =
+                    crate::path::arc_at(s.start, s.dir, s.curvature, s.length * k as f32 / 32.0);
                 // Every point of the arc, plus the tip riding along it.
                 let r = Vec2::splat(s.radius);
                 assert!(

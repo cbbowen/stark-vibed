@@ -91,6 +91,25 @@ const ADD_GAIN: f32 = 2.0;
 /// flattened segment length on the dynamics path, since a pickup can only land
 /// *between* segments (see [`flatten_tolerance`]).
 const RESERVOIR_CADENCE: f32 = 0.5;
+/// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
+/// swept through before the segment goes back to being straight (DESIGN.md §6.2).
+///
+/// Both shaders sweep a curved segment by **unrolling** the annulus about its centre
+/// of curvature into the straight travel frame, which treats a canvas point as sliding
+/// through the tip frame along a line of constant lateral offset. It does not: the
+/// true track is an arc of radius `ρ`, so a point out at the footprint's shoulder is
+/// off that line by `≈ r²/2R`, i.e. **`radius · |curvature| / 2` as a fraction of the
+/// tip radius**. That is the constant's real job. The annular sector the swept path
+/// rasterizes also folds over itself once `radius ≥ |R|`, but that bound (1.0) is five
+/// times looser and never the one that bites.
+///
+/// 0.1 holds the lateral error to 5% of the tip. It was 0.5 — 25% — which the plain
+/// swept deposit absorbed (its segments overlap heavily and the error is smooth) but
+/// the dynamics loop did not: there the same offset picks the wrong reservoir texel to
+/// serve a canvas texel, and because the loop is sequential the error compounds down
+/// the stroke into crescent seams at the reservoir cadence, worst where the tool is
+/// dragging paint with nothing left to `add` over them.
+const MAX_TIP_TURN: f32 = 0.1;
 
 #[derive(Clone)]
 pub struct StrokeRenderer {
@@ -581,6 +600,10 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
     tol.position = tol.position.max(0.01 * b.radius);
+    // The tightest arc this tip may be swept along (DESIGN.md §6.2). Both the
+    // flattener and the segment generator get it from here, so an edge too tight to
+    // sweep as an arc is priced as a chord as well as drawn as one.
+    tol.max_arc_curvature = MAX_TIP_TURN / b.radius.max(0.5);
     // `drain` fades the laid amount/opacity by `drain · dist`, sampled at the
     // segment midpoint: cap the step it can take across one segment at ~2%.
     if b.drain > 0.0 {
