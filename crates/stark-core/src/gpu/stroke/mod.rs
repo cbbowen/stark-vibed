@@ -53,7 +53,8 @@ const BRUSH_RES: u32 = 64;
 /// Resolution of the per-segment **swept prefix** of the reservoir
 /// (`dynamics.wesl::bake`). Finer than the reservoir along the travel axis, since
 /// it also has to resolve the footprint's optical-depth density it integrates
-/// against; the bake is one thread per row, so this costs almost nothing.
+/// against; the bake is a one-workgroup-per-row shared-memory scan, so this costs
+/// almost nothing. Must match the shader's own `BAKE_RES` (its workgroup width).
 const BAKE_RES: u32 = 128;
 /// fp32, for the same reason the prefix-τ volume is: every fragment reads it as a
 /// *difference* of two prefix sums (DESIGN.md §6.2).

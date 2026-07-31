@@ -42,6 +42,12 @@ struct SliceUniform {
 struct LoopDispatch {
     pickup: bool,
     slot: [f32; 32],
+    /// Workgroup counts for the segment's `snapshot`/`deposit` dispatches: the
+    /// segment's own oriented-quad AABB rather than the piece-wide worst-case
+    /// square, so an axis-aligned sweep pays for the ~4·r² texels its footprint
+    /// can reach instead of the ~10·r² a diagonal one might have needed.
+    /// Unused for a pickup (which dispatches over the reservoir).
+    groups: (u32, u32),
 }
 
 /// GPU objects for the brush-dynamics stamp loop (DESIGN.md §6.2), built once.
@@ -556,7 +562,10 @@ impl<'a> DynamicsRun<'a> {
         // piece's segments, so a piece drawn with a fine tip pays for a fine tip.
         let rmax = segments.iter().fold(0.5f32, |m, s| m.max(s.radius));
         let lmax = segments.iter().fold(0.0f32, |m, s| m.max(s.length));
-        let dsize = (2.0 * std::f32::consts::SQRT_2 * (rmax + lmax * 0.5 + 1.5)).ceil() as u32;
+        // +2: a per-segment dispatch rect rounds its AABB outward by a texel each
+        // side (`dynamics_plan`), and the scratch must hold the rounded rect at
+        // the rotation where the AABB meets this bound.
+        let dsize = (2.0 * std::f32::consts::SQRT_2 * (rmax + lmax * 0.5 + 1.5)).ceil() as u32 + 2;
         let mut under_tex = |label: &'static str| {
             scoped_view(
                 device,
@@ -708,10 +717,7 @@ impl<'a> DynamicsRun<'a> {
                     label: Some("stark dynamics stamp loop"),
                     timestamp_writes: None,
                 });
-            let du = dsize.div_ceil(8);
             let bu = BRUSH_RES.div_ceil(8);
-            // The bake is one thread per row of its own texture.
-            let ku = BAKE_RES.div_ceil(64);
             // The prefix-τ rides at group 1 for `bake` and `deposit`. Re-bound after
             // every pipeline switch: changing to a pipeline whose group-0 layout
             // differs invalidates the groups above it, and both consumers are
@@ -732,14 +738,16 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_pipeline(&kit.bake_pipeline);
                     cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
-                    cpass.dispatch_workgroups(ku, 1, 1);
+                    // One BAKE_RES-wide workgroup per row: the shader's scan
+                    // width is a constant, so the two must agree.
+                    cpass.dispatch_workgroups(1, BAKE_RES, 1);
                     cpass.set_pipeline(&kit.snapshot_pipeline);
                     cpass.set_bind_group(0, &snapshot_bg, &[off]);
-                    cpass.dispatch_workgroups(du, du, 1);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                     cpass.set_pipeline(&kit.deposit_pipeline);
                     cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
-                    cpass.dispatch_workgroups(du, du, 1);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                     // Drain the tool by what this segment just took, so the next one
                     // reads a tool that has actually travelled.
                     cpass.set_pipeline(&kit.deplete_pipeline);
@@ -983,13 +991,13 @@ fn dynamics_plan(
     let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
     let l_lift = lambda(d.lift);
     let l_dep = lambda(d.deposit);
-    let half = (dsize / 2) as f32;
     // Colour dynamics for the `add` paint — the same uniform triplet as the fast
     // path, so both paths sample the identical field (DESIGN.md §6.2).
     let (nfreq, namp, noff) = noise_uniform(rec);
 
     let mut plan = Vec::new();
     let mut since = since0;
+    let bu = BRUSH_RES.div_ceil(8);
     for s in segments {
         let step = (RESERVOIR_CADENCE * s.radius).max(0.5);
         if since >= step {
@@ -1001,6 +1009,7 @@ fn dynamics_plan(
             let p = s.start - region_origin;
             plan.push(LoopDispatch {
                 pickup: true,
+                groups: (bu, bu),
                 slot: [
                     p.x,
                     p.y,
@@ -1040,11 +1049,27 @@ fn dynamics_plan(
             since = 0.0;
         }
         // The segment's swept exchange: quad frame = start + travel tangent; the
-        // snapshot rect is centred on the segment midpoint.
+        // snapshot rect is centred on the segment midpoint, sized to the oriented
+        // quad's own AABB — the quad spans x ∈ [-r, l+r] × y ∈ [-r, r] in the
+        // travel frame, plus the same 1.5 px sampling margin the `dsize` bound
+        // allows — so an axis-aligned sweep dispatches ~4·r² threads where the
+        // any-rotation square would spend ~10·r². Texels the dispatch rounds in
+        // beyond the AABB read zero exposure and fall out of `deposit` untouched,
+        // and every rect fits the `under` scratch because `dsize` bounds the AABB
+        // at any rotation.
         let p = s.start - region_origin;
         let mid = p + s.dir * (s.length * 0.5);
+        let ha = s.radius + s.length * 0.5 + 1.5;
+        let hb = s.radius + 1.5;
+        let hx = ha * s.dir.x.abs() + hb * s.dir.y.abs();
+        let hy = ha * s.dir.y.abs() + hb * s.dir.x.abs();
+        let (w, h) = (
+            (((2.0 * hx).ceil() as u32) + 2).min(dsize),
+            (((2.0 * hy).ceil() as u32) + 2).min(dsize),
+        );
         plan.push(LoopDispatch {
             pickup: false,
+            groups: (w.div_ceil(8), h.div_ceil(8)),
             slot: [
                 p.x,
                 p.y,
@@ -1058,8 +1083,8 @@ fn dynamics_plan(
                 channels[1],
                 channels[2],
                 s.opacity,
-                (mid.x - half).floor(),
-                (mid.y - half).floor(),
+                (mid.x - hx).floor(),
+                (mid.y - hy).floor(),
                 s.orient,
                 1.0,
                 // e: the `add` source rate — height per unit exposure. `.y` is unused

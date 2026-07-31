@@ -273,56 +273,98 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 // lives in the shape frame, §6.6) and the reservoir's own evolution are both folded
 // in with no approximation. `dτ` comes from the prefix-τ volume's own differences,
 // so bake and exposure integrate numerically identical footprints.
-@compute @workgroup_size(64)
-fn bake(@builtin(global_invocation_id) gid: vec3<u32>) {
+//
+// One **workgroup per row**, one thread per column, with the running integral
+// built by a shared-memory inclusive scan (Hillis–Steele, log₂(BAKE_RES) steps).
+// The loop this replaced — one thread walking its whole row — put 128 threads on
+// the device per dispatch and a 128-iteration serial chain of texture reads on
+// each, and since the bake runs once per segment inside the sequential stamp
+// loop, that near-idle dispatch dominated the whole dynamics path. The scan
+// computes the same prefix sums (up to float re-association) with every lane of
+// a full-width dispatch busy.
+
+// Must equal the host's BAKE_RES (the bake textures' side).
+const BAKE_RES: u32 = 128u;
+
+var<workgroup> ws_e: array<f32, BAKE_RES>;
+var<workgroup> ws_load: array<vec4<f32>, BAKE_RES>;
+var<workgroup> ws_latm: array<vec4<f32>, BAKE_RES>;
+var<workgroup> ws_g: array<vec4<f32>, BAKE_RES>;
+var<workgroup> ws_gq: array<vec4<f32>, BAKE_RES>;
+
+@compute @workgroup_size(128) // = BAKE_RES: thread i scans column i of its row
+fn bake(
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
     let dim = textureDimensions(bake_load_w);
-    let row = gid.x;
-    if row >= dim.y {
-        return;
-    }
+    let row = wid.y; // dispatched as (1, dim.y, 1), so every row is in range
+    let i = lid.x;
     let yl = (f32(row) + 0.5) / f32(dim.y) * 2.0 - 1.0;
     let theta = st.d.z * TAU;
     let cs = cos(theta);
     let sn = sin(theta);
 
-    var acc_load = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    var acc_latm = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    var acc_g = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    var acc_gq = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    var prev_e = 0.0; // prefix-τ is 0 at the leading edge
-    for (var i: u32 = 0u; i < dim.x; i = i + 1u) {
-        // This column's share of the exposure, and the tool texel over it. The
-        // reservoir is stored in the shape frame, so rotate out of travel first.
-        let x1 = (f32(i) + 1.0) / f32(dim.x) * 2.0 - 1.0;
-        let e = prefix_at(x1, yl, st.d.z);
-        let de = max(e - prev_e, 0.0);
-        prev_e = e;
-
-        let xc = (f32(i) + 0.5) / f32(dim.x) * 2.0 - 1.0;
-        let sl = vec2<f32>(xc * cs + yl * sn, -xc * sn + yl * cs);
-        let buv = clamp(sl * 0.5 + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-        let b_c = textureSampleLevel(brush_src_color, samp, buv, 0.0);
-        let b_a = textureSampleLevel(brush_src_aux, samp, buv, 0.0);
-        let g_c = textureSampleLevel(gain_color, samp, buv, 0.0);
-        let g_a = textureSampleLevel(gain_aux, samp, buv, 0.0);
-
-        // Carried height and optical mass (opacity·height), each weighted by the
-        // exposure they are presented with; latent rides as a mass weight so a
-        // ratio of the two prefixes recovers it (§6.1). The gain parcel gets the
-        // same treatment twice — plain and travel-weighted (`xc`) — which is what
-        // lets the deposit evaluate the linear reload ramp as prefix differences.
-        let m = b_c.a * b_a.x;
-        let mg = g_c.a * g_a.x;
-        acc_load += vec4<f32>(b_a.x, m, g_a.x, 0.0) * de;
-        acc_latm += vec4<f32>(b_c.rgb * m, mg) * de;
-        acc_g += vec4<f32>(g_c.rgb * mg, g_a.x * xc) * de;
-        acc_gq += vec4<f32>(g_c.rgb * (mg * xc), mg * xc) * de;
-        let t = vec2<i32>(i32(i), i32(row));
-        textureStore(bake_load_w, t, acc_load);
-        textureStore(bake_latm_w, t, acc_latm);
-        textureStore(bake_g_w, t, acc_g);
-        textureStore(bake_gq_w, t, acc_gq);
+    // This column's share of the exposure: the prefix-τ difference across it.
+    // Each thread reads its right edge; the left edge is the neighbour's.
+    let x1 = (f32(i) + 1.0) / f32(dim.x) * 2.0 - 1.0;
+    ws_e[i] = prefix_at(x1, yl, st.d.z);
+    workgroupBarrier();
+    var de = ws_e[i];
+    if i > 0u {
+        de = de - ws_e[i - 1u];
     }
+    de = max(de, 0.0);
+
+    // The tool texel over this column. The reservoir is stored in the shape
+    // frame, so rotate out of travel first.
+    let xc = (f32(i) + 0.5) / f32(dim.x) * 2.0 - 1.0;
+    let sl = vec2<f32>(xc * cs + yl * sn, -xc * sn + yl * cs);
+    let buv = clamp(sl * 0.5 + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let b_c = textureSampleLevel(brush_src_color, samp, buv, 0.0);
+    let b_a = textureSampleLevel(brush_src_aux, samp, buv, 0.0);
+    let g_c = textureSampleLevel(gain_color, samp, buv, 0.0);
+    let g_a = textureSampleLevel(gain_aux, samp, buv, 0.0);
+
+    // Carried height and optical mass (opacity·height), each weighted by the
+    // exposure they are presented with; latent rides as a mass weight so a
+    // ratio of the two prefixes recovers it (§6.1). The gain parcel gets the
+    // same treatment twice — plain and travel-weighted (`xc`) — which is what
+    // lets the deposit evaluate the linear reload ramp as prefix differences.
+    let m = b_c.a * b_a.x;
+    let mg = g_c.a * g_a.x;
+    ws_load[i] = vec4<f32>(b_a.x, m, g_a.x, 0.0) * de;
+    ws_latm[i] = vec4<f32>(b_c.rgb * m, mg) * de;
+    ws_g[i] = vec4<f32>(g_c.rgb * mg, g_a.x * xc) * de;
+    ws_gq[i] = vec4<f32>(g_c.rgb * (mg * xc), mg * xc) * de;
+    workgroupBarrier();
+
+    // Inclusive scan over the four accumulators together.
+    for (var off = 1u; off < BAKE_RES; off = off << 1u) {
+        var v_load = ws_load[i];
+        var v_latm = ws_latm[i];
+        var v_g = ws_g[i];
+        var v_gq = ws_gq[i];
+        if i >= off {
+            v_load += ws_load[i - off];
+            v_latm += ws_latm[i - off];
+            v_g += ws_g[i - off];
+            v_gq += ws_gq[i - off];
+        }
+        workgroupBarrier();
+        ws_load[i] = v_load;
+        ws_latm[i] = v_latm;
+        ws_g[i] = v_g;
+        ws_gq[i] = v_gq;
+        workgroupBarrier();
+    }
+
+    // Out-of-range stores (a texture narrower than the workgroup) are no-ops.
+    let t = vec2<i32>(i32(i), i32(row));
+    textureStore(bake_load_w, t, ws_load[i]);
+    textureStore(bake_latm_w, t, ws_latm[i]);
+    textureStore(bake_g_w, t, ws_g[i]);
+    textureStore(bake_gq_w, t, ws_gq[i]);
 }
 
 // ---- 1. Snapshot the region under the segment's footprint rect. -----------------
