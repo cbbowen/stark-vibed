@@ -1,5 +1,5 @@
 //! Mixbox's pigment LUT on the GPU — the inverse of the mixing polynomial
-//! (MISSING_FEATURES.md §0.4, DESIGN.md §6.7).
+//! (§18.0.4, §6.7).
 //!
 //! One caller: the blend pass, which combines *light* and then has to say which
 //! mixture of pigments would have produced it. Every other GPU path in the engine

@@ -1,5 +1,5 @@
 //! Shared test harness: headless engine setup and golden-image comparison
-//! (DESIGN.md §9). Included by integration tests via `mod common;`.
+//! (§9). Included by integration tests via `mod common;`.
 
 #![allow(dead_code)] // not every test binary uses every helper
 
@@ -74,7 +74,7 @@ fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
 }
 
 /// A headless engine left on the procedural `Neutral` environment — the reference
-/// light (DESIGN.md §6.3) — instead of the studio HDR every other helper installs.
+/// light (§6.3) — instead of the studio HDR every other helper installs.
 /// For the reference-identity tests, which ask what the media pass does when the
 /// lighting is deliberately doing as little as it can.
 pub fn engine_or_skip_neutral() -> Option<Engine> {
@@ -96,7 +96,7 @@ pub fn engine_or_skip_sized(size: Extent2) -> Option<Engine> {
 /// A headless engine on the **blue** ground ([`BG`]) rather than the default
 /// paper.
 ///
-/// The substrate is document state (FRAME_DESIGN.md §5), so choosing it is a
+/// The substrate is document state (§15.5), so choosing it is a
 /// logged edit like any other — which is exactly how a user would do it. Blue is
 /// deliberate for these tests: they ask "is there paint here?" by channel
 /// dominance, and a near-white paper lit by the studio HDR already reads
@@ -128,14 +128,14 @@ pub fn engine_or_skip_in_format(format: wgpu::TextureFormat) -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine(format, SIZE)))
 }
 
-/// A headless engine in a chosen color space (DESIGN.md §6.7).
+/// A headless engine in a chosen color space (§6.7).
 pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine_with(TARGET, SIZE, id)))
 }
 
 /// Light the test engine with the real studio HDR, so goldens exercise image-based
 /// lighting from an actual decoded environment rather than the procedural one
-/// (DESIGN.md §6.3). Not the app's startup default — that is the achromatic
+/// (§6.3). Not the app's startup default — that is the achromatic
 /// `Neutral` — but the more demanding of the two paths, and one switch away in the
 /// Lighting panel; [`engine_or_skip_neutral`] covers the reference light.
 fn with_studio_env(mut engine: Engine) -> Engine {
@@ -250,7 +250,7 @@ pub fn images_match(a: &RgbaImage, b: &RgbaImage, tol: u8) -> bool {
 ///
 /// If the golden file is absent it is created and the check passes — so
 /// **deleting a golden re-blesses it** on the next run. Goldens are
-/// GPU-dependent; cross-adapter runs may need re-blessing (DESIGN.md §9).
+/// GPU-dependent; cross-adapter runs may need re-blessing (§9).
 ///
 /// Which is why [`SKIP_GOLDEN`] exists: a committed golden can only match the one
 /// adapter it was blessed on, so a CI runner on a different adapter would fail on

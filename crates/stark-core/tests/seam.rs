@@ -1,4 +1,4 @@
-//! Tile-apron seam regression (DESIGN.md §6.4).
+//! Tile-apron seam regression (§6.4).
 //!
 //! Under magnification the compositor samples each tile bilinearly. Tiles are
 //! separate textures, so without an apron the filter clamps at a tile's edge
@@ -98,7 +98,7 @@ fn apron_makes_tiles_seamless_under_zoom() {
 }
 
 /// Like `render_shifted`, but the height-bearing stroke is a **stamp-loop smudge**
-/// (DESIGN.md §6.2): lay a red field through the corner, then drag a smearing
+/// (§6.2): lay a red field through the corner, then drag a smearing
 /// brush along it. Exercises the region write-back path — the whole-block slice
 /// from the shared region must keep aprons bit-identical to neighbour interiors,
 /// and the halo composite must give rewritten tiles real neighbour content.

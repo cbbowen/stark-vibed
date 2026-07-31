@@ -1,5 +1,5 @@
 //! Stroke engine tests: the step-2 MVP (command/action split, copy-on-write tiles,
-//! and history undo/redo — DESIGN.md §13 build order, step 2).
+//! and history undo/redo — §13 build order, step 2).
 
 mod common;
 
@@ -14,7 +14,7 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
 /// A brush that runs the **sequential stamp loop** rather than the swept fast path:
 /// it lifts paint off the canvas onto the tool and lays it back down, so what it
-/// draws at any point depends on everywhere it has already been (DESIGN.md §6.2).
+/// draws at any point depends on everywhere it has already been (§6.2).
 ///
 /// That carried state is the whole reason this path is worth testing separately —
 /// the swept deposit composes freely, so cutting its path anywhere is trivially
@@ -86,7 +86,7 @@ fn live_preview_shows_stroke_before_commit() {
 
 /// The live preview draws a long stroke in two pieces — a frozen head kept from
 /// earlier moves, plus the live tail over it — while the commit draws the whole
-/// thing in one pass (DESIGN.md §6.2, `engine::FrozenHead`). Those must agree, or
+/// thing in one pass (§6.2, `engine::FrozenHead`). Those must agree, or
 /// the stroke would visibly change at the moment the pointer is released.
 ///
 /// This is the property that makes cutting the path safe at all: the swept deposit
@@ -352,7 +352,7 @@ fn a_smear_stroke_previews_as_it_commits() {
     //
     // It was 8 when the media pass was a look: the old tonemap subtracted a flat 0.04
     // and compressed everything above 0.76, which squashed the residue along with the
-    // rest of the image. Now that the pass is a reference (DESIGN.md §6.3) it squashes
+    // rest of the image. Now that the pass is a reference (§6.3) it squashes
     // nothing, and the *same* buffer discrepancy displays about three times larger —
     // worst pixel 3 before, 9 after. The residue in the composited buffers is
     // unchanged; only its amplification on the way to the screen is. Hence 12: the old
@@ -530,7 +530,7 @@ fn an_oversized_smear_stroke_previews_as_it_commits() {
     );
 }
 
-// --- tapered ends (DESIGN.md §6.2) ---------------------------------------
+// --- tapered ends (§6.2) ---------------------------------------
 
 /// A hard, opaque inking brush with the given taper lengths (in radii). Hard on
 /// purpose: the tests below *measure the stroke's width* off the rendered image, and
@@ -846,7 +846,7 @@ fn stroke_spans_multiple_tiles_via_cow() {
 }
 
 /// Per-move cost must not grow with the length of the stroke — which is the whole
-/// point of the frozen head (DESIGN.md §6.2, `engine::FrozenHead`).
+/// point of the frozen head (§6.2, `engine::FrozenHead`).
 ///
 /// Run for **both** render paths. The stamp loop is the case that matters: before it
 /// carried its reservoir across the freeze boundary it re-rendered the whole stroke

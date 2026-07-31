@@ -1,5 +1,5 @@
 //! Per-client state that every client reads and only its owner writes
-//! (PEER_DESIGN.md).
+//! (§17).
 //!
 //! Two mechanisms, tested apart because the rule that separates them is the whole
 //! design: the **selection** is per-actor *document* state, because a stroke's pixels
@@ -193,7 +193,7 @@ fn peers_hold_independent_selections_and_still_converge() {
     );
 }
 
-/// Undo is already scoped to *my* actions (DESIGN.md §12.3), so undoing my selection
+/// Undo is already scoped to *my* actions (§12.3), so undoing my selection
 /// leaves yours alone. This is a consequence of keying by the action's own author,
 /// not a rule anything has to enforce.
 #[test]
@@ -238,7 +238,7 @@ fn a_solo_document_is_unaffected() {
     assert!(!is_painted(&img, Vec2::new(60.0, 0.0)));
 }
 
-// --- layer ids (PEER_DESIGN.md §9) --------------------------------------
+// --- layer ids (§17.9) --------------------------------------
 
 /// Two peers adding a layer at the same moment must mint **different** ids.
 ///
@@ -331,7 +331,7 @@ fn a_remote_removal_repoints_the_active_layer() {
     assert!(is_painted(&snap(&mut b), Vec2::new(0.0, 0.0)));
 }
 
-// --- presence (PEER_DESIGN.md §4) ---------------------------------------
+// --- presence (§17.4) ---------------------------------------
 
 /// A peer's in-flight stroke is drawn before it commits, and the *committed* action
 /// replaces it with the same pixels — the live-equals-committed invariant, across
@@ -509,7 +509,7 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
 
 /// A collaborator's selection outline is off by default and drawn only when this
 /// client asks for it — a view setting, so it changes what you look at and nothing
-/// about the drawing (PEER_DESIGN.md §3). Your own outline is unaffected either way.
+/// about the drawing (§17.3). Your own outline is unaffected either way.
 #[test]
 fn peer_selection_outlines_are_opt_in() {
     let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {

@@ -1,4 +1,4 @@
-//! Selections: the mask that gates where the brush may paint (DESIGN.md §6.8).
+//! Selections: the mask that gates where the brush may paint (§6.8).
 //!
 //! Most of these assert the properties the feature rests on rather than an image:
 //! paint lands inside and nowhere outside; the boolean modes compose; the *op*, not
@@ -9,7 +9,7 @@
 //! The two **goldens** at the end cover what point probes cannot: the actual shape of
 //! the mask across a whole frame — the analytic silhouettes, the width and profile of
 //! the feather ramp, continuity across tile boundaries, and the outline overlay — for
-//! each of the two masking sites in turn (DESIGN.md §9).
+//! each of the two masking sites in turn (§9).
 
 mod common;
 
@@ -227,7 +227,7 @@ fn lasso_masks_its_interior() {
 #[test]
 fn selection_gates_the_brush_dynamics_path() {
     // `lift`/`deposit` route the stroke through the sequential stamp loop rather than
-    // the swept fast path (DESIGN.md §6.2) — a completely separate masking site, so it
+    // the swept fast path (§6.2) — a completely separate masking site, so it
     // gets its own check.
     let Some(mut engine) = engine_or_skip() else {
         return;
@@ -424,7 +424,7 @@ fn a_click_with_a_marquee_selects_nothing() {
 
 #[test]
 fn drawing_a_selection_disarms_the_tool() {
-    // Selection tools are momentary (DESIGN.md §6.8): selecting is a step towards
+    // Selection tools are momentary (§6.8): selecting is a step towards
     // painting, so the canvas comes back to the brush of its own accord rather than
     // leaving a mode the next gesture would silently redefine the selection through.
     let Some(mut engine) = engine_or_skip() else {
@@ -597,7 +597,7 @@ fn feathered_edge_fades_the_stroke() {
     );
 }
 
-// --- goldens (DESIGN.md §9) --------------------------------------------------
+// --- goldens (§9) --------------------------------------------------
 //
 // Point probes can say "paint here, none there"; they cannot say what the mask
 // *looks like*. These two do: the analytic silhouettes and how the three boolean

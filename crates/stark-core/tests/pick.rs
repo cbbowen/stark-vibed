@@ -1,9 +1,9 @@
-//! The eyedropper (MISSING_FEATURES §0.2): sampling colour back off the canvas.
+//! The eyedropper (§18.0.2): sampling colour back off the canvas.
 //!
 //! The claim it rests on is that it reads the **raw layer channels** rather than the
 //! composited, lit result — so what comes back is a colour the palette could have
 //! mixed, and in a Mixbox document a pigment mixture that can be picked back up
-//! (DESIGN.md §6.7). These check the things that would quietly betray that: that a
+//! (§6.7). These check the things that would quietly betray that: that a
 //! painted colour survives the round trip in *both* colour spaces, that bare canvas
 //! answers "nothing" instead of the paper colour, and that the layer and radius
 //! options select what they say they do.

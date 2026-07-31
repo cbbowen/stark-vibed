@@ -1,9 +1,9 @@
-//! `InputCommand`: raw, high-frequency user intent (DESIGN.md §4).
+//! `InputCommand`: raw, high-frequency user intent (§4).
 //!
 //! Commands are deliberately distinct from [`Action`](crate::document::Action)s.
 //! Many commands are ephemeral (pointer moves mid-stroke, pan/zoom, tool changes)
 //! and never enter history; only committed mutations become actions. The `Session`
-//! (DESIGN.md §3) interprets commands and decides what, if anything, to commit.
+//! (§3) interprets commands and decides what, if anything, to commit.
 //!
 //! # The three kinds
 //!
@@ -17,7 +17,7 @@
 //!   *and never sent*. Two people sharing a drawing pan independently.
 //! - [`PeerCommand`] mutates **presence**: per-client and never logged, like view
 //!   state, but *published* — every collaborator reads it and only its owner writes
-//!   it (PEER_DESIGN.md §7). The private/published line is in the type for the same
+//!   it (§17.7). The private/published line is in the type for the same
 //!   reason the logged/unlogged one is: it decides who sees the change.
 //! - [`GestureCommand`] is the press-drag-release lifecycle, which is neither: it
 //!   *builds* in view state (`Session::in_flight`) and commits a document action
@@ -28,10 +28,10 @@
 //!
 //! Commands are one-way: they carry intent in and nothing back, which is what lets
 //! them become messages over a channel when the engine moves off the UI thread
-//! (DESIGN.md §7). Anything that must answer — importing a brush and getting its
+//! (§7). Anything that must answer — importing a brush and getting its
 //! id, saving bytes, merging a remote action and learning whether it applied — is
 //! a **request**, and requests stay direct methods on [`Engine`](crate::Engine)
-//! until there is an actor to give them a reply channel. See DESIGN.md §4.
+//! until there is an actor to give them a reply channel. See §4.
 
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,7 @@ pub struct InputSample {
     pub pos: Vec2,
     pub pressure: f32,
     pub tilt: Vec2,
-    /// Timestamp in seconds, for velocity and timelapse (DESIGN.md §8).
+    /// Timestamp in seconds, for velocity and timelapse (§8).
     pub time: f64,
 }
 
@@ -72,7 +72,7 @@ impl Default for InputSample {
     }
 }
 
-/// Every stateful interaction the backend accepts (GOALS §Inputs, DESIGN.md §4).
+/// Every stateful interaction the backend accepts (§4).
 ///
 /// Construct the inner enums directly and rely on `Into` — `engine.process(
 /// ViewCommand::Pan { delta }.into())` — rather than spelling both levels out.
@@ -85,7 +85,7 @@ pub enum InputCommand {
 }
 
 /// The press-drag-release lifecycle, shared by painting and by the selection tools
-/// (DESIGN.md §6.8): from the frontend's side both are one gesture, and the `tool`
+/// (§6.8): from the frontend's side both are one gesture, and the `tool`
 /// decides which the session builds — a `StrokeRecord` or a `SelectionOp`.
 ///
 /// In flight this is view state. [`GestureCommand::End`] is the only edge that
@@ -124,7 +124,7 @@ pub enum DocCommand {
     Undo,
     Redo,
     /// Move the history playhead to an absolute position, in actions from the
-    /// start of the log — the scrubber's command (MISSING_FEATURES §2.4).
+    /// start of the log — the scrubber's command (§18.2.4).
     ///
     /// Navigation, exactly like [`Undo`](Self::Undo) and [`Redo`](Self::Redo),
     /// and it lives beside them for that reason: it moves the same applied /
@@ -140,18 +140,18 @@ pub enum DocCommand {
     Seek(usize),
 
     /// Add an empty paint layer to the stack carried by `carrier` (the
-    /// document's own when `None`), directly above `above` (GROUP_DESIGN.md §8).
+    /// document's own when `None`), directly above `above` (§14.8).
     AddLayer {
         carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
     /// Remove a layer **and everything it carries** — the subtree is the group
-    /// (GROUP_DESIGN.md §2). To keep what it carried, release those layers with
+    /// (§14.2). To keep what it carried, release those layers with
     /// [`MoveLayer`](Self::MoveLayer) first.
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
     /// Clip a layer to the paint beneath it in its own stack, or stop
-    /// (GROUP_DESIGN.md §4). On the base of a group this clips the whole group
+    /// (§14.4). On the base of a group this clips the whole group
     /// to what lies under the group.
     SetLayerClip(LayerId, bool),
     SetLayerOpacity(LayerId, f32),
@@ -165,7 +165,7 @@ pub enum DocCommand {
     /// Move a layer — with everything it carries — into the stack carried by
     /// `carrier` (the document's own when `None`), directly above `above`.
     ///
-    /// One command for all three gestures (GROUP_DESIGN.md §8): **reorder**
+    /// One command for all three gestures (§14.8): **reorder**
     /// leaves `carrier` as it was, **carry** sets it to the layer being dropped
     /// onto, **release** clears it. Asking a layer to carry its own ancestor is
     /// declined.
@@ -177,12 +177,12 @@ pub enum DocCommand {
 
     /// Apply a selection op directly — the menu path (Select All / Deselect), and
     /// how a frontend with its own geometry can drive the selection without a
-    /// gesture (DESIGN.md §6.8).
+    /// gesture (§6.8).
     Select(SelectionOp),
     /// Swap selected for unselected everywhere.
     InvertSelection,
 
-    /// Fill a region of `layer` with paint (MISSING_FEATURES §0.4) — the direct
+    /// Fill a region of `layer` with paint (§18.0.4) — the direct
     /// path, next to `Select`: the selection bar's Fill button and any frontend
     /// that has its own geometry. The gesture path goes through
     /// [`ShapeAction::Fill`](crate::document::ShapeAction) instead, and commits the
@@ -197,7 +197,7 @@ pub enum DocCommand {
     },
 
     /// Add a **matte** layer — a region filled with a flat colour
-    /// (FRAME_DESIGN.md §2). A frame is one of these on top of the stack. The
+    /// (§15.2). A frame is one of these on top of the stack. The
     /// engine mints the id, as it does for `AddLayer`; unlike `AddLayer` it does
     /// *not* become the active layer, because a matte cannot be painted on.
     AddMatte {
@@ -212,12 +212,12 @@ pub enum DocCommand {
     /// Recolour a matte (straight sRGB).
     SetMatteColor(LayerId, [f32; 3]),
     /// Set the canvas substrate colour — the ground under everything, straight
-    /// sRGB (FRAME_DESIGN.md §5). A document property, not a view setting: it is
+    /// sRGB (§15.5). A document property, not a view setting: it is
     /// what the piece was painted on, and it is saved.
     SetBackground([f32; 3]),
 
     /// Affine-transform this client's selected paint on `layer`, carrying the
-    /// selection along with it (TRANSFORM_DESIGN.md). A universal selection moves
+    /// selection along with it (§16). A universal selection moves
     /// the whole layer. One action per gesture — the interactive drag builds in
     /// view state and commits once on release, like the frame drag.
     Transform {
@@ -225,7 +225,7 @@ pub enum DocCommand {
         affine: Affine2,
     },
 
-    /// Switch the canvas surface (DESIGN.md §6.4).
+    /// Switch the canvas surface (§6.4).
     ///
     /// Document state, not view state: which canvas a piece was painted on is part
     /// of what the document *is* — it is saved, and reopening on a different weave
@@ -253,7 +253,7 @@ pub enum ViewCommand {
         factor: f32,
     },
     /// Turn the canvas to this angle (radians, clockwise) — the navigator's
-    /// right-drag (MISSING_FEATURES §1.2).
+    /// right-drag (§18.1.2).
     ///
     /// Absolute, like [`CenterOn`](Self::CenterOn) and for the same reason: the
     /// gesture knows exactly where it wants the canvas, and an incremental command
@@ -289,8 +289,8 @@ pub enum ViewCommand {
     Resize(Extent2),
 
     /// What the next shape gesture does with the region it encloses: combine it
-    /// into the selection one of four ways, or fill it (DESIGN.md §6.8,
-    /// MISSING_FEATURES §0.4). Shapes the *next* op; the op itself is what gets
+    /// into the selection one of four ways, or fill it (§6.8,
+    /// §18.0.4). Shapes the *next* op; the op itself is what gets
     /// logged.
     SetShapeAction(ShapeAction),
     /// Edge softness (canvas px) for the next shape gesture — the same ramp whether
@@ -298,12 +298,12 @@ pub enum ViewCommand {
     SetSelectionFeather(f32),
 
     /// Whether collaborators' selection outlines are drawn over the canvas
-    /// (PEER_DESIGN.md §3). View state, so each client decides for itself — this is
+    /// (§17.3). View state, so each client decides for itself — this is
     /// a preference about what you look at, not a fact about the drawing.
     SetShowPeerSelections(bool),
 
     /// Show a matte at `min..max` **without logging it** — the in-flight half of a
-    /// frame-handle drag (FRAME_DESIGN.md §7). `None` drops the preview.
+    /// frame-handle drag (§15.7). `None` drops the preview.
     ///
     /// A view command rather than a `GestureCommand` because a frame drag is
     /// handle-relative, not sample-driven: there is no `InputSample` to feed
@@ -315,7 +315,7 @@ pub enum ViewCommand {
 
     /// Show the document as a [`DocCommand::Transform`] would leave it, **without
     /// logging it** — the in-flight half of the transform gesture
-    /// (TRANSFORM_DESIGN.md §6). `None` drops the preview.
+    /// (§16.6). `None` drops the preview.
     ///
     /// The same bargain as [`PreviewMatteRect`](Self::PreviewMatteRect): the drag
     /// builds in view state and the frontend commits one `Transform` on "Done".
@@ -326,7 +326,7 @@ pub enum ViewCommand {
     PreviewTransform(Option<(LayerId, Affine2)>),
 
     /// Show a substrate colour **without logging it** — the in-flight half of a
-    /// canvas-colour drag (FRAME_DESIGN.md §5). `None` drops the preview.
+    /// canvas-colour drag (§15.5). `None` drops the preview.
     ///
     /// The same bargain as [`PreviewMatteRect`](Self::PreviewMatteRect), for the
     /// same reason: a colour picker reports a value per pointer *move*, so
@@ -335,16 +335,16 @@ pub enum ViewCommand {
     /// where the drag ends and commits one [`DocCommand::SetBackground`] there.
     PreviewBackground(Option<[f32; 3]>),
 
-    /// Tune the media/lighting pass (DESIGN.md §6.3). Changes how the canvas
+    /// Tune the media/lighting pass (§6.3). Changes how the canvas
     /// looks, not what it is.
     SetMediaParams(MediaParams),
-    /// Switch the HDR lighting environment (DESIGN.md §6.3).
+    /// Switch the HDR lighting environment (§6.3).
     SetEnvironment(EnvironmentId),
 }
 
 /// Mutations of **presence**: per-client and never logged — undo does not reach
 /// these and they are not in the save file — but *published*, so every collaborator
-/// sees them (PEER_DESIGN.md §4, §7).
+/// sees them (§17.4, §7).
 ///
 /// What separates these from [`ViewCommand`] is only who reads the result. What
 /// separates them from [`DocCommand`] is that replay does not need them to reproduce
@@ -357,7 +357,7 @@ pub enum PeerCommand {
     /// one. Per-client: collaborators paint on whichever layer each has selected,
     /// and each can see where the others are working.
     ///
-    /// A **matte** may be selected like any other layer (FRAME_DESIGN.md §7). It
+    /// A **matte** may be selected like any other layer (§15.7). It
     /// has no tile map, so a stroke aimed at one draws nothing — refused
     /// identically by `apply` and by the preview path, so the frontend needs no
     /// rule of its own. Selection is therefore one concept rather than "the paint
@@ -366,7 +366,7 @@ pub enum PeerCommand {
 
     /// Where this client's pointer is, in canvas space; `None` when it leaves the
     /// canvas. Cheap at pointer rate: it writes a field, and the publish latch
-    /// coalesces to one frame per tick (PEER_DESIGN.md §5.1).
+    /// coalesces to one frame per tick (§17.5).
     SetCursor(Option<Vec2>),
 
     /// This client's display name. Empty falls back to a short id-derived one, so

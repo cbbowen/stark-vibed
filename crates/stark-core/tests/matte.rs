@@ -1,12 +1,12 @@
-//! Matte layers — the frame (FRAME_DESIGN.md §2, §4).
+//! Matte layers — the frame (§15.2, §15.4).
 //!
 //! A matte is a layer whose content is a *region and a fill* rather than a map of
 //! tiles. These cover what makes it a layer (it composites in stack order, it
 //! takes layer opacity, it undoes) and the two things the compositing model is
-//! most likely to get wrong: that it is visible at all (§4.1 — the media pass
+//! most likely to get wrong: that it is visible at all (§15.4.1 — the media pass
 //! derives visibility from height, not composited alpha), and that an opaque one
 //! *erases* the relief beneath it rather than letting underlying impasto emboss
-//! ghost ridges through it (§4.2).
+//! ghost ridges through it (§15.4.2).
 //!
 //! The two `previews_without_logging` tests are here together rather than split by
 //! subject: the frame drag and the substrate-colour drag are one mechanism — an
@@ -61,7 +61,7 @@ fn add_frame(engine: &mut Engine) {
 }
 
 /// The core claim: a frame matte covers everything outside its rect and nothing
-/// inside it. Also the §4.1 regression — a matte that failed to write the aux
+/// inside it. Also the §15.4.1 regression — a matte that failed to write the aux
 /// (thickness) target would be perfectly invisible, and `outside` would stay red.
 #[test]
 fn frame_covers_outside_and_spares_inside() {
@@ -90,7 +90,7 @@ fn frame_covers_outside_and_spares_inside() {
     );
 }
 
-/// FRAME_DESIGN.md §4.2 — the ghost-relief regression.
+/// §15.4.2 — the ghost-relief regression.
 ///
 /// The aux (height) target's blend for a matte must be `over`, not the colour
 /// space's additive. Additive would keep the height of the paint *underneath*,
@@ -132,13 +132,13 @@ fn opaque_matte_erases_relief_beneath() {
         worst <= 2,
         "impasto beneath an opaque matte is embossing through it \
          (max channel difference {worst}); the matte's aux blend must be `over`, \
-         not additive — FRAME_DESIGN.md §4.2"
+         not additive — §15.4.2"
     );
     let _ = w;
 }
 
 /// A matte takes layer opacity like any other layer — this is what makes the
-/// crop scrim need no machinery of its own (FRAME_DESIGN.md §3).
+/// crop scrim need no machinery of its own (§15.3).
 #[test]
 fn matte_honors_layer_opacity_and_visibility() {
     let Some(mut engine) = engine_or_skip() else {
@@ -168,7 +168,7 @@ fn matte_honors_layer_opacity_and_visibility() {
     // Compared on total brightness, not per channel: against a red stroke the
     // blue channel is already floored at both ends, so it has no range to be
     // "between" in. Monotonic only — the slab law makes opacity markedly
-    // non-linear (§4.3), so this deliberately does not assert a midpoint.
+    // non-linear (§15.4.3), so this deliberately does not assert a midpoint.
     let lum = |c: [u8; 4]| c[0] as i32 + c[1] as i32 + c[2] as i32;
     assert!(
         lum(o) < lum(hf) && lum(hf) < lum(hd),
@@ -178,7 +178,7 @@ fn matte_honors_layer_opacity_and_visibility() {
 }
 
 /// A matte composites at its own place in the stack, so one *below* the paint
-/// covers nothing of it (FRAME_DESIGN.md §4.4). Guards the ordered item walk
+/// covers nothing of it (§15.4.4). Guards the ordered item walk
 /// against being flattened back into "all tiles, then all mattes".
 #[test]
 fn matte_below_paint_does_not_cover_it() {
@@ -205,7 +205,7 @@ fn matte_below_paint_does_not_cover_it() {
 
 /// Bounds are paint-only: a matte covers the infinite plane, and counting it
 /// would make `bounds` unbounded — breaking "frame to content" and export's
-/// no-frame fallback (FRAME_DESIGN.md §6).
+/// no-frame fallback (§15.6).
 #[test]
 fn matte_does_not_extend_canvas_bounds() {
     let Some(mut engine) = engine_or_skip() else {
@@ -225,7 +225,7 @@ fn matte_does_not_extend_canvas_bounds() {
 
 /// A matte may be **selected** like any other layer — that is what lets the
 /// frontend have one selection concept rather than a paint target plus a separate
-/// frame focus (FRAME_DESIGN.md §7) — but a stroke aimed at it draws nothing,
+/// frame focus (§15.7) — but a stroke aimed at it draws nothing,
 /// refused in `apply` rather than swallowed or magically rasterized.
 ///
 /// Enforced in the engine, not the frontend, so replay and peers agree about a log
@@ -291,7 +291,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     );
 }
 
-/// A frame-handle drag previews live but logs once (FRAME_DESIGN.md §7): the
+/// A frame-handle drag previews live but logs once (§15.7): the
 /// canvas follows the pointer, and the whole drag costs one undo step.
 #[test]
 fn dragging_a_frame_previews_without_logging() {
@@ -350,7 +350,7 @@ fn dragging_a_frame_previews_without_logging() {
     );
 }
 
-/// A canvas-colour drag previews live but logs once (FRAME_DESIGN.md §5) — the
+/// A canvas-colour drag previews live but logs once (§15.5) — the
 /// substrate's half of the bargain the test above makes for the frame, and here
 /// beside it because both ride the same preview slot. A colour picker reports a
 /// value per pointer move, so without this a single drag would bury the history

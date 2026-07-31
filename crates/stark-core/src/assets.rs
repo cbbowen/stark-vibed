@@ -1,4 +1,4 @@
-//! Content-addressed brush/image assets (DESIGN.md §6.6).
+//! Content-addressed brush/image assets (§6.6).
 //!
 //! A brush *shape* is a grayscale coverage mask. Imported images are identified
 //! by the BLAKE3 hash of their bytes, so a `StrokeRecord` references a 32-byte
@@ -40,7 +40,7 @@ struct Mask {
     #[allow(dead_code)]
     texture: wgpu::Texture,
     /// The plain (unrotated) coverage mask, for per-stamp footprint sampling in the
-    /// brush-dynamics stamp loop (DESIGN.md §6.2) — orientation is applied by rotating
+    /// brush-dynamics stamp loop (§6.2) — orientation is applied by rotating
     /// the sample coordinates, so a single layer suffices (unlike the prefix-τ, whose
     /// integration axis is baked in).
     coverage_view: wgpu::TextureView,
@@ -97,7 +97,7 @@ impl AssetStore {
                 None => encode_coverage_png(w, h, &coverage)?,
             };
             let cov: Vec<f32> = coverage.iter().map(|&b| b as f32 / 255.0).collect();
-            // One coverage layer per shape orientation (DESIGN.md §6.6): the swept-depth
+            // One coverage layer per shape orientation (§6.6): the swept-depth
             // integral runs along the stroke's travel axis, so to orient the footprint at
             // an arbitrary angle we pre-rotate the shape into the travel frame, layer 0
             // being the identity (the native, follow-stroke orientation).
@@ -128,7 +128,7 @@ impl AssetStore {
     }
 
     /// A clonable view of the brush's plain coverage mask for `id`, if loaded —
-    /// sampled per stamp by the brush-dynamics loop (DESIGN.md §6.2).
+    /// sampled per stamp by the brush-dynamics loop (§6.2).
     pub fn coverage_view(&self, id: AssetId) -> Option<wgpu::TextureView> {
         self.inner
             .lock()
@@ -178,8 +178,8 @@ impl AssetStore {
 /// 2048² source were kept).
 pub const MAX_SHAPE_DIM: u32 = 1024;
 
-/// Largest number of orientation slices a brush's prefix-τ volume holds (DESIGN.md
-/// §6.6). With linear interpolation between adjacent layers this is ~5.6° resolution
+/// Largest number of orientation slices a brush's prefix-τ volume holds
+/// (§6.6). With linear interpolation between adjacent layers this is ~5.6° resolution
 /// — smooth for any practical pen rotation.
 pub const MAX_ORIENTATION_LAYERS: u32 = 64;
 
@@ -197,7 +197,7 @@ pub fn orientation_layers(width: u32, height: u32) -> u32 {
 }
 
 /// Pre-rotate a normalized `[-1, 1]²` coverage mask into `layers` orientation slices
-/// (DESIGN.md §6.6). Slice `l` rotates the shape by `2π·l/layers` into the travel frame
+/// (§6.6). Slice `l` rotates the shape by `2π·l/layers` into the travel frame
 /// (so the sweep's x-integral yields the swept depth at that orientation); slice 0 is the
 /// identity, kept bit-exact so follow-stroke strokes match the un-rotated mask. Bilinear
 /// sampling, zero outside the source. Returns a `layers × height × width` buffer.
@@ -242,7 +242,7 @@ fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<
     out
 }
 
-/// Build a brush's **prefix-τ** volume (DESIGN.md §6.2, §6.6): for each orientation
+/// Build a brush's **prefix-τ** volume (§6.2, §6.6): for each orientation
 /// `layer` and each row, the running integral of optical depth `κ = −ln(1−coverage)`
 /// along the travel axis (x), normalized to brush-local units (x spans `[-1, 1]`, width
 /// 2). Stored as a `R32Float` **2D-array** texture (the array axis is orientation, sampled

@@ -1,5 +1,5 @@
 //! The unified Settings dialog: the client's own preferences, in one place
-//! (DESIGN.md §11).
+//! (§11).
 //!
 //! What belongs here is the third kind of state the UI carries. The panels hold
 //! what you are painting *with* — a colour, a brush, a selection — and change
@@ -18,7 +18,7 @@
 //!   taking effect behind the dialog is one you can judge.
 //! - Every row is **always mounted**, including ones that only bite in some
 //!   contexts. A tool panel earns the opposite rule (a control that is present or
-//!   absent says whether the thing it governs exists — DESIGN.md §6.8), but a
+//!   absent says whether the thing it governs exists — §6.8), but a
 //!   settings dialog is read as the *map* of what is configurable, and a map with
 //!   roads that appear only once you are already on them is not one. Rows that are
 //!   currently inert say so in their own text instead.
@@ -61,7 +61,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     id: "show-peer-selections",
                     label: "Show others' selections",
                     // Says what it draws *and* what it costs, which is why it is off
-                    // by default (PEER_DESIGN.md §3): a second contour over the
+                    // by default (§17.3): a second contour over the
                     // artwork is paid for on every frame you look at it.
                     description: "Outline the regions your collaborators have selected, each in their own colour, alongside your own.",
                     // A row that is inert right now explains itself rather than

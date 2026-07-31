@@ -1,4 +1,4 @@
-//! Step-3 golden-image tests (DESIGN.md §9). Render known scripts and compare
+//! Step-3 golden-image tests (§9). Render known scripts and compare
 //! against committed reference PNGs. Regenerate by deleting the existing golden image.
 
 mod common;
@@ -154,7 +154,7 @@ fn golden_pen_orientation_stroke() {
     // The anisotropic bristle mask in `Pen` orientation: the footprint is pinned to the
     // pen's tilt azimuth (here a constant 45° in canvas space) instead of tracking the
     // stroke tangent. So as this stroke changes direction the bristle streaks keep the
-    // *same* world angle — the whole point of arbitrary orientation (DESIGN.md §6.6).
+    // *same* world angle — the whole point of arbitrary orientation (§6.6).
     let mut brush = brush(RED, 60.0);
     brush.shape = BrushShape::Stamp(id);
     brush.orientation = OrientationSource::Pen;
@@ -191,7 +191,7 @@ fn golden_canvas_surface() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    // Paint on the linen canvas surface (DESIGN.md §6.4): a light, partial-coverage
+    // Paint on the linen canvas surface (§6.4): a light, partial-coverage
     // stroke sits on the weave, and the bare paper
     // shows the woven relief under raking light. The other goldens never register the
     // linen bytes, so they fall back to the flat builtin and test orthogonally. The

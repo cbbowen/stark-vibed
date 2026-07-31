@@ -1,5 +1,5 @@
 //! A simple CPU-side RGBA8 image, used for export and golden-image testing
-//! (DESIGN.md §9). Tightly packed, top-left origin, 4 bytes per pixel.
+//! (§9). Tightly packed, top-left origin, 4 bytes per pixel.
 
 /// An 8-bit RGBA image read back from the GPU.
 #[derive(Clone, PartialEq, Eq)]
@@ -59,7 +59,7 @@ impl RgbaImage {
         Self::new(width, height, bytes)
     }
 
-    /// Encode as an RGBA PNG — the export format (FRAME_DESIGN.md §6).
+    /// Encode as an RGBA PNG — the export format (§15.6).
     ///
     /// Alpha is written straight (un-premultiplied), which is what the media pass
     /// produces and what PNG stores, so a transparent export drops into any

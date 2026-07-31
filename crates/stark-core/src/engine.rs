@@ -1,8 +1,8 @@
 //! The engine: owns the GPU, session, and timeline; turns commands into state
-//! and renders the canvas (DESIGN.md §7).
+//! and renders the canvas (§7).
 //!
 //! For the MVP this exposes a synchronous [`Engine::process`]. The asynchronous
-//! actor loop and reactive `ObservableState` channel (DESIGN.md §7) wrap this
+//! actor loop and reactive `ObservableState` channel (§7) wrap this
 //! same core in a later step.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +33,7 @@ use crate::{EngineError, Result};
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId(0);
 
-/// What sits under the paint when rendering (FRAME_DESIGN.md §6).
+/// What sits under the paint when rendering (§15.6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Background {
     /// The document's substrate colour, lit and textured by the canvas weave —
@@ -49,7 +49,7 @@ pub enum Background {
 
 /// Whether on-canvas affordances (the selection outline) are drawn. Screen: yes.
 /// Export: never — chrome is a thing to draw *with*, not a thing to ship
-/// (FRAME_DESIGN.md §6).
+/// (§15.6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Chrome {
     Shown,
@@ -87,7 +87,7 @@ enum Attachments<'a> {
 pub enum Rendered {
     /// The committed document with every in-flight gesture — this client's and
     /// each peer's — and any unlogged drag preview drawn over it
-    /// (PEER_DESIGN.md §6). What the screen shows.
+    /// (§17.6). What the screen shows.
     #[default]
     Live,
     /// The committed document alone: no in-flight stroke, no drag preview.
@@ -95,7 +95,7 @@ pub enum Rendered {
 }
 
 /// How large an exported image is, relative to the frame's canvas-space size
-/// (FRAME_DESIGN.md §6). Resolution is a property of the *output*, not of the
+/// (§15.6). Resolution is a property of the *output*, not of the
 /// artwork, which is why the frame stores only a canvas-space rect.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ExportScale {
@@ -133,7 +133,7 @@ impl ExportPlan {
             // Upright and unmirrored, whatever angle the artist has the canvas at:
             // turning the easel is a way of *looking* at the piece, and a file — or
             // the navigator's overview, which frames itself the same way — shows the
-            // piece rather than the easel (MISSING_FEATURES §1.2).
+            // piece rather than the easel (§18.1.2).
             rotation: 0.0,
             flip_h: false,
             viewport: self.size,
@@ -146,7 +146,7 @@ impl ExportPlan {
 /// than surfacing as a wgpu validation panic.
 const MAX_EXPORT_DIM: u32 = 8192;
 
-/// Which layers an eyedropper sample is taken from (MISSING_FEATURES §0.2).
+/// Which layers an eyedropper sample is taken from (§18.0.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum PickSource {
     /// Every visible layer, composited — the colour the canvas shows.
@@ -158,7 +158,7 @@ pub enum PickSource {
     Layer(LayerId),
 }
 
-/// How an eyedropper sample is taken (MISSING_FEATURES §0.2).
+/// How an eyedropper sample is taken (§18.0.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct PickOptions {
     pub source: PickSource,
@@ -204,7 +204,7 @@ fn normalize_layer_name(name: Option<String>) -> Option<String> {
 /// The mean **unpremultiplied** channels of a sampled patch, or `None` where there
 /// is no paint in it.
 ///
-/// The composite is premultiplied by opacity (DESIGN.md §6.1), so summing and
+/// The composite is premultiplied by opacity (§6.1), so summing and
 /// dividing by the summed opacity *is* the opacity-weighted mean: a texel carrying
 /// more paint counts for more and a bare one counts for nothing. That is what lets a
 /// radius wider than the stroke still report the stroke's colour rather than a wash
@@ -222,7 +222,7 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
     Some([sum[0] / sum[3], sum[1] / sum[3], sum[2] / sum[3], 1.0])
 }
 
-/// A layer's presentation properties, for the UI's layer panel (DESIGN.md §11).
+/// A layer's presentation properties, for the UI's layer panel (§11).
 ///
 /// `Clone` but not `Copy` since it carries the name — an `Arc<str>` bump, so
 /// cloning one is still a handful of instructions and `observe()` stays cheap.
@@ -230,12 +230,12 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
 pub struct LayerInfo {
     pub id: LayerId,
     pub blend: crate::document::BlendMode,
-    /// Whether this layer clips to the paint beneath it (GROUP_DESIGN.md §4).
+    /// Whether this layer clips to the paint beneath it (§14.4).
     pub clip: bool,
     pub opacity: f32,
     pub visible: bool,
     /// The layer carrying this one — i.e. the group it is in — or `None` for one
-    /// in the document's own stack (GROUP_DESIGN.md §2).
+    /// in the document's own stack (§14.2).
     pub carrier: Option<LayerId>,
     /// How deeply nested it is: 0 in the document's own stack, one more per level
     /// of carrying. What a panel indents by.
@@ -244,7 +244,7 @@ pub struct LayerInfo {
     /// gives one of these a disclosure triangle; nothing else distinguishes it.
     pub is_group: bool,
     /// Whether anything composites beneath it, so its blend mode and its clip do
-    /// anything at all (GROUP_DESIGN.md §4.3). False on exactly one row — the
+    /// anything at all (§14.4.3). False on exactly one row — the
     /// bottom of the document — where a mode is the identity and a clip would
     /// erase the layer, and where a panel therefore shows both controls inert.
     pub has_backdrop: bool,
@@ -254,7 +254,7 @@ pub struct LayerInfo {
     ///
     /// [`Layer::name`]: Layer::name
     pub name: Option<std::sync::Arc<str>>,
-    /// Set when this layer is a **matte** (FRAME_DESIGN.md §2) — a frame rather
+    /// Set when this layer is a **matte** (§15.2) — a frame rather
     /// than paint. `None` for an ordinary paint layer.
     ///
     /// Projected so the frontend can label it, draw its handles, and show that the
@@ -266,18 +266,18 @@ pub struct LayerInfo {
 impl LayerInfo {
     /// Whether a stroke aimed at this layer would draw anything. A matte has no
     /// tile map, so selecting one is legal but painting on it does nothing
-    /// (FRAME_DESIGN.md §7).
+    /// (§15.7).
     pub fn is_paintable(&self) -> bool {
         self.matte.is_none()
     }
 }
 
-/// A matte layer's geometry and fill, for the frame chrome (FRAME_DESIGN.md §7).
+/// A matte layer's geometry and fill, for the frame chrome (§15.7).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MatteInfo {
     /// The rect the region is defined against, in canvas px. For a frame this is
     /// the *hole* — the piece — which is what the handles resize and what export
-    /// frames against (FRAME_DESIGN.md §6).
+    /// frames against (§15.6).
     pub min: crate::geom::Vec2,
     pub max: crate::geom::Vec2,
     /// Fill colour, straight sRGB.
@@ -293,7 +293,7 @@ impl MatteInfo {
     }
 }
 
-/// A cheap, UI-facing projection of engine state (DESIGN.md §7). Published to
+/// A cheap, UI-facing projection of engine state (§7). Published to
 /// the frontend so it can render chrome reactively without touching pixels.
 #[derive(Clone, Debug)]
 pub struct ObservableState {
@@ -323,7 +323,7 @@ pub struct ObservableState {
     pub active_layer: LayerId,
     /// Layers bottom-to-top.
     pub layers: Vec<LayerInfo>,
-    /// Whether a selection is masking the canvas (DESIGN.md §6.8) — drives the
+    /// Whether a selection is masking the canvas (§6.8) — drives the
     /// "Deselect"/"Invert" affordances and the selection indicator.
     pub has_selection: bool,
     /// A conservative canvas-space bounding box of this client's selected
@@ -333,11 +333,11 @@ pub struct ObservableState {
     /// `has_selection`.
     pub selection_hull: Option<(crate::geom::Vec2, crate::geom::Vec2)>,
     /// What the next shape gesture will do with the region it encloses — combine
-    /// it into the selection one of four ways, or fill it (MISSING_FEATURES §0.4).
+    /// it into the selection one of four ways, or fill it (§18.0.4).
     pub shape_action: ShapeAction,
     /// Edge softness (canvas px) the next shape gesture will apply.
     pub selection_feather: f32,
-    /// Whether collaborators' selection outlines are drawn (PEER_DESIGN.md §3).
+    /// Whether collaborators' selection outlines are drawn (§17.3).
     pub show_peer_selections: bool,
 
     // --- view settings (per-client, never historized) ---------------------
@@ -345,19 +345,19 @@ pub struct ObservableState {
     // Projected here for the same reason as `tool` and `brush`: a frontend that
     // has to read these back off the engine ends up keeping its own copy, and a
     // copy seeded from `Default` rather than from the engine goes stale the
-    // moment anything else changes them (DESIGN.md §4).
-    /// Media/lighting parameters of the painterly pass (DESIGN.md §6.3).
+    // moment anything else changes them (§4).
+    /// Media/lighting parameters of the painterly pass (§6.3).
     pub media: crate::gpu::MediaParams,
-    /// The HDR lighting environment in use (DESIGN.md §6.3).
+    /// The HDR lighting environment in use (§6.3).
     pub environment: EnvironmentId,
 
     // --- document properties fixed at creation ----------------------------
     /// The document's colour space. Immutable for the document's life — changing
     /// it means starting a new document ([`Engine::new_with_color_space`]).
     pub color_space: ColorSpaceId,
-    /// The physical canvas surface (DESIGN.md §6.4).
+    /// The physical canvas surface (§6.4).
     pub surface: SurfaceId,
-    /// The canvas substrate colour, straight sRGB (FRAME_DESIGN.md §5). Document
+    /// The canvas substrate colour, straight sRGB (§15.5). Document
     /// state, not a view setting — projected here so the frontend shows what the
     /// document says rather than a copy of its own that goes stale.
     pub background: [f32; 3],
@@ -404,7 +404,7 @@ struct FrozenHead {
     /// canvas that no longer exists.
     epoch: u64,
     /// Every tile the head has rewritten so far, so the fold knows what to overlay
-    /// (PEER_DESIGN.md §6). Accumulated because a head grows across many advances.
+    /// (§17.6). Accumulated because a head grows across many advances.
     dirty: BTreeSet<TileCoord>,
 }
 
@@ -430,7 +430,7 @@ pub struct Engine {
     color_space: Arc<dyn ColorSpace>,
     /// The GPU subsystems an action needs in order to apply itself — the tile
     /// pool, the stroke renderer, the asset store and the selection rasterizer —
-    /// held as the `history::Action::Context` (DESIGN.md §5).
+    /// held as the `history::Action::Context` (§5).
     ///
     /// Stored rather than built per call. `history`'s `Context` is an owned
     /// associated type, so there is nothing to hand it a borrow of; this used to be
@@ -459,7 +459,7 @@ pub struct Engine {
     /// it. Colour-space-independent, so it survives colour-space rebuilds. Which
     /// surface is in use is a *cache* of `document().surface`, kept in step by
     /// [`Engine::apply_document_surface`] — the document is the source of truth
-    /// (DESIGN.md §6.4).
+    /// (§6.4).
     surface: Registry<SurfaceId>,
     /// The surface the action log starts from, written to `CanvasMeta` and used to
     /// seed the document. Plays the same role as `CanvasMeta::color_space`: it
@@ -472,7 +472,7 @@ pub struct Engine {
     environment: Registry<EnvironmentId>,
     timeline: Box<dyn Timeline>,
     session: crate::session::Session,
-    /// Everyone else in the session (PEER_DESIGN.md §4). Empty when solo.
+    /// Everyone else in the session (§17.4). Empty when solo.
     peers: Peers,
     /// The presence clock: the newest instant a caller has handed in, in seconds on
     /// a monotonic scale.
@@ -486,7 +486,7 @@ pub struct Engine {
     now: f64,
     /// The unlogged document edit in flight: a whole document that stands in for
     /// the committed one, because what these edits change — a matte's rect
-    /// (FRAME_DESIGN.md §7), the substrate colour (§5) — is document state rather
+    /// (§15.7), the substrate colour (§15.5) — is document state rather
     /// than a tile edit, so there is nothing to draw *over* the document the way a
     /// stroke preview does. One slot, not one per kind: only one such drag can be
     /// in flight at a time (they all belong to a single held pointer), and the
@@ -496,7 +496,7 @@ pub struct Engine {
     doc_preview: Option<DocState>,
     /// The **presented** document: the committed state (or `doc_preview`) with
     /// every in-flight gesture — this client's and every peer's — drawn over it
-    /// (PEER_DESIGN.md §6). `None` when nobody is mid-gesture.
+    /// (§17.6). `None` when nobody is mid-gesture.
     live: Option<DocState>,
     /// The settled head of each in-flight stroke, keyed by its author (see
     /// [`FrozenHead`]). Every head is rooted at the *committed* document rather than
@@ -527,7 +527,7 @@ pub struct Engine {
     actor: ActorId,
     clock: u64,
     next_layer: u64,
-    /// Locally-committed actions awaiting broadcast to peers (DESIGN.md §12.4).
+    /// Locally-committed actions awaiting broadcast to peers (§12.4).
     /// Only populated in a shared session (`outbox_enabled`), and drained by the
     /// transport via [`Engine::take_outbox`]; solo mode never accumulates.
     outbox: Vec<Action>,
@@ -536,13 +536,13 @@ pub struct Engine {
 
 impl Engine {
     /// Build an engine that presents to `target_format` (a surface format, or a
-    /// test target), in the default Oklab color space. Takes wgpu handles per
-    /// GOALS §Inputs.
+    /// test target), in the default Oklab color space. Takes wgpu handles from
+    /// the frontend (CLAUDE.md).
     pub fn new(gpu: GpuContext, target_format: wgpu::TextureFormat, viewport: Extent2) -> Self {
         Self::new_with_color_space(gpu, target_format, viewport, ColorSpaceId::Oklab)
     }
 
-    /// Build an engine in a chosen color space (DESIGN.md §6.7).
+    /// Build an engine in a chosen color space (§6.7).
     pub fn new_with_color_space(
         gpu: GpuContext,
         target_format: wgpu::TextureFormat,
@@ -553,10 +553,10 @@ impl Engine {
         // The registry starts on the builtin flat surface — it is all that can be
         // built before any bytes exist. A fresh document is on `DEFAULT_SURFACE`
         // (linen), so the two are reconciled at the end of this function; until the
-        // frontend registers the height map, linen renders as flat (DESIGN.md §6.4).
+        // frontend registers the height map, linen renders as flat (§6.4).
         let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
-        // registered later by the frontend (DESIGN.md §6.3).
+        // registered later by the frontend (§6.3).
         let _environment_id = EnvironmentId::default();
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
@@ -617,7 +617,7 @@ impl Engine {
         engine
     }
 
-    /// Apply one input command (DESIGN.md §4).
+    /// Apply one input command (§4).
     ///
     /// One-way by construction: nothing comes back. Reads go through
     /// [`Engine::observe`]; anything that must answer is a request (see
@@ -632,7 +632,7 @@ impl Engine {
     }
 
     /// The press-drag-release lifecycle. One path for both kinds of tool
-    /// (DESIGN.md §6.8): the selection tools build an op where the brush builds a
+    /// (§6.8): the selection tools build an op where the brush builds a
     /// stroke, and both preview through the same `preview` DocState.
     fn process_gesture(&mut self, command: GestureCommand) {
         match command {
@@ -668,7 +668,7 @@ impl Engine {
             GestureCommand::End => {
                 if self.session.is_selecting() {
                     // One gesture, two things it can commit — which one was decided
-                    // when the drag started (MISSING_FEATURES §0.4).
+                    // when the drag started (§18.0.4).
                     match self.session.end_shape() {
                         Some(ShapeResult::Select(op)) => self.commit(ActionKind::Select(op)),
                         Some(ShapeResult::Fill(op)) => self.commit(ActionKind::Fill {
@@ -690,7 +690,7 @@ impl Engine {
         }
     }
 
-    /// Per-client state that is published rather than logged (PEER_DESIGN.md §7).
+    /// Per-client state that is published rather than logged (§17.7).
     /// Nothing here enters the history or the save file; it rides the presence
     /// channel so collaborators can see where this client is working.
     fn process_peer(&mut self, command: PeerCommand) {
@@ -698,7 +698,7 @@ impl Engine {
             // Any existing layer, including a matte. `active_layer` is *the
             // selected layer*, not "a paint target" — a frame is selected the same
             // way a paint layer is, which is what lets the frontend have one
-            // selection concept instead of two (FRAME_DESIGN.md §7). A stroke aimed
+            // selection concept instead of two (§15.7). A stroke aimed
             // at a matte then simply draws nothing, refused identically by `apply`
             // and by the preview path.
             PeerCommand::SetActiveLayer(id) => {
@@ -727,7 +727,7 @@ impl Engine {
             DocCommand::Undo => {
                 self.doc_preview = None;
                 // Shared sessions log undo as an action peers can order
-                // (DESIGN.md §5.4, §12.3); solo falls back to navigation.
+                // (§5.4, §12.3); solo falls back to navigation.
                 if let Some(target) = self.timeline.undo_as_action() {
                     self.commit(ActionKind::Undo(target));
                 } else {
@@ -769,7 +769,7 @@ impl Engine {
                 // the same reason `SetMatteRect` drops its preview.
                 self.doc_preview = None;
                 // A degenerate or non-finite affine would be rejected by `apply`
-                // anyway (deterministically — TRANSFORM_DESIGN.md §1); refusing it
+                // anyway (deterministically — §16.1); refusing it
                 // here as well keeps a knowably-dead action out of the log.
                 if crate::document::affine_usable(affine) {
                     self.commit(ActionKind::Transform { layer, affine });
@@ -786,7 +786,7 @@ impl Engine {
                 self.commit(ActionKind::AddLayer { id, carrier, above });
                 // A freshly added layer becomes the active painting target — but
                 // only if it landed. An unknown carrier adds nothing
-                // (GROUP_DESIGN.md §8), and arming an id no layer has would leave
+                // (§14.8), and arming an id no layer has would leave
                 // the next stroke with nowhere to go.
                 if self.document().contains_layer(id) {
                     self.session.active_layer = id;
@@ -808,7 +808,7 @@ impl Engine {
                 });
                 // Deliberately *not* made the active layer, unlike `AddLayer`: a
                 // matte has no tile map, so painting on it is refused
-                // (FRAME_DESIGN.md §7) and arming it as the target would just
+                // (§15.7) and arming it as the target would just
                 // swallow the user's next stroke.
             }
             DocCommand::SetMatteRect(id, min, max) => {
@@ -952,7 +952,7 @@ impl Engine {
     }
 
     /// Render the current canvas (preview if stroking, else committed) into
-    /// `target`, through the session's own pan/zoom (DESIGN.md §6.4).
+    /// `target`, through the session's own pan/zoom (§6.4).
     pub fn render(&mut self, target: &wgpu::TextureView) {
         self.render_view(
             target,
@@ -965,7 +965,7 @@ impl Engine {
     }
 
     /// Render the document through `view` into a target that is **not** the engine's
-    /// own surface — a second surface showing the same document (DESIGN.md §11).
+    /// own surface — a second surface showing the same document (§11).
     ///
     /// The navigator's miniature is the consumer: an overview of the whole piece is a
     /// second view of the canvas, and once it has somewhere to draw there is no reason
@@ -1006,8 +1006,8 @@ impl Engine {
     }
 
     /// Render through an **explicit** view rather than the session's, choosing what
-    /// sits under the paint and whether on-canvas chrome is drawn (DESIGN.md §6.4,
-    /// FRAME_DESIGN.md §6).
+    /// sits under the paint and whether on-canvas chrome is drawn (§6.4,
+    /// §15.6).
     ///
     /// This is the seam export needs: exporting a frame is rendering at
     /// `frame.rect × scale`, centred on the frame, at `zoom = scale` — the same
@@ -1034,12 +1034,12 @@ impl Engine {
         };
         let groups = self.composite_groups(doc, None);
 
-        // The substrate is document state now (FRAME_DESIGN.md §5), so the ground a
+        // The substrate is document state now (§15.5), so the ground a
         // piece was painted on travels with it instead of living in whichever
         // frontend happened to render it.
         let bg_channels = self.color_space.rgb_to_channels(doc.background);
         // Chrome never reaches a file: an exported image gets no selection outline
-        // (FRAME_DESIGN.md §6). Keyed on `chrome`, deliberately *not* on the
+        // (§15.6). Keyed on `chrome`, deliberately *not* on the
         // background — a substrate export is still an export, and tying the two
         // together silently leaked the outline into every opaque PNG.
         //
@@ -1074,7 +1074,7 @@ impl Engine {
     }
 
     /// Render the current canvas to a CPU-side image at the viewport size
-    /// (DESIGN.md §9). The backbone of golden tests. The target uses the engine's
+    /// (§9). The backbone of golden tests. The target uses the engine's
     /// configured format, so it matches on-screen rendering.
     /// Blocking, and therefore **native-only**: WebGPU has no blocking poll, so
     /// this shape cannot work on the web (see `gpu::readback`). The frontend uses
@@ -1136,8 +1136,8 @@ impl Engine {
     /// What exporting `frame` at `scale` would produce, without producing it —
     /// so a dialog can show the pixel size before committing to the render.
     ///
-    /// `frame` names a **matte layer** whose rect is the piece (FRAME_DESIGN.md
-    /// §6). With no frame it falls back to the painted bounds, and on an empty
+    /// `frame` names a **matte layer** whose rect is the piece
+    /// (§15.6). With no frame it falls back to the painted bounds, and on an empty
     /// canvas to the current viewport, so export always has *something* to mean.
     pub fn export_plan(&self, frame: Option<LayerId>, scale: ExportScale) -> Result<ExportPlan> {
         let (min, max) = self.export_rect(frame);
@@ -1174,7 +1174,7 @@ impl Engine {
         })
     }
 
-    /// Render a frame to a CPU-side image (FRAME_DESIGN.md §6).
+    /// Render a frame to a CPU-side image (§15.6).
     ///
     /// This is the same path the screen takes — every visible layer composited
     /// through the media pass — just with the view centred on the frame at
@@ -1183,7 +1183,7 @@ impl Engine {
     /// to its own export, while a ground matte is inside and contributes exactly
     /// what it should.
     /// Renders immediately and returns a future for the **readback**, which is the
-    /// only asynchronous part (DESIGN.md §7 — on WebGPU `mapAsync` settles only
+    /// only asynchronous part (§7 — on WebGPU `mapAsync` settles only
     /// when the browser's event loop runs, so there is no way to block on it).
     ///
     /// Deliberately *not* an `async fn`. An `async fn` would hold `&mut self` for
@@ -1235,7 +1235,7 @@ impl Engine {
 
     /// The compositor's draw list for `doc`, bottom-to-top: every visible layer's
     /// tiles and mattes, each tagged with its layer opacity, cut into blend groups
-    /// (MISSING_FEATURES §0.4, GROUP_DESIGN.md §7).
+    /// (§18.0.4, §14.7).
     ///
     /// Consecutive layers that need no isolation share one `Run` — they compose
     /// correctly against each other and against everything below under
@@ -1247,18 +1247,18 @@ impl Engine {
     ///
     /// A layer that **carries** others is a group, and composites as a `Stack`:
     /// its own content at the bottom, then each carried layer merging into what is
-    /// beneath it *within the group* (GROUP_DESIGN.md §2). The group as a whole
+    /// beneath it *within the group* (§14.2). The group as a whole
     /// then merges outward through its own — that is, its base's — blend mode,
     /// clip and opacity.
     ///
     /// Within a run this is an *ordered* item list rather than a flat tile list
     /// because a matte has to composite at its own place in the stack — a frame over
-    /// the painting, a ground under it (FRAME_DESIGN.md §4.4). The compositor
+    /// the painting, a ground under it (§15.4.4). The compositor
     /// re-batches consecutive tiles into one instanced draw, so an all-paint document
     /// costs nothing for it.
     ///
     /// `only` restricts the list to a single layer — the eyedropper's
-    /// sample-one-layer option (MISSING_FEATURES §0.2). It means that layer's *own*
+    /// sample-one-layer option (§18.0.2). It means that layer's *own*
     /// paint: what it carries is left out, and its mode, clip and opacity go with
     /// it, since a sample is of the paint that is there rather than of the part of
     /// it that survives its surroundings. Sharing this with rendering is what makes
@@ -1283,7 +1283,7 @@ impl Engine {
         let mut groups: Vec<CompositeGroup> = Vec::new();
         for layer in layers {
             // Hiding a layer hides what it carries: the group is the layer
-            // (GROUP_DESIGN.md §3), so its visibility is the group's.
+            // (§14.3), so its visibility is the group's.
             if !layer.visible || layer.opacity <= 0.0 {
                 continue;
             }
@@ -1357,17 +1357,17 @@ impl Engine {
         }
     }
 
-    /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).
+    /// Sample the canvas colour at `at` — the eyedropper (§18.0.2).
     ///
     /// A **request**, not a command: it has to answer, so it stays a direct method
     /// beside `save_bytes` rather than joining [`InputCommand`](crate::InputCommand),
-    /// whose whole property is that nothing comes back (DESIGN.md §4).
+    /// whose whole property is that nothing comes back (§4).
     ///
     /// What it samples is the **raw layer channels**, not the composited, *lit*
     /// result the screen shows, and that is the decision the feature turns on. The
     /// media pass lights the paint, tonemaps it and encodes sRGB, so picking its
     /// output would load the brush with a colour the palette never mixed — and in a
-    /// Mixbox document (DESIGN.md §6.7) with a display colour rather than the pigment
+    /// Mixbox document (§6.7) with a display colour rather than the pigment
     /// mixture, which would make picking the mix back up impossible. That is the
     /// entire reason pigment mixing is worth having.
     ///
@@ -1414,7 +1414,7 @@ impl Engine {
 
         let (color_format, aux_format) = self.compositor_pipeline.channel_formats();
         // `read_rgba16f` decodes four halves per texel. Both colour spaces store the
-        // colour channels that way (DESIGN.md §6.1); a new one that did not would
+        // colour channels that way (§6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
         debug_assert_eq!(color_format, wgpu::TextureFormat::Rgba16Float);
         let color = self.pick_target(
@@ -1497,7 +1497,7 @@ impl Engine {
         self.session.view.visible_bounds()
     }
 
-    /// Snapshot the document as a saveable [`DocumentFile`] (DESIGN.md §8),
+    /// Snapshot the document as a saveable [`DocumentFile`] (§8),
     /// bundling the brush-shape assets that strokes actually reference (§6.6).
     pub fn document_file(&self) -> DocumentFile {
         let actions = self.timeline.clone_actions();
@@ -1523,19 +1523,19 @@ impl Engine {
         file
     }
 
-    /// Serialize the document to the compact on-disk container (DESIGN.md §8).
+    /// Serialize the document to the compact on-disk container (§8).
     pub fn save_bytes(&self) -> Result<Vec<u8>> {
         self.document_file().to_bytes()
     }
 
     /// Replace the document by replaying a loaded file's action log. The full
-    /// undo timeline is available afterwards — undo-after-load (DESIGN.md §8).
+    /// undo timeline is available afterwards — undo-after-load (§8).
     pub fn load_document(&mut self, file: &DocumentFile) {
         // The surface the log starts from, before `reset_document` seeds with it.
-        // Replayed `SetSurface` actions move it from there (DESIGN.md §6.4).
+        // Replayed `SetSurface` actions move it from there (§6.4).
         self.initial_surface = file.canvas.surface;
         self.reset_document();
-        // Match the document's color space before replaying (DESIGN.md §6.7).
+        // Match the document's color space before replaying (§6.7).
         if file.canvas.color_space != self.color_space.id() {
             self.rebuild_gpu_for(file.canvas.color_space);
         }
@@ -1547,7 +1547,7 @@ impl Engine {
         }
         // Replay only the *effective* sequence: a file saved from a shared
         // session is the full log, including `Undo` actions and the actions
-        // they suppress (DESIGN.md §12.3). A solo load flattens those away.
+        // they suppress (§12.3). A solo load flattens those away.
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
         }
@@ -1564,7 +1564,7 @@ impl Engine {
     }
 
     /// Replay a document, invoking `on_frame` with the rendered image after each
-    /// action — a timelapse (DESIGN.md §8). Ends with the document fully loaded.
+    /// action — a timelapse (§8). Ends with the document fully loaded.
     ///
     /// Native-only, because it reads each frame back with the blocking path. Making
     /// it web-capable means awaiting the readback per frame — a change to this
@@ -1582,13 +1582,13 @@ impl Engine {
         self.resync_counters(&file.actions);
     }
 
-    /// A snapshot of UI-facing state (DESIGN.md §7).
+    /// A snapshot of UI-facing state (§7).
     pub fn observe(&self) -> ObservableState {
         let doc = self.timeline.current();
         // The layers and the substrate colour are read from the *previewed*
         // document when one is in flight, so the frame's handles track a drag and
         // the colour swatch tracks the picker (both live in the preview,
-        // FRAME_DESIGN.md §7, §5) instead of lagging on the committed value — which
+        // §15.7, §15.5) instead of lagging on the committed value — which
         // for the colour would leave the panel disagreeing with the canvas it
         // controls, since rendering reads `presented`.
         //
@@ -1600,7 +1600,7 @@ impl Engine {
         let shown = self.doc_preview.as_ref().unwrap_or(doc);
         // Flattened in **composite order** — each stack bottom-to-top, a group's
         // base before what it carries — with the tree carried alongside as `depth`
-        // and `carrier` (GROUP_DESIGN.md §6). Flat rather than nested because that
+        // and `carrier` (§14.6). Flat rather than nested because that
         // is the order a panel draws in and the order the compositor draws in, and
         // one list that means both is one thing to keep in agreement.
         let mut layers: Vec<LayerInfo> = Vec::new();
@@ -1690,18 +1690,18 @@ impl Engine {
         self.session.view
     }
 
-    /// The current media/lighting parameters (DESIGN.md §6.3).
+    /// The current media/lighting parameters (§6.3).
     pub fn media_params(&self) -> crate::gpu::MediaParams {
         self.compositor_pipeline.media()
     }
 
     /// Import a brush-shape image (PNG bytes), returning its content id for use
-    /// in `BrushParams::shape = BrushShape::Stamp(id)` (DESIGN.md §6.6).
+    /// in `BrushParams::shape = BrushShape::Stamp(id)` (§6.6).
     pub fn import_brush(&self, png_bytes: &[u8]) -> Result<AssetId> {
         self.apply.assets.import(png_bytes)
     }
 
-    // --- collaboration (DESIGN.md §12) -----------------------------------
+    // --- collaboration (§12) -----------------------------------
     //
     // The engine stays network-agnostic: it owns the merge semantics (the
     // `ReplicatedTimeline`) and these hooks; `stark-net` owns the wire.
@@ -1757,7 +1757,7 @@ impl Engine {
         let identity = identity.into();
         let actor = identity.actor;
         // The surface the shared log starts from; replayed `SetSurface` actions
-        // move it from there, exactly as in `load_document` (DESIGN.md §6.4).
+        // move it from there, exactly as in `load_document` (§6.4).
         self.initial_surface = file.canvas.surface;
         self.reset_document();
         if file.canvas.color_space != self.color_space.id() {
@@ -1793,7 +1793,7 @@ impl Engine {
     ///
     /// The peers' *selections* stay in the document, because replay still needs them
     /// to reproduce their strokes; they simply stop being drawn, since the roster is
-    /// what decides that (PEER_DESIGN.md §3).
+    /// what decides that (§17.3).
     pub fn end_collaboration(&mut self) {
         self.outbox.clear();
         self.outbox_enabled = false;
@@ -1801,7 +1801,7 @@ impl Engine {
         self.refresh_live();
     }
 
-    /// Integrate an action authored by a peer (DESIGN.md §12.1). Idempotent —
+    /// Integrate an action authored by a peer (§12.1). Idempotent —
     /// duplicates are rejected by id. Advances the Lamport clock past the
     /// remote action so future local ids order after everything seen.
     pub fn merge_remote(&mut self, action: Action) -> bool {
@@ -1824,12 +1824,12 @@ impl Engine {
                 // A peer deleting the layer this client is painting on used to leave
                 // it pointed at a layer that no longer exists, after which every
                 // stroke was silently refused by `apply` with nothing on screen to
-                // explain it (PEER_DESIGN.md §9).
+                // explain it (§17.9).
                 self.repoint_active_layer();
             }
             self.refresh_live();
         }
-        // A peer may have switched the surface (DESIGN.md §6.4).
+        // A peer may have switched the surface (§6.4).
         self.apply_document_surface();
         merged
     }
@@ -1839,14 +1839,14 @@ impl Engine {
         std::mem::take(&mut self.outbox)
     }
 
-    /// How the timeline has serviced materializations (DESIGN.md §12.6): the
+    /// How the timeline has serviced materializations (§12.6): the
     /// commutation fast paths versus rewind-and-replay. Zeros when solo. For
     /// tests and diagnostics — pixels can't tell the paths apart, by design.
     pub fn timeline_stats(&self) -> TimelineStats {
         self.timeline.stats()
     }
 
-    // --- presence (PEER_DESIGN.md §4) -------------------------------------
+    // --- presence (§17.4) -------------------------------------
     //
     // Symmetric with the action hooks above, and deliberately a separate channel:
     // nothing in the action log ever references presence, which is what lets the
@@ -1870,13 +1870,13 @@ impl Engine {
     }
 
     /// A counter that changes whenever the peer roster does, so a frontend can tell
-    /// that its projection is stale without rebuilding it (PEER_DESIGN.md §4).
+    /// that its projection is stale without rebuilding it (§17.4).
     pub fn peers_revision(&self) -> u64 {
         self.peers.revision()
     }
 
     /// This client's presence, if anything a peer would care about has changed since
-    /// the last call (PEER_DESIGN.md §5.1). Also expires peers that have gone quiet,
+    /// the last call (§17.5). Also expires peers that have gone quiet,
     /// since this is called on the frontend's publish cadence — the only clock
     /// `stark-core` has, because it deliberately owns none.
     ///
@@ -1906,7 +1906,7 @@ impl Engine {
 
     /// Integrate presence published by `actor`, whose identity comes from the
     /// transport's authenticated origin and never from the frame body — a peer can
-    /// publish its own presence and nobody else's (PEER_DESIGN.md §7).
+    /// publish its own presence and nobody else's (§17.7).
     ///
     /// Returns whether the **canvas** changed, i.e. whether a repaint is owed. A
     /// frame that only moved a cursor or a selected layer returns `false`: those are
@@ -1952,7 +1952,7 @@ impl Engine {
 
     /// Every imported brush asset (id + canonical PNG bytes) — used to seed a
     /// transport session's asset mirror so peers can fetch any brush a future
-    /// stroke references (DESIGN.md §12.4).
+    /// stroke references (§12.4).
     pub fn all_asset_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
         self.apply.assets.all_bytes()
     }
@@ -1999,7 +1999,7 @@ impl Engine {
         }
     }
 
-    /// Mint the next layer id for this client (PEER_DESIGN.md §9).
+    /// Mint the next layer id for this client (§17.9).
     fn mint_layer(&mut self) -> LayerId {
         let id = LayerId::mint(self.actor, self.next_layer);
         self.next_layer += 1;
@@ -2011,7 +2011,7 @@ impl Engine {
     /// were painting on wants to keep painting, not to land on the frame.
     /// Searches the whole tree, not just the root stack: removing a group takes
     /// carried layers with it, and the replacement may itself be carried by
-    /// something (GROUP_DESIGN.md §2).
+    /// something (§14.2).
     fn repoint_active_layer(&mut self) {
         if self.document().contains_layer(self.session.active_layer) {
             return;
@@ -2028,7 +2028,7 @@ impl Engine {
         }
     }
 
-    /// The document's color space id (DESIGN.md §6.7).
+    /// The document's color space id (§6.7).
     pub fn color_space(&self) -> ColorSpaceId {
         self.color_space.id()
     }
@@ -2038,7 +2038,7 @@ impl Engine {
     /// The **only** way to choose a colour space, and deliberately so: the channel
     /// layouts differ between spaces, so existing tiles cannot be reinterpreted and
     /// changing it can never preserve a document. Modelling it as a setter hid that
-    /// — every caller was really asking for a new document (DESIGN.md §6.7).
+    /// — every caller was really asking for a new document (§6.7).
     ///
     /// Takes `&mut self` rather than being an associated function because
     /// frontend-provided *resources* survive: imported brush assets, and the
@@ -2051,7 +2051,7 @@ impl Engine {
         self.apply_document_surface();
     }
 
-    /// The document's current surface (DESIGN.md §6.4). Change it with
+    /// The document's current surface (§6.4). Change it with
     /// [`crate::command::DocCommand::SetSurface`].
     pub fn surface(&self) -> SurfaceId {
         self.document().surface
@@ -2076,7 +2076,7 @@ impl Engine {
     /// remote merge. A no-op when unchanged, which is the common case.
     ///
     /// There is deliberately no public `set_surface`: the surface is document state
-    /// (DESIGN.md §6.4), so it changes by logging an action like anything else.
+    /// (§6.4), so it changes by logging an action like anything else.
     fn apply_document_surface(&mut self) {
         let id = self.document().surface;
         if self.surface.set(&self.gpu, id) {
@@ -2091,7 +2091,7 @@ impl Engine {
             .set_surface(self.surface.current().clone());
     }
 
-    /// The current lighting environment (DESIGN.md §6.3).
+    /// The current lighting environment (§6.3).
     pub fn environment(&self) -> EnvironmentId {
         self.environment.id()
     }
@@ -2183,7 +2183,7 @@ impl Engine {
     fn resync_counters(&mut self, actions: &[Action]) {
         let mut max_lamport = None;
         // Only *this* client's layer ids matter: the id space is partitioned by
-        // author (PEER_DESIGN.md §9), so resuming past someone else's counter would
+        // author (§17.9), so resuming past someone else's counter would
         // skip ids for no reason and, worse, hide the fact that they cannot collide.
         let mut max_ordinal = 0u64;
         for a in actions {
@@ -2214,7 +2214,7 @@ impl Engine {
     /// The document as a `Transform { layer, affine }` commit would leave it,
     /// built through the **same renderer** the commit uses — which is what makes
     /// the preview lossless and exact: what is shown is what "Done" will produce
-    /// (TRANSFORM_DESIGN.md §6). `None` when the layer cannot be transformed (a
+    /// (§16.6). `None` when the layer cannot be transformed (a
     /// matte, absent) or the transform is rejected — the preview then simply
     /// shows the committed document, matching the commit's refusal.
     fn preview_transform(&self, layer: LayerId, affine: crate::geom::Affine2) -> Option<DocState> {
@@ -2249,7 +2249,7 @@ impl Engine {
             .unwrap_or_else(|| self.timeline.current())
     }
 
-    /// The selection masks to outline, and whose each is (PEER_DESIGN.md §3).
+    /// The selection masks to outline, and whose each is (§17.3).
     ///
     /// `DocState` holds a selection for every actor that ever made one, because
     /// replay needs them all; only the actors actually *here* are candidates. The log
@@ -2276,7 +2276,7 @@ impl Engine {
 
     /// Rebuild [`Self::live`]: the committed document (or the frame drag standing in
     /// for it) with every in-flight gesture composited over it, this client's and
-    /// every peer's, in ascending [`ActorId`] order (PEER_DESIGN.md §6).
+    /// every peer's, in ascending [`ActorId`] order (§17.6).
     ///
     /// The order is fixed and derivable, so every client folds the same picture. Each
     /// stroke is rendered against the *committed* base and then overlaid tile-wise,
@@ -2355,7 +2355,7 @@ impl Engine {
     /// The local client's is *derived* from the session's fitter rather than kept in
     /// the roster: copying it there would make two sources of truth for the one thing
     /// the `preview == committed` invariant rests on. Merging the two here is what
-    /// gives the uniform ordering without the duplication (PEER_DESIGN.md §4.1).
+    /// gives the uniform ordering without the duplication (§17.4).
     fn live_gestures(&self) -> Vec<GestureView> {
         let mut out: Vec<GestureView> = Vec::new();
         out.extend(self.session.gesture_view(self.actor));
@@ -2515,14 +2515,14 @@ impl Engine {
             dirty: Vec::new(),
         };
         // A matte has no tile map, so it previews as nothing — matching the commit,
-        // which refuses the stroke outright (FRAME_DESIGN.md §7). Preview and
+        // which refuses the stroke outright (§15.7). Preview and
         // commit agreeing is the §1.3 invariant, so the two refusals must line up.
         let Some(tiles_base) = base.layer(rec.layer).and_then(|l| l.tiles()) else {
             return (base.clone(), carry_only(spans.dist));
         };
         // The **author's** mask, exactly as the commit will read it — which is what
         // lets one client's live stroke be reproduced faithfully on another's screen
-        // while their selections differ (PEER_DESIGN.md §3).
+        // while their selections differ (§17.3).
         let selection = base.selection_of(author);
         let (tiles, carry) = self.apply.stroke.render_range(
             crate::gpu::stroke::StrokeScene {
@@ -2540,7 +2540,7 @@ impl Engine {
 }
 
 /// Copy `dirty`'s tiles from `src`'s `layer` into `out` — the overlay step of the
-/// preview fold (PEER_DESIGN.md §6).
+/// preview fold (§17.6).
 ///
 /// Only the named tiles move, which is what keeps two peers painting on one layer
 /// from erasing each other's work back to the committed state: each contributes
@@ -2575,7 +2575,7 @@ fn overlay_tiles(
 ///
 /// Grouped because they are always supplied together: the pool, stroke renderer and
 /// compositor are torn down and rebuilt as a set whenever the colour space changes
-/// (DESIGN.md §6.7), and `surface` / `environment` / `selection` are precisely the
+/// (§6.7), and `surface` / `environment` / `selection` are precisely the
 /// pieces that *survive* that rebuild and have to be handed back in.
 struct GpuBuild<'a> {
     gpu: &'a GpuContext,
@@ -2606,7 +2606,7 @@ fn build_gpu(
         environment,
         selection,
     } = b;
-    // Selection masks are pooled and recycled like paint (DESIGN.md §6.8), so their
+    // Selection masks are pooled and recycled like paint (§6.8), so their
     // format joins the pool's free lists.
     let pool = TilePool::new(
         gpu.clone(),
@@ -2641,7 +2641,7 @@ pub async fn headless_engine(
     headless_engine_with(target_format, viewport, ColorSpaceId::Oklab).await
 }
 
-/// Headless engine in a chosen color space (DESIGN.md §6.7).
+/// Headless engine in a chosen color space (§6.7).
 pub async fn headless_engine_with(
     target_format: wgpu::TextureFormat,
     viewport: Extent2,

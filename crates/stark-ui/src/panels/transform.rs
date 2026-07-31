@@ -1,4 +1,4 @@
-//! The transform gesture's chrome (TRANSFORM_DESIGN.md §6): an **ellipse**, not
+//! The transform gesture's chrome (§16.6): an **ellipse**, not
 //! a box of handles — the image of a reference ellipse under the accumulated
 //! transform, so the widget's own shape shows the deformation. One surface,
 //! three gestures, chosen by where the drag starts:
@@ -26,7 +26,7 @@
 //! `ViewCommand::PreviewTransform` — the same renderer the commit runs, over
 //! the committed tiles, so what is on screen is exactly what "Done" will
 //! produce. "Done" commits a single `DocCommand::Transform`: one undo step per
-//! gesture, like the frame drag (FRAME_DESIGN.md §7).
+//! gesture, like the frame drag (§15.7).
 //!
 //! While the mode is active the full-viewport catcher owns the pointer, so a
 //! stray drag cannot paint — but navigation still works: middle-drag and

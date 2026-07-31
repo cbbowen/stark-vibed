@@ -1,11 +1,11 @@
-//! Stark engine core — the frontend-agnostic GPU painting backend (DESIGN.md).
+//! Stark engine core — the frontend-agnostic GPU painting backend (CLAUDE.md).
 //!
 //! # Where to start
 //!
 //! [`Engine`] owns everything and is the only entry point. Two things go in and
 //! one comes out:
 //!
-//! - [`InputCommand`] — user intent, one-way (DESIGN.md §4). It splits by which
+//! - [`InputCommand`] — user intent, one-way (§4). It splits by which
 //!   class of state it touches: [`command::DocCommand`] mutates the document
 //!   (historized, replicated, replayed), [`command::ViewCommand`] mutates view
 //!   state (per-client, transient), and [`command::GestureCommand`] is the
@@ -13,7 +13,7 @@
 //!   document action at the end.
 //! - **Requests** — the operations that must answer, and so cannot be commands:
 //!   [`Engine::import_brush`], [`Engine::save_bytes`], [`Engine::merge_remote`],
-//!   [`Engine::pick_color`], and friends. They stay direct methods (DESIGN.md §4).
+//!   [`Engine::pick_color`], and friends. They stay direct methods (§4).
 //! - [`ObservableState`] — the cheap UI-facing projection, read back after each
 //!   command.
 //!
@@ -27,16 +27,16 @@
 //!   gesture (§3), plus the half of it that is published to collaborators.
 //! - [`peer`] — presence: per-client state every client reads and only its owner
 //!   writes, held outside the timeline because replay does not need it
-//!   (PEER_DESIGN.md §4). The one piece of per-client state that *is* needed by
+//!   (§17.4). The one piece of per-client state that *is* needed by
 //!   replay — the selection — lives in [`document::DocState`] keyed by
-//!   [`document::ActorId`] instead (PEER_DESIGN.md §3).
+//!   [`document::ActorId`] instead (§17.3).
 //! - [`gpu`] — the tile pool, the stroke renderer, compositing and the media
 //!   pass (§6).
 //! - [`path`] / [`spline`] — pointer samples fitted to a cubic B-spline, then
 //!   flattened adaptively into the segments the brush sweeps along (§6.2).
 //! - [`io`] — the save format, which *is* the action log (§8).
 //!
-//! Build status lives in DESIGN.md §13, not here: it used to be duplicated as a
+//! Build status lives in §13, not here: it used to be duplicated as a
 //! checklist in this comment, and the two drifted.
 
 pub mod assets;

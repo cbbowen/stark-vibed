@@ -1,4 +1,4 @@
-//! The brush editor pop-up (DESIGN.md §11): a Procreate-style dialog with a live
+//! The brush editor pop-up (§11): a Procreate-style dialog with a live
 //! test-stroke preview over grouped settings.
 //!
 //! The preview is a second `Engine` on its **own document** but the **shared GPU
@@ -195,7 +195,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         open: tip_open,
                         ShapeGallery {}
                         // Orientation only matters for non-round tips (per-orientation
-                        // footprint slices, DESIGN §6.6); hardness only for the
+                        // footprint slices, §6.6); hardness only for the
                         // procedural round tip.
                         if !is_round {
                             div { class: "brush-shapes",

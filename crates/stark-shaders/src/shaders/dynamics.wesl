@@ -1,4 +1,4 @@
-// Brush dynamics: the **sequential swept-exchange loop** (DESIGN.md §6.2).
+// Brush dynamics: the **sequential swept-exchange loop** (§6.2).
 //
 // A stroke that manipulates existing paint (lift / deposit / charge) runs as an
 // ordered loop, all inside one compute pass (implicit barriers between dispatches
@@ -49,7 +49,7 @@
 // *is* the reload step, and `stroke::flatten_tolerance` already caps it at a fraction
 // of the tip. All of it is gone.
 //
-// Conservation (DESIGN.md §6.1): paint moves by transferring **height** — the one
+// Conservation (§6.1): paint moves by transferring **height** — the one
 // conserved quantity. Colour and per-unit opacity ride as optical-mass
 // (opacity·height) weighted blends; `add` is the only source term. Both sides of
 // each transfer integrate the same rate over the same footprint, so with
@@ -80,7 +80,7 @@ struct Stamp {
     //    (1/region px, 0 = a straight sweep) .y; the segment's midpoint .zw (region
     //    px), which is where `exchange` samples the canvas.
     e: vec4<f32>,
-    // f–h: colour dynamics (DESIGN.md §6.2) for the brush's own `add` paint —
+    // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
     // f: noise frequency per lookup axis (across the stroke, along it) .xy,
     //    1/NOISE_TILE_PX in .z; .w unused.
@@ -121,7 +121,7 @@ struct Stamp {
 @group(0) @binding(13) var region_color_w: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(14) var region_aux_w: texture_storage_2d<rgba16float, write>;
 // The colour-dynamics noise field + its repeat sampler (deposit only): jitters
-// the brush's own `add` paint exactly like the fast path's stamp (DESIGN §6.2).
+// the brush's own `add` paint exactly like the fast path's stamp (§6.2).
 @group(0) @binding(15) var dyn_noise_tex: texture_2d<f32>;
 @group(0) @binding(16) var dyn_noise_samp: sampler;
 // The reservoir's **swept prefix** in the travel frame (written by `bake`, read by
@@ -136,7 +136,7 @@ struct Stamp {
 @group(0) @binding(18) var bake_latm_w: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(19) var bake_load: texture_2d<f32>;
 @group(0) @binding(20) var bake_latm: texture_2d<f32>;
-// The selection's coverage over the region (DESIGN.md §6.8), 1:1 with it — or a 1×1
+// The selection's coverage over the region (§6.8), 1:1 with it — or a 1×1
 // texture holding a constant when there is nothing to mask. Both the vertical fluxes
 // are gated by it: `exchange` scales what it lifts, `deposit` lerps its whole
 // read-modify-write back towards the untouched region, so paint outside the selection

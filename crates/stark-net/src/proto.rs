@@ -1,6 +1,6 @@
 //! The wire: message formats and the catch-up/asset protocol.
 //!
-//! Three channels, one vocabulary (DESIGN.md §12.4):
+//! Three channels, one vocabulary (§12.4):
 //!
 //! - **Gossip** carries [`Stamped`] messages — one committed action or
 //!   presence frame each, postcard-encoded. Actions are small (fitted control
@@ -29,7 +29,7 @@ pub const ALPN: &[u8] = b"stark/collab/0";
 /// Gossip forwards messages through intermediate peers and reports only the
 /// *delivering* neighbor, so the author travels in the payload. It is
 /// self-declared — the same trust already placed in the payload itself, since
-/// anyone holding the ticket can write anything (DESIGN.md §12.5 defers
+/// anyone holding the ticket can write anything (§12.5 defers
 /// authentication).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Stamped {
@@ -51,13 +51,13 @@ pub enum Wire {
     /// A freshly committed action for the shared log.
     Action(Action),
     /// One client's presence: cursor, selected layer, the gesture it is drawing
-    /// (PEER_DESIGN.md §4). **Never mirrored and never snapshotted** — it is not
+    /// (§17.4). **Never mirrored and never snapshotted** — it is not
     /// part of the document, and nothing in the log refers to it, which is the whole
     /// reason it may be dropped, coalesced or delayed without affecting convergence.
     ///
     /// The author is not in the frame: the receiver takes it from the
     /// [`Stamped`] envelope, whose `origin` names exactly one author
-    /// (PEER_DESIGN.md §7).
+    /// (§17.7).
     Presence(PeerFrame),
 }
 

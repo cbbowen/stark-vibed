@@ -1,5 +1,5 @@
 //! Clamped cardinal **cubic** B-splines over `f32`, and the least-squares solve
-//! [`path::PathFitter`](crate::path::PathFitter) drives (DESIGN.md §6.2).
+//! [`path::PathFitter`](crate::path::PathFitter) drives (§6.2).
 //!
 //! The knot vector is fixed by two constraints, which together remove it as a thing
 //! anyone has to represent:
@@ -92,7 +92,7 @@ impl<const D: usize> CubicBSpline<D> {
             let mut next = SMatrix::<f32, ORDER, ORDER>::zeros();
             // Reciprocal taken in f64 and then narrowed, not divided in f32: `1/3` differs
             // in the last bit between the two, and this feeds every fitted control point.
-            // Bit-identical output is what keeps goldens and replay stable (DESIGN.md §9).
+            // Bit-identical output is what keeps goldens and replay stable (§9).
             let inv_q = (1.0 / q as f64) as f32;
             for a in 0..=q {
                 if a >= 1 {

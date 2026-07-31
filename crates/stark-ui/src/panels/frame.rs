@@ -1,5 +1,5 @@
 //! The frame: its bottom bar, its "add" button, and its on-canvas handles
-//! (FRAME_DESIGN.md §7).
+//! (§15.7).
 //!
 //! A frame is a **matte layer** — a region filled with a flat colour — so almost
 //! everything about it is already the Layers panel's job: visibility, opacity (the
@@ -9,14 +9,14 @@
 //!
 //! That part has no permanent panel. It lives in a bar mounted only while a frame
 //! is **selected**, on the same argument the selection bar is made this way
-//! (DESIGN.md §6.8): controls meaningless without a frame should be absent rather
+//! (§6.8): controls meaningless without a frame should be absent rather
 //! than greyed out, and a bar that is simply present or absent says "you are
 //! composing" more directly than a mode indicator would. Creating a frame is a
 //! button in the Layers panel, because a frame *is* a layer.
 //!
 //! The frame **clips nothing**. Paint runs past it and the matte covers the
 //! overshoot, so re-cropping later is free — that is the whole reason the infinite
-//! canvas earns its keep (FRAME_DESIGN.md §1).
+//! canvas earns its keep (§15.1).
 
 use dioxus::prelude::*;
 
@@ -64,7 +64,7 @@ fn matched_aspect(matte: MatteInfo) -> &'static str {
 /// The frame being composed, if the **selected layer** is one.
 ///
 /// There is deliberately no separate frame-selection state. `active_layer` is the
-/// selected layer and a matte may be it (FRAME_DESIGN.md §7), so the frame bar and
+/// selected layer and a matte may be it (§15.7), so the frame bar and
 /// the on-canvas handles key off the same thing the Layers panel highlights. That
 /// is what makes exactly one row highlighted at a time a *consequence* rather than
 /// a rule to enforce — and it means a frame that is removed, undone, or replaced
@@ -398,7 +398,7 @@ pub struct FrameDrag {
     start: (Vec2, Vec2),
 }
 
-/// The frame's edges and handles, drawn over the canvas (FRAME_DESIGN.md §7).
+/// The frame's edges and handles, drawn over the canvas (§15.7).
 ///
 /// Mounted only while a frame is **selected**, together with [`FrameBar`] — one
 /// state drives both, so the bar being up is exactly the promise that the handles
@@ -424,7 +424,7 @@ pub fn FrameOverlay() -> Element {
 
     // The box is laid out around the frame's *centre* and then turned, rather than
     // pinned by its top-left corner: the canvas can be rotated and mirrored
-    // (MISSING_FEATURES §1.2), and a rect described by two opposite corners only
+    // (§18.1.2), and a rect described by two opposite corners only
     // stays a rect while it is axis-aligned. Handles are placed as percentages of the
     // box, so they ride the turn with it and nothing else needs measuring.
     let center = view.canvas_to_screen((matte.min + matte.max) * 0.5);
@@ -481,7 +481,7 @@ pub fn FrameOverlay() -> Element {
                                 let (min, max) =
                                     d.grip.apply(d.start, to_canvas(page_xy(&e), d.origin));
                                 // Previewed, not committed: one undo step per drag,
-                                // not one per pointer move (FRAME_DESIGN.md §7).
+                                // not one per pointer move (§15.7).
                                 dispatch(
                                     state,
                                     ViewCommand::PreviewMatteRect(Some((info.id, min, max))),

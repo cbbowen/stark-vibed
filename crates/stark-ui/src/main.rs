@@ -1,4 +1,4 @@
-//! Stark's Dioxus **web** frontend (DESIGN.md §11).
+//! Stark's Dioxus **web** frontend (§11).
 //!
 //! The backend runs in WASM and paints through a WebGPU surface bound to the
 //! page's `<canvas>` — the engine renders straight into the surface texture
@@ -116,10 +116,10 @@ fn app() -> Element {
             let mut r = render::init(render::canvas_element(CANVAS_ID)).await;
             // Fetch the bundled brush shapes at runtime (kept out of the wasm
             // binary) and import them once, so the gallery's built-in cards are
-            // ready — and so the default presets have ids to name (DESIGN.md
-            // §6.6, `crate::builtins`).
+            // ready — and so the default presets have ids to name
+            // (§6.6, `crate::builtins`).
             builtins::import_all(&mut r).await;
-            // Fetch the default canvas surface's height map (DESIGN.md §6.4, §6.6).
+            // Fetch the default canvas surface's height map (§6.4, §6.6).
             // The document already starts on it, so registering the bytes is all it
             // takes for the engine to swap the flat stand-in for the real weave —
             // no `SetSurface` action, which would put a bogus first step in the undo
@@ -130,7 +130,7 @@ fn app() -> Element {
                 r.register_surface(DEFAULT_SURFACE, bytes);
             }
             // Fetch the default environment's HDR and light the canvas with it
-            // (DESIGN.md §6.3); until it arrives the procedural neutral one is used,
+            // (§6.3); until it arrives the procedural neutral one is used,
             // and the Lighting panel can switch back to it at any time. A no-op while
             // the default *is* the procedural one, which has no bytes to fetch.
             if let Some(asset) = environment_asset(DEFAULT_ENVIRONMENT)
@@ -164,7 +164,7 @@ fn app() -> Element {
             });
 
             // A `#stark…` fragment in the page URL is a session invitation:
-            // join it now that the engine is up (DESIGN.md §12.4).
+            // join it now that the engine is up (§12.4).
             if let Some(ticket) = collab::url_ticket() {
                 tracing::info!("joining shared session from URL fragment");
                 collab::join(state, ticket);
@@ -207,17 +207,17 @@ fn app() -> Element {
 
             // The frame's edges and handles, over the canvas but *under* all the
             // floating chrome. Mounted only while a frame is selected for composing
-            // (FRAME_DESIGN.md §7); its interior passes pointer events through, so
+            // (§15.7); its interior passes pointer events through, so
             // painting inside the frame is unaffected.
             FrameOverlay {}
 
             // The transform gesture's box and handles, over the canvas while the
-            // selected paint is being composed (TRANSFORM_DESIGN.md §6). Its
+            // selected paint is being composed (§16.6). Its
             // catcher blocks canvas painting for the mode's duration.
             TransformOverlay {}
 
             // Collaborators' pointers, over the canvas and under the chrome
-            // (PEER_DESIGN.md §4). Empty and free when solo.
+            // (§17.4). Empty and free when solo.
             PeerCursors {}
 
             // Left command rail: rarely-used document commands, tucked away.
@@ -234,13 +234,13 @@ fn app() -> Element {
                 // selection — so it doubles as the "canvas is masked" indicator.
                 SelectionBar {}
                 // The transform gesture's flips and "Done", standing in for the
-                // selection bar while one is composing (TRANSFORM_DESIGN.md §6).
+                // selection bar while one is composing (§16.6).
                 TransformBar {}
                 // The frame's composition controls, present only while a frame is
-                // selected for composing (FRAME_DESIGN.md §7).
+                // selected for composing (§15.7).
                 FrameBar {}
                 // The eyedropper's options, present only while Alt arms it
-                // (MISSING_FEATURES §0.2). Last in the column, so it comes up
+                // (§18.0.2). Last in the column, so it comes up
                 // nearest the canvas — it is the most transient of the three.
                 PickBar {}
             }
@@ -249,7 +249,7 @@ fn app() -> Element {
             // the window rather than hugging its contents: the others are commands
             // that happen to apply right now, while this is a *mode* the whole
             // canvas is in, and a scrubber wants every pixel of width it can get
-            // (MISSING_FEATURES §2.4). Mounted from here rather than gated inside
+            // (§18.2.4). Mounted from here rather than gated inside
             // itself, because it owns hooks — a component may not gain or lose
             // those between renders.
             if (state.timeline.open)() {
@@ -290,17 +290,17 @@ fn Canvas() -> Element {
     // transform overlay makes for itself, so navigation means one thing.
     let nav = Nav::use_nav(state);
     // Whether an Alt+drag is sampling colour off the canvas rather than painting on
-    // it (MISSING_FEATURES §0.2). Shared rather than local, unlike the two above,
+    // it (§18.0.2). Shared rather than local, unlike the two above,
     // because the options bar is mounted on *armed but not dragging*.
     let mut picking = state.pick.dragging;
     // The panel's selection mode, stashed while a gesture's modifier keys override it
-    // (DESIGN.md §6.8) and restored when the gesture ends.
+    // (§6.8) and restored when the gesture ends.
     let mut action_restore = use_signal(|| None::<ShapeAction>);
     // Set for as long as the canvas is the thing being used, which fades the floating
     // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
     let mut canvas_active = state.canvas_active;
 
-    // The selected layer may be a frame, which takes no paint (FRAME_DESIGN.md §7).
+    // The selected layer may be a frame, which takes no paint (§15.7).
     // Rather than block the gesture, say so in the cursor: the brush crosshair
     // becomes "not-allowed", so the canvas explains itself before the user draws a
     // stroke that would go nowhere. Panning still works, so the pan cursor wins
@@ -313,7 +313,7 @@ fn Canvas() -> Element {
     // Alt arms the eyedropper over the brush, and the cursor says so before it is
     // used — the only thing that makes a modifier binding discoverable. Not over a
     // selection tool, where alt already means "subtract from the selection"
-    // (DESIGN.md §6.8), so the cursor promises the pick exactly where a press would
+    // (§6.8), so the cursor promises the pick exactly where a press would
     // take one. It beats `no-paint`, because a layer that takes no paint can still
     // be sampled.
     let sampling =
@@ -360,12 +360,12 @@ fn Canvas() -> Element {
                 if e.trigger_button() == Some(MouseButton::Primary) {
                     capture_pointer(&e);
                     // Painting and selecting are the same gesture from here — the
-                    // tool decides what the engine builds (DESIGN.md §6.8).
+                    // tool decides what the engine builds (§6.8).
                     let tool = current_tool(state);
                     // Alt+press samples the canvas instead of painting on it, and
                     // Alt+drag keeps sampling — the binding Clip Studio Paint and
                     // Rebelle both use, so a colour is picked up without putting
-                    // the brush down (MISSING_FEATURES §0.2). Alt over a selection
+                    // the brush down (§18.0.2). Alt over a selection
                     // tool is left alone: there it already means subtract.
                     // (Space+Alt never reaches here — `nav` took it as a pan.)
                     let alt_pick =
@@ -394,7 +394,7 @@ fn Canvas() -> Element {
                         // they apply only while the panel's action is a selecting
                         // one: under Fill there is nothing to combine, and letting
                         // shift quietly turn a fill into a union-select would be
-                        // the worst kind of surprise (MISSING_FEATURES §0.4).
+                        // the worst kind of surprise (§18.0.4).
                         let action = current_action(state);
                         if tool.is_selection()
                             && action.is_select()
@@ -429,8 +429,8 @@ fn Canvas() -> Element {
                     } else {
                         nav.pan_move(&e);
                     }
-                    // Where collaborators see this client's pointer (PEER_DESIGN.md
-                    // §4). Quiet: it changes nothing *this* client renders — the
+                    // Where collaborators see this client's pointer
+                    // (§17.4). Quiet: it changes nothing *this* client renders — the
                     // browser draws our own cursor — so repainting the canvas at
                     // pointer rate to show ourselves nothing would be pure waste.
                     // The presence pump reads it off the engine on its own cadence.
@@ -445,7 +445,7 @@ fn Canvas() -> Element {
     }
 }
 
-/// Collaborators' pointers, drawn in each peer's own colour (PEER_DESIGN.md §4).
+/// Collaborators' pointers, drawn in each peer's own colour (§17.4).
 ///
 /// DOM rather than a compositor pass, on purpose: a cursor is chrome, not artwork —
 /// it must never reach an export, and a label beside it is a `<div>` the browser
@@ -488,7 +488,7 @@ fn PeerCursors() -> Element {
 }
 
 /// A vertical menu rail on the far left for uncommon or keyboard-driven commands
-/// (DESIGN.md §11). Built on the vendored `menubar` component; the dropdown flies
+/// (§11). Built on the vendored `menubar` component; the dropdown flies
 /// out to the right. Undo/Redo live here purely to advertise their Ctrl+Z / Ctrl+Y
 /// shortcuts (the everyday way to invoke them); "New document…" opens a modal.
 ///
@@ -594,7 +594,7 @@ fn CommandRail() -> Element {
                         // A mode rather than a command, so it carries a check like
                         // the Panels menu's entries do — the menu says whether you
                         // are in it, not only how to get there
-                        // (MISSING_FEATURES §2.4).
+                        // (§18.2.4).
                         MenubarItem {
                             index: 9usize,
                             value: "timeline".to_string(),
@@ -672,7 +672,7 @@ fn CommandRail() -> Element {
 }
 
 /// Modal for starting a fresh document. Today it carries the color-space choice
-/// (DESIGN.md §6.7); it's a dialog so more document settings can join it later.
+/// (§6.7); it's a dialog so more document settings can join it later.
 #[component]
 fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
@@ -765,7 +765,7 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 
 /// Replace the document with a fresh one in the chosen color space and surface,
 /// then repaint. Image-backed surfaces are fetched on first use (the large bump
-/// maps stay out of the wasm binary — DESIGN.md §6.6), so this runs async.
+/// maps stay out of the wasm binary — §6.6), so this runs async.
 ///
 /// It owns closing the modal (`on_close`), calling it only once the work is done.
 /// `spawn_forever`, not `spawn`: a plain spawn would tie the task to the

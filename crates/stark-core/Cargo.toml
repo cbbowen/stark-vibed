@@ -3,7 +3,7 @@ name = "stark-core"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
-description = "Frontend-agnostic GPU painting engine for Stark (DESIGN.md)."
+description = "Frontend-agnostic GPU painting engine for Stark (CLAUDE.md)."
 
 [dependencies]
 wgpu = { workspace = true }
@@ -32,7 +32,7 @@ mixbox = { path = "../../vendor/mixbox/rust" }
 #
 #  * The live tail of an in-flight stroke is tinted magenta — the part the engine
 #    repaints on every pointer move, so the seam is the freezing boundary
-#    (DESIGN.md §6.2). It only ever changes the preview, never what commits.
+#    (§6.2). It only ever changes the preview, never what commits.
 #  * Every finished stroke logs its raw input samples as a pasteable Rust
 #    literal, so a stroke that misfits in the app can be turned into a test.
 #

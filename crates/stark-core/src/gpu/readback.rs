@@ -1,7 +1,7 @@
-//! GPU → CPU texture readback (DESIGN.md §9). Used for export and golden tests.
+//! GPU → CPU texture readback (§9). Used for export and golden tests.
 //!
 //! Readback is **inherently asynchronous** — it is the one GPU operation that is
-//! (DESIGN.md §7), and the one place where native and web genuinely differ:
+//! (§7), and the one place where native and web genuinely differ:
 //!
 //! - Natively, `Device::poll(Wait)` blocks until the queue drains, so the map
 //!   callback has already fired by the time it returns.
@@ -144,7 +144,7 @@ pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Exte
 }
 
 /// Read an `Rgba16Float` texture back as `f32` RGBA (4 per texel). The texture must carry
-/// `COPY_SRC`. Used by reservoir-visualization debugging (DESIGN.md §6.2).
+/// `COPY_SRC`. Used by reservoir-visualization debugging (§6.2).
 pub async fn read_rgba16f(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<f32> {
     let bytes = read_texture_bytes(ctx, texture, size, 8).await; // 4 × f16
     bytes

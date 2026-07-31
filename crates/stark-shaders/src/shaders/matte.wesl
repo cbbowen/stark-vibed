@@ -1,4 +1,4 @@
-// Matte layers in compositing pass A (FRAME_DESIGN.md §4): a procedural region
+// Matte layers in compositing pass A (§15.4): a procedural region
 // filled with a flat colour, drawn at its own place in the layer stack.
 //
 // A matte is physically a flat, opaque *coat of paint*, which is what lets it be
@@ -7,7 +7,7 @@
 //   · It writes the aux (thickness) target, not just colour. The media pass
 //     derives visible alpha from the translucent-slab law
 //     `1 − exp(−OPACITY_K · color.a · thickness)`, so a matte that wrote only
-//     colour would be perfectly invisible (FRAME_DESIGN.md §4.1).
+//     colour would be perfectly invisible (§15.4.1).
 //   · Its interior is at *constant* height, so its gradient is zero and it lights
 //     flat — no weave, and the paint film's uniform sheen (media_common.wesl) reads
 //     as an even wash rather than a glint, like a mat board. Its boundary is a
@@ -15,7 +15,7 @@
 //   · Both targets blend as premultiplied `over` (declared by the pipeline, NOT
 //     the colour space's additive aux blend), so an opaque matte *erases* the
 //     relief beneath it instead of letting underlying impasto emboss ghost ridges
-//     through it (FRAME_DESIGN.md §4.2).
+//     through it (§15.4.2).
 //
 // Coverage is evaluated analytically from a signed distance at canvas position —
 // the same technique as `selection.wesl` — so the matte is exact at any zoom,
@@ -116,7 +116,7 @@ fn fs_main(in: VsOut) -> FsOut {
     // the matte is fully opaque paint (per-unit opacity 1) of the constant
     // thickness above, so its slab visible alpha is `1 − exp(−K·thickness)`,
     // scaled by how much of the fragment the matte occupies. The aux carries the
-    // *amount* (DESIGN.md §6.1) with `a` in its own alpha, so an opaque matte
+    // *amount* (§6.1) with `a` in its own alpha, so an opaque matte
     // still erases the relief beneath it.
     var out: FsOut;
     let w = a * (1.0 - exp(-OPACITY_K * MATTE_THICKNESS));

@@ -1,4 +1,4 @@
-//! Presence on the wire (PEER_DESIGN.md §4, §8): it reaches peers, it is
+//! Presence on the wire (§17.4, §8): it reaches peers, it is
 //! attributed to its author by the transport rather than by its payload, and it
 //! never reaches the document.
 //!

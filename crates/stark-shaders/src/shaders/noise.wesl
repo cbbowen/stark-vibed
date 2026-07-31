@@ -84,7 +84,7 @@ fn noise_3_to_4(p: vec3f, seed: u32) -> vec4f {
     return vec4f(_unit(h.x), _unit(h.y), _unit(h.z), _unit(h.w));
 }
 
-// --- colour dynamics (DESIGN.md §6.2) ---------------------------------------------
+// --- colour dynamics (§6.2) ---------------------------------------------
 // Per-channel colour offset at a **stroke-local** position: sample the baked
 // tileable 2-D noise field (signed, ≈[-1,1] per channel; built on the CPU in
 // stark-core's noise.rs) and scale each channel by its amplitude.

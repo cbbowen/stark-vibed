@@ -1,4 +1,4 @@
-//! [`unapply`]: the implementation of `Action::inverse` (DESIGN.md §12.6) —
+//! [`unapply`]: the implementation of `Action::inverse` (§12.6) —
 //! remove one action's effect from a state by restoring what it wrote from the
 //! state it was originally applied to.
 //!
@@ -39,7 +39,7 @@ enum PatchOp {
     /// The layer existed, as this record, at this place in the tree (undoes a
     /// remove). The record carries whatever it carried — a `Layer` owns its
     /// subtree — so removing a group and undoing it restores the group
-    /// (GROUP_DESIGN.md §8).
+    /// (§14.8).
     Present {
         site: LayerSite,
         layer: Layer,
@@ -202,7 +202,7 @@ impl StatePatch {
 }
 
 /// The shape of `state`'s layer tree: every layer in composite order, paired
-/// with the layer carrying it (GROUP_DESIGN.md §8).
+/// with the layer carrying it (§14.8).
 ///
 /// Composite order matters — a carrier is always recorded before anything it
 /// carries — so [`restore_structure`] can rebuild top-down without a sort.

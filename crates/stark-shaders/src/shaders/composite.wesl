@@ -1,4 +1,4 @@
-// Compositing pass A (DESIGN.md §6.3): draw each visible tile's channels into
+// Compositing pass A (§6.3): draw each visible tile's channels into
 // viewport-sized offscreen targets. Color composites with premultiplied "over",
 // the aux (paint height) accumulates additively. The media pass then lights the
 // result. Vertex setup matches the present pass: one instanced quad per tile.
@@ -17,7 +17,7 @@
 //
 //   · `fs_raw` — the passthrough. The dynamics loop composites base tiles into
 //     its working region with this same module, and that region must keep the
-//     tile representation itself (per-unit opacity in alpha, DESIGN.md §6.1):
+//     tile representation itself (per-unit opacity in alpha, §6.1):
 //     the exchange loop's pickup reads it and the slice writes it back to
 //     persistent tiles. Running the slab law here would store *coverage* as
 //     opacity — corrupting every smeared texel, differently on each side of a
@@ -26,7 +26,7 @@
 struct View {
     // The canvas px -> NDC linear map, column-major: `st.xy` is the first column and
     // `st.zw` the second. A full 2x2 because the view can be turned and mirrored
-    // (MISSING_FEATURES §1.2); upright and unmirrored it is diagonal, and this is the
+    // (§18.1.2); upright and unmirrored it is diagonal, and this is the
     // scale pair it always was.
     st: vec4<f32>,
     xlate: vec4<f32>, // translate.xy, unused zw

@@ -1,4 +1,4 @@
-// Selection mask → stroke region (DESIGN.md §6.8, §6.2).
+// Selection mask → stroke region (§6.8, §6.2).
 //
 // The brush-dynamics stamp loop works over one 1:1 canvas *region* rather than
 // per-tile targets, so the selection mask has to be gathered into a region-sized R8

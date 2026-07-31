@@ -1,4 +1,4 @@
-//! Compiles WESL shader modules to WGSL at build time (DESIGN.md §2).
+//! Compiles WESL shader modules to WGSL at build time (§2).
 //!
 //! Each `build_artifact` call links a module and its imports into a single WGSL
 //! string deposited in `OUT_DIR`, retrievable in the crate via `include_wesl!`.
@@ -12,25 +12,25 @@ const MIXBOX_GLSL: &str = "../../vendor/mixbox/shaders/mixbox.glsl";
 fn main() {
     // Transpile Mixbox's `mixbox_eval_polynomial` from the vendored GLSL into a
     // WESL module so the trained coefficients stay sourced from the licensed
-    // submodule rather than copied into this repo (DESIGN.md §6.7).
+    // submodule rather than copied into this repo (§6.7).
     generate_mixbox_poly();
 
     let compiler = wesl::Wesl::new("src/shaders");
 
-    // The brush stamp rasterization shader (DESIGN.md §6.2).
+    // The brush stamp rasterization shader (§6.2).
     compiler.build_artifact(&"package::stamp_oklab".parse().unwrap(), "stamp_oklab");
 
-    // Compositing (pass A) and media/lighting (pass B) shaders (DESIGN.md §6.3).
+    // Compositing (pass A) and media/lighting (pass B) shaders (§6.3).
     compiler.build_artifact(&"package::composite".parse().unwrap(), "composite");
-    // Matte layers, drawn inside pass A at their place in the stack (FRAME_DESIGN §4).
+    // Matte layers, drawn inside pass A at their place in the stack (§15.4).
     compiler.build_artifact(&"package::matte".parse().unwrap(), "matte");
     compiler.build_artifact(&"package::media_oklab".parse().unwrap(), "media_oklab");
 
-    // Mixbox color space: latent→RGB polynomial in the media pass (DESIGN.md §6.7).
+    // Mixbox color space: latent→RGB polynomial in the media pass (§6.7).
     compiler.build_artifact(&"package::media_mixbox".parse().unwrap(), "media_mixbox");
 
     // Per-layer blend modes: the isolated layer merged into the accumulator through
-    // a light-combining mode, one variant per color space (MISSING_FEATURES §0.4).
+    // a light-combining mode, one variant per color space (§18.0.4).
     compiler.build_artifact(&"package::blend_oklab".parse().unwrap(), "blend_oklab");
     compiler.build_artifact(&"package::blend_mixbox".parse().unwrap(), "blend_mixbox");
 
@@ -38,20 +38,20 @@ fn main() {
     compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
 
     // Brush dynamics: the sequential stamp loop (compute) + the region→tile
-    // write-back — DESIGN §6.2.
+    // write-back — §6.2.
     compiler.build_artifact(&"package::dynamics".parse().unwrap(), "dynamics");
     compiler.build_artifact(&"package::slice".parse().unwrap(), "slice");
 
     // Affine transform of the selected paint: parcel + combine + mask passes
-    // (TRANSFORM_DESIGN.md).
+    // (§16).
     compiler.build_artifact(&"package::transform".parse().unwrap(), "transform");
 
     // Region fill: one parcel of paint laid through the coverage `selection` just
-    // rasterized (MISSING_FEATURES §0.4).
+    // rasterized (§18.0.4).
     compiler.build_artifact(&"package::fill".parse().unwrap(), "fill");
 
     // Selections: mask rasterization, the stamp loop's region gather, and the
-    // on-screen outline — DESIGN §6.8.
+    // on-screen outline — §6.8.
     compiler.build_artifact(&"package::selection".parse().unwrap(), "selection");
     compiler.build_artifact(&"package::mask_region".parse().unwrap(), "mask_region");
     compiler.build_artifact(&"package::overlay".parse().unwrap(), "overlay");

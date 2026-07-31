@@ -1,4 +1,4 @@
-# Stark workspace. See DESIGN.md for the architecture this layout implements.
+# Stark workspace. See CLAUDE.md for the architecture this layout implements.
 [workspace]
 resolver = "3"
 members = [
@@ -32,7 +32,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
-# Single source of truth for shared dependency versions (GOALS §Notable Dependencies).
+# Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]
 wgpu = "30"
 glam = { version = "0.33", features = ["serde"] }

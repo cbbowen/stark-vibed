@@ -1,5 +1,5 @@
 //! GPU subsystem: device context, the recycling tile pool, stroke rasterization,
-//! selection masks, and compositing/media (DESIGN.md §6, §7).
+//! selection masks, and compositing/media (§6, §7).
 
 pub mod composite;
 pub mod context;

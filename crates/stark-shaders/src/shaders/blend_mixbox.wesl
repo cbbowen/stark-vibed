@@ -1,5 +1,5 @@
-// Layer blending for the **Mixbox** pigment colour space (MISSING_FEATURES.md §0.4,
-// DESIGN.md §6.7). Same light algebra as every other space; what differs is that a
+// Layer blending for the **Mixbox** pigment colour space (§18.0.4,
+// §6.7). Same light algebra as every other space; what differs is that a
 // channel triple here is a mixture of pigments rather than a colour, so the trip out
 // to light is Mixbox's polynomial and the trip back is its LUT.
 //

@@ -1,8 +1,8 @@
 //! Presence: per-client state that every client reads and only its owner writes
-//! (PEER_DESIGN.md §4).
+//! (§17.4).
 //!
 //! This is the **unlogged** half of per-client state. The rule that puts something
-//! here rather than in [`DocState`](crate::document::DocState) is the one DESIGN §4
+//! here rather than in [`DocState`](crate::document::DocState) is the one §4
 //! already runs on — *does replay need it to reproduce pixels?* — and the answer for
 //! everything in this module is no:
 //!
@@ -15,7 +15,7 @@
 //!   copy is discarded.
 //!
 //! (The selection *does* pass that test, so it lives in `DocState` keyed by actor —
-//! see PEER_DESIGN.md §3. It is the one piece of per-client state that is not here.)
+//! see §17.3. It is the one piece of per-client state that is not here.)
 //!
 //! # Why this may be lossy
 //!
@@ -54,7 +54,7 @@ pub const GESTURE_TIMEOUT: f64 = HEARTBEAT + 1.0;
 
 /// How often the sender re-sends a gesture's invariant head and its whole path
 /// (seconds), repairing any receiver that missed a delta and priming any client
-/// that arrived mid-stroke (PEER_DESIGN.md §5).
+/// that arrived mid-stroke (§17.5).
 pub const GESTURE_RESYNC: Option<f64> = None;
 
 /// Who this client is on the wire.
@@ -100,7 +100,7 @@ impl From<ActorId> for Identity {
 pub enum LiveGesture {
     Stroke(StrokeRecord),
     Selection(SelectionOp),
-    /// A region being dragged out to fill (MISSING_FEATURES §0.4). Carries its
+    /// A region being dragged out to fill (§18.0.4). Carries its
     /// layer, because unlike a [`StrokeRecord`] a [`FillOp`] is the *region*, not
     /// the whole edit — the layer is the author's active one at the time.
     Fill {
@@ -128,7 +128,7 @@ pub struct GestureView {
     /// render of the one before it.
     pub ordinal: u64,
     /// How many leading spans are settled, so an incremental repaint can retire them
-    /// (DESIGN.md §6.2, PEER_DESIGN.md §6).
+    /// (§6.2, §17.6).
     pub frozen_spans: usize,
 }
 
@@ -143,11 +143,11 @@ pub struct StrokeHead {
     pub seed: u64,
 }
 
-/// One gesture update on the wire (PEER_DESIGN.md §5).
+/// One gesture update on the wire (§17.5).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GestureFrame {
     /// A stroke in flight. The path grows by appending, because the fitter *freezes*
-    /// a prefix of control points that is final and never revised (DESIGN §6.2) —
+    /// a prefix of control points that is final and never revised (§6.2) —
     /// so `points` is everything frozen since the last frame plus the provisional
     /// knot under the cursor, and the receiver's reassembly
     /// (`truncate(from); extend(points)`) is exact rather than an approximation.
@@ -165,7 +165,7 @@ pub enum GestureFrame {
     /// the closing edge moves with the cursor.
     Selection { id: u64, op: SelectionOp },
     /// A region being dragged out to fill — sent whole for the same reason a
-    /// selection is (MISSING_FEATURES §0.4). The layer is not in the payload:
+    /// selection is (§18.0.4). The layer is not in the payload:
     /// [`PeerFrame::active_layer`] already carries it, and a second copy could
     /// disagree with it.
     Fill { id: u64, op: FillOp },
@@ -185,7 +185,7 @@ impl GestureFrame {
 ///
 /// The author is **not** in the payload: [`Peers::merge`] takes it from the
 /// transport's authenticated origin, the same discipline `Action` gets for free from
-/// its [`ActionId`](crate::document::ActionId) (PEER_DESIGN.md §7).
+/// its [`ActionId`](crate::document::ActionId) (§17.7).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerFrame {
     /// Which run of this client published the frame ([`Identity::boot`]). Ordered
@@ -292,7 +292,7 @@ impl Peer {
     }
 
     /// How many spans of [`live_stroke`](Self::live_stroke) are settled, so the
-    /// preview can repaint only the tail (DESIGN.md §6.2, PEER_DESIGN.md §6).
+    /// preview can repaint only the tail (§6.2, §17.6).
     pub fn live_frozen_spans(&self) -> usize {
         self.rx.frozen_spans()
     }
@@ -308,7 +308,7 @@ impl Peer {
     /// Integrate a frame. Returns whether the **canvas** changed, which is a much
     /// narrower question than whether the frame changed anything: a cursor is chrome
     /// and a selected layer is a fact about the peer, so neither belongs to the
-    /// composited picture. Only the live gesture does (PEER_DESIGN.md §6).
+    /// composited picture. Only the live gesture does (§17.6).
     fn apply(&mut self, frame: PeerFrame, now: f64) -> bool {
         self.seq = frame.seq;
         self.last_seen = now;
@@ -376,7 +376,7 @@ impl PresenceChange {
     }
 }
 
-/// Everyone else in the session (PEER_DESIGN.md §4).
+/// Everyone else in the session (§17.4).
 ///
 /// The **local** client is deliberately not in here. It would make the fold read
 /// more uniformly, but the local live gesture is *derived* from
@@ -409,7 +409,7 @@ impl Peers {
     ///
     /// `actor` comes from the transport's authenticated origin, never from the
     /// frame: a peer can publish its own presence and nobody else's, which is the
-    /// same guarantee `Action` gets from its id (PEER_DESIGN.md §7).
+    /// same guarantee `Action` gets from its id (§17.7).
     pub fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
         let change = self.merge_inner(actor, frame, now);
         self.revision += u64::from(change.roster);
@@ -512,7 +512,7 @@ impl Peers {
 
     /// Every peer, in ascending [`ActorId`] order. That order is what every client
     /// can compute alike, which is what makes the preview fold agree across clients
-    /// (PEER_DESIGN.md §6).
+    /// (§17.6).
     pub fn iter(&self) -> impl Iterator<Item = &Peer> {
         self.map.values()
     }

@@ -1,4 +1,4 @@
-// Stroke *integrate* pass (DESIGN.md §6.2/§6.1). Every brush rasterizes its swept
+// Stroke *integrate* pass (§6.2/§6.1). Every brush rasterizes its swept
 // footprint into a *cleared scratch* tile (the stamp pass), then this fullscreen
 // pass merges that scratch into a fresh copy-on-write tile over the base:
 // `new = f(base, scratch)`, written to the color+aux MRT.
@@ -19,7 +19,7 @@
 @group(0) @binding(1) var base_aux: texture_2d<f32>;
 @group(0) @binding(2) var scratch_color: texture_2d<f32>;
 @group(0) @binding(3) var scratch_aux: texture_2d<f32>;
-// The selection's coverage over this tile (DESIGN.md §6.8): 1 where the brush may
+// The selection's coverage over this tile (§6.8): 1 where the brush may
 // paint, 0 where it may not, feathered in between. Either this tile's own mask —
 // 1:1 with the destination, apron included — or a 1×1 texture holding the constant
 // coverage outside the mask's tile set; the clamped load below reads both.

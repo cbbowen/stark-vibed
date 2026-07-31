@@ -1,5 +1,5 @@
 //! Frontend-provided GPU resources: registered bytes, which one is in use, and the
-//! live object built from it (DESIGN.md §6.4, §6.6).
+//! live object built from it (§6.4, §6.6).
 //!
 //! The engine embeds no image bytes. The frontend fetches them at runtime and hands
 //! them over, which means every such resource has the same three-part shape — a map

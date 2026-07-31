@@ -1,4 +1,4 @@
-//! The brush-dynamics path (DESIGN.md §6.2): a serial swept-exchange loop that lets
+//! The brush-dynamics path (§6.2): a serial swept-exchange loop that lets
 //! a stroke pick paint up off the canvas and put it back down.
 //!
 //! Where the swept path composes by summing optical depth — and so can draw its
@@ -35,7 +35,7 @@ struct SliceUniform {
     offset: [f32; 4],
 }
 
-/// One segment of the sequential swept-exchange loop (DESIGN.md §6.2): its
+/// One segment of the sequential swept-exchange loop (§6.2): its
 /// `bake`, `snapshot`, `deposit` and `exchange` dispatches. `slot` is the 128-byte
 /// `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as a pure function of
 /// the `StrokeRecord`, so replay is deterministic.
@@ -50,7 +50,7 @@ struct LoopDispatch {
     exchange_groups: (u32, u32),
 }
 
-/// GPU objects for the brush-dynamics stamp loop (DESIGN.md §6.2), built once.
+/// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
 #[derive(Clone)]
 pub(super) struct DynamicsKit {
@@ -87,7 +87,7 @@ pub(super) struct DynamicsKit {
 
 impl StrokeRenderer {
     /// Render `spans` of a paint-manipulating stroke via the **sequential
-    /// swept-exchange loop** (DESIGN.md §6.2): composite the base under it into a 1:1
+    /// swept-exchange loop** (§6.2): composite the base under it into a 1:1
     /// region, then walk it *in order* on the GPU — the canvas-side exchange swept per
     /// flattened segment through the prefix-τ integral (the same definite-integral
     /// footprint as the plain deposit), the 2-D tool reservoir updated at
@@ -298,7 +298,7 @@ impl<'a> DynamicsRun<'a> {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
                                 // Carried height = the pre-`charge` glob; the rest of
                                 // the reservoir aux is unused (height is the only
-                                // thing the tool carries, DESIGN.md §6.1).
+                                // thing the tool carries, §6.1).
                                 r: d.charge as f64,
                                 g: 0.0,
                                 b: 0.0,
@@ -495,7 +495,7 @@ impl<'a> DynamicsRun<'a> {
             }
         }
 
-        // ---- The selection over this region (DESIGN.md §6.8), gathered from the same
+        // ---- The selection over this region (§6.8), gathered from the same
         // halo tiles the paint came from, so it is 1:1 with the colour/aux regions.
         // An unrestricted selection binds the 1×1 constant instead — the loop's masked
         // reads then return 1 everywhere and the stroke behaves exactly as before.
@@ -890,7 +890,7 @@ fn reservoir_desc(
     }
 }
 
-/// Build the swept-exchange dispatch plan (DESIGN.md §6.2): one `snapshot` +
+/// Build the swept-exchange dispatch plan (§6.2): one `snapshot` +
 /// `deposit` pair per flattened segment (the canvas-side exchange, swept through
 /// the prefix-τ integral), each followed by the tool's own `exchange`.
 /// λ = ln(1 − axis) makes every rate exponential in
@@ -916,7 +916,7 @@ fn dynamics_plan(
     let l_lift = lambda(d.lift);
     let l_dep = lambda(d.deposit);
     // Colour dynamics for the `add` paint — the same uniform triplet as the fast
-    // path, so both paths sample the identical field (DESIGN.md §6.2).
+    // path, so both paths sample the identical field (§6.2).
     let (nfreq, namp, noff) = noise_uniform(rec);
 
     let mut plan = Vec::new();
@@ -1036,7 +1036,7 @@ pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePath {
     }
 }
 
-/// Build the brush-dynamics stamp-loop kit (DESIGN.md §6.2): the region
+/// Build the brush-dynamics stamp-loop kit (§6.2): the region
 /// composite, the three loop compute pipelines, and the region→tile slice.
 pub(super) fn build_dynamics_kit(
     device: &wgpu::Device,
@@ -1422,7 +1422,7 @@ pub(super) fn build_dynamics_kit(
     }
 }
 
-/// Build the stroke integrate pipeline (`integrate` shader) — DESIGN §6.2/§6.1. A
+/// Build the stroke integrate pipeline (`integrate` shader) — §6.2/§6.1. A
 /// fullscreen pass with four sampled tiles (base/scratch color/aux), writing the
 /// color+aux MRT of a fresh tile.
 pub(super) fn build_integrate_pipeline(

@@ -1,4 +1,4 @@
-//! Colour dynamics (colour jitter) — DESIGN.md §6.2: the applied colour varies
+//! Colour dynamics (colour jitter) — §6.2: the applied colour varies
 //! across the brush and along the stroke, driven by a tileable 2-D noise field
 //! sampled in the stroke's own (lateral, arc) frame.
 //! These tests pin the three contracts: **off is exactly off** (a zero-amplitude
@@ -170,7 +170,7 @@ fn jitter_survives_save_load() {
 }
 
 /// The sequential exchange loop (a brush that also lifts/deposits canvas paint —
-/// DESIGN §6.2) applies the same jitter to the brush's own `add` paint:
+/// §6.2) applies the same jitter to the brush's own `add` paint:
 /// deterministic across engines, and visibly different from the unjittered loop.
 #[test]
 fn jitter_applies_in_dynamics_loop() {

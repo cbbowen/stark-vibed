@@ -1,4 +1,4 @@
-//! The commutation fast path (DESIGN.md §12.6): an undo whose target commutes
+//! The commutation fast path (§12.6): an undo whose target commutes
 //! with everything materialized after it is shifted out of the history —
 //! `Footprint` as the action's `Centralizer`, `Action::inverse` restoring what
 //! it wrote — instead of rewinding and replaying; redo re-materializes at the
@@ -52,7 +52,7 @@ fn sync(a: &mut Engine, b: &mut Engine) {
 /// The canonical materialization of `engine`'s log: a fresh peer joining from
 /// the full shared document, which rewinds nothing and splices nothing. The
 /// fast paths must produce *identical* pixels to this, tolerance zero — that
-/// is the convergence claim of DESIGN.md §12.6.
+/// is the convergence claim of §12.6.
 fn canonical_snap(of: &mut Engine, size: Extent2) -> Option<RgbaImage> {
     let mut fresh = engine_or_skip_sized(size)?;
     fresh.join_collaboration(&of.document_file(), ActorId(99));
@@ -118,7 +118,7 @@ fn undo_and_redo_splice_past_disjoint_peer_strokes() {
     );
 
     // Redo materializes the revived stroke at the *top* of the stack
-    // (DESIGN.md §12.3), so it is a plain append on both peers: no further
+    // (§12.3), so it is a plain append on both peers: no further
     // rebuilds, nothing replayed.
     let before_a = a.timeline_stats();
     let before_b = b.timeline_stats();
@@ -142,7 +142,7 @@ fn undo_and_redo_splice_past_disjoint_peer_strokes() {
 
 /// A peer's stroke arriving *behind* newer local strokes (smaller Lamport
 /// slot) takes the rewind — mid-sequence inserts have no fast path by design
-/// (DESIGN.md §12.6) — but the rewind is shallow: a concurrent arrival sits
+/// (§12.6) — but the rewind is shallow: a concurrent arrival sits
 /// near the top of the stack by construction, so only the tail replays.
 #[test]
 fn late_arrival_replays_only_the_tail() {

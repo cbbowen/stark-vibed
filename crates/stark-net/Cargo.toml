@@ -1,4 +1,4 @@
-# iroh transport for shared multi-user drawings (DESIGN.md §12.4). Adapts the
+# iroh transport for shared multi-user drawings (§12.4). Adapts the
 # wire (gossip-broadcast live actions + a catch-up/asset ALPN) to stark-core's
 # network-agnostic ReplicatedTimeline; pulled in by the frontend, or omitted.
 [package]

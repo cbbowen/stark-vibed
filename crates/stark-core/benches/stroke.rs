@@ -1,4 +1,4 @@
-//! GPU benchmarks for stroke rendering (DESIGN.md §6.2) — the numbers that guard
+//! GPU benchmarks for stroke rendering (§6.2) — the numbers that guard
 //! against a performance regression in the swept fast path or the brush-dynamics
 //! stamp loop.
 //!

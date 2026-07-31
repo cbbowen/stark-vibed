@@ -1,5 +1,5 @@
 // The parcel-stacking law shared by every pass that restacks *existing* paint
-// (DESIGN.md §6.1): the brush-dynamics deposit (dynamics.wesl) and the transform's
+// (§6.1): the brush-dynamics deposit (dynamics.wesl) and the transform's
 // combine (transform.wesl). One definition so the two cannot drift — a parcel must
 // land the same way whether a brush carried it or a transform did.
 

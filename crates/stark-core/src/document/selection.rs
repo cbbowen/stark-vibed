@@ -1,4 +1,4 @@
-//! Selections: the soft, sparse mask that gates where tools may act (DESIGN.md §6.8).
+//! Selections: the soft, sparse mask that gates where tools may act (§6.8).
 //!
 //! A selection is *not* a shape — it is a coverage field over the canvas, in exactly
 //! the same sparse tile map the paint lives in. That is what makes it "flexible": a
@@ -38,7 +38,7 @@ use crate::gpu::tile::MaskHandle;
 /// "everything" at zero cost.
 pub const MAX_SELECTION_TILES: usize = 1024;
 
-/// A region-producing shape, in canvas space (DESIGN.md §6.8).
+/// A region-producing shape, in canvas space (§6.8).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SelectionShape {
     /// The whole canvas. Costs no tiles — this is how "select all" / "deselect" is
@@ -97,7 +97,7 @@ impl SelectionShape {
     }
 }
 
-/// How an op combines with the selection already in force (DESIGN.md §6.8). The
+/// How an op combines with the selection already in force (§6.8). The
 /// per-texel algebra is the soft-set one, so it degrades to ordinary booleans on hard
 /// edges and stays sensible on feathered ones:
 /// `Replace = s`, `Union = max(p, s)`, `Subtract = p·(1−s)`, `Intersect = p·s`.
@@ -137,7 +137,7 @@ impl SelectionMode {
     }
 }
 
-/// One logged edit to the selection (DESIGN.md §6.8): a shape, how it combines, and
+/// One logged edit to the selection (§6.8): a shape, how it combines, and
 /// how soft its edge is. Compact enough to live in the action log and on the wire.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SelectionOp {
@@ -179,7 +179,7 @@ impl SelectionOp {
 }
 
 /// The document's selection: a sparse coverage mask plus the coverage that reigns
-/// everywhere it has no tile (DESIGN.md §6.8).
+/// everywhere it has no tile (§6.8).
 #[derive(Clone)]
 pub struct Selection {
     tiles: HashTrieMap<TileCoord, MaskHandle>,
@@ -190,7 +190,7 @@ pub struct Selection {
     /// A conservative analytic bounding box of the selected coverage, in canvas px
     /// — `None` when the selection is unbounded (`outside`) or its extent is not
     /// analytically known. Carried through the op algebra so the transform chrome
-    /// has a rect to hang its handles on (TRANSFORM_DESIGN.md); nothing about the
+    /// has a rect to hang its handles on (§16); nothing about the
     /// mask itself depends on it. Conservative means coverage ⊆ hull, never that
     /// the hull is tight: `Subtract` keeps the previous hull, `Intersect`
     /// intersects boxes.

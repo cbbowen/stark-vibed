@@ -1,4 +1,4 @@
-//! The document: versioned state and the actions that produce it (DESIGN.md §4, §5).
+//! The document: versioned state and the actions that produce it (§4, §5).
 
 pub mod action;
 pub mod fill;

@@ -1,4 +1,4 @@
-//! How layers cover one another (DESIGN.md §6.3, pass A).
+//! How layers cover one another (§6.3, pass A).
 //!
 //! **The claim.** A layer affects what is beneath it only as much as it is visible
 //! at all. It sounds too obvious to test, and it used to be false: pass A weighed a
@@ -212,7 +212,7 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
 /// A **kept** [`Offscreen`] renders the same picture a fresh one would, across
 /// everything that changes what it was built against: a new size, a swapped
 /// environment, and a colour-space rebuild — which does not mutate the compositing
-/// pipeline but replaces it (DESIGN.md §6.7).
+/// pipeline but replaces it (§6.7).
 ///
 /// This is the navigator's arrangement: one slot, reused for the life of the app,
 /// one render per edit. So "reused" has to mean "reused *or rebuilt*", and the

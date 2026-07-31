@@ -1,4 +1,4 @@
-//! Filling a region with paint (MISSING_FEATURES §0.4).
+//! Filling a region with paint (§18.0.4).
 //!
 //! A fill is the **fifth thing a shape gesture can do**. Rect, ellipse and lasso do
 //! not produce selections — they produce *coverage*, and [`SelectionMode`] is only
@@ -10,7 +10,7 @@
 //!
 //! Two consequences worth stating, because they are what make this cheap:
 //!
-//! - **The selection bounds the fill.** DESIGN §6.8 already makes the mask the gate
+//! - **The selection bounds the fill.** §6.8 already makes the mask the gate
 //!   every tool acts through, so a fill is gated identically to a brush stroke —
 //!   which is also the answer to the wrinkle that stopped fill being built: a flood
 //!   fill of an unbounded plane is undefined, and here the selection is what bounds
@@ -38,8 +38,8 @@ use crate::geom::{TILE_APRON, TileCoord, Vec2};
 /// function of the op and the mask's tile set, refused identically everywhere.
 pub const MAX_FILL_TILES: usize = 1024;
 
-/// What the next shape gesture does with the region it encloses (DESIGN.md §6.8,
-/// MISSING_FEATURES §0.4) — the "action" the Select panel's chip row picks.
+/// What the next shape gesture does with the region it encloses (§6.8,
+/// §18.0.4) — the "action" the Select panel's chip row picks.
 ///
 /// One enum rather than a mode plus a flag: the chips are five answers to a single
 /// question, and modelling them as five values is what keeps "exactly one is lit"
@@ -74,7 +74,7 @@ impl ShapeAction {
     }
 }
 
-/// One logged fill (MISSING_FEATURES §0.4): a region, and the parcel of paint to
+/// One logged fill (§18.0.4): a region, and the parcel of paint to
 /// lay in it. Compact enough for the action log and the wire, exactly like
 /// [`SelectionOp`](super::SelectionOp) — the shape travels, never the tiles, and
 /// every peer rasterizes it identically from the same shader.
@@ -90,7 +90,7 @@ pub struct FillOp {
     /// Straight (un-premultiplied) sRGB RGBA, like
     /// [`BrushParams::color`](super::BrushParams::color). The alpha is the paint's
     /// **per-unit opacity**, not a coverage — a thin wash and a thick one differ in
-    /// `height`, not here (DESIGN.md §6.1).
+    /// `height`, not here (§6.1).
     pub color: [f32; 4],
     /// Paint **height** laid where coverage is full, taken from the brush's
     /// [`add`](super::BrushDynamics::add) so a fill and the brush in hand lay the
@@ -137,7 +137,7 @@ impl FillOp {
 ///
 /// - **Unbounded** — [`SelectionShape::All`] with nothing selected. There is no
 ///   rectangle to fill, and picking one silently (the frame? the layer's bounds?)
-///   would be a different fill on every client. This is §0.4's wrinkle, answered by
+///   would be a different fill on every client. This is §18.0.4's wrinkle, answered by
 ///   refusing rather than by inventing a boundary.
 /// - **Too large** — more than [`MAX_FILL_TILES`].
 ///

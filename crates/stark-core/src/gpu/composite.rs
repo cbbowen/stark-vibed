@@ -1,4 +1,4 @@
-//! Compositing and the media/lighting pass (DESIGN.md §6.3, §6.4).
+//! Compositing and the media/lighting pass (§6.3, §6.4).
 //!
 //! Two passes:
 //!   A. Composite every visible tile's channels into viewport-sized offscreen
@@ -51,7 +51,7 @@ use crate::gpu::tile::TilePairHandle;
 struct ViewUniform {
     // The canvas px -> NDC linear map, column-major (`mat2x2` in the shaders). A
     // full 2x2 rather than a scale pair because the view can be turned and mirrored
-    // (MISSING_FEATURES §1.2); upright and unmirrored it is diagonal, and every
+    // (§18.1.2); upright and unmirrored it is diagonal, and every
     // shader that reads it multiplies the same way either way.
     st: [f32; 4],
     // translate.xy, then padding to the 16-byte stride a uniform member takes
@@ -72,7 +72,7 @@ struct Instance {
 /// its contour. `tint.a == 0` selects the local actor's black/white marching ants;
 /// anything else draws a flat line in `tint.rgb` at that alpha — which is how
 /// another collaborator's selection is distinguished from your own
-/// (PEER_DESIGN.md §3).
+/// (§17.3).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct OverlayInstance {
@@ -80,7 +80,7 @@ struct OverlayInstance {
     tint: [f32; 4],
 }
 
-/// One selection to outline, and whose it is (PEER_DESIGN.md §3).
+/// One selection to outline, and whose it is (§17.3).
 #[derive(Copy, Clone)]
 pub struct SelectionOutline<'a> {
     pub selection: &'a Selection,
@@ -99,7 +99,7 @@ struct MatteInstance {
     _pad: [f32; 3],
 }
 
-/// A matte layer's draw parameters (FRAME_DESIGN.md §4).
+/// A matte layer's draw parameters (§15.4).
 #[derive(Copy, Clone, Debug)]
 pub struct MatteDraw {
     /// The region's rect in canvas px: `min.xy, max.xy`. For a frame this is the
@@ -115,7 +115,7 @@ pub struct MatteDraw {
 ///
 /// An ordered list rather than a flat tile array because a matte composites at
 /// its own place in the stack — a frame over the painting, a ground under it
-/// (FRAME_DESIGN.md §4.4). Tiles already cost one draw each (each needs its own
+/// (§15.4.4). Tiles already cost one draw each (each needs its own
 /// bind group), so interleaving mattes adds no per-tile overhead.
 #[derive(Clone)]
 pub enum CompositeItem {
@@ -128,19 +128,19 @@ pub enum CompositeItem {
 }
 
 /// One **blend group** of pass A: something that composites on its own, and how
-/// its result merges into everything below it (MISSING_FEATURES.md §0.4,
-/// GROUP_DESIGN.md §7).
+/// its result merges into everything below it (§18.0.4,
+/// §14.7).
 ///
 /// A group is defined against *what is underneath it* — which means it has to be
 /// composited alone, on nothing, before it can be merged. That is the per-layer
-/// isolation DESIGN §6.3 names as the prerequisite for richer modes, and layer
+/// isolation §6.3 names as the prerequisite for richer modes, and layer
 /// groups are the same investment recursed: [`GroupContent::Stack`] is a group
 /// whose members are themselves groups.
 #[derive(Clone)]
 pub struct CompositeGroup {
     pub blend: BlendMode,
-    /// Clip to the coverage of what this group composites onto (GROUP_DESIGN.md
-    /// §4). Costs the same isolation a blend mode does, and for the same reason:
+    /// Clip to the coverage of what this group composites onto
+    /// (§14.4). Costs the same isolation a blend mode does, and for the same reason:
     /// the merge has to *read* the backdrop's alpha.
     pub clip: bool,
     /// Applied to this group's whole composited result at the merge, not to its
@@ -167,11 +167,11 @@ pub enum GroupContent {
     /// what the flat tile list cost before any of this existed.
     Run(Vec<CompositeItem>),
     /// Members composited bottom-to-top, each merging into the one below through
-    /// its own blend mode and clip — a **layer group** (GROUP_DESIGN.md §2).
+    /// its own blend mode and clip — a **layer group** (§14.2).
     ///
     /// The builder collapses a `Stack` that could not tell itself apart from a
     /// `Run` into one, which is what makes "organization is free" structural
-    /// rather than a promise (§7 rule 2).
+    /// rather than a promise (§14.7 rule 2).
     Stack(Vec<CompositeGroup>),
 }
 
@@ -187,8 +187,8 @@ impl CompositeGroup {
     }
 
     /// A group of `members` — **collapsed into a plain [`Run`](GroupContent::Run)
-    /// when nothing about it could tell itself apart from one** (GROUP_DESIGN.md
-    /// §7 rule 2).
+    /// when nothing about it could tell itself apart from one**
+    /// (§14.7 rule 2).
     ///
     /// This is where "organization is free" is made structural rather than
     /// promised. A group that merges normally, unclipped, at full opacity, and
@@ -201,7 +201,7 @@ impl CompositeGroup {
     ///
     /// The condition cannot be relaxed to "the group itself is normal": a member
     /// with a mode of its own *does* blend against a different backdrop once
-    /// isolated, and that difference is the feature (§5).
+    /// isolated, and that difference is the feature (§14.5).
     pub fn stack(blend: BlendMode, clip: bool, opacity: f32, members: Vec<Self>) -> Self {
         let free = blend.is_normal() && !clip && opacity >= 1.0;
         if free && members.iter().all(Self::is_direct) {
@@ -236,7 +236,7 @@ impl CompositeGroup {
 
     /// How deep the isolation nests below this group: 0 for a `Run`, one more
     /// than its deepest member for a `Stack`. The scratch stack is sized by this
-    /// (GROUP_DESIGN.md §7).
+    /// (§14.7).
     fn depth(&self) -> usize {
         match &self.content {
             GroupContent::Run(_) => 0,
@@ -269,7 +269,7 @@ struct BlendUniform {
     clip: u32,
     /// The group's own opacity, applied to its composited result at the merge —
     /// which is the *only* place it can be applied for a group, since its members
-    /// overlap (GROUP_DESIGN.md §7). Always 1.0 for a leaf layer, whose opacity
+    /// overlap (§14.7). Always 1.0 for a leaf layer, whose opacity
     /// rides on its tiles instead.
     opacity: f32,
 }
@@ -278,7 +278,7 @@ struct BlendUniform {
 /// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
 ///
 /// `Normal` reaches the pass only when the group is **clipped** or carries an
-/// opacity of its own (GROUP_DESIGN.md §4); an ordinary normal layer is the
+/// opacity of its own (§14.4); an ordinary normal layer is the
 /// absence of a pass.
 fn blend_code(mode: BlendMode) -> u32 {
     match mode {
@@ -299,7 +299,7 @@ fn blend_code(mode: BlendMode) -> u32 {
 const BLEND_SLOT: u64 = 256;
 
 /// The extra viewport-sized targets **one level** of isolation needs
-/// (MISSING_FEATURES.md §0.4).
+/// (§18.0.4).
 ///
 /// Two pairs, not one. `iso` is where a group composites alone; `swap` is the other
 /// half of a ping-pong, because the blend pass reads the accumulator and writes the
@@ -337,7 +337,7 @@ impl ScratchLevel {
 }
 
 /// One [`ScratchLevel`] per level of group nesting the document actually reaches
-/// (GROUP_DESIGN.md §7).
+/// (§14.7).
 ///
 /// A group's members isolate into *its* level's `iso`, which is the target the
 /// next level down composites into — so nesting costs one of these per level and
@@ -401,13 +401,13 @@ struct Cursors {
 /// `transparent` says whether the ground is drawn at all.
 pub struct CompositeScene<'a> {
     /// The substrate colour in the document's working channels — the ground under
-    /// the paint (FRAME_DESIGN.md §5).
+    /// the paint (§15.5).
     pub background: [f32; 4],
     /// The visible layers, bottom-to-top, cut into blend groups.
     pub groups: &'a [CompositeGroup],
     /// Selection outlines to draw over the lit result: the local actor's and each
-    /// present peer's (PEER_DESIGN.md §3). Empty for anything that is not the screen
-    /// — chrome is a thing to draw *with* (FRAME_DESIGN.md §6).
+    /// present peer's (§17.3). Empty for anything that is not the screen
+    /// — chrome is a thing to draw *with* (§15.6).
     pub outlines: &'a [SelectionOutline<'a>],
     /// Leave the substrate out and carry the paint's own alpha to the target, for a
     /// cut-out export.
@@ -431,7 +431,7 @@ struct MediaUniform {
     surf_m: [f32; 4],
 }
 
-/// Lighting parameters for the media pass (DESIGN.md §6.3). The painting is lit by
+/// Lighting parameters for the media pass (§6.3). The painting is lit by
 /// image-based lighting from an [`Environment`]; this is a single place to tune the
 /// look. A view setting — never historized (it changes how the canvas looks, not
 /// its pixels).
@@ -487,18 +487,18 @@ pub struct CompositorPipeline {
     tile_bgl: wgpu::BindGroupLayout,
 
     // Matte layers, drawn inside pass A at their place in the stack
-    // (FRAME_DESIGN.md §4). Its own pipeline because its blend state differs from
+    // (§15.4). Its own pipeline because its blend state differs from
     // the color space's: `over` on *both* targets, so an opaque matte erases the
     // relief beneath it rather than letting underlying impasto emboss through.
     matte_pipeline: wgpu::RenderPipeline,
 
-    // Per-layer blend modes, inside pass A (MISSING_FEATURES.md §0.4). One
+    // Per-layer blend modes, inside pass A (§18.0.4). One
     // fullscreen draw merging an isolated layer into the accumulator.
     blend_pipeline: wgpu::RenderPipeline,
     blend_bgl: wgpu::BindGroupLayout,
     pigment: PigmentLut,
 
-    // Pass C: the selection outline, drawn over the lit result (DESIGN.md §6.8).
+    // Pass C: the selection outline, drawn over the lit result (§6.8).
     // One instanced quad per mask tile, in the same canvas→NDC frame as pass A.
     overlay_pipeline: wgpu::RenderPipeline,
     overlay_view_bg: wgpu::BindGroup,
@@ -516,7 +516,7 @@ pub struct CompositorPipeline {
 
     // The canvas surface (bump) sampled by the media pass for relief.
     surface: Surface,
-    // The HDR lighting environment sampled by the media pass (DESIGN.md §6.3).
+    // The HDR lighting environment sampled by the media pass (§6.3).
     environment: Environment,
     /// A stamp for "the state a media bind group would be built against". Moved
     /// whenever `surface` or `environment` is swapped: both are bound *into* each
@@ -528,7 +528,7 @@ pub struct CompositorPipeline {
     /// two states anywhere ever share a value: "same stamp" then implies "same
     /// pipeline, same settings", and a consumer's decision to reuse cannot be wrong.
     ///
-    /// The case that needs that is a colour-space rebuild (DESIGN.md §6.7), which does
+    /// The case that needs that is a colour-space rebuild (§6.7), which does
     /// not mutate a pipeline but *replaces* it. A per-pipeline counter would start the
     /// replacement back at its initial value — the very value a consumer that had
     /// rendered against the old pipeline is holding — so a kept [`Compositor`] would
@@ -725,7 +725,7 @@ impl CompositorPipeline {
             ],
         });
 
-        // ---- Matte layers, inside pass A (FRAME_DESIGN.md §4) ----
+        // ---- Matte layers, inside pass A (§15.4) ----
         //
         // Reuses pass A's view bind group (vertex-only uniform: the fragment stage
         // gets canvas position as a varying, and the zoom rides through `misc.w`
@@ -766,7 +766,7 @@ impl CompositorPipeline {
                 // bearing difference from pass A's additive aux: additive would
                 // keep the height of paint *underneath* the matte, and the media
                 // pass would emboss that paint's impasto as ghost ridges through
-                // an opaque mat board (FRAME_DESIGN.md §4.2). `OneMinusSrcAlpha`
+                // an opaque mat board (§15.4.2). `OneMinusSrcAlpha`
                 // is valid on the alpha-less R16Float aux: the factor reads the
                 // *source* alpha from the shader's output vec4.
                 targets: &[
@@ -785,7 +785,7 @@ impl CompositorPipeline {
             multiview_mask: None,
             cache: None,
         });
-        // ---- Per-layer blend, inside pass A (MISSING_FEATURES.md §0.4) ----
+        // ---- Per-layer blend, inside pass A (§18.0.4) ----
         //
         // A fullscreen pass reading the accumulator and one isolated layer, writing
         // the merge to the *other* accumulator. Its own bind group layout: every
@@ -873,7 +873,7 @@ impl CompositorPipeline {
             PigmentLut::placeholder(ctx)
         };
 
-        // ---- Pass C: selection outline (DESIGN.md §6.8) ----
+        // ---- Pass C: selection outline (§6.8) ----
         //
         // Its own view bind group rather than pass A's: the fragment stage needs the
         // uniform too (it converts a canvas-space distance to screen px with the
@@ -1059,18 +1059,18 @@ impl CompositorPipeline {
         }
     }
 
-    /// The current media/lighting parameters (DESIGN.md §6.3).
+    /// The current media/lighting parameters (§6.3).
     pub fn media(&self) -> MediaParams {
         self.media
     }
 
-    /// Adjust the media/lighting parameters (DESIGN.md §6.3).
+    /// Adjust the media/lighting parameters (§6.3).
     pub fn set_media(&mut self, media: MediaParams) {
         self.media = media;
     }
 
     /// Swap the canvas surface (bump) so the next render shades against it
-    /// (DESIGN.md §6.4). A view-time swap — the composited tiles are untouched.
+    /// (§6.4). A view-time swap — the composited tiles are untouched.
     ///
     /// Each [`Compositor`] rebuilds its media bind group when it next notices the
     /// generation moved, rather than being told: a swap has to reach every consumer,
@@ -1346,7 +1346,7 @@ impl Compositor {
     }
 
     /// Composite one stack's members into `target`, bottom-to-top — the recursion
-    /// (GROUP_DESIGN.md §7).
+    /// (§14.7).
     ///
     /// Called on the document's root stack, and again on each group's members one
     /// level deeper. `level` selects this stack's ping-pong pair and the `iso` its
@@ -1482,7 +1482,7 @@ impl Compositor {
     }
 
     /// Merge the isolated layer `src` into the accumulator `back` through blend slot
-    /// `slot`, writing the result to `out` (MISSING_FEATURES.md §0.4).
+    /// `slot`, writing the result to `out` (§18.0.4).
     fn encode_blend(
         &self,
         p: &CompositorPipeline,
@@ -1575,11 +1575,11 @@ impl Compositor {
     /// Composite `items` into caller-supplied targets and **stop there** — pass A
     /// alone, with no media pass over it.
     ///
-    /// This is the eyedropper's sampling path (MISSING_FEATURES §0.2). What lands in
+    /// This is the eyedropper's sampling path (§18.0.2). What lands in
     /// `color` is the paint's own channels in the document's working space, which is
     /// what a picker has to read: the lit result has been through image-based
     /// lighting, a tonemap and an sRGB encode, so picking *that* would hand back a
-    /// colour the palette never mixed — and in a Mixbox document (DESIGN.md §6.7) a
+    /// colour the palette never mixed — and in a Mixbox document (§6.7) a
     /// pigment mixture that cannot be picked back up, which is the point of mixing
     /// in pigment space at all.
     ///
@@ -1632,7 +1632,7 @@ impl Compositor {
     }
 
     /// Composite `scene`'s layers, light the result into `target` under `view`, and
-    /// outline each of its selections over it (DESIGN.md §6.8 — a universal selection
+    /// outline each of its selections over it (§6.8 — a universal selection
     /// draws nothing, so an unmasked document costs one skipped iteration).
     pub fn render(
         &mut self,
@@ -1667,7 +1667,7 @@ impl Compositor {
 
         // Screen→canvas mapping for sampling the surface bump in canvas space, so the
         // weave stays attached to the canvas as it pans, zooms, turns and mirrors
-        // (DESIGN.md §6.4, MISSING_FEATURES §1.2).
+        // (§6.4, §18.1.2).
         let inv_zoom = 1.0 / view.zoom;
         let inv_linear = view.inverse_linear();
         let canvas_origin = view.screen_to_canvas(crate::geom::Vec2::ZERO);
@@ -1679,7 +1679,7 @@ impl Compositor {
         // sharp; roughness 1 → the diffuse level, the hemispherical average).
         let diffuse_lod = p.environment.diffuse_lod as f32;
         // Exposure belongs to the light, not to a knob beside it: each environment is
-        // shown at the value it was judged at (DESIGN.md §6.3). Normalized by the
+        // shown at the value it was judged at (§6.3). Normalized by the
         // irradiance a *flat* canvas receives, so `1.0` means the same thing in every
         // environment — an unrelieved patch of paint comes back out its own colour.
         let exposure = p.environment.exposure / p.environment.flat_irradiance;
@@ -1702,7 +1702,7 @@ impl Compositor {
                 surf_b: [
                     p.media.surface_strength,
                     // Transparent export: the media pass skips the substrate and
-                    // carries the paint's visible alpha out (FRAME_DESIGN.md §6).
+                    // carries the paint's visible alpha out (§15.6).
                     if transparent { 1.0 } else { 0.0 },
                     0.0,
                     0.0,
@@ -1758,7 +1758,7 @@ impl Compositor {
 
         // Pass C: the selection outlines, over the lit image — the local actor's and
         // every present peer's, one instanced quad per mask tile of each
-        // (PEER_DESIGN.md §3). Flattened into one instance stream so N collaborators
+        // (§17.3). Flattened into one instance stream so N collaborators
         // still cost one pass.
         let mut overlay_instances: Vec<OverlayInstance> = Vec::new();
         let mut mask_tiles: Vec<wgpu::BindGroup> = Vec::new();

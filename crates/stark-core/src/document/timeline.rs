@@ -1,4 +1,4 @@
-//! The timeline abstraction (DESIGN.md §5, §12).
+//! The timeline abstraction (§5, §12).
 //!
 //! `Session`/`Engine` only ever see the [`Timeline`] trait, so the storage
 //! strategy can change without touching them. [`LinearTimeline`] is the
@@ -33,12 +33,12 @@ pub trait Timeline {
     fn can_redo(&self) -> bool;
 
     /// All committed actions, oldest to newest — the basis of the save format
-    /// (DESIGN.md §8). For a replicated timeline this is the **full** log,
+    /// (§8). For a replicated timeline this is the **full** log,
     /// including `Undo` actions and the actions they suppress — exactly the
-    /// payload a joining peer needs (DESIGN.md §12.4).
+    /// payload a joining peer needs (§12.4).
     fn clone_actions(&self) -> Vec<Action>;
 
-    /// Shared-mode undo (DESIGN.md §5.4): the action an "undo" should target by
+    /// Shared-mode undo (§5.4): the action an "undo" should target by
     /// logging an [`ActionKind::Undo`], or `None` if undo is plain timeline
     /// navigation (the solo path). The engine asks this first and only falls
     /// back to [`Timeline::undo`] when it returns `None`.
@@ -47,12 +47,12 @@ pub trait Timeline {
     }
 
     /// Shared-mode redo: the **`Undo` action** a "redo" should itself undo
-    /// (redo is an `Undo` of an `Undo`, DESIGN.md §12.3), or `None`.
+    /// (redo is an `Undo` of an `Undo`, §12.3), or `None`.
     fn redo_as_action(&self) -> Option<ActionId> {
         None
     }
 
-    /// Integrate an action authored elsewhere (DESIGN.md §12.1). Returns whether
+    /// Integrate an action authored elsewhere (§12.1). Returns whether
     /// it was new (false = duplicate or unsupported by this timeline).
     fn merge(&mut self, _action: Action, _ctx: &mut ApplyCtx) -> bool {
         false
@@ -60,7 +60,7 @@ pub trait Timeline {
 
     /// Where the playhead stands and how far it can travel — `(applied, total)`,
     /// both counted in actions — or `None` for a timeline that cannot be scrubbed
-    /// (MISSING_FEATURES §2.4).
+    /// (§18.2.4).
     ///
     /// `None` rather than `(n, n)` because the two say different things: a
     /// timeline with nowhere to go is still a timeline, while a
@@ -91,15 +91,15 @@ pub trait Timeline {
         Vec::new()
     }
 
-    /// How materializations have been serviced (DESIGN.md §12.6). Solo timelines
+    /// How materializations have been serviced (§12.6). Solo timelines
     /// report zeros — the counters exist for the replicated fast paths.
     fn stats(&self) -> TimelineStats {
         TimelineStats::default()
     }
 }
 
-/// Counters for how the replicated timeline absorbed log changes (DESIGN.md
-/// §12.6) — the observable difference between the commutation fast path and a
+/// Counters for how the replicated timeline absorbed log changes
+/// (§12.6) — the observable difference between the commutation fast path and a
 /// rewind-and-replay, which pixels alone can't show (that's the point).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TimelineStats {
@@ -108,7 +108,7 @@ pub struct TimelineStats {
     pub fast_removes: u64,
     /// Changes that replayed something: a partially-commuting undo, a
     /// concurrent arrival landing mid-sequence, a joining peer's whole log
-    /// (DESIGN.md §12.2).
+    /// (§12.2).
     pub rebuilds: u64,
     /// Actions re-applied by those rebuilds — the work the fast path avoids.
     pub replayed: u64,
@@ -151,7 +151,7 @@ impl Timeline for LinearTimeline {
 
     fn push(&mut self, action: Action, ctx: &mut ApplyCtx) {
         self.redo.clear();
-        // Infallible apply (DESIGN.md §5) — no error to handle.
+        // Infallible apply (§5) — no error to handle.
         self.history.push_action_with(action, ctx);
     }
 
@@ -193,7 +193,7 @@ impl Timeline for LinearTimeline {
     }
 
     /// Scrubbing **is** the undo/redo split, moved in bulk rather than one step at
-    /// a time (MISSING_FEATURES §2.4). Nothing new is stored: the applied prefix
+    /// a time (§18.2.4). Nothing new is stored: the applied prefix
     /// and the withheld suffix are the two halves this type already had, so a
     /// scrub leaves the timeline in a state undo could equally have produced —
     /// which is what makes it safe to paint from wherever the playhead was left.
@@ -279,7 +279,7 @@ fn undone_ids(log: &[Action]) -> HashSet<ActionId> {
 /// (which must be sorted by id): the id of the latest effective redo (an
 /// `Undo` of an `Undo`) that revived it.
 ///
-/// This is what implements *redo-at-top* (DESIGN.md §12.3): a redone action
+/// This is what implements *redo-at-top* (§12.3): a redone action
 /// re-materializes at the redo's own slot — the top of the stack as of the
 /// redo — rather than its original position. For the redoing client that makes
 /// redo a plain append; peers converge because the key is a pure function of
@@ -331,7 +331,7 @@ fn effective_indices(log: &[Action]) -> Vec<usize> {
     indices
 }
 
-/// The **effective sequence** of a shared action log (DESIGN.md §12.3): the
+/// The **effective sequence** of a shared action log (§12.3): the
 /// actions that actually shape the document — every non-`Undo` action that no
 /// effective `Undo` suppresses — in materialization order (total order by id,
 /// except that a redone action sits at its reviving redo's slot, see
@@ -351,7 +351,7 @@ pub fn effective_actions(log: &[Action]) -> Vec<Action> {
         .collect()
 }
 
-/// Multi-peer timeline (DESIGN.md §12): a grow-only set of actions with the
+/// Multi-peer timeline (§12): a grow-only set of actions with the
 /// total order given by [`ActionId`] `(lamport, actor)`. The canonical state is
 /// the deterministic replay of the *effective* actions in that order; two peers
 /// that have seen the same set of actions therefore compute identical pixels
@@ -359,7 +359,7 @@ pub fn effective_actions(log: &[Action]) -> Vec<Action> {
 /// materialization cache: when an action arrives out of order (or an `Undo`
 /// changes effectiveness mid-log), we pop back to the first divergence and
 /// replay forward — cost scales with how far back the change lands, kept
-/// shallow by the history crate's dense snapshot retention (DESIGN.md §12.2).
+/// shallow by the history crate's dense snapshot retention (§12.2).
 pub struct ReplicatedTimeline {
     /// Whose undo/redo this timeline answers for ([`Timeline::undo_as_action`]).
     actor: ActorId,
@@ -417,8 +417,8 @@ impl ReplicatedTimeline {
     /// Make `history` match the current effective sequence.
     ///
     /// The change is almost always a single action entering or leaving the
-    /// sequence (one call per log insert), so this classifies it (DESIGN.md
-    /// §12.6):
+    /// sequence (one call per log insert), so this classifies it
+    /// (§12.6):
     ///
     /// - an action **removed** (an undo landed) is handed to the history's
     ///   `remove_action_with`, which shifts it past everything it commutes with
@@ -430,7 +430,7 @@ impl ReplicatedTimeline {
     ///   §12.3) is just pushed;
     /// - anything else — a concurrent arrival landing mid-sequence, a joining
     ///   peer's whole log — rewinds to the first divergence and replays forward
-    ///   (DESIGN.md §12.2). Cheap in practice: a concurrent arrival sits near
+    ///   (§12.2). Cheap in practice: a concurrent arrival sits near
     ///   the top of the stack by construction, so the rewind is shallow.
     ///
     /// Untouched prefixes keep their snapshots (and their tiles' `Arc`s) as-is
@@ -483,7 +483,7 @@ impl ReplicatedTimeline {
             return;
         }
 
-        // Rewind to the first divergence and replay forward (DESIGN.md §12.2).
+        // Rewind to the first divergence and replay forward (§12.2).
         self.stats.rebuilds += 1;
         let mut materialized = mat.len();
         while materialized > diverge {
@@ -561,7 +561,7 @@ impl Timeline for ReplicatedTimeline {
     }
 
     /// Navigation undo doesn't exist in a shared session — undo is a logged
-    /// action so peers can order it (DESIGN.md §12.3). The engine routes
+    /// action so peers can order it (§12.3). The engine routes
     /// through [`Timeline::undo_as_action`] first, so this is unreachable in
     /// practice; it conservatively does nothing.
     fn undo(&mut self, _ctx: &mut ApplyCtx) -> bool {

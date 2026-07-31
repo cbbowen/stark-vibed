@@ -1,9 +1,9 @@
-//! `DocState`: the versioned document state (DESIGN.md §5.1).
+//! `DocState`: the versioned document state (§5.1).
 //!
 //! `DocState` is the `history` crate's `State`, so cloning it must be cheap: it
 //! holds `rpds` persistent collections whose clone is a handful of `Arc` bumps.
 //! The heavy GPU memory lives behind `TileHandle`s shared across versions, and
-//! is reclaimed when the last version referencing a tile drops (DESIGN.md §5.2).
+//! is reclaimed when the last version referencing a tile drops (§5.2).
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use super::selection::Selection;
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::SurfaceId;
 
-/// Inclusive tile-coordinate bounding box of all populated tiles (DESIGN.md §6),
+/// Inclusive tile-coordinate bounding box of all populated tiles (§6),
 /// i.e. the explored extent of the infinite canvas.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct CanvasBounds {
@@ -40,7 +40,7 @@ impl CanvasBounds {
 }
 
 /// Where a layer sits in the tree: whose stack it is in, and how far up that
-/// stack (GROUP_DESIGN.md §8).
+/// stack (§14.8).
 ///
 /// Enough to put a removed layer back exactly where it was, and no more. A full
 /// index path would say the same thing in a form that goes stale the moment
@@ -57,7 +57,7 @@ pub struct LayerSite {
 }
 
 /// The full document: a **tree** of layers (each may carry others — a group is
-/// a layer with a non-empty `carries`, GROUP_DESIGN.md §2), the explored
+/// a layer with a non-empty `carries`, §14.2), the explored
 /// bounds, and the selection masks that gate where tools may act.
 #[derive(Clone)]
 pub struct DocState {
@@ -65,7 +65,7 @@ pub struct DocState {
     /// [`carries`](Layer::carries) is the group it is the base of.
     pub layers: Vector<Layer>,
     pub bounds: CanvasBounds,
-    /// The active selection **of each actor** (DESIGN.md §6.8, PEER_DESIGN.md §3).
+    /// The active selection **of each actor** (§6.8, §17.3).
     ///
     /// Document state, not session state: a stroke's pixels depend on the mask it
     /// was drawn through, so replay has to be able to reconstruct it — which is why
@@ -79,7 +79,7 @@ pub struct DocState {
     /// An absent entry is the unrestricted selection, so an actor who never selects
     /// costs nothing and a solo document has at most one entry.
     selections: HashTrieMap<ActorId, Selection>,
-    /// The physical canvas surface (DESIGN.md §6.4). Document state: which canvas
+    /// The physical canvas surface (§6.4). Document state: which canvas
     /// a piece was painted on is part of what the document *is*, it is saved, and
     /// reopening on a different weave would be a different painting. Today it is
     /// read only by the media pass (§6.3), so a switch changes no stored pixel —
@@ -87,7 +87,7 @@ pub struct DocState {
     /// deposition gate read it without becoming a history change.
     pub surface: SurfaceId,
     /// The canvas substrate colour — the ground the paint sits on — as straight
-    /// sRGB (FRAME_DESIGN.md §5).
+    /// sRGB (§15.5).
     ///
     /// Document state on the same argument §6.4 makes for the weave: which ground
     /// a piece was painted on is part of what it *is*, and it must be saved. It
@@ -96,7 +96,7 @@ pub struct DocState {
     ///
     /// Distinct from a matte layer, which is a slab of opaque *paint*: the
     /// substrate sits under everything, is lit, and the canvas weave shows through
-    /// it (the media pass composites paint over it, DESIGN.md §6.3).
+    /// it (the media pass composites paint over it, §6.3).
     pub background: [f32; 3],
 }
 
@@ -106,14 +106,14 @@ pub struct DocState {
 /// a highlight can read lighter than the bare canvas.
 pub const DEFAULT_BACKGROUND: [f32; 3] = [0.85, 0.85, 0.85];
 
-/// The canvas a new document starts on (DESIGN.md §6.4): linen, not `Flat`. The
+/// The canvas a new document starts on (§6.4): linen, not `Flat`. The
 /// weave is what paint has to sit in — its relief is read by the stroke pass
 /// whether or not `MediaParams::surface_strength` makes the light show it — so it
 /// is the honest starting substrate, and `Flat` is the deliberate switch away.
 ///
 /// Distinct from `SurfaceId::default()`, which stays `Flat`: that is the *builtin*
 /// the surface registry falls back to before any bytes arrive (the frontend fetches
-/// the linen height map at runtime — DESIGN.md §6.6).
+/// the linen height map at runtime — §6.6).
 pub const DEFAULT_SURFACE: SurfaceId = SurfaceId::Linen;
 
 impl DocState {
@@ -128,7 +128,7 @@ impl DocState {
         }
     }
 
-    /// The same document on a different canvas surface (DESIGN.md §6.4).
+    /// The same document on a different canvas surface (§6.4).
     pub fn with_surface(&self, surface: SurfaceId) -> Self {
         Self {
             surface,
@@ -136,7 +136,7 @@ impl DocState {
         }
     }
 
-    /// The same document on a different substrate colour (FRAME_DESIGN.md §5).
+    /// The same document on a different substrate colour (§15.5).
     pub fn with_background(&self, background: [f32; 3]) -> Self {
         Self {
             background,
@@ -144,7 +144,7 @@ impl DocState {
         }
     }
 
-    /// `actor`'s selection mask (DESIGN.md §6.8, PEER_DESIGN.md §3). An actor with
+    /// `actor`'s selection mask (§6.8, §17.3). An actor with
     /// no entry has selected nothing, which *is* the unrestricted selection.
     ///
     /// Returned by value because that is what the callers want and it costs a
@@ -170,7 +170,7 @@ impl DocState {
         self.selections.iter().map(|(a, s)| (*a, s))
     }
 
-    /// The same document with `actor`'s selection replaced (DESIGN.md §6.8).
+    /// The same document with `actor`'s selection replaced (§6.8).
     ///
     /// A universal selection is *removed* rather than stored, so "no selection" has
     /// exactly one representation: `selections()` never yields an empty mask, and an
@@ -231,7 +231,7 @@ impl DocState {
         walk(&self.layers, id, None)
     }
 
-    /// Where `id` sits, for a restore to put it back (GROUP_DESIGN.md §8).
+    /// Where `id` sits, for a restore to put it back (§14.8).
     pub fn site_of(&self, id: LayerId) -> Option<LayerSite> {
         fn walk(
             layers: &Vector<Layer>,
@@ -247,8 +247,8 @@ impl DocState {
     }
 
     /// Whether anything composites **beneath** `id` — a sibling lower in its
-    /// stack, or, recursively, beneath the layer carrying it (GROUP_DESIGN.md
-    /// §4.3).
+    /// stack, or, recursively, beneath the layer carrying it
+    /// (§14.4.3).
     ///
     /// The one predicate behind both relational properties: a layer's blend mode
     /// and its clip are live exactly when this holds, and inert together at the
@@ -282,7 +282,7 @@ impl DocState {
         self.insert(Layer::new(id), carrier, above)
     }
 
-    /// Insert a matte layer the same way — FRAME_DESIGN.md §2. A frame is one of
+    /// Insert a matte layer the same way — §15.2. A frame is one of
     /// these on top of the stack.
     pub fn insert_matte(
         &self,
@@ -312,8 +312,8 @@ impl DocState {
         }
     }
 
-    /// Put `layer` back at `site` — the inverse of removing it (GROUP_DESIGN.md
-    /// §8). It comes back carrying whatever it carried, because a `Layer` owns
+    /// Put `layer` back at `site` — the inverse of removing it
+    /// (§14.8). It comes back carrying whatever it carried, because a `Layer` owns
     /// its subtree.
     ///
     /// A site whose carrier has since been removed falls back to the top of the
@@ -365,7 +365,7 @@ impl DocState {
     /// if absent).
     ///
     /// The subtree goes as one because the subtree *is* the group
-    /// (GROUP_DESIGN.md §2): removing a base and leaving what stood on it would
+    /// (§14.2): removing a base and leaving what stood on it would
     /// leave layers whose blend modes and clips were written against a backdrop
     /// that no longer exists. Promoting what it carries is a different
     /// operation, and it has its own command — see [`Self::move_layer`], which
@@ -383,7 +383,7 @@ impl DocState {
     }
 
     /// Set whether a layer clips to the paint beneath it (no-op if absent) —
-    /// GROUP_DESIGN.md §4.
+    /// §14.4.
     pub fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
         self.map_layer(id, |l| Layer { clip, ..l.clone() })
     }
@@ -423,7 +423,7 @@ impl DocState {
     /// it carries**, so a whole group travels as one.
     ///
     /// This is the *only* structural move, and it is deliberately one operation
-    /// rather than three (GROUP_DESIGN.md §8): reordering within a stack is
+    /// rather than three (§14.8): reordering within a stack is
     /// `carrier` unchanged, **carrying** a layer onto another is `carrier` set,
     /// and **releasing** it is `carrier` cleared. There is nothing a "group"
     /// command would do that this does not already say.
@@ -436,7 +436,7 @@ impl DocState {
     ///   would detach the subtree from the document entirely. Two peers can
     ///   concurrently ask for the two halves of one; the total order
     ///   `(lamport, actor)` means the second to apply sees the first's result and
-    ///   refuses, so no tree-CRDT cycle machinery is needed (PEER_DESIGN.md §9).
+    ///   refuses, so no tree-CRDT cycle machinery is needed (§17.9).
     /// - **An unknown carrier**, for the reason [`Self::insert`] gives.
     pub fn move_layer(
         &self,
@@ -487,10 +487,10 @@ impl DocState {
     ///
     /// Bounds are **paint-only**: a matte covers the infinite plane, so counting
     /// it would make `bounds` unbounded and break both "frame to content" and
-    /// export's no-frame fallback (FRAME_DESIGN.md §6). `Layer::tiles` is empty
+    /// export's no-frame fallback (§15.6). `Layer::tiles` is empty
     /// for a matte, so this falls out rather than needing a branch.
     ///
-    /// `pub(crate)` for the timeline's patch restore (DESIGN.md §12.6), which
+    /// `pub(crate)` for the timeline's patch restore (§12.6), which
     /// splices layer records back into the tree.
     pub(crate) fn with_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();

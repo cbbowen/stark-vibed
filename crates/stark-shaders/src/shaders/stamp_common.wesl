@@ -1,4 +1,4 @@
-// Shared swept-segment scaffolding for the stamp pass (DESIGN.md §6.2), imported
+// Shared swept-segment scaffolding for the stamp pass (§6.2), imported
 // by the per-color-space stamp shaders. Everything here is color-space-agnostic:
 // the tile transform + prefix-τ bindings, the oriented-quad vertex, and the
 // swept optical-depth lookup. Each variant differs only in how the fragment
@@ -15,7 +15,7 @@ struct TileXform {
     // across the stroke — per-segment variation (pressure, drain) rides the instance
     // attributes, and colour dynamics (below) jitter it per fragment.
     color: vec4<f32>,
-    // Colour dynamics (DESIGN.md §6.2): noise frequency per lookup axis
+    // Colour dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
     // .z; .w unused.
     noise_freq: vec4<f32>,
@@ -26,12 +26,12 @@ struct TileXform {
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
-// Prefix-τ volume (DESIGN.md §6.2, §6.6): x = travel, y = lateral, array layer = shape
+// Prefix-τ volume (§6.2, §6.6): x = travel, y = lateral, array layer = shape
 // orientation (one slice per relative angle, sampled with wrapping). Round tips are
 // rotation-invariant and have a single slice; image stamps carry up to
 // MAX_ORIENTATION_LAYERS. A 2D array (not a 3D texture) so the mask keeps its full size.
 @group(1) @binding(0) var prefix_tex: texture_2d_array<f32>;
-// The colour-dynamics noise field (DESIGN.md §6.2): a tileable 2-D tile
+// The colour-dynamics noise field (§6.2): a tileable 2-D tile
 // (three signed channels) sampled at (lateral, arc) with a repeat sampler.
 // A 1×1 zero tile is bound when the brush's jitter is off.
 @group(2) @binding(0) var noise_tex: texture_2d<f32>;
@@ -50,7 +50,7 @@ struct VsOut {
     @location(2) @interpolate(flat) dir: vec2<f32>,
     // radius, arc length, the paint height laid per unit swept optical depth (the
     // brush's `add` source faded by its remaining load — the one amount knob,
-    // DESIGN.md §6.1/§6.2), and the brush opacity at this segment.
+    // §6.1/§6.2), and the brush opacity at this segment.
     @location(3) @interpolate(flat) geom: vec4<f32>,
     // Shape orientation in turns ∈ [0,1) (the relative angle between the shape's
     // native axis and the travel direction, picking the prefix-τ slice, §6.6); the
@@ -79,7 +79,7 @@ struct Sweep {
     warp: f32,
 }
 
-// Where `p` sits in the travel frame of one swept segment (DESIGN.md §6.2).
+// Where `p` sits in the travel frame of one swept segment (§6.2).
 //
 // A straight sweep is the plain rotation into (along, across). A **curved** one is
 // the annulus about the centre of curvature *unrolled* into that same straight frame:
@@ -221,8 +221,8 @@ fn sweep_of(in: VsOut) -> Sweep {
 }
 
 // The brush's colour channels (per the color space) at this fragment: the
-// stroke-constant colour, offset by the colour-dynamics noise field (DESIGN.md
-// §6.2). The lookup domain is **stroke-local** — (lateral offset from the
+// stroke-constant colour, offset by the colour-dynamics noise field
+// (§6.2). The lookup domain is **stroke-local** — (lateral offset from the
 // centreline, arc length along the stroke), both in canvas px — so the pattern
 // belongs to the stroke rather than to the canvas it lands on: the same gesture
 // carries the same colour variation wherever it is drawn. Both coordinates are

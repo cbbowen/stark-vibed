@@ -1,4 +1,4 @@
-//! Per-layer blend modes (MISSING_FEATURES.md §0.4): the light-combining family
+//! Per-layer blend modes (§18.0.4): the light-combining family
 //! and the compositor's per-layer isolation that makes it possible.
 //!
 //! The interesting assertions are not "it looks different" — they are the algebraic
@@ -328,7 +328,7 @@ fn black_is_the_identity_through_the_round_trip() {
         (ColorSpaceId::Mixbox, MUTED, 8u8),
         // A saturated orange is not. Three concentrations cannot express it exactly;
         // Mixbox carries the difference in a *residual* that this engine drops so the
-        // channels fit alongside coverage (DESIGN.md §6.7), and the CPU conversion
+        // channels fit alongside coverage (§6.7), and the CPU conversion
         // loses the same ~12 levels of blue on this colour before any of it reaches
         // the GPU. So the bound here is not slack for a suspect shader — it is the
         // documented cost of saying "this much light" in pigment, and it is why a

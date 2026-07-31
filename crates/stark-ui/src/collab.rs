@@ -1,4 +1,4 @@
-//! Shared-drawing UI glue (DESIGN.md §12): hosting and joining sessions, plus
+//! Shared-drawing UI glue (§12): hosting and joining sessions, plus
 //! the two pumps between the engine and the network —
 //!
 //! - **outgoing**: after every dispatched command, [`flush_outbox`] broadcasts
@@ -87,7 +87,7 @@ pub fn share(state: AppState) {
         match CollabSession::host(doc, opts).await {
             Ok(session) => {
                 // Seed every locally-imported brush so peers can fetch any the
-                // snapshot didn't already bundle (DESIGN.md §12.4).
+                // snapshot didn't already bundle (§12.4).
                 for (id, bytes) in assets {
                     session.add_asset(id, bytes);
                 }
@@ -263,7 +263,7 @@ fn install(state: AppState, mut session: CollabSession) {
                         (Some(r.observe()), true)
                     }
                     // A peer moved, switched layer, or drew another stretch of a
-                    // live stroke (PEER_DESIGN.md §4). Repaint only when the frame
+                    // live stroke (§17.4). Repaint only when the frame
                     // reached the *canvas*, which `merge_presence` is what decides:
                     // a cursor and a name are DOM chrome drawn from the roster, which
                     // the presence pump pushes on its own cadence, so a remote
@@ -302,7 +302,7 @@ fn install(state: AppState, mut session: CollabSession) {
 }
 
 /// Publish this client's presence on a fixed cadence for as long as the session
-/// lives (PEER_DESIGN.md §5.1).
+/// lives (§17.5).
 ///
 /// A *pull* loop rather than a push from `dispatch`: presence is a latch, so what
 /// matters is its current value, and pulling on a fixed tick is what turns a 240 Hz

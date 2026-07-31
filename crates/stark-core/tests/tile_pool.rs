@@ -1,5 +1,5 @@
 //! Tile-pool test: the recycling allocator returns dropped tiles to its free
-//! list, so history retention drives GPU memory reclamation (DESIGN.md §5.1,
+//! list, so history retention drives GPU memory reclamation (§5.1,
 //! §6.1). The render path itself is covered end-to-end by the golden tests.
 //!
 //! Needs a GPU adapter; skips (rather than fails) where none is available.
@@ -51,7 +51,7 @@ fn pool_recycles_dropped_tiles() {
 
 /// Free lists are keyed by format: recycling a colour texture must not satisfy a
 /// request for an aux one. This is what lets a scratch tile take a wider aux
-/// (`SCRATCH_AUX_FORMAT`) from the same pool as a persistent tile (DESIGN.md §6.1).
+/// (`SCRATCH_AUX_FORMAT`) from the same pool as a persistent tile (§6.1).
 #[test]
 fn free_lists_do_not_cross_formats() {
     let Some(ctx) = context_or_skip() else { return };

@@ -1,8 +1,8 @@
-// Swept-segment brush rasterization for the OKLAB color space (DESIGN.md §6.2).
+// Swept-segment brush rasterization for the OKLAB color space (§6.2).
 //
 // Shares all geometry/sweep math with the other color spaces via
 // `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile in the
-// normalized representation (DESIGN.md §6.1): colour is premultiplied by **opacity**
+// normalized representation (§6.1): colour is premultiplied by **opacity**
 // (not coverage), height lives in the aux. Within a stroke the colour target
 // over-blends (premult-consistent) and the aux target accumulates additively.
 //
@@ -60,9 +60,9 @@ fn fs_main(in: VsOut) -> FsOut {
     // Premultiplied by opacity: the colour target over-blends, so per-arc rates sum
     // through the overlapping segment quads to the local deposit. The colour is
     // per-fragment: colour dynamics jitter it across the footprint and along the
-    // stroke (DESIGN.md §6.2).
+    // stroke (§6.2).
     out.color = vec4<f32>(brush_color(in, sw) * op, op);
-    // The wide scratch aux (DESIGN §6.1):
+    // The wide scratch aux (§6.1):
     //   .x = laid height — linear in τ, so the additive target sums to the true path
     //        integral of the footprint and a second pass builds impasto in full
     //        (a saturating form would flatten out instead);

@@ -1,4 +1,4 @@
-//! GPU execution of the affine transform (TRANSFORM_DESIGN.md).
+//! GPU execution of the affine transform (§16).
 //!
 //! [`TransformRenderer::apply`] takes a layer's tile map, the author's selection,
 //! and six floats, and produces the transformed tile map plus the carried
@@ -19,7 +19,7 @@
 //!
 //! Like [`StrokeRenderer`](super::stroke::StrokeRenderer) this holds only
 //! immutable GPU objects, so it is cheap to `Clone` and rides in the
-//! `Action::Context` (DESIGN.md §5).
+//! `Action::Context` (§5).
 
 use std::collections::BTreeMap;
 
@@ -303,7 +303,7 @@ impl TransformRenderer {
     /// Transform `base` (one layer's tiles) and `selection` (the author's mask)
     /// under `affine`. `None` rejects the whole action — unusable affine, or more
     /// tiles than the caps allow — deterministically, so peers and replays agree
-    /// (TRANSFORM_DESIGN.md §1).
+    /// (§16.1).
     pub fn apply(
         &self,
         pool: &TilePool,
@@ -352,7 +352,7 @@ impl TransformRenderer {
             tiles = tiles.remove(coord);
         }
 
-        // The mask, carried under the same affine (pure Replace — §1).
+        // The mask, carried under the same affine (pure Replace — §16.1).
         let mut mask_tiles: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle> =
             HashTrieMap::new();
         for (dest, sources) in &mask_plan.rewrites {

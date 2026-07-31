@@ -1,6 +1,6 @@
 //! CPU benchmarks for the stroke *geometry* pipeline: fitting raw pen reports into
 //! a cubic B-spline, and flattening that spline into the polyline the renderer
-//! sweeps (DESIGN.md §6.2).
+//! sweeps (§6.2).
 //!
 //! Separate from `benches/stroke.rs` because these need no adapter and are
 //! nanosecond-to-microsecond scale, so they get criterion's ordinary settings and

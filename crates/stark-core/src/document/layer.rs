@@ -1,13 +1,13 @@
-//! Layers (DESIGN.md §5.1, FRAME_DESIGN.md §2, GROUP_DESIGN.md). A layer is
+//! Layers (§5.1, §15.2, §14). A layer is
 //! either a sparse, persistent map of painted tiles or a **matte** — a
 //! procedural region filled with a flat colour — plus its presentation
 //! properties, plus the layers it **carries**.
 //!
 //! A layer stacks with premultiplied "over" unless its [`BlendMode`] says
 //! otherwise or it is [`clip`](Layer::clip)ped, in which case the compositor
-//! isolates it and merges it through the mode (MISSING_FEATURES.md §0.4). A
+//! isolates it and merges it through the mode (§18.0.4). A
 //! layer that carries others is a **group** — there is no separate group type —
-//! and the same isolation, recursed, is what composites it (GROUP_DESIGN.md §7).
+//! and the same isolation, recursed, is what composites it (§14.7).
 
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ use crate::gpu::tile::TilePairHandle;
 pub struct LayerId(pub u64);
 
 impl LayerId {
-    /// Mint the id for `actor`'s `n`th layer (PEER_DESIGN.md §9).
+    /// Mint the id for `actor`'s `n`th layer (§17.9).
     ///
     /// Two peers adding a layer at the same moment must not mint the same id. A
     /// counter resynced from the log does exactly that — both peers see `n` layers,
@@ -72,7 +72,7 @@ fn mix32(x: u64) -> u32 {
     ((z ^ (z >> 31)) >> 32) as u32
 }
 
-/// How a layer combines with the layers below it (MISSING_FEATURES.md §0.4).
+/// How a layer combines with the layers below it (§18.0.4).
 ///
 /// Everything past `Normal` combines the two layers' **light** rather than covering
 /// one with the other — and none of it is Screen. Screen is `a + b − ab`, which is
@@ -143,14 +143,14 @@ pub enum BlendMode {
     /// *does* push past display white where two strong lights coincide — and that
     /// overflow is the point. The composite targets are half-float, so the excess
     /// survives into the media pass and comes back through its highlight roll-off
-    /// (DESIGN.md §6.3) as a genuine bloom with a filmic shoulder, rather than being
+    /// (§6.3) as a genuine bloom with a filmic shoulder, rather than being
     /// clipped at the blend. Reach for it on flame, specular hits, anything meant to
     /// read as *brighter than the paper*.
     ///
     /// `k` sets how quickly the curve bends: large `k` tends to plain addition,
     /// small `k` tends to `max`. It is fixed at [`DRAGO_K`] rather than exposed —
     /// per-layer blend parameters are the seam a future mapping UI lands on, and
-    /// DESIGN's precedent is that no knob appears before something turns it.
+    /// this codebase's precedent (§1) is that no knob appears before something turns it.
     Drago,
     /// **Multiply** — the same construction read the other way round, with
     /// `T(x) = e^{-x}`, which collapses to
@@ -225,13 +225,13 @@ impl BlendMode {
     ///
     /// The compositor's fast path: a run of consecutive `Normal` layers needs no
     /// isolation and draws straight into the accumulator, so an ordinary document
-    /// costs exactly what it did before blend modes existed (DESIGN.md §6.3).
+    /// costs exactly what it did before blend modes existed (§6.3).
     pub fn is_normal(self) -> bool {
         matches!(self, Self::Normal)
     }
 }
 
-/// The region a matte layer fills (FRAME_DESIGN.md §2).
+/// The region a matte layer fills (§15.2).
 ///
 /// A region is a coverage field over the *infinite* plane, so what matters is its
 /// value at infinity — which is what makes the frame case (fill everywhere except
@@ -245,10 +245,10 @@ impl BlendMode {
 /// canvas position — satisfies the §6.4 seam invariant for free.
 ///
 /// One variant, because one is built. This is the seam where the `SelectionOp`
-/// algebra lands (FRAME_DESIGN.md §9, P4), bringing comic gutters, lasso mattes
-/// and whole-plane slabs at once. Per DESIGN's own precedent (`tooth`, `drag`,
-/// `bleed` were deleted rather than kept inert), no variant appears here before
-/// it does something.
+/// algebra lands (§15.9, P4), bringing comic gutters, lasso mattes
+/// and whole-plane slabs at once. Per this codebase's own precedent (§1 —
+/// `tooth`, `drag`, `bleed` were deleted rather than kept inert), no variant
+/// appears here before it does something.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MatteRegion {
     /// Everything *outside* this canvas-space rect — the frame / mat board.
@@ -258,7 +258,7 @@ pub enum MatteRegion {
 impl MatteRegion {
     /// The rect this region is defined against, in canvas px. For `OutsideRect`
     /// this is the *hole* — the piece — which is what export frames against
-    /// (FRAME_DESIGN.md §6).
+    /// (§15.6).
     pub fn rect(&self) -> (Vec2, Vec2) {
         match self {
             Self::OutsideRect { min, max } => (*min, *max),
@@ -273,7 +273,7 @@ impl MatteRegion {
     }
 }
 
-/// What a layer is made of (FRAME_DESIGN.md §2).
+/// What a layer is made of (§15.2).
 #[derive(Clone)]
 pub enum LayerContent {
     /// Painted tiles. Only populated ones exist — this sparsity is the infinite
@@ -291,7 +291,7 @@ pub enum LayerContent {
     /// a constant thickness, so its interior lights flat (zero height gradient —
     /// no weave, and the paint film's uniform sheen reads as an even wash rather
     /// than a glint) while its boundary catches light the same way any stroke edge
-    /// does. See FRAME_DESIGN.md §4 for why it must write the aux target at all,
+    /// does. See §15.4 for why it must write the aux target at all,
     /// and why its blend there is `over` rather than additive.
     ///
     /// [`BrushParams::color`]: crate::document::BrushParams::color
@@ -305,7 +305,7 @@ pub enum LayerContent {
 /// properties.
 ///
 /// **A group is a layer with a non-empty [`carries`](Self::carries)**, and there
-/// is no other kind (GROUP_DESIGN.md §2). One sentence covers the whole model:
+/// is no other kind (§14.2). One sentence covers the whole model:
 /// a layer's [`blend`](Self::blend), [`clip`](Self::clip) and
 /// [`opacity`](Self::opacity) describe how it *together with everything it
 /// carries* meets what lies beneath it.
@@ -326,8 +326,8 @@ pub enum LayerContent {
 pub struct Layer {
     pub id: LayerId,
     pub blend: BlendMode,
-    /// Clip to the paint beneath — the clipping mask, restated (GROUP_DESIGN.md
-    /// §4).
+    /// Clip to the paint beneath — the clipping mask, restated
+    /// (§14.4).
     ///
     /// The layer exists only where there is paint under it **in its own stack**:
     /// it inherits the alpha of everything composited below it there, not of
@@ -361,7 +361,7 @@ pub struct Layer {
     pub name: Option<Arc<str>>,
     pub content: LayerContent,
     /// The layers carried on this one, **bottom-to-top** — the group this layer
-    /// is the base of (GROUP_DESIGN.md §2). Empty for a layer that carries
+    /// is the base of (§14.2). Empty for a layer that carries
     /// nothing, which is every layer until one is dropped onto it.
     ///
     /// They composite *over* this layer's own content and beneath whatever comes
@@ -370,7 +370,7 @@ pub struct Layer {
     ///
     /// A `Vector` for the same reason the document's stack is one — the whole
     /// tree is cloned per document version, so every level of it has to be
-    /// persistent (DESIGN.md §5.1).
+    /// persistent (§5.1).
     pub carries: Vector<Layer>,
 }
 
@@ -418,7 +418,7 @@ impl Layer {
 
     /// Whether strokes may be painted onto this layer. A matte has no tile map,
     /// so a stroke targeting one is refused rather than silently swallowed or
-    /// magically rasterized (FRAME_DESIGN.md §7).
+    /// magically rasterized (§15.7).
     pub fn is_paintable(&self) -> bool {
         matches!(self.content, LayerContent::Paint(_))
     }
@@ -435,7 +435,7 @@ impl Layer {
     }
 
     /// Whether this layer carries any others — i.e. whether it is a **group**
-    /// (GROUP_DESIGN.md §2). There is no other kind of group, so this is the
+    /// (§14.2). There is no other kind of group, so this is the
     /// whole test.
     pub fn is_group(&self) -> bool {
         !self.carries.is_empty()

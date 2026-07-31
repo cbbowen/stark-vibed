@@ -1,4 +1,4 @@
-// Selection outline — the "marching ants" (DESIGN.md §6.8).
+// Selection outline — the "marching ants" (§6.8).
 //
 // Drawn over the finished image, one instanced quad per mask tile, in the same
 // canvas→NDC frame as the compositor. The outline is recovered from the mask itself
@@ -78,7 +78,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     // A peer's selection (tint.a > 0) is a flat line in that peer's colour, so it
     // reads as "someone else's region" at a glance and never as your own
-    // (PEER_DESIGN.md §3).
+    // (§17.3).
     if in.tint.a > 0.0 {
         return vec4<f32>(in.tint.rgb, alpha * in.tint.a);
     }

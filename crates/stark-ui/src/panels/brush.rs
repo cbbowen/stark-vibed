@@ -218,7 +218,7 @@ pub fn set_shape(state: AppState, shape: BrushShape) {
     update_brush(state, move |b| b.shape = shape);
 }
 
-/// Set what orients the brush shape as it sweeps (DESIGN.md §6.6).
+/// Set what orients the brush shape as it sweeps (§6.6).
 pub fn set_orientation(state: AppState, orientation: OrientationSource) {
     update_brush(state, move |b| b.orientation = orientation);
 }

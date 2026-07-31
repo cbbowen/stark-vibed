@@ -1,7 +1,7 @@
-//! Affine transform of the selected paint (TRANSFORM_DESIGN.md).
+//! Affine transform of the selected paint (§16).
 //!
 //! The exactness invariants carry most of the weight, because they are what the
-//! cut/paste laws were chosen for (TRANSFORM_DESIGN.md §2–§4): the identity
+//! cut/paste laws were chosen for (§16.2–§16.4): the identity
 //! transform is a byte-for-byte no-op at any feather, integer translations move
 //! the painting without a texel of resampling loss, and involutions (a flip, a
 //! there-and-back move of the whole layer) compose to the identity through
@@ -100,7 +100,7 @@ fn assert_identical(a: &RgbaImage, b: &RgbaImage, what: &str) {
     );
 }
 
-// --- The exactness invariants (TRANSFORM_DESIGN.md §4) ---------------------------
+// --- The exactness invariants (§16.4) ---------------------------
 
 #[test]
 fn identity_transform_is_a_noop() {
@@ -122,7 +122,7 @@ fn identity_transform_is_a_noop() {
 
 /// The strong form of the law test: at a *feathered* edge the cut takes `h·m`,
 /// the paste puts `h·m` back, and the lift law recombines them to the original —
-/// chosen precisely so this holds (TRANSFORM_DESIGN.md §2). Inside the ramp the
+/// chosen precisely so this holds (§16.2). Inside the ramp the
 /// values are genuinely recomputed (`h·(1−m) + h·m`), and the render target's
 /// f32→f16 store rounding is implementation-defined, so a ramp texel may land
 /// one f16 tile ulp off — at most one display LSB. Coverage 0 and 1 take exact
@@ -445,7 +445,7 @@ fn undo_restores_the_untransformed_painting() {
 }
 
 /// A transform is six floats in the log: saving and reloading must replay to the
-/// same pixels (DESIGN.md §9's replay-equivalence, extended to the new action).
+/// same pixels (§9's replay-equivalence, extended to the new action).
 #[test]
 fn save_load_reproduces_a_transform() {
     let Some(mut engine) = engine_or_skip() else {
@@ -478,7 +478,7 @@ fn save_load_reproduces_a_transform() {
 /// runs the same renderer over the same committed tiles as `DocCommand::Transform`,
 /// so the previewed frame and the committed frame must be identical — the §1.3
 /// live == committed invariant, extended to the transform gesture
-/// (TRANSFORM_DESIGN.md §6).
+/// (§16.6).
 #[test]
 fn preview_matches_the_commit() {
     use stark_core::command::ViewCommand;
@@ -535,7 +535,7 @@ fn selection_hull_follows_ops_and_transforms() {
 
 /// The one golden: genuinely resampled output — a rotation about the blob's
 /// centre — pinning the bilinear quality, the seam-free tiling of the quads, and
-/// the carried mask's outline (DESIGN.md §9).
+/// the carried mask's outline (§9).
 #[test]
 fn golden_rotate() {
     let Some(mut engine) = engine_or_skip() else {

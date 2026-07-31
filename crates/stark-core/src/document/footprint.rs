@@ -1,5 +1,5 @@
 //! Action footprints: which parts of the document an action reads and writes
-//! (DESIGN.md §12.6).
+//! (§12.6).
 //!
 //! Two actions **commute** — applying them in either order produces the same
 //! state — when neither writes anything the other reads or writes. The
@@ -55,7 +55,7 @@ impl TileRect {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Prop {
     Blend,
-    /// Whether the layer clips to the paint beneath it (GROUP_DESIGN.md §4).
+    /// Whether the layer clips to the paint beneath it (§14.4).
     /// Its own resource beside `Blend` rather than folded into it: the two are
     /// applied at the same step but written by different actions, and a clip
     /// toggle has to commute with a blend change on the same layer.
@@ -80,7 +80,7 @@ pub enum Resource {
     /// One presentation property of a layer.
     Prop(LayerId, Prop),
     /// The **shape of the whole layer tree** — every stack's order and who
-    /// carries whom (GROUP_DESIGN.md §8). One coarse resource: two concurrent
+    /// carries whom (§14.8). One coarse resource: two concurrent
     /// restructures genuinely don't commute, and structural edits are rare
     /// enough that finer granularity would buy nothing.
     ///
@@ -89,11 +89,11 @@ pub enum Resource {
     /// halves of a cycle conflict here, so the log's total order serializes them
     /// and the second one to apply sees the first's result and declines.
     StackOrder,
-    /// An actor's selection mask (PEER_DESIGN.md §3).
+    /// An actor's selection mask (§17.3).
     Selection(ActorId),
-    /// The canvas surface (DESIGN.md §6.4).
+    /// The canvas surface (§6.4).
     Surface,
-    /// The substrate colour (FRAME_DESIGN.md §5).
+    /// The substrate colour (§15.5).
     Background,
 }
 
@@ -128,8 +128,8 @@ impl Footprint {
     }
 }
 
-/// A [`Footprint`] is the [`history::Centralizer`] of an [`Action`] (DESIGN.md
-/// §12.6): the history builds it **once** per removal and asks it about each
+/// A [`Footprint`] is the [`history::Centralizer`] of an [`Action`]
+/// (§12.6): the history builds it **once** per removal and asks it about each
 /// later action, which is what lets `try_remove_action_with` shift an undone
 /// action past everything it commutes with instead of replaying it.
 ///
@@ -196,7 +196,7 @@ pub fn footprint(action: &Action) -> Footprint {
         },
         // Both anchors are read — the sibling to insert above and the layer whose
         // stack to insert into — because either being absent changes where the
-        // layer lands (GROUP_DESIGN.md §8).
+        // layer lands (§14.8).
         ActionKind::AddLayer { id, carrier, above } => Footprint {
             reads: [*carrier, *above]
                 .into_iter()
@@ -401,8 +401,8 @@ mod tests {
     }
 
     /// Clipping and the blend mode are applied at the same step but are separate
-    /// resources, so setting one commutes with setting the other (GROUP_DESIGN.md
-    /// §8) — while two clip toggles on one layer do not.
+    /// resources, so setting one commutes with setting the other
+    /// (§14.8) — while two clip toggles on one layer do not.
     #[test]
     fn clip_commutes_with_blend_but_not_with_itself() {
         let clip = act(1, ActionKind::SetLayerClip(LayerId(0), true));
@@ -419,7 +419,7 @@ mod tests {
 
     /// Carrying a layer is a `MoveLayer`, so it conflicts with every other
     /// structural edit through `StackOrder` — which is what serializes the two
-    /// halves of a would-be cycle (GROUP_DESIGN.md §8).
+    /// halves of a would-be cycle (§14.8).
     #[test]
     fn carrying_conflicts_with_the_reverse_carry() {
         let a_onto_b = act(

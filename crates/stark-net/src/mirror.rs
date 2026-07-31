@@ -31,7 +31,7 @@ impl Mirror {
         }
     }
 
-    /// The full session snapshot, as the save-format container (DESIGN.md §8 ==
+    /// The full session snapshot, as the save-format container (§8 ==
     /// §12.4's join payload): total-ordered actions + every known brush asset.
     pub fn document_file(&self) -> DocumentFile {
         let mut file = DocumentFile::new(self.actions.values().cloned().collect());

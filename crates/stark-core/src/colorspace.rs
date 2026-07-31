@@ -1,4 +1,4 @@
-//! Pluggable color spaces (DESIGN.md §6.7).
+//! Pluggable color spaces (§6.7).
 //!
 //! Tile channels are color-space-agnostic: tools deposit values and only assume
 //! they blend linearly. A [`ColorSpace`] gives those channels meaning — the tile
@@ -48,11 +48,11 @@ pub trait ColorSpace {
     /// The space's color channels → straight display RGB (picker readout/export).
     fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3];
 
-    /// WGSL for the stamp deposit pass (color + aux MRT outputs) — DESIGN §6.2.
+    /// WGSL for the stamp deposit pass (color + aux MRT outputs) — §6.2.
     fn stamp_shader(&self) -> &'static str;
-    /// WGSL for the media/lighting + present pass — DESIGN §6.3.
+    /// WGSL for the media/lighting + present pass — §6.3.
     fn media_shader(&self) -> &'static str;
-    /// WGSL for the per-layer blend pass — MISSING_FEATURES §0.4. One isolated
+    /// WGSL for the per-layer blend pass — §18.0.4. One isolated
     /// layer merged into the accumulator through a light-combining mode.
     ///
     /// A space needs its own variant because blending happens in *light* (normalized
@@ -89,7 +89,7 @@ fn additive() -> wgpu::BlendState {
 
 /// The default perceptual color space: Oklab `(L, a, b)` premultiplied by the
 /// paint's *opacity* (in the color alpha), with paint height in a one-channel aux
-/// (DESIGN.md §6.5/§6.1). The media pass derives visible alpha from opacity × thickness,
+/// (§6.5/§6.1). The media pass derives visible alpha from opacity × thickness,
 /// where thickness is the difference between paint height and surface height.
 pub struct OkLabColorSpace;
 
@@ -141,7 +141,7 @@ impl ColorSpace for OkLabColorSpace {
     }
 }
 
-/// Experimental **Mixbox** pigment-mixing space (DESIGN.md §6.7). Colors are
+/// Experimental **Mixbox** pigment-mixing space (§6.7). Colors are
 /// stored as Mixbox latent pigment *concentrations* `(c0, c1, c2)` — the fourth,
 /// `c3 = 1 − (c0+c1+c2)`, is derived, and the latent residual is dropped so the
 /// three concentrations fit alongside coverage. Because the latent mixes linearly,
@@ -195,7 +195,7 @@ impl ColorSpace for MixboxColorSpace {
     }
     /// The one space that needs it: expressing combined *light* back as a pigment
     /// mixture is Mixbox's LUT, the inverse of the polynomial the media pass runs
-    /// forward (MISSING_FEATURES §0.4).
+    /// forward (§18.0.4).
     fn needs_pigment_lut(&self) -> bool {
         true
     }

@@ -1,4 +1,4 @@
-//! Stroke path fitting and adaptive flattening (DESIGN.md §6.2).
+//! Stroke path fitting and adaptive flattening (§6.2).
 //!
 //! Three representations, deliberately distinct:
 //!
@@ -134,7 +134,7 @@ type GeomCtrl = OMatrix<f32, Dyn, Const<2>>;
 /// which the clamped end condition pins them to.
 ///
 /// `time` is seconds since the stroke started rather than an absolute clock —
-/// that is what velocity and timelapse want (DESIGN.md §8), and it halves the
+/// that is what velocity and timelapse want (§8), and it halves the
 /// field.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlPoint {
@@ -172,7 +172,7 @@ pub struct IntermediateSample {
     pub time: f32,
     /// Arc length from the stroke start (canvas px), measured along the emitted
     /// polyline — the distance axis that the load drain, the colour-dynamics
-    /// noise, and the tool reservoir are parameterized by (DESIGN.md §6.2).
+    /// noise, and the tool reservoir are parameterized by (§6.2).
     pub dist: f32,
 }
 
@@ -494,7 +494,7 @@ impl PathFitter {
     /// A span of a clamped cubic B-spline reads at most two control points past its
     /// own index (see [`span_count`]), so span `k` is final once control points
     /// `0..=k+1` are frozen: `f` frozen control points settle `f - 1` spans. This is
-    /// the hook for incremental repaint (DESIGN.md §6.2) — render
+    /// the hook for incremental repaint (§6.2) — render
     /// `0..frozen_spans()` once and re-render only the short tail after it.
     pub fn frozen_spans(&self) -> usize {
         if self.finished {
@@ -508,7 +508,7 @@ impl PathFitter {
     /// public face of [`frozen`](Self::frozen).
     ///
     /// This is what lets a live gesture be published incrementally
-    /// (PEER_DESIGN.md §5): a frozen control point never moves again, so a peer that
+    /// (§17.5): a frozen control point never moves again, so a peer that
     /// has been told about it never has to be told again, and the wire cost of a
     /// stroke follows its tail rather than its length.
     pub fn frozen_points(&self) -> usize {
@@ -807,7 +807,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 // ---------------------------------------------------------------------------
 //
 // [`flatten`] replaces a piece of curve with one edge, and the renderer sweeps that
-// edge as a **circular arc** rather than a chord (DESIGN.md §6.2). So this is where
+// edge as a **circular arc** rather than a chord (§6.2). So this is where
 // the arc is defined, and the flattening budget below is measured against it — the
 // two have to be the same primitive or the budget is describing geometry nobody draws.
 //
@@ -999,8 +999,8 @@ pub fn span_count(control_points: usize) -> usize {
 /// once control points `0..=k+1` are — hence `frozen - 1`. Split out from
 /// [`PathFitter::frozen_spans`] because a *received* stroke has the same question to
 /// answer without the fitter that produced it: a peer knows which of its control
-/// points are settled (everything the sender has stopped resending, PEER_DESIGN.md
-/// §5) and needs the same incremental repaint from them.
+/// points are settled (everything the sender has stopped resending,
+/// §17.5) and needs the same incremental repaint from them.
 pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
     frozen.saturating_sub(1).min(span_count(total))
 }
@@ -1020,7 +1020,7 @@ pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
 }
 
 /// Expand `knots` into a polyline, subdividing only where the error budget
-/// requires it (DESIGN.md §6.2).
+/// requires it (§6.2).
 pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<IntermediateSample> {
     flatten_spans(knots, 0..span_count(knots.len()), 0.0, tol)
 }

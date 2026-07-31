@@ -1,4 +1,4 @@
-//! Export (FRAME_DESIGN.md §6): rendering a frame to an image.
+//! Export (§15.6): rendering a frame to an image.
 //!
 //! The claim export rests on is that it is *the same path the screen takes* — every
 //! visible layer through the media pass, just with the view centred on the frame at
@@ -158,7 +158,7 @@ fn scale_changes_resolution_not_framing() {
 /// A transparent export is a cut-out: bare canvas is genuinely absent, painted
 /// texels are not. The substrate composite is skipped rather than the alpha being
 /// tweaked afterwards, so bare canvas must not carry substrate colour either
-/// (FRAME_DESIGN.md §6).
+/// (§15.6).
 #[test]
 fn transparent_export_cuts_out_the_paint() {
     let Some(mut engine) = engine_or_skip() else {
@@ -214,7 +214,7 @@ fn transparent_export_cuts_out_the_paint() {
     assert!(corners(&opaque).iter().all(|c| c[3] == 255));
 }
 
-/// The substrate is document state now (FRAME_DESIGN.md §5), so it travels with
+/// The substrate is document state now (§15.5), so it travels with
 /// the export instead of depending on whichever frontend asked for it.
 #[test]
 fn export_uses_the_documents_ground() {
@@ -272,7 +272,7 @@ fn export_uses_the_documents_ground() {
 }
 
 /// Chrome never reaches a file: an active selection outlines on screen but must
-/// not appear in an export (FRAME_DESIGN.md §6).
+/// not appear in an export (§15.6).
 #[test]
 fn export_omits_the_selection_outline() {
     let Some(mut engine) = engine_or_skip() else {
@@ -328,7 +328,7 @@ fn export_omits_the_selection_outline() {
 }
 
 /// With no frame, export falls back to the painted bounds, then to the viewport —
-/// so it always means *something* on an unbounded canvas (FRAME_DESIGN.md §6).
+/// so it always means *something* on an unbounded canvas (§15.6).
 #[test]
 fn export_without_a_frame_falls_back() {
     let Some(mut engine) = engine_or_skip() else {
@@ -463,7 +463,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
 }
 
 /// The frame's *live* rect is what exports — a preview drag included, since the
-/// dialog reports a size while the user is still dragging (FRAME_DESIGN.md §7).
+/// dialog reports a size while the user is still dragging (§15.7).
 #[test]
 fn export_plan_reports_the_size_it_will_produce() {
     let Some(mut engine) = engine_or_skip() else {

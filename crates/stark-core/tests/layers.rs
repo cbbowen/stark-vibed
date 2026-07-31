@@ -1,4 +1,4 @@
-//! Step-6a layer tests (DESIGN.md §6, build order 6a): active-layer painting,
+//! Step-6a layer tests (§6, build order 6a): active-layer painting,
 //! per-layer opacity/visibility, reordering, and undo of layer operations.
 
 mod common;

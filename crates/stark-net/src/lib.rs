@@ -1,5 +1,5 @@
 //! `stark-net` — the iroh transport for shared multi-user drawings
-//! (DESIGN.md §12.4).
+//! (§12.4).
 //!
 //! `stark-core` owns the merge semantics (the `ReplicatedTimeline` CRDT over
 //! the action log); this crate owns the wire and nothing else:
@@ -14,7 +14,7 @@
 //!   save-format [`DocumentFile`](stark_core::DocumentFile), which already
 //!   bundles referenced brush assets — over a dedicated ALPN, then rides the
 //!   gossip tail. Brush blobs a later stroke references are fetched over the
-//!   same ALPN on demand (content-addressed, DESIGN.md §6.6).
+//!   same ALPN on demand (content-addressed, §6.6).
 //!
 //! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_core::Engine::take_outbox)
 //! into [`CollabSession::broadcast`], and feed [`RemoteEvent`]s into

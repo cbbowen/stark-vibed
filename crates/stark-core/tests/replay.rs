@@ -1,7 +1,7 @@
-//! Step-3 history & replay-equivalence tests (DESIGN.md §9).
+//! Step-3 history & replay-equivalence tests (§9).
 //!
 //! These guard the invariant that pixels are a deterministic function of the
-//! action log (DESIGN.md §1): identical scripts produce identical images, undo
+//! action log (§1): identical scripts produce identical images, undo
 //! then redo is lossless, and undoing the last action reproduces the exact
 //! state of a history that never had it — which exercises the `history` crate's
 //! checkpoint-and-replay path through the GPU. (Serialize round-trip joins this
@@ -78,7 +78,7 @@ fn undo_matches_shorter_history() {
     );
 }
 
-// --- Timeline scrubbing (MISSING_FEATURES §2.4) -----------------------------
+// --- Timeline scrubbing (§18.2.4) -----------------------------
 //
 // The scrubber moves the same applied/withheld split undo and redo move, so what
 // these guard is that moving it in bulk lands exactly where moving it one step at
@@ -86,7 +86,7 @@ fn undo_matches_shorter_history() {
 // keeping a second playhead beside it.
 //
 // These build on `engine_or_skip` rather than the blue-ground helper the tests
-// above use: setting the substrate is a *logged* action (FRAME_DESIGN.md §5), so a
+// above use: setting the substrate is a *logged* action (§15.5), so a
 // blue engine starts one step into its own history and every position here would
 // have to be written as an offset from that. What is being asserted is arithmetic
 // on positions, and it should read as the arithmetic it is.

@@ -1,4 +1,4 @@
-// Selection-mask rasterization (DESIGN.md §6.8).
+// Selection-mask rasterization (§6.8).
 //
 // One draw per affected tile: a fullscreen pass over a `TILE_TEX` R8 target that
 // evaluates the op's shape **analytically at canvas position** and combines it with

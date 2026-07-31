@@ -1,4 +1,4 @@
-//! GPU execution of a region fill (MISSING_FEATURES §0.4).
+//! GPU execution of a region fill (§18.0.4).
 //!
 //! [`FillRenderer::apply`] takes a layer's tile map, the author's selection, and a
 //! [`FillOp`], and produces the filled tile map — copy-on-write like every stroke,
@@ -13,7 +13,7 @@
 //! `paint_common.wesl` shares with the brush.
 //!
 //! Like the other renderers this holds only immutable GPU objects, so it is cheap to
-//! `Clone` and rides in the `Action::Context` (DESIGN.md §5).
+//! `Clone` and rides in the `Action::Context` (§5).
 
 use std::sync::Arc;
 

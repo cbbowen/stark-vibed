@@ -1,4 +1,4 @@
-//! Turning and mirroring the view (MISSING_FEATURES §1.2).
+//! Turning and mirroring the view (§18.1.2).
 //!
 //! **The claim.** How you are looking at the painting is not part of the painting.
 //! Rotation and the mirror are view state: they change every pixel the *screen*

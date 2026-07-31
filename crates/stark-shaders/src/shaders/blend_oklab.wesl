@@ -1,4 +1,4 @@
-// Layer blending for the OKLAB colour space (MISSING_FEATURES.md §0.4). The
+// Layer blending for the OKLAB colour space (§18.0.4). The
 // composited channels are premultiplied Oklab with the layer's *coverage* in
 // alpha (composite.wesl), so the only space-specific work is Oklab ↔ normalized
 // XYZ; all of the light algebra and the compositing tail live in `blend_common`.

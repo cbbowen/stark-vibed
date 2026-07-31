@@ -1,5 +1,5 @@
 //! End-to-end: two engines converge over *real* iroh endpoints on loopback
-//! (DESIGN.md §12.4, build-order step 12) — no relays, no external services.
+//! (§12.4, build-order step 12) — no relays, no external services.
 //! This is the wire-level counterpart of stark-core's `tests/collab.rs`.
 
 use std::time::Duration;
@@ -58,7 +58,7 @@ fn identical(a: &RgbaImage, b: &RgbaImage) -> bool {
     a.width == b.width && a.height == b.height && a.pixels == b.pixels
 }
 
-/// Apply every queued remote event to the engine (the UI pump, DESIGN.md §12.4).
+/// Apply every queued remote event to the engine (the UI pump, §12.4).
 fn drain_events(events: &mut UnboundedReceiver<RemoteEvent>, engine: &mut Engine) -> usize {
     let mut applied = 0;
     while let Ok(event) = events.try_recv() {

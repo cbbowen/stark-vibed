@@ -1,5 +1,5 @@
 //! The floating Select panel: shape tool, what the shape *does*, and feather
-//! (DESIGN.md §6.8, MISSING_FEATURES §0.4).
+//! (§6.8, §18.0.4).
 
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
@@ -11,7 +11,7 @@ use crate::widgets::Slider;
 use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool};
 
-/// Shape tools (DESIGN.md §6.8): rect / ellipse / lasso, what the next gesture does
+/// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does
 /// with the region they enclose, and the feather applied to its edge.
 ///
 /// The tool chips **arm** a tool rather than selecting a mode to stay in: one of
@@ -25,7 +25,7 @@ use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool
 /// rather than four ways of combining plus an odd one out. Rect, ellipse and lasso
 /// never produced selections; they produce **coverage**, and the four combine modes
 /// are only the four ways that coverage can land on the mask. `Fill` lands it on the
-/// paint instead (MISSING_FEATURES §0.4), and everything the row already had comes
+/// paint instead (§18.0.4), and everything the row already had comes
 /// with it: the same shapes, the same rasterizer, the same feather slider below.
 ///
 /// Two consequences the row does not have to explain, because they follow:
@@ -152,7 +152,7 @@ pub fn SelectPanel() -> Element {
 }
 
 /// A small floating bar carrying the two commands that act on a **whole** selection
-/// (DESIGN.md §6.8). Mounted only while one is in force, which is the point: those
+/// (§6.8). Mounted only while one is in force, which is the point: those
 /// commands are meaningless without a selection, and a bar that is simply present or
 /// absent says the canvas is masked more directly than a pair of permanently-visible
 /// buttons that happen to be greyed out — and without spending panel space the rest
@@ -183,7 +183,7 @@ pub fn SelectionBar() -> Element {
                 span { class: "bar-label", "Selection" }
                 button {
                     class: "chip",
-                    title: "Move, scale or flip the selected paint (TRANSFORM_DESIGN.md)",
+                    title: "Move, scale or flip the selected paint (§16)",
                     onclick: move |_| crate::panels::transform::begin_transform(state),
                     "Transform"
                 }
@@ -224,7 +224,7 @@ pub fn SelectionBar() -> Element {
 }
 
 /// Fill whatever is selected, on the active layer, with the brush's paint
-/// (MISSING_FEATURES §0.4).
+/// (§18.0.4).
 ///
 /// Reads the colour and the amount off the brush rather than off controls of its
 /// own, which is the same choice [`ShapeAction::Fill`] makes: a fill lays the paint

@@ -1,4 +1,4 @@
-//! Step-5 save/load + timelapse tests (DESIGN.md §8).
+//! Step-5 save/load + timelapse tests (§8).
 //!
 //! Completes the replay-equivalence set from step 3: save → load reproduces the
 //! exact pixels, undo works after loading, the saved file is compact, and a
@@ -147,7 +147,7 @@ fn saved_file_is_compact() {
     eprintln!("400-sample stroke document: {} bytes", bytes.len());
 }
 
-/// The canvas surface is document state (DESIGN.md §6.4), so a mid-document switch
+/// The canvas surface is document state (§6.4), so a mid-document switch
 /// is a logged action: it survives save/load, and undo takes it back.
 ///
 /// `CanvasMeta::surface` records the surface the log *starts* from; the switch

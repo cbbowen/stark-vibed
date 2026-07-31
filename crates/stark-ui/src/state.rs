@@ -2,7 +2,7 @@
 //!
 //! [`dispatch`] is the single seam between the UI and the engine: every mutation
 //! goes through it, so repaint, observable refresh and collaboration broadcast
-//! happen in one place rather than at each call site (DESIGN.md §4).
+//! happen in one place rather than at each call site (§4).
 
 use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::prelude::*;
@@ -70,9 +70,9 @@ pub struct AppState {
     /// "the colour changed": a pick inside the field would then drag its own marker
     /// back onto the gamut boundary under the user's cursor.
     pub color_epoch: Signal<u64>,
-    /// The eyedropper (MISSING_FEATURES §0.2).
+    /// The eyedropper (§18.0.2).
     pub pick: PickState,
-    /// The transform gesture in flight (TRANSFORM_DESIGN.md §6): `Some` while the
+    /// The transform gesture in flight (§16.6): `Some` while the
     /// user is composing a move/scale/flip of the selected paint. View state —
     /// the engine sees only the previews it produces and the one commit on
     /// "Done".
@@ -82,12 +82,12 @@ pub struct AppState {
     /// Read and written only from non-component code (`peek`/`set`), so no
     /// component ever subscribes to it.
     pub paint_queued: Signal<bool>,
-    /// Everything to do with a shared drawing (DESIGN.md §12).
+    /// Everything to do with a shared drawing (§12).
     pub collab: CollabState,
     /// Timeline mode: scrubbing and playing back the history
-    /// (MISSING_FEATURES §2.4; `crate::panels::timeline`).
+    /// (§18.2.4; `crate::panels::timeline`).
     pub timeline: TimelineState,
-    /// The custom brush-shape library (DESIGN.md §6.6; `crate::shapes`).
+    /// The custom brush-shape library (§6.6; `crate::shapes`).
     pub shapes: ShapesState,
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
@@ -152,7 +152,7 @@ impl AppState {
 }
 
 /// Where a pointer stands relative to the transform widget's ellipse — which
-/// decides what a drag starting there does (TRANSFORM_DESIGN.md §6).
+/// decides what a drag starting there does (§16.6).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TransformRegion {
     /// Strictly inside: dragging translates.
@@ -165,7 +165,7 @@ pub enum TransformRegion {
     Outside,
 }
 
-/// The transform gesture being composed (TRANSFORM_DESIGN.md §6). The widget is
+/// The transform gesture being composed (§16.6). The widget is
 /// an **ellipse**: the image of a reference **circle** under the accumulated
 /// linear map, so the widget's shape *is* the transform — it stays a circle
 /// exactly as long as the transform is a similarity, and any distortion shows
@@ -179,7 +179,7 @@ pub enum TransformRegion {
 /// a similarity for the rim, a rank-1 stretch/shear for the outside. Gestures
 /// that were never used leave their factors out entirely — a pure move keeps
 /// `linear` bit-exactly the identity, which is what keeps it a pure translation
-/// through the engine's exactness invariants (TRANSFORM_DESIGN.md §4).
+/// through the engine's exactness invariants (§16.4).
 #[derive(Clone, Copy, PartialEq)]
 pub struct TransformState {
     /// The layer whose selected paint is being transformed.
@@ -230,8 +230,8 @@ impl TransformState {
         Affine2::from_mat2_translation(self.linear, self.center - self.linear * self.anchor)
     }
 
-    /// Classify a canvas-space pointer against the widget (TRANSFORM_DESIGN.md
-    /// §6): pull it back through the linear map into the reference circle's own
+    /// Classify a canvas-space pointer against the widget
+    /// (§16.6): pull it back through the linear map into the reference circle's own
     /// space, where the test is a radius. `band` is the rim's grab half-width in
     /// canvas px, converted to circle units by the widget's local radius along
     /// the pointer's direction.
@@ -431,7 +431,7 @@ mod transform_tests {
     fn the_reference_is_a_circle_matching_the_hull_ellipses_area() {
         // A 200×100 hull: the circle's area equals the inscribed ellipse's
         // (π·100·50), i.e. r = √(100·50) — not the ellipse itself, because a
-        // circle is what says "no distortion yet" (TRANSFORM_DESIGN.md §6).
+        // circle is what says "no distortion yet" (§16.6).
         let r = state().radius;
         assert!((r - 100.0f32.hypot(50.0)).abs() < 1e-3, "got {r}");
     }
@@ -465,7 +465,7 @@ mod transform_tests {
     }
 }
 
-/// Timeline mode's signals (MISSING_FEATURES §2.4), grouped because they are one
+/// Timeline mode's signals (§18.2.4), grouped because they are one
 /// mode's worth of view state: the mode itself, whether it is playing, and how fast.
 ///
 /// None of this is the *playhead* — that lives in the engine's timeline, where undo
@@ -491,7 +491,7 @@ pub struct TimelineState {
     pub task: Signal<Option<Task>>,
 }
 
-/// The eyedropper's signals (MISSING_FEATURES §0.2), grouped because they are one
+/// The eyedropper's signals (§18.0.2), grouped because they are one
 /// feature's worth of view state: the two options a sample is taken with, the latch
 /// that keeps Alt+drag from asking for samples faster than the GPU answers them, and
 /// the two flags that say where in the gesture we are.
@@ -533,8 +533,8 @@ pub struct CollabState {
     pub phase: Signal<collab::CollabPhase>,
     /// The last share/join failure, surfaced in the dialog.
     pub error: Signal<Option<String>>,
-    /// Who else is in the session, refreshed by the presence pump (PEER_DESIGN.md
-    /// §4). Its own signal rather than a field of `obs`: it changes on every remote
+    /// Who else is in the session, refreshed by the presence pump
+    /// (§17.4). Its own signal rather than a field of `obs`: it changes on every remote
     /// pointer move, and re-running the whole component tree at that rate to move a
     /// cursor would be absurd.
     pub peers: Signal<Vec<crate::render::PeerInfo>>,
@@ -549,7 +549,7 @@ pub struct CollabState {
     /// cancels it.
     pub pump: Signal<Option<Task>>,
     /// The outgoing presence pump — a fixed-cadence loop that drains the engine's
-    /// presence latch onto the mesh (PEER_DESIGN.md §5.1). Separate from `pump`
+    /// presence latch onto the mesh (§17.5). Separate from `pump`
     /// because it is a *pull* on a timer rather than a reaction to arriving events,
     /// but shares the same lifecycle.
     pub presence: Signal<Option<Task>>,
@@ -610,7 +610,7 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
 /// case that needs it: it arrives at pointer rate, and drawing our own cursor is the
 /// browser's job, so the full `dispatch` would repaint the canvas hundreds of times a
 /// second to show nothing. The value still reaches peers, because the presence pump
-/// reads it off the engine on its own cadence (PEER_DESIGN.md §5.1) rather than being
+/// reads it off the engine on its own cadence (§17.5) rather than being
 /// pushed from here.
 pub fn dispatch_quiet(state: AppState, command: impl Into<InputCommand>) {
     let mut renderer = state.renderer;

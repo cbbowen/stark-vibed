@@ -1,4 +1,4 @@
-//! The floating tool panels (DESIGN.md §11). One module per panel; the chrome that
+//! The floating tool panels (§11). One module per panel; the chrome that
 //! frames them and the order they stack in belong to [`crate::layout`].
 
 pub mod brush;

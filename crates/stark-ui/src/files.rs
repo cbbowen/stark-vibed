@@ -1,4 +1,4 @@
-//! Getting work in and out as files: save, open, and export (FRAME_DESIGN.md §6, DESIGN.md §8).
+//! Getting work in and out as files: save, open, and export (§15.6, §8).
 //!
 //! Two different things share this module because they are the same gesture from
 //! the user's side — a file leaves or arrives — but they are not the same object:
@@ -23,7 +23,7 @@ use stark_core::{Background, ExportScale, LayerId, Rendered};
 /// Extension for the native (replayable) document format.
 const DOC_EXT: &str = "stark";
 
-/// Write the document — the action log, not the pixels (DESIGN.md §8).
+/// Write the document — the action log, not the pixels (§8).
 pub fn save_document(state: AppState) {
     let bytes = state.renderer.read().as_ref().map(|r| r.save_bytes());
     match bytes {
@@ -42,7 +42,7 @@ pub fn save_document(state: AppState) {
 }
 
 /// Replace the document with one read from disk. Its full undo history comes back
-/// with it, because the file *is* the history (DESIGN.md §8).
+/// with it, because the file *is* the history (§8).
 pub fn open_document(state: AppState) {
     // Called straight from the menu handler: a file picker may only be opened
     // inside the user gesture that asked for it.
@@ -90,7 +90,7 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     // Export frames against a *matte layer*, which need not be the selected one —
     // the dialog is opened from a menu, and the user may be on a paint layer.
     // Prefer whatever is selected, else the topmost frame, else nothing (which
-    // falls back to the painted bounds, FRAME_DESIGN.md §6).
+    // falls back to the painted bounds, §15.6).
     let frame: Option<LayerId> = selected_frame(state).map(|(l, _)| l.id).or_else(|| {
         state.obs.read().as_ref().and_then(|o| {
             o.layers

@@ -1,6 +1,6 @@
 //! The physical canvas **surface** — a tileable height/bump map that affects both
 //! media shading
-//! (the relief catches light), DESIGN.md §6.4.
+//! (the relief catches light), §6.4.
 //!
 //! It is a single global, color-space-independent texture sampled in *canvas*
 //! space (so the weave pans and zooms with the canvas), shared by the stroke
@@ -22,7 +22,7 @@ pub const SURFACE_TILE_PX: f32 = 1024.0;
 ///
 /// Non-`Flat` surfaces need image bytes, which the *frontend* fetches at runtime
 /// and registers with the engine ([`crate::Engine::register_surface`]) — the
-/// engine embeds nothing (DESIGN.md §6.4, §Inputs).
+/// engine embeds nothing (§6.4, §Inputs).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum SurfaceId {
     /// Perfectly smooth: full height everywhere, so the
@@ -48,7 +48,7 @@ pub struct Surface {
 impl Surface {
     /// A perfectly smooth surface: a 1×1 *zero-height* texel. Paint always stands
     /// above it (so it shows everywhere) and the constant height has zero gradient
-    /// (no relief) — exactly equivalent to having no surface (DESIGN.md §6.4).
+    /// (no relief) — exactly equivalent to having no surface (§6.4).
     pub fn flat(ctx: &GpuContext) -> Self {
         Self {
             relief: 0.0,
@@ -166,7 +166,7 @@ impl crate::gpu::registry::Resource for SurfaceId {
 
     /// `Flat` is a 1x1 full-height texel: a constant
     /// height has zero gradient, so it is exactly equivalent to having no surface
-    /// (DESIGN.md §6.4).
+    /// (§6.4).
     fn is_builtin(self) -> bool {
         self == SurfaceId::Flat
     }

@@ -1,6 +1,6 @@
 //! Pointer and keyboard input: turning DOM events into
 //! [`InputCommand`](stark_core::InputCommand)s
-//! (DESIGN.md §4).
+//! (§4).
 
 use std::str::FromStr;
 
@@ -241,7 +241,7 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
             e.prevent_default();
         }
         Key::Character(c) if c.eq_ignore_ascii_case("y") => dispatch(state, DocCommand::Redo),
-        // Selection commands (DESIGN.md §6.8). "Select all" and "Deselect" are the
+        // Selection commands (§6.8). "Select all" and "Deselect" are the
         // same edit here — a selection covering the whole canvas *is* no selection —
         // so both shortcuts land on the same op.
         Key::Character(c) if c.eq_ignore_ascii_case("a") || c.eq_ignore_ascii_case("d") => {
@@ -268,7 +268,7 @@ fn handle_keyup(mut state: AppState, e: &web_sys::KeyboardEvent) {
 }
 
 /// Record whether Alt is held, so the canvas can wear the eyedropper cursor while it
-/// is (MISSING_FEATURES §0.2).
+/// is (§18.0.2).
 ///
 /// Read off the event's **modifier set** rather than off the Alt key itself: a
 /// keystroke that arrives after Alt was pressed or released while the window was not
@@ -284,7 +284,7 @@ fn track_alt(state: AppState, m: Modifiers) {
 }
 
 /// Sample the canvas colour under `pos` and load the brush with it — the eyedropper
-/// (MISSING_FEATURES §0.2).
+/// (§18.0.2).
 ///
 /// One sample at a time. A pick is a render plus an asynchronous readback, and
 /// Alt+drag asks for one per pointer move, so a move arriving while one is still in
@@ -398,15 +398,15 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
         pos: view.screen_to_canvas(elem_xy(e)),
         pressure: e.pressure(),
         // Pen tilt (degrees from vertical, ±90 per axis) → a canvas-space lean vector. The
-        // palette knife's deposit reads its component along the stroke direction (DESIGN
-        // §6.2); a mouse reports (0, 0), so the deposit falls back to its constant rate.
+        // palette knife's deposit reads its component along the stroke direction
+        // (§6.2); a mouse reports (0, 0), so the deposit falls back to its constant rate.
         tilt: Vec2::new(e.tilt_x() as f32, e.tilt_y() as f32) / 90.0,
         ..Default::default()
     })
 }
 
 /// End any in-progress stroke, shape gesture, pan, or eyedropper drag, and put back
-/// the shape action a modifier key overrode for the gesture (DESIGN.md §6.8). The
+/// the shape action a modifier key overrode for the gesture (§6.8). The
 /// canvas is no longer in hand once this returns, so the floating chrome fades back
 /// in.
 pub fn end_interaction(

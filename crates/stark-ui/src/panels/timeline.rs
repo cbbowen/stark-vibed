@@ -1,5 +1,5 @@
 //! Timeline mode: the history as something to travel through
-//! (MISSING_FEATURES §2.4, DESIGN.md §8).
+//! (§18.2.4, §8).
 //!
 //! The action log is already a timelapse — it is what the document *is*, and
 //! replaying it is what loading a file does. What this adds is a way to stand
@@ -180,7 +180,7 @@ fn play(state: AppState) {
     slot.set(Some(task));
 }
 
-/// The timeline bar: transport, scrubber, and speed (MISSING_FEATURES §2.4).
+/// The timeline bar: transport, scrubber, and speed (§18.2.4).
 ///
 /// Mounted by the app root only while the mode is on — like the modals, and unlike
 /// the other bars, because this one owns hooks and a component may not gain or lose
@@ -219,7 +219,7 @@ pub fn TimelineBar() -> Element {
 
     // A shared session has no single playhead to move: the document is a function of
     // a log peers are still appending to, so a scrub would be undone by the next
-    // arrival (DESIGN.md §12.1). Say so, rather than offer a control that does
+    // arrival (§12.1). Say so, rather than offer a control that does
     // nothing.
     let Some((at, total)) = range() else {
         return rsx! {

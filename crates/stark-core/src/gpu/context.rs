@@ -1,8 +1,8 @@
-//! GPU context: the wgpu handles the engine renders with (DESIGN.md §7).
+//! GPU context: the wgpu handles the engine renders with (§7).
 //!
-//! Per GOALS §Inputs the backend is *given* its wgpu resources by the frontend.
+//! Per CLAUDE.md the backend is *given* its wgpu resources by the frontend.
 //! [`GpuContext::from_parts`] is that path; [`GpuContext::headless`] is a
-//! convenience for tests and tools that need an offscreen device (DESIGN.md §9).
+//! convenience for tests and tools that need an offscreen device (§9).
 
 use crate::error::Result;
 
@@ -25,7 +25,7 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    /// Wrap wgpu handles supplied by the frontend (GOALS §Inputs).
+    /// Wrap wgpu handles supplied by the frontend (CLAUDE.md).
     pub fn from_parts(
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,

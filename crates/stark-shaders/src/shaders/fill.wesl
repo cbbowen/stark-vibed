@@ -1,4 +1,4 @@
-// Region fill: lay a parcel of paint through a coverage mask (MISSING_FEATURES §0.4).
+// Region fill: lay a parcel of paint through a coverage mask (§18.0.4).
 //
 // One fullscreen pass per written tile, and deliberately the *smallest* shader in
 // the engine, because a fill has almost nothing of its own. The coverage it lands
@@ -9,7 +9,7 @@
 //
 // The two masks are separate bindings rather than premultiplied on the CPU because
 // they mean different things: `region` is what this gesture drew, `gate` is the
-// author's selection (DESIGN.md §6.8) — the same gate a stroke passes through, so a
+// author's selection (§6.8) — the same gate a stroke passes through, so a
 // fill is clipped by a selection exactly as a brush is. Either may be a real tile
 // 1:1 with the destination *or* a 1×1 constant (`SelectionRenderer::mask_for`), and
 // the clamped loads read both through the same code.
@@ -78,7 +78,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let lat0 = bc.rgb / max(bc.a, EPS);
     // The parcel. Coverage scales the *height* — the amount of paint — never the
     // per-unit opacity, which is a property of the pigment and not of how much of
-    // it there is (DESIGN.md §6.1).
+    // it there is (§6.1).
     let h1 = f.p.x * cov;
     let m1 = f.c.w * h1;
 

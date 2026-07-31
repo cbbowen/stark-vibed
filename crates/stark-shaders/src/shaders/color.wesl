@@ -1,4 +1,4 @@
-// Oklab <-> display color conversions (DESIGN.md §6.5), shared by shader stages
+// Oklab <-> display color conversions (§6.5), shared by shader stages
 // via WESL imports. Mirrors the Rust constants in `color.rs` so CPU ingest and
 // GPU present agree exactly. (WGSL number literals may not contain underscores.)
 

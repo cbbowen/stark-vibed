@@ -1,5 +1,5 @@
 //! Turning a fitted path into swept segments, and the region measurements that decide
-//! where the stamp loop cuts one into pieces (DESIGN.md §6.2).
+//! where the stamp loop cuts one into pieces (§6.2).
 //!
 //! Both render paths flatten through here, so both see the same segments for the
 //! same record — which is what lets a live tail and the commit that replaces it
@@ -32,7 +32,7 @@ pub(super) struct Segment {
     /// Signed curvature of the centreline (1/canvas px), positive turning towards
     /// the left of `dir`. Exactly 0 for a straight sweep, which both render paths
     /// branch on — so a stroke the arc fit declines to bend is bit-identical to one
-    /// drawn before arcs existed (DESIGN.md §6.2).
+    /// drawn before arcs existed (§6.2).
     pub(super) curvature: f32,
     pub(super) radius: f32,
     /// Arc length of the centreline (canvas px) — the tip's own travel, which is the
@@ -40,19 +40,19 @@ pub(super) struct Segment {
     pub(super) length: f32,
     /// Paint **height** laid per unit swept optical depth: the brush's `add` source
     /// faded by the remaining load (`drain`). The single amount knob — the amount of
-    /// paint and its per-unit opacity are independent (DESIGN.md §6.1), which is why
+    /// paint and its per-unit opacity are independent (§6.1), which is why
     /// `opacity` below is not derived from it.
     pub(super) amount: f32,
     /// Paint opacity laid by this segment (the brush's opacity × remaining load).
     /// Drives the color/opacity channel; the amount laid is independent
-    /// (DESIGN.md §6.1, normalized representation).
+    /// (§6.1, normalized representation).
     pub(super) opacity: f32,
     /// Shape orientation for this segment as a fraction of a full turn ∈ [0, 1): the
     /// relative angle between the shape's native axis and the travel direction, used to
-    /// pick the prefix-τ orientation layer. 0 for follow-stroke (DESIGN.md §6.6).
+    /// pick the prefix-τ orientation layer. 0 for follow-stroke (§6.6).
     pub(super) orient: f32,
     /// Arc length from the stroke start to this segment's start (canvas px) — the
-    /// third axis of the colour-dynamics noise lookup (DESIGN.md §6.2).
+    /// third axis of the colour-dynamics noise lookup (§6.2).
     pub(super) dist: f32,
 }
 
@@ -97,7 +97,7 @@ pub(super) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 // positional budget on a primitive the other does not use.
 
 /// The taper's radius profile: the fraction of the brush's radius in force `t` of
-/// the way through a taper (DESIGN.md §6.2).
+/// the way through a taper (§6.2).
 ///
 /// `f(t) = t(3 − t²)/2` — the cubic pinned by `f(0) = 0`, `f(1) = 1`, `f'(1) = 0`,
 /// monotone on `[0, 1]`, and within 2% of `sin(πt/2)` everywhere. Both end
@@ -115,7 +115,7 @@ pub(super) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 ///
 /// A polynomial rather than the sine it approximates because it has to be
 /// bit-identical across platforms: the taper decides stored pixels, so replay,
-/// goldens and peers all have to agree on it (DESIGN.md §12.1), and `sin` is not
+/// goldens and peers all have to agree on it (§12.1), and `sin` is not
 /// specified to the last bit.
 fn taper_profile(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -140,7 +140,7 @@ const TAPER_STEP: f32 = 0.02;
 /// rather than a quality knob.
 const TAPER_MAX_PIECES: usize = 128;
 
-/// A stroke's taper, resolved for one span range (DESIGN.md §6.2).
+/// A stroke's taper, resolved for one span range (§6.2).
 ///
 /// Both lengths are in canvas px here, already scaled out of
 /// [`BrushParams::taper_px`] and — crucially — already **fitted to the stroke**: if
@@ -233,7 +233,7 @@ impl Taper {
     }
 }
 
-/// Build swept segments from the fitted control points (DESIGN.md §6.2): flatten
+/// Build swept segments from the fitted control points (§6.2): flatten
 /// the curve adaptively, then make each polyline edge a segment. The one-way load
 /// reservoir (`drain`) depletes with arc distance; radius follows pressure and the
 /// stroke's start/end tapers.
@@ -295,7 +295,7 @@ pub(super) fn generate_segments_in(
             radius: (b.radius * pressure * tap).max(0.5),
             length: len,
             // The `add` source is the one amount knob; the brush's opacity (color[3])
-            // rides the separate opacity channel (DESIGN.md §6.1).
+            // rides the separate opacity channel (§6.1).
             amount: b.dynamics.add * drain,
             opacity: b.color[3] * drain,
             orient: orientation_turns(b.orientation, mid_dir, tilt),
@@ -396,7 +396,7 @@ pub(super) fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]
 
 /// The per-stroke noise lookup translation in [0, 1)², derived from the stroke
 /// seed via splitmix64 — each stroke samples a fresh part of the tileable field,
-/// deterministically (replay and live == committed hold, DESIGN.md §6.2).
+/// deterministically (replay and live == committed hold, §6.2).
 pub(super) fn noise_offset(seed: u64) -> [f32; 2] {
     let mut state = seed;
     [(); 2].map(|_| {
@@ -412,7 +412,7 @@ pub(super) fn noise_offset(seed: u64) -> [f32; 2] {
 
 /// The shape's orientation for a segment, as a fraction of a full turn ∈ [0, 1): the
 /// relative angle between the shape's native axis and the travel direction `dir`, which
-/// picks the prefix-τ orientation layer (DESIGN.md §6.6).
+/// picks the prefix-τ orientation layer (§6.6).
 ///
 /// - [`OrientationSource::FollowStroke`]: the shape tracks the tangent, so the relative
 ///   angle is always 0 (the historical behaviour; for a round tip it is moot anyway).
@@ -433,7 +433,7 @@ pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2
 /// Tiles whose *texture* (interior + apron) any segment's swept capsule overlaps.
 /// The apron is included in `reach` so a stroke landing within a tile's interior
 /// but inside a neighbor's apron band re-renders that neighbor too, keeping the
-/// shared apron/interior overlap bit-identical (DESIGN.md §6.4).
+/// shared apron/interior overlap bit-identical (§6.4).
 pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
     let tile = TILE_SIZE as f32;
     let mut coords = BTreeSet::new();
@@ -496,7 +496,7 @@ fn region_of(lo: Vec2, hi: Vec2) -> (u32, u32) {
 }
 
 /// Split a stroke's segments into consecutive runs, each of which the stamp loop can
-/// evolve inside one [`MAX_REGION_DIM`]-bounded region (DESIGN.md §6.2).
+/// evolve inside one [`MAX_REGION_DIM`]-bounded region (§6.2).
 ///
 /// The loop works on a 1:1 copy of the canvas under the stroke, so a stroke that
 /// crosses the document would want a region the size of the document. It does not

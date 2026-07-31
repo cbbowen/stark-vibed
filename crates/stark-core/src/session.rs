@@ -1,4 +1,4 @@
-//! Session: ephemeral, non-historized state (DESIGN.md §3).
+//! Session: ephemeral, non-historized state (§3).
 //!
 //! The session holds the current tool/brush, the pan/zoom view, and the
 //! in-flight stroke being dragged out. None of this is undoable — switching
@@ -21,13 +21,13 @@ use crate::presence::{GestureSource, GestureTx};
 /// Minimum spacing (canvas px) between lasso vertices. The mask shader costs one
 /// segment test per texel per vertex, and pointer samples arrive far denser than a
 /// mask boundary can resolve, so the polyline is thinned as it is collected —
-/// bounding both the rasterization cost and the size of the logged op (DESIGN §6.8).
+/// bounding both the rasterization cost and the size of the logged op (§6.8).
 const LASSO_MIN_STEP: f32 = 2.0;
 
 /// Accumulates the stroke currently being drawn.
 ///
 /// Pointer samples are fitted to control points *as they arrive* rather than
-/// buffered and re-fitted on every move (DESIGN.md §6.2): the builder holds only
+/// buffered and re-fitted on every move (§6.2): the builder holds only
 /// the fitter's short working window, and each new sample costs work proportional
 /// to that window instead of to the stroke so far.
 struct StrokeBuilder {
@@ -38,8 +38,8 @@ struct StrokeBuilder {
     fitter: PathFitter,
 }
 
-/// What a finished shape gesture resolves to (DESIGN.md §6.8, MISSING_FEATURES
-/// §0.4): an edit to the selection, or a fill.
+/// What a finished shape gesture resolves to (§6.8,
+/// §18.0.4): an edit to the selection, or a fill.
 ///
 /// The two travel together because they are one gesture with one preview — the
 /// [`ShapeAction`] chosen when the drag started decides which of them the release
@@ -50,7 +50,7 @@ pub enum ShapeResult {
     Fill(FillOp),
 }
 
-/// The shape gesture currently being dragged out (DESIGN.md §6.8). Like a stroke it
+/// The shape gesture currently being dragged out (§6.8). Like a stroke it
 /// is ephemeral: only the [`ShapeResult`] it resolves to on release is committed,
 /// and the shape is derived from the drag on demand so a live preview and the
 /// committed op come from exactly the same code.
@@ -164,14 +164,14 @@ pub struct Session {
     pub brush: BrushParams,
     pub active_layer: LayerId,
     /// What the next shape gesture does with the region it encloses (§6.8,
-    /// MISSING_FEATURES §0.4) — one of the four ways to combine it into the
+    /// §18.0.4) — one of the four ways to combine it into the
     /// selection, or fill it.
     pub shape_action: ShapeAction,
     /// Edge softness (canvas px) applied by the next shape gesture, whichever
     /// action it takes: a feathered fill and a feathered selection are the same
     /// ramp, rasterized by the same shader.
     pub selection_feather: f32,
-    /// Whether collaborators' selection outlines are drawn (PEER_DESIGN.md §3).
+    /// Whether collaborators' selection outlines are drawn (§17.3).
     ///
     /// View state, so each client decides for itself and nothing about it is logged
     /// or sent. Off by default: knowing which region someone else is working inside
@@ -180,13 +180,13 @@ pub struct Session {
     /// that line?" should be "the one I drew".
     pub show_peer_selections: bool,
 
-    // --- the published half (PEER_DESIGN.md §4.1) -------------------------
+    // --- the published half (§17.4) -------------------------
     //
     // Everything above this line is *private* view state — pan/zoom, brush, the
     // selection mode. Everything below it, plus `active_layer` and the in-flight
     // gesture, is what [`Session::publish`] projects for other clients. The split is
     // recorded by what that method returns rather than described in a comment, which
-    // is the same discipline DESIGN §4 applies to the command classes.
+    // is the same discipline §4 applies to the command classes.
     /// This client's display name; empty until it is set, in which case peers fall
     /// back to [`default_name`]. Private because it has an invariant `name_chosen`
     /// carries — see [`Session::set_name`].
@@ -205,7 +205,7 @@ pub struct Session {
     /// continuation without a clock.
     gesture_ordinal: u64,
 
-    // Publish bookkeeping — the latch, not a queue (PEER_DESIGN.md §5.1).
+    // Publish bookkeeping — the latch, not a queue (§17.5).
     published: Option<Published>,
     /// Which run of this client is publishing; see [`Identity::boot`]. Rides every
     /// frame so a peer can order this run's frames against the previous one's.
@@ -274,7 +274,7 @@ impl Session {
     }
 
     /// The publishable half of this session, if anything a peer would care about has
-    /// changed since the last call — otherwise `None` (PEER_DESIGN.md §5.1).
+    /// changed since the last call — otherwise `None` (§17.5).
     ///
     /// This is a **latch, not a queue**: it reports the *current* state, and the
     /// path delta is computed here, at drain time, against what has actually been
@@ -381,7 +381,7 @@ impl Session {
     /// includes a selection gesture that so far encloses nothing).
     ///
     /// Only frozen control points are reported as settled: the provisional tail is
-    /// resent every frame because it can still move (DESIGN §6.2). That is the same
+    /// resent every frame because it can still move (§6.2). That is the same
     /// partition the renderer's `FrozenHead` uses, spent on the wire instead of on
     /// the GPU.
     fn gesture_source(&self) -> Option<GestureSource> {
@@ -413,7 +413,7 @@ impl Session {
         self.gesture_ordinal
     }
 
-    /// Whether a shape gesture is being dragged out (DESIGN.md §6.8).
+    /// Whether a shape gesture is being dragged out (§6.8).
     pub fn is_selecting(&self) -> bool {
         self.selecting.is_some()
     }
@@ -430,7 +430,7 @@ impl Session {
             feather: self.selection_feather,
             color: self.brush.color,
             // A fill lays the brush's own paint, so the amount is the brush's own
-            // source rate (DESIGN.md §6.2) — which is what makes a fill and a very
+            // source rate (§6.2) — which is what makes a fill and a very
             // slow brush over the same area agree, and means Fill needs no control
             // of its own.
             height: self.brush.dynamics.add,
@@ -484,7 +484,7 @@ impl Session {
     }
 
     /// Begin a stroke. `seed` is supplied by the engine so it can be derived
-    /// deterministically (DESIGN.md §6.2). `tolerance` is what the frontend says its
+    /// deterministically (§6.2). `tolerance` is what the frontend says its
     /// input resolves to, in canvas px ([`PathFitter::with_tolerance`]). Replaces any
     /// abandoned in-flight one.
     pub fn start_stroke(&mut self, tool: Tool, sample: InputSample, seed: u64, tolerance: f32) {
@@ -538,7 +538,7 @@ impl Session {
     }
 
     /// Snapshot the in-flight stroke as a record without ending it, for live
-    /// preview (DESIGN.md §6.2). `None` if no stroke is active.
+    /// preview (§6.2). `None` if no stroke is active.
     pub fn preview_record(&self) -> Option<StrokeRecord> {
         self.in_flight.as_ref().map(StrokeBuilder::to_record)
     }
@@ -573,7 +573,7 @@ impl StrokeBuilder {
             layer: self.layer,
             tool: self.tool,
             brush: self.brush,
-            // The fitted control points (DESIGN.md §6.2). Mid-stroke this ends in
+            // The fitted control points (§6.2). Mid-stroke this ends in
             // a provisional knot at the newest sample, so the preview reaches the
             // cursor; the same fitter produces the committed path, so live ==
             // committed.

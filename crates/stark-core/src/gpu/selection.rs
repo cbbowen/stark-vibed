@@ -1,4 +1,4 @@
-//! Selection-mask rasterization and gathering (DESIGN.md §6.8).
+//! Selection-mask rasterization and gathering (§6.8).
 //!
 //! Three small pieces, all colour-space independent (a mask is one coverage channel,
 //! whatever the paint is made of), so this survives a colour-space rebuild untouched:
@@ -74,7 +74,7 @@ pub struct SelectionRenderer {
 /// [`SelectionShape`] being rasterized (rect corners, ellipse centre + radii, lasso
 /// bounds) — and `edges` is the lasso's edge buffer, unused by the analytic shapes.
 struct RasterShape<'a> {
-    /// Coverage outside the rasterized tiles (DESIGN.md §6.8).
+    /// Coverage outside the rasterized tiles (§6.8).
     outside: bool,
     /// The result's analytic hull, as the plan computed it ([`Selection::hull`]).
     hull: Option<(Vec2, Vec2)>,

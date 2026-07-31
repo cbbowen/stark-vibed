@@ -44,7 +44,7 @@ icons! {
     // The Layers panel's header. A frame is a layer, so the two "add" buttons sit side
     // by side and the glyphs have to carry the difference the words used to: a stack
     // gains a member, versus a single bordered region coming into being — which is what
-    // a frame is (FRAME_DESIGN.md §7), and why it is a square rather than a stack.
+    // a frame is (§15.7), and why it is a square rather than a stack.
     ADD_LAYER => "stack-plus-bold",
     REMOVE_LAYER => "stack-minus-bold",
     ADD_FRAME => "plus-square-bold",

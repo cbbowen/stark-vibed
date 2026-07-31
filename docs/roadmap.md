@@ -1,0 +1,313 @@
+# Status, roadmap, and stability
+
+Build order, the gap analysis against the prior art, and the file-format stability policy — §13, §18, §19.
+
+> Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
+> Section numbers are stable — code cites them as `§n.m`.
+
+## 13. Build order & status
+
+Status lives here and nowhere else.
+
+| # | Step | Status |
+|---|---|---|
+| 1 | GPU + tiles skeleton | done |
+| 2 | Stroke MVP (command/action split, CoW tiles) | done |
+| 3 | History + golden harness | done |
+| 4 | Multi-channel + media pass | done |
+| 5 | Save/load + timelapse | done |
+| 6a | Layers | done |
+| 6b | Dioxus UI | done |
+| 6c | Navigation (pan/zoom) | done — tile LOD descoped |
+| 7 | Brush shapes & assets (§6.6) | done |
+| 8 | Cubic stroke interpolation (§6.2) | done — streaming append-only fit, adaptive flattening |
+| 8b | Continuous swept-segment stamping (§6.2) | done — one quad per segment, prefix-τ coverage |
+| 8c | Tile aprons (§6.4) | done — killed the lighting seams the media pass amplified |
+| 9 | Pluggable colour spaces (§6.7) | done — Oklab + Mixbox |
+| 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
+| — | Surface bump maps (§6.4) | done — relief only; the deposition tooth was removed unimplemented |
+| 11 | Brush file upload | done — custom shape library, localStorage, mid-session peer replication |
+| 12 | Collaboration (§12) | done |
+| — | Selections (§6.8) | done |
+| — | Fill (§6.8) | done — the fifth `ShapeAction` |
+| 13 | Per-client state: owned selections + presence (§17) | done |
+| — | Transform (§16) | done — engine, exactness tests, and the ellipse gesture UI; snapping + clipboard remain |
+| — | Frames, mattes, export (§15) | done — P1/P2/P3; the general region (P4) remains |
+| — | Blend modes (§6.3) | done — Glow / Radiance / Multiply |
+| — | Eyedropper (§18.0.2) | done |
+| — | View mirror & rotate (§18.1.2) | done |
+| — | Timeline mode / scrubber (§18.2.4) | done |
+| — | Groups & clipping (§14) | done |
+| 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
+
+Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
+collapsed into **one tool** (`add`/`lift`/`deposit`/`charge`), every axis a flux
+on the single conserved quantity. What remains are the *horizontal*-flux axes —
+drag as conservative finite-volume advection, ridge as a zero-mean doublet, bleed
+as a footprint-local blur. They are the intended design when built and are no
+longer carried as inert fields. Nor is the `wet` *channel*: a real diffusion
+model would reintroduce it as a second aux component, an `R16Float → Rg16Float`
+format change plus the passes that carry it — cheap to redo, and cheaper than
+storing a zero until then. ("Tooth-revealed canvas" would first need the
+deposition gate, removed unimplemented, §6.4.)
+
+Each step is independently testable through `stark-core` before any UI exists,
+which is exactly the leverage the frontend/backend split was meant to provide.
+
+### Nice-to-have (not scheduled)
+
+- **Tile LOD / mipmaps** — sample minified tiles when zoomed far out, for
+  responsiveness and to avoid aliasing on huge canvases. Pan/zoom feel smooth
+  without it at current scales, so it stays unscheduled until profiling on a
+  large document says otherwise.
+- **HiDPI** — the web canvas uses a 1× drawing buffer (CSS pixels); multiply by
+  `devicePixelRatio` for crisp rendering on retina displays.
+- **Damage tracking / view-AABB cull** (§6.3).
+- **Batching the dynamics loop's independent dispatches** (§6.2) — the current
+  per-move bottleneck is dispatch latency, not shader work.
+
+---
+
+
+## 18. Roadmap — a gap analysis against the prior art
+
+What Stark cannot do that Photoshop, Procreate, Clip Studio Paint and Corel
+Painter can — read as *creative workflows enabled*, not as interfaces to copy.
+Ranked by how much finished work each item unblocks, with what it costs **given
+this architecture**, because that is the only thing that makes the ordering
+actionable. Several items are far cheaper here than in a pixel-buffer app; a
+couple are the reverse. §18.2 is the part worth the most attention: the action
+log is a capability none of the four have.
+
+### 18.0 Tier 0 — you cannot finish and keep a painting
+
+Not features. The floor. **All of Tier 0 is now built** except gradient.
+
+#### 18.0.1 Save, open, export — built
+
+See §8 and §15.6. Export forced the decision the infinite canvas had deferred
+(*what rectangle is the piece?*), which is why framing was the right thing to
+build first.
+
+#### 18.0.2 Eyedropper — built
+
+Sampling colour off the canvas is the most-used non-brush action in painting, and
+it matters more here than anywhere else: the entire point of Mixbox pigment
+mixing (§6.7) is to pick the mix back up. Without it the mixing engine is a
+rendering feature rather than a working one.
+
+`Engine::pick_color` is a **request**, not a command (§4), and returns a future
+because readback is the one inherently asynchronous GPU operation — the same
+shape as `export`. Alt+drag is the binding, as in CSP and Rebelle, so a colour is
+picked up without putting the brush down.
+
+The decision it turns on: it samples the **raw layer channels**, not the
+composited, lit result. It runs pass A into a small target and stops there, so
+what comes back is the paint's own channels — not a colour that has been through
+image-based lighting, a tonemap and an sRGB encode, and in a Mixbox document not
+a display colour in place of the pigment mixture. Sharing pass A with rendering
+rather than reimplementing it is what keeps a sample and the screen from drifting
+apart. Bare canvas answers *nothing*: the substrate is the ground, not paint to
+pick up. Sample-layer(s) and sample-radius are `PickOptions`, in a floating bar
+mounted only while Alt arms the tool — the same present-or-absent argument the
+selection and frame bars make, and what makes a modifier binding discoverable
+rather than secret.
+
+#### 18.0.3 Transform — built
+
+Engine *and* gesture UI; see §16. Remaining: snapping, and the cut/copy/paste
+clipboard, which reuses the parcel machinery.
+
+#### 18.0.4 Fill and blend modes — built
+
+See §6.3 (the modes) and §6.8 (fill). Fill cost almost nothing because it turned
+out not to be a tool: the Select panel's four "actions" were really four *combine
+modes*, and reading the shapes as producers of **coverage** made `Fill` the fifth
+answer to the same question, landing that coverage on the paint instead of the
+mask.
+
+**Gradient remains**, and attaches at the same seam: one more way to fill a
+coverage field — a `FillOp` whose parcel varies with position rather than a new
+pipeline.
+
+### 18.1 Tier 1 — the workflow multipliers that define the competitors
+
+#### 18.1.1 Layer masks and alpha lock — groups and clipping built
+
+The non-destructive workflow, and we are closer than it looks: `Selection` is
+*already* a sparse `R8Unorm` tile map with aprons and a soft-set algebra — which
+is exactly a layer mask. Alpha lock is a per-layer flag read by the compositor.
+
+**Groups and clipping shipped as one feature** (§14), reusing the per-layer
+isolation blend modes already had, recursed. **Still missing: layer masks proper,
+alpha lock, thumbnails, duplicate, and merge/flatten.** Merge is load-bearing
+twice: it is a workflow staple *and* it is how an append-only action log stops
+growing forever.
+
+#### 18.1.2 Mirror and rotate the canvas view — built
+
+`ViewTransform` carries `rotation` and `flip_h` beside centre and zoom, and they
+are view state exactly as predicted (§6.4).
+
+- **Mirror**: `H` (`ViewCommand::MirrorH`). A toggle, and **screen-relative**: it
+  swaps the left of the screen with the right at any angle, so the check means
+  the same thing however the easel is turned. Reflecting the result keeps the
+  view a rotation-and-a-mirror rather than a free matrix, because a reflection
+  pushes back through a rotation (`M·R(θ) = R(−θ)·M`) — so the whole operation is
+  "negate the angle, toggle the mirror", and twice is exactly the identity.
+- **Rotate**: right-drag in the Navigator — the direction you drag becomes up.
+  The core answers only the question (`ViewTransform::rotation_for_up`) and the
+  frontend sends an absolute `ViewCommand::SetRotation`, because everything
+  between the two is gesture feel: the drag *eases* toward the angle it points at
+  in proportion to how far it has been pulled (near the press, a two-pixel
+  vector's direction is almost pure noise, and following it exactly makes the
+  canvas snap to a wild angle the instant the button goes down), and the target
+  snaps to a quarter turn within ~5° so upright is reachable by hand.
+
+The chrome over the canvas turns with it: the frame's box and handles and the
+transform widget compose the view's orientation into the CSS matrix they already
+carried, and pointer deltas come back through the full inverse rather than over
+the zoom.
+
+**The light stays in the room.** Relief shading is computed from the height field
+as it falls on the *screen*, so turning or mirroring the canvas changes how
+impasto and the weave catch the light — a real ~130-level difference on a woven
+canvas, and the same thing that happens when you turn a real canvas under a fixed
+lamp. That is the behaviour painters use rotation for; the alternative (the light
+turning with the canvas, so a mirrored view is a pure mirror image) is a one-line
+change to the environment lookup if the mirror ever wants to be exact.
+
+#### 18.1.3 Symmetry and drawing guides
+
+Per unit of implementation effort, probably the highest-leverage illustration
+features in existence (Procreate's Drawing Guides, CSP's perspective and
+symmetrical rulers). Our model makes them unusually clean: a guide is a **path
+transform applied between the fitter and the renderer**. Mirror symmetry is one
+gesture emitting N `StrokeRecord`s — or one record carrying its mirror axes,
+which keeps the log tighter and leaves §12's convergence argument untouched.
+Perspective snapping and shape assist (QuickShape) attach at the same seam.
+
+#### 18.1.4 Brush parameter mapping — inputs → parameters
+
+The structural gap in the brush engine. `BrushParams` holds fixed scalars, and
+§6.2 records that per-segment pressure/tilt modulation of the dynamics rates was
+*removed* as inert scaffolding. What CSP, Procreate and Painter all have and we
+do not is a **mapping matrix**: any input (pressure, tilt, azimuth, velocity,
+stroke-relative position, random) driving any parameter (radius, opacity, `add`,
+`lift`, angle, hue) through a user-editable curve.
+
+Every other axis of our brush model is more sophisticated than theirs. This one
+is what makes a brush feel *authored* rather than configured — and it is what
+makes a brush **library** worth shipping, which is the thing users actually shop
+for. (The library's skeleton exists: named per-user presets persist in
+`localStorage` and apply from the Brush panel, `stark-ui/src/presets.rs`; shape
+import/persistence is done, §6.6. Preset previews and preset import/export do
+not.)
+
+#### 18.1.5 A mixing palette
+
+We have Mixbox and a mass-conserving wet-paint loop. Nobody's mixing surface is
+good — Painter's Mixer Pad is the state of the art and it is twenty years old. A
+scratch surface you genuinely mix on and then pick up from, running the *same*
+dynamics loop and the *same* eyedropper, is a novel and defensible feature that
+falls directly out of what is already built.
+
+#### 18.1.6 Adjustments and a few filters
+
+Levels/curves, hue-sat, blur, sharpen, liquify/warp. Photoshop's bloat is not
+that adjustments exist; it is that there are ninety of them behind eight menus.
+Ten, shipped as **adjustment layers** (non-destructive, re-orderable, log-native),
+is strictly better than Photoshop's destructive model and cheaper to build than
+it.
+
+### 18.2 Tier 2 — where we can beat the prior art
+
+Photoshop's history is a bounded, linear, destructive stack that vanishes when
+the file closes. Ours is a complete, deterministic, replayable log of id-tagged
+actions that *is* the save format. Three things follow that no competitor can
+ship without a rewrite.
+
+#### 18.2.1 Post-hoc stroke editing
+
+Change a committed stroke's colour, brush or dynamics and replay. "Every stroke
+stays editable" is a vector-app promise delivered with natural media. It fits the
+CRDT cleanly: an amend is a **new action referencing the target** — exactly the
+`Undo(ActionId)` shape from §5.4 — not a mutation. Grow-only stays grow-only, and
+`effective_actions` generalizes to "latest amendment wins" without touching
+`Action::apply`.
+
+#### 18.2.2 Branching history
+
+Try a variation, keep both, compare, pick. `Timeline` is already a trait; a
+branch is a second effective-sequence over the same log.
+
+#### 18.2.3 Selective undo
+
+`ActionKind::Undo(ActionId)` already means "derive the document as if `target`
+were absent". The hard part is built and only "undo the last thing" is exposed.
+
+#### 18.2.4 Timelapse as a tool, not an export — shipped
+
+Exposed as a **scrubber the artist can drag while working**, it is a real
+critique tool — seeing your own process is how you find the moment a piece went
+wrong — rather than a novelty output. Shipped as **Timeline mode** (☰ → Timeline;
+`stark-ui/src/panels/timeline.rs`): a bar carrying a transport, a per-action
+scrubber and a speed control, over `Timeline::seek`.
+
+The whole feature is one observation: `LinearTimeline` already holds an *applied
+prefix* and a *withheld suffix*, and undo and redo already move the boundary
+between them one step at a time. A scrubber is that boundary with a handle on it,
+so the mode stores no playhead of its own — and the two behaviours that would
+otherwise need designing fall out instead. Leaving the mode scrubbed back **is**
+being undone by that many steps (Redo is the way forward); painting there
+truncates the future exactly as painting after an undo does. Playback is the only
+thing that has to be guarded, and only against commits: a stroke laid under a
+moving playhead would clear the withheld half and take the rest of the piece with
+it, so the canvas refuses paint while the transport runs (panning still works).
+
+Two limits worth stating:
+
+- **Solo only.** A shared document's state is a function of a log peers are still
+  appending to, so a scrub would be silently undone by the next arrival;
+  `Timeline::scrub_range` answers `None` there and the bar says why.
+- **Steps, not seconds.** Playback is paced in actions per second, not by the
+  `InputSample.time` stamps the log carries. Wall-clock pacing wants an idle-gap
+  policy — an hour away from the easel is one action apart — and that is a
+  decision to make deliberately rather than to fall into.
+
+### 18.3 Deliberate non-goals
+
+Naming these is part of not becoming Photoshop.
+
+- **Animation.** CSP and Procreate both have it. It is a product fork, not a
+  feature, and it would pull the action log toward a timeline model that serves
+  the painting case worse.
+- **Text and vector layers.** CSP's turf, orthogonal to the oil-painting
+  positioning, and a large surface area (fonts, shaping, i18n) for work that is
+  not painting.
+
+### 18.4 Sequencing
+
+1. **Now** — gradient (§18.0.4); layer masks / alpha lock / merge (§18.1.1);
+   frame snapping, guides and review mode (§15.7–§15.8); the transform clipboard
+   (§16.7).
+2. **Then, in parallel** — brush parameter mapping and the brush library
+   (§18.1.4; deepens what is already the strongest asset); symmetry and guides
+   (§18.1.3; highest value per line of code on this list).
+3. **The bet** — post-hoc stroke editing and branching history (§18.2.1–2).
+   Structurally impossible for Adobe to match, and already 80% paid for.
+
+---
+
+## 19. Stability policy — drawing files
+
+- **Alpha** (current): no guarantees whatsoever. Files may not load at all in
+  future versions. If you care about a piece, export it as an image.
+- **Beta**: files will continue to load, but portions may be lost or changed.
+- **Release**: files will continue to load and be perceptually similar. This does
+  not guarantee pixel-perfect reproduction, even with the same version — see §8
+  on `app_build` and cross-build fidelity.
+
+---
+
+

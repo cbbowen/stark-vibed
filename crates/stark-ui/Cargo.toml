@@ -3,11 +3,11 @@ name = "stark-ui"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
-description = "Dioxus web frontend for Stark (DESIGN.md §11): WASM backend + WebGPU surface."
+description = "Dioxus web frontend for Stark (§11): WASM backend + WebGPU surface."
 
 [dependencies]
 stark-core = { path = "../stark-core" }
-# Shared multi-user drawings over iroh (DESIGN.md §12.4). In the browser iroh
+# Shared multi-user drawings over iroh (§12.4). In the browser iroh
 # runs over its relay (WebSocket) transport — same code path as native.
 stark-net = { path = "../stark-net" }
 dioxus = { version = "0.7.9", features = ["web", "asset"] }

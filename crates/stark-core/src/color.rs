@@ -1,4 +1,4 @@
-//! Oklab working color space (DESIGN.md §6.5).
+//! Oklab working color space (§6.5).
 //!
 //! Color enters as straight sRGB (the picker / image space), is stored and
 //! blended in **Oklab** for perceptually uniform mixing, and is converted back

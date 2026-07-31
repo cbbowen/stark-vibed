@@ -1,4 +1,4 @@
-//! The native save format: the serialized action log (DESIGN.md §8).
+//! The native save format: the serialized action log (§8).
 //!
 //! The document *is* the list of actions, so the file is a compact action log
 //! rather than pixels — replaying it rebuilds the canvas, the full undo
@@ -32,7 +32,7 @@ use crate::gpu::SurfaceId;
 const MAGIC: &[u8; 8] = b"STARKDOC";
 /// On-disk schema version. Bump when the serialized layout changes.
 ///
-/// **2** — layer groups (GROUP_DESIGN.md). `AddLayer`, `AddMatte` and `MoveLayer`
+/// **2** — layer groups (§14). `AddLayer`, `AddMatte` and `MoveLayer`
 /// each grew a `carrier` field, and postcard writes a struct variant's fields in
 /// order with no names and no length, so a version-1 file's actions no longer
 /// decode. Every earlier schema change could be *appended* — a new enum variant
@@ -43,7 +43,7 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 const WIRE_VERSION: u32 = 2;
 
 /// Build identity, recorded so cross-build replay differences are explainable
-/// (DESIGN.md §8). Replay is bit-exact within a build; shader/algorithm changes
+/// (§8). Replay is bit-exact within a build; shader/algorithm changes
 /// across builds may shift pixels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildId {
@@ -58,7 +58,7 @@ impl Default for BuildId {
     }
 }
 
-/// Canvas-wide metadata needed to reproduce the document (DESIGN.md §8).
+/// Canvas-wide metadata needed to reproduce the document (§8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanvasMeta {
     pub tile_size: u32,
@@ -81,7 +81,7 @@ impl Default for CanvasMeta {
 }
 
 /// A complete saved document: metadata plus the replayable action log
-/// (DESIGN.md §8). The advisory raster `checkpoints` of §8 are deferred to a
+/// (§8). The advisory raster `checkpoints` of §8 are deferred to a
 /// later wire version.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DocumentFile {
@@ -89,7 +89,7 @@ pub struct DocumentFile {
     pub canvas: CanvasMeta,
     pub actions: Vec<Action>,
     /// Brush-shape images any stroke references, content-addressed and stored as
-    /// compact grayscale PNGs (DESIGN.md §6.6, §8). Bundled so the file is
+    /// compact grayscale PNGs (§6.6, §8). Bundled so the file is
     /// self-contained and replayable.
     pub assets: Vec<(AssetId, Vec<u8>)>,
 }

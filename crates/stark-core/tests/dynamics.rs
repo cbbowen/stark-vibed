@@ -1,4 +1,4 @@
-//! Brush-dynamics stamp-loop tests (DESIGN.md §6.2): the sequential pickup ⇄
+//! Brush-dynamics stamp-loop tests (§6.2): the sequential pickup ⇄
 //! deposit exchange against a 2-D tool reservoir. Covers conservation (paint
 //! moves by height, is neither created nor destroyed), smearing onto bare
 //! canvas, erasing without re-tinting, the pre-`charge` glob, and determinism.
@@ -246,7 +246,7 @@ fn charged_tool_lays_a_finite_glob() {
     // Bare paper, read off this very image instead of hardcoded. The old bound was an
     // absolute "reads ~200", which recorded what the tonemap happened to do the day it
     // was written and had to be re-derived every time the lighting model moved — most
-    // recently when the media pass became a reference (DESIGN.md §6.3) and bare paper
+    // recently when the media pass became a reference (§6.3) and bare paper
     // brightened by forty levels. What this test is *about* is the difference: red
     // paint pulls the paper's green down where the glob landed, and pulls it down less
     // once the charge has run out. That survives any exposure or tonemap.
@@ -309,7 +309,7 @@ fn dynamics_stroke_is_deterministic() {
 fn golden_smudge_drag() {
     // A committed green bar, then a red smudge dragged left→right across it: the
     // tool picks up green where it crosses and carries a fading tint downstream
-    // (DESIGN.md §6.2). Guards the look of the sequential stamp loop end-to-end.
+    // (§6.2). Guards the look of the sequential stamp loop end-to-end.
     let Some(mut engine) = engine_or_skip() else {
         return;
     };

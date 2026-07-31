@@ -1,9 +1,9 @@
-//! Actions: committed, deterministic, replayable document mutations (DESIGN.md §4).
+//! Actions: committed, deterministic, replayable document mutations (§4).
 //!
 //! An [`Action`] is the unit the timeline stores/replays and (later) the unit
 //! serialized to disk. Every action carries a globally-unique [`ActionId`] so
 //! the same records work unchanged in a future replicated, multi-peer log
-//! (DESIGN.md §4, §12) — we pay that tiny cost from the first commit.
+//! (§4, §12) — we pay that tiny cost from the first commit.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +16,7 @@ use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
 
-/// Identifies the author of an action: one local user, or a peer (DESIGN.md §4).
+/// Identifies the author of an action: one local user, or a peer (§4).
 /// Maps to an iroh `NodeId` when collaborating; a fixed value when solo.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActorId(pub u64);
@@ -24,7 +24,7 @@ pub struct ActorId(pub u64);
 impl ActorId {
     /// The fixed author id used when not collaborating. When a document is
     /// first shared, its solo-authored actions are rewritten to the sharer's
-    /// real actor id (so the sharer can still undo them, DESIGN.md §12.3);
+    /// real actor id (so the sharer can still undo them, §12.3);
     /// after that every action in a shared log carries a peer-derived id.
     pub const SOLO: ActorId = ActorId(0);
 }
@@ -36,10 +36,10 @@ pub struct ActionId {
     pub actor: ActorId,
 }
 
-/// The tool a gesture drives. Tools become an open registry later (DESIGN.md §10).
+/// The tool a gesture drives. Tools become an open registry later (§10).
 ///
 /// Only [`Brush`](Self::Brush) ever reaches a [`StrokeRecord`]: the selection tools
-/// produce a [`SelectionOp`] instead of a stroke (DESIGN.md §6.8). They share the
+/// produce a [`SelectionOp`] instead of a stroke (§6.8). They share the
 /// enum — and so the pointer-gesture plumbing — because from the frontend's point of
 /// view they are the same interaction: press, drag, release.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ impl Tool {
     }
 }
 
-/// The brush tip shape (DESIGN.md §6.6).
+/// The brush tip shape (§6.6).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BrushShape {
     /// Procedural soft disc. Edge softness in [0, 1): 0 = very soft, ~1 = hard
@@ -85,13 +85,13 @@ impl Default for BrushShape {
 impl BrushShape {
     /// The round tip's hardness fallback: used both as [`Default`] and when a
     /// `Stamp` asset fails to resolve and rendering falls back to the round tip
-    /// (DESIGN.md §6.6), which by construction has no hardness of its own to fall
+    /// (§6.6), which by construction has no hardness of its own to fall
     /// back on.
     pub const DEFAULT_HARDNESS: f32 = 0.5;
 }
 
-/// What sets the brush shape's orientation as it sweeps along the stroke (DESIGN.md
-/// §6.6). The swept-depth integral runs along the stroke's travel direction, so the
+/// What sets the brush shape's orientation as it sweeps along the stroke
+/// (§6.6). The swept-depth integral runs along the stroke's travel direction, so the
 /// shape is looked up in a per-orientation prefix-τ texture indexed by the *relative*
 /// angle between the shape's native axis and the travel direction.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -106,9 +106,9 @@ pub enum OrientationSource {
     Pen,
 }
 
-/// How a brush interacts with paint already on the canvas (DESIGN.md §6.2). One
+/// How a brush interacts with paint already on the canvas (§6.2). One
 /// **unified tool**, not a mode switch: every axis is a flux on the single conserved
-/// quantity — paint **height** (the amount; DESIGN §6.1) — and the axes compose freely.
+/// quantity — paint **height** (the amount; §6.1) — and the axes compose freely.
 /// [`add`](Self::add) is the only *source* (the brush's own paint); the rest move paint
 /// that is already on the canvas, so with `add = 0` the tool conserves height (it only
 /// moves paint around). The everyday brush is just `add` with the rest 0 (the default).
@@ -121,11 +121,11 @@ pub enum OrientationSource {
 ///
 /// `lift`-only is an eraser; `lift`+`deposit` (`add = 0`) a conservative smudge;
 /// `add`-only ordinary paint. All flow runs with fixed iteration counts, so replay
-/// stays deterministic (DESIGN §6.2).
+/// stays deterministic (§6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushDynamics {
     /// The brush's own paint laid directly: the paint **height** deposited per unit of
-    /// swept optical depth (DESIGN.md §6.1), and the tool's only source term. 0 = lays
+    /// swept optical depth (§6.1), and the tool's only source term. 0 = lays
     /// none (pure manipulation of existing paint), 1 = a heavy full-thickness deposit.
     ///
     /// A *rate*, not a quantity — this source never runs out on its own. For a stroke
@@ -145,7 +145,7 @@ pub struct BrushDynamics {
     /// height (the "load a glob on the palette knife" param). 0 = the tool starts empty (the
     /// historical behaviour). It depletes as the tool [`deposit`](Self::deposit)s and refills
     /// as it [`lift`](Self::lift)s — a finite carried amount, unlike the inexhaustible
-    /// [`add`](Self::add) source (DESIGN.md §6.2).
+    /// [`add`](Self::add) source (§6.2).
     #[serde(default)]
     pub charge: f32,
 }
@@ -162,7 +162,7 @@ impl Default for BrushDynamics {
     }
 }
 
-/// The kind of noise field driving [`ColorDynamics`] (DESIGN.md §6.2). Each kind
+/// The kind of noise field driving [`ColorDynamics`] (§6.2). Each kind
 /// is baked once into a small tileable 2-D texture (`noise.rs`), so lookups are
 /// cheap and deterministic across replay, peers, and builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -184,7 +184,7 @@ pub enum NoiseKind {
 }
 
 /// Colour dynamics (colour jitter): lets the applied colour vary **across the
-/// brush and along the stroke** (DESIGN.md §6.2). A 3-channel tileable 2-D noise
+/// brush and along the stroke** (§6.2). A 3-channel tileable 2-D noise
 /// field is sampled in the stroke's **own** frame — `(lateral offset from the
 /// centreline, arc length)`, both in canvas px — so the variation belongs to the
 /// gesture rather than to the patch of canvas under it: one axis spreads the
@@ -225,7 +225,7 @@ impl ColorDynamics {
 }
 
 /// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
-/// the Oklab working space at stamp time (DESIGN.md §6.5).
+/// the Oklab working space at stamp time (§6.5).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushParams {
     /// Straight (un-premultiplied) sRGB RGBA, components in [0, 1].
@@ -233,31 +233,31 @@ pub struct BrushParams {
     /// Stamp radius in canvas pixels at full pressure.
     pub radius: f32,
     /// Reservoir depletion per canvas pixel travelled: the stroke thins as paint
-    /// runs out (DESIGN.md §6.2). 0 = inexhaustible — which is what a pen, a
+    /// runs out (§6.2). 0 = inexhaustible — which is what a pen, a
     /// charcoal stick, or an ordinary digital brush wants; a physical loaded
     /// brush wants a small positive value.
     pub drain: f32,
-    /// Brush tip shape (DESIGN.md §6.6).
+    /// Brush tip shape (§6.6).
     pub shape: BrushShape,
-    /// What orients the shape as it sweeps (DESIGN.md §6.6) — the successor to the old
+    /// What orients the shape as it sweeps (§6.6) — the successor to the old
     /// `follow_path`/`angle_jitter` knobs: `FollowStroke` is the former `follow_path =
     /// true`. `#[serde(default)]` so documents saved before this field (which instead
     /// carried `follow_path`, now ignored on load) come in as `FollowStroke`.
     #[serde(default)]
     pub orientation: OrientationSource,
     /// How much of its own paint the brush lays, and how it manipulates paint already
-    /// on the canvas (DESIGN.md §6.2) — the unified tool. `#[serde(default)]` so
+    /// on the canvas (§6.2) — the unified tool. `#[serde(default)]` so
     /// documents saved before this field load as the everyday `add`-only brush.
     #[serde(default)]
     pub dynamics: BrushDynamics,
     /// Colour dynamics (colour jitter) — how the applied colour varies across the
-    /// brush and along the stroke (DESIGN.md §6.2). Historized (it changes stored
+    /// brush and along the stroke (§6.2). Historized (it changes stored
     /// pixels); the default (amplitude 0) is the historical constant colour.
     #[serde(default)]
     pub color_dynamics: ColorDynamics,
     /// Length of the stroke's **leading taper** — the run over which the tip widens
     /// from a point to its full [`radius`](Self::radius) — in *units of `radius`*,
-    /// so 4.0 means four brush radii of taper (DESIGN.md §6.2). 0 = no taper: the
+    /// so 4.0 means four brush radii of taper (§6.2). 0 = no taper: the
     /// stroke starts at full width, which is the historical behaviour.
     ///
     /// In radii rather than canvas px so a brush keeps its *look* as it is resized:
@@ -314,14 +314,14 @@ impl BrushParams {
     }
 }
 
-/// A fully-recorded stroke: enough to replay it bit-for-bit (DESIGN.md §4).
+/// A fully-recorded stroke: enough to replay it bit-for-bit (§4).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StrokeRecord {
     pub layer: LayerId,
     pub tool: Tool,
     pub brush: BrushParams,
     /// The fitted stroke curve: the control points the raw pointer samples were
-    /// smoothed and simplified down to (DESIGN.md §6.2), an order of magnitude
+    /// smoothed and simplified down to (§6.2), an order of magnitude
     /// fewer points and all that is needed to reconstruct the stroke. The raw
     /// samples are never stored — not in the file, not in the action log, not
     /// on the wire.
@@ -338,12 +338,12 @@ pub enum ActionKind {
     AddLayer {
         id: LayerId,
         /// Whose carried stack to add it to — `None` for the document's own
-        /// (GROUP_DESIGN.md §8).
+        /// (§14.8).
         carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
     /// Remove a layer **and everything it carries**: the subtree is the group
-    /// (GROUP_DESIGN.md §2). Promoting what it carried instead is a
+    /// (§14.2). Promoting what it carried instead is a
     /// [`MoveLayer`](Self::MoveLayer), which is what "release" is spelled with.
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
@@ -353,7 +353,7 @@ pub enum ActionKind {
     /// `carrier` (the document's own when `None`), directly above `above`.
     ///
     /// The **only** structural move, covering all three gestures at once
-    /// (GROUP_DESIGN.md §8): reorder is `carrier` unchanged, *carry* is `carrier`
+    /// (§14.8): reorder is `carrier` unchanged, *carry* is `carrier`
     /// set, *release* is `carrier` cleared. Declined deterministically when it
     /// would make a layer carry its own ancestor — see
     /// [`DocState::move_layer`](super::state::DocState::move_layer) for why the
@@ -363,7 +363,7 @@ pub enum ActionKind {
         carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
-    /// Undo **as a logged action** (DESIGN.md §5.4, §12.3): a fact peers can see
+    /// Undo **as a logged action** (§5.4, §12.3): a fact peers can see
     /// and order, meaning "derive the document as if `target` were absent".
     /// Redo is an `Undo` of an `Undo`. Emitted only in shared sessions; solo
     /// undo stays pure timeline navigation and never logs one.
@@ -375,7 +375,7 @@ pub enum ActionKind {
     /// older files is unaffected.
     Undo(ActionId),
 
-    /// Switch the canvas surface (DESIGN.md §6.4).
+    /// Switch the canvas surface (§6.4).
     ///
     /// Logged rather than kept as a view setting because the surface feeds the
     /// document: which canvas a piece was painted on is part of what it is, and
@@ -383,17 +383,17 @@ pub enum ActionKind {
     /// postcard decoding of older files is unaffected; documents saved before this
     /// existed simply never contain one and keep the surface from `CanvasMeta`.
     SetSurface(SurfaceId),
-    /// Edit the selection mask (DESIGN.md §6.8). Historized because a stroke's
+    /// Edit the selection mask (§6.8). Historized because a stroke's
     /// pixels depend on the mask in force when it was drawn — replaying the log has
     /// to put the same mask back. Only the **op** travels (a few floats, or a
     /// decimated polyline); every peer rasterizes it identically from the same
     /// shader, so the log stays compact and convergence is unaffected.
     Select(SelectionOp),
-    /// Swap selected for unselected everywhere (DESIGN.md §6.8).
+    /// Swap selected for unselected everywhere (§6.8).
     InvertSelection,
 
     /// Add a **matte** layer — a region filled with a flat colour
-    /// (FRAME_DESIGN.md §2). A frame is one of these on top of the stack; the
+    /// (§15.2). A frame is one of these on top of the stack; the
     /// same action serves comic gutters and opaque grounds once the region
     /// generalizes (P4). Appended last, like every variant before it, so postcard
     /// — which encodes an enum by variant *index* — keeps decoding older files.
@@ -413,12 +413,12 @@ pub enum ActionKind {
     /// Recolour a matte (straight sRGB).
     SetMatteColor(LayerId, [f32; 3]),
     /// Set the canvas substrate colour — the ground the paint sits on, straight
-    /// sRGB (FRAME_DESIGN.md §5). Logged because the ground a piece was painted on
+    /// sRGB (§15.5). Logged because the ground a piece was painted on
     /// is part of what it is; it was previously a view setting, so the paper colour
     /// of a painting was not saved at all.
     SetBackground([f32; 3]),
 
-    /// Affine transform of the selected paint on `layer` (TRANSFORM_DESIGN.md):
+    /// Affine transform of the selected paint on `layer` (§16):
     /// cut what the **author's** selection holds, resample it once under
     /// `affine`, stack it back over what remained — and carry the author's mask
     /// along with it, so the moved region stays selected. A universal selection
@@ -446,7 +446,7 @@ pub enum ActionKind {
     /// keeps decoding older files.
     SetLayerName(LayerId, Option<String>),
 
-    /// Fill a region of `layer` with paint (MISSING_FEATURES §0.4).
+    /// Fill a region of `layer` with paint (§18.0.4).
     ///
     /// The fifth thing a shape gesture can do, alongside the four ways it can
     /// combine into the selection — see [`ShapeAction`](super::fill::ShapeAction).
@@ -464,19 +464,19 @@ pub enum ActionKind {
         op: super::fill::FillOp,
     },
 
-    /// Clip a layer to the paint beneath it, or stop (GROUP_DESIGN.md §4).
+    /// Clip a layer to the paint beneath it, or stop (§14.4).
     ///
     /// A presentation property like the blend mode it is applied beside, and
     /// logged like one: it changes what the document *looks* like, so replay and
     /// peers both have to reproduce it. On the base of a group it clips the whole
-    /// group to what lies under the group (§4.3) — the same outward reading its
+    /// group to what lies under the group (§14.4.3) — the same outward reading its
     /// blend mode gets, which is why this needs no second action for groups.
     SetLayerClip(LayerId, bool),
 }
 
 impl ActionKind {
     /// What this action *is*, in two or three words — the caption a history
-    /// scrubber puts on the step it is about to cross (MISSING_FEATURES §2.4).
+    /// scrubber puts on the step it is about to cross (§18.2.4).
     ///
     /// A `&'static str` and nothing more: a timeline showing a hundred steps needs
     /// them by the hundred, and the point of the caption is to tell a stroke from a
@@ -515,7 +515,7 @@ pub struct Action {
 }
 
 /// Side-channel passed to [`history::Action::apply`]: the GPU resources needed
-/// to render a stroke (DESIGN.md §5). It owns cheap `Arc`-backed clones, so it
+/// to render a stroke (§5). It owns cheap `Arc`-backed clones, so it
 /// has no borrow lifetime — which is what lets it be the `Action::Context`.
 #[derive(Clone)]
 pub struct ApplyCtx {
@@ -532,10 +532,10 @@ impl history::Action for Action {
     type Context = ApplyCtx;
     // GPU work reports failure via wgpu's device error callbacks, not return
     // values, and tile allocation never fails — so applying an action is
-    // genuinely infallible here (DESIGN.md §5).
+    // genuinely infallible here (§5).
     type Error = std::convert::Infallible;
     /// An action commutes with everything its [`Footprint`] is disjoint from
-    /// (DESIGN.md §12.6) — which is what lets the history splice an undone
+    /// (§12.6) — which is what lets the history splice an undone
     /// action out past a peer's unrelated work instead of replaying it.
     ///
     /// [`Footprint`]: super::footprint::Footprint
@@ -553,7 +553,7 @@ impl history::Action for Action {
     fn apply(&self, state: DocState, ctx: &mut ApplyCtx) -> Result<DocState, Self::Error> {
         Ok(match &self.kind {
             // A matte has no tile map, so a stroke targeting one is refused
-            // rather than swallowed or magically rasterized (FRAME_DESIGN.md §7).
+            // rather than swallowed or magically rasterized (§15.7).
             // Refusing here (not only in the frontend) is what keeps replay and
             // peers agreeing about a log that contains such a stroke.
             ActionKind::CommitStroke(rec) => {
@@ -563,8 +563,8 @@ impl history::Action for Action {
                 match state.layer(rec.layer).and_then(|l| l.tiles()).cloned() {
                     Some(base) => {
                         // The **author's** selection, as it stood at this point in
-                        // the log, gates the stroke (DESIGN.md §6.8,
-                        // PEER_DESIGN.md §3). Read from the state being folded over,
+                        // the log, gates the stroke (§6.8,
+                        // §17.3). Read from the state being folded over,
                         // so replay reproduces it exactly; keyed by the author, so a
                         // collaborator's lasso never clips this stroke.
                         let selection = state.selection_of(self.id.actor);
@@ -581,7 +581,7 @@ impl history::Action for Action {
                     }
                     // Absent layer, or a matte — a matte has no tile map, so a
                     // stroke targeting one is refused rather than swallowed
-                    // (FRAME_DESIGN.md §7). Refusing here and not only in the
+                    // (§15.7). Refusing here and not only in the
                     // frontend is what keeps replay and peers agreeing about a
                     // log that happens to contain such a stroke.
                     None => state,
@@ -605,7 +605,7 @@ impl history::Action for Action {
             ActionKind::Undo(_) => state,
             // The author's own selection, and only ever the author's: the key is
             // taken from `self.id.actor`, never from the payload, so an action
-            // cannot address anyone else's mask (PEER_DESIGN.md §3).
+            // cannot address anyone else's mask (§17.3).
             //
             // An op too large to rasterize (see `MAX_SELECTION_TILES`) leaves the
             // selection alone — deterministically, since the bound is a pure
@@ -637,7 +637,7 @@ impl history::Action for Action {
             ActionKind::SetMatteColor(id, color) => state.set_matte_color(*id, *color),
             ActionKind::SetBackground(rgb) => state.with_background(*rgb),
             // Cut the author's selected paint, restack it under the affine, and
-            // carry the author's mask with it (TRANSFORM_DESIGN.md). Gated and
+            // carry the author's mask with it (§16). Gated and
             // keyed exactly as a stroke is: the mask comes off the state being
             // folded over, the actor off the action's own id. A matte or absent
             // layer refuses it, like a stroke; an unusable or oversized transform
@@ -663,8 +663,8 @@ impl history::Action for Action {
             }
             // Lay a parcel of paint through the region's coverage, gated by the
             // author's selection — the same gate a stroke passes through, so a fill
-            // is clipped by a selection exactly as a brush is (MISSING_FEATURES
-            // §0.4). Refused on a matte or absent layer like a stroke; refused
+            // is clipped by a selection exactly as a brush is
+            // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
             // deterministically when unbounded or oversized, so peers and replays
             // agree about a log that contains one.
             ActionKind::Fill { layer, op } => {

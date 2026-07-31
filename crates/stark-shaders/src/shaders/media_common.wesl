@@ -1,4 +1,4 @@
-// Shared scaffolding for the media/lighting pass (DESIGN.md §6.3), imported by
+// Shared scaffolding for the media/lighting pass (§6.3), imported by
 // the per-color-space media shaders. Each variant only differs in how it derives
 // the un-lit linear *base color* from the composited channels; everything else —
 // the bindings, the fullscreen vertex, the impasto normal-from-height, the
@@ -16,7 +16,7 @@ struct Media {
     surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _
     // The screen→canvas linear map, column-major: `surf_m.xy` is the first column,
     // `surf_m.zw` the second. What carries a fragment into canvas space when the view
-    // is turned or mirrored (MISSING_FEATURES §1.2). `surf_a.z` is the same map's
+    // is turned or mirrored (§18.1.2). `surf_a.z` is the same map's
     // length scale — rotation and mirroring leave lengths alone — which is what the
     // relief slope below wants, and what it would be wrong to take from this matrix.
     surf_m: vec4<f32>,
@@ -28,14 +28,14 @@ struct Media {
 @group(0) @binding(3) var surface: texture_2d<f32>; // tileable canvas bump (height)
 @group(0) @binding(4) var surface_samp: sampler;
 // The HDR lighting environment (equirectangular, mipped) for image-based lighting
-// (DESIGN.md §6.3): diffuse irradiance from a high mip in the normal direction,
+// (§6.3): diffuse irradiance from a high mip in the normal direction,
 // specular from a gloss-selected mip in the reflection direction.
 @group(0) @binding(5) var env: texture_2d<f32>;
 @group(0) @binding(6) var env_samp: sampler;
 
 const PI: f32 = 3.14159265359;
 
-// Opacity build-up rate (DESIGN.md §6.1, normalized representation): the slab law
+// Opacity build-up rate (§6.1, normalized representation): the slab law
 // `1 − exp(−OPACITY_K · opacity · thickness)`. Pass A applies it per layer
 // (composite.wesl), so the composited colour's alpha arrives here already as the
 // stack's accumulated coverage; the constant remains only for the weave-sink
@@ -98,7 +98,7 @@ fn paint_vis_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
 
 // The relief height for impasto normals: the canvas surface plus the paint's
 // thickness, gated by how visible the paint is so a near-transparent tail doesn't
-// emboss a ghost ridge around the stroke (DESIGN.md §6.4).
+// emboss a ghost ridge around the stroke (§6.4).
 fn height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
     return max(surface_at(p), paint_height_at(p, dim));
 }
@@ -108,7 +108,7 @@ fn background_color() -> vec4<f32> {
 }
 
 // Whether this is a transparent export: the substrate is skipped entirely and the
-// paint's own visible alpha becomes the image's alpha (FRAME_DESIGN.md §6). A real
+// paint's own visible alpha becomes the image's alpha (§15.6). A real
 // branch rather than an alpha tweak — compositing over the substrate and *then*
 // setting alpha would leave every bare-canvas texel carrying substrate colour at
 // zero alpha, which fringes the moment the PNG is composited over anything else.
@@ -174,7 +174,7 @@ fn env_brdf_approx(n_dot_v: f32, roughness: f32) -> vec2<f32> {
 // Khronos "PBR Neutral" tonemap, re-tuned so the pass is a *reference* rather than a
 // look: it compresses HDR into [0,1] preserving hue, desaturating only the brightest
 // highlights. Two things differ from the stock Khronos curve, both so that a colour
-// already inside display range survives unchanged (DESIGN.md §6.3):
+// already inside display range survives unchanged (§6.3):
 //
 //   · `black_point` is the sheen the BRDF actually added at this fragment, passed in
 //     rather than assumed to be F0 = 0.04. Khronos hardcodes 0.04 because their
@@ -211,7 +211,7 @@ fn commerce_tonemap(color: vec3<f32>, black_point: f32) -> vec3<f32> {
 }
 
 // Light the un-lit linear `base` color by image-based lighting from the HDR
-// environment (DESIGN.md §6.3): diffuse irradiance sampled (blurred) in the relief
+// environment (§6.3): diffuse irradiance sampled (blurred) in the relief
 // normal direction, plus a specular reflection that sharpens with `paint` so
 // impasto ridges glint with the studio lights. `base` is already the composited
 // paint-over-substrate color (the over happened in the caller's latent space), and

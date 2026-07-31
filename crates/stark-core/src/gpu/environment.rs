@@ -1,4 +1,4 @@
-//! HDR **environment maps** for image-based lighting (DESIGN.md §6.3).
+//! HDR **environment maps** for image-based lighting (§6.3).
 //!
 //! A studio (or any) HDR is decoded from its Radiance RGBE file into a linear-RGB
 //! equirectangular image, then used to light the painting: the media pass samples
@@ -30,7 +30,7 @@ pub enum EnvironmentId {
 }
 
 impl EnvironmentId {
-    /// The exposure this light is used at (DESIGN.md §6.3).
+    /// The exposure this light is used at (§6.3).
     ///
     /// A property of the environment rather than a knob beside it, because there is
     /// no single value that suits every light. Exposure is already normalized by
@@ -204,7 +204,7 @@ fn rgbe_to_linear(rgbe: [u8; 4]) -> [f32; 3] {
 /// equirectangular `Rgba16Float` texture with a full mip chain (each level a box
 /// downsample of the last). The media pass samples a high mip in the surface-normal
 /// direction for diffuse irradiance and a gloss-selected mip in the reflection
-/// direction for the paint's specular (DESIGN.md §6.3). Cloning is cheap (Arc-backed wgpu
+/// direction for the paint's specular (§6.3). Cloning is cheap (Arc-backed wgpu
 /// handles), so it can live alongside the [`super::surface::Surface`].
 #[derive(Clone)]
 pub struct Environment {
@@ -478,7 +478,7 @@ impl crate::gpu::registry::Resource for EnvironmentId {
     type Gpu = Environment;
 
     /// `Neutral` is procedural — a soft overhead key over an ambient dome — so the
-    /// canvas is lit before any HDR arrives (DESIGN.md §6.3).
+    /// canvas is lit before any HDR arrives (§6.3).
     fn is_builtin(self) -> bool {
         self == EnvironmentId::Neutral
     }

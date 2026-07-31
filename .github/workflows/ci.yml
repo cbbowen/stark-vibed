@@ -81,7 +81,7 @@ jobs:
           # we want a loud failure, not a suite of vacuous passes.
           #
           # Goldens are blessed against whichever adapter the author develops on,
-          # and a committed PNG can only match one adapter (see DESIGN.md §9), so
+          # and a committed PNG can only match one adapter (see §9), so
           # comparing them here would fail on pixels rather than on behaviour.
           # The strokes are still rendered — shader compilation, wgpu validation
           # errors and panics are all still caught; only the pixel diff is

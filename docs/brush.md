@@ -1,0 +1,476 @@
+# The brush engine
+
+Tiles and channels, the fitted-path swept-segment stroke renderer, the wet-mixing dynamics loop, and brush shape assets — §6.1, §6.2, §6.6.
+
+> Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
+> Section numbers are stable — code cites them as `§n.m`.
+
+## 6.1 Tiles and channels
+
+A tile is a fixed `TILE_SIZE` (256×256) square in canvas space, addressed by
+integer `TileCoord(i32, i32)`. Sparsity gives the infinite canvas: only painted
+tiles allocate. Each tile is **multi-channel**, which is what enables strokes
+that affect more than colour:
+
+```rust
+pub struct GpuTile {
+    pub color:  wgpu::Texture,   // Rgba16Float — working-space channels + premult alpha
+    pub height: wgpu::Texture,   // R16Float — total paint height
+}
+```
+
+The colour texture stores **Oklab** components (or Mixbox concentrations), not
+sRGB. Linear 16-bit float comfortably holds Oklab's range and the negative `a`/`b`
+chroma axes, and keeps blends perceptually uniform. Alpha is premultiplied.
+
+> **The colour alpha channel is *only* the paint's per-unit-thickness opacity** —
+> a material property (how opaque the pigment is per unit of thickness). It says
+> **nothing** about how much paint is on the canvas, nor even whether any is
+> present. **The amount (and presence) of paint is the `height` channel**
+> (precisely, `height − surface_height`, the paint *thickness*). The two combine
+> only at display time in the translucent-slab law
+> `visible = 1 − exp(−K · opacity · thickness)`.
+>
+> Consequences the brush dynamics must respect:
+> - To **conserve paint** (move it without creating or destroying), conserve
+>   **height** — never the alpha. Alpha is per-unit and is carried as a
+>   height-weighted blend of the picked-up paint's opacity; it is not consumed.
+> - A thin layer of opaque paint (alpha ≈ 1, tiny thickness) is *barely visible*;
+>   a thick layer of translucent paint can be very visible. Opacity alone is not
+>   coverage.
+> - Lifting paint reduces the canvas **height**, leaving the remaining paint's
+>   per-unit alpha unchanged; the source lightens because thickness — not alpha —
+>   drops.
+
+Channels are referenced through a small `ChannelSet` descriptor so renderer,
+compositor and tile pool agree on layout without hard-coding it everywhere — a
+new channel is a descriptor entry plus shader usage, not a structural rewrite.
+
+`TilePool` recycles GPU textures of each channel format to avoid per-stroke
+allocation churn; `acquire_tex()` returns a cleared tile, and dropping the last
+`Arc<GpuTile>` returns it to the free list. The pool's formats come from the
+colour space in use, never hardcoded.
+
+## 6.2 The brush engine — natural media
+
+Stroke rasterization is **swept-segment along a fitted path**: pointer samples are
+fitted to control points, expanded to a smooth polyline, and each short segment
+swept as a single quad. Layered on top is a **brush-dynamics** model that carries
+loaded paint and smears what is already on the canvas, so wet-on-wet mixing feels
+physical. Everything is deterministic — the only randomness is the explicit
+`seed` — so live paint, replay and goldens agree.
+
+**Path representation & cubic interpolation.** `path.rs` keeps three
+representations deliberately distinct: an **`InputSample`** is one raw pointer
+report (transient, never stored), a **`ControlPoint`** is a fitted curve knot
+(what `StrokeRecord::path` holds), and an **`IntermediateSample`** is a point *of
+the curve* — position plus derivative, with pen attributes interpolated there —
+produced at render time and consumed by the stamp generator.
+
+A `PathFitter` streams samples into control points as a **least-squares clamped
+cubic B-spline** (`spline.rs`), grown and refit as they arrive:
+
+- **Grow.** The control polygon lengthens with the stroke — one point per
+  `KNOT_SPACING` of arc length, plus more wherever taking one measurably reduces
+  the error, by at least `KNOT_COST`. Fitting is what smooths, so there is no
+  separate low-pass stage: a polygon far coarser than the jitter averages a
+  pixel-quantized staircase away. The arc-length floor is not redundant with the
+  sagitta test — it is what makes the polygon grow, and so freezing advance, on a
+  stroke the fit is already perfect on.
+- **Refit** every sample, but only over the *live* points and the *free* control
+  points, so work per sample follows the tail rather than the stroke so far.
+- **Freeze** all but the last few control points. Those are final — nothing drawn
+  later can move them — which makes the fit append-only and lets a caller treat
+  the settled prefix (`frozen_spans`) as already rendered.
+
+Both growth thresholds are denominated in an **input tolerance** the frontend
+supplies with `GestureCommand::Start`, in canvas px (the error one as its square,
+since it is compared against a mean square). Canvas px are the wrong unit to fix
+them in: the same hand movement covers 64× as many zoomed in as out, and a pen
+digitizer, a touchscreen and a mouse each report at a different grain through the
+same pointer API. Only the frontend knows either fact, so it states the grain and
+the fit becomes invariant to zoom. This is a *fitting* knob and reaches nothing
+else — flattening's budget is an error against the curve, in the canvas px it
+will actually be drawn in.
+
+Both **ends are pinned**: a least-squares fit does not hold them, because a
+stretch of parameter with no sample assigned costs nothing, so the curve
+otherwise starts before the stroke and stops short of the pointer. The start is
+set and frozen at the first sample; the live end moves to the newest sample each
+update (and freezes there on release), which also keeps the preview under the
+cursor.
+
+Pen attributes ride along as **passenger channels**: pressure, tilt and time are
+solved against the geometry's own assignment rather than fitted jointly with it,
+so a pressure ramp cannot stretch the parameterization the way a longer path
+does, and no weighting is needed to reconcile pixels with whatever units they are
+in.
+
+Rendering expands those control points through the same B-spline — converted per
+span to cubic Bézier form, so the derivative is closed-form — into a polyline,
+and subdivides **adaptively**: a piece is split until the straight segment
+standing in for it is within a bounded error in position, in *tangent direction*,
+and in the pen attributes. Sampling follows the curve rather than arc length: a
+long gentle stroke costs a handful of segments where uniform stepping cost
+hundreds, and a corner still gets the density it needs. The tangent bound buys
+both — it is the term that cannot be fooled by a symmetric wiggle, and the one
+that spikes exactly at a corner. This solves several problems:
+
+- **No stair-step aliasing** — jittery pixel-stepped input collapses to a clean
+  curve instead of axis-aligned segments. This is the fit doing it, and it is why
+  the price of a control point must sit *above* the input's own quantization
+  (what the frontend's declared tolerance is for). Priced below it, a staircase
+  reads as curvature and gets traced rather than smoothed.
+- **Continuous-looking stamping** — stamps ride a smooth path with smooth
+  tangents, so even hard-edged tips read as one stroke rather than a row of dabs.
+- **Smaller files** — a handful of control points replace hundreds of raw samples
+  in the action log (§8).
+
+Adaptive sampling has one hard prerequisite, easy to violate silently: **the
+deposit must not depend on how the path was cut into segments.** Anything a
+segment applies *per segment* rather than per fragment also caps segment length,
+which the renderer supplies as a bound rather than the fitter assuming one
+(`gpu::stroke::flatten_tolerance`).
+
+**Tapered ends.** `start_taper_length` / `end_taper_length` scale the tip down to
+a point over a run at each end, which is what turns an even-width digital line
+into an inker's stroke. Both are quoted in **brush radii**, not canvas px, so a
+brush keeps its look as it is resized. The profile is `f(t) = t(3 − t²)/2`:
+`f'(1) = 0`, so the taper meets the full-width body with no crease (the artifact
+that gives a taper away), and `f'(0) = 3/2`, so it leaves the tip as a wedge
+rather than a blunt cap or a whisker-with-a-bulge. It is a polynomial, not the
+sine it approximates, because the taper decides stored pixels and replay,
+goldens and peers must agree on it bit for bit.
+
+Two places the obvious implementation is wrong:
+
+- The taper varies radius *with distance travelled* while a segment sweeps at a
+  constant one. Paid for by cutting segments finer, but **locally**: only edges
+  actually inside a taper are subdivided, so a long stroke pays ~75 extra
+  segments at each end instead of flattening its whole length at the taper's step.
+- A taper is measured from the ends of the **whole** stroke, and while the
+  pointer is down the far end has not happened yet. So freezing is held back: a
+  span is settled only once it is a trailing taper's length clear of the live end
+  *and* a leading taper's length past the start — which together also prove the
+  stroke has outgrown the "scale both zones to fit" compression that keeps a
+  short flick a small pointed mark rather than a sliver. Both tests use chords,
+  which under-estimate arc length, so what they admit is genuinely final; and an
+  admitted prefix stays admitted however the stroke continues
+  (`gpu::stroke::taper_safe_frozen`).
+
+**Incremental repaint.** Freezing is what keeps a long stroke responsive. Drawing
+a live stroke costs (segments × tiles covered), both growing with length, so
+re-rendering the whole thing per pointer move is quadratic. Instead the engine
+keeps a `FrozenHead`: the settled spans, rendered once onto the committed
+document and kept. Each move draws only the live tail over that — a few spans,
+whatever the stroke's length — and the head advances as the fitter freezes more
+(`StrokeRenderer::render_range`, `path::flatten_spans`; adjacent ranges share
+exactly one flattened point, so their segments tile with no gap and no overlap).
+
+This is the *same* partition-independence the constraint above demands, spent
+deliberately: the swept deposit is a definite integral per segment that composes
+by summing optical depth, so cutting the path at a span boundary and compositing
+the pieces in order gives what one pass gives.
+
+The stamp loop that dynamic brushes run has no such property — it is
+*sequential*, each segment reading the canvas the previous one left and the tool
+the previous one loaded. It is cuttable anyway, because that carried state is
+small and entirely **brush-local**: the reservoir texture (what paint the tip
+holds, and where on the tip), plus travel since the last pickup, which sets the
+reload cadence. A `ToolState` remembers both at the freeze boundary and the tail
+resumes from it. Being brush-local is what makes this work at all — the state
+says nothing about *where* the stroke is, so the region rectangle may change
+completely between the piece that saved it and the piece that resumes. The canvas
+side needs no carrying: it is already in the head's tiles.
+
+The renderer cuts the path for its own purposes too, on the same argument. A
+region is a 1:1 copy of the canvas under the stroke, so a stroke crossing the
+document would want a region the size of the document; instead it is drawn in as
+many region-sized **pieces** as it takes, each compositing what the last wrote
+back (`gpu::stroke::chunk_segments`). Length therefore costs a dynamics stroke
+pieces, not correctness — where it used to degrade past `MAX_REGION_DIM` to the
+plain swept deposit, which is not a coarser version of the same brush but a
+different one: the swept path only ever *adds* paint, so a brush whose purpose
+was to lift it stopped doing the one thing it was for, on exactly the long
+strokes and fat tips that wanted it most.
+
+One thing must be decided from the record rather than the piece in hand, because
+a live tail and the commit that replaces it must draw the same pixels: whether
+the stroke runs the stamp loop at all. It is decided from the **brush alone** —
+the strongest form of that guarantee, since there is nothing about the piece, or
+about how long the stroke has grown, for it to disagree over — and what it asks
+is the floor no subdivision gets under: whether one segment's own footprint fits
+a region, since the reservoir pickup reduces over the whole tip at once. See
+`gpu::stroke::dynamics_setup`.
+
+**Continuous stamping (swept segments).** Discrete dabs are visible with hard
+tips. The fix: stamp each short *segment* of the flattened curve as one quad
+whose coverage is the brush **swept** along it — the path integral of the
+footprint, instead of point samples. The enabling identity: alpha-"over" is
+multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1−α)`. So:
+
+- Precompute, per brush, the **prefix integral of `τ` along the travel axis**.
+  A length-`d` segment's swept depth at a point is `prefix(u) − prefix(u−d)` for
+  that row — an O(1) lookup.
+- A segment quad outputs `α_seg = 1 − exp(−opacity · sweptDepth)`. Because the
+  existing premultiplied-"over" blend across overlapping segment quads combines
+  as `1 − ∏(1−α) = 1 − exp(−Σ τ)`, it sums the depths **exactly** — no
+  double-counting at joints, no scratch buffer, no second pass. The whole
+  stroke's coverage is the continuous path integral `1 − exp(−τ_total)`.
+- **Every** channel a segment deposits must be a function of that segment's `τ`
+  in one of exactly two shapes: *additive* in `τ` (an amount — the height the aux
+  target sums), or `1 − exp(−k·τ)` (a rate — the opacity the colour target
+  over-blends). Those are the two that survive re-cutting the path, because `τ`
+  is what sums. Any other shape makes the stroke depend on the *number* of
+  segments: a per-segment `√`, for instance, deposits `Σ√(τ/N) = √(N·τ)`, so the
+  stroke silently gains weight with sampling density. Invisible while sampling is
+  uniform and immediately visible once it adapts — which is why the two forms are
+  a standing constraint on the stamp shaders, not a detail of one.
+
+Segments need only be short enough that the line + constant-radius approximation
+holds, so the sweep uses *fewer* primitives than the dab model. Caveats:
+per-stamp angle jitter no longer applies (the brush follows the tangent
+continuously); the round tip's prefix depends on `hardness`, so it is generated
+per stroke (image brushes precompute theirs at import, §6.6); a click is a
+degenerate segment given a minimal length.
+
+**Live vs. replay unification:** live painting renders the in-flight fitted
+stroke onto CoW preview tiles; commit/replay render the same `StrokeRecord`
+through the same path → same stamps, same pixels.
+
+### The sequential swept-exchange loop (wet mixing & brush dynamics)
+
+To smear paint already on the canvas, the brush picks up wet pigment under it,
+carries it, and lays down an evolving mix downstream. This is **sequential and
+order-dependent** (what is under the brush includes what it deposited a moment
+ago), which the parallel swept pass cannot express. The loop embraces the
+sequence *without giving up definite-integral rendering*: the canvas-side
+exchange is **swept per flattened segment through the same prefix-τ integral as
+the plain deposit**, so a dynamics stroke has the identical continuous, dab-free
+footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
+`dynamics.wesl`):
+
+1. **Region composite.** The base tiles under the stroke (the affected set plus a
+   one-tile ring) are composited once into a 1:1 canvas **region** texture
+   (colour + the wide aux). This is the working canvas the stroke evolves.
+   Bounded by `MAX_REGION_DIM`, which bounds transient memory rather than the
+   stroke: a stroke too big for one region is cut into pieces that fit.
+2. **The loop.** The stroke's flattened segments run *in order* inside a **single
+   compute pass** — the implicit barriers between dispatches give the sequential
+   semantics, and usage scopes are per-dispatch, so the region can be sampled by
+   one dispatch and storage-written by the next with no copies and no pass churn.
+   Per-dispatch parameters ride one dynamic-offset uniform buffer.
+   - Per segment, **snapshot** (copy the segment quad's region texels into an
+     `under` scratch, so the exchange can read-modify-write) then **deposit** —
+     one thread per footprint texel. A texel's **exposure** to the segment is the
+     prefix-τ difference `e(x) = prefix(u) − prefix(u−d)`, and exposures add
+     across overlapping quads of consecutive segments, so what the loop applies
+     must be built from `e` in a way that survives re-cutting the path. Removal
+     is *multiplicative*, `h · exp(λ·e)` with `λ = ln(1 − lift)`, which composes
+     exactly: the whole stroke applies `(1−lift)^∫e`, independent of spacing — no
+     dabbing. What the dispatch *adds* (the tool's deposit, and the brush's own
+     `add` paint) is a source term of the same ODE, so it rides the integrating
+     factor `∫₀ᵉ exp(λ·(e−s)) ds` — the amount laid during the pass, discounted
+     by the lift still acting on it for the rest of the pass. That is the ODE's
+     own solution rather than a one-step Euler approximation, so `h·A₁+B₁` then
+     `·A₂+B₂` equals the single step over `e₁+e₂` exactly. A saturating
+     `1 − exp(λ·e)` in the *added* term instead dumps the tool's load into
+     whichever quad reaches a spot first: the stroke runs dry early and scallops
+     at the segment spacing — invisible under uniform 2px sampling, immediate
+     under adaptive.
+   - The loop reads the reservoir at the tip's **mid-pass** position over each
+     texel — one sample for a segment during which the tip sweeps a whole range
+     of reservoir texels across that spot. That approximation, not the exchange
+     math, is what bounds segment length for a dynamics brush: about one
+     reservoir texel of travel. Integrating the reservoir along the pass would
+     lift the cap.
+   - At `RESERVOIR_CADENCE · radius` cadence, **pickup** — one thread per **tool
+     reservoir** texel. The reservoir is a real 2-D texture in brush-local
+     coordinates (`BRUSH_RES`², ping-ponged), so each part of the tip carries what
+     *it* rolled through. Each texel samples the evolving region under its spot
+     with exposure `cov · Δs/r` (footprint weight × travel since the last pickup
+     — the same exponential law, so depletion matches what the interleaved
+     segments lay), lifts canvas height onto the tool, and depletes the tool by
+     the upcoming deposits. The reservoir colour thus advances at a coarser,
+     cheap cadence while the canvas footprint stays continuous.
+3. **Write-back.** Each affected tile's full `TILE_TEX` block is sliced out of
+   the shared region into a fresh CoW tile (`slice.wesl`, narrowing the wide aux
+   to the persistent `(height)`). Aprons are bit-identical to neighbour interiors
+   **by construction** — both are cut from the same texture — and the ring in the
+   composite gives rewritten tiles real neighbour content (§6.4; the
+   `apron_makes_dynamics_writeback_seamless_under_zoom` regression guards it).
+
+*Conservation (§6.1).* Paint moves by transferring **height** — the one conserved
+quantity. Colour and per-unit opacity ride as optical-mass (opacity·height)
+weighted blends, and a parcel's blend weight is its own *visible* alpha
+(`1 − exp(−K·mass)`, the same translucent-slab law as the media pass), so thick
+deposits cover while thin glazes tint. The lift never touches the source's colour
+or alpha: the source fades because its **thickness** drops. Both sides of every
+transfer integrate the same exponential rate over the same footprint (the canvas
+side through the prefix-τ, the reservoir side as `cov · Δs/r` — two quadratures
+of the same bilinear form), so with `add = 0` total height (canvas + tool) is
+conserved up to resampling error, independent of the pickup cadence.
+
+*Order-dependence is real.* Pickup reads the region as already modified by
+earlier segments, so a stroke smears **its own trail** when it crosses it; drag
+falls out naturally; and there is no band, column or stamp structure to alias.
+
+*The axes* (`BrushDynamics` on `BrushParams` — a flat record in the action log):
+
+- `add` — lay the brush's own paint; the only inexhaustible **source**, and the
+  tool's single *amount* knob: paint height laid per unit swept optical depth. A
+  pure-`add` brush takes the swept fast path, untouched by the loop.
+- `lift` — vertical flux canvas → tool (an eraser when alone).
+- `deposit` — vertical flux tool → canvas (`lift`+`deposit` with `add = 0` is a
+  true mass-conserving smudge).
+- `charge` — a finite glob pre-loaded onto the tool (the palette-knife scoop); it
+  depletes as the tool deposits and refills as it lifts.
+
+That is the whole set. `drag`, `bleed`, `ridge`, `load_pressure` and
+`deposit_tilt` were listed as inert placeholders and were **removed** rather than
+carried. Each remains a local change to reintroduce when built (the loop already
+carries per-dispatch state): a forward deposit offset for the bow-wave drag, a
+footprint-local blur for bleed, edge displacement for ridge, per-segment
+pressure/tilt modulation of the rates. Likewise `BrushParams` no longer carries
+`spacing`, `flow`, `height` or `wetness`: with swept rendering there are no dabs
+for `spacing` to space, and `flow`/`height` were redundant multipliers on `add` —
+`flow` doubly so, since it also carried the `drain` factor into `τ` and applied
+the run-dry falloff *twice*. `wetness` was the only source of the **wet channel**,
+which is why that channel is gone too: a per-texel `wet` nothing could write is a
+stored zero every pass paid for. Gloss is now a **uniform property of the paint**
+(§6.3). The persistent aux is one channel, `(height)`.
+
+*Determinism* — a stroke is a pure function of `base` + the `StrokeRecord`, so
+replay and `preview == committed` hold and the log stays compact: only path +
+params are stored, never per-segment data. *Perf* — two footprint-sized
+dispatches per segment plus a reservoir-sized one per pickup, inside one pass; a
+live stroke re-renders only its tail, resuming the reservoir from the frozen
+head. What remains is per-segment dispatch overhead: a few hundred segments each
+costing four small serialized dispatches dominates a move. Batching the
+independent ones is the next win. *Paint never dries* — every texel stays as
+workable as the moment it was laid, which is what lets there be no wetness state
+at all; to glaze over "dry" paint the user adds a **new document layer**, which
+composites as if dry.
+
+### Colour dynamics (colour jitter)
+
+The applied colour can vary **across the brush and along the stroke**:
+`BrushParams.color_dynamics` (historized — it changes stored pixels) holds a
+noise kind plus two per-axis **frequency** and three per-channel **amplitude**
+factors. A 3-channel, exactly **tileable 2-D noise tile** is baked **once on the
+CPU with fixed constants** (`noise.rs`, `Rgba8Snorm` 64², or 256² for `Mosaic`;
+only correctly-rounded ops, no transcendentals ⇒ bit-reproducible across
+platforms) and sampled with a repeat sampler. The kinds:
+
+- `White` — per-texel hash.
+- `Simplex` — a periodic simplex lattice: gradients hashed from
+  `q = 6·(i,j,k) − (i+j+k)·𝟙 mod 6·P`, invariant under input translation by the
+  period `P` (a multiple of 3). The lattice stays 3-D and the bake takes its
+  `z = 0` plane, because only `G3 = 1/6` makes the unskewed lattice positions
+  integral — the 2-D skew constant is irrational, so a 2-D lattice can be
+  periodic along its own skewed vectors but not along the axes a tileable texture
+  needs.
+- `Voronoi` — Worley F1 on a jittered grid of `P` cells per side, feature points
+  hashed from the cell index `mod P`. The usual 3×3 cell search is *exact* here
+  rather than approximate: every feature outside that ring is more than one cell
+  away and the shaping flattens the field past 0.8 cells.
+- `Mosaic` — the same cells read discretely, one flat value per cell shared by
+  all three channels, so facets are whole polygons with hard edges. Its owner
+  search widens to 5×5, since a flat field has no clamp behind which a mis-picked
+  owner could hide, and its tile is 256² because its walls are steps and so are
+  only as sharp as the tile is fine.
+
+The lookup domain is **stroke-local**: `(lateral·f₀, arc·f₁)/NOISE_TILE_PX` plus
+a per-stroke translation derived from the stroke `seed`, where `lateral` is the
+signed offset from the centreline and `arc` the length along it, both in canvas
+px (brush-local y is in radius units, so it is scaled by the radius — the pattern
+keeps one scale whatever size the tip is). One axis varies colour across the
+footprint, the other evolves it along the stroke. Anchoring to the stroke rather
+than the canvas makes the variation belong to the *gesture*, and costs nothing in
+determinism: both coordinates are still functions of the fragment's canvas
+position and the segment, so the deposit stays a pure function of the two and
+tile aprons stay bit-consistent (§6.4). Clamping arc to each segment's body makes
+it *continuous across overlapping segment quads*.
+
+The sampled signed offsets perturb the brush's **channel triple in the current
+colour space** (Oklab `L,a,b`; Mixbox concentrations), applied per fragment in
+the sweep stamp (`brush_color`, `stamp_common.wesl`) and per texel to the `add`
+paint in the exchange loop's `deposit` (`dynamics.wesl`) — both paths share the
+field and parameters, so a brush looks the same whichever path renders it.
+Amplitude 0 (the default) binds a 1×1 zero tile and early-outs — bit-identical to
+the constant-colour deposit.
+
+
+## 6.6 Brush shapes & the asset store
+
+The default brush is a procedural soft disc, but natural media needs *organic*
+tips. A brush shape is a **coverage mask**: a greyscale image where white = full
+deposit and black = none. The mask drives coverage and, scaled, the height
+channel too — so a worn-bristle tip lays down *broken* impasto rather than a
+uniform slab.
+
+**Brush shapes are content-addressed assets.** An imported image is identified by
+the hash of its bytes; `BrushParams` references that id, never the pixels:
+
+```rust
+pub struct AssetId([u8; 32]);   // BLAKE3 of the canonical image bytes
+
+pub enum BrushShape {
+    Round { hardness: f32 },   // procedural soft disc
+    Stamp(AssetId),            // sampled coverage mask from an imported image
+}
+// BrushParams gains:  shape: BrushShape, orientation: OrientationSource
+```
+
+`orientation` (`FollowStroke` | `Pen`) sets how the swept footprint is angled:
+`FollowStroke` keeps the shape's native axis on the stroke tangent (what makes a
+bristle brush read as a real stroke rather than a rubber stamp), while `Pen` pins
+it to the pen's tilt azimuth in canvas space, like a calligraphy nib. The swept
+integral runs along the travel direction, so the shape is pre-rotated into a
+per-orientation prefix-τ volume indexed by the relative angle.
+
+Content-addressing is the load-bearing choice:
+
+- **The action log stays tiny.** `StrokeRecord` carries a 32-byte `AssetId`, not
+  a 100 KB image; a thousand strokes with one brush reference one blob.
+- **Determinism & dedup for free.** Same bytes → same id → same texture, so
+  replay, goldens and peers resolve identically. Unlike shader drift across
+  builds (§8), the brush image is *data the file owns*.
+- **Collaboration fits the iroh model.** Content-addressed blobs are exactly what
+  iroh blobs sync (§12.4): a peer seeing a stroke referencing an unknown
+  `AssetId` fetches that blob by hash before rendering it.
+
+**Asset store.** `AssetStore` maps `AssetId →` a GPU coverage texture
+(single-channel `R8`, mip-mapped for clean minification). On import the image is
+decoded, normalized to coverage (alpha if present, else luminance),
+box-downsampled to `assets::MAX_SHAPE_DIM` (1024) so an oversized upload cannot
+exceed device texture limits, hashed, uploaded and cached
+(`Engine::import_brush(bytes) -> AssetId`). The store is **document-adjacent
+resources**, not the action log: populated on import and on load, bundled into
+the save file (§8). Selecting a brush is session state, not a historized edit.
+
+**Stamp rendering.** `stamp.wesl` carries a per-instance rotation (cos/sin) and
+samples the bound mask at the footprint's uv, so the mask's coverage is what the
+swept optical depth integrates and therefore modulates both opacity and the
+height `add` lays. `Round` is realized as a built-in generated mask under a
+reserved id, so the shader always samples a texture — one code path.
+
+**Assets are fetched at runtime, never embedded.** The engine is *given* image
+bytes; it embeds none. Built-in assets (brush shapes, surface bump maps, the HDR)
+live as static files under `stark-ui/assets/`, bundled by `asset!` with
+cache-busting URLs; the frontend fetches them on demand with
+`dioxus::asset_resolver::read_asset_bytes` (HTTP on web, filesystem on native)
+and hands the bytes to the engine. The built-in shapes are listed in one table
+(`stark-ui/src/builtins.rs`) and fetched once at startup, which is what makes an
+id available to name them by: imported bytes are keyed by the hash of their
+decoded coverage, so every engine (main canvas, brush-editor preview, a peer's)
+lands on the same `AssetId`, and a built-in is referenced downstream exactly like
+a user's imported shape — a `BrushShape::Stamp`, with no notion of "built-in"
+anywhere. Adding a shape is a PNG plus a row. Brush *presets*
+(`stark-ui/src/presets.rs`) are the one thing that has to wait for the fetch,
+since a preset stores a content id. The large surface maps are fetched lazily,
+only when a surface is selected. This keeps multi-megabyte assets out of the wasm
+binary and is the path that scales as the libraries grow. (Headless tests, having
+no frontend, read the same files from disk and register them directly.)
+
+

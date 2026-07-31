@@ -1,5 +1,5 @@
 //! The floating Lighting panel: the image-based-lighting media pass and the canvas
-//! surface (DESIGN.md §6.3, §6.4).
+//! surface (§6.3, §6.4).
 
 use dioxus::prelude::*;
 
@@ -11,17 +11,17 @@ use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::{EnvironmentId, MediaParams, SurfaceId};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
-/// stay out of the wasm binary (DESIGN.md §6.6). The engine is handed the bytes.
+/// stay out of the wasm binary (§6.6). The engine is handed the bytes.
 pub const SURFACE_LINEN: Asset = asset!("/assets/surface/Linen.png");
 pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 
-/// The selectable canvas surfaces, in display order (DESIGN.md §6.4). Adding a
+/// The selectable canvas surfaces, in display order (§6.4). Adding a
 /// surface = one row here (plus its asset fetch in [`set_surface`]); the Lighting
 /// panel's drop-down renders this table.
 pub const SURFACES: &[(SurfaceId, &str)] =
     &[(SurfaceId::Flat, "Smooth"), (SurfaceId::Linen, "Linen")];
 
-/// The selectable lighting environments, in display order (DESIGN.md §6.3). Same
+/// The selectable lighting environments, in display order (§6.3). Same
 /// shape as [`SURFACES`]: one row per environment, its bytes (if any) resolved by
 /// [`environment_asset`]. `Neutral` leads because it is the reference light — the
 /// achromatic one you switch to to judge colour; the HDRs are the room you paint in.
@@ -32,28 +32,28 @@ pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
 
 /// What the app lights the canvas with on startup: the achromatic reference light,
 /// which is also what the engine boots on. Paint reads as its own colour under it —
-/// at `Neutral`'s exposure of 1.0 the media pass is an identity (DESIGN.md §6.3) — so
+/// at `Neutral`'s exposure of 1.0 the media pass is an identity (§6.3) — so
 /// what you mix is what you see, and the studio HDR is the deliberate switch into a
 /// room. Kept a named constant because the startup hook in `main.rs` fetches its
 /// bytes if it has any; `Neutral` is procedural, so today that fetch is skipped.
 pub const DEFAULT_ENVIRONMENT: EnvironmentId = EnvironmentId::Neutral;
 
-/// Lighting controls for the image-based-lighting media pass (DESIGN.md §6.3).
+/// Lighting controls for the image-based-lighting media pass (§6.3).
 /// The canvas is lit by the chosen environment; these tune how it reads. Exposure is
 /// not among them — it rides with the environment, so picking a light picks it.
 #[component]
 pub fn LightingPanel() -> Element {
     let state = use_context::<AppState>();
     // Read off the engine's own projection rather than a local copy: a shadow seeded
-    // from `Default` goes stale the moment anything else changes these (DESIGN.md §4).
+    // from `Default` goes stale the moment anything else changes these (§4).
     let obs = state.obs.read();
     let p = obs.as_ref().map(|o| o.media).unwrap_or_default();
     let surf = obs.as_ref().map(|o| o.surface).unwrap_or_default();
     let env = obs.as_ref().map(|o| o.environment).unwrap_or_default();
     // The canvas substrate colour (straight sRGB), shown as a swatch that pops out an
     // Oklab picker. Read from the engine's projection rather than a local signal:
-    // it is document state now (FRAME_DESIGN.md §5), so a copy here would go stale
-    // the moment an undo or a document load moved it (DESIGN.md §4).
+    // it is document state now (§15.5), so a copy here would go stale
+    // the moment an undo or a document load moved it (§4).
     let c = obs
         .as_ref()
         .map(|o| o.background)
@@ -143,7 +143,7 @@ fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
 }
 
 /// Show a substrate colour without logging it — every sample of a picker drag
-/// (FRAME_DESIGN.md §5). The engine renders it and reports it back through
+/// (§15.5). The engine renders it and reports it back through
 /// `observe`, so the canvas and the swatch both track the pointer.
 fn preview_background(state: AppState, rgb: [f32; 3]) {
     dispatch(state, ViewCommand::PreviewBackground(Some(rgb)));
@@ -151,7 +151,7 @@ fn preview_background(state: AppState, rgb: [f32; 3]) {
 
 /// Commit the canvas substrate colour (straight sRGB) — once, when the pick ends.
 /// A logged document edit, not a view setting: the ground a piece was painted on is
-/// part of what it is, and it is saved with it (FRAME_DESIGN.md §5).
+/// part of what it is, and it is saved with it (§15.5).
 fn update_background(state: AppState, rgb: [f32; 3]) {
     dispatch(state, DocCommand::SetBackground(rgb));
 }
@@ -166,7 +166,7 @@ pub fn surface_asset(id: SurfaceId) -> Option<Asset> {
 }
 
 /// Switch the canvas surface in place and repaint — the document is preserved;
-/// existing paint re-reads against the new weave (DESIGN.md §6.4). Image-backed
+/// existing paint re-reads against the new weave (§6.4). Image-backed
 /// surfaces are fetched on first use (the bump maps stay out of the wasm binary),
 /// so this runs async, like `new_document`'s fetch.
 pub fn set_surface(state: AppState, id: SurfaceId) {
@@ -211,7 +211,7 @@ pub fn environment_asset(id: EnvironmentId) -> Option<Asset> {
 }
 
 /// Re-light the canvas with `id` and repaint. A view setting: no stored pixel moves,
-/// only how the relief catches the light (DESIGN.md §6.3). HDR-backed environments
+/// only how the relief catches the light (§6.3). HDR-backed environments
 /// are fetched on first use — the same `spawn_forever` + register-then-switch shape
 /// as [`set_surface`], for the same reason: closing the panel mid-fetch must not
 /// cancel the switch.

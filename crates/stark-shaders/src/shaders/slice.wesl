@@ -1,4 +1,4 @@
-// Region → tile write-back for the brush-dynamics stamp loop (DESIGN.md §6.2).
+// Region → tile write-back for the brush-dynamics stamp loop (§6.2).
 //
 // After the stamp loop evolves the stroke's canvas region, each affected tile is
 // sliced back out as a fresh copy-on-write tile: a fullscreen pass over the tile's

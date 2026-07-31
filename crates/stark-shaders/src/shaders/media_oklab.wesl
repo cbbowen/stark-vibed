@@ -1,4 +1,4 @@
-// Media pass B for the OKLAB color space (DESIGN.md §6.3): the "old masters"
+// Media pass B for the OKLAB color space (§6.3): the "old masters"
 // payoff. Color arrives premultiplied by *coverage* — pass A weighs each layer by
 // its slab visible alpha (composite.wesl), so alpha here is the stack's
 // accumulated coverage. We un-premultiply, composite the paint over the substrate

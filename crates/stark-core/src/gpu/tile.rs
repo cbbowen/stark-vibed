@@ -1,4 +1,4 @@
-//! Tiles and the recycling tile pool (DESIGN.md §5.1, §5.2, §6.1).
+//! Tiles and the recycling tile pool (§5.1, §5.2, §6.1).
 //!
 //! A tile's channels are independent GPU textures, each held through a
 //! [`TexHandle`] (`Arc`); when the last handle drops, the texture returns to the
@@ -11,9 +11,9 @@
 //! so different consumers can mix formats freely. In particular a brush-dynamics
 //! *scratch* tile takes a wider `Rgba16Float` aux (an extra channel the deposit and
 //! integrate use internally) while persistent tiles keep the compact color-space
-//! `aux` format — the two never need to match (DESIGN.md §6.2).
+//! `aux` format — the two never need to match (§6.2).
 //!
-//! Channels (DESIGN.md §6.1, normalized representation):
+//! Channels (§6.1, normalized representation):
 //! - `color`: `Rgba16Float`, latent colour premultiplied by **opacity**
 //!   (`L·op, a·op, b·op, op`) — opacity, *not* coverage.
 //! - `aux`: `R16Float`, `(height)` — the amount of paint, from which the media pass
@@ -35,10 +35,10 @@ const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
 
 /// The aux format a brush-dynamics *scratch* tile uses: wider than the persistent
 /// `aux` so the deposit can stash an extra channel (the smear-lifted height) for the
-/// integrate to read, without disturbing the compact persistent layout (DESIGN §6.2).
+/// integrate to read, without disturbing the compact persistent layout (§6.2).
 pub const SCRATCH_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// The format of a **selection mask** tile (DESIGN.md §6.8): one unsigned-normalized
+/// The format of a **selection mask** tile (§6.8): one unsigned-normalized
 /// coverage channel. Same `TILE_TEX` geometry (apron included) as a paint tile, so a
 /// mask texel is 1:1 with the tile texel it gates and the mask is pooled and recycled
 /// exactly like paint.
@@ -53,13 +53,13 @@ pub enum AllocSource {
     StrokeScratch,
     DynamicsWriteback,
     SelectionMask,
-    /// The transform's moved-parcel scratch pair (TRANSFORM_DESIGN.md §5).
+    /// The transform's moved-parcel scratch pair (§16.5).
     TransformScratch,
     /// A tile rewritten by a transform's combine pass.
     TransformDestination,
     /// A selection mask tile carried under a transform's affine.
     TransformMask,
-    /// A tile rewritten by a region fill (MISSING_FEATURES §0.4).
+    /// A tile rewritten by a region fill (§18.0.4).
     FillDestination,
 }
 
@@ -92,7 +92,7 @@ impl Drop for GpuTex {
 ///
 /// This is the unit the pool deals in. Pairing two of them into a tile is the
 /// *caller's* job, because which two formats make a tile is the colour space's
-/// business (DESIGN.md §6.7) and the pool has no view of that.
+/// business (§6.7) and the pool has no view of that.
 #[derive(Clone)]
 pub struct TexHandle(Arc<GpuTex>);
 
@@ -112,7 +112,7 @@ struct TilePair {
 }
 
 /// A handle to a tile. Cloning is cheap (Arc bumps), which is what makes persistent
-/// `DocState` snapshots cheap (DESIGN.md §5.1).
+/// `DocState` snapshots cheap (§5.1).
 ///
 /// Built from two [`TexHandle`]s rather than acquired from the pool: see
 /// [`TexHandle`] for why the pool does not know what a tile is.
@@ -138,14 +138,14 @@ impl TilePairHandle {
 
     /// Whether two handles are the same allocation. A tile's texels are never
     /// rewritten once a commit lands — copy-on-write hands out a fresh tile
-    /// instead (DESIGN.md §5.2) — so identity doubles as "unchanged", which is
+    /// instead (§5.2) — so identity doubles as "unchanged", which is
     /// what the timeline's patch capture diffs by (§12.6).
     pub fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
-/// A handle to one pooled **selection mask** tile (DESIGN.md §6.8). Cloning is an
+/// A handle to one pooled **selection mask** tile (§6.8). Cloning is an
 /// `Arc` bump, so a `Selection` snapshot is as cheap as a `DocState` one — and the
 /// texture returns to the pool when the last history version referencing it drops.
 #[derive(Clone)]
@@ -181,7 +181,7 @@ impl PoolInner {
     }
 }
 
-/// Recycling allocator for tile textures (DESIGN.md §6.1). Hands out one texture at a
+/// Recycling allocator for tile textures (§6.1). Hands out one texture at a
 /// time, keyed by format, so `Rgba16Float` textures are shared across every consumer
 /// that needs one (persistent colour, scratch colour, the wide scratch aux).
 #[derive(Clone)]
@@ -196,7 +196,7 @@ impl TilePool {
         Self { ctx, format_pools }
     }
 
-    /// Acquire a selection mask tile ([`MASK_FORMAT`], DESIGN.md §6.8). Contents are
+    /// Acquire a selection mask tile ([`MASK_FORMAT`], §6.8). Contents are
     /// undefined until rasterized; the selection renderer always writes the whole
     /// target, aprons included.
     pub fn acquire_mask(&self, source: AllocSource) -> MaskHandle {
@@ -245,7 +245,7 @@ impl TilePool {
     fn create_texture(&self, format: wgpu::TextureFormat) -> wgpu::Texture {
         self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("stark tile channel"),
-            // Interior + apron on every side (DESIGN.md §6.4).
+            // Interior + apron on every side (§6.4).
             size: wgpu::Extent3d {
                 width: TILE_TEX,
                 height: TILE_TEX,

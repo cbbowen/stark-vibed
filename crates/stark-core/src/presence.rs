@@ -1,4 +1,4 @@
-//! The presence gesture protocol — **both ends, adjacent** (PEER_DESIGN.md §5).
+//! The presence gesture protocol — **both ends, adjacent** (§17.5).
 //!
 //! [`GestureTx`] encodes the gesture a client has in flight into [`GestureFrame`]s;
 //! [`GestureRx`] reassembles them. That is one protocol, not two: a sent-path
@@ -8,7 +8,7 @@
 //!
 //! - a `head` rides exactly the frames that start from index 0;
 //! - only **frozen** control points may be counted as sent, because the provisional
-//!   tail can still move (DESIGN §6.2);
+//!   tail can still move (§6.2);
 //! - the frozen watermark only ever advances, so a resync frame (which says nothing
 //!   new about what is frozen) cannot walk it back;
 //! - a watermark may only advance for a frame that is actually **sent**;
@@ -42,11 +42,11 @@ pub(crate) enum GestureSource {
     Stroke {
         head: StrokeHead,
         path: Vec<ControlPoint>,
-        /// How many leading control points are final (DESIGN §6.2).
+        /// How many leading control points are final (§6.2).
         frozen: usize,
     },
     Selection(SelectionOp),
-    /// A region being dragged out to fill (MISSING_FEATURES §0.4). No layer: the
+    /// A region being dragged out to fill (§18.0.4). No layer: the
     /// frame's own [`active_layer`](crate::peer::PeerFrame::active_layer) is it, and
     /// a second copy could disagree with that one.
     Fill(FillOp),
@@ -174,7 +174,7 @@ struct StrokeAssembly {
     path: Vec<ControlPoint>,
     /// Control points the sender has stopped resending — i.e. the ones its fitter
     /// froze. The receiver learns this for free from the delta's `from`, and it is
-    /// exactly what the incremental repaint needs to know (PEER_DESIGN.md §6).
+    /// exactly what the incremental repaint needs to know (§17.6).
     frozen: usize,
 }
 
@@ -202,7 +202,7 @@ impl GestureRx {
     }
 
     /// How many spans of the reassembled stroke are settled, so the preview can
-    /// repaint only the tail (DESIGN.md §6.2, PEER_DESIGN.md §6).
+    /// repaint only the tail (§6.2, §17.6).
     pub(crate) fn frozen_spans(&self) -> usize {
         self.stroke
             .as_ref()

@@ -1,4 +1,4 @@
-// Affine transform of the selected paint (TRANSFORM_DESIGN.md).
+// Affine transform of the selected paint (§16).
 //
 // Two passes per rewritten tile, plus one for the mask:
 //
@@ -8,10 +8,10 @@
 //   quads share transformed edges bitwise and rasterization is watertight — every
 //   destination texel receives **at most one** parcel, which is what lets this be
 //   a plain write with no blending and no order dependence. Sampling is bilinear;
-//   the 1-px apron feeds the filter's edge taps (DESIGN.md §6.4).
+//   the 1-px apron feeds the filter's edge taps (§6.4).
 // - **Combine** (`vs_fill` + `fs_combine`): cut the base by its own mask — the
 //   lift law, `h₀ = h·(1−m)` with latent and per-unit opacity untouched
-//   (DESIGN.md §6.1) — then stack the parcel by the shared parcel-deposit law
+//   (§6.1) — then stack the parcel by the shared parcel-deposit law
 //   (paint_common.wesl). A texel neither cut nor pasted passes through
 //   bit-exactly, so a far-away transform provably cannot disturb paint.
 // - **Mask** (`vs_quad` + `fs_mask`): the author's selection mask resampled under
@@ -38,7 +38,7 @@ struct Quad {
     //    interpolating a uv across the quad: attribute interpolation plus the
     //    sampler's fixed-point uv conversion can land an exact-centre tap a
     //    fraction off, and the exactness invariants (identity, integer translate,
-    //    flips — TRANSFORM_DESIGN.md §4) live or die on those taps being exact.
+    //    flips — §16.4) live or die on those taps being exact.
     i: vec4<f32>,
     j: vec4<f32>,
 }
@@ -106,7 +106,7 @@ struct ParcelOut {
 
 // The moved parcel: `(latent, op, h·m)` — the cut takes height with it, the
 // paint's latent and per-unit opacity ride along unscaled (the lift law,
-// TRANSFORM_DESIGN.md §2).
+// §16.2).
 @fragment
 fn fs_parcel(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     let uv = src_uv(frag.xy);
@@ -119,7 +119,7 @@ fn fs_parcel(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     return out;
 }
 
-// The selection mask itself, carried under the same affine (§1).
+// The selection mask itself, carried under the same affine (§16.1).
 @fragment
 fn fs_mask(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let m = textureSampleLevel(src_mask, samp, src_uv(frag.xy), 0.0).r;
@@ -159,7 +159,7 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     // arithmetic below computes, but the f32→f16 render-target store's rounding
     // is implementation-defined, so a value that merely *recomputes* the answer
     // can land one f16 ulp off it. The exactness invariants
-    // (TRANSFORM_DESIGN.md §4) hold exactly on fully-selected and fully-
+    // (§16.4) hold exactly on fully-selected and fully-
     // unselected texels; inside a feather ramp they hold to one f16 ulp.
     //
     // Untouched: not under the selection, and no parcel landed here.

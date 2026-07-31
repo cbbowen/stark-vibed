@@ -1,4 +1,4 @@
-//! Layer groups and clipping (GROUP_DESIGN.md) — one feature, tested as one.
+//! Layer groups and clipping (§14) — one feature, tested as one.
 //!
 //! A layer carries layers; a layer's blend mode, clip and opacity describe how it
 //! *together with everything it carries* meets what lies beneath it. Everything here
@@ -9,12 +9,12 @@
 //! changed" is the failure this design exists to prevent — and because the exactness
 //! is *structural*: [`CompositeGroup::stack`] collapses such a group back into a plain
 //! run at build time, so the compositor is handed the same draw list it would have
-//! been handed without the group at all (§7 rule 2). A test that tolerated a few
+//! been handed without the group at all (§14.7 rule 2). A test that tolerated a few
 //! least-significant bits here would pass just as happily if that collapse silently
 //! stopped happening.
 //!
 //! **The ones about clipping's algebra.** A clipped layer must contribute no
-//! coverage of its own (§4.1) — over an opaque backdrop it is exactly an unclipped
+//! coverage of its own (§14.4.1) — over an opaque backdrop it is exactly an unclipped
 //! layer, over nothing it is nothing at all, and there is no middle case where it
 //! invents opacity the group did not have. That last one is what the "obvious"
 //! implementation gets wrong, so it is tested directly rather than inferred from
@@ -72,7 +72,7 @@ fn assert_identical(a: &RgbaImage, b: &RgbaImage, what: &str) {
 // ---------------------------------------------------------------------------
 
 /// Carrying is a move, and it moves the whole subtree. Releasing puts it back
-/// beside the group rather than inside it (GROUP_DESIGN.md §8).
+/// beside the group rather than inside it (§14.8).
 #[test]
 fn carry_and_release_move_the_whole_subtree() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -119,7 +119,7 @@ fn carry_and_release_move_the_whole_subtree() {
 
 /// A layer may not carry its own ancestor. Both halves of a cycle are `MoveLayer`s
 /// that conflict on `StackOrder`, so the log's total order serializes them and
-/// whichever applies second sees the first's result and declines (§8).
+/// whichever applies second sees the first's result and declines (§14.8).
 #[test]
 fn a_layer_cannot_carry_its_own_ancestor() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -155,7 +155,7 @@ fn a_layer_cannot_carry_its_own_ancestor() {
 
 /// Removing a group removes what it carries, and undo brings the whole subtree
 /// back — a `Layer` owns its subtree, so the patch that restores it restores all of
-/// it (§8).
+/// it (§14.8).
 #[test]
 fn removing_a_group_takes_its_carried_layers_and_undo_returns_them() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -189,7 +189,7 @@ fn removing_a_group_takes_its_carried_layers_and_undo_returns_them() {
     );
 }
 
-/// `has_backdrop` is the one predicate behind both relational controls (§4.3): true
+/// `has_backdrop` is the one predicate behind both relational controls (§14.4.3): true
 /// wherever something composites beneath, false on exactly one row — the bottom of
 /// the document — including for a layer carried by it.
 #[test]
@@ -223,7 +223,7 @@ fn only_the_bottom_of_the_document_has_no_backdrop() {
 /// **The invariant this design exists for.** Grouping layers that use no modes and
 /// no clipping renders the identical picture, to the byte.
 ///
-/// Not "close enough": §7 rule 2 collapses such a group back into a plain run at
+/// Not "close enough": §14.7 rule 2 collapses such a group back into a plain run at
 /// build time, so the compositor receives the same draw list it would have received
 /// with no group at all. Any drift here means the collapse stopped happening and the
 /// group is being isolated through two extra render passes that are supposed to be
@@ -277,7 +277,7 @@ fn carry_then_release_returns_the_same_picture() {
     assert_identical(&before, &after, "carry then release is the identity");
 }
 
-/// **The cost of having no pass-through, asserted rather than assumed** (§5).
+/// **The cost of having no pass-through, asserted rather than assumed** (§14.5).
 ///
 /// A group is always isolated, so a blend mode *inside* one blends against the group
 /// rather than against what lies under the group — and putting a glow layer into a
@@ -285,7 +285,7 @@ fn carry_then_release_returns_the_same_picture() {
 /// than Photoshop's, and the test exists so that the day someone decides it is a bug
 /// and "fixes" it, they have to come here and read why it is not.
 ///
-/// What buys it back is §5's other half, which the modes were built for: every mode
+/// What buys it back is §14.5's other half, which the modes were built for: every mode
 /// past `Normal` is a conjugation of addition, so regrouping layers that share a
 /// mode is exactly invariant. It is only mixing scopes, as here, that moves.
 #[test]
@@ -317,7 +317,7 @@ fn grouping_rescopes_an_interior_blend_mode() {
 }
 
 /// Hiding a group hides what it carries: the group is the layer, so its visibility
-/// is the group's (§3).
+/// is the group's (§14.3).
 #[test]
 fn hiding_a_group_hides_what_it_carries() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -340,12 +340,12 @@ fn hiding_a_group_hides_what_it_carries() {
 }
 
 // ---------------------------------------------------------------------------
-// Clipping: the algebra of §4.1.
+// Clipping: the algebra of §14.4.1.
 // ---------------------------------------------------------------------------
 
 /// Over **nothing**, a clipped layer is nothing. The one case where a clip and a
 /// blend mode differ at the same place: a mode over an empty backdrop is the
-/// identity, a clip erases (§4.3).
+/// identity, a clip erases (§14.4.3).
 #[test]
 fn clipping_over_an_empty_backdrop_shows_nothing() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -444,7 +444,7 @@ fn a_clipped_layer_adds_no_coverage_where_the_backdrop_is_empty() {
 }
 
 /// Clipping inherits the alpha of the **whole stack below it in its group**, not of
-/// the one layer under it (§4).
+/// the one layer under it (§14.4).
 ///
 /// Three layers in one group. The clipped one paints across a region where only the
 /// *base* has paint and the layer immediately below it does not — a nearest-neighbour
@@ -492,7 +492,7 @@ fn clipping_inherits_the_whole_stack_below_it() {
 }
 
 /// The base's clip points **outward**: it clips the composited group to what lies
-/// beneath the *group*, exactly as its blend mode does (§4.3).
+/// beneath the *group*, exactly as its blend mode does (§14.4.3).
 #[test]
 fn clipping_the_base_clips_the_whole_group() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -580,7 +580,7 @@ fn the_bases_blend_mode_is_the_groups() {
 
 /// Group opacity fades the group as a unit, and is not the same as fading its
 /// members: two overlapping members at 50% each show their seam, the group at 50%
-/// does not (§3).
+/// does not (§14.3).
 #[test]
 fn group_opacity_fades_the_composite_not_the_members() {
     let Some(mut engine) = engine_or_skip_blue() else {
@@ -617,7 +617,7 @@ fn group_opacity_fades_the_composite_not_the_members() {
 // ---------------------------------------------------------------------------
 
 /// The active layer survives its group being removed, landing on something that
-/// still exists — including when the replacement is itself carried (§2).
+/// still exists — including when the replacement is itself carried (§14.2).
 #[test]
 fn the_active_layer_repoints_out_of_a_removed_group() {
     let Some(mut engine) = engine_or_skip_blue() else {

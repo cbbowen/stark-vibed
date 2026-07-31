@@ -1,4 +1,4 @@
-//! Region fill (MISSING_FEATURES §0.4).
+//! Region fill (§18.0.4).
 //!
 //! The claims worth pinning are the ones that make fill *this* app's fill rather
 //! than a paint bucket: it deposits paint with real height (so it lights, and a
@@ -145,7 +145,7 @@ fn the_selection_bounds_the_fill() {
         return;
     };
     // Select a small box, then fill a much larger one. The mask is the gate every
-    // tool acts through (DESIGN.md §6.8), so the fill must stop at the selection —
+    // tool acts through (§6.8), so the fill must stop at the selection —
     // which is also what makes a fill of an infinite canvas well-defined.
     select_rect(
         &mut engine,

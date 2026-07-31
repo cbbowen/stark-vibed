@@ -1,4 +1,4 @@
-//! Collaboration semantics, headlessly (DESIGN.md §12, build-order step 12):
+//! Collaboration semantics, headlessly (§12, build-order step 12):
 //! two engines exchanging action logs must converge to identical pixels —
 //! convergence as a test — including out-of-order merges, undo-as-an-action,
 //! and late joins. No network here; `stark-net` adds the wire on top.
@@ -80,7 +80,7 @@ fn concurrent_strokes_converge() {
 }
 
 /// Undo in a shared session is a logged action targeting *my* stroke, skipping
-/// the peer's intervening one (DESIGN.md §12.3); redo is an undo of that undo.
+/// the peer's intervening one (§12.3); redo is an undo of that undo.
 #[test]
 fn shared_undo_skips_peer_actions() {
     let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
@@ -119,7 +119,7 @@ fn shared_undo_skips_peer_actions() {
     );
 
     // Redo brings A's stroke back on both peers — at the *top* of the stack
-    // (DESIGN.md §12.3), over B's stroke rather than back under it, so the
+    // (§12.3), over B's stroke rather than back under it, so the
     // crossing no longer matches the pre-undo image. What must hold: the peers
     // agree, a late joiner materializing the log canonically agrees, and the
     // redone stroke is genuinely back (the image changed from "only B").
@@ -285,7 +285,7 @@ fn merge_is_idempotent() {
     );
 }
 
-/// A shared document has no single playhead to scrub (MISSING_FEATURES §2.4).
+/// A shared document has no single playhead to scrub (§18.2.4).
 ///
 /// Not a gap: the state is a function of a log peers are still appending to, so a
 /// scrub would be silently undone by the next arrival. Answering `None` is what

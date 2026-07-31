@@ -1,6 +1,6 @@
 # Nightly is required by one dependency: `history` uses
 # #![feature(associated_type_defaults)]. Nothing in this workspace needs it —
-# `generic_const_exprs` went with the spline-fit crate (CLEANUP.md §2) — so if
+# `generic_const_exprs` went with the spline-fit crate (CLAUDE.md) — so if
 # `history` ever lands on stable, so does Stark.
 [toolchain]
 channel = "nightly"

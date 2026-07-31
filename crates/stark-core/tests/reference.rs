@@ -1,4 +1,4 @@
-//! The **reference light** invariant (DESIGN.md §6.3).
+//! The **reference light** invariant (§6.3).
 //!
 //! Under the procedural `Neutral` environment — whose exposure is 1.0 — with the
 //! relief flattened, the media pass is supposed to be an identity: what you painted is what

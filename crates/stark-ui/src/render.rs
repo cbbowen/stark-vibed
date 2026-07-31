@@ -1,4 +1,4 @@
-//! WebGPU surface rendering (DESIGN.md §6.4, §11).
+//! WebGPU surface rendering (§6.4, §11).
 //!
 //! The engine renders directly into the canvas's `wgpu::Surface` texture — no
 //! readback, no encode. A [`Renderer`] bundles the surface and the engine; the
@@ -39,7 +39,7 @@ pub struct Renderer {
 /// through (`panels::navigator`).
 ///
 /// The miniature is a *rendered surface*, not an image the UI carries — the same
-/// bargain the painting canvas makes (DESIGN.md §11). It began as an `export`: render
+/// bargain the painting canvas makes (§11). It began as an `export`: render
 /// to an offscreen texture, copy the pixels back to the CPU, hand them to a 2D canvas
 /// through `ImageData`. Every part of that after "render" existed only because the
 /// miniature had nowhere of its own to draw, and giving it a surface deleted all of
@@ -61,7 +61,7 @@ struct Overview {
     targets: stark_core::Offscreen,
 }
 
-/// A collaborator, as the chrome draws them (PEER_DESIGN.md §4).
+/// A collaborator, as the chrome draws them (§17.4).
 ///
 /// Deliberately not the engine's [`Peer`](stark_core::Peer): that carries the
 /// in-flight gesture, which is a whole stroke path and is the *canvas's* business,
@@ -127,24 +127,24 @@ impl Renderer {
         self.engine.view()
     }
 
-    /// The document's current color space (DESIGN.md §6.7).
+    /// The document's current color space (§6.7).
     pub fn color_space(&self) -> ColorSpaceId {
         self.engine.color_space()
     }
 
-    /// Start a fresh document in `color_space`, on `surface` (DESIGN.md §6.7).
+    /// Start a fresh document in `color_space`, on `surface` (§6.7).
     /// The colour space cannot be changed any other way — see
     /// [`Engine::new_document`].
     pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SurfaceId) {
         self.engine.new_document(color_space, surface);
     }
 
-    /// The document's current canvas surface (DESIGN.md §6.4).
+    /// The document's current canvas surface (§6.4).
     pub fn surface(&self) -> SurfaceId {
         self.engine.surface()
     }
 
-    /// Switch the canvas surface (DESIGN.md §6.4). Document state, so this logs an
+    /// Switch the canvas surface (§6.4). Document state, so this logs an
     /// action like any other edit.
     pub fn set_surface(&mut self, id: SurfaceId) {
         self.engine.process(DocCommand::SetSurface(id));
@@ -155,12 +155,12 @@ impl Renderer {
         self.engine.surface_loaded(id)
     }
 
-    /// Register frontend-fetched image bytes for a surface (DESIGN.md §6.4).
+    /// Register frontend-fetched image bytes for a surface (§6.4).
     pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
         self.engine.register_surface(id, png_bytes);
     }
 
-    /// The current lighting environment (DESIGN.md §6.3).
+    /// The current lighting environment (§6.3).
     pub fn environment(&self) -> EnvironmentId {
         self.engine.environment()
     }
@@ -205,7 +205,7 @@ impl Renderer {
 
     /// Where the history playhead stands and how far it can travel, in actions —
     /// `None` when the history is not this client's alone to walk
-    /// (MISSING_FEATURES §2.4).
+    /// (§18.2.4).
     pub fn scrub_range(&self) -> Option<(usize, usize)> {
         self.engine.scrub_range()
     }
@@ -215,17 +215,17 @@ impl Renderer {
         self.engine.scrub_labels()
     }
 
-    /// Serialize the document — the action log, not the pixels (DESIGN.md §8).
+    /// Serialize the document — the action log, not the pixels (§8).
     pub fn save_bytes(&self) -> stark_core::Result<Vec<u8>> {
         self.engine.save_bytes()
     }
 
-    /// Replace the document by replaying a saved log (DESIGN.md §8).
+    /// Replace the document by replaying a saved log (§8).
     pub fn load_bytes(&mut self, bytes: &[u8]) -> stark_core::Result<()> {
         self.engine.load_bytes(bytes)
     }
 
-    /// What exporting would produce, without producing it (FRAME_DESIGN.md §6).
+    /// What exporting would produce, without producing it (§15.6).
     pub fn export_plan(
         &self,
         frame: Option<stark_core::LayerId>,
@@ -234,7 +234,7 @@ impl Renderer {
         self.engine.export_plan(frame, scale)
     }
 
-    /// Render a frame and return a future for its readback (FRAME_DESIGN.md §6).
+    /// Render a frame and return a future for its readback (§15.6).
     ///
     /// The future does **not** borrow the renderer, which is the whole point: the
     /// caller can drop its write guard before awaiting, so the UI is free to
@@ -348,7 +348,7 @@ impl Renderer {
         true
     }
 
-    /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).
+    /// Sample the canvas colour at `at` — the eyedropper (§18.0.2).
     ///
     /// The same borrow bargain as [`Renderer::export`], and it matters more here:
     /// the sample is taken mid-gesture, so the caller has to be able to drop its
@@ -370,7 +370,7 @@ impl Renderer {
             .map(|(_, id)| *id)
     }
 
-    // --- collaboration (DESIGN.md §12) — thin engine delegates for the
+    // --- collaboration (§12) — thin engine delegates for the
     // session glue in `collab.rs`. ---
 
     /// Convert the current document into a shared one, authored as `identity`.
@@ -419,7 +419,7 @@ impl Renderer {
     }
 
     /// Drain this client's presence latch, and expire peers gone quiet
-    /// (PEER_DESIGN.md §5.1). The frame is `None` when there is nothing new to
+    /// (§17.5). The frame is `None` when there is nothing new to
     /// say; `repaint` reports that the expiry took paint off the canvas.
     pub fn take_presence(&mut self, now: f64) -> stark_core::PresenceTick {
         self.engine.take_presence(now)
@@ -445,7 +445,7 @@ impl Renderer {
         self.engine.merge_presence(actor, frame, now)
     }
 
-    /// Everyone else in the session, for the peer chrome (PEER_DESIGN.md §4).
+    /// Everyone else in the session, for the peer chrome (§17.4).
     pub fn peers(&self) -> Vec<PeerInfo> {
         self.engine
             .peers()
@@ -568,7 +568,7 @@ pub fn canvas_element(id: &str) -> web_sys::HtmlCanvasElement {
         .expect("element is a canvas")
 }
 
-/// stark-ui is a web app (DESIGN.md §11), so the surface is always the page's
+/// stark-ui is a web app (§11), so the surface is always the page's
 /// canvas. The crate still *compiles* for the host — that is what `cargo test
 /// --workspace` and clippy exercise — but there is no native windowing backend
 /// behind it, and reaching here off the web is a bug rather than a fallback.
@@ -585,7 +585,7 @@ fn canvas_target<'a>(canvas: web_sys::HtmlCanvasElement) -> wgpu::SurfaceTarget<
 }
 
 /// Asynchronously create the WebGPU device, configure the surface to the
-/// canvas's current size, and build the engine (DESIGN.md §7).
+/// canvas's current size, and build the engine (§7).
 pub async fn init(canvas: web_sys::HtmlCanvasElement) -> Renderer {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::BROWSER_WEBGPU;
@@ -654,7 +654,7 @@ async fn finish_init(
     canvas.set_height(height);
 
     // Pick a non-sRGB format: the media pass already encodes display sRGB, so an
-    // sRGB surface would double-encode (DESIGN.md §6.5).
+    // sRGB surface would double-encode (§6.5).
     let caps = surface.get_capabilities(&gpu.adapter);
     let format = caps
         .formats

@@ -1,6 +1,6 @@
-// Media pass B for the Mixbox color space (DESIGN.md §6.7). The composited color
+// Media pass B for the Mixbox color space (§6.7). The composited color
 // is premultiplied Mixbox latent concentrations (c0, c1, c2) with coverage in
-// alpha (c3 = 1 − (c0+c1+c2) is derived; the residual is dropped — see DESIGN
+// alpha (c3 = 1 − (c0+c1+c2) is derived; the residual is dropped — see
 // §6.7). We un-premultiply, evaluate Mixbox's pigment polynomial to sRGB, convert
 // to linear, and hand off to the shared lighting/composite tail.
 //

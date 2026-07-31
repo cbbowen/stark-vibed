@@ -1,4 +1,4 @@
-//! Tileable 2-D noise fields for colour dynamics (DESIGN.md §6.2).
+//! Tileable 2-D noise fields for colour dynamics (§6.2).
 //!
 //! Each [`crate::document::NoiseKind`] is baked **once, on the CPU,
 //! with fixed constants** into a small `Rgba8Snorm` 2-D texture (three

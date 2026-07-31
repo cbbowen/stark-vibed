@@ -1,4 +1,4 @@
-//! The swept fast path (DESIGN.md §6.2): one quad per segment, coverage integrated
+//! The swept fast path (§6.2): one quad per segment, coverage integrated
 //! along the sweep through a precomputed prefix-τ texture, over-blended so optical
 //! depth sums exactly.
 //!
@@ -20,7 +20,7 @@ use super::{
 
 /// Vertices in one segment's swept geometry: a triangle strip of two rims across
 /// `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc
-/// rather than a chord (DESIGN.md §6.2). Must match `SWEEP_VERTS` in
+/// rather than a chord (§6.2). Must match `SWEEP_VERTS` in
 /// `stamp_common.wesl`, which is where the strip is actually built — asking for fewer
 /// would clip the sweep short, more would fold the strip back over itself.
 const SWEEP_VERTS: u32 = 18;
@@ -46,7 +46,7 @@ struct TileXform {
 ///
 /// Used to composite the base into a 1:1 region texture for the stamp loop.
 /// `st` is the canvas→region-NDC linear map, column-major; the screen view can be
-/// turned and mirrored (MISSING_FEATURES §1.2), but this region never is — it is a
+/// turned and mirrored (§18.1.2), but this region never is — it is a
 /// working buffer aligned to the canvas, so the map stays diagonal.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -95,7 +95,7 @@ impl StrokeRenderer {
 
         // The per-stroke instance buffer registers here and is `destroy()`d when this
         // drops (at the end of `render`, after the submit below) — freeing it
-        // deterministically instead of leaking to JS GC (DESIGN.md §6.2).
+        // deterministically instead of leaking to JS GC (§6.2).
         let mut scoped = ScopedResources::default();
 
         // Resolve the brush's prefix-τ texture: image brushes from the asset
@@ -112,7 +112,7 @@ impl StrokeRenderer {
             }],
         });
 
-        // Colour dynamics (DESIGN.md §6.2): the noise tile for this brush and
+        // Colour dynamics (§6.2): the noise tile for this brush and
         // the stroke's lookup parameters. An inactive brush binds the zero
         // tile with zero amplitudes — the deposit is exactly the constant
         // colour.
@@ -168,8 +168,8 @@ impl StrokeRenderer {
         });
 
         // Every brush rasterizes its footprint into a *cleared scratch* tile, then the
-        // integrate pass merges it over the base into a fresh CoW tile (DESIGN.md
-        // §6.2/§6.1). `empty` (cleared) stands in as the base wherever the stroke
+        // integrate pass merges it over the base into a fresh CoW tile
+        // (§6.2/§6.1). `empty` (cleared) stands in as the base wherever the stroke
         // touches bare canvas — acquired tiles are undefined, so clear it once here.
         let clear = wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),

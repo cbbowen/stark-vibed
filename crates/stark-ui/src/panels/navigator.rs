@@ -1,9 +1,9 @@
 //! The Navigator panel: a miniature of the whole piece, the viewport marked on it,
-//! and a click to go there (DESIGN.md §11).
+//! and a click to go there (§11).
 //!
 //! # What "the whole piece" means
 //!
-//! Exactly what an export would write (FRAME_DESIGN.md §6): the topmost frame's
+//! Exactly what an export would write (§15.6): the topmost frame's
 //! rect, or — with no frame — the painted bounds, or on an empty canvas nothing at
 //! all. That is not a coincidence to be maintained but the *same call*:
 //! [`Engine::export_plan`] answers the rect, and the plan it returns *is* the view the
@@ -263,7 +263,7 @@ pub fn NavigatorPanel() -> Element {
         let o = obs.as_ref()?;
         let frame = overview_frame(o);
         // Nothing painted and no frame: the rect the engine would fall back to is
-        // the *viewport* (FRAME_DESIGN.md §6), which for an overview would be a
+        // the *viewport* (§15.6), which for an overview would be a
         // picture of the window presented as the piece — and, since panning is not a
         // change to the document, one that then froze where it was rendered. An
         // unbounded canvas with nothing on it has no overview, and saying so is the

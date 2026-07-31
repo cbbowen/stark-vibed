@@ -1,4 +1,4 @@
-//! Planning for the affine transform of selected paint (TRANSFORM_DESIGN.md).
+//! Planning for the affine transform of selected paint (§16).
 //!
 //! Pure tile-level geometry — which tiles are cut, which are rewritten, which
 //! source quads land on each — mirroring [`Selection::plan`]'s split: the CPU

@@ -1,4 +1,4 @@
-// The **layer blend** pass (MISSING_FEATURES.md §0.4, DESIGN.md §6.3). One
+// The **layer blend** pass (§18.0.4, §6.3). One
 // fullscreen draw that merges an isolated layer's composited channels into the
 // accumulator through a non-`Normal` blend mode.
 //
@@ -77,7 +77,7 @@ const EPS: f32 = 1e-4;
 // enum, which has no business knowing a `u32`.
 //
 // `MODE_NORMAL` reaches this pass only when the layer is **clipped**
-// (GROUP_DESIGN.md §4): an unclipped normal layer needs no isolation and draws
+// (§14.4): an unclipped normal layer needs no isolation and draws
 // straight into the accumulator under fixed-function `over`, which is the fast
 // path an ordinary document never leaves.
 const MODE_NORMAL: u32 = 0u;
@@ -93,12 +93,12 @@ struct Blend {
     // where the doc comment and the tests can reach it.
     k: f32,
     // Whether this layer is **clipped** to the paint beneath it: 0 or 1
-    // (GROUP_DESIGN.md §4). Read by `merge`, which is where the whole of clipping
+    // (§14.4). Read by `merge`, which is where the whole of clipping
     // lives.
     clip: u32,
     // The group's own opacity. For a **group** this is the only place opacity can
     // be applied: its members overlap, so fading each of them is not the same
-    // thing as fading their composite (GROUP_DESIGN.md §7). A leaf layer's
+    // thing as fading their composite (§14.7). A leaf layer's
     // opacity rides on its tiles instead (composite.wesl) and this is 1.0 —
     // exactly, so the arithmetic below is unchanged for it.
     opacity: f32,
@@ -245,7 +245,7 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
 // asserts to the byte — instead of exact-to-a-least-significant-bit.
 //
 //
-// CLIPPING (GROUP_DESIGN.md §4)
+// CLIPPING (§14.4)
 //
 // It is a deletion, not a scale — and that distinction is the design. Reading
 // "multiply by the opacity of what it composites onto" literally, as `αs ← αs·αb`,
@@ -271,14 +271,14 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
 //
 // The aux is summed, mode or no mode. Aux is *amount of paint*, and paint stacks
 // whatever its colour does — height conservation is an invariant of the medium, not
-// of the blend (DESIGN.md §6.1). Clipping is the one thing that reaches it: a clipped
+// of the blend (§6.1). Clipping is the one thing that reaches it: a clipped
 // layer's colour is suppressed outside the backdrop, and height that stayed behind
-// would light as relief with no paint under it — ghost impasto (§4.2). So the source
+// would light as relief with no paint under it — ghost impasto (§14.4.2). So the source
 // height carries the same weight the source's coverage does.
 //
 // One consequence worth naming: a **matte** inside a non-`Normal` group keeps the
 // additive merge, so it will not erase the relief under it the way a `Normal` matte
-// does (FRAME_DESIGN.md §4.2). A frame that screens light is not a thing anyone has
+// does (§15.4.2). A frame that screens light is not a thing anyone has
 // asked for; if it becomes one, this is the line that has to learn the difference.
 fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, p: vec2<i32>) -> FsOut {
     // The group's opacity, applied to its composited result — premultiplied

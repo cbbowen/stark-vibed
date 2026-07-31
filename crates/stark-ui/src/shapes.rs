@@ -1,4 +1,4 @@
-//! The user's custom brush-shape library (DESIGN.md §6.6, build-order step 11).
+//! The user's custom brush-shape library (§6.6, build-order step 11).
 //!
 //! An entry is a **canonical grayscale PNG keyed by content id** — exactly the
 //! bytes the engine's `AssetStore` holds, bundles into save files, and serves

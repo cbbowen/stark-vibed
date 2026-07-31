@@ -1,4 +1,4 @@
-//! The brush shapes that ship with the app (DESIGN.md §6.6).
+//! The brush shapes that ship with the app (§6.6).
 //!
 //! A built-in is a PNG under `assets/shape/`, bundled as a static file and
 //! **fetched at runtime** so the stamps stay out of the wasm binary. Every

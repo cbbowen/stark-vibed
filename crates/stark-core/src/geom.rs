@@ -2,7 +2,7 @@
 //!
 //! Canvas space is in pixels with x to the right and y downward. Tile `(i, j)`
 //! covers the square `[i*TILE_SIZE, (i+1)*TILE_SIZE) × [j*TILE_SIZE, ...)`.
-//! The infinite canvas (DESIGN.md §6) is realized by tiles being sparse and
+//! The infinite canvas (§6) is realized by tiles being sparse and
 //! addressed by signed integer coordinates.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
@@ -10,7 +10,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 pub use glam::{Affine2, Mat2, Vec2};
 
 /// Apron (halo) width in pixels carried around each tile's interior, replicated
-/// from the neighboring canvas content (DESIGN.md §6.4). The compositor samples a
+/// from the neighboring canvas content (§6.4). The compositor samples a
 /// tile's interior with bilinear filtering; without an apron the filter clamps at
 /// the tile edge instead of reaching into the neighbor, leaving a visible seam at
 /// every boundary under sub-pixel pan or non-1:1 zoom (the seam is then amplified
@@ -22,7 +22,7 @@ pub const TILE_APRON: u32 = 1;
 /// every side. Tiles are stored at this size; only the interior is presented.
 pub const TILE_TEX: u32 = 256;
 
-/// Edge length of a square tile's *interior*, in canvas pixels (DESIGN.md §6.1).
+/// Edge length of a square tile's *interior*, in canvas pixels (§6.1).
 /// This is the addressing stride: tile `(i, j)` owns canvas
 /// `[i*TILE_SIZE, (i+1)*TILE_SIZE)` — aprons (below) overlap neighbors and are
 /// not owned.
@@ -70,12 +70,12 @@ impl Extent2 {
 }
 
 /// The pan/zoom/rotate/mirror transform applied when presenting the canvas to a
-/// surface (DESIGN.md §6.4). This is session state and is never historized.
+/// surface (§6.4). This is session state and is never historized.
 ///
 /// Everything here is *how you are looking at* the painting rather than anything
 /// about it, which is what makes turning the canvas and holding it up to a mirror
 /// the same kind of act as panning: per-client, never logged, never sent, and
-/// invisible to replay (MISSING_FEATURES §1.2). Two people sharing a drawing can
+/// invisible to replay (§18.1.2). Two people sharing a drawing can
 /// have it at different angles.
 #[derive(Copy, Clone, Debug)]
 pub struct ViewTransform {
@@ -155,7 +155,7 @@ impl ViewTransform {
     }
 
     /// Linear map from canvas pixels to normalized device coordinates:
-    /// `ndc = m * canvas_pos + translate`. Derivation in DESIGN.md §6.4.
+    /// `ndc = m * canvas_pos + translate`. Derivation in §6.4.
     ///
     /// The y row is negated because canvas y is downward while NDC y is upward. An
     /// upright, unmirrored view leaves `m` diagonal and this is exactly the scale it
@@ -182,7 +182,7 @@ impl ViewTransform {
     /// Forward of [`screen_to_canvas`](Self::screen_to_canvas): a canvas-space
     /// point to its screen-pixel position (origin top-left). Used by frontend
     /// chrome that has to sit over a canvas-space feature — the frame's handles
-    /// (FRAME_DESIGN.md §7).
+    /// (§15.7).
     pub fn canvas_to_screen(self, canvas: Vec2) -> Vec2 {
         self.linear() * (canvas - self.center) + self.half()
     }
@@ -315,7 +315,7 @@ mod tests {
 
     /// The turn and the mirror are still a *view*: screen→canvas and canvas→screen
     /// have to remain each other's inverse, or a stroke would land somewhere other
-    /// than under the pen (MISSING_FEATURES §1.2).
+    /// than under the pen (§18.1.2).
     #[test]
     fn the_two_directions_invert_each_other_at_any_orientation() {
         let probes = [

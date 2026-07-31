@@ -1,4 +1,4 @@
-//! A live shared-drawing session over iroh (DESIGN.md §12.4).
+//! A live shared-drawing session over iroh (§12.4).
 //!
 //! One [`CollabSession`] per shared document. The engine stays on the UI
 //! thread; the session runs the network side (the gossip receive loop, catch-up
@@ -50,7 +50,7 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const ASSET_RETRIES: u32 = 5;
 const ASSET_RETRY_DELAY: Duration = Duration::from_millis(300);
 
-/// Map an iroh endpoint identity to the engine's author id (DESIGN.md §12.4:
+/// Map an iroh endpoint identity to the engine's author id (§12.4:
 /// "an iroh node id *is* the `ActorId`"). `ActorId` is 8 bytes to keep every
 /// action id small, so this takes the key's first 8 bytes — collisions across
 /// the handful of peers in a drawing session are negligible (birthday bound
@@ -74,7 +74,7 @@ pub enum RemoteEvent {
     Action(Action),
     /// A peer's presence — feed to
     /// [`Engine::merge_presence`](stark_core::Engine::merge_presence)
-    /// (PEER_DESIGN.md §4). Unlike an action this may be dropped freely: nothing in
+    /// (§17.4). Unlike an action this may be dropped freely: nothing in
     /// the log refers to it, so losing one costs a frame of someone else's cursor
     /// and nothing else.
     Presence { actor: ActorId, frame: PeerFrame },
@@ -357,7 +357,7 @@ impl Broadcaster {
         self.publish_wire(Wire::Action(action), asset).await
     }
 
-    /// Publish this client's presence (PEER_DESIGN.md §4).
+    /// Publish this client's presence (§17.4).
     ///
     /// Deliberately *not* mirrored: presence is not part of the document, so it is
     /// never served to a joiner and never reaches a file. And deliberately
@@ -450,9 +450,9 @@ async fn recv_loop(
             Ok(GossipEvent::Received(message)) => message,
             Ok(GossipEvent::Lagged) => {
                 // Dropped messages: peers converge again on the next snapshot
-                // fetch; flag it loudly for now (DESIGN.md §12.5). A lagged
+                // fetch; flag it loudly for now (§12.5). A lagged
                 // *presence* stream needs no recovery at all — the author re-sends
-                // its whole gesture on the next resync frame (PEER_DESIGN.md §5).
+                // its whole gesture on the next resync frame (§17.5).
                 tracing::warn!("gossip lagged; some remote actions may be missing");
                 continue;
             }
@@ -574,7 +574,7 @@ fn require_hash(id: AssetId, hash: Option<Hash>) -> Option<Hash> {
 }
 
 /// The brush image a *live* remote gesture depends on, if any: a stroke's head
-/// frame carries the full `BrushParams` (PEER_DESIGN.md §5). Only head/resync
+/// frame carries the full `BrushParams` (§17.5). Only head/resync
 /// frames name it — delta frames extend the path of a head already seen.
 fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetId> {
     match &frame.gesture {
@@ -619,7 +619,7 @@ async fn resolve_asset(
     }
 }
 
-/// The brush image a stroke depends on, if any (DESIGN.md §6.6).
+/// The brush image a stroke depends on, if any (§6.6).
 fn referenced_asset(action: &Action) -> Option<AssetId> {
     match &action.kind {
         ActionKind::CommitStroke(rec) => match rec.brush.shape {

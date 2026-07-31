@@ -1,10 +1,10 @@
 //! The floating Layers panel: the layer tree, with per-layer opacity, visibility,
-//! blend mode and clipping (DESIGN.md §6 step 6a, GROUP_DESIGN.md §6).
+//! blend mode and clipping (§6 step 6a, §14.6).
 //!
 //! The tree is drawn the way clipping masks are drawn everywhere: **the base at the
 //! bottom, what it carries indented above it**. That picture is already how a
 //! painter reads a clipping group in Photoshop; here it is simply the truth, because
-//! a group *is* the layer at its base (GROUP_DESIGN.md §2).
+//! a group *is* the layer at its base (§14.2).
 //!
 //! The one thing a Photoshop refugee has to unlearn is that the indent means
 //! clipping. Here indent means **membership** and the rail down the left of a row
@@ -50,7 +50,7 @@ pub fn LayerPanel() -> Element {
     let layers = obs.as_ref().map(|o| o.layers.clone()).unwrap_or_default();
     // The properties that belong to *whichever* layer is selected live here, once,
     // rather than being repeated per row and again in the frame bar. A frame is a
-    // layer, so it needs no copies of its own (FRAME_DESIGN.md §7).
+    // layer, so it needs no copies of its own (§15.7).
     let selected = obs
         .as_ref()
         .and_then(|o| o.layers.iter().find(|l| l.id == o.active_layer).cloned());
@@ -69,7 +69,7 @@ pub fn LayerPanel() -> Element {
         selected.as_ref().map(|l| l.carrier).unwrap_or(None),
         selected_id,
     );
-    // Removing a group takes what it carries with it (GROUP_DESIGN.md §2), so the
+    // Removing a group takes what it carries with it (§14.2), so the
     // floor is not "more than one row" but "something would be left".
     let can_remove = selected_id.is_some_and(|id| subtree_len(&layers, id) < layers.len());
     // Carry puts the selection onto the layer below it *in its own stack*, which is
@@ -85,7 +85,7 @@ pub fn LayerPanel() -> Element {
     rsx! {
         div { class: "layer-header",
             // A frame is a layer, so making one belongs here rather than in a
-            // panel of its own (FRAME_DESIGN.md §7).
+            // panel of its own (§15.7).
             AddFrameButton {}
             button {
                 class: "layer-add",
@@ -122,7 +122,7 @@ pub fn LayerPanel() -> Element {
 
         // Grouping, in the two words it takes. There is no third command: "clip to
         // the layer below" is Carry followed by the Clip toggle, because clipping to
-        // exactly one layer *is* that layer carrying this one (GROUP_DESIGN.md §4).
+        // exactly one layer *is* that layer carrying this one (§14.4).
         div { class: "layer-header",
             button {
                 class: "layer-add",
@@ -189,8 +189,8 @@ pub fn LayerPanel() -> Element {
                     // light modes is readable without painting a test stroke.
                     title: "{blend_hint(l.blend, &l)}",
                     // Inert at the bottom of the document, where there is nothing to
-                    // blend with and every mode is the identity (GROUP_DESIGN.md
-                    // §4.3). Shown rather than hidden: the control belongs to the
+                    // blend with and every mode is the identity
+                    // (§14.4.3). Shown rather than hidden: the control belongs to the
                     // layer wherever it sits, and a row that loses a control when it
                     // is dragged to the bottom reads as a bug.
                     disabled: !l.has_backdrop,
@@ -218,7 +218,7 @@ pub fn LayerPanel() -> Element {
                     // where a mode over nothing is harmlessly the identity, a clip
                     // over nothing would erase the layer, which is the whole reason
                     // this one has to be stopped rather than merely left to do
-                    // nothing (GROUP_DESIGN.md §4.3).
+                    // nothing (§14.4.3).
                     disabled: !l.has_backdrop,
                     onchange: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
                 }
@@ -346,7 +346,7 @@ fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
 ///
 /// Three answers, and the first is the one worth having: on a group, opacity is the
 /// property that could *not* be borrowed from the base the way blend and clip are
-/// (GROUP_DESIGN.md §3), so it fades the base and everything it carries as one unit.
+/// (§14.3), so it fades the base and everything it carries as one unit.
 fn opacity_hint(layer: &LayerInfo) -> &'static str {
     if layer.is_group {
         "Fades this layer and everything it carries, as one"
@@ -361,7 +361,7 @@ fn opacity_hint(layer: &LayerInfo) -> &'static str {
 ///
 /// Three different sentences, because the control means three different things
 /// depending on where the row sits — and the difference is the part users get wrong
-/// everywhere else (GROUP_DESIGN.md §4).
+/// everywhere else (§14.4).
 fn clip_hint(layer: &LayerInfo) -> &'static str {
     if !layer.has_backdrop {
         return "Nothing composites under this layer, so clipping it would leave nothing \
@@ -385,7 +385,7 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
 }
 
 /// What to call a layer that has never been named: its place in the stack, or what
-/// it *is* when that says more (FRAME_DESIGN.md §7 — there is only ever one frame,
+/// it *is* when that says more (§15.7 — there is only ever one frame,
 /// so numbering it would be noise).
 ///
 /// Kept here rather than in the core because it is a way of *presenting* a stack,
@@ -434,7 +434,7 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
     // the label instead, so the row still says what it is called while empty.
     let seed = info.name.as_deref().unwrap_or_default().to_string();
     // One selection, one highlight. A matte is selected exactly the way a paint
-    // layer is (FRAME_DESIGN.md §7) — selecting it raises the frame bar and its
+    // layer is (§15.7) — selecting it raises the frame bar and its
     // on-canvas handles, and the brush simply has nowhere to go until a paint layer
     // is selected again. Because there is only one thing to highlight, "exactly one
     // row is highlighted" is a consequence rather than a rule to keep.
@@ -450,7 +450,7 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
         (false, false) => "layer-row",
     };
     // Membership is an indent; clipping is a rail. Two marks, because they are two
-    // facts (GROUP_DESIGN.md §6) — and a row can wear one without the other, which
+    // facts (§14.6) — and a row can wear one without the other, which
     // is the state Photoshop's single arrow cannot express.
     let row_class = if info.clip {
         format!("{row_class} clipped")
@@ -553,7 +553,7 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                     "{label}"
                 }
             }
-            // Who else is working here (PEER_DESIGN.md §4). The selected layer is
+            // Who else is working here (§17.4). The selected layer is
             // per-client, so this is the only place that answers "am I about to
             // paint over what someone else is doing?" before it happens.
             for peer in peers_on(state, id) {

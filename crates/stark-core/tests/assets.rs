@@ -1,4 +1,4 @@
-//! User-supplied brush-shape import robustness (DESIGN.md §6.6).
+//! User-supplied brush-shape import robustness (§6.6).
 //!
 //! Arbitrary user images must import safely: oversized sources are capped to
 //! [`stark_core::assets::MAX_SHAPE_DIM`] (a raw 4096² upload would otherwise

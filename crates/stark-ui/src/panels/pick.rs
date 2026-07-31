@@ -1,4 +1,4 @@
-//! The eyedropper's options, in a floating bar (MISSING_FEATURES §0.2).
+//! The eyedropper's options, in a floating bar (§18.0.2).
 //!
 //! A bar rather than a panel, and mounted only while Alt is held, on the same
 //! argument the selection and frame bars are mounted only while the thing they act

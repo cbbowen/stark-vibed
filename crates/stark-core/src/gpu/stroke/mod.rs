@@ -1,5 +1,5 @@
 //! The brush engine: **swept-segment** stroke rasterization with copy-on-write
-//! tiles (DESIGN.md §6.2, §5.2, §6.6, §6.7).
+//! tiles (§6.2, §5.2, §6.6, §6.7).
 //!
 //! Rather than stamping discrete dabs, each short segment of the flattened curve
 //! is drawn as one oriented quad whose coverage is the brush *swept* along it —
@@ -12,7 +12,7 @@
 //!
 //! That is the plain **add** fast path: footprint → cleared scratch tile →
 //! integrate over the base into a fresh CoW tile. A brush that also moves paint
-//! already on the canvas (`lift` / `deposit` / `charge`, DESIGN §6.2) instead runs
+//! already on the canvas (`lift` / `deposit` / `charge`, §6.2) instead runs
 //! the sequential swept-exchange loop in `dynamics.wesl`; `dynamics_setup`
 //! decides which path a record takes.
 //!
@@ -45,8 +45,8 @@ use segments::{SegmentInstance, round_coverage};
 /// Resolution of the generated round-tip prefix texture.
 const ROUND_RES: u32 = 256;
 
-/// Resolution (texels per side) of the stamp loop's tool reservoir (DESIGN.md
-/// §6.2). Brush-local, so carried colour detail is ~radius/32 canvas px — plenty
+/// Resolution (texels per side) of the stamp loop's tool reservoir
+/// (§6.2). Brush-local, so carried colour detail is ~radius/32 canvas px — plenty
 /// for smeared paint, and small enough that the per-stamp reservoir update is
 /// nearly free.
 const BRUSH_RES: u32 = 64;
@@ -57,14 +57,14 @@ const BRUSH_RES: u32 = 64;
 /// almost nothing. Must match the shader's own `BAKE_RES` (its workgroup width).
 const BAKE_RES: u32 = 128;
 /// fp32, for the same reason the prefix-τ volume is: every fragment reads it as a
-/// *difference* of two prefix sums (DESIGN.md §6.2).
+/// *difference* of two prefix sums (§6.2).
 const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
 /// ceiling `assets::build_prefix_tau` clamps to.
 ///
 /// Every exchange in the stamp loop is a rate *per unit optical depth*, because
 /// that is the currency the swept integral is denominated in and the only one both
-/// sides can agree on (DESIGN.md §6.2). But τ ≈ 7 for a single pass, so read
+/// sides can agree on (§6.2). But τ ≈ 7 for a single pass, so read
 /// literally a `lift` of 0.5 would strip 99% of the canvas in one pass. Dividing
 /// the rates through by this makes an axis mean a fraction **per pass of the tip**
 /// — hardness-independent, and what a 0..1 knob is expected to mean.
@@ -73,7 +73,7 @@ const TAU_PER_PASS: f32 = 6.9;
 /// wants more is drawn in as many region-sized *pieces* as it takes
 /// ([`segments::chunk_segments`]), so this bounds the loop's transient GPU memory —
 /// at 2048² the colour and aux regions are ~34 MB together — rather than deciding
-/// which strokes the loop can draw at all (DESIGN.md §6.2).
+/// which strokes the loop can draw at all (§6.2).
 const MAX_REGION_DIM: u32 = 2048;
 /// Cap on the segments one piece dispatches, which bounds its stamp uniform buffer.
 /// Reached only by a stroke fine enough to fill a whole region with segments, and it
@@ -85,7 +85,7 @@ const MAX_STAMPS: usize = 4096;
 /// optical depth (`stamp_oklab.wesl`), with no correction factor.
 const ADD_GAIN: f32 = 2.0;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
-/// (DESIGN.md §6.2) — which, since the tool now exchanges once per *segment*, is
+/// (§6.2) — which, since the tool now exchanges once per *segment*, is
 /// simply a cap on the flattened segment length for a dynamics brush
 /// (see [`flatten_tolerance`]).
 ///
@@ -96,7 +96,7 @@ const ADD_GAIN: f32 = 2.0;
 /// left a stroke's last footprint short of paint (`dynamics.wesl`).
 const RESERVOIR_EXCHANGE_STEP: f32 = 0.5;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
-/// swept through before the segment goes back to being straight (DESIGN.md §6.2).
+/// swept through before the segment goes back to being straight (§6.2).
 ///
 /// Both shaders sweep a curved segment by **unrolling** the annulus about its centre
 /// of curvature into the straight travel frame, which treats a canvas point as sliding
@@ -124,7 +124,7 @@ pub struct StrokeRenderer {
     prefix_bgl: wgpu::BindGroupLayout,
     /// Cached round-tip prefix-τ, keyed by `hardness.to_bits()`.
     round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
-    /// Colour dynamics (DESIGN.md §6.2): the sweep's noise bind group layout
+    /// Colour dynamics (§6.2): the sweep's noise bind group layout
     /// (group 2), the shared wrap/linear sampler, the 1×1×1 zero volume bound
     /// when a brush's jitter is off, and the lazily-baked per-kind fields.
     noise_bgl: wgpu::BindGroupLayout,
@@ -132,23 +132,23 @@ pub struct StrokeRenderer {
     dummy_noise: wgpu::TextureView,
     noise_cache: Arc<Mutex<Vec<(NoiseKind, wgpu::TextureView)>>>,
 
-    // Stroke integrate (DESIGN.md §6.2/§6.1): a fullscreen pass reads the base tile +
+    // Stroke integrate (§6.2/§6.1): a fullscreen pass reads the base tile +
     // the stroke's footprint scratch and writes `new = f(base, scratch)` into a fresh
     // CoW tile's color+aux MRT — premultiplied-over + additive height.
     integrate_pipeline: wgpu::RenderPipeline,
     integrate_bgl: wgpu::BindGroupLayout,
 
-    // Brush dynamics: the sequential stamp loop (DESIGN.md §6.2), used when the
+    // Brush dynamics: the sequential stamp loop (§6.2), used when the
     // brush manipulates existing paint (`load` / `deposit` / `charge`).
     dynamics: DynamicsKit,
 
-    /// Selection masks (DESIGN.md §6.8): the per-tile mask bound into the integrate
+    /// Selection masks (§6.8): the per-tile mask bound into the integrate
     /// pass, and the region gather the stamp loop reads. Colour-space independent, so
     /// it is handed in rather than rebuilt with the rest of this renderer.
     selection: SelectionRenderer,
 }
 
-/// The stamp loop's carried state at a cut point in a stroke (DESIGN.md §6.2).
+/// The stamp loop's carried state at a cut point in a stroke (§6.2).
 ///
 /// The sequential loop threads exactly two things from one segment to the next that
 /// do not already live on the canvas: the **tool reservoir** — what paint the tip is
@@ -192,7 +192,7 @@ pub struct StrokeScene<'a> {
     pub assets: &'a AssetStore,
     /// The layer's committed tiles: what the stroke composites over.
     pub base: &'a HashTrieMap<TileCoord, TilePairHandle>,
-    /// The selection in force, which gates the deposit (DESIGN.md §6.8).
+    /// The selection in force, which gates the deposit (§6.8).
     pub selection: &'a Selection,
 }
 
@@ -215,7 +215,7 @@ pub struct StrokeCarry {
     /// The renderer already enumerates these to decide what to draw
     /// ([`affected_tiles`](segments::affected_tiles)), and reporting them is what
     /// lets several in-flight strokes be composited over one committed document
-    /// without diffing whole tile maps (PEER_DESIGN.md §6).
+    /// without diffing whole tile maps (§17.6).
     pub dirty: Vec<TileCoord>,
 }
 
@@ -316,7 +316,7 @@ impl StrokeRenderer {
         });
 
         // Group 2: the colour-dynamics noise field (a tileable 3-D volume) + its
-        // repeat sampler (DESIGN.md §6.2).
+        // repeat sampler (§6.2).
         let noise_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark sweep noise bgl"),
             entries: &[
@@ -430,7 +430,7 @@ impl StrokeRenderer {
     /// than by clipping the footprint. That keeps one rule for both paths (a texel
     /// receives the mask's fraction of whatever the stroke did there) and is what
     /// makes a feathered selection fade a stroke out instead of scaling its optical
-    /// depth, which for an opaque brush would barely fade at all (DESIGN.md §6.8).
+    /// depth, which for an opaque brush would barely fade at all (§6.8).
     pub fn render(
         &self,
         scene: StrokeScene<'_>,
@@ -445,7 +445,7 @@ impl StrokeRenderer {
     /// where this one stops must resume from ([`StrokeCarry`]).
     ///
     /// This is what makes a live stroke cost its *tail* rather than its whole length
-    /// (DESIGN.md §6.2). On the swept path it is sound because the deposit is a
+    /// (§6.2). On the swept path it is sound because the deposit is a
     /// definite integral over each segment and composes by summing optical depth, so
     /// cutting the path at a span boundary and compositing the two halves in order
     /// gives the same result as one pass — the same property that lets adaptive
@@ -472,7 +472,7 @@ impl StrokeRenderer {
                 // stroke that was asked for but a different brush — the swept deposit
                 // only ever adds paint, so `lift`, `deposit` and `charge` all silently
                 // do nothing. It is the one degradation left (stroke *length* is
-                // handled by drawing the stroke in pieces, DESIGN.md §6.2), and no
+                // handled by drawing the stroke in pieces, §6.2), and no
                 // brush the UI can build reaches it, so hitting it means a record came
                 // from somewhere else and is not being honoured. It repeats per
                 // pointer move, because the gate is re-asked per render.
@@ -493,7 +493,7 @@ impl StrokeRenderer {
     /// Pairing them here is what keeps the two formats coming from the colour space
     /// actually in use rather than from a constant — the pool previously hardcoded
     /// `R16Float` for aux, which happened to match every colour space but would have
-    /// panicked on the first one that chose otherwise (DESIGN.md §6.7).
+    /// panicked on the first one that chose otherwise (§6.7).
     fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
         TilePairHandle::new(
             pool.acquire_tex(self.color_space.color_format(), source),
@@ -503,7 +503,7 @@ impl StrokeRenderer {
 
     /// Acquire a brush-dynamics *scratch* tile: the same colour channel, but a wider
     /// [`SCRATCH_AUX_FORMAT`] aux (an extra channel the deposit/integrate use
-    /// internally, DESIGN.md §6.2).
+    /// internally, §6.2).
     fn acquire_scratch(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
         TilePairHandle::new(
             pool.acquire_tex(self.color_space.color_format(), source),
@@ -536,7 +536,7 @@ impl StrokeRenderer {
             return view.clone();
         }
         // The round tip is rotation-invariant, so a single orientation layer suffices —
-        // the shader's wrapping lookup reads it for every orientation (DESIGN.md §6.6).
+        // the shader's wrapping lookup reads it for every orientation (§6.6).
         let coverage = round_coverage(hardness, ROUND_RES);
         let (_tex, view) = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &coverage);
         *cache = Some((key, view.clone()));
@@ -581,7 +581,7 @@ impl StrokeRenderer {
     }
 }
 
-/// The flattening budget for a brush (DESIGN.md §6.2). The error bounds are
+/// The flattening budget for a brush (§6.2). The error bounds are
 /// brush-independent — sub-pixel position, a small tangent turn, a small attribute
 /// step — but a segment is swept with *constant* attributes, so any brush quantity
 /// that varies with distance travelled and is applied per segment (rather than
@@ -590,7 +590,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
     tol.position = tol.position.max(0.01 * b.radius);
-    // The tightest arc this tip may be swept along (DESIGN.md §6.2). Both the
+    // The tightest arc this tip may be swept along (§6.2). Both the
     // flattener and the segment generator get it from here, so an edge too tight to
     // sweep as an arc is priced as a chord as well as drawn as one.
     tol.max_arc_curvature = MAX_TIP_TURN / b.radius.max(0.5);
@@ -615,7 +615,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
 }
 
 /// How many leading spans of a *live* stroke may be rendered once and kept, given
-/// that the fitter has settled `frozen` of them (DESIGN.md §6.2).
+/// that the fitter has settled `frozen` of them (§6.2).
 ///
 /// Freezing is what makes a long live stroke cost its tail rather than its length
 /// ([`StrokeRenderer::render_range`]), and it rests on a frozen span's pixels being

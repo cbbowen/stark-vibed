@@ -1,6 +1,6 @@
 //! Floating-panel layout: identity, order, visibility, the title-bar drag, and the
 //! fade that gets all the floating chrome out of the way mid-gesture
-//! (DESIGN.md §11).
+//! (§11).
 //!
 //! The drag math deliberately never reads the layout it is mutating: panel
 //! positions are measured once at drag start and everything after is derived from
@@ -19,7 +19,7 @@ use crate::platform::sleep_ms;
 use crate::state::AppState;
 
 /// Identity of a floating tool panel. The set is fixed; `PanelLayout` tracks their
-/// order and which are open (DESIGN.md §11).
+/// order and which are open (§11).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PanelId {
     Navigator,

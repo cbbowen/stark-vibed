@@ -1,4 +1,4 @@
-//! Engine error type (DESIGN.md §5: `Action::Error`, surfaced everywhere).
+//! Engine error type (§5: `Action::Error`, surfaced everywhere).
 
 use thiserror::Error;
 

@@ -1,4 +1,4 @@
-//! A session must outlive the peer that started it (DESIGN.md §12.4: "every
+//! A session must outlive the peer that started it (§12.4: "every
 //! member can hand out a ticket").
 //!
 //! These run over real iroh endpoints on loopback but need no GPU: they work on

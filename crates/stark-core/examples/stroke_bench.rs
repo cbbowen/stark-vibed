@@ -1,4 +1,4 @@
-//! Wall-clock benchmark for the brush-dynamics stroke path (DESIGN.md §6.2).
+//! Wall-clock benchmark for the brush-dynamics stroke path (§6.2).
 //!
 //! Measures the case the fast path cannot take: a large brush with non-zero
 //! lift/deposit, which runs the sequential swept-exchange loop. Two numbers per
