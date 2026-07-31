@@ -223,3 +223,22 @@ fn golden_canvas_surface() {
     let img = engine.render_to_image();
     assert_golden("linen_surface", &img, 6);
 }
+
+#[test]
+fn golden_lift_end_regression() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut brush = brush([0.0, 0.0, 0.0, 1.0], 80.0);
+    brush.dynamics.add = 1.0;
+    brush.drain = 0.005;
+    brush.dynamics.lift = 0.95;
+    brush.dynamics.deposit = 0.95;
+    stroke_with(&mut engine, brush, &[
+            Vec2::new(-200.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(30.0, 0.0),
+        ]);
+    let img = engine.render_to_image();
+    assert_golden("lift_end_regression", &img, 6);
+}

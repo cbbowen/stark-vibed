@@ -24,8 +24,8 @@ use super::segments::{
 };
 use super::swept::{TileInstance, ViewUniform};
 use super::{
-    ADD_GAIN, BAKE_FORMAT, BAKE_RES, BRUSH_RES, RESERVOIR_CADENCE, ScopedResources, StrokeCarry,
-    StrokeRenderer, StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, flatten_tolerance,
+    ADD_GAIN, BAKE_FORMAT, BAKE_RES, BRUSH_RES, ScopedResources, StrokeCarry, StrokeRenderer,
+    StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, flatten_tolerance,
 };
 
 /// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
@@ -35,19 +35,19 @@ struct SliceUniform {
     offset: [f32; 4],
 }
 
-/// One dispatch step of the sequential swept-exchange loop (DESIGN.md §6.2):
-/// either a reservoir `pickup` or a segment's `snapshot`+`deposit` pair. `slot`
-/// is the 128-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
-/// a pure function of the `StrokeRecord`, so replay is deterministic.
+/// One segment of the sequential swept-exchange loop (DESIGN.md §6.2): its
+/// `bake`, `snapshot`, `deposit` and `exchange` dispatches. `slot` is the 128-byte
+/// `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as a pure function of
+/// the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
-    pickup: bool,
     slot: [f32; 32],
     /// Workgroup counts for the segment's `snapshot`/`deposit` dispatches: the
-    /// segment's own oriented-quad AABB rather than the piece-wide worst-case
-    /// square, so an axis-aligned sweep pays for the ~4·r² texels its footprint
-    /// can reach instead of the ~10·r² a diagonal one might have needed.
-    /// Unused for a pickup (which dispatches over the reservoir).
+    /// segment's own coverage box rather than the piece-wide worst-case square, so an
+    /// axis-aligned sweep pays for the ~4·r² texels its footprint can reach instead
+    /// of the ~10·r² a diagonal one might have needed.
     groups: (u32, u32),
+    /// Workgroup counts for `exchange`, which covers the reservoir instead.
+    exchange_groups: (u32, u32),
 }
 
 /// GPU objects for the brush-dynamics stamp loop (DESIGN.md §6.2), built once.
@@ -62,12 +62,10 @@ pub(super) struct DynamicsKit {
     // The stamp-loop dispatches (one compute shader, four entry points).
     pub(super) snapshot_pipeline: wgpu::ComputePipeline,
     pub(super) snapshot_bgl: wgpu::BindGroupLayout,
-    pub(super) pickup_pipeline: wgpu::ComputePipeline,
-    pub(super) pickup_bgl: wgpu::BindGroupLayout,
-    /// Drains the tool by what each segment takes, so its state advances with travel
-    /// rather than in pickup-sized steps (`dynamics.wesl::deplete`). Shares
-    /// `pickup_bgl`.
-    pub(super) deplete_pipeline: wgpu::ComputePipeline,
+    /// The tool's own side of one segment's transfer: drain by what it just laid,
+    /// then lift what is now under it (`dynamics.wesl::exchange`).
+    pub(super) exchange_pipeline: wgpu::ComputePipeline,
+    pub(super) exchange_bgl: wgpu::BindGroupLayout,
     /// Integrates the reservoir along the segment's travel axis so the deposit can
     /// read the whole pass instead of one mid-pass sample (`dynamics.wesl::bake`).
     pub(super) bake_pipeline: wgpu::ComputePipeline,
@@ -160,8 +158,8 @@ impl StrokeRenderer {
 /// loop threads along the stroke, and the GPU objects that outlive any one region.
 ///
 /// What survives from piece to piece is exactly what survives from one *range* to the
-/// next — the tool reservoir, and the travel since its last pickup — because that is
-/// all the loop carries between segments that is not already on the canvas. It lives
+/// next — the tool reservoir — because that is all the loop carries between segments
+/// that is not already on the canvas. It lives
 /// here rather than being copied out into a [`ToolState`] and back in at every cut:
 /// the pieces are recorded one after another against the same reservoir textures, so
 /// the ping-pong simply keeps going.
@@ -193,24 +191,11 @@ struct DynamicsRun<'a> {
     brush_color: [wgpu::TextureView; 2],
     brush_aux: [wgpu::TextureView; 2],
     cur: usize,
-    /// The last pickup's gain parcel (dynamics.wesl): written whole by every
-    /// `pickup`, read by `bake` so the deposit can ramp the reload in across the
-    /// interval. Not ping-ponged — nothing reads and writes it in one dispatch.
-    gain_color_tex: wgpu::Texture,
-    gain_aux_tex: wgpu::Texture,
-    gain_color: wgpu::TextureView,
-    gain_aux: wgpu::TextureView,
     /// The segment's swept reservoir prefixes (fp32, so the per-fragment difference
-    /// keeps its precision — see [`BAKE_FORMAT`]): the reservoir set and the
-    /// gain-ramp set (plain + travel-weighted; see dynamics.wesl for the packing).
-    /// Rebuilt per segment, so a single quad serves the whole stroke: nothing reads
-    /// the last segment's bake.
+    /// keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a single
+    /// pair serves the whole stroke: nothing reads the last segment's bake.
     bake_load: wgpu::TextureView,
     bake_latm: wgpu::TextureView,
-    bake_g: wgpu::TextureView,
-    bake_gq: wgpu::TextureView,
-    /// Travel since the last reservoir pickup (see [`ToolState`]).
-    since: f32,
 }
 
 impl<'a> DynamicsRun<'a> {
@@ -271,11 +256,6 @@ impl<'a> DynamicsRun<'a> {
         let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let brush_color = [view_of(&brush_color_tex[0]), view_of(&brush_color_tex[1])];
         let brush_aux = [view_of(&brush_aux_tex[0]), view_of(&brush_aux_tex[1])];
-        // The gain parcel needs no init of its own: a fresh stroke's plan opens with
-        // a forced pickup (`since = ∞`), which writes every texel before the first
-        // bake reads any; a resumed one copies the carried parcel in below.
-        let gain_color_tex = brush_tex(&mut scoped, "stark dynamics gain color");
-        let gain_aux_tex = brush_tex(&mut scoped, "stark dynamics gain aux");
         if let Some(t) = tool {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
@@ -287,16 +267,6 @@ impl<'a> DynamicsRun<'a> {
             encoder.copy_texture_to_texture(
                 t.aux.as_image_copy(),
                 brush_aux_tex[0].as_image_copy(),
-                RESERVOIR_EXTENT,
-            );
-            encoder.copy_texture_to_texture(
-                t.gain_color.as_image_copy(),
-                gain_color_tex.as_image_copy(),
-                RESERVOIR_EXTENT,
-            );
-            encoder.copy_texture_to_texture(
-                t.gain_aux.as_image_copy(),
-                gain_aux_tex.as_image_copy(),
                 RESERVOIR_EXTENT,
             );
         } else {
@@ -356,11 +326,6 @@ impl<'a> DynamicsRun<'a> {
         };
         let bake_load = bake("stark dynamics bake load");
         let bake_latm = bake("stark dynamics bake latm");
-        let bake_g = bake("stark dynamics bake g");
-        let bake_gq = bake("stark dynamics bake gq");
-
-        let gain_color = view_of(&gain_color_tex);
-        let gain_aux = view_of(&gain_aux_tex);
         Self {
             r,
             rec,
@@ -377,15 +342,8 @@ impl<'a> DynamicsRun<'a> {
             brush_color,
             brush_aux,
             cur: 0,
-            gain_color_tex,
-            gain_aux_tex,
-            gain_color,
-            gain_aux,
             bake_load,
             bake_latm,
-            bake_g,
-            bake_gq,
-            since: tool.map_or(f32::INFINITY, |t| t.since),
         }
     }
 
@@ -583,12 +541,10 @@ impl<'a> DynamicsRun<'a> {
         let under_color = under_tex("stark dynamics under color");
         let under_aux = under_tex("stark dynamics under aux");
 
-        // ---- The dispatch plan (segments + interleaved pickups), one 256-byte
+        // ---- The dispatch plan, one segment each, one 256-byte
         // slot each (dynamic uniform offsets — the standard way to vary a uniform
         // across dispatches within one pass).
-        let (plan, since_end) =
-            dynamics_plan(rec, segments, region_origin, dsize, channels, self.since);
-        self.since = since_end;
+        let plan = dynamics_plan(rec, segments, region_origin, dsize, channels);
         const STRIDE: usize = 256;
         const SLOT: usize = 128; // sizeof the `Stamp` uniform (8 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
@@ -606,7 +562,7 @@ impl<'a> DynamicsRun<'a> {
         r.ctx.queue.write_buffer(&stamp_buf, 0, &data);
 
         // ---- Bind groups. `params` binds a single slot-sized window whose dynamic
-        // offset selects the dispatch; pickup/deposit come in two flavours for the
+        // offset selects the dispatch; `exchange` comes in two flavours for the
         // reservoir ping-pong.
         let params = || wgpu::BindGroupEntry {
             binding: 0,
@@ -631,11 +587,11 @@ impl<'a> DynamicsRun<'a> {
                 tex(4, &under_aux),
             ],
         });
-        let pickup_bgs: Vec<wgpu::BindGroup> = (0..2)
+        let exchange_bgs: Vec<wgpu::BindGroup> = (0..2)
             .map(|i| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark dynamics pickup bg"),
-                    layout: &kit.pickup_bgl,
+                    label: Some("stark dynamics exchange bg"),
+                    layout: &kit.exchange_bgl,
                     entries: &[
                         params(),
                         tex(1, &region_color),
@@ -647,10 +603,6 @@ impl<'a> DynamicsRun<'a> {
                         tex(9, &self.brush_color[1 - i]),
                         tex(10, &self.brush_aux[1 - i]),
                         tex(21, &sel_mask),
-                        // The gain parcel the pickup writes for the bake's reload
-                        // ramp — not ping-ponged, so both phases bind the same pair.
-                        tex(22, &self.gain_color),
-                        tex(23, &self.gain_aux),
                     ],
                 })
             })
@@ -669,10 +621,6 @@ impl<'a> DynamicsRun<'a> {
                         tex(8, &self.brush_aux[i]),
                         tex(17, &self.bake_load),
                         tex(18, &self.bake_latm),
-                        tex(24, &self.gain_color),
-                        tex(25, &self.gain_aux),
-                        tex(26, &self.bake_g),
-                        tex(27, &self.bake_gq),
                     ],
                 })
             })
@@ -687,8 +635,6 @@ impl<'a> DynamicsRun<'a> {
                         samp(),
                         tex(19, &self.bake_load),
                         tex(20, &self.bake_latm),
-                        tex(28, &self.bake_g),
-                        tex(29, &self.bake_gq),
                         tex(11, &under_color),
                         tex(12, &under_aux),
                         tex(13, &region_color),
@@ -704,8 +650,8 @@ impl<'a> DynamicsRun<'a> {
             })
             .collect();
 
-        // ---- The loop: snapshot → pickup → deposit per stamp, in stroke order.
-        // One compute pass; the implicit barriers between dispatches give the
+        // ---- The loop: bake → snapshot → deposit → exchange per segment, in stroke
+        // order. One compute pass; the implicit barriers between dispatches give the
         // sequential semantics, and usage scopes are per-dispatch, so the region
         // may be sampled by one dispatch and storage-written by the next.
         //
@@ -721,44 +667,35 @@ impl<'a> DynamicsRun<'a> {
                     label: Some("stark dynamics stamp loop"),
                     timestamp_writes: None,
                 });
-            let bu = BRUSH_RES.div_ceil(8);
             // The prefix-τ rides at group 1 for `bake` and `deposit`. Re-bound after
             // every pipeline switch: changing to a pipeline whose group-0 layout
             // differs invalidates the groups above it, and both consumers are
             // reached only across such a switch.
-            // Each pickup reads `cur` and writes the other, then flips; the segment
-            // bakes in between read `cur` (the post-pickup state).
             for (i, d) in plan.iter().enumerate() {
                 let off = (i * STRIDE) as u32;
-                if d.pickup {
-                    cpass.set_pipeline(&kit.pickup_pipeline);
-                    cpass.set_bind_group(0, &pickup_bgs[cur], &[off]);
-                    cpass.dispatch_workgroups(bu, bu, 1);
-                    cur = 1 - cur;
-                } else {
-                    // Bake this segment's swept reservoir prefix first — it folds in
-                    // the tip's current orientation as well as the reservoir state,
-                    // so it is per segment, not per pickup.
-                    cpass.set_pipeline(&kit.bake_pipeline);
-                    cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    // One BAKE_RES-wide workgroup per row: the shader's scan
-                    // width is a constant, so the two must agree.
-                    cpass.dispatch_workgroups(1, BAKE_RES, 1);
-                    cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, &snapshot_bg, &[off]);
-                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
-                    cpass.set_pipeline(&kit.deposit_pipeline);
-                    cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
-                    // Drain the tool by what this segment just took, so the next one
-                    // reads a tool that has actually travelled.
-                    cpass.set_pipeline(&kit.deplete_pipeline);
-                    cpass.set_bind_group(0, &pickup_bgs[cur], &[off]);
-                    cpass.dispatch_workgroups(bu, bu, 1);
-                    cur = 1 - cur;
-                }
+                // Bake this segment's swept reservoir prefix first — it folds in the
+                // tip's current orientation as well as the reservoir state.
+                cpass.set_pipeline(&kit.bake_pipeline);
+                cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
+                cpass.set_bind_group(1, prefix_bg, &[]);
+                // One BAKE_RES-wide workgroup per row: the shader's scan width is a
+                // constant, so the two must agree.
+                cpass.dispatch_workgroups(1, BAKE_RES, 1);
+                cpass.set_pipeline(&kit.snapshot_pipeline);
+                cpass.set_bind_group(0, &snapshot_bg, &[off]);
+                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                cpass.set_pipeline(&kit.deposit_pipeline);
+                cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
+                cpass.set_bind_group(1, prefix_bg, &[]);
+                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                // Then the tool's own side, for the very same segment: drain by what
+                // it just laid, lift what is now under it. Reads `cur` and writes the
+                // other half, so the next segment's bake sees a tool that has actually
+                // travelled and reloaded.
+                cpass.set_pipeline(&kit.exchange_pipeline);
+                cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
+                cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
+                cur = 1 - cur;
             }
             self.cur = cur;
         }
@@ -848,7 +785,7 @@ impl<'a> DynamicsRun<'a> {
     /// Remember the tool for the range that resumes after this one. Copied rather
     /// than aliased: the loop's own reservoir textures are scoped to this call and
     /// destroyed at the end of it, and the range that resumes will write its first
-    /// pickup straight into whatever it is handed. 64² rgba16f ×4, so the copy is
+    /// exchange straight into whatever it is handed. 64² rgba16f ×2, so the copy is
     /// ~64 KB — nothing beside the region work it saves the next pointer move.
     fn capture_tool(&mut self) -> ToolState {
         let device = &self.r.ctx.device;
@@ -873,19 +810,6 @@ impl<'a> DynamicsRun<'a> {
                 &self.brush_aux_tex[self.cur],
                 "stark tool state aux",
             ),
-            // The gain parcel rides along: a range resuming mid pickup interval
-            // still has part of this reload left to ramp in (dynamics.wesl).
-            gain_color: copy_out(
-                &mut self.encoder,
-                &self.gain_color_tex,
-                "stark tool state gain color",
-            ),
-            gain_aux: copy_out(
-                &mut self.encoder,
-                &self.gain_aux_tex,
-                "stark tool state gain aux",
-            ),
-            since: self.since,
         }
     }
 
@@ -968,25 +892,21 @@ fn reservoir_desc(
 
 /// Build the swept-exchange dispatch plan (DESIGN.md §6.2): one `snapshot` +
 /// `deposit` pair per flattened segment (the canvas-side exchange, swept through
-/// the prefix-τ integral), interleaved with reservoir `pickup` steps every
-/// `spacing · radius` of travel. λ = ln(1 − axis) makes every rate exponential in
+/// the prefix-τ integral), each followed by the tool's own `exchange`.
+/// λ = ln(1 − axis) makes every rate exponential in
 /// exposure, so the exchange composes exactly across overlapping segment quads —
 /// the continuous path integral, independent of any spacing. Pure CPU float math
 /// → replay-deterministic.
 ///
-/// `since0` is the travel already accumulated toward the next pickup — `INFINITY` at
-/// a stroke start, which forces one immediately, or whatever the preceding range
-/// ended on. Returned alongside the plan so the next range can continue it: the
-/// pickup *cadence* is the one piece of loop state that is neither on the canvas nor
-/// in the reservoir, and restarting it per range would reload the tool at every cut.
+/// Every dispatch is a segment: the tool exchanges once per segment rather than on a
+/// cadence of its own, so there is no interval state to carry between ranges.
 fn dynamics_plan(
     rec: &StrokeRecord,
     segments: &[Segment],
     region_origin: Vec2,
     dsize: u32,
     channels: [f32; 4],
-    since0: f32,
-) -> (Vec<LoopDispatch>, f32) {
+) -> Vec<LoopDispatch> {
     let b = &rec.brush;
     let d = b.dynamics;
     // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
@@ -1000,58 +920,7 @@ fn dynamics_plan(
     let (nfreq, namp, noff) = noise_uniform(rec);
 
     let mut plan = Vec::new();
-    let mut since = since0;
-    let bu = BRUSH_RES.div_ceil(8);
     for s in segments {
-        let step = (RESERVOIR_CADENCE * s.radius).max(0.5);
-        if since >= step {
-            // Reservoir update: the tool exchanges for the travel just covered
-            // (the first pickup uses one nominal step — a fresh tip arriving).
-            let ds = if since.is_finite() { since } else { step };
-            let (sn, cs) = (s.orient * std::f32::consts::TAU).sin_cos();
-            let rot = Vec2::new(s.dir.x * cs - s.dir.y * sn, s.dir.x * sn + s.dir.y * cs);
-            let p = s.start - region_origin;
-            plan.push(LoopDispatch {
-                pickup: true,
-                groups: (bu, bu),
-                slot: [
-                    p.x,
-                    p.y,
-                    rot.x,
-                    rot.y,
-                    s.radius,
-                    0.0,
-                    l_lift,
-                    l_dep,
-                    channels[0],
-                    channels[1],
-                    channels[2],
-                    s.opacity,
-                    0.0,
-                    0.0,
-                    s.orient,
-                    ds / s.radius,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    // f–h (colour dynamics) — unused by `pickup`.
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-            });
-            since = 0.0;
-        }
         // The segment's swept exchange: the frame is (start, travel tangent at the
         // start, curvature), and the dispatch rect is the segment's own coverage box
         // plus a 1.5 px sampling margin — so an axis-aligned sweep dispatches ~4·r²
@@ -1068,9 +937,14 @@ fn dynamics_plan(
             (((hi.x - ox).ceil() as u32) + 1).min(dsize),
             (((hi.y - oy).ceil() as u32) + 1).min(dsize),
         );
+        // Where `exchange` samples the canvas: the segment's midpoint, along the arc
+        // rather than the chord. The midpoint rule for a lift that is really swept
+        // over the segment — second order, where either endpoint would be first.
+        let mid =
+            crate::path::arc_at(s.start, s.dir, s.curvature, s.length * 0.5).0 - region_origin;
         plan.push(LoopDispatch {
-            pickup: false,
             groups: (w.div_ceil(8), h.div_ceil(8)),
+            exchange_groups: (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(8)),
             slot: [
                 p.x,
                 p.y,
@@ -1087,18 +961,15 @@ fn dynamics_plan(
                 ox,
                 oy,
                 s.orient,
-                1.0,
-                // e: the `add` source rate — height per unit exposure — and the
-                // segment's signed curvature, which bends the travel frame every
-                // dispatch of this loop measures its exchange in (dynamics.wesl).
-                // `.zw` are the reload ramp's coordinates: travel into the pickup
-                // interval at the segment start, and the interval's nominal length —
-                // both in radius units, both replay-deterministic (`since` is carried
-                // across ranges, the step is a function of the segment).
+                0.0,
+                // e: the `add` source rate — height per unit exposure — the segment's
+                // signed curvature, which bends the travel frame every dispatch of
+                // this loop measures its exchange in, and the midpoint `exchange`
+                // lifts from (dynamics.wesl).
                 s.amount * ADD_GAIN,
                 s.curvature,
-                since / s.radius,
-                (RESERVOIR_CADENCE * s.radius).max(0.5) / s.radius,
+                mid.x,
+                mid.y,
                 // f–h: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
                 nfreq[0],
                 nfreq[1],
@@ -1114,9 +985,8 @@ fn dynamics_plan(
                 0.0,
             ],
         });
-        since += s.length;
     }
-    (plan, since)
+    plan
 }
 
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
@@ -1245,7 +1115,7 @@ pub(super) fn build_dynamics_kit(
             module: &composite_shader,
             // `fs_raw`, NOT the screen path's `fs_main`: the loop's region must
             // hold the tile representation itself (opacity in alpha), not the
-            // coverage-weighted channels pass A shows — the pickup reads this
+            // coverage-weighted channels pass A shows — the exchange reads this
             // region and the slice writes it back to persistent tiles.
             entry_point: Some("fs_raw"),
             compilation_options: Default::default(),
@@ -1337,8 +1207,8 @@ pub(super) fn build_dynamics_kit(
             stor(4),
         ],
     });
-    let pickup_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics pickup bgl"),
+    let exchange_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark dynamics exchange bgl"),
         entries: &[
             params_entry,
             ctex(1, true),
@@ -1352,11 +1222,6 @@ pub(super) fn build_dynamics_kit(
             // The selection mask over the region (§6.8) — sampled bilinearly here,
             // since a reservoir texel sits over an arbitrary sub-pixel spot.
             ctex(21, true),
-            // The gain parcel `pickup` writes for the bake's reload ramp. With the
-            // reservoir ping-pong this puts the stage at core WebGPU's guaranteed
-            // four storage textures — exactly.
-            stor(22),
-            stor(23),
         ],
     });
     // `bake` integrates the reservoir along the travel axis for one segment; the
@@ -1370,13 +1235,6 @@ pub(super) fn build_dynamics_kit(
             ctex(8, true),
             stor32(17),
             stor32(18),
-            // The gain parcel (read) and its two ramp prefixes (written) — see the
-            // packing note in dynamics.wesl. Four storage textures: exactly core
-            // WebGPU's guaranteed limit.
-            ctex(24, true),
-            ctex(25, true),
-            stor32(26),
-            stor32(27),
         ],
     });
     let deposit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1386,8 +1244,6 @@ pub(super) fn build_dynamics_kit(
             csamp,
             ctex(19, false),
             ctex(20, false),
-            ctex(28, false),
-            ctex(29, false),
             ctex(11, false),
             ctex(12, false),
             stor(13),
@@ -1449,10 +1305,11 @@ pub(super) fn build_dynamics_kit(
         "snapshot",
         &[Some(&snapshot_bgl)],
     );
-    let pickup_pipeline = cpipe("stark dynamics pickup", "pickup", &[Some(&pickup_bgl)]);
-    // `deplete` touches a subset of what `pickup` binds (no region), so it can share
-    // the layout and its bind groups — unused entries are legal.
-    let deplete_pipeline = cpipe("stark dynamics deplete", "deplete", &[Some(&pickup_bgl)]);
+    let exchange_pipeline = cpipe(
+        "stark dynamics exchange",
+        "exchange",
+        &[Some(&exchange_bgl)],
+    );
     // The bake reads the prefix-τ volume too (group 1) — the exposure weights in
     // its integral are that volume's own differences.
     let bake_pipeline = cpipe(
@@ -1551,9 +1408,8 @@ pub(super) fn build_dynamics_kit(
         composite_sampler,
         snapshot_pipeline,
         snapshot_bgl,
-        pickup_pipeline,
-        pickup_bgl,
-        deplete_pipeline,
+        exchange_pipeline,
+        exchange_bgl,
         bake_pipeline,
         bake_bgl,
         deposit_pipeline,

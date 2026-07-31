@@ -492,3 +492,89 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
         "carried-paint profile reverses {reversals}× — per-segment scalloping",
     );
 }
+
+/// A conservative smear (`add = 0`) can move paint around for as long as it likes and
+/// must never end up with more of it than it started with.
+///
+/// The single-pass test above cannot see this. The failure it guards against is a
+/// *drift* in the tool's own accounting, and one pass of a drift is nothing — what
+/// makes it visible is the tool's load compounding, which needs one **long** gesture
+/// rather than many short ones (a fresh gesture starts the tool empty, so repeating
+/// short strokes resets the very thing that accumulates).
+///
+/// The bug it exists for: the tool's drain used to carry a fudge factor of 0.75
+/// ("deplete a bit slower than the math would indicate to account for error"), so the
+/// tool kept a quarter of every deposit it made *and laid it anyway*. That factor was
+/// covering for the old reload cadence — the tool reloading on its own schedule while
+/// the canvas was stripped every segment — and once both sides of the transfer measured
+/// the same segment it had nothing left to cover for. Reinstating it fails this by ~6%.
+///
+/// Measured as image darkness rather than height, since there is no height readback:
+/// the field is deliberately faint, because height only reaches the render while the
+/// paint is still short of opaque.
+#[test]
+fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A broad field to smear inside, so nothing the tip carries leaves the region.
+    let mut faint = brush([1.0, 0.0, 0.0, 0.12], 110.0);
+    faint.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        faint,
+        &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)],
+    );
+
+    let before = total_ink(&engine.render_to_image());
+
+    // `add = 0`, so the tool can only move what is already there. Zig-zagging keeps
+    // the tip inside the field for the whole gesture.
+    let smear = dyn_brush(
+        RED,
+        30.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.9,
+            deposit: 0.9,
+            ..Default::default()
+        },
+    );
+    engine.process(ViewCommand::SetBrush(smear));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    for i in 1..=240 {
+        let t = i as f32;
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(Vec2::new((t * 0.19).sin() * 70.0, (t * 0.11).cos() * 40.0)),
+        });
+    }
+    engine.process(GestureCommand::End);
+    let after = total_ink(&engine.render_to_image());
+
+    // Conserved, the tool ends the stroke still holding some of what it lifted, so
+    // the canvas can only come out level or slightly lighter. Minting shows up as the
+    // one thing conservation forbids: more paint than went in.
+    let growth = after / before;
+    assert!(
+        growth <= 1.0,
+        "a conservative smear left {:.1}% more ink on the canvas than it found          — the tool is minting paint",
+        (growth - 1.0) * 100.0
+    );
+}
+
+/// Mean darkness over the image: with a fixed palette this rises as paint thickens,
+/// so it stands in for "how much paint is on the canvas" without a height readback.
+fn total_ink(img: &stark_core::RgbaImage) -> f64 {
+    let sum: u64 = img
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| (255 - p[1]) as u64 + (255 - p[2]) as u64)
+        .sum();
+    sum as f64 / (img.width * img.height) as f64
+}

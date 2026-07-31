@@ -84,13 +84,17 @@ const MAX_STAMPS: usize = 4096;
 /// counterpart: it lays height directly as the brush's rate times the swept
 /// optical depth (`stamp_oklab.wesl`), with no correction factor.
 const ADD_GAIN: f32 = 2.0;
-/// How far the tool reservoir travels between `pickup`s, as a fraction of the
-/// brush radius (DESIGN.md §6.2). A property of the exchange loop, not of the tip:
-/// the reload cadence sets how finely the reservoir tracks the evolving canvas, and
-/// nothing about a shape's coverage mask should change it. It also caps the
-/// flattened segment length on the dynamics path, since a pickup can only land
-/// *between* segments (see [`flatten_tolerance`]).
-const RESERVOIR_CADENCE: f32 = 0.5;
+/// How far the tool may travel per exchange, as a fraction of the brush radius
+/// (DESIGN.md §6.2) — which, since the tool now exchanges once per *segment*, is
+/// simply a cap on the flattened segment length for a dynamics brush
+/// (see [`flatten_tolerance`]).
+///
+/// A property of the exchange loop, not of the tip: it sets how finely the reservoir
+/// tracks the evolving canvas, and nothing about a shape's coverage mask should change
+/// it. It was once a cadence of its own — the tool reloaded every `spacing·radius`
+/// while the canvas was stripped every segment — and the lag between the two is what
+/// left a stroke's last footprint short of paint (`dynamics.wesl`).
+const RESERVOIR_EXCHANGE_STEP: f32 = 0.25;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (DESIGN.md §6.2).
 ///
@@ -162,18 +166,6 @@ pub struct ToolState {
     color: wgpu::Texture,
     /// Reservoir aux: per texel, the carried amount (height).
     aux: wgpu::Texture,
-    /// The last pickup's gain parcel (same two-texture layout), which the deposit
-    /// ramps in across the pickup interval rather than serving as a step
-    /// (dynamics.wesl). A range resuming mid-interval still has part of this
-    /// reload left to ramp, so it travels with the reservoir.
-    gain_color: wgpu::Texture,
-    gain_aux: wgpu::Texture,
-    /// Travel (canvas px) since the last reservoir pickup. The tool reloads every
-    /// `spacing · radius` of travel and a pickup can only land *between* segments, so
-    /// a range that resumed this at zero would reload early and lay a visible step —
-    /// and the reload ramp reads it as the interval-elapsed coordinate, so it would
-    /// also restart every gain ramp from zero.
-    since: f32,
 }
 
 impl Drop for ToolState {
@@ -184,8 +176,6 @@ impl Drop for ToolState {
         // them retires.
         self.color.destroy();
         self.aux.destroy();
-        self.gain_color.destroy();
-        self.gain_aux.destroy();
     }
 }
 
@@ -609,23 +599,17 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     if b.drain > 0.0 {
         tol.max_len = tol.max_len.min(0.02 / b.drain);
     }
-    // The stamp loop reloads its reservoir every [`RESERVOIR_CADENCE`] radii of
-    // travel, and a pickup can only land *between* segments — so a segment longer
-    // than that cadence would silently thin the reloads and change how the tool
-    // carries paint. The cap sits at *half* the cadence: the reload itself is
-    // ramped in continuously (dynamics.wesl), but `deplete`'s per-segment drain
-    // step still disagrees with the deposit's exposure currency where the
-    // footprint's density varies, and that residual — the crescent seams a
-    // lift × deposit stroke used to show at the cadence — shrinks linearly with
-    // segment length while the per-texel drain composes exactly across any cut.
-    // The exchange itself is exact at any length (`dynamics.wesl::bake` integrates
-    // the reservoir over the whole pass rather than sampling it mid-pass), and the
-    // cap also bounds the snapshot scratch, which is sized by the longest segment.
+    // The stamp loop exchanges once per segment, so the segment length *is* the step
+    // at which the tool reloads and drains — and unlike the canvas side, which the
+    // prefix-τ integral makes exact at any length, that step is a plain first-order
+    // discretization of a coupled ODE. [`RESERVOIR_EXCHANGE_STEP`] is what keeps it
+    // fine enough. The cap also bounds the snapshot scratch, which is sized by the
+    // longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
         tol.max_len = tol
             .max_len
-            .min((0.5 * RESERVOIR_CADENCE * b.radius).max(0.5));
+            .min((RESERVOIR_EXCHANGE_STEP * b.radius).max(0.5));
     }
     tol
 }

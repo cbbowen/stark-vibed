@@ -5,15 +5,13 @@
 // give the sequencing; usage scopes are per-dispatch, so the region may be
 // sampled by one dispatch and storage-written by the next — no copies):
 //
-//   - `pickup` (at reservoir cadence, every `spacing·radius` of travel) — one
-//     thread per **tool reservoir** texel: sample the (evolving) canvas region
-//     under that part of the tip, lift paint onto the tool, deplete the tool by
-//     the upcoming deposit. Ping-pongs the reservoir.
-//   - per flattened segment: `bake` (integrate the reservoir along the travel
-//     axis, so the deposit can read what the tip presented over a whole pass
+//   - per flattened segment, in order: `bake` (integrate the reservoir along the
+//     travel axis, so the deposit can read what the tip presented over a whole pass
 //     rather than at one point), `snapshot` (copy the segment's footprint texels
 //     to an `under` scratch, so the exchange can read-modify-write the region),
-//     then `deposit` — one thread per footprint texel.
+//     `deposit` — one thread per footprint texel — and `exchange`, one thread per
+//     **tool reservoir** texel, which drains the tool by what it just laid and lifts
+//     what is now under it. `exchange` ping-pongs the reservoir.
 //
 // **The canvas-side exchange is swept, not stamped** — the same definite-integral
 // formulation as the plain deposit: a texel's *exposure* to the segment is the
@@ -29,24 +27,27 @@
 // already modified by earlier segments, smearing is genuinely order-dependent —
 // including across the stroke's own trail.
 //
-// **The reservoir's own evolution is ramped, not stepped.** The canvas-side
-// exchange above composes exactly, but the tool state it serves changes at
-// discrete instants: `pickup` lands a whole interval's reload between two
-// segments, and at high lift × deposit that is a large fraction of the load —
-// so consecutive segments served visibly different tools, and the stroke showed
-// crescent seams at the reservoir cadence (level sets of a texel's partial
-// exposure, i.e. the tip's edge). `pickup` therefore also writes its reload as a
-// separate **gain parcel**, and the bake serves `R + G·(γ − ½)` with
-// `γ = (t0 + s)/L` the fraction of the pickup interval elapsed at the moment of
-// service — the reload fades in linearly across the interval (mean-preserving:
-// the average serving equals the stepped one, so stroke feel is unchanged; a
-// 1-D simulation of this loop puts the seam ripple at ~1.7% stepped vs ~0.5%
-// ramped, with the peak seam gradient down ~4×). `γ` is linear in the serving
-// column, so it rides the same prefix trick as everything else — two extra
-// baked prefixes (`G` and `G·q`), no per-fragment loop. The matching
-// `deplete` step stays multiplicative (it composes exactly across any cut); its
-// residual against the deposit's exposure currency is bounded by cutting
-// segments at *half* the cadence (`stroke::flatten_tolerance`).
+// **The tool exchanges once per segment, at the same cadence as everything else.**
+// The canvas side of the transfer is swept per segment (above), so the tool side has
+// to be too, or the tool gains what the canvas gave up only some segments later. That
+// lag used to be real: `pickup` ran on its own coarse cadence, every `spacing·radius`
+// of travel, and a stroke that stopped mid-interval left its last footprint stripped
+// by a `deposit` whose paint the tool had not yet been credited with — a tip-shaped
+// patch of missing paint, worst exactly where `lift` is high.
+//
+// So `exchange` does both halves of the tool's side in one dispatch, per segment,
+// right after the `deposit` it accounts for: the tool drains by what it just laid,
+// then lifts what is now under it. Nothing is deferred, so nothing is left owing at
+// the end of a stroke.
+//
+// This also retires a good deal of machinery. The old cadence had to hide its own
+// discreteness — a whole interval's reload landing between two segments is a large
+// fraction of the load at high lift × deposit, and consecutive segments served
+// visibly different tools — which took a separate **gain parcel**, a linear ramp
+// serving it in across the interval, and two extra baked prefixes to evaluate that
+// ramp per fragment. A per-segment exchange has no step to hide: the segment length
+// *is* the reload step, and `stroke::flatten_tolerance` already caps it at a fraction
+// of the tip. All of it is gone.
 //
 // Conservation (DESIGN.md §6.1): paint moves by transferring **height** — the one
 // conserved quantity. Colour and per-unit opacity ride as optical-mass
@@ -73,14 +74,11 @@ struct Stamp {
     // c: the brush's own colour channels .xyz + per-unit opacity .w (drained).
     c: vec4<f32>,
     // d: under-rect origin .xy (region px, integral); orientation (turns ∈ [0,1),
-    //    picks the prefix-τ slice) .z; exposure scale .w (pickup: the travel since
-    //    the last pickup in radius units; segments: 1 — exposure comes from the
-    //    prefix difference directly).
+    //    picks the prefix-τ slice) .z; .w unused.
     d: vec4<f32>,
     // e: the `add` rate per unit exposure: height .x; the segment's signed curvature
-    //    (1/region px, 0 = a straight sweep) .y. For a segment slot, the gain-ramp
-    //    coordinates: travel into the current pickup interval at the segment start .z
-    //    and the interval's nominal length .w (radius units).
+    //    (1/region px, 0 = a straight sweep) .y; the segment's midpoint .zw (region
+    //    px), which is where `exchange` samples the canvas.
     e: vec4<f32>,
     // f–h: colour dynamics (DESIGN.md §6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
@@ -128,50 +126,25 @@ struct Stamp {
 @group(0) @binding(16) var dyn_noise_samp: sampler;
 // The reservoir's **swept prefix** in the travel frame (written by `bake`, read by
 // `deposit`): running integrals of the carried paint weighted by the footprint's
-// optical-depth density, for the full reservoir `R` and for the last pickup's gain
-// parcel `G` (plain and travel-weighted — the two prefixes the linear reload ramp
-// decomposes into; see the header). Packed to stay within the four storage
-// textures core WebGPU guarantees a stage:
-//   load = (∫h_R·dτ,      ∫m_R·dτ,      ∫h_G·dτ,      unused)
-//   latm = (∫lat_R·m_R·dτ,                             ∫m_G·dτ)
-//   g    = (∫lat_G·m_G·dτ,                             ∫h_G·q·dτ)
-//   gq   = (∫lat_G·m_G·q·dτ,                           ∫m_G·q·dτ)
-// with `q` the serving column's travel-frame coordinate (radius units). fp32
-// because each fragment takes a *difference* of two prefix sums, exactly as the
-// prefix-τ volume does, and for the same cancellation reason.
+// optical-depth density.
+//   load = (∫h·dτ, ∫m·dτ, unused, unused)
+//   latm = (∫lat·m·dτ,        unused)
+// fp32 because each fragment takes a *difference* of two prefix sums, exactly as the
+// prefix-τ volume does, and for the same cancellation reason. Two targets where there
+// were four: the other pair only ever carried the retired reload ramp.
 @group(0) @binding(17) var bake_load_w: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(18) var bake_latm_w: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(19) var bake_load: texture_2d<f32>;
 @group(0) @binding(20) var bake_latm: texture_2d<f32>;
-@group(0) @binding(26) var bake_g_w: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(27) var bake_gq_w: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(28) var bake_g: texture_2d<f32>;
-@group(0) @binding(29) var bake_gq: texture_2d<f32>;
 // The selection's coverage over the region (DESIGN.md §6.8), 1:1 with it — or a 1×1
 // texture holding a constant when there is nothing to mask. Both the vertical fluxes
-// are gated by it: `pickup` scales what it lifts, `deposit` lerps its whole
+// are gated by it: `exchange` scales what it lifts, `deposit` lerps its whole
 // read-modify-write back towards the untouched region, so paint outside the selection
 // is neither taken nor laid and the two sides of the transfer still balance.
 @group(0) @binding(21) var sel_mask: texture_2d<f32>;
-// The last pickup's **gain parcel** (written by `pickup`, read by `bake`): what the
-// tool lifted over the preceding interval, kept separately from the reservoir it
-// was also added to so the bake can ramp it in across the interval instead of
-// serving it as a step (see the header). Same layout as the reservoir pair:
-// colour = (lifted latent .xyz, its per-unit opacity .w), aux = (height, _, _, _).
-// Not ping-ponged: each pickup overwrites it whole, `deplete` leaves it alone (the
-// undrained tail of a ramping gain is second-order), and nothing else writes it.
-@group(0) @binding(22) var gain_color_w: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(23) var gain_aux_w: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(24) var gain_color: texture_2d<f32>;
-@group(0) @binding(25) var gain_aux: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const TAU: f32 = 6.283185307179586;
-
-// Deplete a bit slower than the math would indicate to account for error. Depleting
-// too slowly feels better than depleting too quickly.
-// TODO: Compute the right value for this from the current parameters.
-const DEPLETE_FACTOR: f32 = 0.75;
 
 // How much of a *constant deposition rate* survives on the canvas at the end of a
 // segment of exposure `e`: `∫₀ᵉ exp(λ_lift·(e−s)) ds`, the amount laid at each
@@ -290,8 +263,6 @@ const BAKE_RES: u32 = 128u;
 var<workgroup> ws_e: array<f32, BAKE_RES>;
 var<workgroup> ws_load: array<vec4<f32>, BAKE_RES>;
 var<workgroup> ws_latm: array<vec4<f32>, BAKE_RES>;
-var<workgroup> ws_g: array<vec4<f32>, BAKE_RES>;
-var<workgroup> ws_gq: array<vec4<f32>, BAKE_RES>;
 
 @compute @workgroup_size(128) // = BAKE_RES: thread i scans column i of its row
 fn bake(
@@ -324,39 +295,26 @@ fn bake(
     let buv = clamp(sl * 0.5 + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
     let b_c = textureSampleLevel(brush_src_color, samp, buv, 0.0);
     let b_a = textureSampleLevel(brush_src_aux, samp, buv, 0.0);
-    let g_c = textureSampleLevel(gain_color, samp, buv, 0.0);
-    let g_a = textureSampleLevel(gain_aux, samp, buv, 0.0);
 
     // Carried height and optical mass (opacity·height), each weighted by the
     // exposure they are presented with; latent rides as a mass weight so a
-    // ratio of the two prefixes recovers it (§6.1). The gain parcel gets the
-    // same treatment twice — plain and travel-weighted (`xc`) — which is what
-    // lets the deposit evaluate the linear reload ramp as prefix differences.
+    // ratio of the two prefixes recovers it (§6.1).
     let m = b_c.a * b_a.x;
-    let mg = g_c.a * g_a.x;
-    ws_load[i] = vec4<f32>(b_a.x, m, g_a.x, 0.0) * de;
-    ws_latm[i] = vec4<f32>(b_c.rgb * m, mg) * de;
-    ws_g[i] = vec4<f32>(g_c.rgb * mg, g_a.x * xc) * de;
-    ws_gq[i] = vec4<f32>(g_c.rgb * (mg * xc), mg * xc) * de;
+    ws_load[i] = vec4<f32>(b_a.x, m, 0.0, 0.0) * de;
+    ws_latm[i] = vec4<f32>(b_c.rgb * m, 0.0) * de;
     workgroupBarrier();
 
-    // Inclusive scan over the four accumulators together.
+    // Inclusive scan over both accumulators together.
     for (var off = 1u; off < BAKE_RES; off = off << 1u) {
         var v_load = ws_load[i];
         var v_latm = ws_latm[i];
-        var v_g = ws_g[i];
-        var v_gq = ws_gq[i];
         if i >= off {
             v_load += ws_load[i - off];
             v_latm += ws_latm[i - off];
-            v_g += ws_g[i - off];
-            v_gq += ws_gq[i - off];
         }
         workgroupBarrier();
         ws_load[i] = v_load;
         ws_latm[i] = v_latm;
-        ws_g[i] = v_g;
-        ws_gq[i] = v_gq;
         workgroupBarrier();
     }
 
@@ -364,8 +322,6 @@ fn bake(
     let t = vec2<i32>(i32(i), i32(row));
     textureStore(bake_load_w, t, ws_load[i]);
     textureStore(bake_latm_w, t, ws_latm[i]);
-    textureStore(bake_g_w, t, ws_g[i]);
-    textureStore(bake_gq_w, t, ws_gq[i]);
 }
 
 // ---- 1. Snapshot the region under the segment's footprint rect. -----------------
@@ -420,27 +376,73 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(under_aux_w, t, a);
 }
 
-// ---- 2. Pickup: canvas → tool, plus the tool's own depletion. --------------------
-
+// ---- 2. Exchange: the tool's own side of the transfer, per segment. -------------
+//
+// One thread per **tool reservoir** texel, run straight after the `deposit` it
+// accounts for, and doing both halves of the tool's side in the order they happen:
+//
+//   * **drain** by what the texel just gave up. Multiplicative in the texel's own
+//     exposure to the segment (its footprint weight × the travel), so the tool's
+//     state after a run of segments is `exp(λ_dep · Σeᵢ)` — the same wherever the
+//     path was cut. Latent and per-unit opacity are untouched: the tool holds *less*
+//     paint, not different paint (§6.1).
+//   * **lift** what is now under it, off the region as this segment's deposit has
+//     just left it — which is what makes smearing genuinely order-dependent,
+//     including across the stroke's own trail.
+//
+// Both halves share the one exposure, and it is the *same* segment travel the canvas
+// side integrated over, so nothing the canvas gave up waits to be credited. That is
+// the whole reason this runs per segment rather than on a cadence of its own: the
+// tool used to be reloaded every `spacing·radius` while the canvas was stripped every
+// segment, and a stroke ending mid-interval left the difference behind as a
+// tip-shaped patch of missing paint.
+//
+// The canvas is sampled at the segment's **midpoint** (`st.e.zw`) rather than either
+// end — the midpoint rule for a lift that is really swept along the segment, and
+// second-order where an endpoint would be first.
 @compute @workgroup_size(8, 8)
-fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bdim = textureDimensions(brush_src_color);
     if gid.x >= bdim.x || gid.y >= bdim.y {
         return;
     }
     let t = vec2<i32>(gid.xy);
-    // This reservoir texel's brush-local position and its spot on the canvas.
     let local = (vec2<f32>(t) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
-    let rot = st.a.zw;
-    let world = st.a.xy
-        + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
 
-    // This texel's exposure over the interval since the last pickup: its own
-    // optical depth × the travel (radius units). In τ, like the canvas side and
-    // like `deplete` — the canvas gives up `1 − exp(λ_lift·∫τ)`, so a tool that
-    // measured its gain in bare coverage would receive a fraction of what the
-    // canvas lost and quietly destroy paint.
-    let e = tau_at(local) * st.d.w;
+    // This texel's exposure to the segment: its own optical depth × the travel
+    // (radius units). In τ, like the canvas side — the canvas gives up
+    // `1 − exp(λ_lift·∫τ)`, so a tool that measured its gain in bare coverage would
+    // receive a fraction of what the canvas lost and quietly destroy paint.
+    let e = tau_at(local) * st.b.y;
+
+    let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult
+    let b_a = textureLoad(brush_src_aux, t, 0);   // (height, _, _, _)
+
+    // Drain first: this is the load the `deposit` just before us laid from, and `e`
+    // is the very exposure it laid over — so the drain is exactly `exp(λ_dep·e)`,
+    // with no correction factor.
+    //
+    // There used to be one (`DEPLETE_FACTOR = 0.75`, "deplete a bit slower than the
+    // math would indicate to account for error"). The error it was accounting for was
+    // the cadence: the tool was reloaded on its own coarse schedule while the canvas
+    // was stripped every segment, so the two sides disagreed about how much had
+    // changed hands and the tool over-drained. Draining slower papered over that —
+    // but a factor below 1 means the tool keeps a fraction of every deposit it makes,
+    // which compounds, so paint grew without bound over a long stroke. With both
+    // sides now measuring the same transfer over the same segment there is nothing
+    // left to correct, and the exact rate is also the conserving one.
+    let keep = exp(st.b.w * e);
+    var h = b_a.x * keep;
+    var m = b_c.a * h;
+
+    // Then lift. The tool's shape frame is the travel frame turned by the shape's
+    // orientation (§6.6) — the same rotation `bake` applies to read the reservoir.
+    let theta = st.d.z * TAU;
+    let cs = cos(theta);
+    let sn = sin(theta);
+    let dir = st.a.zw;
+    let rot = vec2<f32>(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs);
+    let world = st.e.zw + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
 
     let rdim = vec2<f32>(textureDimensions(region_color));
     // Outside the selection the canvas gives nothing up (§6.8) — the matching
@@ -453,18 +455,8 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rc = textureSampleLevel(region_color, samp, world / rdim, 0.0);
     let ra = textureSampleLevel(region_aux, samp, world / rdim, 0.0);
 
-    let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult
-    let b_a = textureLoad(brush_src_aux, t, 0);   // (height, _, _, _)
-
-    // Only the canvas→tool direction happens here. The tool's own draining is per
-    // *segment* (`deplete`), because it has to advance with travel for the exchange
-    // to be independent of how the path was cut — at pickup cadence, every segment
-    // in an interval would deposit from the same undepleted load.
-    var h = b_a.x;
-    var m = b_c.a * h;
-
-    // Fold in the paint lifted off the canvas: height moves, colour/opacity
-    // ride as optical-mass-weighted blends (§6.1).
+    // Height moves; colour and per-unit opacity ride as optical-mass-weighted
+    // blends (§6.1).
     let take_h = ra.x * lift;
     let take_m = rc.a * take_h;
     let canvas_lat = rc.rgb / max(rc.a, EPS);
@@ -474,40 +466,6 @@ fn pickup(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
-    // The reload just folded in, again as its own parcel — the bake reads it back
-    // out of the reservoir sum so the deposit can ramp it in across the coming
-    // interval instead of serving it as a step (see the header). Same convention
-    // as the reservoir pair: straight latent + per-unit opacity, mass = op·height.
-    textureStore(gain_color_w, t, vec4<f32>(canvas_lat, rc.a));
-    textureStore(gain_aux_w, t, vec4<f32>(take_h, 0.0, 0.0, 0.0));
-}
-
-// ---- 2b. Deplete: the tool drains as it gives paint up, per segment. ------------
-//
-// The counterpart to what `deposit` lays. Multiplicative in the texel's own
-// exposure to the segment (its footprint weight × the travel), so the tool's state
-// after a run of segments is `exp(λ_dep · Σeᵢ)` — the same wherever the path was
-// cut. Doing this at pickup cadence instead is what left a carrying stroke
-// depositing the same undepleted load once per segment and scalloping between
-// reloads. Latent and per-unit opacity are untouched: the tool holds *less* paint,
-// not different paint (§6.1).
-@compute @workgroup_size(8, 8)
-fn deplete(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let bdim = textureDimensions(brush_src_color);
-    if gid.x >= bdim.x || gid.y >= bdim.y {
-        return;
-    }
-    let t = vec2<i32>(gid.xy);
-    let local = (vec2<f32>(t) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
-    // In optical depth, like every other transfer here: `deposit` integrates the
-    // tool's decay over the canvas-side exposure, which is the prefix-τ integral, so
-    // a tool draining in bare coverage would disagree with it by a factor that grows
-    // with segment length — the very partition dependence this dispatch removes.
-    let keep = exp(DEPLETE_FACTOR * st.b.w * tau_at(local) * st.b.y);
-    let b_c = textureLoad(brush_src_color, t, 0);
-    let b_a = textureLoad(brush_src_aux, t, 0);
-    textureStore(brush_dst_color_w, t, b_c);
-    textureStore(brush_dst_aux_w, t, vec4<f32>(b_a.x * keep, 0.0, 0.0, 0.0));
 }
 
 // ---- 3. Deposit: the swept exchange over one segment. ----------------------------
@@ -587,36 +545,19 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // segment length — no mid-pass sample, no length-dependent error.
     let d_load = bake_at(bake_load, xl, yl) - bake_at(bake_load, xl - sw.lr, yl);
     let d_latm = bake_at(bake_latm, xl, yl) - bake_at(bake_latm, xl - sw.lr, yl);
-    let d_g = bake_at(bake_g, xl, yl) - bake_at(bake_g, xl - sw.lr, yl);
-    let d_gq = bake_at(bake_gq, xl, yl) - bake_at(bake_gq, xl - sw.lr, yl);
-    // The reload ramp (see the header): the last pickup's gain parcel is served as
-    // `G·(γ − ½)` on top of the reservoir it was already added to, with
-    // `γ = (t0 + s)/L` the fraction of the pickup interval elapsed when the column
-    // at `q` served this texel. `s = xl − q` is linear in `q`, so the integral
-    // splits into the plain and travel-weighted `G` prefixes baked above:
-    //     Σ G·(γ − ½)·dτ = ((t0 + xl)/L − ½)·ΔG − ΔGq/L.
-    // Mean-preserving by construction — over a whole interval the ramp serves
-    // exactly the stepped amount — so this changes the seams, not the stroke.
-    //
-    // `s` is elapsed *tip* travel while `xl − q` is in this texel's own measure, so
-    // the two coefficients carry the same `warp` the exposure does — and reduce to
-    // what they were on a straight sweep, where it is 1.
-    let rc0 = (st.e.z + xl * sw.warp) / st.e.w - 0.5;
-    let rc1 = sw.warp / st.e.w;
-    // Height and mass are non-negative and the ramp is a fraction of the parcel
-    // already inside the reservoir sum, so a total below zero can only be
-    // rounding. The *latent* is not: these are colour-space channels (Oklab a/b
-    // are signed — green carries a negative a), so its prefix is not monotonic and
-    // clamping the difference would shear the chroma off whatever the tool is
-    // carrying.
     // Divided by the prefix difference in the *same* measure the bake integrated
     // against, not by the tip-travel exposure: these three are means of the load the
     // pass delivered, so the curved sweep's warp cancels between numerator and
     // denominator instead of appearing twice.
+    //
+    // Height and mass are non-negative, so a total below zero can only be rounding.
+    // The *latent* is not: these are colour-space channels (Oklab a/b are signed —
+    // green carries a negative a), so its prefix is not monotonic and clamping the
+    // difference would shear the chroma off whatever the tool is carrying.
     let inv_pre = 1.0 / dpre;
-    let tool_h = max(d_load.x + rc0 * d_load.z - rc1 * d_g.w, 0.0) * inv_pre;
-    let tool_m = max(d_load.y + rc0 * d_latm.w - rc1 * d_gq.w, 0.0) * inv_pre;
-    let latm = d_latm.xyz + rc0 * d_g.xyz - rc1 * d_gq.xyz;
+    let tool_h = max(d_load.x, 0.0) * inv_pre;
+    let tool_m = max(d_load.y, 0.0) * inv_pre;
+    let latm = d_latm.xyz;
     let tool_op = tool_m / max(tool_h, EPS);
     let tool_lat = latm * inv_pre / max(tool_m, EPS);
 
