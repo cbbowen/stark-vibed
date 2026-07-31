@@ -19,8 +19,8 @@ use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, Vec
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle};
 
 use super::segments::{
-    Segment, affected_tiles, chunk_segments, generate_segments_in, noise_uniform, region_rect,
-    segment_fits_region,
+    Segment, affected_tiles, chunk_segments, coverage_bounds, generate_segments_in, noise_uniform,
+    region_rect, segment_fits_region,
 };
 use super::swept::{TileInstance, ViewUniform};
 use super::{
@@ -556,16 +556,20 @@ impl<'a> DynamicsRun<'a> {
             view
         };
 
-        // ---- Footprint snapshot textures. The snapshot rect must cover a segment
-        // quad's AABB at any rotation: half extents (radius + len/2 + margin,
-        // radius + margin), bounded by √2 × the half-diagonal. Sized from *this*
-        // piece's segments, so a piece drawn with a fine tip pays for a fine tip.
-        let rmax = segments.iter().fold(0.5f32, |m, s| m.max(s.radius));
-        let lmax = segments.iter().fold(0.0f32, |m, s| m.max(s.length));
-        // +2: a per-segment dispatch rect rounds its AABB outward by a texel each
-        // side (`dynamics_plan`), and the scratch must hold the rounded rect at
-        // the rotation where the AABB meets this bound.
-        let dsize = (2.0 * std::f32::consts::SQRT_2 * (rmax + lmax * 0.5 + 1.5)).ceil() as u32 + 2;
+        // ---- Footprint snapshot textures. The snapshot rect must cover any one
+        // segment's coverage box — its swept arc plus the tip riding along it —
+        // which is measured rather than bounded analytically, since `coverage_bounds`
+        // is already the exact box and a curved sweep has no closed-form "worst
+        // rotation" to fall back on. Sized from *this* piece's segments, so a piece
+        // drawn with a fine tip pays for a fine tip.
+        //
+        // +3 for the sampling margin `dynamics_plan` adds each side, +2 because a
+        // per-segment rect then rounds outward by a texel each side.
+        let dmax = segments.iter().fold(1.0f32, |m, s| {
+            let (lo, hi) = coverage_bounds(s);
+            m.max(hi.x - lo.x).max(hi.y - lo.y)
+        });
+        let dsize = (dmax + 3.0).ceil() as u32 + 2;
         let mut under_tex = |label: &'static str| {
             scoped_view(
                 device,
@@ -1048,24 +1052,21 @@ fn dynamics_plan(
             });
             since = 0.0;
         }
-        // The segment's swept exchange: quad frame = start + travel tangent; the
-        // snapshot rect is centred on the segment midpoint, sized to the oriented
-        // quad's own AABB — the quad spans x ∈ [-r, l+r] × y ∈ [-r, r] in the
-        // travel frame, plus the same 1.5 px sampling margin the `dsize` bound
-        // allows — so an axis-aligned sweep dispatches ~4·r² threads where the
-        // any-rotation square would spend ~10·r². Texels the dispatch rounds in
-        // beyond the AABB read zero exposure and fall out of `deposit` untouched,
-        // and every rect fits the `under` scratch because `dsize` bounds the AABB
-        // at any rotation.
+        // The segment's swept exchange: the frame is (start, travel tangent at the
+        // start, curvature), and the dispatch rect is the segment's own coverage box
+        // plus a 1.5 px sampling margin — so an axis-aligned sweep dispatches ~4·r²
+        // threads where a piece-wide square would spend ~10·r². Texels the dispatch
+        // rounds in beyond the box read zero exposure and fall out of `deposit`
+        // untouched, and every rect fits the `under` scratch because `dsize` was
+        // measured from these same boxes.
         let p = s.start - region_origin;
-        let mid = p + s.dir * (s.length * 0.5);
-        let ha = s.radius + s.length * 0.5 + 1.5;
-        let hb = s.radius + 1.5;
-        let hx = ha * s.dir.x.abs() + hb * s.dir.y.abs();
-        let hy = ha * s.dir.y.abs() + hb * s.dir.x.abs();
+        let (clo, chi) = coverage_bounds(s);
+        let lo = clo - region_origin - Vec2::splat(1.5);
+        let hi = chi - region_origin + Vec2::splat(1.5);
+        let (ox, oy) = (lo.x.floor(), lo.y.floor());
         let (w, h) = (
-            (((2.0 * hx).ceil() as u32) + 2).min(dsize),
-            (((2.0 * hy).ceil() as u32) + 2).min(dsize),
+            (((hi.x - ox).ceil() as u32) + 1).min(dsize),
+            (((hi.y - oy).ceil() as u32) + 1).min(dsize),
         );
         plan.push(LoopDispatch {
             pickup: false,
@@ -1083,18 +1084,19 @@ fn dynamics_plan(
                 channels[1],
                 channels[2],
                 s.opacity,
-                (mid.x - hx).floor(),
-                (mid.y - hy).floor(),
+                ox,
+                oy,
                 s.orient,
                 1.0,
-                // e: the `add` source rate — height per unit exposure. `.y` is unused
-                // (height is the only thing a segment sources). `.zw` are the reload
-                // ramp's coordinates (dynamics.wesl): travel into the pickup interval
-                // at the segment start, and the interval's nominal length — both in
-                // radius units, both replay-deterministic (`since` is carried across
-                // ranges, the step is a function of the segment).
+                // e: the `add` source rate — height per unit exposure — and the
+                // segment's signed curvature, which bends the travel frame every
+                // dispatch of this loop measures its exchange in (dynamics.wesl).
+                // `.zw` are the reload ramp's coordinates: travel into the pickup
+                // interval at the segment start, and the interval's nominal length —
+                // both in radius units, both replay-deterministic (`since` is carried
+                // across ranges, the step is a function of the segment).
                 s.amount * ADD_GAIN,
-                0.0,
+                s.curvature,
                 since / s.radius,
                 (RESERVOIR_CADENCE * s.radius).max(0.5) / s.radius,
                 // f–h: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).

@@ -433,7 +433,7 @@ mod transform_tests {
         // (π·100·50), i.e. r = √(100·50) — not the ellipse itself, because a
         // circle is what says "no distortion yet" (TRANSFORM_DESIGN.md §6).
         let r = state().radius;
-        assert!((r - 5000.0_f32.sqrt()).abs() < 1e-3, "got {r}");
+        assert!((r - 100.0f32.hypot(50.0)).abs() < 1e-3, "got {r}");
     }
 
     #[test]

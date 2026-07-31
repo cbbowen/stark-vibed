@@ -17,11 +17,26 @@ use crate::noise::NOISE_TILE_PX;
 use super::{MAX_REGION_DIM, MAX_STAMPS, StrokeSpans};
 
 /// One swept segment of the stroke.
+///
+/// The centreline is a **circular arc**, not a chord: `start` and `dir` give the
+/// frame it leaves in, `curvature` bends it, and `length` measures along it. A
+/// straight sweep is `curvature == 0` and is what every quantity below reduces to,
+/// exactly — see [`fit_arc`].
 #[derive(Copy, Clone)]
 pub(super) struct Segment {
     pub(super) start: Vec2,
+    /// Unit travel tangent **at the segment's start** — the x axis of the frame the
+    /// sweep is integrated in. On a curved segment the tangent turns as the tip
+    /// travels; this is where it begins.
     pub(super) dir: Vec2,
+    /// Signed curvature of the centreline (1/canvas px), positive turning towards
+    /// the left of `dir`. Exactly 0 for a straight sweep, which both render paths
+    /// branch on — so a stroke the arc fit declines to bend is bit-identical to one
+    /// drawn before arcs existed (DESIGN.md §6.2).
+    pub(super) curvature: f32,
     pub(super) radius: f32,
+    /// Arc length of the centreline (canvas px) — the tip's own travel, which is the
+    /// measure every rate in both paths is denominated in.
     pub(super) length: f32,
     /// Paint **height** laid per unit swept optical depth: the brush's `add` source
     /// faded by the remaining load (`drain`). The single amount knob — the amount of
@@ -46,9 +61,10 @@ pub(super) struct Segment {
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub(super) struct SegmentInstance {
     pub(super) start: [f32; 2],
-    pub(super) dir: [f32; 2],   // unit tangent
-    pub(super) geom: [f32; 4],  // radius, length, amount (height per unit τ), opacity
-    pub(super) extra: [f32; 4], // orientation (turns ∈ [0,1)), arc length at segment start, _, _
+    pub(super) dir: [f32; 2],  // unit tangent at the segment start
+    pub(super) geom: [f32; 4], // radius, arc length, amount (height per unit τ), opacity
+    // orientation (turns ∈ [0,1)), arc length at segment start, signed curvature, _
+    pub(super) extra: [f32; 4],
 }
 
 /// Generate the round tip's coverage: a soft disc with `hardness` falloff.
@@ -69,6 +85,128 @@ pub(super) fn round_coverage(hardness: f32, res: u32) -> Vec<f32> {
 pub(super) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+// --- swept arcs ----------------------------------------------------------------
+//
+// A flattened edge stands in for a piece of curve, and a *chord* is a poor stand-in
+// even when it is well within the positional budget: the union of straight sweeps is
+// tangent-continuous but its curvature breaks at every joint, and on the inside of a
+// turn the outline creases. Curvature breaks along a silhouette are what the eye
+// reads as facets — so the fix is not more segments (which the reservoir cadence and
+// the per-segment dispatches make expensive) but *better* ones. An arc costs a float
+// on the instance and some fragment ALU, and nothing else (DESIGN.md §6.2).
+
+/// The least sagitta (canvas px) an arc has to buy before a segment is bent at all.
+/// Under this the arc is indistinguishable from its chord, so the segment is emitted
+/// straight — which keeps a straight or barely-curved stroke on exactly the code path
+/// (and exactly the floats) it had before arcs existed.
+const MIN_SAGITTA: f32 = 0.01;
+
+/// Cap on `sin(θ/2)` for the turn `θ` one segment may bend through — ~23°, far past
+/// the ~5.7° [`crate::path::FLATTEN_TOLERANCE`]'s `angle` bound admits. A backstop on
+/// a pathological edge (a cusp, or a span that bottomed out `MAX_SUBDIVISION_DEPTH`)
+/// rather than a quality knob: past it both the series below and the shader's
+/// annular-sector geometry stop being the right approximation, so the segment goes
+/// back to being straight.
+const MAX_HALF_TURN_SIN: f32 = 0.2;
+
+/// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
+/// sweeping through.
+///
+/// The shaders rasterize a curved sweep as an **annular sector** about the centre of
+/// curvature, which stays a simple polygon only while the tip's inner edge clears
+/// that centre — `radius < |R|`. Past it the sector folds over itself, and since the
+/// two paths accumulate optical depth additively, a fold would deposit twice. Half is
+/// the margin. A tip this fat relative to the curve hides the faceting in its own
+/// width anyway, so falling back to a straight sweep costs nothing visible.
+const MAX_TIP_TURN: f32 = 0.5;
+
+/// `sin(x)`, `1 − cos(x)` and `asin(u)/u` as **polynomials**, for the same reason
+/// [`taper_profile`] is one: these decide stored pixels, so replay, goldens and peers
+/// have to agree on them to the last bit, and the transcendental library functions are
+/// not specified that far. Each is a truncated Maclaurin series, accurate to better
+/// than 1e-7 relative over the range its caller is guarded to
+/// ([`MAX_HALF_TURN_SIN`]) — well inside the f32 the result is stored in.
+///
+/// `versin` is `1 − cos(x)` evaluated *directly* rather than by subtraction: it is
+/// used where `x` is small and the difference would cancel away most of its digits.
+fn sin_small(x: f32) -> f32 {
+    let x2 = x * x;
+    x * (1.0 - x2 * (1.0 / 6.0 - x2 * (1.0 / 120.0 - x2 / 5040.0)))
+}
+
+fn versin_small(x: f32) -> f32 {
+    let x2 = x * x;
+    x2 * (0.5 - x2 * (1.0 / 24.0 - x2 / 720.0))
+}
+
+fn asin_over_x(u: f32) -> f32 {
+    let u2 = u * u;
+    1.0 + u2 * (1.0 / 6.0 + u2 * (3.0 / 40.0 + u2 * (15.0 / 336.0)))
+}
+
+/// The circular arc standing in for one flattened edge: the arc that leaves the
+/// edge's start along the **curve's own tangent** there and passes through its end.
+///
+/// Returns `(start tangent, signed curvature, arc length)`; a curvature of exactly 0
+/// means "sweep this one straight", and then the other two are the chord's own
+/// direction and length — bit-identical to what this function replaced.
+///
+/// Fitting from the start tangent rather than from both is what makes it cheap: with
+/// `t̂` the unit tangent and `n̂` its left normal, an arc leaving along `t̂` reaches
+/// chord `v` iff `κ = 2 (v·n̂)/|v|²`, and `sin(θ/2) = κ|v|/2` falls straight out of
+/// the same identity. No angle is ever formed, so nothing here needs a transcendental
+/// beyond the series above.
+///
+/// The end tangent is then *not* pinned to the curve's tangent there, so consecutive
+/// arcs still meet with a small kink — but it is second order in the turn where the
+/// chord's was first order, which is the whole point: the joints stop being the
+/// dominant error and the flattening budget becomes the dominant one again.
+fn fit_arc(vel: Vec2, v: Vec2, chord: f32, tip_radius: f32) -> (Vec2, f32, f32) {
+    let straight = (v / chord, 0.0, chord);
+    let speed = vel.length();
+    if speed < 1e-12 {
+        // A stationary derivative names no tangent (`path::turn` declines the same
+        // case): there is nothing to bend towards.
+        return straight;
+    }
+    let t = vel / speed;
+    let n = Vec2::new(-t.y, t.x);
+    let kappa = 2.0 * v.dot(n) / (chord * chord);
+    if !kappa.is_finite() || kappa == 0.0 {
+        return straight;
+    }
+    // Half the turn, as its sine — the arc is `chord = 2 sin(θ/2)/κ` by construction.
+    let u = 0.5 * kappa * chord;
+    if u.abs() > MAX_HALF_TURN_SIN || v.dot(t) <= 0.0 {
+        return straight;
+    }
+    // Sagitta = |R|(1 − cos(θ/2)), rearranged to avoid cancelling two large radii.
+    let cos_half = (1.0 - u * u).max(0.0).sqrt();
+    let sagitta = kappa.abs() * chord * chord / (4.0 * (1.0 + cos_half));
+    if sagitta < MIN_SAGITTA || tip_radius * kappa.abs() > MAX_TIP_TURN {
+        return straight;
+    }
+    (t, kappa, chord * asin_over_x(u))
+}
+
+/// Where an arc leaving `start` along `dir` with signed `kappa` has got to after `s`
+/// of arc length, and the unit tangent it is travelling along there. The straight case
+/// is the exact limit and is taken as one, so a `kappa == 0` segment is stepped by
+/// plain addition.
+fn arc_at(start: Vec2, dir: Vec2, kappa: f32, s: f32) -> (Vec2, Vec2) {
+    if kappa == 0.0 {
+        return (start + dir * s, dir);
+    }
+    let turn = kappa * s;
+    let sn = sin_small(turn);
+    let vs = versin_small(turn);
+    let perp = Vec2::new(-dir.y, dir.x);
+    (
+        start + dir * (sn / kappa) + perp * (vs / kappa),
+        dir * (1.0 - vs) + perp * sn,
+    )
 }
 
 /// The taper's radius profile: the fraction of the brush's radius in force `t` of
@@ -243,11 +381,26 @@ pub(super) fn generate_segments_in(
     // long, and start-sampling would lag every ramp by half a segment. `dist` is
     // the exception: it is the segment start's arc length because the shader adds
     // the fragment's own offset along the travel to it (stamp_common.wesl).
-    let make = |pos: Vec2, pressure: f32, tilt: Vec2, dir: Vec2, len: f32, dist: f32, tap: f32| {
+    //
+    // `dir` is the tangent the sweep *starts* along (the frame's x axis) while
+    // `mid_dir` is the one at the midpoint — the same midpoint-sampling argument,
+    // applied to the one attribute that reads a direction. They are the same vector
+    // on a straight segment.
+    #[allow(clippy::too_many_arguments)]
+    let make = |pos: Vec2,
+                pressure: f32,
+                tilt: Vec2,
+                dir: Vec2,
+                mid_dir: Vec2,
+                kappa: f32,
+                len: f32,
+                dist: f32,
+                tap: f32| {
         let drain = (1.0 - b.drain * (dist + len * 0.5)).max(0.0);
         Segment {
             start: pos,
             dir,
+            curvature: kappa,
             // Pressure and the taper both scale the tip; the floor keeps a tapered
             // tip a hairline at its very point rather than a degenerate zero-width
             // sweep (which would also divide by zero in the dynamics loop's
@@ -258,7 +411,7 @@ pub(super) fn generate_segments_in(
             // rides the separate opacity channel (DESIGN.md §6.1).
             amount: b.dynamics.add * drain,
             opacity: b.color[3] * drain,
-            orient: orientation_turns(b.orientation, dir, tilt),
+            orient: orientation_turns(b.orientation, mid_dir, tilt),
             dist,
         }
     };
@@ -266,17 +419,23 @@ pub(super) fn generate_segments_in(
     for w in pts.windows(2) {
         let (a, c) = (w[0], w[1]);
         let v = c.pos - a.pos;
-        let len = v.length();
-        if len < 1e-5 {
+        let chord = v.length();
+        if chord < 1e-5 {
             continue;
         }
-        let dir = v / len;
+        // The edge as an arc rather than a chord (see [`fit_arc`]): same endpoints,
+        // but leaving along the curve's own tangent, so the swept outline no longer
+        // breaks its curvature at every joint. `kappa == 0` comes back for a straight
+        // or barely-curved edge and everything below reduces to what it was.
+        let (dir, kappa, len) = fit_arc(a.vel, v, chord, b.radius);
         // One flattened edge is one segment wherever the taper is flat — which is
         // everywhere on an untapered brush, so nothing below changes those strokes
         // by a bit. Inside a taper it is cut into pieces fine enough that the radius
         // steps smoothly, the same length bound `drain` and the reservoir cadence
         // ask of the *fitter* (`flatten_tolerance`), except paid only near the ends
-        // instead of over the whole stroke.
+        // instead of over the whole stroke. The pieces are sub-*arcs*: they inherit
+        // the edge's curvature and are stepped along it, so cutting an edge up still
+        // traces exactly the same centreline.
         let n = taper.pieces(a.dist, len);
         let step = len / n as f32;
         for k in 0..n {
@@ -285,11 +444,15 @@ pub(super) fn generate_segments_in(
             let tilt = a.tilt + (c.tilt - a.tilt) * mid;
             let along = step * k as f32;
             let dist = a.dist + along;
+            let (pos, tan) = arc_at(a.pos, dir, kappa, along);
+            let (_, mid_tan) = arc_at(a.pos, dir, kappa, along + step * 0.5);
             segs.push(make(
-                a.pos + dir * along,
+                pos,
                 pressure,
                 tilt,
-                dir,
+                tan,
+                mid_tan,
+                kappa,
                 step,
                 dist,
                 taper.factor(dist + step * 0.5),
@@ -303,11 +466,14 @@ pub(super) fn generate_segments_in(
         // brush still dots at full size instead of leaving an invisible speck.
         let p = pts[0];
         let r = (b.radius * p.pressure).max(0.5);
+        let dir = Vec2::new(1.0, 0.0);
         segs.push(make(
             p.pos,
             p.pressure,
             p.tilt,
-            Vec2::new(1.0, 0.0),
+            dir,
+            dir,
+            0.0,
             r * 0.6,
             0.0,
             1.0,
@@ -393,15 +559,42 @@ pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
     coords
 }
 
-/// The canvas box one segment's swept coverage occupies, grown by the apron a
-/// rewritten tile's neighbours reach into (§6.4). The one place that reach is
-/// defined: [`affected_tiles`] enumerates the tiles it touches, [`chunk_segments`]
-/// accumulates it into the region a run of segments needs, and those two answers have
-/// to be the same rectangle.
-fn segment_bounds(s: &Segment) -> (Vec2, Vec2) {
-    let end = s.start + s.dir * s.length;
-    let reach = Vec2::splat(s.radius + TILE_APRON as f32);
+/// Where a segment's centreline ends — along the arc, not along the chord.
+pub(super) fn segment_end(s: &Segment) -> Vec2 {
+    arc_at(s.start, s.dir, s.curvature, s.length).0
+}
+
+/// How far a segment's centreline bows away from its own chord: `|R|(1 − cos(θ/2))`
+/// for a turn of `θ`, and 0 for a straight sweep. Every box below adds it, since the
+/// two endpoints alone no longer bound the arc between them.
+fn segment_sagitta(s: &Segment) -> f32 {
+    if s.curvature == 0.0 {
+        return 0.0;
+    }
+    versin_small(0.5 * s.curvature * s.length) / s.curvature.abs()
+}
+
+/// The canvas box one segment's swept coverage occupies — the arc, grown by the tip
+/// that rides along it.
+///
+/// The rasterized geometry reaches further than this at the caps (the shaders sweep a
+/// generous angular margin so the round end is never clipped), but every fragment out
+/// there differences two prefix taps to exactly zero and writes nothing. What a box
+/// has to contain is where the deposit *lands*, which is within one radius of the arc.
+pub(super) fn coverage_bounds(s: &Segment) -> (Vec2, Vec2) {
+    let end = segment_end(s);
+    let reach = Vec2::splat(s.radius + segment_sagitta(s));
     (s.start.min(end) - reach, s.start.max(end) + reach)
+}
+
+/// [`coverage_bounds`] grown by the apron a rewritten tile's neighbours reach into
+/// (§6.4). The one place that reach is defined: [`affected_tiles`] enumerates the
+/// tiles it touches, [`chunk_segments`] accumulates it into the region a run of
+/// segments needs, and those two answers have to be the same rectangle.
+fn segment_bounds(s: &Segment) -> (Vec2, Vec2) {
+    let (lo, hi) = coverage_bounds(s);
+    let apron = Vec2::splat(TILE_APRON as f32);
+    (lo - apron, hi + apron)
 }
 
 /// The size of the region [`region_rect`] would build for a coverage box, without
@@ -477,7 +670,11 @@ pub(super) fn chunk_segments(segments: &[Segment]) -> Vec<Range<usize>> {
 /// whichever tile boundary it happens to straddle.
 pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTolerance) -> bool {
     let radius = b.radius.max(0.5);
-    let length = tol.max_len.max(0.6 * radius);
+    // The chord is what `path::within` caps; the arc over it is longer, and bows a
+    // sagitta out of its own box. Both are bounded by the turn a segment may bend
+    // through (`MAX_HALF_TURN_SIN`) — under 2% and under 5% of the chord — so a
+    // single margin covers the pair with room to spare.
+    let length = tol.max_len.max(0.6 * radius) * 1.1;
     let extent = length + 2.0 * (radius + TILE_APRON as f32);
     let worst = (extent / TILE_SIZE as f32).ceil().max(0.0) as u32 * TILE_SIZE + TILE_TEX;
     worst <= MAX_REGION_DIM
@@ -733,6 +930,243 @@ mod tests {
         );
     }
 
+    // --- swept arcs -------------------------------------------------------
+
+    /// A stroke bending through `sweep` radians of a circle of radius `curve_radius`.
+    fn curved_record(radius: f32, curve_radius: f32, sweep: f32) -> StrokeRecord {
+        let path: Vec<crate::path::ControlPoint> = (0..=12)
+            .map(|i| {
+                let t = i as f32 / 12.0 * sweep;
+                crate::path::ControlPoint::at(Vec2::new(
+                    curve_radius * t.sin(),
+                    curve_radius * (1.0 - t.cos()),
+                ))
+            })
+            .collect();
+        StrokeRecord {
+            layer: crate::document::LayerId(0),
+            tool: crate::document::Tool::Brush,
+            brush: BrushParams {
+                radius,
+                drain: 0.0,
+                ..BrushParams::default()
+            },
+            path,
+            seed: 0,
+        }
+    }
+
+    /// Densely sampled points of the true curve — the ground truth the two stand-ins
+    /// below are measured against. Fifty times tighter than the render budget, so its
+    /// own flattening error is nowhere near what is being compared.
+    fn dense(rec: &StrokeRecord) -> Vec<Vec2> {
+        let tol = super::super::flatten_tolerance(&rec.brush).relaxed(0.02);
+        crate::path::flatten(&rec.path, tol)
+            .into_iter()
+            .map(|s| s.pos)
+            .collect()
+    }
+
+    /// The largest distance from any point of the true curve to `poly`.
+    fn deviation(curve: &[Vec2], poly: &[Vec2]) -> f32 {
+        let to_seg = |p: Vec2, a: Vec2, b: Vec2| {
+            let ab = b - a;
+            let len2 = ab.length_squared();
+            let t = if len2 < 1e-12 {
+                0.0
+            } else {
+                ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+            };
+            (p - (a + ab * t)).length()
+        };
+        curve
+            .iter()
+            .map(|&p| {
+                poly.windows(2)
+                    .map(|w| to_seg(p, w[0], w[1]))
+                    .fold(f32::INFINITY, f32::min)
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// `fit_arc` on a genuine circular arc recovers the circle it came from — the
+    /// case the whole construction is pinned to, since a flattened edge of a smooth
+    /// stroke is one to second order.
+    #[test]
+    fn the_arc_fit_recovers_a_circle() {
+        for (r, theta) in [(50.0f64, 0.08f64), (300.0, 0.05), (900.0, 0.02)] {
+            // An arc of radius `r` turning `theta`, starting at the origin heading +x.
+            // Built in f64: the far endpoint's lateral offset is `r(1 − cos θ)`, and
+            // forming that in f32 would cancel away enough digits to swamp the
+            // tolerances below — an artifact of the test's own construction, not of
+            // the fit it is checking.
+            let start_dir = Vec2::new(1.0, 0.0);
+            let end = Vec2::new((r * theta.sin()) as f32, (r * (1.0 - theta.cos())) as f32);
+            let (r, theta) = (r as f32, theta as f32);
+            let chord = end.length();
+            let (dir, kappa, len) = fit_arc(start_dir, end, chord, 1.0);
+            assert!(kappa != 0.0, "r={r} θ={theta}: fitted straight");
+            assert!(
+                (kappa - 1.0 / r).abs() < 1e-4 / r,
+                "r={r}: curvature {kappa} is not 1/{r}"
+            );
+            assert!(
+                (len - r * theta).abs() < 1e-3 * len,
+                "r={r}: arc length {len} is not {}",
+                r * theta
+            );
+            // And walking it lands exactly on the far end, which is what makes
+            // consecutive segments meet.
+            let (landed, _) = arc_at(Vec2::ZERO, dir, kappa, len);
+            assert!(
+                (landed - end).length() < 1e-3,
+                "r={r}: the arc ends at {landed:?}, not {end:?}"
+            );
+        }
+    }
+
+    /// The claim the change exists for: swept **arcs** track the fitted curve far
+    /// more closely than the chords they replace, at the same segment count.
+    ///
+    /// The chord's error is the flattener's positional budget by construction — that
+    /// is what the budget *is* — so this is really a statement about what a segment
+    /// can be asked to do without being made shorter. Measured on the curves below,
+    /// the arcs land ~4× closer; the residual is the fitted spline's own curvature
+    /// *variation* across a segment, which a single arc cannot follow and which the
+    /// flattener's `angle` bound is what actually limits.
+    ///
+    /// The ratio understates the visible gain, because the amplitude is not what the
+    /// eye is picking up: a chord sweep breaks the outline's curvature at every joint
+    /// and creases it on the inside of a turn, and an arc sweep does neither. That is
+    /// what facets are, and it is not something a distance metric sees.
+    #[test]
+    fn arcs_track_the_curve_far_closer_than_chords() {
+        for curve_radius in [200.0f32, 600.0, 2000.0] {
+            let rec = curved_record(8.0, curve_radius, 1.2);
+            let segs = whole(&rec);
+            let curve = dense(&rec);
+            assert!(
+                segs.iter().any(|s| s.curvature != 0.0),
+                "r={curve_radius}: nothing was bent at all"
+            );
+
+            let chords: Vec<Vec2> = segs
+                .iter()
+                .map(|s| s.start)
+                .chain(segs.last().map(segment_end))
+                .collect();
+            // Each arc sampled finely, so a point-to-polyline distance measures the
+            // arc itself rather than its own chord.
+            let mut arcs = Vec::new();
+            for s in &segs {
+                for i in 0..16 {
+                    arcs.push(arc_at(s.start, s.dir, s.curvature, s.length * i as f32 / 16.0).0);
+                }
+            }
+            arcs.extend(segs.last().map(segment_end));
+
+            let chord_err = deviation(&curve, &chords);
+            let arc_err = deviation(&curve, &arcs);
+            assert!(
+                arc_err < 0.35 * chord_err,
+                "r={curve_radius}: arcs are off by {arc_err}, chords by {chord_err}"
+            );
+        }
+    }
+
+    /// Consecutive segments meet: each one's arc *ends* where the next one starts.
+    /// Nothing in the deposit re-derives a segment's end — the shaders sweep from
+    /// `start` along the arc for `length` — so a gap here would be a seam of missing
+    /// paint at every joint, and an overlap a double deposit.
+    #[test]
+    fn segments_meet_end_to_start_along_their_arcs() {
+        let rec = curved_record(12.0, 400.0, 1.5);
+        let segs = whole(&rec);
+        assert!(segs.len() > 4, "not enough segments to join up");
+        for (i, w) in segs.windows(2).enumerate() {
+            let gap = (segment_end(&w[0]) - w[1].start).length();
+            assert!(
+                gap < 1e-2,
+                "segment {i} ends {gap}px from where {} starts",
+                i + 1
+            );
+        }
+    }
+
+    /// A straight stroke is not bent, and the arc machinery leaves it on exactly the
+    /// floats it was on before — the same no-op guarantee the taper's subdivision has.
+    #[test]
+    fn a_straight_stroke_is_never_bent() {
+        let rec = tapered_record(18.0, 0.0, 0.0, 900.0);
+        let segs = whole(&rec);
+        assert!(
+            segs.iter().all(|s| s.curvature == 0.0),
+            "a straight stroke picked up curvature"
+        );
+        for s in &segs {
+            assert_eq!(
+                segment_end(s),
+                s.start + s.dir * s.length,
+                "a straight segment's end moved off its chord"
+            );
+        }
+    }
+
+    /// A tip too fat for the turn it is sweeping falls back to a straight segment.
+    ///
+    /// This is the invariant the shaders' geometry rests on: they rasterize a curved
+    /// sweep as an annular sector about the centre of curvature, and that stays a
+    /// simple polygon only while the tip's inner rim clears that centre. A segment
+    /// past the bound would fold the sector over itself, and since both paths
+    /// accumulate optical depth additively, the fold would deposit twice.
+    #[test]
+    fn a_fat_tip_on_a_tight_turn_sweeps_straight() {
+        let curve_radius = 60.0;
+        let fat = 50.0; // well over half the curve's radius
+        for s in whole(&curved_record(fat, curve_radius, 1.5)) {
+            assert!(
+                s.radius * s.curvature.abs() <= MAX_TIP_TURN,
+                "a segment sweeps an arc of radius {} under a {} tip",
+                1.0 / s.curvature.abs(),
+                s.radius
+            );
+        }
+        // And the curve really is tight enough for that to have bitten: under a fine
+        // tip the same path keeps curvature the fat one had to give up. Without this
+        // the assertion above would pass on any straight line.
+        let fine = whole(&curved_record(2.0, curve_radius, 1.5));
+        assert!(
+            fine.iter().any(|s| fat * s.curvature.abs() > MAX_TIP_TURN),
+            "the test curve is too gentle to exercise the guard"
+        );
+    }
+
+    /// Every box a segment is measured by contains its whole arc, not just its two
+    /// ends. Under-reporting here is a clipped stroke: `affected_tiles` would leave a
+    /// tile out of the render, and the dynamics loop would dispatch a rect too small
+    /// for its own footprint.
+    #[test]
+    fn the_coverage_box_contains_the_whole_arc() {
+        let rec = curved_record(10.0, 150.0, 2.4);
+        let segs = whole(&rec);
+        assert!(segs.iter().any(|s| s.curvature != 0.0), "nothing bent");
+        for (i, s) in segs.iter().enumerate() {
+            let (lo, hi) = coverage_bounds(s);
+            for k in 0..=32 {
+                let (p, _) = arc_at(s.start, s.dir, s.curvature, s.length * k as f32 / 32.0);
+                // Every point of the arc, plus the tip riding along it.
+                let r = Vec2::splat(s.radius);
+                assert!(
+                    (p - r).x >= lo.x
+                        && (p - r).y >= lo.y
+                        && (p + r).x <= hi.x
+                        && (p + r).y <= hi.y,
+                    "segment {i}: the arc escapes its own coverage box at {p:?}"
+                );
+            }
+        }
+    }
+
     // --- region measurement ----------------------------------------------
 
     /// A segment carrying only what the region measurements read.
@@ -746,6 +1180,7 @@ mod tests {
             } else {
                 Vec2::new(1.0, 0.0)
             },
+            curvature: 0.0,
             radius,
             length,
             amount: 0.0,

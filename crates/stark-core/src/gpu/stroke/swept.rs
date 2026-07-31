@@ -18,6 +18,13 @@ use super::{
     ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, flatten_tolerance,
 };
 
+/// Vertices in one segment's swept geometry: a triangle strip of two rims across
+/// `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc
+/// rather than a chord (DESIGN.md §6.2). Must match `SWEEP_VERTS` in
+/// `stamp_common.wesl`, which is where the strip is actually built — asking for fewer
+/// would clip the sweep short, more would fold the strip back over itself.
+const SWEEP_VERTS: u32 = 18;
+
 /// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
 /// scale, plus the brush's stroke-constant colour channels. The texture origin is
 /// the interior origin minus the apron, so the stroke rasterizes into the apron
@@ -132,7 +139,7 @@ impl StrokeRenderer {
                 start: s.start.to_array(),
                 dir: s.dir.to_array(),
                 geom: [s.radius, s.length, s.amount, s.opacity],
-                extra: [s.orient, s.dist, 0.0, 0.0],
+                extra: [s.orient, s.dist, s.curvature, 0.0],
             })
             .collect();
         // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
@@ -254,7 +261,7 @@ impl StrokeRenderer {
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &noise_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
-                pass.draw(0..4, 0..instances.len() as u32);
+                pass.draw(0..SWEEP_VERTS, 0..instances.len() as u32);
             }
 
             // Integrate the scratch slab over the base into a fresh CoW tile, gated

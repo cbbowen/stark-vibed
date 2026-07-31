@@ -57,7 +57,7 @@
 // Determinism: segment/pickup slots are fixed CPU-side per stroke; every dispatch
 // is a pure function of what it reads. Replay and live == committed hold.
 
-import package::stamp_common::{prefix_at};
+import package::stamp_common::{prefix_at, Sweep, sweep_at};
 import package::noise::{color_jitter};
 import package::paint_common::{blend_latent, EPS};
 
@@ -77,9 +77,10 @@ struct Stamp {
     //    the last pickup in radius units; segments: 1 — exposure comes from the
     //    prefix difference directly).
     d: vec4<f32>,
-    // e: the `add` rate per unit exposure: height .x (.y unused). For a segment
-    //    slot, the gain-ramp coordinates: travel into the current pickup interval at
-    //    the segment start .z and the interval's nominal length .w (radius units).
+    // e: the `add` rate per unit exposure: height .x; the segment's signed curvature
+    //    (1/region px, 0 = a straight sweep) .y. For a segment slot, the gain-ramp
+    //    coordinates: travel into the current pickup interval at the segment start .z
+    //    and the interval's nominal length .w (radius units).
     e: vec4<f32>,
     // f–h: colour dynamics (DESIGN.md §6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
@@ -369,24 +370,32 @@ fn bake(
 
 // ---- 1. Snapshot the region under the segment's footprint rect. -----------------
 
-// Whether a region texel `rt` is provably outside the segment's swept quad — the
-// span x ∈ (-1, lr+1), |y| < 1 in the travel frame — so its exposure is exactly 0
-// and `deposit` leaves it untouched. The dispatch rect is the quad's AABB, so at a
+// This texel's place in the segment's travel frame — the one the whole exchange is
+// measured in. Straight or curved, `sweep_at` hands back the same three quantities
+// (see stamp_common.wesl), so nothing downstream branches on the segment's shape.
+//
+// `st.b.y` carries the travel as `length / radius`, so the arc length it was built
+// from is recovered by multiplying back through.
+fn segment_frame(rt: vec2<i32>) -> Sweep {
+    let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
+    return sweep_at(p, st.a.xy, st.a.zw, st.b.x, st.b.y * st.b.x, st.e.y);
+}
+
+// Whether a region texel is provably outside the segment's sweep — the span
+// x ∈ (-1, lr+1), |y| < 1 in the travel frame — so its exposure is exactly 0 and
+// `deposit` leaves it untouched. The dispatch rect is the sweep's AABB, so at a
 // diagonal orientation up to half its texels are these corners; the test rejects
 // them with a few ALU ops instead of the prefix-τ taps `deposit` would otherwise
 // spend proving e = 0. `snapshot` may skip exactly the same texels because
 // `deposit` reads the snapshot only after its own e > 0 check, and the two compute
 // the identical frame from the identical uniform — same floats, same verdict.
-fn outside_quad(rt: vec2<i32>) -> bool {
-    let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
-    let rel = (p - st.a.xy) / st.b.x;
-    let dir = st.a.zw;
-    let xl = rel.x * dir.x + rel.y * dir.y;
-    let yl = -rel.x * dir.y + rel.y * dir.x;
+fn outside_sweep(sw: Sweep) -> bool {
     // Beyond the lateral edges the prefix rows are the footprint's own zero
     // border; past the trailing edge both taps clamp to the row total. Either
-    // way the difference is exactly 0.
-    return abs(yl) >= 1.0 || xl <= -1.0 || xl - st.b.y >= 1.0;
+    // way the difference is exactly 0. The lateral test comes first because it is
+    // also what rejects a texel near a tight arc's centre of curvature, where the
+    // travel coordinate has no meaning to test.
+    return abs(sw.local.y) >= 1.0 || sw.local.x <= -1.0 || sw.local.x - sw.lr >= 1.0;
 }
 
 @compute @workgroup_size(8, 8)
@@ -397,7 +406,7 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let t = vec2<i32>(gid.xy);
     let rt = vec2<i32>(st.d.xy) + t;
-    if outside_quad(rt) {
+    if outside_sweep(segment_frame(rt)) {
         return; // deposit never reads these texels of the snapshot
     }
     let rdim = vec2<i32>(textureDimensions(region_color));
@@ -515,27 +524,32 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     if rt.x < 0 || rt.y < 0 || rt.x >= rdim.x || rt.y >= rdim.y {
         return;
     }
-    // The AABB's corners are outside the oriented quad and provably at zero
-    // exposure (`outside_quad`): reject them before the prefix-τ taps below
-    // spend ~10 loads apiece computing that zero.
-    if outside_quad(rt) {
+    // Travel-frame brush-local coords (x in radius units from the segment start).
+    // The AABB's corners are outside the sweep and provably at zero exposure
+    // (`outside_sweep`): reject them before the prefix-τ taps below spend ~10 loads
+    // apiece computing that zero.
+    let sw = segment_frame(rt);
+    if outside_sweep(sw) {
         return;
     }
-    // Travel-frame brush-local coords (x in radius units from the segment start).
-    let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
-    let rel = (p - st.a.xy) / st.b.x;
-    let dir = st.a.zw;
-    let xl = rel.x * dir.x + rel.y * dir.y;
-    let yl = -rel.x * dir.y + rel.y * dir.x;
+    let xl = sw.local.x;
+    let yl = sw.local.y;
 
     // The swept exposure — the brush's coverage integrated as it travels this
     // segment, as a difference of prefix sums (identical to the plain deposit's
-    // `swept_depth`). Overlapping segment quads add their exposures, so the
+    // `swept_depth`). Overlapping segment sweeps add their exposures, so the
     // exponential rates below compose exactly across the whole stroke.
-    let e = max(prefix_at(xl, yl, st.d.z) - prefix_at(xl - st.b.y, yl, st.d.z), 0.0);
-    if e <= 0.0 {
+    //
+    // `dpre` is that difference in *this texel's own* measure of travel and `e` is it
+    // in the tip's, which on a curved segment differ by `sw.warp` (see `sweep_at`).
+    // Both are needed: every exchange rate below is per unit tip travel, but the bake
+    // was integrated against the same prefix and its ratios must be taken in the
+    // measure it was integrated in — where the factor cancels rather than squaring.
+    let dpre = max(prefix_at(xl, yl, st.d.z) - prefix_at(xl - sw.lr, yl, st.d.z), 0.0);
+    if dpre <= 0.0 {
         return; // outside the swept footprint: the region keeps its value
     }
+    let e = dpre * sw.warp;
     // The selection's coverage here (§6.8). Fully deselected texels are exactly the
     // "keeps its value" case, so they cost nothing.
     let mdim = vec2<i32>(textureDimensions(sel_mask));
@@ -571,10 +585,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // exposure-weighted integral of the reservoir over the whole pass, so dividing
     // by the exposure recovers the mean load that pass delivered. Exact for any
     // segment length — no mid-pass sample, no length-dependent error.
-    let d_load = bake_at(bake_load, xl, yl) - bake_at(bake_load, xl - st.b.y, yl);
-    let d_latm = bake_at(bake_latm, xl, yl) - bake_at(bake_latm, xl - st.b.y, yl);
-    let d_g = bake_at(bake_g, xl, yl) - bake_at(bake_g, xl - st.b.y, yl);
-    let d_gq = bake_at(bake_gq, xl, yl) - bake_at(bake_gq, xl - st.b.y, yl);
+    let d_load = bake_at(bake_load, xl, yl) - bake_at(bake_load, xl - sw.lr, yl);
+    let d_latm = bake_at(bake_latm, xl, yl) - bake_at(bake_latm, xl - sw.lr, yl);
+    let d_g = bake_at(bake_g, xl, yl) - bake_at(bake_g, xl - sw.lr, yl);
+    let d_gq = bake_at(bake_gq, xl, yl) - bake_at(bake_gq, xl - sw.lr, yl);
     // The reload ramp (see the header): the last pickup's gain parcel is served as
     // `G·(γ − ½)` on top of the reservoir it was already added to, with
     // `γ = (t0 + s)/L` the fraction of the pickup interval elapsed when the column
@@ -583,20 +597,28 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     //     Σ G·(γ − ½)·dτ = ((t0 + xl)/L − ½)·ΔG − ΔGq/L.
     // Mean-preserving by construction — over a whole interval the ramp serves
     // exactly the stepped amount — so this changes the seams, not the stroke.
-    let rc0 = (st.e.z + xl) / st.e.w - 0.5;
-    let rc1 = 1.0 / st.e.w;
+    //
+    // `s` is elapsed *tip* travel while `xl − q` is in this texel's own measure, so
+    // the two coefficients carry the same `warp` the exposure does — and reduce to
+    // what they were on a straight sweep, where it is 1.
+    let rc0 = (st.e.z + xl * sw.warp) / st.e.w - 0.5;
+    let rc1 = sw.warp / st.e.w;
     // Height and mass are non-negative and the ramp is a fraction of the parcel
     // already inside the reservoir sum, so a total below zero can only be
     // rounding. The *latent* is not: these are colour-space channels (Oklab a/b
     // are signed — green carries a negative a), so its prefix is not monotonic and
     // clamping the difference would shear the chroma off whatever the tool is
     // carrying.
-    let inv_e = 1.0 / e;
-    let tool_h = max(d_load.x + rc0 * d_load.z - rc1 * d_g.w, 0.0) * inv_e;
-    let tool_m = max(d_load.y + rc0 * d_latm.w - rc1 * d_gq.w, 0.0) * inv_e;
+    // Divided by the prefix difference in the *same* measure the bake integrated
+    // against, not by the tip-travel exposure: these three are means of the load the
+    // pass delivered, so the curved sweep's warp cancels between numerator and
+    // denominator instead of appearing twice.
+    let inv_pre = 1.0 / dpre;
+    let tool_h = max(d_load.x + rc0 * d_load.z - rc1 * d_g.w, 0.0) * inv_pre;
+    let tool_m = max(d_load.y + rc0 * d_latm.w - rc1 * d_gq.w, 0.0) * inv_pre;
     let latm = d_latm.xyz + rc0 * d_g.xyz - rc1 * d_gq.xyz;
     let tool_op = tool_m / max(tool_h, EPS);
-    let tool_lat = latm * inv_e / max(tool_m, EPS);
+    let tool_lat = latm * inv_pre / max(tool_m, EPS);
 
     // The lift's removal: height leaves; the remaining paint's latent and per-unit
     // opacity are unchanged — the source fades because its *thickness* drops,

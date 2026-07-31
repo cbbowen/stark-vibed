@@ -28,7 +28,7 @@
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
 //             (height)) — (height, footprint coverage, unused, unused)
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, swept_depth, brush_color};
+import package::stamp_common::{VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color};
 
 @vertex
 fn vs_main(
@@ -43,22 +43,25 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
+    // Where this fragment sits in the segment's travel frame — straight or curved,
+    // the rest of this shader cannot tell the difference.
+    let sw = sweep_of(in);
     // The segment's swept optical depth — the footprint's geometric coverage
     // integrated along the travel. Everything below is built from this.
-    let tau = swept_depth(in);
+    let tau = swept_depth(in, sw);
     let cov = 1.0 - exp(-tau);
     // Per-unit opacity enters as an *absorption rate* rather than a factor, so the
     // colour target's over-blend multiplies out to exactly `exp(−op · Στ)` — the
     // stroke's coverage is the same whether the path was cut into one segment or a
     // hundred.
-    let op = 1.0 - exp(-in.op * tau);
+    let op = 1.0 - exp(-in.geom.w * tau);
 
     var out: FsOut;
     // Premultiplied by opacity: the colour target over-blends, so per-arc rates sum
     // through the overlapping segment quads to the local deposit. The colour is
     // per-fragment: colour dynamics jitter it across the footprint and along the
     // stroke (DESIGN.md §6.2).
-    out.color = vec4<f32>(brush_color(in) * op, op);
+    out.color = vec4<f32>(brush_color(in, sw) * op, op);
     // The wide scratch aux (DESIGN §6.1):
     //   .x = laid height — linear in τ, so the additive target sums to the true path
     //        integral of the footprint and a second pass builds impasto in full
@@ -69,6 +72,6 @@ fn fs_main(in: VsOut) -> FsOut {
     // never represents amount (§6.1). Height is also the *only* thing a persistent
     // tile keeps: gloss is a uniform property of paint, not a stored channel, so
     // there is nothing here that a brush could source it from.
-    out.aux = vec4<f32>(in.amount * tau, cov, 0.0, 0.0);
+    out.aux = vec4<f32>(in.geom.z * tau, cov, 0.0, 0.0);
     return out;
 }
