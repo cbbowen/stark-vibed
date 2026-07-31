@@ -17,7 +17,7 @@ pub use action::{
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
 pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
-pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState};
+pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState, LayerSite};
 pub use timeline::{
     LinearTimeline, ReplicatedTimeline, Timeline, TimelineStats, effective_actions,
 };

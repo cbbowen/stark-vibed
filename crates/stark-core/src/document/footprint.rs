@@ -55,6 +55,11 @@ impl TileRect {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Prop {
     Blend,
+    /// Whether the layer clips to the paint beneath it (GROUP_DESIGN.md §4).
+    /// Its own resource beside `Blend` rather than folded into it: the two are
+    /// applied at the same step but written by different actions, and a clip
+    /// toggle has to commute with a blend change on the same layer.
+    Clip,
     Opacity,
     Visible,
     Name,
@@ -74,9 +79,15 @@ pub enum Resource {
     Existence(LayerId),
     /// One presentation property of a layer.
     Prop(LayerId, Prop),
-    /// The relative z-order of the whole stack. One coarse resource: two
-    /// concurrent reorders genuinely don't commute, and structural edits are
-    /// rare enough that finer granularity would buy nothing.
+    /// The **shape of the whole layer tree** — every stack's order and who
+    /// carries whom (GROUP_DESIGN.md §8). One coarse resource: two concurrent
+    /// restructures genuinely don't commute, and structural edits are rare
+    /// enough that finer granularity would buy nothing.
+    ///
+    /// Nesting rides on it unchanged, which is the point. It is also what makes
+    /// the carry-your-own-ancestor case safe without tree-CRDT machinery: two
+    /// halves of a cycle conflict here, so the log's total order serializes them
+    /// and the second one to apply sees the first's result and declines.
     StackOrder,
     /// An actor's selection mask (PEER_DESIGN.md §3).
     Selection(ActorId),
@@ -183,14 +194,33 @@ pub fn footprint(action: &Action) -> Footprint {
             reads: vec![Resource::Existence(rec.layer), Resource::Selection(actor)],
             writes: vec![Resource::Paint(rec.layer, stroke_rect(rec))],
         },
-        ActionKind::AddLayer { id, above } => Footprint {
-            reads: above.iter().map(|a| Resource::Existence(*a)).collect(),
+        // Both anchors are read — the sibling to insert above and the layer whose
+        // stack to insert into — because either being absent changes where the
+        // layer lands (GROUP_DESIGN.md §8).
+        ActionKind::AddLayer { id, carrier, above } => Footprint {
+            reads: [*carrier, *above]
+                .into_iter()
+                .flatten()
+                .map(Resource::Existence)
+                .collect(),
             writes: vec![Resource::Existence(*id), Resource::StackOrder],
         },
-        ActionKind::AddMatte { id, above, .. } => Footprint {
-            reads: above.iter().map(|a| Resource::Existence(*a)).collect(),
+        ActionKind::AddMatte {
+            id, carrier, above, ..
+        } => Footprint {
+            reads: [*carrier, *above]
+                .into_iter()
+                .flatten()
+                .map(Resource::Existence)
+                .collect(),
             writes: vec![Resource::Existence(*id), Resource::StackOrder],
         },
+        // A removal takes the whole subtree, so it writes the existence of layers
+        // it does not name. `StackOrder` is the coarse resource that covers them:
+        // anything touching another layer's place in the tree conflicts here
+        // already, and a property edit on a carried layer commutes with the
+        // removal only in the sense that the restore puts the subtree back
+        // wholesale — which is exactly what `PatchOp::Present` does.
         ActionKind::RemoveLayer(id) => Footprint {
             reads: Vec::new(),
             writes: vec![
@@ -199,8 +229,8 @@ pub fn footprint(action: &Action) -> Footprint {
                 Resource::Paint(*id, TileRect::ALL),
             ],
         },
-        ActionKind::MoveLayer { id, above } => Footprint {
-            reads: [Some(*id), *above]
+        ActionKind::MoveLayer { id, carrier, above } => Footprint {
+            reads: [Some(*id), *carrier, *above]
                 .into_iter()
                 .flatten()
                 .map(Resource::Existence)
@@ -208,6 +238,7 @@ pub fn footprint(action: &Action) -> Footprint {
             writes: vec![Resource::StackOrder],
         },
         ActionKind::SetLayerBlend(id, _) => prop_write(*id, Prop::Blend),
+        ActionKind::SetLayerClip(id, _) => prop_write(*id, Prop::Clip),
         ActionKind::SetLayerOpacity(id, _) => prop_write(*id, Prop::Opacity),
         ActionKind::SetLayerVisible(id, _) => prop_write(*id, Prop::Visible),
         ActionKind::SetLayerName(id, _) => prop_write(*id, Prop::Name),
@@ -354,6 +385,7 @@ mod tests {
             1,
             ActionKind::AddLayer {
                 id: LayerId(7),
+                carrier: None,
                 above: None,
             },
         );
@@ -361,9 +393,51 @@ mod tests {
             2,
             ActionKind::MoveLayer {
                 id: LayerId(3),
+                carrier: None,
                 above: None,
             },
         );
         assert!(!commutes(&add, &mv));
+    }
+
+    /// Clipping and the blend mode are applied at the same step but are separate
+    /// resources, so setting one commutes with setting the other (GROUP_DESIGN.md
+    /// §8) — while two clip toggles on one layer do not.
+    #[test]
+    fn clip_commutes_with_blend_but_not_with_itself() {
+        let clip = act(1, ActionKind::SetLayerClip(LayerId(0), true));
+        let blend = act(
+            2,
+            ActionKind::SetLayerBlend(LayerId(0), crate::document::BlendMode::Multiply),
+        );
+        let unclip = act(2, ActionKind::SetLayerClip(LayerId(0), false));
+        let elsewhere = act(2, ActionKind::SetLayerClip(LayerId(1), true));
+        assert!(commutes(&clip, &blend));
+        assert!(commutes(&clip, &elsewhere));
+        assert!(!commutes(&clip, &unclip));
+    }
+
+    /// Carrying a layer is a `MoveLayer`, so it conflicts with every other
+    /// structural edit through `StackOrder` — which is what serializes the two
+    /// halves of a would-be cycle (GROUP_DESIGN.md §8).
+    #[test]
+    fn carrying_conflicts_with_the_reverse_carry() {
+        let a_onto_b = act(
+            1,
+            ActionKind::MoveLayer {
+                id: LayerId(0),
+                carrier: Some(LayerId(1)),
+                above: None,
+            },
+        );
+        let b_onto_a = act(
+            2,
+            ActionKind::MoveLayer {
+                id: LayerId(1),
+                carrier: Some(LayerId(0)),
+                above: None,
+            },
+        );
+        assert!(!commutes(&a_onto_b, &b_onto_a));
     }
 }

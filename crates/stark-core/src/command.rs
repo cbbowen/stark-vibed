@@ -139,11 +139,21 @@ pub enum DocCommand {
     /// [`Timeline::scrub_range`](crate::document::Timeline::scrub_range)).
     Seek(usize),
 
+    /// Add an empty paint layer to the stack carried by `carrier` (the
+    /// document's own when `None`), directly above `above` (GROUP_DESIGN.md §8).
     AddLayer {
+        carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
+    /// Remove a layer **and everything it carries** — the subtree is the group
+    /// (GROUP_DESIGN.md §2). To keep what it carried, release those layers with
+    /// [`MoveLayer`](Self::MoveLayer) first.
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
+    /// Clip a layer to the paint beneath it in its own stack, or stop
+    /// (GROUP_DESIGN.md §4). On the base of a group this clips the whole group
+    /// to what lies under the group.
+    SetLayerClip(LayerId, bool),
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
     /// Name a layer, or with `None` clear the name so it goes back to being
@@ -152,8 +162,16 @@ pub enum DocCommand {
     /// setting an empty one — so "a name is either absent or something you can
     /// read" holds however the frontend collects it.
     SetLayerName(LayerId, Option<String>),
+    /// Move a layer — with everything it carries — into the stack carried by
+    /// `carrier` (the document's own when `None`), directly above `above`.
+    ///
+    /// One command for all three gestures (GROUP_DESIGN.md §8): **reorder**
+    /// leaves `carrier` as it was, **carry** sets it to the layer being dropped
+    /// onto, **release** clears it. Asking a layer to carry its own ancestor is
+    /// declined.
     MoveLayer {
         id: LayerId,
+        carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
 
@@ -183,6 +201,7 @@ pub enum DocCommand {
     /// engine mints the id, as it does for `AddLayer`; unlike `AddLayer` it does
     /// *not* become the active layer, because a matte cannot be painted on.
     AddMatte {
+        carrier: Option<LayerId>,
         above: Option<LayerId>,
         region: MatteRegion,
         /// Straight sRGB.

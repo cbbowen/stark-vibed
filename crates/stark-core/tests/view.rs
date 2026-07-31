@@ -113,6 +113,7 @@ fn the_view_never_reaches_the_document() {
     };
     bar(&mut engine, -90.0, 40.0);
     engine.process(stark_core::command::DocCommand::AddMatte {
+        carrier: None,
         above: None,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(-100.0, -60.0),
@@ -257,6 +258,7 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
     bar(&mut engine, -90.0, 20.0);
     // …and a frame, so the matte's own inverse of the view is in the picture too.
     engine.process(DocCommand::AddMatte {
+        carrier: None,
         above: None,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(-70.0, -50.0),

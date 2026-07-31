@@ -253,8 +253,14 @@ fn concurrent_layer_adds_do_not_collide() {
     a.start_collaboration(ActorId(1));
     b.join_collaboration(&a.document_file(), ActorId(2));
 
-    a.process(DocCommand::AddLayer { above: None });
-    b.process(DocCommand::AddLayer { above: None });
+    a.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    b.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     let id_a = a.observe().active_layer;
     let id_b = b.observe().active_layer;
     assert_ne!(id_a, id_b, "concurrent adds minted the same layer id");
@@ -277,9 +283,15 @@ fn solo_layer_ids_stay_small() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     assert_eq!(engine.observe().active_layer, LayerId(1));
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     assert_eq!(engine.observe().active_layer, LayerId(2));
 }
 
@@ -294,7 +306,10 @@ fn a_remote_removal_repoints_the_active_layer() {
     a.start_collaboration(ActorId(1));
     b.join_collaboration(&a.document_file(), ActorId(2));
 
-    a.process(DocCommand::AddLayer { above: None });
+    a.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     sync(&mut a, &mut b);
     let added = a.observe().active_layer;
 

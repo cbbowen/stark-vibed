@@ -12,16 +12,16 @@ use crate::assets::{AssetId, AssetStore};
 use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, ViewCommand};
 use crate::document::{
-    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, BrushShape, CanvasBounds,
-    DocState, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline, ShapeAction, StrokeRecord,
-    Timeline, TimelineStats, Tool, effective_actions,
+    Action, ActionId, ActionKind, ActorId, ApplyCtx, BlendMode, BrushParams, BrushShape,
+    CanvasBounds, DocState, Layer, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline,
+    ShapeAction, StrokeRecord, Timeline, TimelineStats, Tool, effective_actions,
 };
 use crate::geom::{Extent2, TileCoord, ViewTransform};
 use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, Environment,
-    EnvironmentId, FillRenderer, GpuContext, MatteDraw, Offscreen, Registry, SelectionOutline,
-    SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
+    EnvironmentId, FillRenderer, GpuContext, GroupContent, MatteDraw, Offscreen, Registry,
+    SelectionOutline, SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
     TransformRenderer,
 };
 use crate::image::RgbaImage;
@@ -230,13 +230,29 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
 pub struct LayerInfo {
     pub id: LayerId,
     pub blend: crate::document::BlendMode,
+    /// Whether this layer clips to the paint beneath it (GROUP_DESIGN.md §4).
+    pub clip: bool,
     pub opacity: f32,
     pub visible: bool,
+    /// The layer carrying this one — i.e. the group it is in — or `None` for one
+    /// in the document's own stack (GROUP_DESIGN.md §2).
+    pub carrier: Option<LayerId>,
+    /// How deeply nested it is: 0 in the document's own stack, one more per level
+    /// of carrying. What a panel indents by.
+    pub depth: usize,
+    /// Whether this layer carries others, i.e. whether it is a **group**. A panel
+    /// gives one of these a disclosure triangle; nothing else distinguishes it.
+    pub is_group: bool,
+    /// Whether anything composites beneath it, so its blend mode and its clip do
+    /// anything at all (GROUP_DESIGN.md §4.3). False on exactly one row — the
+    /// bottom of the document — where a mode is the identity and a clip would
+    /// erase the layer, and where a panel therefore shows both controls inert.
+    pub has_backdrop: bool,
     /// What the author called this layer, or `None` for one that has never been
     /// named — in which case it is for the frontend to describe it, since only the
     /// frontend knows how it presents a stack (see [`Layer::name`]).
     ///
-    /// [`Layer::name`]: crate::document::Layer::name
+    /// [`Layer::name`]: Layer::name
     pub name: Option<std::sync::Arc<str>>,
     /// Set when this layer is a **matte** (FRAME_DESIGN.md §2) — a frame rather
     /// than paint. `None` for an ordinary paint layer.
@@ -686,7 +702,7 @@ impl Engine {
             // at a matte then simply draws nothing, refused identically by `apply`
             // and by the preview path.
             PeerCommand::SetActiveLayer(id) => {
-                if self.document().layer_index(id).is_some() {
+                if self.document().contains_layer(id) {
                     self.session.active_layer = id;
                 }
             }
@@ -765,13 +781,19 @@ impl Engine {
                     self.apply_document_surface();
                 }
             }
-            DocCommand::AddLayer { above } => {
+            DocCommand::AddLayer { carrier, above } => {
                 let id = self.mint_layer();
-                self.commit(ActionKind::AddLayer { id, above });
-                // A freshly added layer becomes the active painting target.
-                self.session.active_layer = id;
+                self.commit(ActionKind::AddLayer { id, carrier, above });
+                // A freshly added layer becomes the active painting target — but
+                // only if it landed. An unknown carrier adds nothing
+                // (GROUP_DESIGN.md §8), and arming an id no layer has would leave
+                // the next stroke with nowhere to go.
+                if self.document().contains_layer(id) {
+                    self.session.active_layer = id;
+                }
             }
             DocCommand::AddMatte {
+                carrier,
                 above,
                 region,
                 color,
@@ -779,6 +801,7 @@ impl Engine {
                 let id = self.mint_layer();
                 self.commit(ActionKind::AddMatte {
                     id,
+                    carrier,
                     above,
                     region,
                     color,
@@ -811,6 +834,7 @@ impl Engine {
             DocCommand::SetLayerBlend(id, blend) => {
                 self.commit(ActionKind::SetLayerBlend(id, blend))
             }
+            DocCommand::SetLayerClip(id, clip) => self.commit(ActionKind::SetLayerClip(id, clip)),
             DocCommand::SetLayerOpacity(id, opacity) => {
                 self.commit(ActionKind::SetLayerOpacity(id, opacity))
             }
@@ -827,7 +851,9 @@ impl Engine {
                     self.commit(ActionKind::SetLayerName(id, name));
                 }
             }
-            DocCommand::MoveLayer { id, above } => self.commit(ActionKind::MoveLayer { id, above }),
+            DocCommand::MoveLayer { id, carrier, above } => {
+                self.commit(ActionKind::MoveLayer { id, carrier, above })
+            }
         }
     }
 
@@ -1208,70 +1234,127 @@ impl Engine {
     }
 
     /// The compositor's draw list for `doc`, bottom-to-top: every visible layer's
-    /// tiles and mattes, each tagged with its layer opacity, cut into blend groups.
+    /// tiles and mattes, each tagged with its layer opacity, cut into blend groups
+    /// (MISSING_FEATURES §0.4, GROUP_DESIGN.md §7).
     ///
-    /// Consecutive `Normal` layers share one group — they compose correctly against
-    /// each other and against everything below under premultiplied "over", so a
-    /// document that uses no blend modes produces exactly one group and the
-    /// compositor's work is unchanged. Every other layer becomes a group of its own,
-    /// because its mode is defined against *what is underneath it*, which means it
-    /// has to be composited in isolation first (MISSING_FEATURES §0.4).
+    /// Consecutive layers that need no isolation share one `Run` — they compose
+    /// correctly against each other and against everything below under
+    /// premultiplied "over", so a document that uses no blend modes, no clipping
+    /// and no groups produces exactly one `Run` and the compositor's work is
+    /// unchanged. Anything else becomes a group of its own, because its mode and
+    /// its clip are both defined against *what is underneath it*, which means it
+    /// has to be composited in isolation first.
     ///
-    /// Within a group this is an *ordered* item list rather than a flat tile list
+    /// A layer that **carries** others is a group, and composites as a `Stack`:
+    /// its own content at the bottom, then each carried layer merging into what is
+    /// beneath it *within the group* (GROUP_DESIGN.md §2). The group as a whole
+    /// then merges outward through its own — that is, its base's — blend mode,
+    /// clip and opacity.
+    ///
+    /// Within a run this is an *ordered* item list rather than a flat tile list
     /// because a matte has to composite at its own place in the stack — a frame over
     /// the painting, a ground under it (FRAME_DESIGN.md §4.4). The compositor
     /// re-batches consecutive tiles into one instanced draw, so an all-paint document
     /// costs nothing for it.
     ///
     /// `only` restricts the list to a single layer — the eyedropper's
-    /// sample-one-layer option (MISSING_FEATURES §0.2). Sharing this with rendering
-    /// is what makes a sample come off the same stack the screen draws, hidden
-    /// layers, layer opacity and blend modes included.
+    /// sample-one-layer option (MISSING_FEATURES §0.2). It means that layer's *own*
+    /// paint: what it carries is left out, and its mode, clip and opacity go with
+    /// it, since a sample is of the paint that is there rather than of the part of
+    /// it that survives its surroundings. Sharing this with rendering is what makes
+    /// a sample come off the same stack the screen draws.
     fn composite_groups(&self, doc: &DocState, only: Option<LayerId>) -> Vec<CompositeGroup> {
+        if let Some(id) = only {
+            let Some(layer) = doc.layer(id).filter(|l| l.visible && l.opacity > 0.0) else {
+                return Vec::new();
+            };
+            let items = self.layer_items(layer);
+            return if items.is_empty() {
+                Vec::new()
+            } else {
+                vec![CompositeGroup::run(BlendMode::Normal, false, items)]
+            };
+        }
+        self.composite_stack(doc.layers.iter())
+    }
+
+    /// One stack's worth of groups — the root's, or a layer's carried stack.
+    fn composite_stack<'a>(&self, layers: impl Iterator<Item = &'a Layer>) -> Vec<CompositeGroup> {
         let mut groups: Vec<CompositeGroup> = Vec::new();
-        for layer in doc.layers.iter() {
-            if !layer.visible || layer.opacity <= 0.0 || only.is_some_and(|id| id != layer.id) {
+        for layer in layers {
+            // Hiding a layer hides what it carries: the group is the layer
+            // (GROUP_DESIGN.md §3), so its visibility is the group's.
+            if !layer.visible || layer.opacity <= 0.0 {
                 continue;
             }
-            let mut items: Vec<CompositeItem> = Vec::new();
-            match &layer.content {
-                LayerContent::Paint(tiles) => {
-                    items.extend(tiles.iter().map(|(coord, handle)| CompositeItem::Tile {
-                        coord: *coord,
-                        handle: handle.clone(),
-                        opacity: layer.opacity,
-                    }));
-                }
-                LayerContent::Matte { region, color } => {
-                    let (min, max) = region.rect();
-                    items.push(CompositeItem::Matte(MatteDraw {
-                        rect: [min.x, min.y, max.x, max.y],
-                        // sRGB in the log, working-space channels on the GPU — the
-                        // same conversion the brush colour gets, so a matte means
-                        // the same colour in an Oklab and a Mixbox document.
-                        channels: self.color_space.rgb_to_channels(*color),
-                        opacity: layer.opacity,
-                    }));
-                }
-            }
-            // An empty layer is dropped rather than given a group. For `Normal` that
-            // only saves a loop; for a blend mode it saves two render passes that
-            // provably compute the identity, which is what keeps a stack of empty
-            // glow layers free.
-            if items.is_empty() {
+            let own = self.layer_items(layer);
+            let carried = self.composite_stack(layer.carries.iter());
+            // An empty layer is dropped rather than given a group. For `Normal`
+            // that only saves a loop; for a blend mode or a clip it saves two
+            // render passes that provably compute the identity, which is what
+            // keeps a stack of empty glow layers free. A layer that carries
+            // something visible is not empty, whatever its own content.
+            if own.is_empty() && carried.is_empty() {
                 continue;
             }
-            match groups.last_mut() {
-                Some(last) if last.blend.is_normal() && layer.blend.is_normal() => {
-                    last.items.append(&mut items)
+            let mut group = if carried.is_empty() {
+                // A leaf: its opacity is already folded into its tiles, which is
+                // equivalent because tiles within a layer do not overlap.
+                CompositeGroup::run(layer.blend, layer.clip, own)
+            } else {
+                // A group: the base's own paint at the bottom of it, then what it
+                // carries. Its opacity applies to the composite, not to the
+                // members — they overlap.
+                let mut members = Vec::with_capacity(carried.len() + 1);
+                if !own.is_empty() {
+                    members.push(CompositeGroup::run(BlendMode::Normal, false, own));
                 }
-                _ => groups.push(CompositeGroup {
-                    blend: layer.blend,
-                    items,
-                }),
+                members.extend(carried);
+                CompositeGroup::stack(layer.blend, layer.clip, layer.opacity, members)
+            };
+            // Merge into the run below when neither side needs isolating — the
+            // fast path, and the reason an ordinary document is one group.
+            let merged = match groups.last_mut() {
+                Some(last) if last.is_direct() && group.is_direct() => {
+                    if let (GroupContent::Run(items), GroupContent::Run(more)) =
+                        (&mut last.content, &mut group.content)
+                    {
+                        items.append(more);
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if !merged {
+                groups.push(group);
             }
         }
         groups
+    }
+
+    /// What one layer's own content draws, without what it carries.
+    fn layer_items(&self, layer: &Layer) -> Vec<CompositeItem> {
+        match &layer.content {
+            LayerContent::Paint(tiles) => tiles
+                .iter()
+                .map(|(coord, handle)| CompositeItem::Tile {
+                    coord: *coord,
+                    handle: handle.clone(),
+                    opacity: layer.opacity,
+                })
+                .collect(),
+            LayerContent::Matte { region, color } => {
+                let (min, max) = region.rect();
+                vec![CompositeItem::Matte(MatteDraw {
+                    rect: [min.x, min.y, max.x, max.y],
+                    // sRGB in the log, working-space channels on the GPU — the
+                    // same conversion the brush colour gets, so a matte means
+                    // the same colour in an Oklab and a Mixbox document.
+                    channels: self.color_space.rgb_to_channels(*color),
+                    opacity: layer.opacity,
+                })]
+            }
+        }
     }
 
     /// Sample the canvas colour at `at` — the eyedropper (MISSING_FEATURES §0.2).
@@ -1397,8 +1480,7 @@ impl Engine {
     fn export_rect(&self, frame: Option<LayerId>) -> (crate::geom::Vec2, crate::geom::Vec2) {
         let doc = self.timeline.current();
         if let Some(id) = frame
-            && let Some(idx) = doc.layer_index(id)
-            && let Some(region) = doc.layer_at(idx).matte_region()
+            && let Some(region) = doc.layer(id).and_then(|l| l.matte_region())
         {
             return region.rect();
         }
@@ -1516,14 +1598,25 @@ impl Engine {
         // `a_selection_gesture_commits_the_same_op_it_previewed`. A stroke preview
         // changes no presentation property, so it is not consulted here at all.
         let shown = self.doc_preview.as_ref().unwrap_or(doc);
-        let layers = shown
-            .layers
-            .iter()
-            .map(|l| LayerInfo {
+        // Flattened in **composite order** — each stack bottom-to-top, a group's
+        // base before what it carries — with the tree carried alongside as `depth`
+        // and `carrier` (GROUP_DESIGN.md §6). Flat rather than nested because that
+        // is the order a panel draws in and the order the compositor draws in, and
+        // one list that means both is one thing to keep in agreement.
+        let mut layers: Vec<LayerInfo> = Vec::new();
+        let mut carriers: Vec<LayerId> = Vec::new();
+        shown.visit(&mut |l, depth| {
+            carriers.truncate(depth);
+            layers.push(LayerInfo {
                 id: l.id,
                 blend: l.blend,
+                clip: l.clip,
                 opacity: l.opacity,
                 visible: l.visible,
+                carrier: carriers.last().copied(),
+                depth,
+                is_group: l.is_group(),
+                has_backdrop: shown.has_backdrop(l.id),
                 name: l.name.clone(),
                 matte: match &l.content {
                     LayerContent::Matte { region, color } => {
@@ -1536,8 +1629,9 @@ impl Engine {
                     }
                     LayerContent::Paint(_) => None,
                 },
-            })
-            .collect();
+            });
+            carriers.push(l.id);
+        });
         ObservableState {
             can_undo: self.timeline.can_undo(),
             can_redo: self.timeline.can_redo(),
@@ -1915,22 +2009,22 @@ impl Engine {
     /// Point the active layer at something that exists, preferring a paintable one:
     /// a matte may legitimately be selected, but someone who just lost the layer they
     /// were painting on wants to keep painting, not to land on the frame.
+    /// Searches the whole tree, not just the root stack: removing a group takes
+    /// carried layers with it, and the replacement may itself be carried by
+    /// something (GROUP_DESIGN.md §2).
     fn repoint_active_layer(&mut self) {
-        if self
-            .document()
-            .layer_index(self.session.active_layer)
-            .is_some()
-        {
+        if self.document().contains_layer(self.session.active_layer) {
             return;
         }
-        if let Some(first) = self
-            .document()
-            .layers
-            .iter()
-            .find(|l| l.is_paintable())
-            .or_else(|| self.document().layers.iter().next())
-        {
-            self.session.active_layer = first.id;
+        let (mut paintable, mut any) = (None, None);
+        self.document().visit(&mut |l, _| {
+            any = any.or(Some(l.id));
+            if paintable.is_none() && l.is_paintable() {
+                paintable = Some(l.id);
+            }
+        });
+        if let Some(id) = paintable.or(any) {
+            self.session.active_layer = id;
         }
     }
 
@@ -2125,16 +2219,14 @@ impl Engine {
     /// shows the committed document, matching the commit's refusal.
     fn preview_transform(&self, layer: LayerId, affine: crate::geom::Affine2) -> Option<DocState> {
         let doc = self.timeline.current();
-        let idx = doc.layer_index(layer)?;
-        let base = doc.layer_at(idx).tiles()?;
+        let base = doc.layer(layer)?.tiles()?;
         let selection = doc.selection_of(self.actor);
         let (tiles, moved) =
             self.apply
                 .transform
                 .apply(&self.apply.pool, base, &selection, affine)?;
-        let layer = doc.layer_at(idx).with_tiles(tiles);
         Some(
-            doc.with_layer_at(idx, layer)
+            doc.map_layer(layer, |l| l.with_tiles(tiles))
                 .with_selection(self.actor, moved),
         )
     }
@@ -2233,16 +2325,12 @@ impl Engine {
                 // each move rather than accumulated, which is what keeps dragging a
                 // rectangle out from stacking a hundred glazes.
                 LiveGesture::Fill { layer, op } => {
-                    if let Some((idx, tiles)) = out
-                        .layer_index(layer)
-                        .and_then(|i| out.layer_at(i).tiles().map(|t| (i, t.clone())))
-                    {
+                    if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
                         let gate = base.selection_of(actor);
                         if let Some(filled) =
                             self.apply.fill.apply(&self.apply.pool, &tiles, &gate, &op)
                         {
-                            let record = out.layer_at(idx).with_tiles(filled);
-                            out = out.with_layer_at(idx, record);
+                            out = out.map_layer(layer, |l| l.with_tiles(filled));
                         }
                     }
                     heads.remove(&actor);
@@ -2429,10 +2517,7 @@ impl Engine {
         // A matte has no tile map, so it previews as nothing — matching the commit,
         // which refuses the stroke outright (FRAME_DESIGN.md §7). Preview and
         // commit agreeing is the §1.3 invariant, so the two refusals must line up.
-        let Some((idx, tiles_base)) = base
-            .layer_index(rec.layer)
-            .and_then(|idx| base.layer_at(idx).tiles().map(|t| (idx, t)))
-        else {
+        let Some(tiles_base) = base.layer(rec.layer).and_then(|l| l.tiles()) else {
             return (base.clone(), carry_only(spans.dist));
         };
         // The **author's** mask, exactly as the commit will read it — which is what
@@ -2450,8 +2535,7 @@ impl Engine {
             spans,
             tool,
         );
-        let layer = base.layer_at(idx).with_tiles(tiles);
-        (base.with_layer_at(idx, layer), carry)
+        (base.map_layer(rec.layer, |l| l.with_tiles(tiles)), carry)
     }
 }
 
@@ -2470,13 +2554,10 @@ fn overlay_tiles(
     if dirty.is_empty() {
         return out.clone();
     }
-    let (Some(idx), Some(src_tiles)) = (
-        out.layer_index(layer),
-        src.layer_index(layer).and_then(|i| src.layer_at(i).tiles()),
-    ) else {
+    let Some(src_tiles) = src.layer(layer).and_then(|l| l.tiles()) else {
         return out.clone();
     };
-    let Some(tiles) = out.layer_at(idx).tiles() else {
+    let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()) else {
         return out.clone();
     };
     let mut tiles = tiles.clone();
@@ -2486,8 +2567,7 @@ fn overlay_tiles(
             None => tiles = tiles.remove(coord),
         }
     }
-    let layer = out.layer_at(idx).with_tiles(tiles);
-    out.with_layer_at(idx, layer)
+    out.map_layer(layer, |l| l.with_tiles(tiles))
 }
 
 /// Build the GPU subsystems whose layout/shaders depend on the color space.

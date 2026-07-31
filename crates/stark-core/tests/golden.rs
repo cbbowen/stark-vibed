@@ -234,11 +234,15 @@ fn golden_lift_end_regression() {
     brush.drain = 0.005;
     brush.dynamics.lift = 0.95;
     brush.dynamics.deposit = 0.95;
-    stroke_with(&mut engine, brush, &[
+    stroke_with(
+        &mut engine,
+        brush,
+        &[
             Vec2::new(-200.0, 0.0),
             Vec2::new(0.0, 0.0),
             Vec2::new(30.0, 0.0),
-        ]);
+        ],
+    );
     let img = engine.render_to_image();
     assert_golden("lift_end_regression", &img, 6);
 }

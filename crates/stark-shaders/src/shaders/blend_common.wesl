@@ -75,6 +75,12 @@ const EPS: f32 = 1e-4;
 // Blend-mode codes. Mirrored by `blend_code` in `gpu/composite.rs` — this is the
 // shader ABI for `BlendMode`, so it lives next to the shader rather than in the
 // enum, which has no business knowing a `u32`.
+//
+// `MODE_NORMAL` reaches this pass only when the layer is **clipped**
+// (GROUP_DESIGN.md §4): an unclipped normal layer needs no isolation and draws
+// straight into the accumulator under fixed-function `over`, which is the fast
+// path an ordinary document never leaves.
+const MODE_NORMAL: u32 = 0u;
 const MODE_REINHARD: u32 = 1u;
 const MODE_DRAGO: u32 = 2u;
 const MODE_MULTIPLY: u32 = 3u;
@@ -86,7 +92,16 @@ struct Blend {
     // rather than hardcoded so the constant has exactly one home, on the Rust side
     // where the doc comment and the tests can reach it.
     k: f32,
-    _pad: vec2<f32>,
+    // Whether this layer is **clipped** to the paint beneath it: 0 or 1
+    // (GROUP_DESIGN.md §4). Read by `merge`, which is where the whole of clipping
+    // lives.
+    clip: u32,
+    // The group's own opacity. For a **group** this is the only place opacity can
+    // be applied: its members overlap, so fading each of them is not the same
+    // thing as fading their composite (GROUP_DESIGN.md §7). A leaf layer's
+    // opacity rides on its tiles instead (composite.wesl) and this is 1.0 —
+    // exactly, so the arithmetic below is unchanged for it.
+    opacity: f32,
 }
 
 @group(0) @binding(0) var<uniform> b: Blend;
@@ -182,6 +197,14 @@ fn drago(a: f32, bb: f32, k: f32) -> f32 {
 fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
     let x = clamp(back, vec3<f32>(0.0), vec3<f32>(1.0));
     let y = clamp(src, vec3<f32>(0.0), vec3<f32>(1.0));
+    // Normal's blend function is "the source" — it covers rather than combines.
+    // Reached only by a clipped layer, and `merge` does not read what this
+    // returns for it: taking the source *premultiplied* instead is the same
+    // number without a round trip out of the working space and back, which is
+    // what keeps a clipped layer over opaque paint identical to an unclipped one.
+    if b.mode == MODE_NORMAL {
+        return y;
+    }
     // Multiply is `T(T⁻¹(a) + T⁻¹(b))` for `T(x) = e^{-x}` — adding optical density,
     // which is what a glaze does. No helper: unlike the emissive curves there is
     // nothing to rearrange for stability, because there is nothing to be unstable.
@@ -203,12 +226,6 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
 // which is exactly the weight `Normal` gives a layer, so a mode that changes only
 // the colour changes only the colour.
 //
-// The aux is summed unconditionally, mode or no mode. Aux is *amount of paint*, and
-// paint stacks whatever its colour does — height conservation is an invariant of the
-// medium, not of the blend (§6.1). One consequence worth naming: a **matte** inside a
-// non-`Normal` group keeps the additive merge, so it will not erase the relief under
-// it the way a `Normal` matte does (FRAME_DESIGN.md §4.2). A frame that screens light
-// is not a thing anyone has asked for; if it becomes one, this is the line.
 // `blended` is `B(Cb, Cs)` un-premultiplied — the mode's opinion, before any of it
 // is weighed against how much of the two layers is actually there.
 //
@@ -227,21 +244,66 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
 // over an empty stack is bit-for-bit the `Normal` render, which `tests/blend.rs`
 // asserts to the byte — instead of exact-to-a-least-significant-bit.
 //
-// The aux is summed unconditionally, mode or no mode. Aux is *amount of paint*, and
-// paint stacks whatever its colour does — height conservation is an invariant of the
-// medium, not of the blend (DESIGN.md §6.1). One consequence worth naming: a **matte**
-// inside a non-`Normal` group keeps the additive merge, so it will not erase the
-// relief under it the way a `Normal` matte does (FRAME_DESIGN.md §4.2). A frame that
-// screens light is not a thing anyone has asked for; if it becomes one, this is the
-// line that has to learn the difference.
-fn merge(cb: vec4<f32>, cs: vec4<f32>, blended: vec3<f32>, p: vec2<i32>) -> FsOut {
+//
+// CLIPPING (GROUP_DESIGN.md §4)
+//
+// It is a deletion, not a scale — and that distinction is the design. Reading
+// "multiply by the opacity of what it composites onto" literally, as `αs ← αs·αb`,
+// invents coverage: at `αb = 0.5, αs = 1` it returns alpha 0.75, so a clipped layer
+// makes the group *more* opaque than the group is and the backdrop shows through
+// paint that should be solid. Expanding the mix instead shows the three terms this
+// function is actually made of,
+//
+//     rgb = (1−αb)·αs·Cs  +  αb·αs·B(Cb,Cs)  +  cb.rgb·(1−αs)
+//     a   =    αs·(1−αb)  +  αb·αs           +  αb·(1−αs)
+//
+// and clipping is: drop the first one from each. The alpha then collapses to
+// exactly `αb` — the backdrop's coverage is untouched by anything clipped to it,
+// which is the property that makes clipping composable and which the scaled-alpha
+// version does not have. Note the tail keeps the *unmodified* `αs`: inside the
+// backdrop's region the source still covers `αs` of it.
+//
+// The two weights below are written so that the unclipped case is **exactly** the
+// arithmetic this function performed before clipping existed — `x * 1.0` and
+// `x * keep` with `keep` an exact 1.0 — rather than something that agrees to a
+// least-significant bit. `tests/blend.rs` compares byte-for-byte, and a `mix` that
+// reconstructs 1.0 from `(1−αb) + αb` would not survive it.
+//
+// The aux is summed, mode or no mode. Aux is *amount of paint*, and paint stacks
+// whatever its colour does — height conservation is an invariant of the medium, not
+// of the blend (DESIGN.md §6.1). Clipping is the one thing that reaches it: a clipped
+// layer's colour is suppressed outside the backdrop, and height that stayed behind
+// would light as relief with no paint under it — ghost impasto (§4.2). So the source
+// height carries the same weight the source's coverage does.
+//
+// One consequence worth naming: a **matte** inside a non-`Normal` group keeps the
+// additive merge, so it will not erase the relief under it the way a `Normal` matte
+// does (FRAME_DESIGN.md §4.2). A frame that screens light is not a thing anyone has
+// asked for; if it becomes one, this is the line that has to learn the difference.
+fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, p: vec2<i32>) -> FsOut {
+    // The group's opacity, applied to its composited result — premultiplied
+    // colour and coverage scale together, which is the same thing
+    // `composite.wesl` does to a leaf layer's tiles one at a time.
+    let cs = cs_raw * b.opacity;
+    let unclipped = b.clip == 0u;
+    // The weight on source that lands where the backdrop is *not*: all of it, or
+    // none of it.
+    let outside = select(0.0, 1.0, unclipped);
+    // How much of the source survives overall — 1 unclipped, the backdrop's own
+    // coverage when clipped.
+    let keep = select(cb.a, 1.0, unclipped);
+    // `B(Cb,Cs)·αs`, premultiplied. For `Normal` that product is `cs.rgb` by
+    // definition, and taking it verbatim rather than dividing by `αs` and
+    // multiplying it back is what makes a **clipped normal layer over opaque
+    // paint** bit-identical to the fixed-function `over` an unclipped one gets.
+    let src_term = select(blended * cs.a, cs.rgb, b.mode == MODE_NORMAL);
     var out: FsOut;
     out.color = vec4<f32>(
-        mix(cs.rgb, blended * cs.a, cb.a) + cb.rgb * (1.0 - cs.a),
-        cs.a + cb.a * (1.0 - cs.a),
+        mix(cs.rgb * outside, src_term, cb.a) + cb.rgb * (1.0 - cs.a),
+        cs.a * keep + cb.a * (1.0 - cs.a),
     );
     out.aux = vec4<f32>(
-        textureLoad(back_aux, p, 0).x + textureLoad(src_aux, p, 0).x,
+        textureLoad(back_aux, p, 0).x + textureLoad(src_aux, p, 0).x * keep * b.opacity,
         0.0, 0.0, 0.0,
     );
     return out;

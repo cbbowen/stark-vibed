@@ -206,7 +206,10 @@ fn scrub_labels_span_the_whole_range() {
         return;
     };
     paint(&mut engine, RED, 20.0, STROKE_A);
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     paint(&mut engine, GREEN, 20.0, STROKE_B);
     engine.process(DocCommand::Seek(1));
 
@@ -225,7 +228,10 @@ fn a_scrub_past_a_layers_creation_leaves_the_brush_somewhere_to_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     paint(&mut engine, RED, 20.0, STROKE_A);
     engine.process(DocCommand::Seek(0));
 

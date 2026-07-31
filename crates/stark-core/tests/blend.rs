@@ -49,7 +49,10 @@ fn luma(c: [u8; 4]) -> f64 {
 
 /// Add a layer above the current one and paint `color` along `points` on it.
 fn layer_with(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     paint(engine, color, 44.0, points);
 }
 
@@ -112,7 +115,10 @@ fn empty_blend_layer_contributes_nothing() {
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let before = engine.render_to_image();
 
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Reinhard));
     let after = engine.render_to_image();
 
@@ -253,7 +259,10 @@ fn glow_stacking_is_order_independent() {
         let mut engine = engine_or_skip_blue()?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
-                engine.process(DocCommand::AddLayer { above: None });
+                engine.process(DocCommand::AddLayer {
+                    carrier: None,
+                    above: None,
+                });
             }
             paint(&mut engine, colors[i], 44.0, paths[i]);
             let id = engine.observe().active_layer;
@@ -457,7 +466,10 @@ fn glow_leaves_headroom_where_radiance_does_not() {
         let mut engine = engine_or_skip()?;
         for n in 0..5 {
             if n > 0 {
-                engine.process(DocCommand::AddLayer { above: None });
+                engine.process(DocCommand::AddLayer {
+                    carrier: None,
+                    above: None,
+                });
             }
             paint(&mut engine, bright, 50.0, H_STROKE);
             let id = engine.observe().active_layer;

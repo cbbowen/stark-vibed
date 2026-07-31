@@ -53,6 +53,7 @@ fn is_dark(c: [u8; 4]) -> bool {
 
 fn add_frame(engine: &mut Engine) {
     engine.process(DocCommand::AddMatte {
+        carrier: None,
         above: None,
         region: HOLE,
         color: BLACK,
@@ -190,6 +191,7 @@ fn matte_below_paint_does_not_cover_it() {
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
     engine.process(DocCommand::MoveLayer {
+        carrier: None,
         id: LayerId(0),
         above: Some(matte_id),
     });

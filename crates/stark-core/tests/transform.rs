@@ -398,6 +398,7 @@ fn transform_on_a_matte_layer_is_refused() {
     };
     blob(&mut engine, Vec2::new(-30.0, 0.0));
     engine.process(DocCommand::AddMatte {
+        carrier: None,
         above: None,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(-100.0, -100.0),

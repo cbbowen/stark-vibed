@@ -32,7 +32,10 @@ fn green_dominant(c: [u8; 4]) -> bool {
 /// strokes cross the canvas origin (screen center), green on top.
 fn two_layers(engine: &mut Engine) {
     paint(engine, RED, 40.0, H_STROKE);
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     // AddLayer makes the new layer active.
     assert_eq!(engine.observe().active_layer, TOP);
     paint(engine, GREEN, 40.0, V_STROKE);
@@ -93,6 +96,7 @@ fn reordering_changes_which_layer_wins() {
 
     // Move the root (red) layer above the top (green) layer.
     engine.process(DocCommand::MoveLayer {
+        carrier: None,
         id: ROOT,
         above: Some(TOP),
     });

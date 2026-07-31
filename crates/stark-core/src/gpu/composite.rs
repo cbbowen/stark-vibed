@@ -127,24 +127,137 @@ pub enum CompositeItem {
     Matte(MatteDraw),
 }
 
-/// One **blend group** of pass A: a run of the stack that composites internally
-/// under premultiplied "over", and the mode by which its result merges into
-/// everything below it (MISSING_FEATURES.md §0.4).
+/// One **blend group** of pass A: something that composites on its own, and how
+/// its result merges into everything below it (MISSING_FEATURES.md §0.4,
+/// GROUP_DESIGN.md §7).
 ///
-/// A `Normal` group is a whole run of consecutive `Normal` layers. They compose
-/// correctly against each other *and* against the accumulator with no isolation, so
-/// a document that uses no blend modes is one group and costs exactly what the flat
-/// tile list cost before blend modes existed.
-///
-/// Anything else is a single layer on its own, because a blend mode is defined
-/// against *what is underneath the layer* — which means the layer has to be
+/// A group is defined against *what is underneath it* — which means it has to be
 /// composited alone, on nothing, before it can be merged. That is the per-layer
-/// isolation DESIGN §6.3 names as the prerequisite for richer modes, and it is the
-/// same investment groups and adjustment layers need.
+/// isolation DESIGN §6.3 names as the prerequisite for richer modes, and layer
+/// groups are the same investment recursed: [`GroupContent::Stack`] is a group
+/// whose members are themselves groups.
 #[derive(Clone)]
 pub struct CompositeGroup {
     pub blend: BlendMode,
-    pub items: Vec<CompositeItem>,
+    /// Clip to the coverage of what this group composites onto (GROUP_DESIGN.md
+    /// §4). Costs the same isolation a blend mode does, and for the same reason:
+    /// the merge has to *read* the backdrop's alpha.
+    pub clip: bool,
+    /// Applied to this group's whole composited result at the merge, not to its
+    /// members one at a time.
+    ///
+    /// That distinction is only visible on a [`Stack`](GroupContent::Stack),
+    /// whose members overlap — a leaf layer's tiles do not, so its opacity rides
+    /// on [`CompositeItem::Tile`] and this stays 1.0 for it. Two granularities of
+    /// the same fact, and the cheaper one is used wherever it is equivalent.
+    pub opacity: f32,
+    pub content: GroupContent,
+}
+
+/// What a [`CompositeGroup`] is made of — and the fast path, expressed as a
+/// shape rather than as a condition inside the encoder.
+#[derive(Clone)]
+pub enum GroupContent {
+    /// A run of the stack that composites internally under plain premultiplied
+    /// "over", with **no isolation**.
+    ///
+    /// Consecutive `Normal`, unclipped layers carrying nothing compose correctly
+    /// against each other *and* against the accumulator, so a document that uses
+    /// no modes, no clipping and no groups is a single `Run` and costs exactly
+    /// what the flat tile list cost before any of this existed.
+    Run(Vec<CompositeItem>),
+    /// Members composited bottom-to-top, each merging into the one below through
+    /// its own blend mode and clip — a **layer group** (GROUP_DESIGN.md §2).
+    ///
+    /// The builder collapses a `Stack` that could not tell itself apart from a
+    /// `Run` into one, which is what makes "organization is free" structural
+    /// rather than a promise (§7 rule 2).
+    Stack(Vec<CompositeGroup>),
+}
+
+impl CompositeGroup {
+    /// A run of drawables that merges outward through `blend` and `clip`.
+    pub fn run(blend: BlendMode, clip: bool, items: Vec<CompositeItem>) -> Self {
+        Self {
+            blend,
+            clip,
+            opacity: 1.0,
+            content: GroupContent::Run(items),
+        }
+    }
+
+    /// A group of `members` — **collapsed into a plain [`Run`](GroupContent::Run)
+    /// when nothing about it could tell itself apart from one** (GROUP_DESIGN.md
+    /// §7 rule 2).
+    ///
+    /// This is where "organization is free" is made structural rather than
+    /// promised. A group that merges normally, unclipped, at full opacity, and
+    /// whose every member draws directly, changes no blending scope: its members
+    /// were composing against everything below them under `over` already, and
+    /// isolating them would produce the same pixels through two extra render
+    /// passes per member. So it produces the identical draw list to no group at
+    /// all — which is the property the golden test pins, and the answer to
+    /// "grouping my layers changed my painting".
+    ///
+    /// The condition cannot be relaxed to "the group itself is normal": a member
+    /// with a mode of its own *does* blend against a different backdrop once
+    /// isolated, and that difference is the feature (§5).
+    pub fn stack(blend: BlendMode, clip: bool, opacity: f32, members: Vec<Self>) -> Self {
+        let free = blend.is_normal() && !clip && opacity >= 1.0;
+        if free && members.iter().all(Self::is_direct) {
+            let items = members
+                .into_iter()
+                .flat_map(|m| match m.content {
+                    GroupContent::Run(items) => items,
+                    GroupContent::Stack(_) => {
+                        unreachable!("a direct group is a Run by construction")
+                    }
+                })
+                .collect();
+            return Self::run(blend, clip, items);
+        }
+        Self {
+            blend,
+            clip,
+            opacity,
+            content: GroupContent::Stack(members),
+        }
+    }
+
+    /// Whether this group can be drawn straight into the accumulator with no
+    /// isolation — the fast path. True only for an unclipped `Normal` `Run` at
+    /// full opacity.
+    pub fn is_direct(&self) -> bool {
+        self.blend.is_normal()
+            && !self.clip
+            && self.opacity >= 1.0
+            && matches!(self.content, GroupContent::Run(_))
+    }
+
+    /// How deep the isolation nests below this group: 0 for a `Run`, one more
+    /// than its deepest member for a `Stack`. The scratch stack is sized by this
+    /// (GROUP_DESIGN.md §7).
+    fn depth(&self) -> usize {
+        match &self.content {
+            GroupContent::Run(_) => 0,
+            GroupContent::Stack(members) => 1 + members.iter().map(Self::depth).max().unwrap_or(0),
+        }
+    }
+
+    /// Every drawable in this group, in composite order — the flat streams pass A
+    /// uploads (the draw loop walks the tree, but the instance buffers do not
+    /// need to).
+    fn items(&self) -> Vec<&CompositeItem> {
+        let mut out = Vec::new();
+        fn walk<'a>(g: &'a CompositeGroup, out: &mut Vec<&'a CompositeItem>) {
+            match &g.content {
+                GroupContent::Run(items) => out.extend(items.iter()),
+                GroupContent::Stack(members) => members.iter().for_each(|m| walk(m, out)),
+            }
+        }
+        walk(self, &mut out);
+        out
+    }
 }
 
 /// Mirrors `Blend` in `blend_common.wesl` (16 bytes).
@@ -153,12 +266,20 @@ pub struct CompositeGroup {
 struct BlendUniform {
     mode: u32,
     k: f32,
-    _pad: [f32; 2],
+    clip: u32,
+    /// The group's own opacity, applied to its composited result at the merge —
+    /// which is the *only* place it can be applied for a group, since its members
+    /// overlap (GROUP_DESIGN.md §7). Always 1.0 for a leaf layer, whose opacity
+    /// rides on its tiles instead.
+    opacity: f32,
 }
 
 /// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
 /// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
-/// `Normal` never reaches the pass — it is the absence of one.
+///
+/// `Normal` reaches the pass only when the group is **clipped** or carries an
+/// opacity of its own (GROUP_DESIGN.md §4); an ordinary normal layer is the
+/// absence of a pass.
 fn blend_code(mode: BlendMode) -> u32 {
     match mode {
         BlendMode::Normal => 0,
@@ -177,23 +298,20 @@ fn blend_code(mode: BlendMode) -> u32 {
 /// edge case, so the buffer holds them all and each pass binds its own offset.
 const BLEND_SLOT: u64 = 256;
 
-/// The extra viewport-sized targets a non-`Normal` layer needs (MISSING_FEATURES
-/// §0.4).
+/// The extra viewport-sized targets **one level** of isolation needs
+/// (MISSING_FEATURES.md §0.4).
 ///
-/// Two pairs, not one. `iso` is where a layer composites alone; `swap` is the other
+/// Two pairs, not one. `iso` is where a group composites alone; `swap` is the other
 /// half of a ping-pong, because the blend pass reads the accumulator and writes the
-/// merged result and a texture cannot be both. They are allocated only when a
-/// document actually contains a non-`Normal` layer — an ordinary painting never pays
-/// the ~40 MB.
-struct ScratchTargets {
-    size: Extent2,
+/// merged result and a texture cannot be both.
+struct ScratchLevel {
     swap_color: wgpu::TextureView,
     swap_aux: wgpu::TextureView,
     iso_color: wgpu::TextureView,
     iso_aux: wgpu::TextureView,
 }
 
-impl ScratchTargets {
+impl ScratchLevel {
     fn new(
         device: &wgpu::Device,
         size: Extent2,
@@ -202,17 +320,77 @@ impl ScratchTargets {
     ) -> Self {
         let make = |format, label| offscreen_view(device, size, format, label);
         Self {
-            size,
             swap_color: make(color_format, "stark blend swap color"),
             swap_aux: make(aux_format, "stark blend swap aux"),
             iso_color: make(color_format, "stark blend iso color"),
             iso_aux: make(aux_format, "stark blend iso aux"),
         }
     }
+
+    fn swap(&self) -> Targets<'_> {
+        (&self.swap_color, &self.swap_aux)
+    }
+
+    fn iso(&self) -> Targets<'_> {
+        (&self.iso_color, &self.iso_aux)
+    }
+}
+
+/// One [`ScratchLevel`] per level of group nesting the document actually reaches
+/// (GROUP_DESIGN.md §7).
+///
+/// A group's members isolate into *its* level's `iso`, which is the target the
+/// next level down composites into — so nesting costs one of these per level and
+/// not one per group. Allocated only when a document contains something that has
+/// to be isolated at all: an ordinary painting never pays the ~40 MB, and one
+/// that uses blend modes without groups pays for exactly the one level it uses.
+struct ScratchTargets {
+    size: Extent2,
+    levels: Vec<ScratchLevel>,
+}
+
+impl ScratchTargets {
+    fn new(
+        device: &wgpu::Device,
+        size: Extent2,
+        levels: usize,
+        color_format: wgpu::TextureFormat,
+        aux_format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            size,
+            levels: (0..levels)
+                .map(|_| ScratchLevel::new(device, size, color_format, aux_format))
+                .collect(),
+        }
+    }
+}
+
+/// How many [`ScratchLevel`]s composting `members` as one stack takes: none if
+/// every member draws straight into the accumulator, else one for this stack plus
+/// however many the deepest nested group below it needs.
+fn scratch_levels(members: &[CompositeGroup]) -> usize {
+    if members.iter().all(CompositeGroup::is_direct) {
+        return 0;
+    }
+    1 + members.iter().map(CompositeGroup::depth).max().unwrap_or(0)
 }
 
 /// A color + aux target pair, as pass A hands one around.
 type Targets<'a> = (&'a wgpu::TextureView, &'a wgpu::TextureView);
+
+/// How far through the frame's flat streams the encoder has drawn.
+///
+/// The instance buffers and the blend uniform's slots are flat across the whole
+/// group tree, while the drawing walks it — so the walk carries one of these and
+/// each run, each merge, takes the next entry. They are `u32` because that is what
+/// `draw` and the dynamic bind-group offset take.
+#[derive(Default)]
+struct Cursors {
+    tile: u32,
+    matte: u32,
+    blend: u32,
+}
 
 /// What one render draws, as against *where and how* it draws it (the target and the
 /// view, which stay separate parameters).
@@ -1033,7 +1211,7 @@ impl Compositor {
         let mut instances: Vec<Instance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
         let mut mattes: Vec<MatteInstance> = Vec::new();
-        for item in groups.iter().flat_map(|g| g.items.iter()) {
+        for item in groups.iter().flat_map(CompositeGroup::items) {
             match item {
                 CompositeItem::Tile {
                     coord,
@@ -1091,27 +1269,41 @@ impl Compositor {
                 .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
         }
 
-        // One uniform slot per blend group, all written before the single submit —
-        // see `BLEND_SLOT` for why they cannot share one.
-        let modes: Vec<BlendMode> = groups
-            .iter()
-            .map(|g| g.blend)
-            .filter(|b| !b.is_normal())
-            .collect();
-        if !modes.is_empty() {
-            if modes.len() > self.blend_slots {
-                self.blend_buf = alloc_blend(device, modes.len());
-                self.blend_slots = modes.len();
+        // One uniform slot per merge, all written before the single submit — see
+        // `BLEND_SLOT` for why they cannot share one.
+        //
+        // Collected by the **same recursion the encoder consumes them with**, so
+        // slot `n` is the `n`th merge either walk reaches. That is a post-order
+        // DFS: a group's members merge before the group itself does, because the
+        // group cannot be merged until it has been composited.
+        fn collect(members: &[CompositeGroup], out: &mut Vec<BlendUniform>) {
+            for m in members {
+                if m.is_direct() {
+                    continue;
+                }
+                if let GroupContent::Stack(inner) = &m.content {
+                    collect(inner, out);
+                }
+                out.push(BlendUniform {
+                    mode: blend_code(m.blend),
+                    k: DRAGO_K,
+                    clip: u32::from(m.clip),
+                    opacity: m.opacity,
+                });
             }
-            for (i, mode) in modes.iter().enumerate() {
+        }
+        let mut blends = Vec::new();
+        collect(groups, &mut blends);
+        if !blends.is_empty() {
+            if blends.len() > self.blend_slots {
+                self.blend_buf = alloc_blend(device, blends.len());
+                self.blend_slots = blends.len();
+            }
+            for (i, uniform) in blends.iter().enumerate() {
                 p.ctx.queue.write_buffer(
                     &self.blend_buf,
                     i as u64 * BLEND_SLOT,
-                    bytemuck::bytes_of(&BlendUniform {
-                        mode: blend_code(*mode),
-                        k: DRAGO_K,
-                        _pad: [0.0; 2],
-                    }),
+                    bytemuck::bytes_of(uniform),
                 );
             }
         }
@@ -1140,60 +1332,80 @@ impl Compositor {
         tile_bgs: &[wgpu::BindGroup],
         scratch: Option<&ScratchTargets>,
     ) {
-        let blends = groups.iter().filter(|g| !g.blend.is_normal()).count();
-        let swap: Targets<'_> = match scratch {
-            Some(s) => (&s.swap_color, &s.swap_aux),
-            // Unreachable while `blends == 0`, which is the only case `None` is legal
-            // in; `alt` is never read then.
-            None => target,
-        };
-        let (mut cur, mut alt) = if blends % 2 == 1 {
+        let levels: &[ScratchLevel] = scratch.map_or(&[], |s| &s.levels);
+        self.encode_stack(
+            p,
+            encoder,
+            target,
+            groups,
+            tile_bgs,
+            &mut Cursors::default(),
+            levels,
+            0,
+        );
+    }
+
+    /// Composite one stack's members into `target`, bottom-to-top — the recursion
+    /// (GROUP_DESIGN.md §7).
+    ///
+    /// Called on the document's root stack, and again on each group's members one
+    /// level deeper. `level` selects this stack's ping-pong pair and the `iso` its
+    /// members composite alone into; a member that is itself a group recurses into
+    /// that `iso` at `level + 1`, which is why nesting costs a pair-set per level
+    /// rather than per group.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_stack(
+        &self,
+        p: &CompositorPipeline,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Targets<'_>,
+        members: &[CompositeGroup],
+        tile_bgs: &[wgpu::BindGroup],
+        cursors: &mut Cursors,
+        levels: &[ScratchLevel],
+        level: usize,
+    ) {
+        let merges = members.iter().filter(|m| !m.is_direct()).count();
+        let here = levels.get(level);
+        let swap = here.map_or(target, ScratchLevel::swap);
+        let (mut cur, mut alt) = if merges % 2 == 1 {
             (swap, target)
         } else {
             (target, swap)
         };
 
-        // Whether `cur` holds a real accumulator yet. The first group's draw clears
-        // as it goes; a blend group cannot, because the pass *reads* what is under
-        // it, so a stack that opens with one needs the clear encoded on its own.
+        // Whether `cur` holds a real accumulator yet. A direct member's draw clears
+        // as it goes; a merge cannot, because the pass *reads* what is under it, so
+        // a stack that opens with one needs the clear encoded on its own.
         let mut written = false;
-        let (mut tile_i, mut matte_i) = (0u32, 0u32);
-        let mut blend_i = 0u32;
 
-        for group in groups {
-            if group.blend.is_normal() {
-                self.encode_items(
-                    p,
-                    encoder,
-                    cur,
-                    &group.items,
-                    tile_bgs,
-                    &mut tile_i,
-                    &mut matte_i,
-                    !written,
-                );
+        for member in members {
+            if member.is_direct() {
+                let GroupContent::Run(items) = &member.content else {
+                    unreachable!("a direct group is a Run by construction");
+                };
+                self.encode_items(p, encoder, cur, items, tile_bgs, cursors, !written);
                 written = true;
                 continue;
             }
-            let s = scratch.expect("blend group without scratch targets");
+            let scratch = here.expect("a merge without scratch targets");
             if !written {
                 clear_targets(encoder, cur);
                 written = true;
             }
-            // The layer, alone on nothing — the isolation the mode is defined against.
-            let iso: Targets<'_> = (&s.iso_color, &s.iso_aux);
-            self.encode_items(
-                p,
-                encoder,
-                iso,
-                &group.items,
-                tile_bgs,
-                &mut tile_i,
-                &mut matte_i,
-                true,
-            );
-            self.encode_blend(p, encoder, cur, iso, alt, blend_i);
-            blend_i += 1;
+            // The group, alone on nothing — the isolation its mode and its clip are
+            // both defined against.
+            let iso = scratch.iso();
+            match &member.content {
+                GroupContent::Run(items) => {
+                    self.encode_items(p, encoder, iso, items, tile_bgs, cursors, true)
+                }
+                GroupContent::Stack(inner) => {
+                    self.encode_stack(p, encoder, iso, inner, tile_bgs, cursors, levels, level + 1)
+                }
+            }
+            self.encode_blend(p, encoder, cur, iso, alt, cursors.blend);
+            cursors.blend += 1;
             // `alt` now holds the merged stack and becomes the accumulator; what was
             // `cur` is stale, and the next blend pass overwrites all of it.
             std::mem::swap(&mut cur, &mut alt);
@@ -1204,12 +1416,12 @@ impl Compositor {
         }
     }
 
-    /// Draw one group's items into `into`, in stack order, switching pipelines where
+    /// Draw one run's items into `into`, in stack order, switching pipelines where
     /// a matte sits between runs of tiles. Both pipelines share group 0 (the view
     /// uniform), so only the vertex buffer and pipeline change.
     ///
-    /// The instance indices are `&mut` because the streams are flat across every
-    /// group: a group draws the next run of them and hands the cursor on.
+    /// The cursors are `&mut` because the streams are flat across the whole tree:
+    /// a run draws the next stretch of them and hands the cursor on.
     #[allow(clippy::too_many_arguments)]
     fn encode_items(
         &self,
@@ -1218,10 +1430,14 @@ impl Compositor {
         into: Targets<'_>,
         items: &[CompositeItem],
         tile_bgs: &[wgpu::BindGroup],
-        tile_i: &mut u32,
-        matte_i: &mut u32,
+        cursors: &mut Cursors,
         clear: bool,
     ) {
+        let Cursors {
+            tile: tile_i,
+            matte: matte_i,
+            ..
+        } = cursors;
         let load = if clear {
             wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
         } else {
@@ -1333,13 +1549,22 @@ impl Compositor {
         size: Extent2,
         groups: &[CompositeGroup],
     ) -> bool {
-        if groups.iter().all(|g| g.blend.is_normal()) {
+        let levels = scratch_levels(groups);
+        if levels == 0 {
             return false;
         }
-        if self.scratch.as_ref().is_none_or(|s| s.size != size) {
+        // Grown to the deepest nesting the document has *reached*, and never
+        // shrunk within a size: a group opened and closed again over and over
+        // would otherwise reallocate two viewport-sized pairs each time.
+        if self
+            .scratch
+            .as_ref()
+            .is_none_or(|s| s.size != size || s.levels.len() < levels)
+        {
             self.scratch = Some(ScratchTargets::new(
                 &p.ctx.device,
                 size,
+                levels,
                 p.color_format,
                 p.aux_format,
             ));
@@ -1379,8 +1604,15 @@ impl Compositor {
         // trade that for reallocating the *window* twice a frame (see
         // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
         // eyedropper would report a colour the screen never showed.
-        let scratch = groups.iter().any(|g| !g.blend.is_normal()).then(|| {
-            ScratchTargets::new(&p.ctx.device, view.viewport, p.color_format, p.aux_format)
+        let levels = scratch_levels(groups);
+        let scratch = (levels > 0).then(|| {
+            ScratchTargets::new(
+                &p.ctx.device,
+                view.viewport,
+                levels,
+                p.color_format,
+                p.aux_format,
+            )
         });
         let mut encoder = p
             .ctx

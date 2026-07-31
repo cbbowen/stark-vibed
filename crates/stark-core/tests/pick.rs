@@ -128,7 +128,10 @@ fn one_layer_ignores_the_layers_over_it() {
     let under = engine.observe().active_layer;
     paint(&mut engine, RED, 24.0, BAR);
 
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     let over = engine.observe().active_layer;
     assert_ne!(over, under, "AddLayer should arm the new layer");
     paint(&mut engine, BLUE, 24.0, BAR);
@@ -176,7 +179,10 @@ fn hidden_layers_are_not_sampled() {
     };
     let under = engine.observe().active_layer;
     paint(&mut engine, RED, 24.0, BAR);
-    engine.process(DocCommand::AddLayer { above: None });
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     let over = engine.observe().active_layer;
     paint(&mut engine, BLUE, 24.0, BAR);
 

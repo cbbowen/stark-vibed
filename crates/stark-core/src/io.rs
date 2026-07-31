@@ -31,7 +31,16 @@ use crate::gpu::SurfaceId;
 /// Container magic; identifies a Stark document.
 const MAGIC: &[u8; 8] = b"STARKDOC";
 /// On-disk schema version. Bump when the serialized layout changes.
-const WIRE_VERSION: u32 = 1;
+///
+/// **2** — layer groups (GROUP_DESIGN.md). `AddLayer`, `AddMatte` and `MoveLayer`
+/// each grew a `carrier` field, and postcard writes a struct variant's fields in
+/// order with no names and no length, so a version-1 file's actions no longer
+/// decode. Every earlier schema change could be *appended* — a new enum variant
+/// takes the next index and leaves the old ones where they were — but a field in
+/// the middle of an existing variant cannot, and inventing a second `MoveLayer`
+/// to preserve the layout would have put the duplication this design exists to
+/// remove straight back into the log.
+const WIRE_VERSION: u32 = 2;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (DESIGN.md §8). Replay is bit-exact within a build; shader/algorithm changes
@@ -145,6 +154,7 @@ mod tests {
             },
             kind: ActionKind::AddLayer {
                 id: LayerId(2),
+                carrier: None,
                 above: None,
             },
         }])

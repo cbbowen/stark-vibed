@@ -167,12 +167,30 @@ pipeline.
 
 ## Tier 1 — the workflow multipliers that define the competitors
 
-### 1.1 Layer masks, clipping masks, alpha lock, groups
+### 1.1 Layer masks and alpha lock — groups and clipping **built**
 
 The non-destructive workflow, and we are closer than it looks: `Selection` is
 *already* a sparse `R8Unorm` tile map with aprons and a soft-set algebra — which
-is exactly a layer mask. Alpha lock and clip-to-below are per-layer flags read
-by the compositor. Groups need the same per-layer isolation as blend modes.
+is exactly a layer mask. Alpha lock is a per-layer flag read by the compositor.
+
+**Groups and clipping shipped as one feature**
+([GROUP_DESIGN.md](GROUP_DESIGN.md)): a layer carries layers, and a layer's blend
+mode, clip and opacity describe how it *together with what it carries* meets what
+is beneath. That spends the blend-mode slot at the bottom of a stack — which
+`merge()` proves cannot express anything — on the group, so there is no group
+blend mode to duplicate and no pass-through to invent, and "clip to the layer
+below" becomes the same gesture as "group these two" instead of a second
+mechanism that looks nothing like the first. Clipping inherits the alpha of the
+whole stack below it *within its group*, not of the nearest unclipped layer, so
+there is no chain to trace and no arrow pointing at one layer while meaning
+several. It reuses the per-layer isolation blend modes already had, recursed —
+one scratch pair-set per level of nesting actually reached.
+
+The cost, stated rather than hidden: a group is always isolated, so a blend mode
+*inside* one blends against the group. This family being conjugations of addition
+is what makes that survivable — regrouping layers that share a mode is exactly
+invariant, and multiply is invariant even at partial coverage — and
+`tests/groups.rs` pins both halves, the invariance and the rescoping.
 
 Layers also lack names, thumbnails, duplicate, and merge/flatten. Merge is
 load-bearing twice: it is a workflow staple *and* it is how an append-only
@@ -342,8 +360,8 @@ Naming these is part of not becoming Photoshop.
 1. **Now** — framing/export, save/open, ~~eyedropper~~, ~~blend modes~~, ~~fill~~,
    gradient. The difference between a tech demo and something a finished piece comes
    out of.
-2. **Next** — transform (engine done; the gesture UI remains); layer masks /
-   clipping / alpha lock / merge; view mirror and rotate.
+2. **Next** — transform (engine done; the gesture UI remains); ~~groups and
+   clipping~~; layer masks / alpha lock / merge; view mirror and rotate.
 3. **Then, in parallel** — brush parameter mapping and the brush library
    (deepens what is already the strongest asset); symmetry and guides (highest
    value per line of code on this list).

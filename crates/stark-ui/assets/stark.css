@@ -806,6 +806,49 @@
   background: #2f6f4f;
 }
 
+/* --- groups and clipping (GROUP_DESIGN.md §6) ---
+   Two marks for two facts, and they must not be confusable. A row's *indent* is
+   membership: this layer is carried by the one below it. The *rail* down its left
+   edge is clipping: this layer shows only where there is paint under it. A Photoshop
+   refugee arrives believing the indent means clipping, so the rail has to be
+   something the indent visibly is not — a coloured edge rather than more space. */
+.layer-row.clipped {
+  border-left: 3px solid #6f8fd0;
+  padding-left: 3px;
+}
+
+/* The frame's dashed border already claims the whole edge, so a clipped matte gets
+   the rail's colour on its existing border rather than a second one beside it. */
+.layer-row.matte.clipped {
+  border-left: 3px solid #6f8fd0;
+}
+
+/* The disclosure triangle on a layer that carries others. The empty span every
+   other row gets is the same width, which is what keeps the visibility checkboxes
+   in one column down the panel however deep the tree goes. */
+.layer-fold {
+  width: 12px;
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: #ffffffa6;
+  cursor: pointer;
+}
+
+/* The clip toggle sits with the sliders, as one more property of whatever is
+   selected — not on every row. Its label is a full sentence rather than the word
+   "Clip", because the word is the thing nobody guesses the meaning of. */
+.layer-clip-row {
+  margin-bottom: 8px;
+}
+
+.layer-clip-label {
+  margin-bottom: 0;
+}
+
 .layer-name {
   flex: 1;
   min-width: 0;

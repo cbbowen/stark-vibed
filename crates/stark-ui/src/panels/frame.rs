@@ -149,6 +149,7 @@ pub fn AddFrameButton() -> Element {
             onclick: move |_| {
                 let (min, max) = default_rect(state);
                 dispatch(state, DocCommand::AddMatte {
+                    carrier: None,
                     above: None,
                     region: MatteRegion::OutsideRect { min, max },
                     color: DEFAULT_MATTE,

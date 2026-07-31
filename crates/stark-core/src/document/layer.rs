@@ -1,12 +1,17 @@
-//! Layers (DESIGN.md §5.1, FRAME_DESIGN.md §2). A layer is either a sparse,
-//! persistent map of painted tiles or a **matte** — a procedural region filled
-//! with a flat colour — plus its presentation properties. A layer stacks with
-//! premultiplied "over" unless its [`BlendMode`] says otherwise, in which case the
-//! compositor isolates it and merges it through the mode (MISSING_FEATURES.md §0.4).
+//! Layers (DESIGN.md §5.1, FRAME_DESIGN.md §2, GROUP_DESIGN.md). A layer is
+//! either a sparse, persistent map of painted tiles or a **matte** — a
+//! procedural region filled with a flat colour — plus its presentation
+//! properties, plus the layers it **carries**.
+//!
+//! A layer stacks with premultiplied "over" unless its [`BlendMode`] says
+//! otherwise or it is [`clip`](Layer::clip)ped, in which case the compositor
+//! isolates it and merges it through the mode (MISSING_FEATURES.md §0.4). A
+//! layer that carries others is a **group** — there is no separate group type —
+//! and the same isolation, recursed, is what composites it (GROUP_DESIGN.md §7).
 
 use std::sync::Arc;
 
-use rpds::HashTrieMap;
+use rpds::{HashTrieMap, Vector};
 use serde::{Deserialize, Serialize};
 
 use super::action::ActorId;
@@ -296,11 +301,48 @@ pub enum LayerContent {
     },
 }
 
-/// A single layer: its content plus its presentation properties.
+/// A single layer: its content, what it carries, and its presentation
+/// properties.
+///
+/// **A group is a layer with a non-empty [`carries`](Self::carries)**, and there
+/// is no other kind (GROUP_DESIGN.md §2). One sentence covers the whole model:
+/// a layer's [`blend`](Self::blend), [`clip`](Self::clip) and
+/// [`opacity`](Self::opacity) describe how it *together with everything it
+/// carries* meets what lies beneath it.
+///
+/// That splits the properties in two, and the split is why there is no separate
+/// group object to own a second copy of anything:
+///
+/// - **Relational** — `blend` and `clip`, which are about the backdrop. At the
+///   bottom of a stack a layer has no backdrop *inside* its group, so these are
+///   vacuous there and are free to describe the group's own merge outward. That
+///   is not an overload: `merge()` with an empty backdrop is provably the
+///   `Normal` result, so the slot could not express anything to begin with
+///   (`blend_common.wesl`, and `tests/blend.rs` pins it to the byte).
+/// - **Intrinsic** — `opacity`, `visible`, `name`. The base's opacity does real
+///   work, so it cannot be borrowed; fading a layer fades what it carries with
+///   it, as one unit, which is what fading a group should do.
 #[derive(Clone)]
 pub struct Layer {
     pub id: LayerId,
     pub blend: BlendMode,
+    /// Clip to the paint beneath — the clipping mask, restated (GROUP_DESIGN.md
+    /// §4).
+    ///
+    /// The layer exists only where there is paint under it **in its own stack**:
+    /// it inherits the alpha of everything composited below it there, not of
+    /// "the nearest layer that is not itself clipped". There is no chain to
+    /// trace, because the group is what bounds *below* — clipping to exactly one
+    /// layer is that layer carrying this one, which is the same single gesture
+    /// every other app spells with a separate mode.
+    ///
+    /// Applied at the same step as [`blend`](Self::blend) and, like it, pointing
+    /// **outward**: on the base of a group this clips the whole composited group
+    /// to what lies beneath the group.
+    ///
+    /// Not a scale on the source's alpha — see `blend_common.wesl` for why that
+    /// is the wrong operation and what the right one is.
+    pub clip: bool,
     /// Layer opacity in [0, 1].
     pub opacity: f32,
     /// Whether the layer contributes to the composite.
@@ -318,18 +360,32 @@ pub struct Layer {
     /// every `observe()` projects it — and never edited in place.
     pub name: Option<Arc<str>>,
     pub content: LayerContent,
+    /// The layers carried on this one, **bottom-to-top** — the group this layer
+    /// is the base of (GROUP_DESIGN.md §2). Empty for a layer that carries
+    /// nothing, which is every layer until one is dropped onto it.
+    ///
+    /// They composite *over* this layer's own content and beneath whatever comes
+    /// after the group, so this order is render order and panel order alike: the
+    /// panel draws them indented **above** the base, which is where they land.
+    ///
+    /// A `Vector` for the same reason the document's stack is one — the whole
+    /// tree is cloned per document version, so every level of it has to be
+    /// persistent (DESIGN.md §5.1).
+    pub carries: Vector<Layer>,
 }
 
 impl Layer {
-    /// An empty paint layer.
+    /// An empty paint layer, carrying nothing.
     pub fn new(id: LayerId) -> Self {
         Self {
             id,
             blend: BlendMode::Normal,
+            clip: false,
             opacity: 1.0,
             visible: true,
             name: None,
             content: LayerContent::Paint(HashTrieMap::new()),
+            carries: Vector::new(),
         }
     }
 
@@ -376,5 +432,43 @@ impl Layer {
             },
             LayerContent::Matte { .. } => self.clone(),
         }
+    }
+
+    /// Whether this layer carries any others — i.e. whether it is a **group**
+    /// (GROUP_DESIGN.md §2). There is no other kind of group, so this is the
+    /// whole test.
+    pub fn is_group(&self) -> bool {
+        !self.carries.is_empty()
+    }
+
+    /// The same layer carrying `carries` instead.
+    pub fn with_carries(&self, carries: Vector<Layer>) -> Self {
+        Self {
+            carries,
+            ..self.clone()
+        }
+    }
+
+    /// This layer and everything it carries, in **composite order**: the base
+    /// first, then each carried subtree in turn. `depth` counts levels below
+    /// this one, so the receiver is always visited at `0`.
+    ///
+    /// One traversal for every reader — the projection, the bounds, the draw
+    /// list, the peers' layer index — so "what order does a group composite in"
+    /// is answered in one place instead of once per caller with a chance to
+    /// disagree.
+    pub fn visit(&self, depth: usize, f: &mut impl FnMut(&Layer, usize)) {
+        f(self, depth);
+        for l in self.carries.iter() {
+            l.visit(depth + 1, f);
+        }
+    }
+
+    /// The layer with this id within this subtree, the receiver included.
+    pub fn find(&self, id: LayerId) -> Option<&Layer> {
+        if self.id == id {
+            return Some(self);
+        }
+        self.carries.iter().find_map(|l| l.find(id))
     }
 }

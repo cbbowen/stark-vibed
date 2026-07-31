@@ -84,7 +84,10 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
     let mut under = engine_or_skip().expect("engine");
     stroke_with(&mut under, soft(RED, 120.0), UNDER);
     let under_alone = under.render_to_image();
-    under.process(DocCommand::AddLayer { above: None });
+    under.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     stroke_with(&mut under, soft(BLUE, 60.0), OVER);
     let stacked = under.render_to_image();
 
@@ -149,7 +152,10 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
             ],
         );
         // A second layer, multiplied over the first.
-        engine.process(DocCommand::AddLayer { above: None });
+        engine.process(DocCommand::AddLayer {
+            carrier: None,
+            above: None,
+        });
         let top = engine.observe().active_layer;
         engine.process(DocCommand::SetLayerBlend(top, BlendMode::Multiply));
         paint(
@@ -159,6 +165,7 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
             &[Vec2::new(-80.0, 40.0), Vec2::new(90.0, -30.0)],
         );
         engine.process(DocCommand::AddMatte {
+            carrier: None,
             above: None,
             region: MatteRegion::OutsideRect {
                 min: -HALF,
@@ -240,6 +247,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
             ],
         );
         engine.process(DocCommand::AddMatte {
+            carrier: None,
             above: None,
             region: MatteRegion::OutsideRect {
                 min: Vec2::new(-80.0, -60.0),

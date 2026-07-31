@@ -203,7 +203,10 @@ fn undo_splices_past_another_layers_stroke() {
     sync(&mut a, &mut b);
     // B adds its own layer (which becomes B's active layer) and paints a
     // crossing stroke there.
-    b.process(DocCommand::AddLayer { above: None });
+    b.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
     paint(
         &mut b,
         GREEN,

@@ -10,6 +10,7 @@
 //! touched (see [`tile_diff`]). Restored tile values are `Arc` handles shared
 //! with `previous`, so removal re-renders nothing.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rpds::Vector;
@@ -18,7 +19,7 @@ use super::action::{Action, ActionKind, ActorId};
 use super::footprint::{Resource, TileRect, footprint};
 use super::layer::{BlendMode, Layer, LayerId, MatteRegion};
 use super::selection::Selection;
-use super::state::DocState;
+use super::state::{DocState, LayerSite};
 use crate::geom::TileCoord;
 use crate::gpu::SurfaceId;
 use crate::gpu::tile::TilePairHandle;
@@ -35,14 +36,25 @@ enum PatchOp {
     },
     /// The layer did not exist (undoes an add).
     Absent(LayerId),
-    /// The layer existed, as this record, at this stack index (undoes a remove).
+    /// The layer existed, as this record, at this place in the tree (undoes a
+    /// remove). The record carries whatever it carried — a `Layer` owns its
+    /// subtree — so removing a group and undoing it restores the group
+    /// (GROUP_DESIGN.md §8).
     Present {
-        index: usize,
+        site: LayerSite,
         layer: Layer,
     },
-    /// The stack sat in this order (undoes a move).
-    Order(Vec<LayerId>),
+    /// The layer tree had this **shape** (undoes a move): every layer in
+    /// composite order, each with the layer carrying it.
+    ///
+    /// One op restoring the whole structure, exactly as the flat order it
+    /// replaces did. It has to be the whole shape rather than a per-layer
+    /// carrier, because a move can change several layers' relative positions at
+    /// once and `StackOrder` is the single coarse resource that covers all of
+    /// them (`footprint.rs`).
+    Structure(Vec<(LayerId, Option<LayerId>)>),
     Blend(LayerId, BlendMode),
+    Clip(LayerId, bool),
     Opacity(LayerId, f32),
     Visible(LayerId, bool),
     Name(LayerId, Option<Arc<str>>),
@@ -90,42 +102,46 @@ impl StatePatch {
             }
             ActionKind::AddLayer { id, .. }
             | ActionKind::AddMatte { id, .. }
-            | ActionKind::RemoveLayer(id) => match (to.layer_index(*id), from.layer_index(*id)) {
-                (None, Some(_)) => ops.push(PatchOp::Absent(*id)),
-                (Some(index), None) => ops.push(PatchOp::Present {
-                    index,
-                    layer: to.layer_at(index).clone(),
-                }),
-                // Present or absent on both sides: the action no-oped.
-                _ => {}
-            },
-            ActionKind::MoveLayer { .. } => {
-                ops.push(PatchOp::Order(to.layers.iter().map(|l| l.id).collect()));
+            | ActionKind::RemoveLayer(id) => {
+                match (to.site_of(*id), from.contains_layer(*id)) {
+                    (None, true) => ops.push(PatchOp::Absent(*id)),
+                    (Some(site), false) => ops.push(PatchOp::Present {
+                        site,
+                        layer: to.layer(*id).expect("sited layer exists").clone(),
+                    }),
+                    // Present or absent on both sides: the action no-oped.
+                    _ => {}
+                }
             }
+            ActionKind::MoveLayer { .. } => ops.push(PatchOp::Structure(structure(to))),
             ActionKind::SetLayerBlend(id, _) => {
-                if let Some(i) = to.layer_index(*id) {
-                    ops.push(PatchOp::Blend(*id, to.layer_at(i).blend));
+                if let Some(l) = to.layer(*id) {
+                    ops.push(PatchOp::Blend(*id, l.blend));
+                }
+            }
+            ActionKind::SetLayerClip(id, _) => {
+                if let Some(l) = to.layer(*id) {
+                    ops.push(PatchOp::Clip(*id, l.clip));
                 }
             }
             ActionKind::SetLayerOpacity(id, _) => {
-                if let Some(i) = to.layer_index(*id) {
-                    ops.push(PatchOp::Opacity(*id, to.layer_at(i).opacity));
+                if let Some(l) = to.layer(*id) {
+                    ops.push(PatchOp::Opacity(*id, l.opacity));
                 }
             }
             ActionKind::SetLayerVisible(id, _) => {
-                if let Some(i) = to.layer_index(*id) {
-                    ops.push(PatchOp::Visible(*id, to.layer_at(i).visible));
+                if let Some(l) = to.layer(*id) {
+                    ops.push(PatchOp::Visible(*id, l.visible));
                 }
             }
             ActionKind::SetLayerName(id, _) => {
-                if let Some(i) = to.layer_index(*id) {
-                    ops.push(PatchOp::Name(*id, to.layer_at(i).name.clone()));
+                if let Some(l) = to.layer(*id) {
+                    ops.push(PatchOp::Name(*id, l.name.clone()));
                 }
             }
             ActionKind::SetMatteRect(id, _, _) | ActionKind::SetMatteColor(id, _) => {
-                if let Some(i) = to.layer_index(*id)
-                    && let super::layer::LayerContent::Matte { region, color } =
-                        &to.layer_at(i).content
+                if let Some(l) = to.layer(*id)
+                    && let super::layer::LayerContent::Matte { region, color } = &l.content
                 {
                     ops.push(PatchOp::Matte(*id, *region, *color));
                 }
@@ -146,57 +162,25 @@ impl StatePatch {
         let mut state = state.clone();
         for op in &self.ops {
             state = match op {
-                PatchOp::Tiles { layer, tiles } => match state.layer_index(*layer) {
-                    Some(index) => {
-                        let record = state.layer_at(index);
-                        match record.tiles() {
-                            Some(map) => {
-                                let mut map = map.clone();
-                                for (coord, handle) in tiles {
-                                    map = match handle {
-                                        Some(handle) => map.insert(*coord, handle.clone()),
-                                        None => map.remove(coord),
-                                    };
-                                }
-                                let record = record.with_tiles(map);
-                                state.with_layer_at(index, record)
+                PatchOp::Tiles { layer, tiles } => {
+                    match state.layer(*layer).and_then(|l| l.tiles()).cloned() {
+                        Some(mut map) => {
+                            for (coord, handle) in tiles {
+                                map = match handle {
+                                    Some(handle) => map.insert(*coord, handle.clone()),
+                                    None => map.remove(coord),
+                                };
                             }
-                            None => state,
+                            state.map_layer(*layer, |l| l.with_tiles(map))
                         }
+                        None => state,
                     }
-                    None => state,
-                },
+                }
                 PatchOp::Absent(id) => state.remove_layer(*id),
-                PatchOp::Present { index, layer } => {
-                    let mut layers = Vector::new();
-                    for (i, l) in state.layers.iter().enumerate() {
-                        if i == *index {
-                            layers = layers.push_back(layer.clone());
-                        }
-                        layers = layers.push_back(l.clone());
-                    }
-                    if *index >= state.layers.len() {
-                        layers = layers.push_back(layer.clone());
-                    }
-                    state.with_layers(layers)
-                }
-                PatchOp::Order(ids) => {
-                    let mut layers = Vector::new();
-                    for id in ids {
-                        if let Some(i) = state.layer_index(*id) {
-                            layers = layers.push_back(state.layer_at(i).clone());
-                        }
-                    }
-                    // Anything the order predates keeps stacking on top; with a
-                    // commuting suffix (no structural edits) this arm is empty.
-                    for l in state.layers.iter() {
-                        if !ids.contains(&l.id) {
-                            layers = layers.push_back(l.clone());
-                        }
-                    }
-                    state.with_layers(layers)
-                }
+                PatchOp::Present { site, layer } => state.restore_layer(site, layer.clone()),
+                PatchOp::Structure(shape) => restore_structure(&state, shape),
                 PatchOp::Blend(id, v) => state.set_layer_blend(*id, *v),
+                PatchOp::Clip(id, v) => state.set_layer_clip(*id, *v),
                 PatchOp::Opacity(id, v) => state.set_layer_opacity(*id, *v),
                 PatchOp::Visible(id, v) => state.set_layer_visible(*id, *v),
                 PatchOp::Name(id, v) => state.set_layer_name(*id, v.clone()),
@@ -215,6 +199,70 @@ impl StatePatch {
         }
         state
     }
+}
+
+/// The shape of `state`'s layer tree: every layer in composite order, paired
+/// with the layer carrying it (GROUP_DESIGN.md §8).
+///
+/// Composite order matters — a carrier is always recorded before anything it
+/// carries — so [`restore_structure`] can rebuild top-down without a sort.
+fn structure(state: &DocState) -> Vec<(LayerId, Option<LayerId>)> {
+    let mut out = Vec::new();
+    let mut stack: Vec<Option<LayerId>> = Vec::new();
+    state.visit(&mut |layer, depth| {
+        stack.truncate(depth);
+        out.push((layer.id, stack.last().copied().flatten()));
+        stack.push(Some(layer.id));
+    });
+    out
+}
+
+/// `state` rebuilt into `shape`, keeping each layer's **current record** — its
+/// tiles, its name, its opacity.
+///
+/// That is the whole point of restoring a shape rather than a snapshot: the two
+/// states this runs between are not adjacent, and a commuting action in the gap
+/// may have painted on a layer or renamed it. Only the tree's shape belongs to
+/// the move being undone, so only the shape is put back.
+fn restore_structure(state: &DocState, shape: &[(LayerId, Option<LayerId>)]) -> DocState {
+    // Every layer, stripped of what it carries — the tree is rebuilt from
+    // `shape`, so the old nesting must not travel along inside the records.
+    let mut records: HashMap<LayerId, Layer> = HashMap::new();
+    state.visit(&mut |l, _| {
+        records.insert(l.id, l.with_carries(Vector::new()));
+    });
+
+    let mut children: HashMap<Option<LayerId>, Vec<LayerId>> = HashMap::new();
+    let mut placed: HashSet<LayerId> = HashSet::new();
+    for (id, carrier) in shape {
+        // `placed` also guards the rebuild against a shape that names a layer
+        // twice, which would otherwise recurse forever.
+        if records.contains_key(id) && placed.insert(*id) {
+            children.entry(*carrier).or_default().push(*id);
+        }
+    }
+    // Anything the shape predates keeps stacking on top of the root. With a
+    // commuting suffix — no structural edits, which is what `StackOrder`
+    // guarantees — this arm is empty.
+    state.visit(&mut |l, _| {
+        if !placed.contains(&l.id) {
+            children.entry(None).or_default().push(l.id);
+        }
+    });
+
+    fn build(
+        carrier: Option<LayerId>,
+        children: &HashMap<Option<LayerId>, Vec<LayerId>>,
+        records: &HashMap<LayerId, Layer>,
+    ) -> Vector<Layer> {
+        let mut out = Vector::new();
+        for id in children.get(&carrier).into_iter().flatten() {
+            let record = records[id].with_carries(build(Some(*id), children, records));
+            out = out.push_back(record);
+        }
+        out
+    }
+    state.with_layers(build(None, &children, &records))
 }
 
 /// The tile rect an action's footprint claims on `layer` — the region the
@@ -246,11 +294,7 @@ fn tile_diff(
     from: &DocState,
     ops: &mut Vec<PatchOp>,
 ) {
-    let tiles_of = |state: &DocState| {
-        state
-            .layer_index(layer)
-            .and_then(|i| state.layer_at(i).tiles().cloned())
-    };
+    let tiles_of = |state: &DocState| state.layer(layer).and_then(|l| l.tiles()).cloned();
     let (Some(to_tiles), Some(from_tiles)) = (tiles_of(to), tiles_of(from)) else {
         // Absent layer or matte on either side: the action no-oped on paint.
         return;

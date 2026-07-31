@@ -30,6 +30,7 @@ const WIDE: &[Vec2] = &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)];
 
 fn add_frame(engine: &mut Engine) -> LayerId {
     engine.process(DocCommand::AddMatte {
+        carrier: None,
         above: None,
         region: FRAME,
         color: BLACK,

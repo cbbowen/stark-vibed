@@ -337,14 +337,30 @@ pub enum ActionKind {
     CommitStroke(StrokeRecord),
     AddLayer {
         id: LayerId,
+        /// Whose carried stack to add it to — `None` for the document's own
+        /// (GROUP_DESIGN.md §8).
+        carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
+    /// Remove a layer **and everything it carries**: the subtree is the group
+    /// (GROUP_DESIGN.md §2). Promoting what it carried instead is a
+    /// [`MoveLayer`](Self::MoveLayer), which is what "release" is spelled with.
     RemoveLayer(LayerId),
     SetLayerBlend(LayerId, BlendMode),
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
+    /// Move a layer — with everything it carries — into the stack carried by
+    /// `carrier` (the document's own when `None`), directly above `above`.
+    ///
+    /// The **only** structural move, covering all three gestures at once
+    /// (GROUP_DESIGN.md §8): reorder is `carrier` unchanged, *carry* is `carrier`
+    /// set, *release* is `carrier` cleared. Declined deterministically when it
+    /// would make a layer carry its own ancestor — see
+    /// [`DocState::move_layer`](super::state::DocState::move_layer) for why the
+    /// log's total order is all the cycle protection this needs.
     MoveLayer {
         id: LayerId,
+        carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
     /// Undo **as a logged action** (DESIGN.md §5.4, §12.3): a fact peers can see
@@ -383,6 +399,7 @@ pub enum ActionKind {
     /// — which encodes an enum by variant *index* — keeps decoding older files.
     AddMatte {
         id: LayerId,
+        carrier: Option<LayerId>,
         above: Option<LayerId>,
         region: MatteRegion,
         /// Straight sRGB, like `BrushParams::color` — converted to working-space
@@ -446,6 +463,15 @@ pub enum ActionKind {
         layer: LayerId,
         op: super::fill::FillOp,
     },
+
+    /// Clip a layer to the paint beneath it, or stop (GROUP_DESIGN.md §4).
+    ///
+    /// A presentation property like the blend mode it is applied beside, and
+    /// logged like one: it changes what the document *looks* like, so replay and
+    /// peers both have to reproduce it. On the base of a group it clips the whole
+    /// group to what lies under the group (§4.3) — the same outward reading its
+    /// blend mode gets, which is why this needs no second action for groups.
+    SetLayerClip(LayerId, bool),
 }
 
 impl ActionKind {
@@ -467,6 +493,7 @@ impl ActionKind {
             ActionKind::RemoveLayer(_) => "Remove layer",
             ActionKind::MoveLayer { .. } => "Reorder layer",
             ActionKind::SetLayerBlend(..) => "Blend mode",
+            ActionKind::SetLayerClip(..) => "Clip layer",
             ActionKind::SetLayerOpacity(..) => "Layer opacity",
             ActionKind::SetLayerVisible(..) => "Layer visibility",
             ActionKind::SetLayerName(..) => "Rename layer",
@@ -530,11 +557,11 @@ impl history::Action for Action {
             // Refusing here (not only in the frontend) is what keeps replay and
             // peers agreeing about a log that contains such a stroke.
             ActionKind::CommitStroke(rec) => {
-                match state
-                    .layer_index(rec.layer)
-                    .and_then(|idx| state.layer_at(idx).tiles().map(|base| (idx, base)))
-                {
-                    Some((idx, base)) => {
+                // Cloned out of the tree before anything is rebuilt: the tile map
+                // is persistent, so this is a handful of `Arc` bumps, and it is
+                // what keeps the borrow of `state` from outliving the rewrite.
+                match state.layer(rec.layer).and_then(|l| l.tiles()).cloned() {
+                    Some(base) => {
                         // The **author's** selection, as it stood at this point in
                         // the log, gates the stroke (DESIGN.md §6.8,
                         // PEER_DESIGN.md §3). Read from the state being folded over,
@@ -545,13 +572,12 @@ impl history::Action for Action {
                             crate::gpu::stroke::StrokeScene {
                                 pool: &ctx.pool,
                                 assets: &ctx.assets,
-                                base,
+                                base: &base,
                                 selection: &selection,
                             },
                             rec,
                         );
-                        let layer = state.layer_at(idx).with_tiles(tiles);
-                        state.with_layer_at(idx, layer)
+                        state.map_layer(rec.layer, |l| l.with_tiles(tiles))
                     }
                     // Absent layer, or a matte — a matte has no tile map, so a
                     // stroke targeting one is refused rather than swallowed
@@ -561,15 +587,18 @@ impl history::Action for Action {
                     None => state,
                 }
             }
-            ActionKind::AddLayer { id, above } => state.insert_layer(*id, *above),
+            ActionKind::AddLayer { id, carrier, above } => {
+                state.insert_layer(*id, *carrier, *above)
+            }
             ActionKind::RemoveLayer(id) => state.remove_layer(*id),
             ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
+            ActionKind::SetLayerClip(id, clip) => state.set_layer_clip(*id, *clip),
             ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
             ActionKind::SetLayerVisible(id, visible) => state.set_layer_visible(*id, *visible),
             ActionKind::SetLayerName(id, name) => {
                 state.set_layer_name(*id, name.as_deref().map(Into::into))
             }
-            ActionKind::MoveLayer { id, above } => state.move_layer(*id, *above),
+            ActionKind::MoveLayer { id, carrier, above } => state.move_layer(*id, *carrier, *above),
             // Resolved at the timeline layer (effective-sequence filtering); an
             // `Undo` should never be materialized through `apply`. Identity, so
             // a stray one is harmless rather than wrong.
@@ -599,10 +628,11 @@ impl history::Action for Action {
             ActionKind::SetSurface(id) => state.with_surface(*id),
             ActionKind::AddMatte {
                 id,
+                carrier,
                 above,
                 region,
                 color,
-            } => state.insert_matte(*id, *above, *region, *color),
+            } => state.insert_matte(*id, *carrier, *above, *region, *color),
             ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
             ActionKind::SetMatteColor(id, color) => state.set_matte_color(*id, *color),
             ActionKind::SetBackground(rgb) => state.with_background(*rgb),
@@ -613,19 +643,13 @@ impl history::Action for Action {
             // layer refuses it, like a stroke; an unusable or oversized transform
             // is rejected deterministically, so peers and replays agree.
             ActionKind::Transform { layer, affine } => {
-                match state
-                    .layer_index(*layer)
-                    .and_then(|idx| state.layer_at(idx).tiles().map(|base| (idx, base)))
-                {
-                    Some((idx, base)) => {
+                match state.layer(*layer).and_then(|l| l.tiles()).cloned() {
+                    Some(base) => {
                         let selection = state.selection_of(self.id.actor);
-                        match ctx.transform.apply(&ctx.pool, base, &selection, *affine) {
-                            Some((tiles, moved_selection)) => {
-                                let layer = state.layer_at(idx).with_tiles(tiles);
-                                state
-                                    .with_layer_at(idx, layer)
-                                    .with_selection(self.id.actor, moved_selection)
-                            }
+                        match ctx.transform.apply(&ctx.pool, &base, &selection, *affine) {
+                            Some((tiles, moved_selection)) => state
+                                .map_layer(*layer, |l| l.with_tiles(tiles))
+                                .with_selection(self.id.actor, moved_selection),
                             None => {
                                 tracing::warn!(
                                     "transform rejected (unusable affine or too many tiles); ignored"
@@ -644,17 +668,11 @@ impl history::Action for Action {
             // deterministically when unbounded or oversized, so peers and replays
             // agree about a log that contains one.
             ActionKind::Fill { layer, op } => {
-                match state
-                    .layer_index(*layer)
-                    .and_then(|idx| state.layer_at(idx).tiles().map(|base| (idx, base)))
-                {
-                    Some((idx, base)) => {
+                match state.layer(*layer).and_then(|l| l.tiles()).cloned() {
+                    Some(base) => {
                         let selection = state.selection_of(self.id.actor);
-                        match ctx.fill.apply(&ctx.pool, base, &selection, op) {
-                            Some(tiles) => {
-                                let layer = state.layer_at(idx).with_tiles(tiles);
-                                state.with_layer_at(idx, layer)
-                            }
+                        match ctx.fill.apply(&ctx.pool, &base, &selection, op) {
+                            Some(tiles) => state.map_layer(*layer, |l| l.with_tiles(tiles)),
                             None => {
                                 tracing::warn!(
                                     "fill rejected (unbounded region or too many tiles); ignored"
