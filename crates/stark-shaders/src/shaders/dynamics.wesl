@@ -369,6 +369,26 @@ fn bake(
 
 // ---- 1. Snapshot the region under the segment's footprint rect. -----------------
 
+// Whether a region texel `rt` is provably outside the segment's swept quad — the
+// span x ∈ (-1, lr+1), |y| < 1 in the travel frame — so its exposure is exactly 0
+// and `deposit` leaves it untouched. The dispatch rect is the quad's AABB, so at a
+// diagonal orientation up to half its texels are these corners; the test rejects
+// them with a few ALU ops instead of the prefix-τ taps `deposit` would otherwise
+// spend proving e = 0. `snapshot` may skip exactly the same texels because
+// `deposit` reads the snapshot only after its own e > 0 check, and the two compute
+// the identical frame from the identical uniform — same floats, same verdict.
+fn outside_quad(rt: vec2<i32>) -> bool {
+    let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
+    let rel = (p - st.a.xy) / st.b.x;
+    let dir = st.a.zw;
+    let xl = rel.x * dir.x + rel.y * dir.y;
+    let yl = -rel.x * dir.y + rel.y * dir.x;
+    // Beyond the lateral edges the prefix rows are the footprint's own zero
+    // border; past the trailing edge both taps clamp to the row total. Either
+    // way the difference is exactly 0.
+    return abs(yl) >= 1.0 || xl <= -1.0 || xl - st.b.y >= 1.0;
+}
+
 @compute @workgroup_size(8, 8)
 fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     let udim = textureDimensions(under_color_w);
@@ -377,6 +397,9 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let t = vec2<i32>(gid.xy);
     let rt = vec2<i32>(st.d.xy) + t;
+    if outside_quad(rt) {
+        return; // deposit never reads these texels of the snapshot
+    }
     let rdim = vec2<i32>(textureDimensions(region_color));
     var c = vec4<f32>(0.0);
     var a = vec4<f32>(0.0);
@@ -490,6 +513,12 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rt = vec2<i32>(st.d.xy) + t;
     let rdim = vec2<i32>(textureDimensions(region_color_w));
     if rt.x < 0 || rt.y < 0 || rt.x >= rdim.x || rt.y >= rdim.y {
+        return;
+    }
+    // The AABB's corners are outside the oriented quad and provably at zero
+    // exposure (`outside_quad`): reject them before the prefix-τ taps below
+    // spend ~10 loads apiece computing that zero.
+    if outside_quad(rt) {
         return;
     }
     // Travel-frame brush-local coords (x in radius units from the segment start).
