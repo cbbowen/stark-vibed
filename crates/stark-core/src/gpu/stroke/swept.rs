@@ -33,8 +33,14 @@ const SWEEP_VERTS: u32 = 18;
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct TileXform {
-    params: [f32; 4],     // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
-    color: [f32; 4],      // brush channels (.xyz), _
+    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
+    color: [f32; 4],  // brush channels (.xyz), per-unit opacity (.w)
+    /// The stroke's paint rates, all constant along it: the `add` source (height per
+    /// unit swept optical depth), the `drain` falloff per canvas px, and two spare.
+    /// They live here rather than on the segment instance because that is what they
+    /// are — properties of the brush, not of any one segment. The fragment applies
+    /// `drain` at its own arc length (see `generate_segments_in`).
+    paint: [f32; 4],
     noise_freq: [f32; 4], // colour-dynamics frequency (across, along), 1/NOISE_TILE_PX, _
     noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
     noise_off: [f32; 4],  // per-stroke noise lookup translation (2), _, _
@@ -138,7 +144,7 @@ impl StrokeRenderer {
             .map(|s| SegmentInstance {
                 start: s.start.to_array(),
                 dir: s.dir.to_array(),
-                geom: [s.radius, s.length, s.amount, s.opacity],
+                geom: [s.radius, s.length],
                 extra: [s.orient, s.dist, s.curvature, 0.0],
             })
             .collect();
@@ -211,7 +217,8 @@ impl StrokeRenderer {
                     2.0 / TILE_TEX as f32,
                     0.0,
                 ],
-                color: channels,
+                color: [channels[0], channels[1], channels[2], rec.brush.color[3]],
+                paint: [rec.brush.dynamics.add, rec.brush.drain, 0.0, 0.0],
                 noise_freq: nfreq,
                 noise_amp: namp,
                 noise_off: noff,

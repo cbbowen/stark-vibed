@@ -38,15 +38,6 @@ pub(super) struct Segment {
     /// Arc length of the centreline (canvas px) — the tip's own travel, which is the
     /// measure every rate in both paths is denominated in.
     pub(super) length: f32,
-    /// Paint **height** laid per unit swept optical depth: the brush's `add` source
-    /// faded by the remaining load (`drain`). The single amount knob — the amount of
-    /// paint and its per-unit opacity are independent (§6.1), which is why
-    /// `opacity` below is not derived from it.
-    pub(super) amount: f32,
-    /// Paint opacity laid by this segment (the brush's opacity × remaining load).
-    /// Drives the color/opacity channel; the amount laid is independent
-    /// (§6.1, normalized representation).
-    pub(super) opacity: f32,
     /// Shape orientation for this segment as a fraction of a full turn ∈ [0, 1): the
     /// relative angle between the shape's native axis and the travel direction, used to
     /// pick the prefix-τ orientation layer. 0 for follow-stroke (§6.6).
@@ -56,13 +47,15 @@ pub(super) struct Segment {
     pub(super) dist: f32,
 }
 
-/// Per-segment instance data for the sweep shader.
+/// Per-segment instance data for the sweep shader. Carries only what actually varies
+/// from segment to segment — the paint rates are stroke constants and ride the
+/// `TileXform` uniform instead (see [`generate_segments_in`]).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub(super) struct SegmentInstance {
     pub(super) start: [f32; 2],
     pub(super) dir: [f32; 2],  // unit tangent at the segment start
-    pub(super) geom: [f32; 4], // radius, arc length, amount (height per unit τ), opacity
+    pub(super) geom: [f32; 2], // radius, arc length
     // orientation (turns ∈ [0,1)), arc length at segment start, signed curvature, _
     pub(super) extra: [f32; 4],
 }
@@ -234,9 +227,19 @@ impl Taper {
 }
 
 /// Build swept segments from the fitted control points (§6.2): flatten
-/// the curve adaptively, then make each polyline edge a segment. The one-way load
-/// reservoir (`drain`) depletes with arc distance; radius follows pressure and the
-/// stroke's start/end tapers.
+/// the curve adaptively, then make each polyline edge a segment. Radius follows
+/// pressure and the stroke's start/end tapers.
+///
+/// **The `drain` falloff is deliberately not here.** It is a function of arc length
+/// alone, and every shader that reads a segment already knows the arc length of the
+/// fragment it is shading (`dist` plus the fragment's own offset along the travel), so
+/// it is evaluated there instead of being baked in per segment. That is not a
+/// micro-optimization: a per-segment factor makes the paint laid depend on where the
+/// segment boundaries happened to fall, which is the one thing §6.2 works to keep out
+/// of the deposit. Evaluated per fragment it drops out of the sum entirely — the
+/// stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut — so the
+/// flattener no longer has to buy accuracy for it with segments
+/// (see [`flatten_tolerance`](super::flatten_tolerance)).
 ///
 /// Returns the range's segments plus the arc length at its end — measured on the
 /// emitted polyline rather than recomputed, so the range that resumes from it starts
@@ -283,7 +286,6 @@ pub(super) fn generate_segments_in(
                 len: f32,
                 dist: f32,
                 tap: f32| {
-        let drain = (1.0 - b.drain * (dist + len * 0.5)).max(0.0);
         Segment {
             start: pos,
             dir,
@@ -294,10 +296,6 @@ pub(super) fn generate_segments_in(
             // reservoir cadence).
             radius: (b.radius * pressure * tap).max(0.5),
             length: len,
-            // The `add` source is the one amount knob; the brush's opacity (color[3])
-            // rides the separate opacity channel (§6.1).
-            amount: b.dynamics.add * drain,
-            opacity: b.color[3] * drain,
             orient: orientation_turns(b.orientation, mid_dir, tilt),
             dist,
         }
@@ -1247,7 +1245,7 @@ mod tests {
             // exactly on it.
             (
                 "straight, smearing tip",
-                26,
+                52,
                 record(smearing(20.0), &straight),
             ),
             // The same cadence on a tip four times as fat. The cap is a fraction of the
@@ -1256,14 +1254,18 @@ mod tests {
             // them both.
             (
                 "straight, fat smearing tip",
-                6,
+                14,
                 record(smearing(80.0), &straight),
             ),
-            // `max_len` from `drain` (0.02 / 0.005 = 4px), tighter than the reservoir
-            // cadence and therefore the one that binds here.
+            // `drain` costs **nothing**, which is the point of this row: the falloff is
+            // evaluated per fragment from its own arc length, so it asks the flattener
+            // for no segments at all and this comes out identical to the smearing row
+            // above. It used to bind at `0.02 / drain` = 4px and cost 156 segments —
+            // 3× what the reservoir cadence alone asks — for a quantity that is now
+            // exact rather than merely finely sampled.
             (
                 "straight, draining tip",
-                156,
+                52,
                 record(
                     BrushParams {
                         drain: 0.005,
@@ -1319,7 +1321,7 @@ mod tests {
                     &arc,
                 ),
             ),
-            ("arc, smearing tip", 31, record(smearing(20.0), &arc)),
+            ("arc, smearing tip", 55, record(smearing(20.0), &arc)),
             // The Euler spiral: `angle` again over 1.2 radians of total turning, but
             // with the fitter crossing the arc/chord threshold on each side of a
             // genuine inflection. Cheaper than the arc because it turns one way and
@@ -1350,7 +1352,7 @@ mod tests {
             // does, so a smearing tip pays the same price on a curve as on a line.
             (
                 "euler spiral, smearing tip",
-                26,
+                50,
                 record(smearing(20.0), &spiral),
             ),
         ];
@@ -1385,8 +1387,6 @@ mod tests {
             curvature: 0.0,
             radius,
             length,
-            amount: 0.0,
-            opacity: 1.0,
             orient: 0.0,
             dist: 0.0,
         }

@@ -94,7 +94,23 @@ const ADD_GAIN: f32 = 2.0;
 /// it. It was once a cadence of its own — the tool reloaded every `spacing·radius`
 /// while the canvas was stripped every segment — and the lag between the two is what
 /// left a stroke's last footprint short of paint (`dynamics.wesl`).
-const RESERVOIR_EXCHANGE_STEP: f32 = 1.0;
+///
+/// **0.5 is where this converges, and 1.0 is not.** Measured on a radius-100 smear that
+/// runs dry, against a step of 0.125: 0.25 is within 1.7 levels, 0.5 within 4.0, and
+/// both leave *no* pixel outside the goldens' tolerance of 6. At 1.0 that becomes 13.7
+/// levels over 1502 pixels, and at 2.0 it is 41 levels — the tool visibly steps from
+/// one footprint to the next instead of dragging.
+///
+/// It is worth knowing why that was not obvious. The goldens could not see it: nearly
+/// every one of them paints with the shared `brush()` helper, which sets
+/// `drain = 0.0015`, and `drain` used to impose its own `0.02 / drain` = 13.3px cap on
+/// segment length. For any tip wider than 13.3px that cap was the tighter of the two,
+/// so the goldens rendered at 13.3px segments *whatever this constant said* — a change
+/// here moved nothing, and looked free. Only once the drain cap was retired (it is
+/// evaluated per fragment now, see [`flatten_tolerance`]) did this become the binding
+/// constraint and start deciding pixels. A benchmark or a golden that does not move is
+/// evidence about the test, not about the change.
+const RESERVOIR_EXCHANGE_STEP: f32 = 0.5;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
 ///
@@ -366,7 +382,7 @@ impl StrokeRenderer {
                     array_stride: std::mem::size_of::<SegmentInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4
                     ],
                 })],
             },
@@ -594,11 +610,12 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // flattener and the segment generator get it from here, so an edge too tight to
     // sweep as an arc is priced as a chord as well as drawn as one.
     tol.max_arc_curvature = MAX_TIP_TURN / b.radius.max(0.5);
-    // `drain` fades the laid amount/opacity by `drain · dist`, sampled at the
-    // segment midpoint: cap the step it can take across one segment at ~2%.
-    if b.drain > 0.0 {
-        tol.max_len = tol.max_len.min(0.02 / b.drain);
-    }
+    // `drain` used to be bought here, at `0.02 / drain` px per segment — a cap that
+    // could dominate everything else (at `drain = 0.02`, one segment per pixel). It is
+    // gone because the falloff is no longer a per-segment constant: both paths
+    // evaluate it from the fragment's own arc length, so the amount laid is exactly
+    // independent of how the path was cut and there is nothing left for a length cap
+    // to bound (`generate_segments_in`).
     // The stamp loop exchanges once per segment, so the segment length *is* the step
     // at which the tool reloads and drains — and unlike the canvas side, which the
     // prefix-τ integral makes exact at any length, that step is a plain first-order

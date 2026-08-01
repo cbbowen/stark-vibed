@@ -28,14 +28,16 @@
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
 //             (height)) — (height, footprint coverage, unused, unused)
 
-import package::stamp_common::{VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color};
+import package::stamp_common::{
+    VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain, xf,
+};
 
 @vertex
 fn vs_main(
     @builtin(vertex_index) vi: u32,
     @location(0) start: vec2<f32>,
     @location(1) dir: vec2<f32>,
-    @location(2) geom: vec4<f32>,
+    @location(2) geom: vec2<f32>,
     @location(3) extra: vec4<f32>,
 ) -> VsOut {
     return sweep_vertex(vi, start, dir, geom, extra);
@@ -50,11 +52,15 @@ fn fs_main(in: VsOut) -> FsOut {
     // integrated along the travel. Everything below is built from this.
     let tau = swept_depth(in, sw);
     let cov = 1.0 - exp(-tau);
+    // The brush's remaining load here. A function of the fragment's own arc length
+    // along the stroke, not of the segment it happens to be drawn by, so both rates
+    // below stay independent of how the path was cut (`stroke_drain`).
+    let drain = stroke_drain(stroke_arc(in, sw));
     // Per-unit opacity enters as an *absorption rate* rather than a factor, so the
     // colour target's over-blend multiplies out to exactly `exp(−op · Στ)` — the
     // stroke's coverage is the same whether the path was cut into one segment or a
     // hundred.
-    let op = 1.0 - exp(-in.geom.w * tau);
+    let op = 1.0 - exp(-xf.color.w * drain * tau);
 
     var out: FsOut;
     // Premultiplied by opacity: the colour target over-blends, so per-arc rates sum
@@ -72,6 +78,6 @@ fn fs_main(in: VsOut) -> FsOut {
     // never represents amount (§6.1). Height is also the *only* thing a persistent
     // tile keeps: gloss is a uniform property of paint, not a stored channel, so
     // there is nothing here that a brush could source it from.
-    out.aux = vec4<f32>(in.geom.z * tau, cov, 0.0, 0.0);
+    out.aux = vec4<f32>(xf.paint.x * drain * tau, cov, 0.0, 0.0);
     return out;
 }

@@ -11,10 +11,14 @@ struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
     // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); params.w unused.
     params: vec4<f32>,
-    // The brush's colour in the color space's channels (.xyz); .w unused. Constant
-    // across the stroke — per-segment variation (pressure, drain) rides the instance
-    // attributes, and colour dynamics (below) jitter it per fragment.
+    // The brush's colour in the color space's channels (.xyz) + its per-unit opacity
+    // (.w). Constant across the stroke — colour dynamics (below) jitter the channels
+    // per fragment, and `drain` fades the opacity per fragment (see `stroke_drain`).
     color: vec4<f32>,
+    // The stroke's paint rates: the `add` source in .x (height per unit swept optical
+    // depth) and the `drain` falloff per canvas px in .y; .zw unused. Both are
+    // stroke constants — see `stroke_drain` for why they are not per-segment.
+    paint: vec4<f32>,
     // Colour dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
     // .z; .w unused.
@@ -48,10 +52,9 @@ struct VsOut {
     // interpolating them across a curved sweep would be meaningless.
     @location(1) @interpolate(flat) start: vec2<f32>,
     @location(2) @interpolate(flat) dir: vec2<f32>,
-    // radius, arc length, the paint height laid per unit swept optical depth (the
-    // brush's `add` source faded by its remaining load — the one amount knob,
-    // §6.1/§6.2), and the brush opacity at this segment.
-    @location(3) @interpolate(flat) geom: vec4<f32>,
+    // radius, arc length. The paint rates that used to ride here are stroke constants
+    // on the uniform instead (`xf.paint`, `stroke_drain`).
+    @location(3) @interpolate(flat) geom: vec2<f32>,
     // Shape orientation in turns ∈ [0,1) (the relative angle between the shape's
     // native axis and the travel direction, picking the prefix-τ slice, §6.6); the
     // arc length of the segment's start from the stroke start (canvas px); the
@@ -161,7 +164,7 @@ fn sweep_vertex(
     vi: u32,
     start: vec2<f32>,
     dir: vec2<f32>,   // unit tangent at the segment start
-    geom: vec4<f32>,  // radius, arc length, amount (height per unit τ), opacity
+    geom: vec2<f32>,  // radius, arc length
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, _
 ) -> VsOut {
     let radius = geom.x;
@@ -237,12 +240,39 @@ fn brush_color(in: VsOut, sw: Sweep) -> vec3<f32> {
     // Brush-local y is in radius units; the noise domain is px on both axes, so
     // the pattern keeps one scale whatever size the tip is.
     let lateral = sw.local.y * radius;
-    let arc = in.extra.y + sw.local.x * radius;
     let jitter = color_jitter(
-        noise_tex, noise_samp, vec2<f32>(lateral, arc),
+        noise_tex, noise_samp, vec2<f32>(lateral, stroke_arc(in, sw)),
         xf.noise_freq, xf.noise_amp.xyz, xf.noise_off.xy,
     );
     return xf.color.xyz + jitter;
+}
+
+// How far along the stroke this fragment is, in canvas px: the segment's own start
+// distance plus the fragment's offset along the travel (brush-local x is in radius
+// units). A function of the fragment's canvas position and the segment alone, so it
+// keeps tile aprons bit-consistent (§6.4) like everything else here.
+//
+// The same value comes out whichever segment is being drawn — segment `i` starts at
+// `dᵢ` and sees this fragment at `(arc − dᵢ)/radius`, which adds back to `arc` — and
+// that is the whole point of measuring the paint rates against it.
+fn stroke_arc(in: VsOut, sw: Sweep) -> f32 {
+    return in.extra.y + sw.local.x * in.geom.x;
+}
+
+// The brush's remaining load at this fragment: `drain` fades the paint it lays,
+// linearly with distance travelled, until the stroke runs dry (§6.2).
+//
+// **Evaluated per fragment, and that is load-bearing rather than tidy.** As a
+// per-segment constant it made the paint laid depend on where the segment boundaries
+// fell — the one property the swept formulation exists to avoid, and the flattener had
+// to buy accuracy back at `0.02 / drain` px per segment, which for a fast-draining
+// brush dominated every other budget. Per fragment the stroke lays `a(arc) · Στ`,
+// where `Στ` is already independent of the cut, so the whole dependence is gone and
+// the cap with it. It is also exact rather than merely better: the falloff is linear
+// in arc length, and a linear function sampled at the fragment's own position needs no
+// correction at all.
+fn stroke_drain(arc: f32) -> f32 {
+    return max(1.0 - xf.paint.y * arc, 0.0);
 }
 
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0

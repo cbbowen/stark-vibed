@@ -1027,16 +1027,18 @@ fn dynamics_plan(
                 channels[0],
                 channels[1],
                 channels[2],
-                s.opacity,
+                // Undrained: the shader fades both this and the `add` rate below by
+                // the fragment's own arc length (`dynamics.wesl::stroke_drain`).
+                b.color[3],
                 ox,
                 oy,
                 s.orient,
-                0.0,
+                b.drain,
                 // e: the `add` source rate — height per unit exposure — the segment's
                 // signed curvature, which bends the travel frame every dispatch of
                 // this loop measures its exchange in, and the midpoint `exchange`
                 // lifts from (dynamics.wesl).
-                s.amount * ADD_GAIN,
+                d.add * ADD_GAIN,
                 s.curvature,
                 mid.x,
                 mid.y,
@@ -1092,11 +1094,14 @@ fn dynamics_plan(
                 channels[0],
                 channels[1],
                 channels[2],
-                s.opacity,
+                // The settle lays the tool's *carried* paint, which already carries the
+                // opacity it was picked up with, so it reads neither of these. They are
+                // filled consistently with a segment slot rather than left as junk.
+                b.color[3],
                 ox,
                 oy,
                 s.orient,
-                0.0,
+                b.drain,
                 // No `add`: the source is a rate per unit of travel, and there is none.
                 // No curvature, for the same reason — the frame is a standing tip.
                 0.0,

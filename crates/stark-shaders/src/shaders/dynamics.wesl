@@ -80,12 +80,15 @@ struct Stamp {
     // b: radius (px), segment length / radius (0 for pickup), λ_lift, λ_deposit —
     //    λ = ln(1 − axis) ≤ 0, clamped away from −∞.
     b: vec4<f32>,
-    // c: the brush's own colour channels .xyz + per-unit opacity .w (drained).
+    // c: the brush's own colour channels .xyz + per-unit opacity .w. **Undrained** —
+    //    the falloff is applied per fragment from its own arc length, not baked in
+    //    per segment (see `stroke_drain`).
     c: vec4<f32>,
     // d: under-rect origin .xy (region px, integral); orientation (turns ∈ [0,1),
-    //    picks the prefix-τ slice) .z; .w unused.
+    //    picks the prefix-τ slice) .z; the `drain` falloff per canvas px .w.
     d: vec4<f32>,
-    // e: the `add` rate per unit exposure: height .x; the segment's signed curvature
+    // e: the `add` rate per unit exposure, **undrained** like `c.w`: height .x; the
+    //    segment's signed curvature
     //    (1/region px, 0 = a straight sweep) .y; the segment's midpoint .zw (region
     //    px), which is where `exchange` samples the canvas.
     e: vec4<f32>,
@@ -238,6 +241,19 @@ fn exchange_at(e: f32) -> Exchange {
     out.add_w = (kd * e + kl * w) / s;
     out.src_w = kl * (e - w) / s;
     return out;
+}
+
+// The brush's remaining load at a point `arc` canvas px along the stroke: `drain`
+// fades what it lays, linearly with distance travelled, until it runs dry (§6.2).
+//
+// **Every consumer evaluates this at its own position rather than per segment**, which
+// is what keeps the paint laid independent of how the path was cut — the same property
+// the exposure integral has, and for the same reason it matters. The falloff is linear
+// in arc length, so sampling it where the paint actually lands is exact, not merely
+// closer; it used to be baked in at the segment midpoint and bought back with a
+// `0.02 / drain` cap on segment length (`gpu::stroke::flatten_tolerance`).
+fn stroke_drain(arc: f32) -> f32 {
+    return max(1.0 - st.d.w * arc, 0.0);
 }
 
 // The footprint's **optical depth** for a given coverage — the currency every
@@ -723,7 +739,8 @@ fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     for (var i = 0u; i < EXCHANGE_STEPS; i = i + 1u) {
         // Midpoint of this sub-step's stretch of the track.
-        let tip = tip_at((f32(i) + 0.5) / f32(EXCHANGE_STEPS));
+        let f = (f32(i) + 0.5) / f32(EXCHANGE_STEPS);
+        let tip = tip_at(f);
         let dir = tip.zw;
         let rot = vec2<f32>(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs);
         let world = tip.xy + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
@@ -776,8 +793,20 @@ fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         m = m + take_m;
 
-        let src_h = st.e.x * ex.src_w * sel;
-        let src_m = st.c.w * src_h;
+        // The brush's remaining load **where this texel actually is**, not where the
+        // segment starts. The reservoir lives in the shape frame, so turning its
+        // position back into travel — the inverse of the `rot` above, which works out
+        // to `local.x·cos − local.y·sin` — gives its offset along the stroke, and the
+        // tip's own travel this far into the segment gives the rest.
+        //
+        // It has to be this point and not the segment's, or the two halves of the
+        // source stop balancing: the `deposit` hands the canvas `add_w · A` at the
+        // canvas texel's arc, and this takes back `src_w · A` at the tool texel's. The
+        // two are the same place at the same moment, so they must read the same `A`.
+        let arc = st.g.w + f * st.b.y * st.b.x + (local.x * cs - local.y * sn) * st.b.x;
+        let drain = stroke_drain(arc);
+        let src_h = st.e.x * drain * ex.src_w * sel;
+        let src_m = st.c.w * drain * src_h;
         lat = blend_latent(lat, m, st.c.xyz, src_m);
         h = h + src_h;
         m = m + src_m;
@@ -875,10 +904,18 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // colour-dynamics field, sampled at the same stroke-local (lateral, arc)
     // domain as the fast path — both in canvas px (the travel frame's y is in
     // radius units, so it scales by the radius).
+    // How far along the stroke this texel sits, and what the brush has left to lay
+    // there. The same value whichever segment is drawing it — segment `i` starts at
+    // `dᵢ` and sees this texel at `(arc − dᵢ)/radius` — so both rates below come out
+    // independent of how the path was cut (`stroke_drain`). It is also the domain the
+    // colour-dynamics lookup already ran on, so there is one arc, not two.
+    let arc = st.g.w + xl * st.b.x;
+    let drain = stroke_drain(arc);
+    let own_op = st.c.w * drain;
+
     var own_lat = st.c.xyz;
     if any(st.g.xyz != vec3<f32>(0.0, 0.0, 0.0)) {
         let lateral = yl * st.b.x;
-        let arc = st.g.w + xl * st.b.x;
         own_lat += color_jitter(
             dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
             st.f, st.g.xyz, st.h.xy,
@@ -889,12 +926,12 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // paint — the latter linear in exposure, i.e. exactly the plain deposit's
     // path-integral height.
     let dep_h = tool_h * ex.dep;
-    let add_h = st.e.x * ex.add_w;
+    let add_h = st.e.x * drain * ex.add_w;
     let par_h = dep_h + add_h;
-    let par_m = tool_op * dep_h + st.c.w * add_h;
+    let par_m = tool_op * dep_h + own_op * add_h;
     var par_lat = own_lat;
     if par_m > EPS {
-        par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (st.c.w * add_h)) / par_m;
+        par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
     }
 
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
