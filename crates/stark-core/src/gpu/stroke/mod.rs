@@ -782,33 +782,42 @@ const MAX_EXCHANGE_TRAVEL: f32 = 1.0;
 ///
 /// Freezing is what makes a long live stroke cost its tail rather than its length
 /// ([`StrokeRenderer::render_range`]), and it rests on a frozen span's pixels being
-/// final. A taper breaks that on its own terms: it is measured from the ends of the
-/// **whole** stroke, and while the pointer is down the far end has not happened yet.
-/// Bake the trailing taper into a span too early and the stroke would carry a pinch
-/// in its middle that the commit does not — the live == committed invariant (§1.3),
-/// failing in the one place it cannot be repainted.
+/// final. Everything the sweep measures against the **whole** stroke breaks that on
+/// its own terms, because while the pointer is down the whole stroke has not happened
+/// yet. Bake such a quantity into a span too early and the stroke carries something
+/// the commit does not — the live == committed invariant (§1.3), failing in the one
+/// place it cannot be repainted. There are two, and this is the one rule that holds
+/// both back until the answer can no longer change.
 ///
-/// So a span is held back unless both of the taper's inputs are already settled for
-/// it:
+/// A span is held back unless all three are already settled for it:
 ///
 /// * it is at least the trailing taper's length before the stroke's end, so its
 ///   trailing factor is 1 — and stays 1, since the stroke only gets longer;
 /// * it is at least the leading taper's length past the start, which together with
 ///   the first condition proves the stroke is already longer than the two zones
 ///   together, so the "scale both to fit" compression ([`segments::Taper`]) is 1 and
-///   likewise stays 1.
+///   likewise stays 1;
+/// * it is at least a touch-down dab's travel past the start
+///   ([`segments::DAB_TRAVEL`]), which proves the stroke has already outrun the dab —
+///   so the dab is zero for this stroke, for good, and a prefix that renders without
+///   one is what the commit renders too.
 ///
-/// Both are tested on **chords**, which under-estimate arc length — so a span this
-/// admits genuinely satisfies them, and a stroke that doubles back near its own
-/// start or end merely re-renders a little more than it had to. Only the last span
-/// in the candidate prefix is tested: arc length increases monotonically along the
-/// stroke, so it is the hardest case, and once a prefix is admitted it stays
-/// admissible however the stroke continues (which is what lets a kept head survive
-/// this shrinking under it).
-pub fn taper_safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
+/// All three are tested on **chords**, which under-estimate arc length — so a span
+/// this admits genuinely satisfies them, and a stroke that doubles back near its own
+/// start or end merely re-renders a little more than it had to. The dab's bound is
+/// under-estimated a second way, against the brush's own radius rather than the
+/// pressure- and taper-scaled one the dab is actually built from, which can only be
+/// smaller (the same bound [`segments::generate_segments_in`] leaves by). Only the last span in the candidate prefix is tested: arc length
+/// increases monotonically along the stroke, so it is the hardest case, and once a
+/// prefix is admitted it stays admissible however the stroke continues (which is what
+/// lets a kept head survive this shrinking under it).
+pub fn safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
     let (start_px, end_px) = rec.brush.taper_px();
+    // Every brush has a dab, so — unlike the taper — there is no shortcut past this
+    // for the common case; a stroke simply cannot freeze its first dab's worth.
+    let start_px = start_px.max(segments::DAB_TRAVEL * rec.brush.radius.max(0.5));
     let last = crate::path::span_count(rec.path.len());
-    if (start_px <= 0.0 && end_px <= 0.0) || last == 0 {
+    if last == 0 {
         return frozen;
     }
     let head = rec.path[0].pos;

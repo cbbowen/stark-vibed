@@ -179,7 +179,7 @@ fn commit(c: &mut Criterion) {
 ///
 /// The number the user feels. It is not the commit cost divided up — a live stroke
 /// re-renders its unfrozen tail on *every* move, so this also measures how well the
-/// freezing boundary is holding (`taper_safe_frozen`, `StrokeCarry`). A change that
+/// freezing boundary is holding (`safe_frozen`, `StrokeCarry`). A change that
 /// leaves `commit` flat and moves this one has moved the freezing, and that is
 /// exactly the regression hardest to notice by hand.
 fn live(c: &mut Criterion) {

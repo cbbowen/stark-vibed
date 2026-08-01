@@ -658,7 +658,7 @@ fn the_taper_widens_without_a_step() {
 /// down the far end has not been drawn yet. Bake the trailing taper into a frozen
 /// span too early and the stroke keeps a pinch in its middle that the commit does not
 /// draw — permanently, because a frozen head is never redrawn. So freezing is held
-/// back (`gpu::stroke::taper_safe_frozen`), and this is what checks it: re-setting the
+/// back (`gpu::stroke::safe_frozen`), and this is what checks it: re-setting the
 /// brush drops the head, so the very next repaint renders the whole stroke in one
 /// pass and any prematurely-baked taper shows as a difference.
 #[cfg(not(feature = "debug-unfrozen"))]
@@ -735,6 +735,82 @@ fn a_tapered_brush_still_dots() {
         "the dot is a speck, not the brush's own size ({}px)",
         painted_height(&img, 128)
     );
+}
+
+/// The painted span of screen row/column `at`, as `(first, last)`.
+fn painted_span(img: &stark_core::RgbaImage, along_x: bool, at: u32) -> (u32, u32) {
+    let n = if along_x { img.width } else { img.height };
+    let px = |i| {
+        if along_x {
+            img.pixel(i, at)
+        } else {
+            img.pixel(at, i)
+        }
+    };
+    let painted: Vec<u32> = (0..n).filter(|&i| is_red(px(i))).collect();
+    (
+        *painted.first().expect("some paint"),
+        *painted.last().expect("some paint"),
+    )
+}
+
+/// **A click leaves a dab, centred where it was pressed** — and so does the same
+/// press nudged by a pixel, which is the half of it that is easy to get wrong.
+///
+/// A swept deposit is a definite integral over travel, so a press that has not moved
+/// integrates over nothing. The minimum travel that fixes it (`segments::DAB_TRAVEL`)
+/// used to be swept *from* the point, in the `+x` a click's absent tangent fell back
+/// to: a whole tip's width of travel, all on one side, which read as a short dash
+/// pointing right rather than as a dot. And because it applied only to a stroke with
+/// no travel at all, moving one pixel replaced it with a twentieth of a dab — the dot
+/// vanished the moment the hand moved and came back a tip's width later.
+///
+/// So both are asserted here against the *same* threshold: a click is round and
+/// centred, and one pixel of movement changes it hardly at all.
+#[test]
+fn a_click_dabs_where_it_was_pressed_and_a_nudge_keeps_it() {
+    let dab = |nudge: f32| {
+        let mut engine = engine_or_skip_blue()?;
+        engine.process(ViewCommand::SetBrush(brush(RED, 40.0)));
+        engine.process(GestureCommand::Start {
+            tool: Tool::Brush,
+            sample: InputSample::at(Vec2::ZERO),
+            tolerance: DEFAULT_TOLERANCE,
+        });
+        if nudge > 0.0 {
+            engine.process(GestureCommand::To {
+                sample: InputSample::at(Vec2::new(nudge, 0.0)),
+            });
+        }
+        engine.process(GestureCommand::End);
+        Some(engine.render_to_image())
+    };
+    let Some(click) = dab(0.0) else {
+        return;
+    };
+    let Some(nudged) = dab(1.0) else {
+        return;
+    };
+
+    assert!(is_red(center(&click)), "a click left no mark at all");
+    assert!(
+        is_red(center(&nudged)),
+        "a one-pixel drag left no mark at all"
+    );
+
+    // Canvas (0,0) is screen (128,128) at the default 1:1 view.
+    for (what, img) in [("a click", &click), ("a one-pixel drag", &nudged)] {
+        let (x0, x1) = painted_span(img, true, 128);
+        let (y0, y1) = painted_span(img, false, 128);
+        let centre = (x0 + x1) as i32 / 2;
+        assert!(
+            (centre - 128).abs() <= 3,
+            "{what}'s mark spans {x0}..{x1}, centred at {centre} rather than on the \
+             128 that was pressed"
+        );
+        let (w, h) = ((x1 - x0) as f32, (y1 - y0) as f32);
+        assert!(w / h < 1.25, "{what} left a {w}x{h} dash rather than a dab");
+    }
 }
 
 /// [`the_incremental_tapered_preview_matches_a_fresh_one_throughout`] for the **stamp

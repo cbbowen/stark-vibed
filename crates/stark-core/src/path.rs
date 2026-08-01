@@ -1022,7 +1022,7 @@ pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
 ///
 /// One Bézier conversion and one evaluation, with no subdivision at all, which is
 /// what lets a caller walk spans back from the live end of a stroke measuring chords
-/// without paying for the polyline (see `gpu::stroke::taper_safe_frozen`).
+/// without paying for the polyline (see `gpu::stroke::safe_frozen`).
 pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
     match span_count(knots.len()) {
         // Fewer than two control points is not a curve: one is a click, zero nothing.

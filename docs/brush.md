@@ -153,10 +153,12 @@ Two places the obvious implementation is wrong:
   span is settled only once it is a trailing taper's length clear of the live end
   *and* a leading taper's length past the start — which together also prove the
   stroke has outgrown the "scale both zones to fit" compression that keeps a
-  short flick a small pointed mark rather than a sliver. Both tests use chords,
-  which under-estimate arc length, so what they admit is genuinely final; and an
-  admitted prefix stays admitted however the stroke continues
-  (`gpu::stroke::taper_safe_frozen`).
+  short flick a small pointed mark rather than a sliver. The touch-down dab
+  (below) is the other whole-stroke quantity and rides the same rule: a span is
+  held back until it is a dab's travel past the start, which proves the stroke
+  has outrun the dab for good. All three tests use chords, which under-estimate
+  arc length, so what they admit is genuinely final; and an admitted prefix stays
+  admitted however the stroke continues (`gpu::stroke::safe_frozen`).
 
 **Incremental repaint.** Freezing is what keeps a long stroke responsive. Drawing
 a live stroke costs (segments × tiles covered), both growing with length, so
@@ -231,8 +233,20 @@ Segments need only be short enough that the line + constant-radius approximation
 holds, so the sweep uses *fewer* primitives than the dab model. Caveats:
 per-stamp angle jitter no longer applies (the brush follows the tangent
 continuously); the round tip's prefix depends on `hardness`, so it is generated
-per stroke (image brushes precompute theirs at import, §6.6); a click is a
-degenerate segment given a minimal length.
+per stroke (image brushes precompute theirs at import, §6.6); and a stroke that
+has not travelled needs a **touch-down dab**, since a definite integral over no
+travel is no paint.
+
+The dab is that minimum: a stroke sweeps at least 0.6 radii, and a stroke short
+of it gets a dwell segment of the difference, swept symmetrically about its own
+midpoint. A click is the limiting case — the whole dab, centred on the point
+pressed, at full width whatever taper the brush carries (zero length compresses
+both taper zones to nothing, so the profile is exactly 1 there). Centred rather
+than led from the point because a click has no tangent for a dab to lead along;
+swept from the point it reads as a short dash in whatever direction the fallback
+names. Because the dwell shrinks as the stroke travels, the mark grows
+continuously from a dot into a stroke rather than jumping between the two — the
+first pixel of a drag no longer replaces a dab with a twentieth of one.
 
 **Live vs. replay unification:** live painting renders the in-flight fitted
 stroke onto CoW preview tiles; commit/replay render the same `StrokeRecord`
