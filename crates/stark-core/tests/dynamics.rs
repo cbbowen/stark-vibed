@@ -217,6 +217,112 @@ fn smear_over_empty_canvas_adds_nothing() {
     );
 }
 
+/// The pen-up settle (§6.2), from the canvas → tool side: **an eraser must take the
+/// paint it stopped on.**
+///
+/// A stroke ends with the tip still in contact and the transfer still in flight, and
+/// on the last footprint alone nothing finishes it — everywhere else on the trail a
+/// point sees the whole footprint pass over it and leave by the trailing rim. Without
+/// a settle the eraser's own last footprint keeps a tip-shaped patch of the paint it
+/// was standing on: measured here, 18 levels of red still there at the pen-up point
+/// against a trail that is scraped to bare paper. The settle takes it, and the mark
+/// then ends where the pen did, tapering only across the half the tip had not reached.
+#[test]
+fn an_eraser_takes_the_paint_it_stopped_on() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A bed far wider than the tip, so the whole stroke runs inside it.
+    paint(
+        &mut engine,
+        RED,
+        140.0,
+        &[Vec2::new(-220.0, 0.0), Vec2::new(220.0, 0.0)],
+    );
+    stroke_with(
+        &mut engine,
+        dyn_brush(
+            RED,
+            45.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.95,
+                deposit: 0.0,
+                ..Default::default()
+            },
+        ),
+        &[Vec2::new(-150.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+    let y = SIZE.height / 2;
+    // Red on the warm ground pulls green down, so paint left behind reads as green
+    // that failed to come back up. Canvas 0 is the pen-up point.
+    let trail = img.pixel(SIZE.width / 2 - 38, y)[1] as i32;
+    let stop = img.pixel(SIZE.width / 2, y)[1] as i32;
+    assert!(
+        trail - stop < 8,
+        "the eraser left {} levels of paint under its last footprint that the rest of \
+         the trail was scraped clean of — the pen-up transfer is stranded on the tool",
+        trail - stop
+    );
+}
+
+/// The same settle from the tool → canvas side: **a carrying stroke must not break
+/// its own slope where it stops.**
+///
+/// A tool laying its load onto bare canvas leaves a mark that fades as the load runs
+/// down — gently, since one tip radius of travel depletes it barely at all. But the
+/// last footprint is served only by the tip's *leading* half, which is the depleted
+/// half, so without a settle the mark falls off a cliff at the trailing rim of that
+/// footprint: measured here it lightens by 17 levels across the final footprint
+/// against 2 over the whole trail before it, and the corner reads as a tip-shaped
+/// disc. With the settle it is 4.
+///
+/// The bound is on the *deficit at the pen-up point* rather than on a slope ratio
+/// because a gentle fade is only a few levels over the window either way, and a ratio
+/// of two small differences is mostly quantization.
+#[test]
+fn a_carrying_stroke_ends_without_breaking_its_own_slope() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            // No `drain`: it fades the mark on its own and caps the segment length,
+            // and both would muddy a measurement about how the mark *ends*. A hard tip
+            // because that is where the corner is sharpest — `κ = −ln(1−coverage)`
+            // knees wherever coverage approaches 1, and a soft tip spreads the break
+            // over its own falloff.
+            drain: 0.0,
+            shape: BrushShape::Round { hardness: 0.95 },
+            ..dyn_brush(
+                RED,
+                70.0,
+                BrushDynamics {
+                    add: 0.0,
+                    lift: 0.0,
+                    deposit: 0.12,
+                    charge: 2.0,
+                },
+            )
+        },
+        &[Vec2::new(-260.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+    let y = SIZE.height / 2;
+    // Just behind the final footprint (canvas −76) against the pen-up point itself.
+    let trail = img.pixel(SIZE.width / 2 - 76, y)[1] as i32;
+    let stop = img.pixel(SIZE.width / 2, y)[1] as i32;
+    assert!(
+        stop - trail < 10,
+        "the mark lightened by {} levels across the final footprint against {} of fade \
+         over the whole trail before it — the tool's load is stranded at the pen-up",
+        stop - trail,
+        trail - img.pixel(SIZE.width / 2 - 108, y)[1] as i32
+    );
+}
+
 #[test]
 fn charged_tool_lays_a_finite_glob() {
     // A pre-`charge`d tool (add = 0, no lift) deposits its glob along the stroke:

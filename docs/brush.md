@@ -264,7 +264,8 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      **exchange** (the tool's half of the transfer, one thread per reservoir
      texel), **snapshot** (copy the segment quad's region texels into an `under`
      scratch, so the deposit can read-modify-write) and **deposit** — one thread
-     per footprint texel. A texel's **exposure** to the segment is the prefix-τ
+     per footprint texel. The range that ends the stroke closes with one more
+     `snapshot` + **settle** over the final footprint (see *The pen-up* below). A texel's **exposure** to the segment is the prefix-τ
      difference `e(x) = prefix(u) − prefix(u−d)`, and exposures add across
      overlapping quads of consecutive segments, so what the loop applies must be
      built from `e` in a way that survives re-cutting the path.
@@ -299,9 +300,25 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      (`BRUSH_RES`², ping-ponged), so each part of the tip carries what *it* rolled
      through. `bake` integrates it along the travel axis into a swept prefix, so
      the deposit reads what the tip presented over a whole pass rather than one
-     mid-pass sample — exact for any segment length. What still bounds a dynamics
-     brush's segments (`RESERVOIR_EXCHANGE_STEP`) is the tool side's single
-     mid-segment tap of the canvas, not the exchange law.
+     mid-pass sample — exact for any segment length.
+   - **The tool's side is not swept, and that is the open defect.** A reservoir texel
+     is dragged along a track `lr` radii long over a canvas that changes under it, but
+     it reads that canvas with a single tap at the segment's midpoint. It is the last
+     thing in the loop whose answer depends on how finely the path happened to be cut
+     — and the flattener's segment lengths follow the pointer samples, so a hand
+     varying its speed cuts the tool's decay differently every time. Measured on a
+     pure smear dragged out of a band of paint, one 300px stroke drawn with 2, 6, 20
+     and 80 pointer samples came out up to **11 levels apart**, and 15% from the
+     converged answer; `RESERVOIR_EXCHANGE_STEP` bounds that error but does not remove
+     its dependence on the input.
+     
+     `EXCHANGE_STEPS` walks the track as a quadrature instead, and at 8 it closes the
+     spread to ≤ 3 levels for the same segment length. **It is pinned at 1 — the
+     single-tap behaviour — because it is not yet correct:** at 8 it leaves isolated
+     bright pixels combed along the stroke, out in the faded tail where the region's
+     stored opacity is a rounding error. Bisected to the sub-stepping (8 → streaks,
+     1 → none); guarding the latent's division by that opacity does *not* fix it, so
+     the cause is still unidentified. Do not raise it until that is understood.
 3. **Write-back.** Each affected tile's full `TILE_TEX` block is sliced out of
    the shared region into a fresh CoW tile (`slice.wesl`, narrowing the wide aux
    to the persistent `(height)`). Aprons are bit-identical to neighbour interiors
@@ -322,16 +339,46 @@ same bilinear form, which agree texel for paired texel), so with `add = 0` total
 height (canvas + tool) is conserved up to resampling error, whatever the segment
 length.
 
-What is *not* conserved is the load the tool still holds when the pen comes up:
-the reservoir is per-stroke, so it is dropped. Under the last footprint that
-leaves the canvas short of the trail behind it by the deposit the tip would have
-made had it kept travelling, and for a near-hard tip the onset of that deficit is
-compressed into the few pixels of the coverage shoulder — a faint tip-shaped disc
-at the end of a heavy smear. No constant-free pen-up rule tested removes it
-without introducing a worse one: settling the pair to equilibrium scrapes an
-eraser's last footprint into a hard disc, and giving the footprint the pass it was
-owed (`prefix(l)`) hands the *leading* rim a whole pass in one go and steps there
-instead. A trailing `taper` sidesteps it entirely by taking the tip to a point.
+*The pen-up.* A stroke stops with the tip still in contact and the transfer still
+in flight. Everywhere else on the trail a point sees the whole footprint pass over
+it and leave by the trailing rim, where `τ` has fallen back to 0; the **last**
+footprint never gets that, so what is in flight there is stranded — and since the
+reservoir is per-stroke, stranded means gone. It shows both ways round: a carrying
+stroke ends a tip-shaped disc short of its own trail, and an eraser leaves a
+tip-shaped patch of the paint it was standing on.
+
+So the pen-up settles the pair once, through the same `exchange_at` kernel, over
+an exposure bounded by the pass on **both** sides:
+
+```
+e = min(owed, received),   owed = prefix(l),  received = rowtotal − prefix(l)
+```
+
+Both bounds are load-bearing, and both are readings of the very prefix-τ volume
+the swept deposit integrates against. `received` is what the tip has already given
+this texel — a point it has barely reached has no film to break, and without that
+bound the settle steps against untouched canvas a radius *ahead* of the pen-up
+(40% of the paint's own range on a smear; a fully-scraped disc with a hard rim on
+an eraser). `owed` is what it still had to give — a point it had all but finished
+with has nothing left to hand over, and without that bound the settle steps against
+the *trail*, which got no settle at all, right where the two meet. They vanish on
+the footprint's rim (`owed` at the trailing edge, `received` at the leading one,
+the row total itself laterally), so the settle fades to nothing all the way round,
+and they cross at the tip centre where the kernel is already deep in saturation.
+
+**Why the prefix and not `τ`.** The instantaneous depth would put the fall-off
+across the few pixels of the tip's coverage knee — `κ = −ln(1−coverage)` rises
+steeply wherever coverage approaches 1 — and simply print the tip's edge. `prefix`
+is that same `τ` integrated *along the travel*, so it ramps across the whole
+radius. It is the same reason the brush's own `add` caps smoothly and the exchange
+does not: `add` is linear in the prefix, the exchange saturates exponentially in
+it. Tapering the tip out at the pen-up instead makes matters worse, not better —
+measured, the trailing `taper` raises the total curvature along the mark's
+centreline by 6× and staircases at the taper's own radius steps.
+
+A range that does not reach the stroke's end never settles: it hands its reservoir
+on to the range that resumes, so nothing is stranded, and a live tail computes the
+same settle its commit will.
 
 *Order-dependence is real.* Pickup reads the region as already modified by
 earlier segments, so a stroke smears **its own trail** when it crosses it; drag

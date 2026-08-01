@@ -435,6 +435,57 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(under_aux_w, t, a);
 }
 
+// How many sub-steps `exchange` walks its texel's track in. The canvas side gets its
+// sweep exactly, from the prefix-τ; the tool side has no prefix to difference — the
+// canvas under it is an arbitrary evolving field — so it is a quadrature, and this is
+// how fine. 8 puts the sub-step at `spacing/8` of the tip, an eighth of what
+// `RESERVOIR_EXCHANGE_STEP` allows a segment to be, and it costs texture taps inside
+// one dispatch rather than eight times as many dispatches.
+const EXCHANGE_STEPS: u32 = 1u;
+
+// `sin(x)` and `1 − cos(x)` as the same truncated Maclaurin series `path::arc_at` uses,
+// and for the same reason it does: the turn across one segment is *tiny* — the host
+// caps `radius · |curvature|` at `MAX_TIP_TURN` — and `1 − cos(x)` formed by
+// subtraction at that scale cancels away most of its digits before it is divided
+// through by an equally tiny curvature. Evaluating the versine directly is what keeps
+// the quotient meaningful.
+//
+// Getting this wrong is not a rounding difference, it is garbage: the position comes
+// out arbitrarily far from the tip, `exchange` lifts from somewhere else entirely, and
+// the reservoir fills with paint that was never under the brush. It shows as bright
+// streaks combed out along the stroke.
+fn sin_small(x: f32) -> f32 {
+    let x2 = x * x;
+    return x * (1.0 - x2 * (1.0 / 6.0 - x2 * (1.0 / 120.0 - x2 / 5040.0)));
+}
+
+fn versin_small(x: f32) -> f32 {
+    let x2 = x * x;
+    return x2 * (0.5 - x2 * (1.0 / 24.0 - x2 / 720.0));
+}
+
+// The tip's centre and travel tangent a fraction `f` along this segment — the arc
+// `path::arc_at` walks, run forwards, with the same sign convention (curvature turns
+// towards the left of `dir`). A straight segment never touches the arc arithmetic.
+fn tip_at(f: f32) -> vec4<f32> {
+    let start = st.a.xy;
+    let dir = st.a.zw;
+    let s = f * st.b.y * st.b.x; // travel = (length / radius) · radius · f
+    let k = st.e.y;
+    if k == 0.0 {
+        return vec4<f32>(start + dir * s, dir.x, dir.y);
+    }
+    let perp = vec2<f32>(-dir.y, dir.x);
+    let turn = k * s;
+    let sn = sin_small(turn);
+    let vs = versin_small(turn);
+    return vec4<f32>(
+        start + dir * (sn / k) + perp * (vs / k),
+        dir.x * (1.0 - vs) + perp.x * sn,
+        dir.y * (1.0 - vs) + perp.y * sn,
+    );
+}
+
 // ---- 2. Exchange: the tool's own side of the transfer, per segment. -------------
 //
 // One thread per **tool reservoir** texel, run *before* the `deposit` it is the other
@@ -458,9 +509,25 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
 // segment, and a stroke ending mid-interval left the difference behind as a
 // tip-shaped patch of missing paint.
 //
-// The canvas is sampled at the segment's **midpoint** (`st.e.zw`) rather than either
-// end — the midpoint rule for a lift that is really swept along the segment, and
-// second-order where an endpoint would be first.
+// **The tool's side is swept too.** A reservoir texel does not hover over one spot for
+// a segment — it is dragged along a track `lr` radii long, over a canvas that is
+// changing under it, and the canvas side integrates over exactly that track through
+// the prefix-τ. This used to be a single bilinear tap at the segment's midpoint: the
+// midpoint rule, second-order in the segment length, and the only thing left in the
+// loop whose answer depended on how finely the path happened to be cut.
+//
+// That dependence is visible, and it is *not* the kind that hides behind a tolerance:
+// the flattener's segment lengths follow the pointer samples, and a hand varies its
+// speed, so the same gesture drawn twice cut the tool's decay differently and the
+// smear faded at a different rate. Measured on a pure smear dragged out of a band of
+// paint, the same 300px stroke drawn with 2, 6, 20 and 80 pointer samples came out up
+// to 11 levels apart, and 15% away from the converged answer.
+//
+// So the track is walked in [`EXCHANGE_STEPS`] sub-steps, each with its own canvas tap
+// and its own share of the exposure. The kernel composes exactly, so splitting the
+// exposure changes nothing on its own — what the sub-steps buy is the *canvas* being
+// read where the texel actually was, which is the whole error term. The tip's frame is
+// re-evaluated at each one, so a curved sweep turns under the tool as it goes.
 @compute @workgroup_size(8, 8)
 fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bdim = textureDimensions(brush_src_color);
@@ -470,68 +537,86 @@ fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
     let t = vec2<i32>(gid.xy);
     let local = (vec2<f32>(t) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
 
-    // This texel's exposure to the segment: its own optical depth × the travel
+    let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult
+    let b_a = textureLoad(brush_src_aux, t, 0);   // (height, _, _, _)
+    var h = b_a.x;
+    var m = b_c.a * h;
+    var lat = b_c.rgb;
+
+    // This texel's exposure to the whole segment: its own optical depth × the travel
     // (radius units). In τ, like the canvas side — the canvas gives up
     // `1 − keep(∫τ)`, so a tool that measured its gain in bare coverage would
     // receive a fraction of what the canvas lost and quietly destroy paint.
-    let e = tau_at(local) * st.b.y;
-    let ex = exchange_at(e);
-
-    let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult
-    let b_a = textureLoad(brush_src_aux, t, 0);   // (height, _, _, _)
-
-    // What it keeps of its own load. Exactly the complement of the fraction the
-    // `deposit` after us lays from it, over the very exposure it lays over — so there
-    // is no correction factor.
-    //
-    // There used to be one (`DEPLETE_FACTOR = 0.75`, "deplete a bit slower than the
-    // math would indicate to account for error"). The error it was accounting for was
-    // real but misdiagnosed: the two sides were solving different equations, so they
-    // disagreed about how much had changed hands and the tool over-drained. Draining
-    // slower papered over that — but a factor below 1 means the tool keeps a fraction
-    // of every deposit it makes, which compounds, so paint grew without bound over a
-    // long stroke. With both sides now taking complementary shares of one solution
-    // there is nothing left to correct, and the exact rate is also the conserving one.
-    var h = b_a.x * (1.0 - ex.dep);
-    var m = b_c.a * h;
-
-    // Then lift. The tool's shape frame is the travel frame turned by the shape's
-    // orientation (§6.6) — the same rotation `bake` applies to read the reservoir.
+    let e_step = tau_at(local) * st.b.y / f32(EXCHANGE_STEPS);
+    let ex = exchange_at(e_step);
+    let rdim = vec2<f32>(textureDimensions(region_color));
+    // The tool's shape frame is the travel frame turned by the shape's orientation
+    // (§6.6) — the same rotation `bake` applies to read the reservoir.
     let theta = st.d.z * TAU;
     let cs = cos(theta);
     let sn = sin(theta);
-    let dir = st.a.zw;
-    let rot = vec2<f32>(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs);
-    let world = st.e.zw + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
 
-    let rdim = vec2<f32>(textureDimensions(region_color));
-    // Outside the selection the canvas gives nothing up and the source mints nothing
-    // (§6.8) — the matching reduction on the canvas side is the deposit's own mask
-    // lerp, so height stays conserved. Bilinear like the region taps below: this texel
-    // is over an arbitrary sub-pixel spot, and a 1×1 constant mask reads the same at
-    // every uv.
-    let sel = textureSampleLevel(sel_mask, samp, world / rdim, 0.0).r;
+    for (var i = 0u; i < EXCHANGE_STEPS; i = i + 1u) {
+        // Midpoint of this sub-step's stretch of the track.
+        let tip = tip_at((f32(i) + 0.5) / f32(EXCHANGE_STEPS));
+        let dir = tip.zw;
+        let rot = vec2<f32>(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs);
+        let world = tip.xy + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
+        let uv = world / rdim;
 
-    let rc = textureSampleLevel(region_color, samp, world / rdim, 0.0);
-    let ra = textureSampleLevel(region_aux, samp, world / rdim, 0.0);
+        // Outside the selection the canvas gives nothing up and the source mints
+        // nothing (§6.8) — the matching reduction on the canvas side is the deposit's
+        // own mask lerp, so height stays conserved. Bilinear like the region taps
+        // below: this texel is over an arbitrary sub-pixel spot, and a 1×1 constant
+        // mask reads the same at every uv.
+        let sel = textureSampleLevel(sel_mask, samp, uv, 0.0).r;
+        let rc = textureSampleLevel(region_color, samp, uv, 0.0);
+        let ra = textureSampleLevel(region_aux, samp, uv, 0.0);
 
-    // Height moves; colour and per-unit opacity ride as optical-mass-weighted
-    // blends (§6.1). Two parcels land on the tool — what it took off the canvas, and
-    // the share of the brush's own `add` it lifted back before that paint had settled
-    // — each stacked with its own latent, so a tip smearing red through white carries
-    // the mixture rather than an average of the two errands.
-    let take_h = ra.x * (1.0 - ex.keep) * sel;
-    let take_m = rc.a * take_h;
-    let canvas_lat = rc.rgb / max(rc.a, EPS);
-    var lat = blend_latent(b_c.rgb, m, canvas_lat, take_m);
-    h += take_h;
-    m += take_m;
+        // What it keeps of its own load. Exactly the complement of the fraction the
+        // `deposit` after us lays from it, over the very exposure it lays over — so
+        // there is no correction factor.
+        //
+        // There used to be one (`DEPLETE_FACTOR = 0.75`, "deplete a bit slower than the
+        // math would indicate to account for error"). The error it was accounting for
+        // was real but misdiagnosed: the two sides were solving different equations, so
+        // they disagreed about how much had changed hands and the tool over-drained.
+        // Draining slower papered over that — but a factor below 1 means the tool keeps
+        // a fraction of every deposit it makes, which compounds, so paint grew without
+        // bound over a long stroke. With both sides now taking complementary shares of
+        // one solution there is nothing left to correct, and the exact rate is also the
+        // conserving one.
+        h = h * (1.0 - ex.dep);
+        m = m * (1.0 - ex.dep);
 
-    let src_h = st.e.x * ex.src_w * sel;
-    let src_m = st.c.w * src_h;
-    lat = blend_latent(lat, m, st.c.xyz, src_m);
-    h += src_h;
-    m += src_m;
+        // Height moves; colour and per-unit opacity ride as optical-mass-weighted
+        // blends (§6.1). Two parcels land on the tool — what it took off the canvas,
+        // and the share of the brush's own `add` it lifted back before that paint had
+        // settled — each stacked with its own latent, so a tip smearing red through
+        // white carries the mixture rather than an average of the two errands.
+        let take_h = ra.x * (1.0 - ex.keep) * sel;
+        let take_m = rc.a * take_h;
+        h = h + take_h;
+        // Only mix a colour in when there is optical mass to carry it. The region is
+        // stored premultiplied, so recovering a latent is a division by the opacity —
+        // and out in a stroke's faded tail that opacity is a rounding error, so the
+        // quotient is enormous. `blend_latent` weights it by its own vanishing mass,
+        // but "enormous × almost nothing" is not nothing: it leaves a few tenths of a
+        // wild colour on the tool, which the deposit then combs out along the stroke as
+        // thin bright streaks. The single mid-segment tap this replaced could hit that
+        // too, but once per segment and at the midpoint; walking the track samples the
+        // ends as well, where the canvas is emptiest, and eight times as often.
+        if take_m > EPS {
+            lat = blend_latent(lat, m, rc.rgb / rc.a, take_m);
+        }
+        m = m + take_m;
+
+        let src_h = st.e.x * ex.src_w * sel;
+        let src_m = st.c.w * src_h;
+        lat = blend_latent(lat, m, st.c.xyz, src_m);
+        h = h + src_h;
+        m = m + src_m;
+    }
 
     textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
@@ -656,6 +741,117 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // the mask's feathered edge the texel receives that fraction of everything this
     // segment did — the lift as well as the deposit — which is exactly the fraction
     // `pickup` scaled its own side of the transfer by.
+    textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
+    textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));
+}
+
+// ---- 4. Settle: the transfer the pen-up breaks. ----------------------------------
+//
+// A stroke stops with the tip still **in contact and out of equilibrium**: the tool
+// is holding more than the canvas under it (or less, for an eraser), and that excess
+// is exactly the transfer the tip would have gone on making. Everywhere else on the
+// trail the tip left smoothly — a point sees the whole footprint pass over it, ending
+// with the trailing rim where `τ` has fallen back to 0 — but the last footprint never
+// gets that, so what was in flight is stranded. The reservoir is per-stroke, so
+// stranded means gone: a tip-shaped disc short of the trail behind it, and (for an
+// eraser) a tip-shaped smudge of paint that should have been taken.
+//
+// So the pen-up settles the pair — one dispatch, one thread per canvas texel of the
+// final footprint, the same `exchange_at` kernel as every segment. What it needs is an
+// exposure, and there is exactly one choice that does not simply move the discontinuity
+// somewhere else. **The transfer a break of contact settles is bounded by the pass on
+// both sides:**
+//
+//     e = min(owed, received),   owed = prefix(l),  received = rowtotal − prefix(l)
+//
+// * `received` is what the tip has already given this texel. A point the tip has
+//   barely reached has no film to break — and without this bound the settle steps
+//   against untouched canvas a radius *ahead* of where the pen came up. Measured on a
+//   smear over a flat field that step is 40% of the paint's own range; on an eraser it
+//   is a fully-scraped disc with a hard rim.
+// * `owed` is what it still had to give. A point the tip had all but finished with has
+//   nothing left to hand over — and without this bound the settle steps against the
+//   *trail*, which got no settle at all, right where the two meet.
+//
+// Both are readings of the **same prefix-τ volume** the swept deposit integrates
+// against, and that is the whole reason this comes out smooth. The instantaneous
+// depth `τ(l)` would do neither: `κ = −ln(1−coverage)` has a knee wherever coverage
+// approaches 1, so a settle keyed on it turns on across the few pixels of the tip's
+// shoulder and prints the tip's own edge. `prefix` is that same `τ` *integrated along
+// the travel*, so it ramps across the whole radius — which is why the brush's own
+// `add`, which is linear in it, caps smoothly, and the exchange, which saturates
+// exponentially in it, does not.
+//
+// Both bounds vanish on the footprint's rim (`owed` at the trailing edge, `received`
+// at the leading one, and the row total itself laterally), so the settle fades to
+// nothing all the way round and adds no edge of its own. They cross at the tip centre,
+// where the kernel is already deep in saturation and the kink costs nothing.
+//
+// The tool is not written back: nothing reads it after this. A range that does *not*
+// reach the end of the stroke never runs this dispatch — it hands its reservoir on to
+// the range that resumes instead — so the settle happens once, at the pen-up, and a
+// live tail computes the same one its commit will.
+@compute @workgroup_size(8, 8)
+fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let udim = textureDimensions(under_color);
+    if gid.x >= udim.x || gid.y >= udim.y {
+        return;
+    }
+    let t = vec2<i32>(gid.xy);
+    let rt = vec2<i32>(st.d.xy) + t;
+    let rdim = vec2<i32>(textureDimensions(region_color_w));
+    if rt.x < 0 || rt.y < 0 || rt.x >= rdim.x || rt.y >= rdim.y {
+        return;
+    }
+    // The slot carries zero travel and zero curvature, so the "sweep" is the tip's own
+    // footprint and `outside_sweep` reduces to the brush-local unit square — the same
+    // rejection `snapshot` used to decide which texels it bothered to copy.
+    let sw = segment_frame(rt);
+    if outside_sweep(sw) {
+        return;
+    }
+    let xl = sw.local.x;
+    let yl = sw.local.y;
+
+    let total = prefix_at(1.0, yl, st.d.z);
+    let owed = prefix_at(xl, yl, st.d.z);
+    let e = min(owed, total - owed);
+    if e <= 0.0 {
+        return; // the footprint's rim: nothing in flight, nothing to settle
+    }
+    let mdim = vec2<i32>(textureDimensions(sel_mask));
+    let sel = textureLoad(sel_mask, min(rt, mdim - vec2<i32>(1, 1)), 0).r;
+    if sel <= 0.0 {
+        return;
+    }
+    let ex = exchange_at(e);
+
+    // The tool over this texel. The reservoir lives in the shape frame, so rotate out
+    // of travel exactly as `bake` does — these are the two directions of one map.
+    let theta = st.d.z * TAU;
+    let cs = cos(theta);
+    let sn = sin(theta);
+    let sl = vec2<f32>(xl * cs + yl * sn, -xl * sn + yl * cs);
+    let buv = clamp(sl * 0.5 + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let b_c = textureSampleLevel(brush_src_color, samp, buv, 0.0);
+    let b_a = textureSampleLevel(brush_src_aux, samp, buv, 0.0);
+
+    let uc = textureLoad(under_color, t, 0);
+    let ua = textureLoad(under_aux, t, 0);
+
+    // The same parcel stacking as the deposit, with the tool's own load as the parcel:
+    // no `add` source, because a settle is a break of contact and not a stretch of
+    // travel, and the source is a rate per unit of travel.
+    var h = ua.x * ex.keep;
+    var m = uc.a * h;
+    let canvas_lat = uc.rgb / max(uc.a, EPS);
+    let par_h = b_a.x * ex.dep;
+    let par_m = b_c.a * par_h;
+    let lat = blend_latent(canvas_lat, m, b_c.rgb, par_m);
+    h += par_h;
+    m += par_m;
+    let op = m / max(h, EPS);
+
     textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
     textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));
 }

@@ -72,6 +72,11 @@ pub(super) struct DynamicsKit {
     pub(super) bake_bgl: wgpu::BindGroupLayout,
     pub(super) deposit_pipeline: wgpu::ComputePipeline,
     pub(super) deposit_bgl: wgpu::BindGroupLayout,
+    /// The pen-up: settles the transfer the tip was still in the middle of when the
+    /// stroke stopped (`dynamics.wesl::settle`). Reads the reservoir directly rather
+    /// than through the bake — a settle has no travel to integrate along.
+    pub(super) settle_pipeline: wgpu::ComputePipeline,
+    pub(super) settle_bgl: wgpu::BindGroupLayout,
     /// The deposit's prefix-τ volume binding (group 1) — the same texture the
     /// swept fast path samples, so the exchange footprint *is* the definite
     /// integral of the brush along the travel (compute-visible variant).
@@ -138,8 +143,15 @@ impl StrokeRenderer {
         let dirty: Vec<TileCoord> = affected_tiles(&segments).into_iter().collect();
         let mut run = DynamicsRun::new(self, scene, rec, tool);
         let mut map = scene.base.clone();
-        for piece in chunk_segments(&segments) {
-            map = run.draw(&map, &segments[piece]);
+        // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
+        // and within it to the last piece — which is the same condition that says there
+        // is no reservoir worth keeping. A range that stops short hands its tool on
+        // instead, so nothing is stranded for the settle to hand back, and a live tail
+        // computes the same settle its commit will.
+        let pieces = chunk_segments(&segments);
+        let last = pieces.len() - 1;
+        for (i, piece) in pieces.into_iter().enumerate() {
+            map = run.draw(&map, &segments[piece], !capture && i == last);
         }
         let tool_out = capture.then(|| run.capture_tool());
         run.submit();
@@ -352,10 +364,13 @@ impl<'a> DynamicsRun<'a> {
     /// result back into fresh CoW tiles. The tool carries on from where the previous
     /// piece left it, and the canvas side needs no carrying — it is in `base`, which
     /// for a later piece is what the earlier ones wrote back.
+    /// `settle` is set only for the piece that ends the stroke: see
+    /// [`StrokeRenderer::render_dynamic`] and `dynamics.wesl::settle`.
     fn draw(
         &mut self,
         base: &HashTrieMap<TileCoord, TilePairHandle>,
         segments: &[Segment],
+        settle: bool,
     ) -> HashTrieMap<TileCoord, TilePairHandle> {
         self.flush();
         let r = self.r;
@@ -544,7 +559,10 @@ impl<'a> DynamicsRun<'a> {
         // ---- The dispatch plan, one segment each, one 256-byte
         // slot each (dynamic uniform offsets — the standard way to vary a uniform
         // across dispatches within one pass).
-        let plan = dynamics_plan(rec, segments, region_origin, dsize, channels);
+        let plan = dynamics_plan(rec, segments, region_origin, dsize, channels, settle);
+        // The settle rides as one extra slot at the end of the plan; everything before
+        // it is a segment, and the loop below dispatches the two differently.
+        let segment_slots = plan.len() - usize::from(settle);
         const STRIDE: usize = 256;
         const SLOT: usize = 128; // sizeof the `Stamp` uniform (8 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
@@ -649,6 +667,27 @@ impl<'a> DynamicsRun<'a> {
                 })
             })
             .collect();
+        // The pen-up, which reads the reservoir itself — hence one bind group per
+        // ping-pong half, like `exchange`.
+        let settle_bgs: Vec<wgpu::BindGroup> = (0..2)
+            .map(|i| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark dynamics settle bg"),
+                    layout: &kit.settle_bgl,
+                    entries: &[
+                        params(),
+                        samp(),
+                        tex(7, &self.brush_color[i]),
+                        tex(8, &self.brush_aux[i]),
+                        tex(11, &under_color),
+                        tex(12, &under_aux),
+                        tex(13, &region_color),
+                        tex(14, &region_aux),
+                        tex(21, &sel_mask),
+                    ],
+                })
+            })
+            .collect();
 
         // ---- The loop: bake → exchange → snapshot → deposit per segment, in stroke
         // order. One compute pass; the implicit barriers between dispatches give the
@@ -675,7 +714,7 @@ impl<'a> DynamicsRun<'a> {
             // every pipeline switch: changing to a pipeline whose group-0 layout
             // differs invalidates the groups above it, and both consumers are
             // reached only across such a switch.
-            for (i, d) in plan.iter().enumerate() {
+            for (i, d) in plan.iter().take(segment_slots).enumerate() {
                 let off = (i * STRIDE) as u32;
                 // Bake this segment's swept reservoir prefix first — it folds in the
                 // tip's current orientation as well as the reservoir state.
@@ -700,6 +739,19 @@ impl<'a> DynamicsRun<'a> {
                 cpass.set_bind_group(1, prefix_bg, &[]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 cur = 1 - cur;
+            }
+            // The pen-up: snapshot the final footprint, then settle the transfer the
+            // stroke stopped in the middle of (`dynamics.wesl::settle`). `cur` now names
+            // the reservoir the last segment left, which is what the tip is holding.
+            if let Some(d) = plan.get(segment_slots) {
+                let off = (segment_slots * STRIDE) as u32;
+                cpass.set_pipeline(&kit.snapshot_pipeline);
+                cpass.set_bind_group(0, &snapshot_bg, &[off]);
+                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                cpass.set_pipeline(&kit.settle_pipeline);
+                cpass.set_bind_group(0, &settle_bgs[cur], &[off]);
+                cpass.set_bind_group(1, prefix_bg, &[]);
+                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
             }
             self.cur = cur;
         }
@@ -910,6 +962,7 @@ fn dynamics_plan(
     region_origin: Vec2,
     dsize: u32,
     channels: [f32; 4],
+    settle: bool,
 ) -> Vec<LoopDispatch> {
     let b = &rec.brush;
     let d = b.dynamics;
@@ -990,7 +1043,113 @@ fn dynamics_plan(
             ],
         });
     }
+
+    // The pen-up (`dynamics.wesl::settle`), as one more slot on the same uniform: the
+    // tip standing at the stroke's last point with **zero travel**, which is what makes
+    // the shared `segment_frame`/`outside_sweep` reduce to the tip's own footprint and
+    // `snapshot` copy exactly the texels the settle will write. Everything the settle
+    // reads is already here — the frame, the radius, the two λs and the orientation —
+    // so it costs a slot rather than a second uniform.
+    if let Some(s) = settle.then(|| segments.last()).flatten() {
+        let (end, _) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
+        let tan = settle_tangent(segments, end);
+        let p = end - region_origin;
+        // The tip's own square, with the same 1.5px sampling margin every other rect
+        // gets. It cannot overrun the `under` scratch: that was sized from coverage
+        // boxes, and a segment's box is this square grown by its travel.
+        let lo = p - Vec2::splat(s.radius + 1.5);
+        let hi = p + Vec2::splat(s.radius + 1.5);
+        let (ox, oy) = (lo.x.floor(), lo.y.floor());
+        let (w, h) = (
+            (((hi.x - ox).ceil() as u32) + 1).min(dsize),
+            (((hi.y - oy).ceil() as u32) + 1).min(dsize),
+        );
+        plan.push(LoopDispatch {
+            groups: (w.div_ceil(8), h.div_ceil(8)),
+            exchange_groups: (0, 0), // the tool is not written back; nothing reads it
+            slot: [
+                p.x,
+                p.y,
+                tan.x,
+                tan.y,
+                s.radius,
+                0.0, // no travel: a pen-up is a break of contact, not a stretch of it
+                l_lift,
+                l_dep,
+                channels[0],
+                channels[1],
+                channels[2],
+                s.opacity,
+                ox,
+                oy,
+                s.orient,
+                0.0,
+                // No `add`: the source is a rate per unit of travel, and there is none.
+                // No curvature, for the same reason — the frame is a standing tip.
+                0.0,
+                0.0,
+                p.x,
+                p.y,
+                nfreq[0],
+                nfreq[1],
+                nfreq[2],
+                nfreq[3],
+                namp[0],
+                namp[1],
+                namp[2],
+                s.dist + s.length,
+                noff[0],
+                noff[1],
+                noff[2],
+                0.0,
+            ],
+        });
+    }
     plan
+}
+
+/// The travel direction the pen-up settle measures `owed` and `received` along: the
+/// chord over the **last footprint's worth of path**, rather than the last segment's
+/// own tangent.
+///
+/// The last segment's tangent cannot be trusted, and the reason is a property of real
+/// input rather than a rare edge case. A hand pauses before it lifts, so a pen-up
+/// arrives as a cluster of samples at almost one point; the fitter turns that into
+/// spans of no length, and the flattener into edges whose chord is a rounding error
+/// and whose direction is therefore arbitrary — measured on a straight drag down, the
+/// final edges came out at 0°, −90°, 90° and 180° against a stroke running at 90°.
+///
+/// Nothing else in the loop notices: a segment of no length deposits nothing, so its
+/// direction never reaches a pixel. The settle is the exception, because it takes a
+/// whole tip's worth of exchange from that one frame — and its `min(owed, received)`
+/// lens is elongated *along* it, so a wrong direction lands a tip-shaped disc across
+/// the stroke instead of along it, at a different angle every time the hand pauses
+/// differently. That is exactly what it looked like: a fade-out cap whose orientation
+/// wandered from stroke to stroke, and worse the higher `lift` and `deposit` were.
+///
+/// One radius is the natural window because it is the extent of the thing being
+/// settled — the tip's own footprint — so this is the direction the tip was travelling
+/// over precisely the stretch of canvas the settle acts on, and no new constant.
+fn settle_tangent(segments: &[Segment], end: Vec2) -> Vec2 {
+    let radius = segments.last().map_or(1.0, |s| s.radius);
+    let mut back = end;
+    let mut acc = 0.0;
+    for s in segments.iter().rev() {
+        back = s.start;
+        acc += s.length;
+        if acc >= radius {
+            break;
+        }
+    }
+    let v = end - back;
+    let len = v.length();
+    if len > 1e-4 {
+        v / len
+    } else {
+        // A stroke with no travel at all — a click. Its own frame is all there is, and
+        // `generate_segments_in` gives that a real direction rather than a fitted one.
+        segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.dir)
+    }
 }
 
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
@@ -1241,6 +1400,23 @@ pub(super) fn build_dynamics_kit(
             stor32(18),
         ],
     });
+    // The pen-up settle: the deposit's targets and snapshot, but reading the reservoir
+    // itself (bilinearly — a canvas texel sits over an arbitrary spot of it) instead of
+    // the bake, since a settle integrates along no travel.
+    let settle_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark dynamics settle bgl"),
+        entries: &[
+            params_entry,
+            csamp,
+            ctex(7, true),
+            ctex(8, true),
+            ctex(11, false),
+            ctex(12, false),
+            stor(13),
+            stor(14),
+            ctex(21, false),
+        ],
+    });
     let deposit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("stark dynamics deposit bgl"),
         entries: &[
@@ -1325,6 +1501,14 @@ pub(super) fn build_dynamics_kit(
         "stark dynamics deposit",
         "deposit",
         &[Some(&deposit_bgl), Some(&prefix_bgl)],
+    );
+    // The settle reads the prefix-τ volume too (group 1): its exposure is a pair of
+    // readings of it, which is what makes the pen-up fade over the whole tip rather
+    // than over the few pixels of its coverage knee.
+    let settle_pipeline = cpipe(
+        "stark dynamics settle",
+        "settle",
+        &[Some(&settle_bgl), Some(&prefix_bgl)],
     );
     let exchange_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("stark dynamics exchange sampler"),
@@ -1418,6 +1602,8 @@ pub(super) fn build_dynamics_kit(
         bake_bgl,
         deposit_pipeline,
         deposit_bgl,
+        settle_pipeline,
+        settle_bgl,
         exchange_sampler,
         slice_pipeline,
         slice_bgl,
