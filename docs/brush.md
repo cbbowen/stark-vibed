@@ -301,6 +301,36 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      through. `bake` integrates it along the travel axis into a swept prefix, so
      the deposit reads what the tip presented over a whole pass rather than one
      mid-pass sample — exact for any segment length.
+   - **Paint migrates within the tip (`wick`), because the cells trade at wildly
+     different rates.** A cell's exposure is keyed on its own optical depth, and τ is
+     flat across the interior (the coverage clamp caps it) then falls off a cliff over
+     the few texels of a hard tip's shoulder — at `hardness = 0.95`, some fifty times
+     slower there than at the centre. Left as isolated cells, that disparity strands
+     paint: once a stroke's own source runs dry (`drain`) and the tip is only smearing,
+     the interior empties in step with the fading trail while the shoulder ring still
+     holds what it lifted hundreds of pixels back. The deposit lays each lateral row's
+     load back at its own offset, so the ring prints — a rim of surplus paint with a
+     scraped groove inside it, curving into a tip-shaped chevron where the stroke stops
+     (`golden_lift_end_regression`).
+
+     So each cell trades with its four neighbours in **flux form**: one thread adds what
+     the other subtracts, making the pass a pure internal redistribution that leaves
+     total height and optical mass on the tool untouched — which is what lets it sit in
+     the loop without disturbing the conservation argument the transfer rests on. What
+     it chases is **concentration**, height per unit coverage, not height: a tool holds
+     more paint where more of it is in contact, so `height ∝ coverage` — the tip's own
+     shape — is the state it relaxes towards. Driving it on raw height instead makes
+     *uniform* height the equilibrium, which pumps paint out of the interior into the
+     barely-touching rim and is a measurably different brush.
+
+     It runs **before `bake`**, not between `bake` and `exchange`: those two are the two
+     halves of one transfer and only add up if both read the reservoir as the segment
+     found it. Ahead of both, it is simply part of what the tool arrives carrying.
+
+     The rate has a cost on the far side, and it is why `WICK_RATE` is a knee rather
+     than a large number. Wicking hands paint to shoulder cells that used to hold almost
+     none — the same rate disparity that stranded the ring also starved them — so they
+     now deposit and the stroke's own edge softens.
    - **The tool's side is not swept, and that is the open defect.** A reservoir texel
      is dragged along a track `lr` radii long over a canvas that changes under it, but
      it reads that canvas with a single tap at the segment's midpoint. It is the last

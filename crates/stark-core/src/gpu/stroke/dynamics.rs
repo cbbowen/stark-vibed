@@ -66,6 +66,10 @@ pub(super) struct DynamicsKit {
     /// the `deposit` after it hands the canvas (`dynamics.wesl::exchange`).
     pub(super) exchange_pipeline: wgpu::ComputePipeline,
     pub(super) exchange_bgl: wgpu::BindGroupLayout,
+    /// Paint migrating *within* the tip, ahead of both halves of the transfer
+    /// (`dynamics.wesl::wick`). Shares `exchange`'s bind group: it reads and writes the
+    /// same reservoir ping-pong and needs a strict subset of the same bindings.
+    pub(super) wick_pipeline: wgpu::ComputePipeline,
     /// Integrates the reservoir along the segment's travel axis so the deposit can
     /// read the whole pass instead of one mid-pass sample (`dynamics.wesl::bake`).
     pub(super) bake_pipeline: wgpu::ComputePipeline,
@@ -716,7 +720,16 @@ impl<'a> DynamicsRun<'a> {
             // reached only across such a switch.
             for (i, d) in plan.iter().take(segment_slots).enumerate() {
                 let off = (i * STRIDE) as u32;
-                // Bake this segment's swept reservoir prefix first — it folds in the
+                // Let the tool's own paint migrate across the tip before anything reads
+                // it. Ahead of *both* halves of the transfer, so `bake` and `exchange`
+                // still see one another's entry state and their shares still add up
+                // (`dynamics.wesl::wick`). Reads `cur` and writes the other half, like
+                // every reservoir pass, so a segment cycles the ping-pong twice.
+                cpass.set_pipeline(&kit.wick_pipeline);
+                cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
+                cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
+                cur = 1 - cur;
+                // Bake this segment's swept reservoir prefix next — it folds in the
                 // tip's current orientation as well as the reservoir state.
                 cpass.set_pipeline(&kit.bake_pipeline);
                 cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
@@ -1490,6 +1503,10 @@ pub(super) fn build_dynamics_kit(
         "exchange",
         &[Some(&exchange_bgl)],
     );
+    // The wick reads the reservoir and writes the other half of the ping-pong, which is
+    // exactly what `exchange_bgl` already describes — the region and selection bindings
+    // it also carries simply go unused, which a pipeline layout is free to do.
+    let wick_pipeline = cpipe("stark dynamics wick", "wick", &[Some(&exchange_bgl)]);
     // The bake reads the prefix-τ volume too (group 1) — the exposure weights in
     // its integral are that volume's own differences.
     let bake_pipeline = cpipe(
@@ -1598,6 +1615,7 @@ pub(super) fn build_dynamics_kit(
         snapshot_bgl,
         exchange_pipeline,
         exchange_bgl,
+        wick_pipeline,
         bake_pipeline,
         bake_bgl,
         deposit_pipeline,

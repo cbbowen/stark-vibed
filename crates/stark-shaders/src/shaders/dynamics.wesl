@@ -5,13 +5,15 @@
 // give the sequencing; usage scopes are per-dispatch, so the region may be
 // sampled by one dispatch and storage-written by the next — no copies):
 //
-//   - per flattened segment, in order: `bake` (integrate the reservoir along the
-//     travel axis, so the deposit can read what the tip presented over a whole pass
-//     rather than at one point), `exchange` — one thread per **tool reservoir**
-//     texel, which settles the tool's half of the transfer — `snapshot` (copy the
-//     segment's footprint texels to an `under` scratch, so the deposit can
-//     read-modify-write the region) and `deposit`, one thread per footprint texel.
-//     `exchange` ping-pongs the reservoir.
+//   - per flattened segment, in order: `wick` (let the paint on the tool migrate
+//     between neighbouring parts of the tip, before either half of the transfer reads
+//     it), `bake` (integrate the reservoir along the travel axis, so the deposit can
+//     read what the tip presented over a whole pass rather than at one point),
+//     `exchange` — one thread per **tool reservoir** texel, which settles the tool's
+//     half of the transfer — `snapshot` (copy the segment's footprint texels to an
+//     `under` scratch, so the deposit can read-modify-write the region) and `deposit`,
+//     one thread per footprint texel. `wick` and `exchange` each ping-pong the
+//     reservoir, so a segment cycles it twice.
 //
 // **`exchange` runs before `deposit`, not after.** The two are the two halves of one
 // transfer, and a transfer is a statement about a *single* pre-state: both dispatches
@@ -238,13 +240,13 @@ fn exchange_at(e: f32) -> Exchange {
     return out;
 }
 
-// The footprint's **optical depth** at brush-local `local` — the currency every
+// The footprint's **optical depth** for a given coverage — the currency every
 // transfer in this loop is measured in, on both sides. The canvas side gets it from
 // the prefix-τ volume's differences; the tool side, which has no prefix to
 // difference, converts its own coverage the same way the volume was built
 // (`assets::build_prefix_tau`), clamp included, so the two agree.
-fn tau_at(local: vec2<f32>) -> f32 {
-    return -log(1.0 - min(coverage_at(local), 0.999));
+fn tau_of(cov: f32) -> f32 {
+    return -log(1.0 - min(cov, 0.999));
 }
 
 // Footprint coverage at brush-local `local` ∈ [-1,1]² (0 outside — image masks may
@@ -286,7 +288,170 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
     return mix(mix(p00, p10, fx), mix(p01, p11, fx), fy);
 }
 
-// ---- 0. Bake: the reservoir's swept prefix along the travel axis. ----------------
+// ---- 0. Wick: paint migrating within the tip. ------------------------------------
+//
+// The reservoir is a grid of independent cells: each one trades with the canvas
+// directly beneath it and with nothing else. Real paint on a tool does not hold still
+// like that — it creeps between the bristles — and leaving that out is visible,
+// because the *rate* each cell trades at varies enormously across the tip.
+//
+// `exchange` keys a cell's exposure on its own optical depth, and τ is flat across the
+// interior (the 0.999 coverage clamp caps it) and then falls off a cliff over the few
+// texels of a hard tip's shoulder — at `hardness = 0.95` the shoulder cells exchange
+// some fifty times slower than the interior. So when a stroke's own paint runs out
+// (`drain`) and the tip is smearing what it picked up, the interior cells empty in step
+// with the fading trail while the shoulder ring goes on holding paint lifted hundreds
+// of pixels back. Nothing relaxes it, and the deposit lays each lateral row's load back
+// at its own offset, so the ring prints: a rim of surplus paint at the shoulder with a
+// scraped groove just inside it, curving into a tip-shaped chevron where the stroke
+// stops. `golden_lift_end_regression` pins it.
+//
+// So the cells trade with their four neighbours, in **flux form**: a pair swaps a share
+// of its difference, one thread adding what the other subtracts. That makes the whole
+// pass a pure internal redistribution — total height and optical mass over the tool are
+// unchanged to the last bit the float arithmetic keeps — which is why it can sit in the
+// loop without touching the conservation argument the transfer rests on (§6.1).
+//
+// **It runs before `bake`, not between `bake` and `exchange`.** Those two are the two
+// halves of one transfer and only add up if both read the reservoir as the segment
+// found it; wicking between them would let the canvas receive a share of one reservoir
+// while the tool gave up a share of another, and the halves would disagree by the flux.
+// Ahead of both, it is simply part of what the tool arrives at the segment carrying.
+//
+// **What the flux chases is concentration, not height.** A tool holds more paint where
+// there is more of it in contact, so the state a tip relaxes towards is `height ∝
+// coverage` — its own shape — and the thing that actually equalises is height *per unit
+// coverage*. Driving the flux on raw height instead would make uniform height the
+// equilibrium, which is a different brush: it pumps paint out of the interior into the
+// barely-touching shoulder, and the whole stroke lays down ~5% of a radius wider with a
+// softer edge. Measured, not reasoned about — that version widened this test's body
+// edge from 15 to 32 levels before the concentration form replaced it.
+//
+// The mobility is `min` of the two cells' coverage — symmetric, so the flux stays
+// antisymmetric, and vanishing where the tip does. That second property matters twice
+// over: no paint is dragged out into the zero-coverage corners of the square reservoir,
+// where nothing would ever deposit it again, and a cell out of contact carries nothing
+// along. It is also what bounds the scheme: a cell can shed at most `min(c_n, c_t)/c_t
+// ≤ 1` of its own concentration to each neighbour.
+
+// How readily paint migrates within the tip, per unit of travel in radius units.
+//
+// Tuned against `golden_lift_end_regression`, measuring the ring as the worst rise
+// above a groove along any lateral profile — a stroke's paint may only fall off as you
+// walk away from its axis, so any rise is a rim sitting outside a scrape. Rates 0, 2,
+// 4, 8, 16, 24 gave 3.7, 2.0, 1.3, 0.67, 0.67, 0.33 levels. 8 is the knee: it is where
+// the worst remaining rise stops being the stroke end at all and moves off into the
+// body, i.e. the ring has dropped below the 8-bit noise it is measured against, and
+// paying more buys nothing.
+//
+// There is a real cost on the other side, which is why this is not simply set high.
+// Wicking hands paint to shoulder cells that used to hold almost none — the same rate
+// disparity that stranded the ring also starved them — so they now deposit, and the
+// stroke's own edge softens: this test's body edge goes from 15 to 27 levels at 8, and
+// on to 34 by 24. Arguably the starved rim was the older defect of the two, but it is a
+// visible change to every paint-manipulating brush and not one to spend for free.
+const WICK_RATE: f32 = 8.0;
+
+// The share of a neighbouring pair's concentration difference that crosses over `lr` of
+// travel. Exponential in travel like every other rate in this loop (§6.2), so no
+// segment length can push it past the ceiling however the path was cut. That ceiling is
+// the explicit four-neighbour stability bound: with each of the four pairs trading at
+// most a quarter of the difference, a cell's own share of itself never goes negative.
+// `RESERVOIR_EXCHANGE_STEP` holds the loop clear of it anyway.
+fn wick_share(mobility: f32, lr: f32) -> f32 {
+    return 0.25 * (1.0 - exp(-WICK_RATE * lr * mobility));
+}
+
+// Coverage floor for the concentration quotient. Cells below it are out of contact —
+// nothing ever deposits from them and the mobility above already zeroes their flux — so
+// this only keeps the division finite, it never decides a pixel.
+const WICK_MIN_COV: f32 = 1e-4;
+
+// What one reservoir cell carries, in the quantities the flux moves: height, optical
+// mass (opacity·height), and the latent riding as a mass weight — the same
+// mass-weighted form the rest of the loop blends colour in, so a cell that gains paint
+// from a neighbour gains that neighbour's colour in proportion to what it brought.
+struct Load {
+    h: f32,
+    m: f32,
+    lm: vec3<f32>,
+}
+
+fn load_at(t: vec2<i32>, bdim: vec2<u32>) -> Load {
+    let tc = clamp(t, vec2<i32>(0, 0), vec2<i32>(bdim) - vec2<i32>(1, 1));
+    let c = textureLoad(brush_src_color, tc, 0);
+    let a = textureLoad(brush_src_aux, tc, 0);
+    var out: Load;
+    out.h = a.x;
+    out.m = c.a * a.x;
+    out.lm = c.rgb * out.m;
+    return out;
+}
+
+// A reservoir texel's brush-local coordinates, clamped into the grid — so a cell on the
+// border reads *itself* as its outside neighbour, the difference is exactly zero, and
+// the rim is a no-flux wall with no special case.
+fn brush_local_at(t: vec2<i32>, bdim: vec2<u32>) -> vec2<f32> {
+    let tc = clamp(t, vec2<i32>(0, 0), vec2<i32>(bdim) - vec2<i32>(1, 1));
+    return (vec2<f32>(tc) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
+}
+
+const WICK_NEIGHBOURS = array<vec2<i32>, 4>(
+    vec2<i32>(1, 0),
+    vec2<i32>(-1, 0),
+    vec2<i32>(0, 1),
+    vec2<i32>(0, -1),
+);
+
+@compute @workgroup_size(8, 8)
+fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let bdim = textureDimensions(brush_src_color);
+    if gid.x >= bdim.x || gid.y >= bdim.y {
+        return;
+    }
+    let t = vec2<i32>(gid.xy);
+    let self_load = load_at(t, bdim);
+    let cov_t = coverage_at(brush_local_at(t, bdim));
+    let inv_t = 1.0 / max(cov_t, WICK_MIN_COV);
+
+    // Every share is taken against the *entering* state on both sides, never against a
+    // running total: that is what makes this thread's flux the exact negative of the
+    // one its neighbour computes for the same pair — the mobility, the share and the
+    // two concentrations are all symmetric in the pair, so the two threads compute one
+    // number and disagree only in sign.
+    var d: Load;
+    d.h = 0.0;
+    d.m = 0.0;
+    d.lm = vec3<f32>(0.0, 0.0, 0.0);
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let tn = t + WICK_NEIGHBOURS[k];
+        let n = load_at(tn, bdim);
+        let cov_n = coverage_at(brush_local_at(tn, bdim));
+        let mobility = min(cov_t, cov_n);
+        // The share converts back out of concentration into the height it moves, so
+        // what crosses is a quantity of paint and the sum over the tool is untouched.
+        let f = wick_share(mobility, st.b.y) * mobility;
+        let inv_n = 1.0 / max(cov_n, WICK_MIN_COV);
+        d.h += f * (n.h * inv_n - self_load.h * inv_t);
+        d.m += f * (n.m * inv_n - self_load.m * inv_t);
+        d.lm += f * (n.lm * inv_n - self_load.lm * inv_t);
+    }
+
+    let h = self_load.h + d.h;
+    let m = self_load.m + d.m;
+    let lm = self_load.lm + d.lm;
+    // Colour comes back out of the mass weight it travelled as. With no mass there is
+    // no colour to recover, so the cell keeps the latent it had rather than a quotient
+    // of two vanishing numbers (§6.1).
+    var lat = textureLoad(brush_src_color, t, 0).rgb;
+    if m > EPS {
+        lat = lm / m;
+    }
+    textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
+    textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
+}
+
+// ---- 1. Bake: the reservoir's swept prefix along the travel axis. ----------------
 //
 // During a segment the tip does not present one texel to a canvas point — it drags
 // a whole *range* of texels across it. A point at travel-frame `(xl, yl)` is served
@@ -383,7 +548,7 @@ fn bake(
     textureStore(bake_latm_w, t, ws_latm[i]);
 }
 
-// ---- 1. Snapshot the region under the segment's footprint rect. -----------------
+// ---- 2. Snapshot the region under the segment's footprint rect. -----------------
 
 // This texel's place in the segment's travel frame — the one the whole exchange is
 // measured in. Straight or curved, `sweep_at` hands back the same three quantities
@@ -486,7 +651,7 @@ fn tip_at(f: f32) -> vec4<f32> {
     );
 }
 
-// ---- 2. Exchange: the tool's own side of the transfer, per segment. -------------
+// ---- 3. Exchange: the tool's own side of the transfer, per segment. -------------
 //
 // One thread per **tool reservoir** texel, run *before* the `deposit` it is the other
 // half of, so that both read the canvas and the reservoir as the segment found them.
@@ -547,7 +712,7 @@ fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
     // (radius units). In τ, like the canvas side — the canvas gives up
     // `1 − keep(∫τ)`, so a tool that measured its gain in bare coverage would
     // receive a fraction of what the canvas lost and quietly destroy paint.
-    let e_step = tau_at(local) * st.b.y / f32(EXCHANGE_STEPS);
+    let e_step = tau_of(coverage_at(local)) * st.b.y / f32(EXCHANGE_STEPS);
     let ex = exchange_at(e_step);
     let rdim = vec2<f32>(textureDimensions(region_color));
     // The tool's shape frame is the travel frame turned by the shape's orientation
@@ -622,7 +787,7 @@ fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
 }
 
-// ---- 3. Deposit: the swept exchange over one segment. ----------------------------
+// ---- 4. Deposit: the swept exchange over one segment. ----------------------------
 
 @compute @workgroup_size(8, 8)
 fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -745,7 +910,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));
 }
 
-// ---- 4. Settle: the transfer the pen-up breaks. ----------------------------------
+// ---- 5. Settle: the transfer the pen-up breaks. ----------------------------------
 //
 // A stroke stops with the tip still **in contact and out of equilibrium**: the tool
 // is holding more than the canvas under it (or less, for an eraser), and that excess
