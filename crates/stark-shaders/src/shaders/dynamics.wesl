@@ -691,9 +691,23 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
 // How many sub-steps `exchange` walks its texel's track in. The canvas side gets its
 // sweep exactly, from the prefix-τ; the tool side has no prefix to difference — the
 // canvas under it is an arbitrary evolving field — so it is a quadrature, and this is
-// how fine. 8 puts the sub-step at `spacing/8` of the tip, an eighth of what
-// `RESERVOIR_EXCHANGE_STEP` allows a segment to be, and it costs texture taps inside
-// one dispatch rather than eight times as many dispatches.
+// how fine.
+//
+// **Pinned at 1, and it is not a placeholder — raising it is wrong.** It looks like the
+// obvious refinement and it is a different model: over each sub-step the tool lifts its
+// share of a canvas held *fixed*, N times over, while the `deposit` gives up a single
+// share of the whole exposure — so the two halves stop being complements of one
+// solution and the transfer stops balancing. That is not a small bias. At a segment
+// length four times finer than the loop runs at, where discretization error is
+// negligible and the two schemes ought to agree, N = 8 lands **12 levels rms** away
+// from where N = 1 converges. (It is also what made N = 8 look good on a ringing
+// stroke: it drops the tool's per-segment retention from 0.5 to 0.007, which damps the
+// smear by destroying its memory.)
+//
+// Averaging the canvas along the track and evaluating the kernel *once* — the version
+// that keeps the halves complementary — was also tried, and moves the result by less
+// than the 8-bit noise floor. The midpoint tap is simply not where the error is; see
+// `RESERVOIR_EXCHANGE_STEP`, which is.
 const EXCHANGE_STEPS: u32 = 1u;
 
 // `sin(x)` and `1 − cos(x)` as the same truncated Maclaurin series `path::arc_at` uses,

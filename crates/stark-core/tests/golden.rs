@@ -319,7 +319,11 @@ fn golden_drained_brush_length_independent() {
         stroke_with(
             &mut engine,
             brush,
-            &[Vec2::new(-400.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(x, 0.0)],
+            &[
+                Vec2::new(-400.0, 0.0),
+                Vec2::new(0.0, 0.0),
+                Vec2::new(x, 0.0),
+            ],
         );
         let img = engine.render_to_image();
         assert_golden(&format!("drained_brush_length_independent_{i}"), &img, 6);

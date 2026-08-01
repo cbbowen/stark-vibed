@@ -1238,14 +1238,14 @@ mod tests {
                     &straight,
                 ),
             ),
-            // `max_len` from RESERVOIR_EXCHANGE_STEP (0.5 · radius = 10px over 400px).
+            // `max_len` from RESERVOIR_EXCHANGE_STEP (0.125 · radius = 2.5px over 400px).
             // **This is the row a reservoir-cadence retuning moves**, and the reason
             // the dynamics path costs what it does. Subdivision is by bisection, so a
-            // count sits at or above the length bound's own `400/10 = 40` rather than
+            // count sits at or above the length bound's own `400/2.5 = 160` rather than
             // exactly on it.
             (
                 "straight, smearing tip",
-                52,
+                208,
                 record(smearing(20.0), &straight),
             ),
             // The same cadence on a tip four times as fat. The cap is a fraction of the
@@ -1254,18 +1254,17 @@ mod tests {
             // them both.
             (
                 "straight, fat smearing tip",
-                14,
+                52,
                 record(smearing(80.0), &straight),
             ),
             // `drain` costs **nothing**, which is the point of this row: the falloff is
             // evaluated per fragment from its own arc length, so it asks the flattener
             // for no segments at all and this comes out identical to the smearing row
-            // above. It used to bind at `0.02 / drain` = 4px and cost 156 segments —
-            // 3× what the reservoir cadence alone asks — for a quantity that is now
-            // exact rather than merely finely sampled.
+            // above. It used to bind at `0.02 / drain` = 4px, and now costs nothing at all —
+            // for a quantity that is exact rather than merely finely sampled.
             (
                 "straight, draining tip",
-                52,
+                208,
                 record(
                     BrushParams {
                         drain: 0.005,
@@ -1321,7 +1320,7 @@ mod tests {
                     &arc,
                 ),
             ),
-            ("arc, smearing tip", 55, record(smearing(20.0), &arc)),
+            ("arc, smearing tip", 200, record(smearing(20.0), &arc)),
             // The Euler spiral: `angle` again over 1.2 radians of total turning, but
             // with the fitter crossing the arc/chord threshold on each side of a
             // genuine inflection. Cheaper than the arc because it turns one way and
@@ -1352,7 +1351,7 @@ mod tests {
             // does, so a smearing tip pays the same price on a curve as on a line.
             (
                 "euler spiral, smearing tip",
-                50,
+                196,
                 record(smearing(20.0), &spiral),
             ),
         ];

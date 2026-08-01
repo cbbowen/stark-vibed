@@ -331,24 +331,34 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      than a large number. Wicking hands paint to shoulder cells that used to hold almost
      none — the same rate disparity that stranded the ring also starved them — so they
      now deposit and the stroke's own edge softens.
-   - **The tool's side is not swept, and that is the open defect.** A reservoir texel
-     is dragged along a track `lr` radii long over a canvas that changes under it, but
-     it reads that canvas with a single tap at the segment's midpoint. It is the last
-     thing in the loop whose answer depends on how finely the path happened to be cut
-     — and the flattener's segment lengths follow the pointer samples, so a hand
-     varying its speed cuts the tool's decay differently every time. Measured on a
-     pure smear dragged out of a band of paint, one 300px stroke drawn with 2, 6, 20
-     and 80 pointer samples came out up to **11 levels apart**, and 15% from the
-     converged answer; `RESERVOIR_EXCHANGE_STEP` bounds that error but does not remove
-     its dependence on the input.
-     
-     `EXCHANGE_STEPS` walks the track as a quadrature instead, and at 8 it closes the
-     spread to ≤ 3 levels for the same segment length. **It is pinned at 1 — the
-     single-tap behaviour — because it is not yet correct:** at 8 it leaves isolated
-     bright pixels combed along the stroke, out in the faded tail where the region's
-     stored opacity is a rounding error. Bisected to the sub-stepping (8 → streaks,
-     1 → none); guarding the latent's division by that opacity does *not* fix it, so
-     the cause is still unidentified. Do not raise it until that is understood.
+   - **The splitting is first order in the segment length, and that is the open
+     defect.** Both halves read the state the segment *entered* with — the canvas side
+     integrates over which reservoir cell is above it (`bake`), the tool side reads the
+     canvas with a single tap at the segment's midpoint — so each is exact about the
+     geometry of the slide and stale about the partner's value. Halving
+     `RESERVOIR_EXCHANGE_STEP` halves the error, cleanly, with no knee to sit on.
+
+     It prints. A tip lifts at a point and lays back down swept, so the smear
+     translates the canvas by exactly one segment length per segment — a delay line
+     ringing at the segment cadence — and a stroke long enough to run dry comes out
+     ruled with one tip-shaped arc per segment. Worse, the arcs move: the flattener
+     bisects, so a span's segment length depends on the *whole path's* length, and the
+     same visible stretch of stroke renders differently depending on where the pen went
+     afterwards. `golden_drained_brush_length_independent` paints one visible stretch
+     with five different tails and pins that; the convergence table and the four cheaper
+     fixes that do **not** work are recorded on `RESERVOIR_EXCHANGE_STEP` itself.
+
+     The fix worth designing is a **sliding** exchange kernel. The pair kernel treats a
+     canvas point and the cell above it as two coupled boxes for the whole segment, so
+     its `keep` saturates at `k_lift/s` — half the canvas retained, however long the
+     segment. A canvas point does not stay under one cell: it slides through a stream of
+     them, each pairing brief, and composing brief pairings gives `exp(−k_lift·e)`
+     instead. The two agree as the step goes to zero and diverge badly at any coarse
+     one. Measured, the sliding form converges to the same answer and is ~2.5× more
+     accurate at every step. What it costs is the exact complementarity the transfer
+     rests on — `keep`/`dep`/`add_w`/`src_w` no longer sum to conservation, which is
+     precisely the failure the pair kernel was introduced to fix — so it needs a
+     conserving formulation before it can land.
 3. **Write-back.** Each affected tile's full `TILE_TEX` block is sliced out of
    the shared region into a fresh CoW tile (`slice.wesl`, narrowing the wide aux
    to the persistent `(height)`). Aprons are bit-identical to neighbour interiors

@@ -95,22 +95,71 @@ const ADD_GAIN: f32 = 2.0;
 /// while the canvas was stripped every segment — and the lag between the two is what
 /// left a stroke's last footprint short of paint (`dynamics.wesl`).
 ///
-/// **0.5 is where this converges, and 1.0 is not.** Measured on a radius-100 smear that
-/// runs dry, against a step of 0.125: 0.25 is within 1.7 levels, 0.5 within 4.0, and
-/// both leave *no* pixel outside the goldens' tolerance of 6. At 1.0 that becomes 13.7
-/// levels over 1502 pixels, and at 2.0 it is 41 levels — the tool visibly steps from
-/// one footprint to the next instead of dragging.
+/// **The loop is first order in this constant, and nothing here is free.** Measured on
+/// `golden_drained_brush_length_independent` — a tip that runs dry and then *carries*
+/// paint 400px into view, so every visible pixel arrived through the reservoir and the
+/// transport error has nowhere to hide — against a reference at 0.03125:
 ///
-/// It is worth knowing why that was not obvious. The goldens could not see it: nearly
-/// every one of them paints with the shared `brush()` helper, which sets
+/// ```text
+///   step     error vs reference     length-dependence     order
+///   1.0        93 max / 49.7 rms      15.8 max / 3.69
+///   0.5        51 max / 23.2 rms       8.0 max / 2.27      1.10
+///   0.25       24 max / 10.1 rms       3.6 max / 0.82      1.20
+///   0.125      13 max /  5.3 rms       1.6 max / 0.34      0.94
+///   0.0625      8 max /  2.7 rms       1.6 max / 0.28      0.96
+/// ```
+///
+/// Clean first order, no knee to sit on. The second column is what makes it a bug and
+/// not a tolerance: the flattener bisects, so a span's segment length depends on the
+/// *whole path's* length, and the same visible stretch of stroke therefore renders
+/// differently depending on where the pen went afterwards. The error prints as one
+/// tip-shaped arc per segment — the tool lifts at a point and lays back down swept, so
+/// the smear translates the canvas by exactly one segment length per segment, which is
+/// a delay line ringing at the segment cadence. 0.125 is where that falls into the
+/// 8-bit quantization noise.
+///
+/// It is worth knowing why 0.5 looked fine for a while. The goldens could not see it:
+/// nearly every one of them paints with the shared `brush()` helper, which sets
 /// `drain = 0.0015`, and `drain` used to impose its own `0.02 / drain` = 13.3px cap on
 /// segment length. For any tip wider than 13.3px that cap was the tighter of the two,
 /// so the goldens rendered at 13.3px segments *whatever this constant said* — a change
 /// here moved nothing, and looked free. Only once the drain cap was retired (it is
 /// evaluated per fragment now, see [`flatten_tolerance`]) did this become the binding
 /// constraint and start deciding pixels. A benchmark or a golden that does not move is
-/// evidence about the test, not about the change.
-const RESERVOIR_EXCHANGE_STEP: f32 = 0.5;
+/// evidence about the test, not about the change. For a radius-80 tip that old cap
+/// worked out to 0.166, so this value is very close to what actually shipped; the step
+/// was never really at 0.5.
+///
+/// **Four cheaper things were tried and none of them work**, which is worth recording
+/// because each looks obvious:
+///
+/// * *Averaging the canvas along the reservoir texel's track* instead of the single
+///   midpoint tap `dynamics.wesl::exchange` takes. Changes the result by less than the
+///   8-bit noise floor on both this test and the pointer-sample-density spread it was
+///   meant for. The midpoint tap is not the error.
+/// * *Sub-stepping the tool's own kernel* over `e/N`. It looks like refinement and is a
+///   different model: the tool lifts its share of a canvas held fixed, N times over,
+///   while the deposit gives up a single share of `e`, so the halves stop being
+///   complements. At a step four times finer than this one it lands 12 levels rms from
+///   where the single step converges.
+/// * *Baking the post-exchange reservoir* rather than the entering one. Tempting — it
+///   scores 5.0 rms at a step of 0.5, better than the honest scheme manages at 0.125 —
+///   and it is a leak: the canvas receives a share of a reservoir the tool never gave
+///   up. It converges to a *different* answer, 3.2 rms from the true one, and stalls
+///   there however fine the step. The good score at 0.5 is discretization error
+///   cancelling the bias.
+/// * *Matching `BAKE_RES` to the prefix-τ volume's 256.* No effect; the two grids
+///   meeting in `deposit`'s ratio are not the problem.
+///
+/// The one thing that does help is replacing the closed-pair kernel with a **sliding**
+/// one — `keep = exp(−k_lift·e)` rather than the pair's `1 − k_lift·w(e)`, on the
+/// grounds that a canvas point does not stay under one reservoir cell for a segment but
+/// slides through a stream of them, so the pair's saturation at `k_lift/s` is wrong at
+/// any coarse step. That converges to the same answer and is ~2.5× more accurate at
+/// every step. It also gives up the exact complementarity the transfer is built on
+/// (`dynamics.wesl`, and the 39%-of-height-vanishing story there), so it is a design
+/// change and not a constant, and it is not made here.
+const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
 ///
