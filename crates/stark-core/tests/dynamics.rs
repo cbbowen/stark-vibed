@@ -566,6 +566,74 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
     );
 }
 
+/// The other half of conservation: a smear must not **destroy** paint either.
+///
+/// The test above bounds the transfer from one side only, and a leak passes it
+/// trivially — losing paint is never "more than went in". That is the side the
+/// exchange actually got wrong: the tool used to solve half the coupled pair (the
+/// canvas relaxing towards a tool that never took anything back) and then lift from
+/// the region as the `deposit` had already left it, so the two halves disagreed about
+/// how much had changed hands by `O(lift²)` per segment. At the rates below that is
+/// ~39% of the total `canvas + tool` height at *every* segment boundary, and what it
+/// draws is the pair of artifacts `golden_heavy_smear_regression` and
+/// `golden_lift_end_regression` pin: arcs at the segment spacing through thick paint,
+/// and a tip-shaped hole where a stroke stops.
+///
+/// Measured as the **worst** lightening along the smear rather than as total ink,
+/// because that is what the eye is picking up and because a global average dilutes a
+/// hole the size of a tip into nothing. Inside a uniform field a conservative smear
+/// has nothing to move — the lift takes paint up and the deposit lays the same colour
+/// straight back — so the only lightening the law permits is the load the tool is
+/// still carrying, one tip's worth of a pass. `conservative_smear_preserves_uniform_field`
+/// makes the same argument at `lift = deposit = 0.5`; the rates here are the ones that
+/// made the discrepancy an `O(1)` fraction of the transfer instead of a rounding error.
+///
+/// The bound has room on both sides: the half-solved exchange lightens the field by 91
+/// levels here and the complementary one by 35, and those 35 are the tool's own load —
+/// what it picked up over its first pass and still holds when the pen comes up (§6.2).
+#[test]
+fn a_conservative_smear_does_not_destroy_paint_either() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A field far wider than the tip, so nothing it carries can be left outside it.
+    paint(
+        &mut engine,
+        RED,
+        140.0,
+        &[Vec2::new(-200.0, 0.0), Vec2::new(200.0, 0.0)],
+    );
+    let before = engine.render_to_image();
+
+    stroke_with(
+        &mut engine,
+        dyn_brush(
+            RED,
+            40.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..Default::default()
+            },
+        ),
+        &[Vec2::new(-100.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+
+    // Red paint on the warm ground pulls the green channel down, so paint going
+    // missing shows as green coming back up.
+    let y = SIZE.height / 2;
+    let worst = (0..SIZE.width)
+        .map(|x| after.pixel(x, y)[1] as i32 - before.pixel(x, y)[1] as i32)
+        .max()
+        .expect("a row of pixels");
+    assert!(
+        worst < 60,
+        "a conservative smear lightened the field it was smearing by {worst} levels —          the two halves of the exchange are not taking complementary shares of it"
+    );
+}
+
 /// Mean darkness over the image: with a fixed palette this rises as paint thickens,
 /// so it stands in for "how much paint is on the canvas" without a height readback.
 fn total_ink(img: &stark_core::RgbaImage) -> f64 {

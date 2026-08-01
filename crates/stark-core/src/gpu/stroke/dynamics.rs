@@ -36,7 +36,7 @@ struct SliceUniform {
 }
 
 /// One segment of the sequential swept-exchange loop (§6.2): its
-/// `bake`, `snapshot`, `deposit` and `exchange` dispatches. `slot` is the 128-byte
+/// `bake`, `exchange`, `snapshot` and `deposit` dispatches. `slot` is the 128-byte
 /// `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as a pure function of
 /// the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
@@ -62,8 +62,8 @@ pub(super) struct DynamicsKit {
     // The stamp-loop dispatches (one compute shader, four entry points).
     pub(super) snapshot_pipeline: wgpu::ComputePipeline,
     pub(super) snapshot_bgl: wgpu::BindGroupLayout,
-    /// The tool's own side of one segment's transfer: drain by what it just laid,
-    /// then lift what is now under it (`dynamics.wesl::exchange`).
+    /// The tool's own side of one segment's transfer — the complement of every share
+    /// the `deposit` after it hands the canvas (`dynamics.wesl::exchange`).
     pub(super) exchange_pipeline: wgpu::ComputePipeline,
     pub(super) exchange_bgl: wgpu::BindGroupLayout,
     /// Integrates the reservoir along the segment's travel axis so the deposit can
@@ -90,8 +90,8 @@ impl StrokeRenderer {
     /// swept-exchange loop** (§6.2): composite the base under it into a 1:1
     /// region, then walk it *in order* on the GPU — the canvas-side exchange swept per
     /// flattened segment through the prefix-τ integral (the same definite-integral
-    /// footprint as the plain deposit), the 2-D tool reservoir updated at
-    /// `spacing · radius` cadence — and slice the evolved region back into fresh CoW
+    /// footprint as the plain deposit), the 2-D tool reservoir taking the complement
+    /// of it over the same segment — and slice the evolved region back into fresh CoW
     /// tiles.
     ///
     /// A region is a 1:1 copy of the canvas under the stroke, so the range is drawn in
@@ -650,10 +650,14 @@ impl<'a> DynamicsRun<'a> {
             })
             .collect();
 
-        // ---- The loop: bake → snapshot → deposit → exchange per segment, in stroke
+        // ---- The loop: bake → exchange → snapshot → deposit per segment, in stroke
         // order. One compute pass; the implicit barriers between dispatches give the
         // sequential semantics, and usage scopes are per-dispatch, so the region
         // may be sampled by one dispatch and storage-written by the next.
+        //
+        // `exchange` comes *before* `deposit` and not after: the two are the two halves
+        // of one transfer, and they only add up if both read the canvas and the
+        // reservoir as this segment found them (`dynamics.wesl::exchange_at`).
         //
         // `self.cur` outlives the pass: it names the reservoir texture holding the
         // tool's state, so after the last dispatch it names the state this piece ends
@@ -681,6 +685,13 @@ impl<'a> DynamicsRun<'a> {
                 // One BAKE_RES-wide workgroup per row: the shader's scan width is a
                 // constant, so the two must agree.
                 cpass.dispatch_workgroups(1, BAKE_RES, 1);
+                // Then the tool's own side of this segment's transfer, off the region
+                // as the segment found it. Reads `cur` and writes the other half, so
+                // the next segment's bake sees a tool that has actually travelled and
+                // reloaded.
+                cpass.set_pipeline(&kit.exchange_pipeline);
+                cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
+                cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
                 cpass.set_pipeline(&kit.snapshot_pipeline);
                 cpass.set_bind_group(0, &snapshot_bg, &[off]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
@@ -688,13 +699,6 @@ impl<'a> DynamicsRun<'a> {
                 cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
                 cpass.set_bind_group(1, prefix_bg, &[]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
-                // Then the tool's own side, for the very same segment: drain by what
-                // it just laid, lift what is now under it. Reads `cur` and writes the
-                // other half, so the next segment's bake sees a tool that has actually
-                // travelled and reloaded.
-                cpass.set_pipeline(&kit.exchange_pipeline);
-                cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
-                cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
                 cur = 1 - cur;
             }
             self.cur = cur;

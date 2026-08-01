@@ -260,39 +260,48 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
    semantics, and usage scopes are per-dispatch, so the region can be sampled by
    one dispatch and storage-written by the next with no copies and no pass churn.
    Per-dispatch parameters ride one dynamic-offset uniform buffer.
-   - Per segment, **snapshot** (copy the segment quad's region texels into an
-     `under` scratch, so the exchange can read-modify-write) then **deposit** —
-     one thread per footprint texel. A texel's **exposure** to the segment is the
-     prefix-τ difference `e(x) = prefix(u) − prefix(u−d)`, and exposures add
-     across overlapping quads of consecutive segments, so what the loop applies
-     must be built from `e` in a way that survives re-cutting the path. Removal
-     is *multiplicative*, `h · exp(λ·e)` with `λ = ln(1 − lift)`, which composes
-     exactly: the whole stroke applies `(1−lift)^∫e`, independent of spacing — no
-     dabbing. What the dispatch *adds* (the tool's deposit, and the brush's own
-     `add` paint) is a source term of the same ODE, so it rides the integrating
-     factor `∫₀ᵉ exp(λ·(e−s)) ds` — the amount laid during the pass, discounted
-     by the lift still acting on it for the rest of the pass. That is the ODE's
-     own solution rather than a one-step Euler approximation, so `h·A₁+B₁` then
-     `·A₂+B₂` equals the single step over `e₁+e₂` exactly. A saturating
-     `1 − exp(λ·e)` in the *added* term instead dumps the tool's load into
-     whichever quad reaches a spot first: the stroke runs dry early and scallops
-     at the segment spacing — invisible under uniform 2px sampling, immediate
-     under adaptive.
-   - The loop reads the reservoir at the tip's **mid-pass** position over each
-     texel — one sample for a segment during which the tip sweeps a whole range
-     of reservoir texels across that spot. That approximation, not the exchange
-     math, is what bounds segment length for a dynamics brush: about one
-     reservoir texel of travel. Integrating the reservoir along the pass would
-     lift the cap.
-   - At `RESERVOIR_CADENCE · radius` cadence, **pickup** — one thread per **tool
-     reservoir** texel. The reservoir is a real 2-D texture in brush-local
-     coordinates (`BRUSH_RES`², ping-ponged), so each part of the tip carries what
-     *it* rolled through. Each texel samples the evolving region under its spot
-     with exposure `cov · Δs/r` (footprint weight × travel since the last pickup
-     — the same exponential law, so depletion matches what the interleaved
-     segments lay), lifts canvas height onto the tool, and depletes the tool by
-     the upcoming deposits. The reservoir colour thus advances at a coarser,
-     cheap cadence while the canvas footprint stays continuous.
+   - Per segment: **bake** (integrate the reservoir along the travel axis),
+     **exchange** (the tool's half of the transfer, one thread per reservoir
+     texel), **snapshot** (copy the segment quad's region texels into an `under`
+     scratch, so the deposit can read-modify-write) and **deposit** — one thread
+     per footprint texel. A texel's **exposure** to the segment is the prefix-τ
+     difference `e(x) = prefix(u) − prefix(u−d)`, and exposures add across
+     overlapping quads of consecutive segments, so what the loop applies must be
+     built from `e` in a way that survives re-cutting the path.
+   - **The exchange is one closed-form solution, evaluated by both halves.** Over
+     a segment a canvas point and the tool above it are a pair of coupled boxes
+     trading the one conserved quantity:
+
+     ```
+     dh/de = −k_lift·h + k_dep·R + A      (canvas)
+     dR/de = +k_lift·h − k_dep·R          (tool)
+     ```
+
+     Their sum moves only by the source `A`, so with `add = 0` the pair conserves
+     height *identically*. The pair has one non-zero eigenvalue — it relaxes
+     towards the split `k_dep : k_lift` at rate `s = k_lift + k_dep` — so every
+     coefficient is a function of the single window `w(e) = (1 − exp(−s·e))/s`:
+     the canvas keeps `1 − k_lift·w` of its own height, takes `k_dep·w` of the
+     tool's load, and the tool takes exactly the complement of each. Being linear
+     and autonomous in `e`, running it over `e₁` then `e₂` *is* running it over
+     `e₁+e₂`: the whole stroke applies the continuous path integral whatever the
+     spacing, with no dabbing.
+   - **Both halves read the same pre-state** — which is why `exchange` is
+     dispatched *before* `deposit` rather than after. Solving only half the pair
+     (the canvas relaxing towards a tool that never took anything back) and then
+     lifting from the region as the deposit had already left it makes the two
+     sides disagree about how much changed hands by `O(lift²)` per segment. At
+     `lift = deposit = 0.95` and a segment of half a radius that is 39% of the
+     total `canvas + tool` height destroyed at *every* segment boundary — which
+     shows as arcs at exactly the segment spacing through thick paint, and as a
+     tip-shaped patch of missing paint wherever a stroke stops.
+   - The **reservoir** is a real 2-D texture in brush-local coordinates
+     (`BRUSH_RES`², ping-ponged), so each part of the tip carries what *it* rolled
+     through. `bake` integrates it along the travel axis into a swept prefix, so
+     the deposit reads what the tip presented over a whole pass rather than one
+     mid-pass sample — exact for any segment length. What still bounds a dynamics
+     brush's segments (`RESERVOIR_EXCHANGE_STEP`) is the tool side's single
+     mid-segment tap of the canvas, not the exchange law.
 3. **Write-back.** Each affected tile's full `TILE_TEX` block is sliced out of
    the shared region into a fresh CoW tile (`slice.wesl`, narrowing the wide aux
    to the persistent `(height)`). Aprons are bit-identical to neighbour interiors
@@ -306,10 +315,23 @@ weighted blends, and a parcel's blend weight is its own *visible* alpha
 (`1 − exp(−K·mass)`, the same translucent-slab law as the media pass), so thick
 deposits cover while thin glazes tint. The lift never touches the source's colour
 or alpha: the source fades because its **thickness** drops. Both sides of every
-transfer integrate the same exponential rate over the same footprint (the canvas
-side through the prefix-τ, the reservoir side as `cov · Δs/r` — two quadratures
-of the same bilinear form), so with `add = 0` total height (canvas + tool) is
-conserved up to resampling error, independent of the pickup cadence.
+transfer take complementary shares of the one solution above, over the same
+segment and from the same pre-state (the canvas side measuring its exposure
+through the prefix-τ, the reservoir side as `τ(l) · Δs/r` — two quadratures of the
+same bilinear form, which agree texel for paired texel), so with `add = 0` total
+height (canvas + tool) is conserved up to resampling error, whatever the segment
+length.
+
+What is *not* conserved is the load the tool still holds when the pen comes up:
+the reservoir is per-stroke, so it is dropped. Under the last footprint that
+leaves the canvas short of the trail behind it by the deposit the tip would have
+made had it kept travelling, and for a near-hard tip the onset of that deficit is
+compressed into the few pixels of the coverage shoulder — a faint tip-shaped disc
+at the end of a heavy smear. No constant-free pen-up rule tested removes it
+without introducing a worse one: settling the pair to equilibrium scrapes an
+eraser's last footprint into a hard disc, and giving the footprint the pass it was
+owed (`prefix(l)`) hands the *leading* rim a whole pass in one go and steps there
+instead. A trailing `taper` sidesteps it entirely by taking the tip to a point.
 
 *Order-dependence is real.* Pickup reads the region as already modified by
 earlier segments, so a stroke smears **its own trail** when it crosses it; drag

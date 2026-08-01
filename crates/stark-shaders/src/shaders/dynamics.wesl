@@ -7,11 +7,19 @@
 //
 //   - per flattened segment, in order: `bake` (integrate the reservoir along the
 //     travel axis, so the deposit can read what the tip presented over a whole pass
-//     rather than at one point), `snapshot` (copy the segment's footprint texels
-//     to an `under` scratch, so the exchange can read-modify-write the region),
-//     `deposit` — one thread per footprint texel — and `exchange`, one thread per
-//     **tool reservoir** texel, which drains the tool by what it just laid and lifts
-//     what is now under it. `exchange` ping-pongs the reservoir.
+//     rather than at one point), `exchange` — one thread per **tool reservoir**
+//     texel, which settles the tool's half of the transfer — `snapshot` (copy the
+//     segment's footprint texels to an `under` scratch, so the deposit can
+//     read-modify-write the region) and `deposit`, one thread per footprint texel.
+//     `exchange` ping-pongs the reservoir.
+//
+// **`exchange` runs before `deposit`, not after.** The two are the two halves of one
+// transfer, and a transfer is a statement about a *single* pre-state: both dispatches
+// evaluate the same kernel (`exchange_at`) from the same segment-entry canvas and the
+// same segment-entry reservoir, and hand back complementary fractions of it. Reading
+// the region as the deposit had already left it — which is what the tool used to do —
+// makes the tool lift from a canvas that has, from its point of view, not happened yet,
+// and the halves stop adding up (see `exchange_at`).
 //
 // **The canvas-side exchange is swept, not stamped** — the same definite-integral
 // formulation as the plain deposit: a texel's *exposure* to the segment is the
@@ -35,10 +43,9 @@
 // by a `deposit` whose paint the tool had not yet been credited with — a tip-shaped
 // patch of missing paint, worst exactly where `lift` is high.
 //
-// So `exchange` does both halves of the tool's side in one dispatch, per segment,
-// right after the `deposit` it accounts for: the tool drains by what it just laid,
-// then lifts what is now under it. Nothing is deferred, so nothing is left owing at
-// the end of a stroke.
+// So `exchange` does the whole of the tool's side in one dispatch, per segment,
+// against the very same segment the `deposit` accounts for. Nothing is deferred, so
+// nothing is left owing at the end of a stroke.
 //
 // This also retires a good deal of machinery. The old cadence had to hide its own
 // discreteness — a whole interval's reload landing between two segments is a large
@@ -146,37 +153,89 @@ struct Stamp {
 
 const TAU: f32 = 6.283185307179586;
 
-// How much of a *constant deposition rate* survives on the canvas at the end of a
-// segment of exposure `e`: `∫₀ᵉ exp(λ_lift·(e−s)) ds`, the amount laid at each
-// point of the pass discounted by the lift still acting on it for the rest of the
-// pass. Reduces to `e` when the brush does not lift.
+// ---- The exchange kernel ---------------------------------------------------------
 //
-// This is what makes the exchange **independent of how the path was cut into
-// segments** — the property adaptive flattening (`path::flatten`) depends on and
-// uniform 2px sampling used to hide. Within a segment the exchange is an ODE,
-// `dh/de = λ_lift·h + source`; the canvas-side `lift` alone composes exactly
-// (`h·exp(λ·e)` is multiplicative), but a source term added *after* the lift is a
-// one-step Euler integration of it, and one coarse step is not N fine ones. Using
-// the ODE's own solution instead makes any cut of the path agree exactly:
+// Over one segment a canvas point and the tool above it are a pair of coupled boxes
+// trading the one conserved quantity — height (§6.1) — at rates proportional to their
+// exposure `e`, with the brush's own `add` a source into the canvas box:
 //
-//     h·A₁ + B₁ then ·A₂ + B₂  ==  h·A₁A₂ + B₁₊₂     with A = exp(λ·e), B = k·W(e)
+//     dh/de = −k_lift·h + k_dep·R + A          (canvas)
+//     dR/de = +k_lift·h − k_dep·R              (tool)
 //
-// Getting this wrong is visible, not subtle: the previous `1 − exp(λ_dep·e)` per
-// segment dumped the tool's load in the first quad that touched a spot, so a
-// carrying stroke ran dry early and showed arcs at the segment spacing. It only
-// shows once the tool is actually carrying paint — the `add` axis was already a
-// bare `e`, correct only because it had no lift to survive.
+// where `k = −λ ≥ 0`. Their sum moves only by the source, so with `add = 0` the pair
+// conserves height *identically*, not approximately.
 //
-// This is the uniform-reservoir case of what `bake` integrates: with `R ≡ 1`, the
-// swept prefix there evaluates to exactly this window. The two are one expression
-// seen from either end — which is why the deposit multiplies them together and
-// nothing else is needed to make a pass composable.
-fn laid_window(e: f32) -> f32 {
-    let k = -st.b.z; // the lift rate; 0 when the brush does not lift
-    if k < 1e-6 {
-        return e;
+// **Both halves of the loop evaluate this one solution**, over the same exposure and
+// from the same segment-entry state, and take complementary shares of it — which is
+// what makes the whole exchange **independent of how the path was cut into segments**,
+// the property adaptive flattening (`path::flatten`) depends on and uniform 2px
+// sampling used to hide. The system is linear and autonomous in `e`, so running it
+// over `e₁` and then `e₂` is running it over `e₁+e₂`; exposures add across the
+// overlapping quads of consecutive segments, so the whole stroke applies the
+// continuous path integral whatever the spacing.
+//
+// Getting this wrong is not subtle. What was here before solved only *half* the pair —
+// the canvas relaxing towards a tool that never took anything back, `1 − exp(λ_lift·e)`
+// lifted off and `k_dep(exp(λ_dep·e) − exp(λ_lift·e))/(λ_dep − λ_lift)` laid on — and
+// then let the tool lift from the region as the `deposit` had already left it. The two
+// sides therefore disagreed about how much had changed hands by `O(lift²)` per
+// segment, and paint that goes nowhere has to show:
+//
+//   * at `lift = deposit = 0.95` and a segment of half a radius, 39% of the total
+//     `canvas + tool` height vanished at *every* segment boundary. What survives is
+//     front-loaded into the first quad that touches a spot, which draws arcs at
+//     exactly the segment spacing through anything thick enough to see them.
+//   * a stroke that stops leaves its last footprint stripped by a lift the tool was
+//     never credited with — a tip-shaped disc of missing paint, worst where `lift` is
+//     high, and unmistakable because the tip's own hardness edge is frozen into it.
+//
+// The pair has one non-zero eigenvalue: it relaxes towards the split `k_dep : k_lift`
+// at rate `s = k_lift + k_dep`. So every coefficient below is written in terms of the
+// single window
+//
+//     w(e) = (1 − exp(−s·e)) / s
+//
+// which is also the plain `∫₀ᵉ exp(−k(e−u)) du` the source rides when nothing takes it
+// back, and the uniform-reservoir case of what `bake` integrates: with `R ≡ 1` the
+// swept prefix there evaluates to exactly this. One expression seen from three ends.
+
+// How one segment's exposure `e` splits the two boxes. Every field is a fraction of an
+// entering quantity, and the tool's share is the complement of each — so the canvas
+// takes `keep·h + dep·R + add_w·A` and the tool takes `(1−keep)·h + (1−dep)·R + src_w·A`,
+// which sum to `h + R + e·A`: everything the pair started with, plus everything the
+// source minted, and not a texel of height more or less.
+struct Exchange {
+    // Of the canvas's own height, what is still on the canvas.
+    keep: f32,
+    // Of the tool's entering load, what is now on the canvas.
+    dep: f32,
+    // Canvas height laid per unit of the brush's own `add` rate…
+    add_w: f32,
+    // …and what the tool lifted straight back off it, so that `add_w + src_w == e`.
+    src_w: f32,
+}
+
+fn exchange_at(e: f32) -> Exchange {
+    let kl = -st.b.z; // the lift rate; 0 when the brush does not lift
+    let kd = -st.b.w; // the deposit rate
+    let s = kl + kd;
+    var out: Exchange;
+    if s < 1e-6 {
+        // Neither box trades, so the source is all the canvas gets — and it keeps it.
+        out.keep = 1.0;
+        out.dep = 0.0;
+        out.add_w = e;
+        out.src_w = 0.0;
+        return out;
     }
-    return (1.0 - exp(-k * e)) / k;
+    let w = (1.0 - exp(-s * e)) / s;
+    out.keep = 1.0 - kl * w;
+    out.dep = kd * w;
+    // `kl/s ≤ 1` bounds the second term, so no division here can run away as `s → 0`;
+    // the branch above is for exactness, not for conditioning.
+    out.add_w = (kd * e + kl * w) / s;
+    out.src_w = kl * (e - w) / s;
+    return out;
 }
 
 // The footprint's **optical depth** at brush-local `local` — the currency every
@@ -378,20 +437,22 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ---- 2. Exchange: the tool's own side of the transfer, per segment. -------------
 //
-// One thread per **tool reservoir** texel, run straight after the `deposit` it
-// accounts for, and doing both halves of the tool's side in the order they happen:
+// One thread per **tool reservoir** texel, run *before* the `deposit` it is the other
+// half of, so that both read the canvas and the reservoir as the segment found them.
+// It takes the complement of every share `exchange_at` hands the canvas:
 //
-//   * **drain** by what the texel just gave up. Multiplicative in the texel's own
-//     exposure to the segment (its footprint weight × the travel), so the tool's
-//     state after a run of segments is `exp(λ_dep · Σeᵢ)` — the same wherever the
-//     path was cut. Latent and per-unit opacity are untouched: the tool holds *less*
-//     paint, not different paint (§6.1).
-//   * **lift** what is now under it, off the region as this segment's deposit has
-//     just left it — which is what makes smearing genuinely order-dependent,
-//     including across the stroke's own trail.
+//   * **retain** `1 − dep` of its entering load — the rest the deposit has on the
+//     canvas. Latent and per-unit opacity are untouched: the tool holds *less* paint,
+//     not different paint (§6.1).
+//   * **lift** `1 − keep` of what is under it — which is what makes smearing
+//     genuinely order-dependent, including across the stroke's own trail, since the
+//     region it reads is the one earlier segments have already worked over.
+//   * **take back** `src_w` of the brush's own `add`, the share of the newly minted
+//     paint the tip lifts straight off again. Without it a high-`lift` brush would
+//     mint `A·e` of height, lay `add_w·A` and destroy the difference.
 //
-// Both halves share the one exposure, and it is the *same* segment travel the canvas
-// side integrated over, so nothing the canvas gave up waits to be credited. That is
+// All three share the one exposure, and it is the *same* segment travel the canvas
+// side integrates over, so nothing the canvas gave up waits to be credited. That is
 // the whole reason this runs per segment rather than on a cadence of its own: the
 // tool used to be reloaded every `spacing·radius` while the canvas was stripped every
 // segment, and a stroke ending mid-interval left the difference behind as a
@@ -411,28 +472,27 @@ fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // This texel's exposure to the segment: its own optical depth × the travel
     // (radius units). In τ, like the canvas side — the canvas gives up
-    // `1 − exp(λ_lift·∫τ)`, so a tool that measured its gain in bare coverage would
+    // `1 − keep(∫τ)`, so a tool that measured its gain in bare coverage would
     // receive a fraction of what the canvas lost and quietly destroy paint.
     let e = tau_at(local) * st.b.y;
+    let ex = exchange_at(e);
 
     let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult
     let b_a = textureLoad(brush_src_aux, t, 0);   // (height, _, _, _)
 
-    // Drain first: this is the load the `deposit` just before us laid from, and `e`
-    // is the very exposure it laid over — so the drain is exactly `exp(λ_dep·e)`,
-    // with no correction factor.
+    // What it keeps of its own load. Exactly the complement of the fraction the
+    // `deposit` after us lays from it, over the very exposure it lays over — so there
+    // is no correction factor.
     //
     // There used to be one (`DEPLETE_FACTOR = 0.75`, "deplete a bit slower than the
     // math would indicate to account for error"). The error it was accounting for was
-    // the cadence: the tool was reloaded on its own coarse schedule while the canvas
-    // was stripped every segment, so the two sides disagreed about how much had
-    // changed hands and the tool over-drained. Draining slower papered over that —
-    // but a factor below 1 means the tool keeps a fraction of every deposit it makes,
-    // which compounds, so paint grew without bound over a long stroke. With both
-    // sides now measuring the same transfer over the same segment there is nothing
-    // left to correct, and the exact rate is also the conserving one.
-    let keep = exp(st.b.w * e);
-    var h = b_a.x * keep;
+    // real but misdiagnosed: the two sides were solving different equations, so they
+    // disagreed about how much had changed hands and the tool over-drained. Draining
+    // slower papered over that — but a factor below 1 means the tool keeps a fraction
+    // of every deposit it makes, which compounds, so paint grew without bound over a
+    // long stroke. With both sides now taking complementary shares of one solution
+    // there is nothing left to correct, and the exact rate is also the conserving one.
+    var h = b_a.x * (1.0 - ex.dep);
     var m = b_c.a * h;
 
     // Then lift. The tool's shape frame is the travel frame turned by the shape's
@@ -445,24 +505,33 @@ fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world = st.e.zw + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
 
     let rdim = vec2<f32>(textureDimensions(region_color));
-    // Outside the selection the canvas gives nothing up (§6.8) — the matching
-    // reduction on the canvas side is the deposit's own mask lerp, so height stays
-    // conserved. Bilinear like the region taps below: this texel is over an arbitrary
-    // sub-pixel spot, and a 1×1 constant mask reads the same at every uv.
-    let lift = (1.0 - exp(st.b.z * e))
-        * textureSampleLevel(sel_mask, samp, world / rdim, 0.0).r;
+    // Outside the selection the canvas gives nothing up and the source mints nothing
+    // (§6.8) — the matching reduction on the canvas side is the deposit's own mask
+    // lerp, so height stays conserved. Bilinear like the region taps below: this texel
+    // is over an arbitrary sub-pixel spot, and a 1×1 constant mask reads the same at
+    // every uv.
+    let sel = textureSampleLevel(sel_mask, samp, world / rdim, 0.0).r;
 
     let rc = textureSampleLevel(region_color, samp, world / rdim, 0.0);
     let ra = textureSampleLevel(region_aux, samp, world / rdim, 0.0);
 
     // Height moves; colour and per-unit opacity ride as optical-mass-weighted
-    // blends (§6.1).
-    let take_h = ra.x * lift;
+    // blends (§6.1). Two parcels land on the tool — what it took off the canvas, and
+    // the share of the brush's own `add` it lifted back before that paint had settled
+    // — each stacked with its own latent, so a tip smearing red through white carries
+    // the mixture rather than an average of the two errands.
+    let take_h = ra.x * (1.0 - ex.keep) * sel;
     let take_m = rc.a * take_h;
     let canvas_lat = rc.rgb / max(rc.a, EPS);
-    let lat = blend_latent(b_c.rgb, m, canvas_lat, take_m);
+    var lat = blend_latent(b_c.rgb, m, canvas_lat, take_m);
     h += take_h;
     m += take_m;
+
+    let src_h = st.e.x * ex.src_w * sel;
+    let src_m = st.c.w * src_h;
+    lat = blend_latent(lat, m, st.c.xyz, src_m);
+    h += src_h;
+    m += src_m;
 
     textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
@@ -515,26 +584,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     if sel <= 0.0 {
         return;
     }
-    let lift = 1.0 - exp(st.b.z * e);
-    // The brush's own `add` is a *constant* source, so it rides the plain window.
-    let laid = laid_window(e);
-    // The tool's is not: it drains as it gives paint up (`deplete`), while what it
-    // has already laid is itself being lifted. Over the segment that is a pair of
-    // coupled linear ODEs — `dR/de = λ_dep·R`, `dh/de = λ_lift·h + k_dep·R` — whose
-    // solution is the fraction of the *entering* load that ends up on the canvas:
-    //
-    //     k_dep · (exp(λ_dep·e) − exp(λ_lift·e)) / (λ_dep − λ_lift)
-    //
-    // Being the exact solution, it composes over any cut of the path, and it is
-    // bounded by 1 on its own — a segment cannot lay more than the tool brought,
-    // which is what a per-segment rate applied to an undepleted reservoir could.
-    let ld = st.b.w;
-    let ll = st.b.z;
-    let split = ld - ll;
-    var dep = -ld * e * exp(ll * e); // λ_dep → λ_lift limit
-    if abs(split) > 1e-4 {
-        dep = -ld * (exp(ld * e) - exp(ll * e)) / split;
-    }
+    // The canvas's share of the segment's transfer (`exchange_at`), of which the tool
+    // took the complement in the dispatch just before this one — off the same region
+    // and the same reservoir, both as the segment found them.
+    let ex = exchange_at(e);
 
     let uc = textureLoad(under_color, t, 0);
     let ua = textureLoad(under_aux, t, 0);
@@ -564,7 +617,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The lift's removal: height leaves; the remaining paint's latent and per-unit
     // opacity are unchanged — the source fades because its *thickness* drops,
     // never because its alpha is scaled (§6.1).
-    var h = ua.x * (1.0 - lift);
+    var h = ua.x * ex.keep;
     var m = uc.a * h;
     let canvas_lat = uc.rgb / max(uc.a, EPS);
 
@@ -585,8 +638,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The parcel this segment lays: the tool's deposit + the brush's own `add`
     // paint — the latter linear in exposure, i.e. exactly the plain deposit's
     // path-integral height.
-    let dep_h = tool_h * dep;
-    let add_h = st.e.x * laid;
+    let dep_h = tool_h * ex.dep;
+    let add_h = st.e.x * ex.add_w;
     let par_h = dep_h + add_h;
     let par_m = tool_op * dep_h + st.c.w * add_h;
     var par_lat = own_lat;
