@@ -1106,6 +1106,269 @@ mod tests {
         }
     }
 
+    // --- segment budget ----------------------------------------------------
+
+    /// A stroke through `pts` with `brush`, as a path of plain full-pressure knots.
+    fn record(brush: BrushParams, pts: &[Vec2]) -> StrokeRecord {
+        StrokeRecord {
+            layer: crate::document::LayerId(0),
+            tool: crate::document::Tool::Brush,
+            brush,
+            path: pts
+                .iter()
+                .map(|p| crate::path::ControlPoint::at(*p))
+                .collect(),
+            seed: 0,
+        }
+    }
+
+    /// `sin` and `cos` from their Maclaurin series in plain f64 arithmetic.
+    ///
+    /// Not for accuracy — the curves below only have to be representative shapes. The
+    /// library versions are not specified to the last bit and may differ between
+    /// platforms, and these decide *control points*, so a knot differing by an ulp
+    /// could flip a subdivision decision and fail this test on someone else's machine.
+    /// Basic IEEE arithmetic is exactly specified, which rules that out rather than
+    /// hoping — the same argument that makes [`taper_profile`] a polynomial (§12.1).
+    fn sin_series(x: f64) -> f64 {
+        let (x2, mut term, mut acc) = (x * x, x, x);
+        for k in 1..10 {
+            term *= -x2 / (((2 * k) * (2 * k + 1)) as f64);
+            acc += term;
+        }
+        acc
+    }
+
+    fn cos_series(x: f64) -> f64 {
+        let (x2, mut term, mut acc) = (x * x, 1.0, 1.0);
+        for k in 1..10 {
+            term *= -x2 / (((2 * k - 1) * (2 * k)) as f64);
+            acc += term;
+        }
+        acc
+    }
+
+    /// `n + 1` knots along a curve given by its **heading** — the tangent angle as a
+    /// function of arc length, stepped into positions. Curvature is that function's
+    /// derivative, which is what lets the curved cases below state their curvature
+    /// directly instead of implying it through a parameterization.
+    fn by_heading(n: usize, length: f64, theta: impl Fn(f64) -> f64) -> Vec<Vec2> {
+        const STEPS_PER_KNOT: usize = 16;
+        let ds = length / (n * STEPS_PER_KNOT) as f64;
+        let (mut x, mut y) = (0.0f64, 0.0f64);
+        let mut pts = vec![Vec2::new(0.0, 0.0)];
+        for i in 0..n * STEPS_PER_KNOT {
+            let t = theta((i as f64 + 0.5) * ds); // midpoint: symmetric about an inflection
+            x += cos_series(t) * ds;
+            y += sin_series(t) * ds;
+            if (i + 1) % STEPS_PER_KNOT == 0 {
+                pts.push(Vec2::new(x as f32, y as f32));
+            }
+        }
+        pts
+    }
+
+    /// A brush that manipulates paint, so the stroke takes the dynamics loop.
+    fn smearing(radius: f32) -> BrushParams {
+        use crate::document::BrushDynamics;
+        BrushParams {
+            radius,
+            dynamics: BrushDynamics {
+                lift: 0.8,
+                deposit: 0.8,
+                ..BrushDynamics::default()
+            },
+            ..BrushParams::default()
+        }
+    }
+
+    /// **How many segments the flattener spends on a stroke — pinned, on purpose.**
+    ///
+    /// This is a change-detector test and it is meant to be one. **Updating these
+    /// numbers is a normal thing to do:** if a change moves them and you have decided
+    /// the new geometry is right, paste in the new counts and say why in the commit.
+    /// The test is not asserting that any particular number is correct — it is making
+    /// sure a number cannot move *silently*, because nothing else here would notice.
+    ///
+    /// Segment count is the loop's unit of cost. Every dispatch in the dynamics path
+    /// is charged per segment (`dynamics.wesl`), so the budgets below are the dial
+    /// between quality and time, and they are set from five different quantities that
+    /// have nothing to do with one another. A change to any one of them moves a stroke
+    /// nobody was thinking about: the cases are chosen so that each is dominated by a
+    /// *different* budget, and the one that moves tells you which.
+    ///
+    /// Every count is reported in one pass rather than failing at the first, so a
+    /// deliberate retuning gives you the whole new table to paste in from one run.
+    ///
+    /// These are CPU-side and float-deterministic (§12.1) — the same reason replay and
+    /// peers agree on geometry — so a count that differs *per machine* is a bug in that
+    /// determinism, not a tolerance to loosen.
+    #[test]
+    fn the_segment_budget_is_what_it_was() {
+        // Three curves, shared across brushes so that a difference between two rows on
+        // the same path is the brush's doing and nothing else. Each is 400px of arc.
+        //
+        // The tip radii below are 20 and 80, so `max_arc_curvature` (MAX_TIP_TURN /
+        // radius) sits at 0.005 and 0.00125 respectively — the curvatures are picked
+        // around those two thresholds.
+        let straight = vec![Vec2::new(0.0, 0.0), Vec2::new(400.0, 0.0)];
+        // Constant curvature 0.004: inside what a radius-20 tip may sweep as an arc,
+        // outside what a radius-80 tip may, so the same curve is priced both ways.
+        let arc = by_heading(24, 400.0, |s| 0.004 * s);
+        // An Euler spiral **through its inflection**: curvature linear in arc length,
+        // running −0.006 → +0.006 with the zero at the middle. It is the one shape that
+        // exercises the whole of `fit_arc` in a single stroke — a sign change, the
+        // degenerate straight case exactly at the inflection, and the
+        // `max_arc_curvature` threshold crossed once on each side (at |κ| = 0.005 for a
+        // radius-20 tip), so the fitter alternates between arcs and chords along it.
+        // Heading is the integral of curvature: ∫(a·s + b) ds with the constant chosen
+        // to put the inflection at the halfway point.
+        let spiral = by_heading(24, 400.0, |s| 0.5 * 0.00003 * s * s - 0.006 * s);
+
+        let cases: &[(&str, usize, StrokeRecord)] = &[
+            // `position` and `angle` alone: a straight line satisfies both everywhere,
+            // so this is the floor — one segment per flattened span, and the number to
+            // compare every other row against.
+            (
+                "straight, plain tip",
+                3,
+                record(
+                    BrushParams {
+                        radius: 20.0,
+                        ..BrushParams::default()
+                    },
+                    &straight,
+                ),
+            ),
+            // `max_len` from RESERVOIR_EXCHANGE_STEP (0.5 · radius = 10px over 400px).
+            // **This is the row a reservoir-cadence retuning moves**, and the reason
+            // the dynamics path costs what it does. Subdivision is by bisection, so a
+            // count sits at or above the length bound's own `400/10 = 40` rather than
+            // exactly on it.
+            (
+                "straight, smearing tip",
+                52,
+                record(smearing(20.0), &straight),
+            ),
+            // The same cadence on a tip four times as fat. The cap is a fraction of the
+            // radius, so this row and the one above stand in the radius ratio — which
+            // is what identifies the cadence, rather than something else, as what sets
+            // them both.
+            (
+                "straight, fat smearing tip",
+                14,
+                record(smearing(80.0), &straight),
+            ),
+            // `max_len` from `drain` (0.02 / 0.005 = 4px), tighter than the reservoir
+            // cadence and therefore the one that binds here.
+            (
+                "straight, draining tip",
+                156,
+                record(
+                    BrushParams {
+                        drain: 0.005,
+                        ..smearing(20.0)
+                    },
+                    &straight,
+                ),
+            ),
+            // TAPER_STEP, and by a wide margin the most expensive row in the table: a
+            // taper costs ~`TAPER_MAX_SLOPE / TAPER_STEP` ≈ 75 pieces however long it
+            // is, and this brush has two of them. Nothing about the curve is driving
+            // this one — it is the same straight line as the 3-segment row above.
+            (
+                "straight, tapered tip",
+                211,
+                record(
+                    BrushParams {
+                        radius: 20.0,
+                        start_taper_length: 2.0,
+                        end_taper_length: 3.0,
+                        ..BrushParams::default()
+                    },
+                    &straight,
+                ),
+            ),
+            // `angle` (0.1 rad): 0.004 × 400 = 1.6 radians of turning, so ≥ 16 segments
+            // however large the curve is drawn.
+            (
+                "arc, plain tip",
+                31,
+                record(
+                    BrushParams {
+                        radius: 20.0,
+                        ..BrushParams::default()
+                    },
+                    &arc,
+                ),
+            ),
+            // The same curve under a tip too fat to sweep it as an arc, so `fit_arc`
+            // hands back chords instead. **It costs exactly the same**, and that is the
+            // point of keeping both rows: at this curvature `angle` binds first, so the
+            // arc/chord choice changes what a segment *is* without changing how many
+            // there are. If a change to `MAX_TIP_TURN` or to how a too-tight edge is
+            // priced ever makes these two diverge, that is worth knowing about.
+            (
+                "arc, fat tip",
+                31,
+                record(
+                    BrushParams {
+                        radius: 80.0,
+                        ..BrushParams::default()
+                    },
+                    &arc,
+                ),
+            ),
+            ("arc, smearing tip", 55, record(smearing(20.0), &arc)),
+            // The Euler spiral: `angle` again over 1.2 radians of total turning, but
+            // with the fitter crossing the arc/chord threshold on each side of a
+            // genuine inflection. Cheaper than the arc because it turns one way and
+            // then back, rather than accumulating.
+            (
+                "euler spiral, plain tip",
+                26,
+                record(
+                    BrushParams {
+                        radius: 20.0,
+                        ..BrushParams::default()
+                    },
+                    &spiral,
+                ),
+            ),
+            (
+                "euler spiral, fat tip",
+                26,
+                record(
+                    BrushParams {
+                        radius: 80.0,
+                        ..BrushParams::default()
+                    },
+                    &spiral,
+                ),
+            ),
+            // Back to `max_len`: the cadence asks for more than the spiral's own shape
+            // does, so a smearing tip pays the same price on a curve as on a line.
+            (
+                "euler spiral, smearing tip",
+                50,
+                record(smearing(20.0), &spiral),
+            ),
+        ];
+
+        let mut moved = Vec::new();
+        for (name, expected, rec) in cases {
+            let got = whole(rec).len();
+            if got != *expected {
+                moved.push(format!("  {name}: {expected} -> {got}"));
+            }
+        }
+        assert!(
+            moved.is_empty(),
+            "the segment budget moved (update the counts if this was deliberate):\n{}",
+            moved.join("\n")
+        );
+    }
+
     // --- region measurement ----------------------------------------------
 
     /// A segment carrying only what the region measurements read.
