@@ -296,3 +296,33 @@ fn golden_heavy_smear_regression() {
     assert_golden("heavy_smear_regression", &img, 6);
     engine.process(DocCommand::Undo);
 }
+
+#[test]
+fn golden_drained_brush_length_independent() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let brush = BrushParams {
+        radius: 80.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        drain: 0.005,
+        dynamics: BrushDynamics {
+            add: 1.0,
+            lift: 0.95,
+            deposit: 0.95,
+            ..BrushDynamics::default()
+        },
+        ..BrushParams::default()
+    };
+    // These should all be visually indistiguishable because the brush runs out of paint before the end of the stroke (which is also off the edge of the image).
+    for (i, x) in [200.0, 300.0, 400.0, 500.0, 600.0].into_iter().enumerate() {
+        stroke_with(
+            &mut engine,
+            brush,
+            &[Vec2::new(-400.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(x, 0.0)],
+        );
+        let img = engine.render_to_image();
+        assert_golden(&format!("drained_brush_length_independent_{i}"), &img, 6);
+        engine.process(DocCommand::Undo);
+    }
+}
