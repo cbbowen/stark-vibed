@@ -214,20 +214,39 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
 - Precompute, per brush, the **prefix integral of `τ` along the travel axis**.
   A length-`d` segment's swept depth at a point is `prefix(u) − prefix(u−d)` for
   that row — an O(1) lookup.
-- A segment quad outputs `α_seg = 1 − exp(−opacity · sweptDepth)`. Because the
-  existing premultiplied-"over" blend across overlapping segment quads combines
-  as `1 − ∏(1−α) = 1 − exp(−Σ τ)`, it sums the depths **exactly** — no
-  double-counting at joints, no scratch buffer, no second pass. The whole
-  stroke's coverage is the continuous path integral `1 − exp(−τ_total)`.
+- A segment quad lays a **parcel of paint**, not a coverage: `add · τ` of height
+  at the brush's own per-unit opacity, the two meeting only in the slab law
+  (§6.1). What the colour target carries is therefore that parcel's *visible
+  alpha*, `α_seg = 1 − exp(−K · opacity · add · τ)`. Because the existing
+  premultiplied-"over" blend across overlapping segment quads combines as
+  `1 − ∏(1−α) = 1 − exp(−K·Σ m)`, it sums the parcels **exactly** — no
+  double-counting at joints, no second pass — and the latent it carries stays
+  ordered, so a stroke crossing itself covers rather than averages. The scratch's
+  aux sums the height and the mass unsaturated alongside it, and `integrate.wesl`
+  stacks the one parcel that comes out on the base through the shared law in
+  `paint_common.wesl` — the very one a fill lands through and the one the stamp
+  loop's `deposit` uses, so the two paths cannot drift.
+
+  Weighting by the brush's per-unit **opacity** instead — which the fast path did
+  — is the same defect §6.3 names in the layer composite, one level down. `add`
+  is the only thing that decides how much paint lands, so leaving it out of the
+  colour meant a 5%-flow glaze drew as nothing over bare canvas (the media pass
+  covers for it, since visible alpha is `opacity × height` there and the height
+  was right) and repainted at full strength over existing paint, where nothing
+  does. `tests/dynamics.rs::a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`
+  pins the agreement, by drawing the same glaze with `deposit` at 0 and at 0.01 —
+  which routes it through the whole sequential loop with an empty reservoir, so
+  every texel is still the brush's own `add` paint.
 - **Every** channel a segment deposits must be a function of that segment's `τ`
-  in one of exactly two shapes: *additive* in `τ` (an amount — the height the aux
-  target sums), or `1 − exp(−k·τ)` (a rate — the opacity the colour target
-  over-blends). Those are the two that survive re-cutting the path, because `τ`
-  is what sums. Any other shape makes the stroke depend on the *number* of
-  segments: a per-segment `√`, for instance, deposits `Σ√(τ/N) = √(N·τ)`, so the
-  stroke silently gains weight with sampling density. Invisible while sampling is
-  uniform and immediately visible once it adapts — which is why the two forms are
-  a standing constraint on the stamp shaders, not a detail of one.
+  in one of exactly two shapes: *additive* in `τ` (an amount — the height and the
+  optical mass the aux target sums), or `1 − exp(−k·τ)` (a rate — the visible
+  alpha the colour target over-blends). Those are the two that survive re-cutting
+  the path, because `τ` is what sums. Any other shape makes the stroke depend on
+  the *number* of segments: a per-segment `√`, for instance, deposits
+  `Σ√(τ/N) = √(N·τ)`, so the stroke silently gains weight with sampling density.
+  Invisible while sampling is uniform and immediately visible once it adapts —
+  which is why the two forms are a standing constraint on the stamp shaders, not
+  a detail of one.
 
 Segments need only be short enough that the line + constant-radius approximation
 holds, so the sweep uses *fewer* primitives than the dab model. Caveats:

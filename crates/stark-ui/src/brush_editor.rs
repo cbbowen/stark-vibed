@@ -231,7 +231,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         open: paint_open,
                         // `add` is the tool's only source term (§6.2) and its only amount
                         // knob: the paint height laid per unit swept optical depth.
-                        Slider { label: "Flow", min: 0.0, max: 1.5, value: d.add,
+                        Slider { label: "Flow", min: 0.0, max: 3.0, value: d.add,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.add = v) }
                         // Per-unit opacity, independent of the amount laid (§6.1).
                         Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],

@@ -752,3 +752,103 @@ fn total_ink(img: &stark_core::RgbaImage) -> f64 {
         .sum();
     sum as f64 / (img.width * img.height) as f64
 }
+
+/// Flow for the glaze below. Low on purpose: `add` is the amount of paint the brush
+/// lays and the only thing that decides it (§6.1), so at full flow a renderer
+/// that honours it and one that ignores it both come out red and there is nothing
+/// left to measure.
+const GLAZE_ADD: f32 = 0.02;
+
+/// Paint a solid vertical bar, then glaze a horizontal stroke across it at `add`
+/// flow with the given `deposit`, and return the lit result.
+fn bar_then_glaze(add: f32, deposit: f32) -> Option<stark_core::RgbaImage> {
+    let mut engine = engine_or_skip()?;
+    paint(
+        &mut engine,
+        GREEN,
+        34.0,
+        &[Vec2::new(0.0, -110.0), Vec2::new(0.0, 110.0)],
+    );
+    let mut glaze = dyn_brush(
+        RED,
+        34.0,
+        BrushDynamics {
+            add,
+            lift: 0.0,
+            deposit,
+            charge: 0.0,
+        },
+    );
+    // No falloff, so the glaze is one uniform parcel over its whole travel and both
+    // paths are being asked the same question at every texel of it.
+    glaze.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        glaze,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    Some(engine.render_to_image())
+}
+
+/// **The stamp loop reduces to the swept fast path when there is nothing to
+/// manipulate**, and the same brush must therefore draw the same picture whichever
+/// one runs (§6.2). A `deposit` of 0.01 with no `lift` and no `charge` puts the
+/// stroke through the whole sequential loop while leaving the tool's reservoir empty
+/// for all of it — nothing ever gets onto the tip, so `deposit` has nothing to lay
+/// and every texel of the mark is the brush's own `add` paint, exactly as on the
+/// fast path. `exchange_at` says so algebraically: with `k_lift = 0` the canvas keeps
+/// all of its height (`keep = 1`) and the source rides the full exposure
+/// (`add_w = e`), which is the fast path's deposit written out.
+///
+/// It is drawn *over existing paint*, which is where the two can differ without the
+/// media pass covering for them. Over bare canvas visible alpha is `opacity × height`
+/// and the height was always right, so a path that laid the colour by the brush's
+/// per-unit opacity alone still came out faint; over a stroke already on the canvas
+/// nothing checks it, and a 2%-flow glaze repainted the bar at full strength. That
+/// was the swept path's `integrate`, covering by opacity rather than by the parcel's
+/// visible alpha `1 − exp(−K·opacity·height)` — the same defect §6.3 names in
+/// the layer composite, one level down.
+///
+/// The other half of the agreement is that `add` mean the same amount of paint on
+/// both paths. It did not: the loop scaled it by a gain of 2, so nudging `deposit`
+/// off zero doubled the flow of a slider that has nothing to do with it — 24% of
+/// this image more than 4 levels apart on its own. Together the two put the worst
+/// pixel 157 levels out; what is left is 2, which is the 8-bit floor.
+#[test]
+fn a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs() {
+    let Some(swept) = bar_then_glaze(GLAZE_ADD, 0.0) else {
+        return;
+    };
+    let Some(looped) = bar_then_glaze(GLAZE_ADD, 0.01) else {
+        return;
+    };
+    let (_, worst) = diff_fraction(&swept, &looped);
+    let frac = frac_exceeding(&swept, &looped, 4);
+    assert!(
+        frac < 0.002 && worst <= 8,
+        "the same glaze drew differently through the stamp loop: {:.2}% of pixels \
+         differ by >4 levels, worst {worst} — the loop is not reducing to the fast path",
+        frac * 100.0
+    );
+
+    // …and the glaze must actually be a glaze, or the two paths above agree only
+    // because they are both ignoring `add`. Against the bar alone and against the
+    // same stroke at full flow, at the crossing: a fiftieth of the flow has to move
+    // the colour a great deal less than all of it.
+    let (Some(bar), Some(opaque)) = (bar_then_glaze(0.0, 0.0), bar_then_glaze(1.0, 0.0)) else {
+        return;
+    };
+    let (x, y) = (SIZE.width / 2, SIZE.height / 2);
+    let shift = |img: &stark_core::RgbaImage| {
+        (0..3)
+            .map(|i| (img.pixel(x, y)[i] as i32 - bar.pixel(x, y)[i] as i32).abs())
+            .max()
+            .expect("three channels")
+    };
+    let (thin, thick) = (shift(&swept), shift(&opaque));
+    assert!(
+        thin * 2 < thick,
+        "a {GLAZE_ADD}-flow glaze moved the paint under it {thin} levels where full \
+         flow moved it {thick} — `add` is not deciding how much paint lands"
+    );
+}

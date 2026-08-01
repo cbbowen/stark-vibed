@@ -61,7 +61,7 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
                 drain: 0.0015,
                 shape: BrushShape::Round { hardness: 0.9 },
                 dynamics: BrushDynamics {
-                    add: 1.0,
+                    add: 2.0,
                     lift: 0.6,
                     deposit: 0.95,
                     ..BrushDynamics::default()
@@ -85,7 +85,7 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
                 dynamics: BrushDynamics {
-                    add: 1.0,
+                    add: 2.0,
                     ..BrushDynamics::default()
                 },
                 ..BrushParams::default()
@@ -101,7 +101,7 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
                 shape: stamp(builtins::BRISTLES),
                 orientation: OrientationSource::Pen,
                 dynamics: BrushDynamics {
-                    add: 0.1,
+                    add: 0.2,
                     ..BrushDynamics::default()
                 },
                 color_dynamics: ColorDynamics {

@@ -6,9 +6,9 @@
 //! the path integral of the footprint. Because alpha-"over" is additive in
 //! optical depth `τ = −ln(1−α)`, the swept depth of a segment is a difference of
 //! the brush's precomputed prefix-τ texture (`prefix(u) − prefix(u−d)`), and the
-//! existing premultiplied-over blend across overlapping segment quads sums those
-//! depths *exactly* — reconstructing the continuous stroke with no banding, no
-//! scratch buffer, and no second pass.
+//! premultiplied-over blend across overlapping segment quads sums those depths
+//! *exactly* — reconstructing the continuous stroke with no banding and no
+//! double-counting at the joints.
 //!
 //! That is the plain **add** fast path: footprint → cleared scratch tile →
 //! integrate over the base into a fresh CoW tile. A brush that also moves paint
@@ -81,11 +81,6 @@ const MAX_REGION_DIM: u32 = 2048;
 /// Reached only by a stroke fine enough to fill a whole region with segments, and it
 /// cuts a new piece rather than coarsening anything.
 const MAX_STAMPS: usize = 4096;
-/// Gain on the `add` axis in the stamp loop, tuned so `add = 1` lays roughly a
-/// full-thickness deposit per pass of the tip. The swept fast path needs no
-/// counterpart: it lays height directly as the brush's rate times the swept
-/// optical depth (`stamp_oklab.wesl`), with no correction factor.
-const ADD_GAIN: f32 = 2.0;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
 /// (§6.2) — which, since the tool now exchanges once per *segment*, is
 /// simply a cap on the flattened segment length for a dynamics brush
@@ -238,7 +233,9 @@ pub struct StrokeRenderer {
 
     // Stroke integrate (§6.2/§6.1): a fullscreen pass reads the base tile +
     // the stroke's footprint scratch and writes `new = f(base, scratch)` into a fresh
-    // CoW tile's color+aux MRT — premultiplied-over + additive height.
+    // CoW tile's color+aux MRT — the scratch's accumulated parcel stacked on the base
+    // through the shared law in `paint_common.wesl`, the same one a fill lands through
+    // and the stamp loop's `deposit` uses.
     integrate_pipeline: wgpu::RenderPipeline,
     integrate_bgl: wgpu::BindGroupLayout,
 

@@ -1,10 +1,13 @@
 // Swept-segment brush rasterization for the OKLAB color space (§6.2).
 //
 // Shares all geometry/sweep math with the other color spaces via
-// `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile in the
-// normalized representation (§6.1): colour is premultiplied by **opacity**
-// (not coverage), height lives in the aux. Within a stroke the colour target
-// over-blends (premult-consistent) and the aux target accumulates additively.
+// `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile, which
+// holds the **parcel this stroke is laying** rather than a tile of paint: colour
+// premultiplied by the parcel's visible alpha, and the amounts that alpha was built
+// from (height, optical mass) in the aux. `integrate.wesl` is what turns the one
+// parcel that comes out into paint on the canvas, in the normalized representation
+// (§6.1). Within a stroke the colour target over-blends (premult-consistent) and the
+// aux target accumulates additively.
 //
 // Every deposit here is a function of the segment's **swept optical depth** `τ`
 // alone, in one of exactly two forms — additive in `τ`, or `1 − exp(−k·τ)` — because
@@ -20,17 +23,29 @@
 // agree with the stamp loop's `add` axis, which was always linear in exposure
 // (`dynamics.wesl::deposit`).
 //
-// The cost of dropping the `√` split: the footprint's coverage now reaches the
-// media's visible alpha through *both* factors of `op · T`, so a soft tip's faint
-// edge falls off as `τ²` rather than `τ`. Tip hardness absorbs that; sampling
-// independence is not something a parameter can buy back.
-//   target 0: color (Rgba16Float) — premultiplied Oklab (L,a,b)·op + opacity in a
+// **What a segment lays is a parcel of paint, not a coverage** (§6.1). Its
+// amount is `add · τ` of height and its per-unit opacity is the brush's own; the two
+// meet only in the slab law `1 − exp(−K · opacity · height)`, which is what the
+// colour target carries so that `integrate.wesl` can stack the accumulated parcel
+// through the shared law in `paint_common.wesl`. Emitting the opacity *alone* there
+// — which is what this did — was the same defect §6.3 fixed in the layer composite,
+// one level down: a fragment whose brush lays almost no paint still arrived at the
+// integrate claiming near-full coverage, so a low-`add` stroke drew as nothing over
+// bare canvas (the media pass caught it, via the height) and replaced the colour
+// outright over paint (nothing caught it at all). It also cost the faint edge of a
+// soft tip a factor of `τ`, since coverage then reached visible alpha through *both*
+// factors of `op · height`; weighing the parcel by its own visible alpha makes that
+// linear in `τ` again, which is what it always should have been.
+//   target 0: color (Rgba16Float) — the parcel's visible alpha in `.a`, with the
+//             Oklab (L,a,b) latent premultiplied by it; over-blended, so the latent
+//             a stroke crossing itself carries is ordered rather than averaged
 //   target 1: aux   (Rgba16Float, the wide *scratch* layout — persistent tiles keep only
-//             (height)) — (height, footprint coverage, unused, unused)
+//             (height)) — (height, optical mass, unused, unused)
 
 import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain, xf,
 };
+import package::paint_common::{OPACITY_K};
 
 @vertex
 fn vs_main(
@@ -51,33 +66,45 @@ fn fs_main(in: VsOut) -> FsOut {
     // The segment's swept optical depth — the footprint's geometric coverage
     // integrated along the travel. Everything below is built from this.
     let tau = swept_depth(in, sw);
-    let cov = 1.0 - exp(-tau);
     // The brush's remaining load here. A function of the fragment's own arc length
-    // along the stroke, not of the segment it happens to be drawn by, so both rates
-    // below stay independent of how the path was cut (`stroke_drain`).
+    // along the stroke, not of the segment it happens to be drawn by, so every rate
+    // below stays independent of how the path was cut (`stroke_drain`).
     let drain = stroke_drain(stroke_arc(in, sw));
-    // Per-unit opacity enters as an *absorption rate* rather than a factor, so the
-    // colour target's over-blend multiplies out to exactly `exp(−op · Στ)` — the
-    // stroke's coverage is the same whether the path was cut into one segment or a
-    // hundred.
-    let op = 1.0 - exp(-xf.color.w * drain * tau);
+
+    // The parcel this segment lays. `add` is the brush's only source term (§6.1),
+    // so it — and not the per-unit opacity — is what decides how much paint arrives;
+    // a brush at zero flow lays a parcel of nothing, and the integrate below leaves
+    // the canvas alone. Height is linear in `τ`, and the per-unit opacity is a
+    // property of the pigment rather than of how much of it there is, so the mass
+    // (their product) is linear in `τ` too.
+    let h = xf.paint.x * drain * tau;
+    let op = xf.color.w * drain;
+    let m = op * h;
 
     var out: FsOut;
-    // Premultiplied by opacity: the colour target over-blends, so per-arc rates sum
-    // through the overlapping segment quads to the local deposit. The colour is
-    // per-fragment: colour dynamics jitter it across the footprint and along the
-    // stroke (§6.2).
-    out.color = vec4<f32>(brush_color(in, sw) * op, op);
-    // The wide scratch aux (§6.1):
-    //   .x = laid height — linear in τ, so the additive target sums to the true path
-    //        integral of the footprint and a second pass builds impasto in full
-    //        (a saturating form would flatten out instead);
-    //   .y = footprint coverage (read by nothing today; kept for the write-back);
+    // The parcel's **visible alpha**: the slab law `1 − exp(−K·op·height)` that
+    // `paint_common.wesl` weighs a parcel by, evaluated per segment. Being of the
+    // form `1 − exp(−k·τ)` it is exactly what the colour target's premultiplied
+    // "over" composes — the complements multiply out to `1 − exp(−K·Σm)`, the whole
+    // stroke's parcel, whether the path was cut into one segment or a hundred. The
+    // colour it carries is per-fragment: colour dynamics jitter it across the
+    // footprint and along the stroke (§6.2), and the "over" keeps that jitter
+    // *ordered*, so a stroke crossing itself covers rather than averages.
+    let w = 1.0 - exp(-OPACITY_K * m);
+    out.color = vec4<f32>(brush_color(in, sw) * w, w);
+    // The wide scratch aux (§6.1), both channels additive in τ so they sum to the
+    // true path integral of the footprint:
+    //   .x = laid height — the amount of paint, so a second pass builds impasto in
+    //        full (a saturating form would flatten out instead);
+    //   .y = the parcel's optical mass (opacity · height) — the currency the parcel
+    //        law blends in. It rides here *unsaturated* because `.a` above has
+    //        already saturated, and the integrate needs the total to recover the
+    //        merged per-unit opacity `m/h`;
     //   .zw = unused.
     // Height is the amount of paint; the colour alpha is per-unit opacity only and
     // never represents amount (§6.1). Height is also the *only* thing a persistent
     // tile keeps: gloss is a uniform property of paint, not a stored channel, so
     // there is nothing here that a brush could source it from.
-    out.aux = vec4<f32>(xf.paint.x * drain * tau, cov, 0.0, 0.0);
+    out.aux = vec4<f32>(h, m, 0.0, 0.0);
     return out;
 }

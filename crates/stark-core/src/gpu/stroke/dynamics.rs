@@ -24,8 +24,8 @@ use super::segments::{
 };
 use super::swept::{TileInstance, ViewUniform};
 use super::{
-    ADD_GAIN, BAKE_FORMAT, BAKE_RES, BRUSH_RES, ScopedResources, StrokeCarry, StrokeRenderer,
-    StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, flatten_tolerance,
+    BAKE_FORMAT, BAKE_RES, BRUSH_RES, ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene,
+    StrokeSpans, TAU_PER_PASS, ToolState, flatten_tolerance,
 };
 
 /// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
@@ -1038,7 +1038,16 @@ fn dynamics_plan(
                 // signed curvature, which bends the travel frame every dispatch of
                 // this loop measures its exchange in, and the midpoint `exchange`
                 // lifts from (dynamics.wesl).
-                d.add * ADD_GAIN,
+                //
+                // Passed through **unscaled**, exactly as `stamp_oklab.wesl` takes it.
+                // It used to carry a gain of 2 ("tuned so `add = 1` lays roughly a
+                // full-thickness deposit per pass"), which made the same slider mean
+                // two different amounts of paint depending on whether some *other*
+                // axis happened to be non-zero — nudging `deposit` off zero doubled
+                // the flow. The tuning it claimed is already met without it: a pass of
+                // the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so `add = 1` lays 6.9
+                // of height, which the slab law reads as 0.999 coverage.
+                d.add,
                 s.curvature,
                 mid.x,
                 mid.y,

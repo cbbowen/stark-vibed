@@ -237,9 +237,11 @@ impl StrokeRenderer {
                 }],
             });
 
-            // Footprint → cleared scratch tile: within-stroke accumulation (the color
-            // target over-blends opacity-premultiplied colour, the aux accumulates
-            // height/coverage additively). The scratch aux is the wide format.
+            // Footprint → cleared scratch tile: within-stroke accumulation of the
+            // parcel this stroke lays (the color target over-blends the parcel's
+            // visible alpha with the latent premultiplied by it, the aux accumulates
+            // its height and optical mass additively). The scratch aux is the wide
+            // format.
             let scratch = self.acquire_scratch(pool, AllocSource::StrokeScratch);
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

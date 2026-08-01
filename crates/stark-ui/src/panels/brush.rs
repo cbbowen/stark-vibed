@@ -34,7 +34,7 @@ pub fn BrushPanel() -> Element {
     rsx! {
         Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
-        Slider { label: "Flow", min: 0.0, max: 1.5, value: brush.dynamics.add,
+        Slider { label: "Flow", min: 0.0, max: 3.0, value: brush.dynamics.add,
             oninput: move |v| update_brush(state, move |b| b.dynamics.add = v) }
         button {
             class: "be-open",

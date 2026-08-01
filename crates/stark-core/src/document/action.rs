@@ -131,6 +131,12 @@ pub struct BrushDynamics {
     /// A *rate*, not a quantity — this source never runs out on its own. For a stroke
     /// that runs dry as it travels see [`BrushParams::drain`]; for a finite carried
     /// glob that depletes as it is laid see [`charge`](Self::charge).
+    ///
+    /// **It means the same amount of paint whatever the other three are doing.** The
+    /// axes below decide whether the stroke goes through the swept fast path or the
+    /// sequential stamp loop (§6.2), and the loop used to scale this by a gain
+    /// of 2 — so nudging [`deposit`](Self::deposit) off zero doubled the flow of a
+    /// slider that has nothing to do with it.
     pub add: f32,
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
     /// in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Vertical flux canvas → tool.
