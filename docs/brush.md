@@ -348,17 +348,39 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      with five different tails and pins that; the convergence table and the four cheaper
      fixes that do **not** work are recorded on `RESERVOIR_EXCHANGE_STEP` itself.
 
-     The fix worth designing is a **sliding** exchange kernel. The pair kernel treats a
-     canvas point and the cell above it as two coupled boxes for the whole segment, so
-     its `keep` saturates at `k_lift/s` — half the canvas retained, however long the
-     segment. A canvas point does not stay under one cell: it slides through a stream of
-     them, each pairing brief, and composing brief pairings gives `exp(−k_lift·e)`
-     instead. The two agree as the step goes to zero and diverge badly at any coarse
-     one. Measured, the sliding form converges to the same answer and is ~2.5× more
-     accurate at every step. What it costs is the exact complementarity the transfer
-     rests on — `keep`/`dep`/`add_w`/`src_w` no longer sum to conservation, which is
-     precisely the failure the pair kernel was introduced to fix — so it needs a
-     conserving formulation before it can land.
+     **No reformulation of the pair kernel can help, and that is provable.** Write it as
+     the transfer matrix `M(e) = [[keep, dep], [1−keep, 1−dep]]`, whose columns sum to 1
+     — that column-stochasticity *is* the complementarity, and it is why the transfer
+     conserves. Its eigenvalues are `1` and `exp(−s·e)` with `s = k_lift + k_deposit`,
+     and its stationary split `k_deposit : k_lift` does not depend on `e`, so
+     `M(e/K)^K = M(e)` **exactly**, for every K, exposure and rate pair. The kernel
+     already composes perfectly under subdivision; a product of column-stochastic
+     matrices is the matrix it started from. Subdividing changes something only if the
+     *partner* is frozen across the sub-steps, and that is not a refinement but a
+     one-parameter deformation away from the pair model.
+
+     So the error is not in the kernel. It is in the two mean-field approximations
+     either side of it, and those are bounded by the segment length alone.
+
+     Where that deformation leads is a **sliding** kernel: `keep = exp(−k_lift·e)`
+     rather than `1 − k_lift·w(e)`, on the grounds that a canvas point does not stay
+     under one cell but slides through a stream of them, each pairing brief — so the
+     pair's saturation at `k_lift/s` is modelling a coupling that is not there. It
+     converges to the same answer and is ~2.5× more accurate at every step. What it
+     costs is the column-stochasticity above, which is precisely the failure the pair
+     kernel was introduced to fix, so it needs a conserving formulation — bake the
+     **flux** rather than the load, so the canvas receives what the tool gave up by
+     construction — before it can land.
+   - **What the step costs is scaled by the transfer rate**, not charged flat. The
+     error is first order in the transfer a segment *completes*, `(k_lift + k_deposit)·τ·lr`,
+     so holding that fixed is what makes one constant mean the same thing to every
+     brush; `stroke::exchange_travel` does it in closed form, since the rates enter as
+     `λ = ln(1 − axis)/TAU_PER_PASS` and the `τ` cancels. Measured across
+     `lift = deposit` from 0.4 to 0.95, the length-dependence stays in a 1.1–2.2 level
+     band while the segment length varies 6×. It only ever relaxes — a brush trading
+     faster than the calibration point stays at it — and `charge` is excluded, being a
+     starting load rather than a rate: a brush that only charges never enters the
+     exchange at all.
 3. **Write-back.** Each affected tile's full `TILE_TEX` block is sliced out of
    the shared region into a fresh CoW tile (`slice.wesl`, narrowing the wide aux
    to the persistent `(height)`). Aprons are bit-identical to neighbour interiors

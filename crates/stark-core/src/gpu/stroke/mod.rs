@@ -27,7 +27,9 @@ use rpds::HashTrieMap;
 use crate::assets::{AssetStore, build_coverage_r8, build_prefix_tau};
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
-use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind, StrokeRecord};
+use crate::document::{
+    BrushDynamics, BrushParams, BrushShape, ColorDynamics, NoiseKind, StrokeRecord,
+};
 use crate::geom::TileCoord;
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
@@ -88,6 +90,11 @@ const ADD_GAIN: f32 = 2.0;
 /// (§6.2) — which, since the tool now exchanges once per *segment*, is
 /// simply a cap on the flattened segment length for a dynamics brush
 /// (see [`flatten_tolerance`]).
+///
+/// **Quoted at one transfer rate.** This is the travel for `lift = deposit = 0.95`;
+/// [`exchange_travel`] scales it by how fast the brush being drawn actually trades,
+/// because that — not the travel — is what the error is first order in. A gentler
+/// brush is not being given a tolerance, it is being charged its own price.
 ///
 /// A property of the exchange loop, not of the tip: it sets how finely the reservoir
 /// tracks the evolving canvas, and nothing about a shape's coverage mask should change
@@ -151,14 +158,46 @@ const ADD_GAIN: f32 = 2.0;
 /// * *Matching `BAKE_RES` to the prefix-τ volume's 256.* No effect; the two grids
 ///   meeting in `deposit`'s ratio are not the problem.
 ///
-/// The one thing that does help is replacing the closed-pair kernel with a **sliding**
-/// one — `keep = exp(−k_lift·e)` rather than the pair's `1 − k_lift·w(e)`, on the
-/// grounds that a canvas point does not stay under one reservoir cell for a segment but
-/// slides through a stream of them, so the pair's saturation at `k_lift/s` is wrong at
-/// any coarse step. That converges to the same answer and is ~2.5× more accurate at
-/// every step. It also gives up the exact complementarity the transfer is built on
-/// (`dynamics.wesl`, and the 39%-of-height-vanishing story there), so it is a design
-/// change and not a constant, and it is not made here.
+/// **There is no fix for this inside the closed-pair model, and that is a theorem
+/// rather than a failure to find one.** Write the pair kernel as the transfer matrix
+///
+/// ```text
+///   M(e) = [ keep(e)      dep(e)  ]
+///          [ 1−keep(e)  1−dep(e)  ]
+/// ```
+///
+/// whose columns sum to 1 — that column-stochasticity *is* the complementarity, and it
+/// is why the transfer conserves. Its eigenvalues are 1 and `exp(−s·e)` with
+/// `s = k_lift + k_deposit`, and the stationary split `k_deposit : k_lift` is
+/// independent of `e`, so
+///
+/// ```text
+///   M(e/K)^K = M(e)     exactly, for every K, every exposure, every rate pair.
+/// ```
+///
+/// The kernel already composes perfectly under subdivision. So no re-derivation of it,
+/// no sub-stepping of it, no K-fold refinement of it can change a single pixel while
+/// remaining a closed pair — a product of column-stochastic matrices is the matrix it
+/// started from. Subdividing only does something if the *partner* is held fixed across
+/// the sub-steps, and that is not a refinement: it is a one-parameter deformation away
+/// from the pair model, whose `K → ∞` limit is exactly the sliding kernel below
+/// (`keep` runs 0.503 → 0.076 for the smear brush as K goes 1 → ∞).
+///
+/// So the error is not in the kernel at all. It is in the two mean-field
+/// approximations either side of it — `bake` gives the canvas a reservoir frozen at the
+/// segment's entry, and `exchange` gives the tool a canvas frozen at the same instant —
+/// and those are bounded by the segment length and nothing else. Which is what this
+/// constant is.
+///
+/// The one thing that does help is replacing the closed pair with a **sliding** kernel
+/// — `keep = exp(−k_lift·e)` rather than `1 − k_lift·w(e)`, on the grounds that a canvas
+/// point does not stay under one reservoir cell for a segment but slides through a
+/// stream of them, so the pair's saturation at `k_lift/s` is modelling a coupling that
+/// is not there. It converges to the same answer and is ~2.5× more accurate at every
+/// step. It also gives up the column-stochasticity above — the two sides' shares stop
+/// summing to one, which is the 39%-of-height-vanishing story in `dynamics.wesl` — so
+/// it needs a conserving formulation (bake the *flux*, not the load) before it can
+/// land, and it is not made here.
 const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
@@ -673,12 +712,70 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // longest segment.
     let d = b.dynamics;
     if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
-        tol.max_len = tol
-            .max_len
-            .min((RESERVOIR_EXCHANGE_STEP * b.radius).max(0.5));
+        tol.max_len = tol.max_len.min((exchange_travel(d) * b.radius).max(0.5));
     }
     tol
 }
+
+/// How far the tool may travel per segment, in radii — [`RESERVOIR_EXCHANGE_STEP`]
+/// scaled by how fast *this* brush actually trades.
+///
+/// The error the step bounds is a first-order splitting error, and what it is first
+/// order in is not the travel but the **transfer the segment completes**: the pair
+/// relaxes at `k_lift + k_deposit` per unit optical depth, so a segment's progress
+/// through it is `(k_lift + k_deposit) · τ · lr`. Holding *that* fixed rather than `lr`
+/// is what makes one constant mean the same thing to every brush.
+///
+/// The rate falls out in closed form. Each axis enters the shader as
+/// `λ = ln(1 − axis) / TAU_PER_PASS` (`dynamics.rs`), so `(k_lift + k_deposit) · τ` is
+/// just `−ln((1 − lift)(1 − deposit))` — the `τ` cancels, and there is no calibration
+/// hiding in it.
+///
+/// Two things this fixes, beyond the arithmetic:
+///
+/// * **`charge` is not a rate.** It sets the load the tool *starts* with, and a brush
+///   that charges but neither lifts nor deposits has `k = 0`: `exchange_at` takes its
+///   no-trading branch and the only thing reaching the canvas is `add`, which is linear
+///   in exposure and therefore exact at any segment length. Such a brush was paying the
+///   full cap for a transfer that never happens.
+/// * **The old test was a boolean.** Any brush with a non-zero axis was priced as the
+///   most extreme one, so a tip that lifts a tenth of a pass cost the same per pixel as
+///   a full smear.
+///
+/// The budget is calibrated so that `lift = deposit = 0.95` — the repro's brush, and
+/// about as hard as the transfer gets — comes out at exactly
+/// [`RESERVOIR_EXCHANGE_STEP`], leaving every golden that uses it untouched. A gentler
+/// brush earns its relaxation and nothing else changes.
+fn exchange_travel(d: BrushDynamics) -> f32 {
+    // Mirrors `dynamics.rs`'s own clamp, so the flattener prices the rates the shader
+    // will actually run — an axis at 1.0 is `−∞` otherwise.
+    let rate_of = |axis: f32| -(1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0);
+    let rate = rate_of(d.lift) + rate_of(d.deposit);
+    if rate <= 0.0 {
+        return MAX_EXCHANGE_TRAVEL;
+    }
+    // **Only ever a relaxation.** Rates above the reference are left at the reference
+    // step rather than priced below it. Partly because the scaling has only been
+    // measured across the band where a brush is usable — `lift = 1.0` is clamped to
+    // `λ = −20` in the shader anyway (`dynamics.rs`), so past a point the axis stops
+    // meaning what the rule reads it as — and partly because this is a *cost* change:
+    // clamping here is what makes it incapable of charging any brush more than it
+    // already pays, so no setting can regress on either axis.
+    (RESERVOIR_EXCHANGE_STEP * EXCHANGE_REFERENCE_RATE / rate)
+        .clamp(RESERVOIR_EXCHANGE_STEP, MAX_EXCHANGE_TRAVEL)
+}
+
+/// The transfer rate [`RESERVOIR_EXCHANGE_STEP`] is quoted at: `lift = deposit = 0.95`,
+/// i.e. `−ln(0.05 · 0.05)`.
+const EXCHANGE_REFERENCE_RATE: f32 = 5.991_465;
+
+/// Ceiling on the travel per segment however slowly the brush trades, in radii.
+///
+/// Not an accuracy bound — a structural one. A segment carries **one** tip orientation
+/// and one curvature (§6.6), the snapshot scratch is sized by the longest of them, and
+/// the sweep's own arc approximation is only good while the segment is short next to
+/// the tip. None of those care how fast paint changes hands.
+const MAX_EXCHANGE_TRAVEL: f32 = 1.0;
 
 /// How many leading spans of a *live* stroke may be rendered once and kept, given
 /// that the fitter has settled `frozen` of them (§6.2).

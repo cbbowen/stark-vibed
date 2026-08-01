@@ -1201,6 +1201,64 @@ mod tests {
     /// These are CPU-side and float-deterministic (§12.1) — the same reason replay and
     /// peers agree on geometry — so a count that differs *per machine* is a bug in that
     /// determinism, not a tolerance to loosen.
+    /// The exchange budget means the same thing to every brush
+    /// (`super::super::flatten_tolerance`). These are properties of the rule, not
+    /// measured counts — unlike the table below, a failure here is a bug rather than a
+    /// retuning.
+    #[test]
+    fn the_exchange_budget_scales_with_the_transfer_rate() {
+        use crate::document::BrushDynamics;
+        let at = |lift: f32, deposit: f32, charge: f32| {
+            super::super::flatten_tolerance(&BrushParams {
+                radius: 100.0,
+                dynamics: BrushDynamics {
+                    lift,
+                    deposit,
+                    charge,
+                    ..BrushDynamics::default()
+                },
+                ..BrushParams::default()
+            })
+            .max_len
+        };
+
+        // The calibration point: `lift = deposit = 0.95` is quoted at exactly
+        // `RESERVOIR_EXCHANGE_STEP`, which is what leaves the goldens that use it alone.
+        assert!(
+            (at(0.95, 0.95, 0.0) - 12.5).abs() < 0.05,
+            "calibration moved: {}",
+            at(0.95, 0.95, 0.0)
+        );
+
+        // Halving the rate doubles the travel: `−ln((1−a)(1−b))` is what the step is
+        // inversely proportional to, so squaring the retained fractions halves it.
+        // (0.95 → 0.9975 has half the rate of 0.95 → 0.95 per axis.)
+        let slow = at(0.7775, 0.7775, 0.0); // (1−a)² = 0.05 ⇒ half the rate of 0.95
+        assert!(
+            (slow - 25.0).abs() < 0.2,
+            "the step is not inverse in the rate: {slow}"
+        );
+
+        // Monotone in each axis on its own — more trading, shorter segments.
+        assert!(at(0.9, 0.0, 0.0) < at(0.5, 0.0, 0.0));
+        assert!(at(0.0, 0.9, 0.0) < at(0.0, 0.5, 0.0));
+
+        // `charge` is a starting load, not a rate. A brush that only charges never
+        // enters the exchange at all (`exchange_at`'s no-trading branch), so it is
+        // bounded by the structural ceiling and nothing else.
+        assert_eq!(at(0.0, 0.0, 1.0), 100.0);
+        // …and it does not tighten a brush that *does* trade.
+        assert!((at(0.95, 0.95, 1.0) - at(0.95, 0.95, 0.0)).abs() < f32::EPSILON);
+
+        // A brush with no dynamics at all is not capped by this at all.
+        assert!(at(0.0, 0.0, 0.0) > 100.0);
+
+        // Never a tightening: a brush that trades *faster* than the reference is left at
+        // the reference step, so no setting pays more than it did before the scaling.
+        assert!((at(1.0, 1.0, 0.0) - at(0.95, 0.95, 0.0)).abs() < 0.05);
+        assert!(at(0.99, 0.99, 0.0) >= at(0.95, 0.95, 0.0) - 0.05);
+    }
+
     #[test]
     fn the_segment_budget_is_what_it_was() {
         // Three curves, shared across brushes so that a difference between two rows on
@@ -1238,14 +1296,16 @@ mod tests {
                     &straight,
                 ),
             ),
-            // `max_len` from RESERVOIR_EXCHANGE_STEP (0.125 · radius = 2.5px over 400px).
+            // `max_len` from the exchange budget. `smearing()` trades at `lift = deposit = 0.8`,
+            // which the rate scaling prices at 0.233 · radius = 4.7px over 400px — not the
+            // 2.5px the 0.95 calibration point would cost.
             // **This is the row a reservoir-cadence retuning moves**, and the reason
             // the dynamics path costs what it does. Subdivision is by bisection, so a
-            // count sits at or above the length bound's own `400/2.5 = 160` rather than
+            // count sits at or above the length bound's own `400/4.7 = 86` rather than
             // exactly on it.
             (
                 "straight, smearing tip",
-                208,
+                118,
                 record(smearing(20.0), &straight),
             ),
             // The same cadence on a tip four times as fat. The cap is a fraction of the
@@ -1254,7 +1314,7 @@ mod tests {
             // them both.
             (
                 "straight, fat smearing tip",
-                52,
+                30,
                 record(smearing(80.0), &straight),
             ),
             // `drain` costs **nothing**, which is the point of this row: the falloff is
@@ -1264,7 +1324,7 @@ mod tests {
             // for a quantity that is exact rather than merely finely sampled.
             (
                 "straight, draining tip",
-                208,
+                118,
                 record(
                     BrushParams {
                         drain: 0.005,
@@ -1320,7 +1380,7 @@ mod tests {
                     &arc,
                 ),
             ),
-            ("arc, smearing tip", 200, record(smearing(20.0), &arc)),
+            ("arc, smearing tip", 103, record(smearing(20.0), &arc)),
             // The Euler spiral: `angle` again over 1.2 radians of total turning, but
             // with the fitter crossing the arc/chord threshold on each side of a
             // genuine inflection. Cheaper than the arc because it turns one way and
@@ -1351,7 +1411,7 @@ mod tests {
             // does, so a smearing tip pays the same price on a curve as on a line.
             (
                 "euler spiral, smearing tip",
-                196,
+                98,
                 record(smearing(20.0), &spiral),
             ),
         ];
