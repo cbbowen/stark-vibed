@@ -354,28 +354,87 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 //
 // Tuned against `golden_lift_end_regression`, measuring the ring as the worst rise
 // above a groove along any lateral profile — a stroke's paint may only fall off as you
-// walk away from its axis, so any rise is a rim sitting outside a scrape. Rates 0, 2,
-// 4, 8, 16, 24 gave 3.7, 2.0, 1.3, 0.67, 0.67, 0.33 levels. 8 is the knee: it is where
-// the worst remaining rise stops being the stroke end at all and moves off into the
-// body, i.e. the ring has dropped below the 8-bit noise it is measured against, and
-// paying more buys nothing.
+// walk away from its axis, so any rise is a rim sitting outside a scrape. Rates 1, 2,
+// 4, 8 gave 2.0, 1.67, 1.0, 1.67 levels. 4 is the optimum from both ends: below it the
+// worst rise is still *at the stroke end*, which is the ring itself, and above it the
+// ring is gone but the rim the wick feeds starts registering instead.
 //
 // There is a real cost on the other side, which is why this is not simply set high.
 // Wicking hands paint to shoulder cells that used to hold almost none — the same rate
 // disparity that stranded the ring also starved them — so they now deposit, and the
-// stroke's own edge softens: this test's body edge goes from 15 to 27 levels at 8, and
-// on to 34 by 24. Arguably the starved rim was the older defect of the two, but it is a
-// visible change to every paint-manipulating brush and not one to spend for free.
-const WICK_RATE: f32 = 8.0;
+// stroke's own edge softens: the same test's body edge climbs 25 → 29 → 33 → 36 levels
+// across the rates above. Arguably the starved rim was the older defect of the two, but
+// it is a visible change to every paint-manipulating brush and not one to spend for
+// free, which is what makes the optimum an optimum rather than a floor.
+//
+// Read it as a **variance rate**: one step over `lr` of travel injects `σ² = 0.5 ·
+// WICK_RATE · lr` texels² per axis, and `wick_reach` plus the weight below realise
+// exactly that at any step size. It was 8 while the retired saturating form was
+// silently delivering a fraction of nominal at the step this loop actually runs at;
+// with the scheme honest the same smoothing costs about half the number.
+const WICK_RATE: f32 = 4.0;
 
-// The share of a neighbouring pair's concentration difference that crosses over `lr` of
-// travel. Exponential in travel like every other rate in this loop (§6.2), so no
-// segment length can push it past the ceiling however the path was cut. That ceiling is
-// the explicit four-neighbour stability bound: with each of the four pairs trading at
-// most a quarter of the difference, a cell's own share of itself never goes negative.
-// `RESERVOIR_EXCHANGE_STEP` holds the loop clear of it anyway.
-fn wick_share(mobility: f32, lr: f32) -> f32 {
-    return 0.25 * (1.0 - exp(-WICK_RATE * lr * mobility));
+// **The step size rides the flux's *reach*, not its weight.** An explicit diffusion
+// step is stable only while the shares leaving a cell sum to ≤ 1 — that is a bound on
+// the *weight*, and it says nothing about how far the weight is allowed to reach. The
+// variance a step injects is `Σ w·d²`, so moving the same weight out to distance `d`
+// buys `d²` times the smoothing for free, at exactly the same stability bound.
+//
+// That matters because the alternative is worse in both directions. Holding the
+// neighbours at `d = 1` caps a step at `σ² = 0.5`, and a rate that wants more than that
+// simply saturates: the shares pile up against the ceiling, the smoothing stops growing
+// with the step, and the total over a stroke starts depending on how many segments
+// there were. This wick shipped that way and it cost a factor of 3.4 in total smoothing
+// the moment `drain` stopped pinning segments short. Sub-stepping in time would fix it
+// too, but only by dispatching the pass several times per segment, and this loop is
+// dispatch-bound.
+//
+// With the reach carrying the step instead, variance per step is proportional to travel
+// at any step size, and **variance adds under composition** — so the total over a stroke
+// is proportional to the distance travelled however the path was cut. That is the
+// property the old exponential form was reaching for and only half achieved (it stayed
+// bounded, which is what it claimed, but stopped composing once saturated).
+//
+// The shells sit at *integer* offsets, and that is load-bearing rather than convenient:
+// the pair `(x, x+d)` is then symmetric, so both threads compute one number and apply
+// it with opposite signs. Sampling a neighbour at a fractional distance through the
+// bilinear sampler would quietly break conservation, because the partner is a blend of
+// four cells whose reciprocal flux does not mirror it. Two shells, at `d` and `d+1`
+// with the fraction split between them, keep every offset integral while letting the
+// reach vary continuously.
+
+// Reservoir texels the flux reaches over `lr` of travel. Diffusion length grows as the
+// square root of time, hence the `sqrt`; the floor of 1 is the nearest neighbour, below
+// which there is nowhere closer to put the weight and it goes back to being the weight
+// that carries the step.
+fn wick_reach(lr: f32) -> f32 {
+    return max(sqrt(WICK_RATE * lr), 1.0);
+}
+
+// One neighbour pair's parcel for this cell. `weight` is the share of the pair's
+// concentration difference that crosses, and the mobility folded in on top converts
+// that concentration back into the height it moves. Every factor is symmetric in the
+// pair, so the neighbour computes the identical number and applies it with the opposite
+// sign — which is what conserves the total exactly.
+fn wick_pair(
+    t: vec2<i32>,
+    off: vec2<i32>,
+    bdim: vec2<u32>,
+    cov_t: f32,
+    inv_t: f32,
+    self_load: Load,
+    weight: f32,
+) -> Load {
+    let tn = t + off;
+    let n = load_at(tn, bdim);
+    let cov_n = coverage_at(brush_local_at(tn, bdim));
+    let f = weight * min(cov_t, cov_n);
+    let inv_n = 1.0 / max(cov_n, WICK_MIN_COV);
+    var d: Load;
+    d.h = f * (n.h * inv_n - self_load.h * inv_t);
+    d.m = f * (n.m * inv_n - self_load.m * inv_t);
+    d.lm = f * (n.lm * inv_n - self_load.lm * inv_t);
+    return d;
 }
 
 // Coverage floor for the concentration quotient. Cells below it are out of contact —
@@ -430,9 +489,27 @@ fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cov_t = coverage_at(brush_local_at(t, bdim));
     let inv_t = 1.0 / max(cov_t, WICK_MIN_COV);
 
+    // The two shells this step reaches to, and the weight to hand them. `d_sq` is the
+    // `Σ w·d²` the pair of shells will realise, so dividing the target variance through
+    // by it lands the weight wherever the reach happens to have put it.
+    //
+    // The result is bounded by `0.25` without a clamp, which is worth seeing rather
+    // than asserting: `reach² = WICK_RATE·lr`, and interpolating `d²` between the two
+    // shells overshoots `reach²` by exactly `frac·(1 − frac) ≥ 0`, so `d_sq ≥
+    // WICK_RATE·lr` and the quotient below cannot exceed a quarter. Mobility ≤ 1 only
+    // takes it further down. That is the stability bound met by construction: four
+    // directions × two shells, summing to at most 1, so a cell's share of itself
+    // never goes negative.
+    let reach = wick_reach(st.b.y);
+    let d0 = floor(reach);
+    let frac = reach - d0;
+    let d_sq = d0 * d0 + frac * (2.0 * d0 + 1.0);
+    let weight = 0.25 * WICK_RATE * st.b.y / d_sq;
+    let i0 = i32(d0);
+
     // Every share is taken against the *entering* state on both sides, never against a
     // running total: that is what makes this thread's flux the exact negative of the
-    // one its neighbour computes for the same pair — the mobility, the share and the
+    // one its neighbour computes for the same pair — the mobility, the weight and the
     // two concentrations are all symmetric in the pair, so the two threads compute one
     // number and disagree only in sign.
     var d: Load;
@@ -440,17 +517,12 @@ fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
     d.m = 0.0;
     d.lm = vec3<f32>(0.0, 0.0, 0.0);
     for (var k = 0u; k < 4u; k = k + 1u) {
-        let tn = t + WICK_NEIGHBOURS[k];
-        let n = load_at(tn, bdim);
-        let cov_n = coverage_at(brush_local_at(tn, bdim));
-        let mobility = min(cov_t, cov_n);
-        // The share converts back out of concentration into the height it moves, so
-        // what crosses is a quantity of paint and the sum over the tool is untouched.
-        let f = wick_share(mobility, st.b.y) * mobility;
-        let inv_n = 1.0 / max(cov_n, WICK_MIN_COV);
-        d.h += f * (n.h * inv_n - self_load.h * inv_t);
-        d.m += f * (n.m * inv_n - self_load.m * inv_t);
-        d.lm += f * (n.lm * inv_n - self_load.lm * inv_t);
+        let dir = WICK_NEIGHBOURS[k];
+        let a = wick_pair(t, dir * i0, bdim, cov_t, inv_t, self_load, weight * (1.0 - frac));
+        let b = wick_pair(t, dir * (i0 + 1), bdim, cov_t, inv_t, self_load, weight * frac);
+        d.h += a.h + b.h;
+        d.m += a.m + b.m;
+        d.lm += a.lm + b.lm;
     }
 
     let h = self_load.h + d.h;
