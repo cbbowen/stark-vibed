@@ -37,6 +37,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use super::frame::{content_rect, view_rect};
+use crate::icons::{self, icon};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::state::{AppState, TransformRegion, TransformState, dispatch};
@@ -106,17 +107,24 @@ pub fn TransformBar() -> Element {
     rsx! {
         div { class: chrome_class(state, "transform-bar"),
             span { class: "bar-label", "Transform" }
+            // The axis was already the only thing distinguishing these two buttons, and
+            // it was already carried by a glyph — the arrow that used to trail the word.
+            // Leading it instead puts the pair in the same shape every other chip in the
+            // application wears, glyph then noun, and the mark that says *which* flip is
+            // now a picture of the mirroring rather than of its axis.
             button {
                 class: "chip",
                 title: "Mirror left \u{2194} right",
                 onclick: move |_| update(state, ts.flipped_h()),
-                "Flip \u{2194}"
+                {icon(icons::FLIP_H)}
+                "Flip"
             }
             button {
                 class: "chip",
                 title: "Mirror top \u{2195} bottom",
                 onclick: move |_| update(state, ts.flipped_v()),
-                "Flip \u{2195}"
+                {icon(icons::FLIP_V)}
+                "Flip"
             }
             span { class: "bar-sep" }
             button {

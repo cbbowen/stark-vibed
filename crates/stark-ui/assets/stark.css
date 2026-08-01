@@ -824,8 +824,8 @@
 }
 
 /* The disclosure triangle on a layer that carries others. The empty span every
-   other row gets is the same width, which is what keeps the visibility checkboxes
-   in one column down the panel however deep the tree goes. */
+   other row gets is the same width, which is what keeps the names in one column
+   among rows at the same depth. */
 .layer-fold {
   width: 12px;
   flex: none;
@@ -838,15 +838,44 @@
   cursor: pointer;
 }
 
-/* The clip toggle sits with the sliders, as one more property of whatever is
-   selected — not on every row. Its label is a full sentence rather than the word
-   "Clip", because the word is the thing nobody guesses the meaning of. */
-.layer-clip-row {
-  margin-bottom: 8px;
+/* Blend and clip, on one line: the picker takes the slack and the clip toggle sizes
+   to its glyph. A chip rather than a control of its own so lit, resting and disabled
+   are the states the application already has — the only thing this row overrides is
+   the `flex: 1` that makes a chip stretch in a panel row, which here would split the
+   line evenly with the picker. */
+.blend-row .select {
+  flex: 1;
+  min-width: 0;
 }
 
-.layer-clip-label {
-  margin-bottom: 0;
+.blend-row .chip {
+  flex: none;
+  padding: 5px 7px;
+}
+
+/* The per-row visibility toggle, hard against the right edge (`.layer-name` takes
+   the slack, so nothing has to push it there). Bare — no chip's ground — because a
+   row already carries one lit background of its own for selection, and a second
+   filled box on the same line would compete with it. The glyph alone carries the
+   state: an open eye at the row's own weight, a struck one dimmed, which is the
+   layer saying it is not contributing. */
+.layer-eye {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: #ffffffa6;
+  cursor: pointer;
+}
+
+.layer-eye:hover {
+  color: #eee;
+}
+
+.layer-eye.hidden {
+  color: #ffffff59;
 }
 
 .layer-name {

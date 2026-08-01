@@ -140,6 +140,11 @@ pub fn LayerPanel() -> Element {
                         });
                     }
                 },
+                // A folder gaining a member, against the same folder losing one. The
+                // two words are a pair nothing else in the panel is paired with, and
+                // the mirrored glyph is what says so at a glance — the header row above
+                // makes the same claim about its own two with the stack pair.
+                {icon(icons::CARRY)}
                 "Carry"
             }
             button {
@@ -158,6 +163,7 @@ pub fn LayerPanel() -> Element {
                         });
                     }
                 },
+                {icon(icons::RELEASE)}
                 "Release"
             }
         }
@@ -183,47 +189,54 @@ pub fn LayerPanel() -> Element {
                 div { class: "slider-label",
                     if l.is_group { "Blend \u{2014} of the group" } else { "Blend" }
                 }
-                select {
-                    class: "select",
-                    // The mode's own description, so the difference between the two
-                    // light modes is readable without painting a test stroke.
-                    title: "{blend_hint(l.blend, &l)}",
-                    // Inert at the bottom of the document, where there is nothing to
-                    // blend with and every mode is the identity
-                    // (§14.4.3). Shown rather than hidden: the control belongs to the
-                    // layer wherever it sits, and a row that loses a control when it
-                    // is dragged to the bottom reads as a bug.
-                    disabled: !l.has_backdrop,
-                    onchange: move |e| {
-                        if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
-                            dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
-                        }
-                    },
-                    for mode in BlendMode::ALL {
-                        option {
-                            value: "{mode.label()}",
-                            selected: mode == l.blend,
-                            "{mode.label()}"
+                // Blend and clip are one row because they are one question — *how does
+                // this layer meet what is below it* — and they share the answer's two
+                // halves: the mode says how the paint combines, the toggle says where it
+                // is allowed to land. Both go inert together at the bottom of the
+                // document, which is the other thing the shared row makes visible.
+                div { class: "row blend-row",
+                    select {
+                        class: "select",
+                        // The mode's own description, so the difference between the two
+                        // light modes is readable without painting a test stroke.
+                        title: "{blend_hint(l.blend, &l)}",
+                        // Inert at the bottom of the document, where there is nothing to
+                        // blend with and every mode is the identity
+                        // (§14.4.3). Shown rather than hidden: the control belongs to the
+                        // layer wherever it sits, and a row that loses a control when it
+                        // is dragged to the bottom reads as a bug.
+                        disabled: !l.has_backdrop,
+                        onchange: move |e| {
+                            if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
+                                dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
+                            }
+                        },
+                        for mode in BlendMode::ALL {
+                            option {
+                                value: "{mode.label()}",
+                                selected: mode == l.blend,
+                                "{mode.label()}"
+                            }
                         }
                     }
-                }
-            }
-            label {
-                class: "row layer-clip-row",
-                title: "{clip_hint(&l)}",
-                input {
-                    r#type: "checkbox",
-                    checked: l.clip,
-                    // Inert for the same reason the blend picker is — except that
-                    // where a mode over nothing is harmlessly the identity, a clip
-                    // over nothing would erase the layer, which is the whole reason
-                    // this one has to be stopped rather than merely left to do
-                    // nothing (§14.4.3).
-                    disabled: !l.has_backdrop,
-                    onchange: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
-                }
-                span { class: "slider-label layer-clip-label",
-                    if l.is_group { "Clip the group to what is under it" } else { "Clip to the paint below" }
+                    // A lit chip rather than a tick-box and a sentence. The sentence was
+                    // there because the *word* "Clip" is the thing nobody guesses the
+                    // meaning of — but a sentence is not a label, it is a tooltip that
+                    // had been promoted into the panel, and it cost the control a row of
+                    // its own. It is a tooltip again here, and the glyph carries what a
+                    // one-word label could not.
+                    button {
+                        class: if l.clip { "chip active" } else { "chip" },
+                        title: "{clip_hint(&l)}",
+                        // Inert for the same reason the blend picker is — except that
+                        // where a mode over nothing is harmlessly the identity, a clip
+                        // over nothing would erase the layer, which is the whole reason
+                        // this one has to be stopped rather than merely left to do
+                        // nothing (§14.4.3).
+                        disabled: !l.has_backdrop,
+                        onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
+                        {icon(icons::CLIP)}
+                    }
                 }
             }
         }
@@ -467,15 +480,16 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
         "Paint on this layer — double-click to rename"
     };
 
-    // A row is one line — the group's triangle if it has one, visibility, then the
-    // name that selects it. The per-layer opacity slider lives in the panel's single
-    // set of controls for whatever is selected.
+    // A row is one line — the group's triangle if it has one, the name that selects
+    // it, and the eye that shows it, hard against the right edge. The per-layer
+    // opacity slider lives in the panel's single set of controls for whatever is
+    // selected.
     rsx! {
         div {
             class: "{row_class} row",
             style: "margin-left:{indent}px",
             // Only a group gets a triangle, and the space is held either way so the
-            // checkboxes down the panel stay in one column.
+            // names down the panel start in one column at each depth.
             if is_group {
                 button {
                     class: "layer-fold",
@@ -486,13 +500,6 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                 }
             } else {
                 span { class: "layer-fold" }
-            }
-            input {
-                r#type: "checkbox",
-                title: if is_group { "Show this layer and what it carries" }
-                       else { "Show this layer" },
-                checked: visible,
-                onchange: move |_| dispatch(state, DocCommand::SetLayerVisible(id, !visible)),
             }
             if let Some(text) = draft() {
                 input {
@@ -563,6 +570,24 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                     title: "{peer.name} is working on this layer",
                     "{peer.initials()}"
                 }
+            }
+            // Last on the line, so the eyes stand in one column down the whole panel
+            // however deep the tree goes: a row is indented from the left, and its right
+            // edge is where the panel's is. That column is the thing being bought — the
+            // tick-boxes this replaces marched *rightwards* with the indent, so reading
+            // "what is hidden?" off the panel meant reading every row rather than
+            // glancing down an edge. It shows the eye the layer *is*, not the one
+            // clicking would give you (see `icons::VISIBLE`).
+            button {
+                class: if visible { "layer-eye" } else { "layer-eye hidden" },
+                title: match (is_group, visible) {
+                    (true, true) => "Hide this layer and what it carries",
+                    (true, false) => "Show this layer and what it carries",
+                    (false, true) => "Hide this layer",
+                    (false, false) => "Show this layer",
+                },
+                onclick: move |_| dispatch(state, DocCommand::SetLayerVisible(id, !visible)),
+                {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
             }
         }
     }

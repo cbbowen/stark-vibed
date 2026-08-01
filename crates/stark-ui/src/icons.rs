@@ -30,9 +30,16 @@ icons! {
     CIRCLE => "circle-bold",
     LASSO => "lasso-bold",
     SELECTION_NEW => "rectangle-dashed-bold",
-    SELECTION_ADD => "selection-plus-bold",
-    SELECTION_SUB => "selection-foreground-bold",
-    SELECTION_ISECT => "selection-background-bold",
+    // The three combining modes, drawn as the set operation itself: two overlapping
+    // squares with the kept part filled. They are one family where the marks they
+    // replaced were three unrelated pictures of a marquee — and the family matters
+    // more than the picture here, because the row's whole claim is that Add, Sub and
+    // Isect are the same question answered three ways (see `panels::select`). Squares
+    // rather than the bare `unite`/`subtract` circles so they sit at the weight of the
+    // rectangle beside them.
+    SELECTION_ADD => "unite-square-bold",
+    SELECTION_SUB => "subtract-square-bold",
+    SELECTION_ISECT => "intersect-square-bold",
     SELECTION_NONE => "selection-slash-bold",
     SELECTION_INVERT => "selection-inverse-bold",
     // The one solid glyph in the set, and the only one that ever wears a colour of its
@@ -52,6 +59,32 @@ icons! {
     // is not *about* the rectangle — it is about deciding what the piece is, which is
     // the one job a frame does and the reason it clips nothing.
     FRAME => "crop-bold",
+    // Grouping, as a folder gaining or losing a member. The pair has to read as one
+    // gesture and its undo, which is why it is one glyph mirrored rather than two
+    // pictures — the same argument the stack pair above is built on. A folder rather
+    // than a stack because these two commands are about *membership* (§14.2), which is
+    // the fact the panel draws as an indent; the stack pair is about existence.
+    CARRY => "folder-simple-plus-bold",
+    RELEASE => "folder-simple-minus-bold",
+    // The clip toggle. What a clipped layer is bounded by is the paint under it, so the
+    // glyph is a picture in a frame — an image with a silhouette, which is the thing
+    // doing the bounding. It sits beside the blend picker because both answer *how does
+    // this layer meet what is below it*, and the two together are one row of that
+    // question rather than a drop-down and a sentence with a tick-box.
+    CLIP => "image-square-bold",
+    // The two flips on the transform bar. Here the glyph *is* the meaning — each one
+    // draws its own axis of mirroring, which is the whole difference between the two
+    // buttons, and is what the `\u{2194}` / `\u{2195}` arrows in their labels used to
+    // carry.
+    FLIP_H => "flip-horizontal-bold",
+    FLIP_V => "flip-vertical-bold",
+    // Per-row visibility. Unlike every other icon here this one is a *state* rather
+    // than an act: the row shows the eye it currently is, not the one clicking would
+    // give you. That is the way the tick-box it replaces read, and the way the same
+    // control reads in every other painting application — a row of eyes is scannable
+    // in a way a row of "would-hide" glyphs is not.
+    VISIBLE => "eye-bold",
+    HIDDEN => "eye-slash-bold",
 }
 
 /// One icon, sized and coloured by whatever it sits in (`.icon` in `stark.css`).
