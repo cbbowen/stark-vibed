@@ -7,7 +7,7 @@ use common::*;
 use stark_core::SurfaceId;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_core::document::{BrushShape, OrientationSource, Tool};
+use stark_core::document::{BrushDynamics, BrushParams, BrushShape, OrientationSource, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 
@@ -229,20 +229,70 @@ fn golden_lift_end_regression() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let mut brush = brush([0.0, 0.0, 0.0, 1.0], 80.0);
-    brush.dynamics.add = 1.0;
-    brush.drain = 0.005;
-    brush.dynamics.lift = 0.95;
-    brush.dynamics.deposit = 0.95;
+    let brush = BrushParams {
+        radius: 80.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        drain: 0.005,
+        dynamics: BrushDynamics {
+            add: 1.0,
+            lift: 0.95,
+            deposit: 0.95,
+            ..BrushDynamics::default()
+        },
+        ..BrushParams::default()
+    };
+    for (i, x) in [-200.0, -300.0, -400.0].into_iter().enumerate() {
+        stroke_with(
+            &mut engine,
+            brush,
+            &[Vec2::new(x, 0.0), Vec2::new(0.0, 0.0), Vec2::new(30.0, 0.0)],
+        );
+        let img = engine.render_to_image();
+        assert_golden(&format!("lift_end_regression_{i}"), &img, 6);
+        engine.process(DocCommand::Undo);
+    }
+}
+
+#[test]
+fn golden_heavy_smear_regression() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let points = [
+        Vec2::new(-100.0, 0.0),
+        Vec2::new(0.0, 0.0),
+        Vec2::new(100.0, 0.0),
+    ];
+    let shape = BrushShape::Round { hardness: 0.95 };
     stroke_with(
         &mut engine,
-        brush,
-        &[
-            Vec2::new(-200.0, 0.0),
-            Vec2::new(0.0, 0.0),
-            Vec2::new(30.0, 0.0),
-        ],
+        BrushParams {
+            radius: 200.0,
+            shape,
+            dynamics: BrushDynamics {
+                add: 1.5,
+                ..BrushDynamics::default()
+            },
+            ..BrushParams::default()
+        },
+        &points,
+    );
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            radius: 50.0,
+            shape,
+            dynamics: BrushDynamics {
+                add: 0.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+            ..BrushParams::default()
+        },
+        &points,
     );
     let img = engine.render_to_image();
-    assert_golden("lift_end_regression", &img, 6);
+    assert_golden("heavy_smear_regression", &img, 6);
+    engine.process(DocCommand::Undo);
 }
