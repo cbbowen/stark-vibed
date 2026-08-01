@@ -35,7 +35,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | Doc | Sections | What's in it |
 |---|---|---|
 | [architecture.md](docs/architecture.md) | §1–§5 | Principles, crate layout, the command/action boundary, the history & timeline model |
-| [brush.md](docs/brush.md) | §6.1, §6.2, §6.6 | Tiles and channels, path fitting, swept-segment stamping, the wet-mixing dynamics loop, brush shape assets |
+| [brush.md](docs/brush.md) | §6.1, §6.2, §6.6, §6.9 | Tiles and channels, path fitting, swept-segment stamping, the wet-mixing dynamics loop, brush shape assets, drag-and-hold shape assist |
 | [rendering.md](docs/rendering.md) | §6.3–§6.5, §6.7 | The three compositing passes, blend modes, the media/lighting pass, aprons and the canvas surface, Oklab and Mixbox |
 | [selection.md](docs/selection.md) | §6.8, §16 | The soft-mask coverage field every tool acts through, fill, and transform |
 | [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; matte layers, framing and export |
@@ -81,7 +81,6 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo check -p stark-ui --target wasm32-unknown-unknown
-cargo doc --workspace                       # ~15 intra-doc-link warnings, pre-existing
 dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
 cargo bench -p stark-core --bench stroke    # criterion; the dynamics perf gate
 ```

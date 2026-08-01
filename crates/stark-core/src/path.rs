@@ -437,6 +437,18 @@ impl PathFitter {
         }
     }
 
+    /// Every accepted report's position, in order — the **raw trace**, which the
+    /// drawing assist recognizes a shape from (§6.9).
+    ///
+    /// Deliberately the reports rather than [`path`](Self::path): the fit is a curve
+    /// pulled *towards* its control points, so those sit off the stroke by design and
+    /// asking whether they lie on a circle is asking the wrong question. Nothing
+    /// downstream stores these — they are already held here only because the window
+    /// solve reads its own tail, and a few hundred `Vec2`s is nothing.
+    pub fn trace(&self) -> Vec<Vec2> {
+        self.pts.iter().map(|s| s.pos).collect()
+    }
+
     /// End the stroke: commit the whole polygon, so every control point is final.
     pub fn finish(&mut self) {
         if self.finished {
@@ -724,7 +736,7 @@ const ARC_SAMPLES_PER_SPAN: usize = 4;
 /// earlier update: those spans' control points are held, so their geometry — and so
 /// their length — cannot change, and re-walking them every update is the last piece
 /// of per-update work that scaled with the whole stroke rather than the window.
-fn arc_profile(curve: &CubicBSpline<2>, settled: &[f32]) -> Vec<f32> {
+pub(crate) fn arc_profile(curve: &CubicBSpline<2>, settled: &[f32]) -> Vec<f32> {
     let spans = curve.num_spans();
     let n = spans * ARC_SAMPLES_PER_SPAN;
     let keep = settled.len().saturating_sub(1).min(n);
@@ -752,7 +764,7 @@ fn arc_profile(curve: &CubicBSpline<2>, settled: &[f32]) -> Vec<f32> {
 /// curve independently — samples keep their order and their relative spacing, so
 /// they cannot slide past one another or bunch up on the input's jitter, which is
 /// how per-sample correction blew strokes up to 45px with loops.
-fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
+pub(crate) fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
     let total = *profile.last().expect("profile is never empty");
     if total <= 1e-6 || profile.len() < 2 {
         return f.clamp(0.0, 1.0) * spans;
@@ -769,7 +781,7 @@ fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
 /// Tilt clamped to the unit disc a pen reports in — the same overshoot guard as the
 /// pressure clamp in [`PathFitter::path`], for the channel that steers the footprint
 /// rather than sizing it.
-fn clamp_tilt(t: Vec2) -> Vec2 {
+pub(crate) fn clamp_tilt(t: Vec2) -> Vec2 {
     let len = t.length();
     if len > 1.0 { t / len } else { t }
 }

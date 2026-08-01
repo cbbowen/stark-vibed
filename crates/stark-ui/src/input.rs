@@ -10,8 +10,9 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
-use crate::platform::{capture_pointer, on_window_key};
-use crate::state::{AppState, dispatch, update_brush};
+use crate::collab::now_seconds;
+use crate::platform::{capture_pointer, on_window_key, sleep_ms};
+use crate::state::{AppState, Dwell, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::SelectionOp;
@@ -337,6 +338,99 @@ pub fn pick_color(state: AppState, pos: Vec2) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// The hold, for the drawing assist (§6.9)
+// ---------------------------------------------------------------------------
+
+/// How long the pointer has to hold still before the stroke in flight snaps.
+///
+/// The cost of the two mistakes is asymmetric, and that is what sets it. Too short and
+/// the natural pause before lifting the pen turns considered strokes into shapes; too
+/// long and the gesture just feels unresponsive and gets tried again. So it sits at the
+/// long end of what still reads as immediate — the same figure Procreate settled on.
+const DWELL: f64 = 0.45;
+
+/// How far the pointer may drift and still count as held, in **CSS px**: a hand's own
+/// tremor on a pen resting against the glass, plus the digitizer's noise.
+const DWELL_SLOP: f32 = 4.0;
+
+/// How often the watcher looks. Well under a tenth of [`DWELL`], so the snap lands
+/// within a frame or two of the hold being earned, and far too rare to cost anything.
+const DWELL_POLL_MS: i32 = 60;
+
+/// Begin watching a stroke gesture for a hold (§6.9). A no-op when the assist is off.
+///
+/// `at` is the press position in element (CSS) px — the frame the dwell is measured in;
+/// see [`Dwell::at`].
+pub fn watch_for_hold(state: AppState, at: Vec2) {
+    if !*state.assist.enabled.peek() {
+        return;
+    }
+    let mut dwell = state.assist.dwell;
+    dwell.set(Some(Dwell {
+        at,
+        since: now_seconds(),
+        fired: false,
+    }));
+    // `spawn_forever` for the reason `request_paint` uses it: this is started from a
+    // component's event handler and must not be tied to that scope's lifetime. Every
+    // signal it touches is root-owned (see `state::root_signal`).
+    let task = spawn_forever(async move {
+        let mut dwell = state.assist.dwell;
+        loop {
+            sleep_ms(DWELL_POLL_MS).await;
+            // Cleared means the gesture is over, and that is the only way out: the
+            // watcher runs for as long as the pointer is down, because a hold that was
+            // declined (or that snapped a shape now being steered) may be followed by
+            // another worth reporting.
+            let Some(held) = *dwell.peek() else { return };
+            if held.fired || now_seconds() - held.since < DWELL {
+                continue;
+            }
+            // Latch *before* dispatching, so a pointer that simply stays put does not
+            // report the same hold thirty times a second.
+            dwell.set(Some(Dwell {
+                fired: true,
+                ..held
+            }));
+            dispatch(state, GestureCommand::Hold);
+        }
+    });
+    let mut watcher = state.assist.task;
+    if let Some(old) = watcher.write().replace(task) {
+        old.cancel();
+    }
+}
+
+/// Report a pointer move against the hold being watched, in element (CSS) px.
+///
+/// Restarts the clock only when the pointer has actually gone somewhere: a pen resting
+/// on glass reports continuously, so treating every report as movement would mean the
+/// dwell never completed on the one device the feature exists for.
+pub fn pointer_moved(state: AppState, at: Vec2) {
+    let mut dwell = state.assist.dwell;
+    let Some(held) = *dwell.peek() else { return };
+    if held.at.distance(at) > DWELL_SLOP {
+        dwell.set(Some(Dwell {
+            at,
+            since: now_seconds(),
+            fired: false,
+        }));
+    }
+}
+
+/// Stop watching for a hold. Harmless when nothing is being watched.
+pub fn stop_watching(state: AppState) {
+    let mut dwell = state.assist.dwell;
+    if dwell.peek().is_some() {
+        dwell.set(None);
+    }
+    let mut task = state.assist.task;
+    if let Some(task) = task.write().take() {
+        task.cancel();
+    }
+}
+
 /// The engine's current view, or `None` before WebGPU init has finished.
 ///
 /// Fallible rather than `expect`ing, because the canvas element is in the DOM and
@@ -422,6 +516,7 @@ pub fn end_interaction(
     if let Some(base) = action_restore.take() {
         dispatch(state, ViewCommand::SetShapeAction(base));
     }
+    stop_watching(state);
     nav.stop();
     // Not a parameter like the two above because the eyedropper's drag flag is shared
     // state, not the canvas's own — the options bar reads it (see `PickState`).

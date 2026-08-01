@@ -430,7 +430,7 @@ fn start_presence_pump(state: AppState) {
 ///
 /// `performance.now()` is missing only in environments with no `performance` at all,
 /// where `Date.now()` is the best available answer.
-fn now_seconds() -> f64 {
+pub(crate) fn now_seconds() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
         .map_or_else(js_sys::Date::now, |p| p.now())

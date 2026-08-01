@@ -38,6 +38,7 @@ Status lives here and nowhere else.
 | — | View mirror & rotate (§18.1.2) | done |
 | — | Timeline mode / scrubber (§18.2.4) | done |
 | — | Groups & clipping (§14) | done |
+| — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
 
 Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
@@ -177,7 +178,7 @@ lamp. That is the behaviour painters use rotation for; the alternative (the ligh
 turning with the canvas, so a mirrored view is a pure mirror image) is a one-line
 change to the environment lookup if the mirror ever wants to be exact.
 
-#### 18.1.3 Symmetry and drawing guides
+#### 18.1.3 Symmetry and drawing guides — shape assist built
 
 Per unit of implementation effort, probably the highest-leverage illustration
 features in existence (Procreate's Drawing Guides, CSP's perspective and
@@ -185,7 +186,14 @@ symmetrical rulers). Our model makes them unusually clean: a guide is a **path
 transform applied between the fitter and the renderer**. Mirror symmetry is one
 gesture emitting N `StrokeRecord`s — or one record carrying its mirror axes,
 which keeps the log tighter and leaves §12's convergence argument untouched.
-Perspective snapping and shape assist (QuickShape) attach at the same seam.
+Perspective snapping attaches at the same seam.
+
+**Shape assist (QuickShape) shipped there** — see §6.9. It is the evidence for the
+claim above: drag out a rough line or ellipse, hold the pen still, and the stroke
+snaps and becomes steerable, in one new module plus a dwell watcher in the
+frontend — because a snapped stroke is still a `Vec<ControlPoint>` and nothing
+downstream of the fitter had to learn what it was. **Still missing: symmetry,
+perspective and the guide overlay**, which is the larger half.
 
 #### 18.1.4 Brush parameter mapping — inputs → parameters
 
@@ -292,8 +300,9 @@ Naming these is part of not becoming Photoshop.
    frame snapping, guides and review mode (§15.7–§15.8); the transform clipboard
    (§16.7).
 2. **Then, in parallel** — brush parameter mapping and the brush library
-   (§18.1.4; deepens what is already the strongest asset); symmetry and guides
-   (§18.1.3; highest value per line of code on this list).
+   (§18.1.4; deepens what is already the strongest asset); symmetry and
+   perspective guides (§18.1.3; highest value per line of code on this list, and
+   shape assist has now paid for the seam they attach at).
 3. **The bet** — post-hoc stroke editing and branching history (§18.2.1–2).
    Structurally impossible for Adobe to match, and already 80% paid for.
 

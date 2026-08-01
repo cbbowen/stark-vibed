@@ -113,6 +113,21 @@ pub enum GestureCommand {
     To {
         sample: InputSample,
     },
+    /// The pointer has been **held still** mid-gesture: snap the stroke in flight to
+    /// the line or ellipse it resembles, and hand the rest of the drag to that shape
+    /// (§6.9).
+    ///
+    /// The dwell itself is the frontend's to detect and is not described here, for the
+    /// same reason [`ViewCommand::SetRotation`] is absolute: how long a pause has to be
+    /// and how still the hand has to hold is *gesture feel*, a property of the device
+    /// and the hand, and the engine has no clock to measure it with anyway (§7). What
+    /// the engine owns is what a hold **means**, which is this command.
+    ///
+    /// Idempotent, and a no-op for a gesture that has already snapped, for a selection
+    /// drag, or for a stroke that resembles nothing — so the frontend may send it
+    /// whenever it thinks the pointer has stopped without first asking what state the
+    /// gesture is in.
+    Hold,
     End,
     Cancel,
 }

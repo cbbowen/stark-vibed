@@ -40,6 +40,7 @@
 //! checklist in this comment, and the two drifted.
 
 pub mod assets;
+pub mod assist;
 pub mod color;
 pub mod colorspace;
 pub mod command;

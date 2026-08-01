@@ -39,6 +39,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
         .read()
         .as_ref()
         .is_some_and(|o| o.show_peer_selections);
+    let mut assist_enabled = state.assist.enabled;
+    let assist = assist_enabled();
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
     let shared = (state.collab.phase)() == CollabPhase::Shared;
@@ -54,6 +56,21 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 div { class: "modal-title", "Settings" }
                 div { class: "modal-subtitle",
                     "These apply to this browser, not to the drawing — nothing here is saved into the document or sent to anyone you share with."
+                }
+
+                div { class: "modal-section-label", "DRAWING" }
+                SettingToggle {
+                    id: "drawing-assist",
+                    label: "Snap shapes when you hold",
+                    // Says what the gesture *is*, because a hold is not a control
+                    // anybody can see — the dialog is the only place it is written
+                    // down (§6.9).
+                    description: "Draw a rough line or ellipse and keep the pen down without moving: the stroke snaps to the perfect shape, and the rest of the drag steers it. Lift to finish.",
+                    // The one thing somebody turning it off is likely to be reacting
+                    // to, stated rather than left to be discovered.
+                    note: Some("Strokes that aren't close to a line or an ellipse are left exactly as you drew them.".to_string()),
+                    checked: assist,
+                    onchange: move |v| assist_enabled.set(v),
                 }
 
                 div { class: "modal-section-label", "COLLABORATION" }

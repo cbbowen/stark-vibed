@@ -181,7 +181,10 @@ which the engine draws into directly. DOM chrome surrounds it.
   become `GestureCommand::Start`/`To`/`End`, with element coordinates mapped via
   `ViewTransform::screen_to_canvas`. `Start` also carries the **input tolerance**
   (§6.2): `devicePixelRatio` and the event's `pointerType` give the device's
-  grain in CSS px, and the same view transform carries it into canvas px.
+  grain in CSS px, and the same view transform carries it into canvas px. A
+  fourth, `Hold`, is sent by the dwell watcher when the pointer stops moving
+  mid-stroke — the drawing assist (§6.9). It is the frontend that has the clock,
+  and the moves after it are still plain `To`s.
 - The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each
   command the engine renders **straight into the surface texture**
   (`get_current_texture` → `render` → `present`) — no readback, no encode. The

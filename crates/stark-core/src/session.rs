@@ -6,13 +6,14 @@
 //! pointer commands and, on `EndStroke`, hands the [`Engine`](crate::Engine) a
 //! finished [`StrokeRecord`] to commit.
 
+use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;
 use crate::document::{
     ActorId, BrushParams, FillOp, LayerId, SelectionOp, SelectionShape, ShapeAction, StrokeRecord,
     Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
-use crate::path::PathFitter;
+use crate::path::{ControlPoint, PathFitter};
 use crate::peer::{
     GestureView, HEARTBEAT, Identity, LiveGesture, PeerFrame, StrokeHead, default_name,
 };
@@ -36,6 +37,45 @@ struct StrokeBuilder {
     layer: LayerId,
     seed: u64,
     fitter: PathFitter,
+    /// What the frontend said this gesture's input resolves to (canvas px). Kept
+    /// because the drawing assist prices its recognition in the same unit the fit
+    /// does — see [`crate::assist`].
+    tolerance: f32,
+    /// Set once the gesture has been **held** and snapped to a shape (§6.9). From
+    /// there the fitter stops being fed and this decides the path.
+    assist: Option<Assist>,
+}
+
+/// A stroke that has snapped to an ideal shape, and is now being steered rather than
+/// extended (§6.9).
+///
+/// `base` and `grip` are kept beside the current `shape` on purpose: every adjustment
+/// is `base.adjust(grip, pointer)`, never `shape.adjust(...)`, so a minute of dragging
+/// is the same as the same displacement made at once. `path` is the realization of
+/// `shape`, cached because a preview asks for it on every frame and a pointer move is
+/// the only thing that can change it.
+struct Assist {
+    base: AssistShape,
+    grip: Vec2,
+    shape: AssistShape,
+    /// The pen channels of the stroke as it was drawn, carried onto the ideal shape.
+    pen: PenProfile,
+    /// How many control points the drawn stroke had — the floor on the snapped one's,
+    /// so the profile above has somewhere to live.
+    knots: usize,
+    path: Vec<ControlPoint>,
+}
+
+impl Assist {
+    /// Re-derive the shape and its path for a pointer at `pos`.
+    fn steer(&mut self, pos: Vec2) {
+        let shape = self.base.adjust(self.grip, pos);
+        if shape == self.shape {
+            return;
+        }
+        self.shape = shape;
+        self.path = shape.to_path(&self.pen, self.knots);
+    }
 }
 
 /// What a finished shape gesture resolves to (§6.8,
@@ -393,8 +433,16 @@ impl Session {
                     brush: b.brush,
                     seed: b.seed,
                 },
-                path: b.fitter.path(),
-                frozen: b.fitter.frozen_points(),
+                path: b.path(),
+                // A snapped stroke has **no settled prefix**: steering it moves every
+                // control point at once, so nothing may be retired. The whole path
+                // therefore rides every frame — which it can afford to, being a shape.
+                // The ordinal bump in `assist_stroke` is what lets the watermark drop
+                // back to zero without walking backwards within one gesture (§17.5).
+                frozen: b
+                    .assist
+                    .as_ref()
+                    .map_or_else(|| b.fitter.frozen_points(), |_| 0),
             }),
             None => self.preview_shape().map(|r| match r {
                 ShapeResult::Select(op) => GestureSource::Selection(op),
@@ -499,14 +547,68 @@ impl Session {
             layer: self.active_layer,
             seed,
             fitter,
+            tolerance,
+            assist: None,
         });
     }
 
-    /// Extend the in-flight stroke with another sample.
+    /// Extend the in-flight stroke with another sample — or, once it has snapped,
+    /// **steer** the shape it snapped to (§6.9).
+    ///
+    /// One entry point for both halves of the gesture, so the frontend goes on sending
+    /// the same `To` for every pointer move and nothing about the dwell has to be
+    /// mirrored on that side. What the drag means changed; how it arrives did not.
     pub fn stroke_to(&mut self, sample: InputSample) {
         if let Some(b) = self.in_flight.as_mut() {
-            b.fitter.push(sample);
+            match b.assist.as_mut() {
+                Some(assist) => assist.steer(sample.pos),
+                None => b.fitter.push(sample),
+            }
         }
+    }
+
+    /// Snap the stroke in flight to the shape it resembles — what a **hold** means
+    /// (§6.9). Returns whether anything snapped.
+    ///
+    /// Declining is a normal outcome, not a failure: a stroke that is neither a line
+    /// nor an ellipse is left exactly as it was drawn, and the gesture carries on
+    /// through the fitter as though nothing had happened. The frontend needs no answer
+    /// for that reason — it asks once per dwell and the canvas either changes or does
+    /// not.
+    ///
+    /// A snap **bumps the gesture ordinal**, because it is a discontinuity in a stream
+    /// that is otherwise append-only: the path is replaced rather than extended. That
+    /// one increment is what invalidates the renderer's cached head (§6.2) and makes
+    /// peers restart their assembly (§17.5) instead of splicing a delta onto a path
+    /// that no longer exists.
+    pub fn assist_stroke(&mut self) -> bool {
+        let Some(b) = self.in_flight.as_mut() else {
+            return false;
+        };
+        if b.assist.is_some() {
+            return false;
+        }
+        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance) else {
+            return false;
+        };
+        let drawn = b.fitter.path();
+        let pen = PenProfile::of(&drawn);
+        let knots = drawn.len();
+        b.assist = Some(Assist {
+            base,
+            grip: base.grip(),
+            shape: base,
+            path: base.to_path(&pen, knots),
+            pen,
+            knots,
+        });
+        self.gesture_ordinal += 1;
+        true
+    }
+
+    /// Whether the stroke in flight has snapped to a shape (§6.9).
+    pub fn is_assisted(&self) -> bool {
+        self.in_flight.as_ref().is_some_and(|b| b.assist.is_some())
     }
 
     /// This client's gesture in flight as the preview fold wants it, authored by
@@ -546,16 +648,25 @@ impl Session {
     /// How many spans of the in-flight stroke are settled — the prefix a live
     /// preview could render once instead of repainting per pointer move
     /// (see [`PathFitter::frozen_spans`]). 0 when no stroke is active.
+    ///
+    /// Also 0 once the stroke has snapped (§6.9): steering a shape moves every control
+    /// point, so there is no settled prefix to retire — the same answer a marquee gives
+    /// for the same reason.
     pub fn frozen_spans(&self) -> usize {
-        self.in_flight
-            .as_ref()
-            .map_or(0, |b| b.fitter.frozen_spans())
+        self.in_flight.as_ref().map_or(0, |b| match b.assist {
+            Some(_) => 0,
+            None => b.fitter.frozen_spans(),
+        })
     }
 
     /// Finish the stroke, returning the record to commit (`None` if empty).
     pub fn end_stroke(&mut self) -> Option<StrokeRecord> {
         self.in_flight.take().map(|mut b| {
-            b.fitter.finish();
+            // A snapped stroke's path is the shape's, not the fit's — there is nothing
+            // left for a last solve to settle.
+            if b.assist.is_none() {
+                b.fitter.finish();
+            }
             b.to_record()
         })
     }
@@ -568,16 +679,29 @@ impl Session {
 }
 
 impl StrokeBuilder {
+    /// The stroke's path as it now stands: the fit's, or — once the gesture has
+    /// snapped — the shape's (§6.9).
+    ///
+    /// The one place the two are chosen between, which is what keeps the assist a
+    /// *path transform between the fitter and the renderer* (§18.1.3) rather than a
+    /// second kind of stroke. Everything above this reads a `Vec<ControlPoint>` and
+    /// cannot tell which it got.
+    fn path(&self) -> Vec<ControlPoint> {
+        match self.assist.as_ref() {
+            Some(a) => a.path.clone(),
+            // The fitted control points (§6.2). Mid-stroke this ends in a provisional
+            // knot at the newest sample, so the preview reaches the cursor; the same
+            // fitter produces the committed path, so live == committed.
+            None => self.fitter.path(),
+        }
+    }
+
     fn to_record(&self) -> StrokeRecord {
         StrokeRecord {
             layer: self.layer,
             tool: self.tool,
             brush: self.brush,
-            // The fitted control points (§6.2). Mid-stroke this ends in
-            // a provisional knot at the newest sample, so the preview reaches the
-            // cursor; the same fitter produces the committed path, so live ==
-            // committed.
-            path: self.fitter.path(),
+            path: self.path(),
             seed: self.seed,
         }
     }

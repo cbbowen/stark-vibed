@@ -664,6 +664,15 @@ impl Engine {
                 }
                 self.refresh_live();
             }
+            // A held pointer: snap the stroke to the shape it resembles (§6.9). Nothing
+            // is committed and nothing is decided about the gesture's end — a snap
+            // changes what the *same* drag builds, and the release still commits one
+            // stroke either way.
+            GestureCommand::Hold => {
+                if self.session.assist_stroke() {
+                    self.refresh_live();
+                }
+            }
             // The one edge that produces document state.
             GestureCommand::End => {
                 if self.session.is_selecting() {

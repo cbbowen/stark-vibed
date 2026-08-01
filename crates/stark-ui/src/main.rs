@@ -43,7 +43,10 @@ use dioxus::prelude::*;
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
-use input::{Nav, bind_shortcuts, end_interaction, input_tolerance, pick_color, sample};
+use input::{
+    Nav, bind_shortcuts, elem_xy, end_interaction, input_tolerance, pick_color, pointer_moved,
+    sample, watch_for_hold,
+};
 use layout::{
     PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move, resize_end, resize_move,
 };
@@ -411,6 +414,13 @@ fn Canvas() -> Element {
                             tolerance,
                         });
                         drawing.set(true);
+                        // Watch for the pen being held still, which snaps the
+                        // stroke to the shape it resembles (§6.9). Painting
+                        // only: a marquee is already an exact shape, so there
+                        // is nothing for a hold to improve.
+                        if !tool.is_selection() {
+                            watch_for_hold(state, elem_xy(&e));
+                        }
                     }
                 }
             },
@@ -425,6 +435,11 @@ fn Canvas() -> Element {
                         // arrives while the last sample is still settling.
                         pick_color(state, s.pos);
                     } else if drawing() {
+                        // In screen px, before the sample is mapped: whether the
+                        // hand is holding still is a fact about the hand
+                        // (§6.9). Once the stroke has snapped this stops
+                        // watching and the same `To` steers the shape instead.
+                        pointer_moved(state, elem_xy(&e));
                         dispatch(state, GestureCommand::To { sample: s });
                     } else {
                         nav.pan_move(&e);

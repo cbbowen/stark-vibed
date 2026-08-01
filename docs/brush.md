@@ -474,3 +474,162 @@ binary and is the path that scales as the libraries grow. (Headless tests, havin
 no frontend, read the same files from disk and register them directly.)
 
 
+## 6.9 Drag-and-hold drawing assist
+
+Drag out a rough line or a rough ellipse, then **keep the pen down without moving
+it**. After a beat the stroke in flight snaps to the ideal shape it resembles, and
+the rest of the *same* drag steers that shape — the end of the line, the angle and
+size of the ellipse — until the pen lifts, which commits it. The gesture is one
+stroke and one undo step, start to finish.
+
+This is the shape-assist half of §18.1.3, and it attaches exactly where that
+section predicted: **a path transform between the fitter and the renderer**.
+Nothing downstream of `StrokeRecord::path` learns that assist exists. A snapped
+stroke is still a list of control points, so the renderer, the wire format, the
+save file, replay and the goldens are untouched, and the stroke is undoable,
+replayable and collaborative for free. That is why `stark-core/src/assist.rs`
+answers in control points rather than carrying a shape into the action log.
+
+### Three pieces, deliberately separable
+
+**Recognition** — which shape, if any, the raw pointer trace is. It works on the
+*accepted reports* (`PathFitter::trace`) rather than on the fitted control points,
+because a B-spline is pulled towards its control points rather than through them,
+so asking whether *those* lie on a circle is asking the wrong question.
+
+- A **line** is total least squares — perpendicular distance, not vertical offset,
+  since ordinary least squares would answer differently for the same stroke drawn
+  at a different angle, which on a canvas that can itself be rotated (§18.1.2) is
+  not a fit at all. But it is **anchored at the first sample** rather than free,
+  because the two ends of a drag are not the same kind of thing: where a stroke
+  starts is placed deliberately, with the pen at rest on the point the hand chose,
+  while where it ends is wherever the hand had got to. So the start is taken as
+  drawn and the fit spends all its freedom on the direction — which also makes the
+  residual honest, being measured against the line that will actually be drawn.
+- An **ellipse** is fitted by **reweighted moments**. Points spread uniformly in an
+  ellipse's own parameter have covariance exactly `½·diag(a², b²)` in its own
+  frame, so the moments give the shape in closed form — but only for that measure.
+  Everything difficult about the fit is in earning that measure, and the passes
+  that do it are the whole of it: estimate, read off the parameter every sample
+  sits at, reweight, repeat until it settles. The true ellipse is a fixed point, so
+  the iteration converges to it rather than the first estimate having to land on
+  it, and the correspondence is *declared* from the current estimate and never
+  searched — the same discipline §6.2 applies to the stroke fit.
+
+**What the reweighting has to correct is worth spelling out, because each is a way
+a real hand draws a loop and each broke recognition outright.**
+
+- **Speed.** Pointer reports are spread by how fast the hand moved. Resampling them
+  uniformly by *arc length* does not fix it either: arc length runs fastest at the
+  ends of the minor axis, so an arc-length measure reads a 2:1 ellipse as roughly
+  1.7:1, and the error grows with eccentricity until a long thin loop misses the
+  bar for being what it is.
+- **Overshoot.** Closing a loop means coming back *past* where you started.
+  Weighting each sample by the gap to its neighbours counts that wedge twice, which
+  on a 6% overshoot walked the estimated centre 78px off a 400px ellipse and took
+  the worst residual from 4px to 112px. So the weight is **coverage, not travel**:
+  the parameter circle is cut into equal wedges, and every *occupied* wedge is
+  worth the same, shared out among whatever landed in it. Going over an arc twice
+  says nothing extra about the shape.
+- **Undershoot.** Stopping short leaves a wedge with no data in it, and a
+  closed-form inversion that assumes a whole turn then describes an arc — an 8%
+  short loop was enough to fail the bar at every eccentricity. Empty wedges are
+  therefore **filled from the estimate itself**, one point per wedge, which is
+  sound because the truth stays a fixed point and the gap is at most an eighth of
+  the circle, so what was drawn always outvotes it.
+
+**Everything is barred on the worst sample, not the RMS.** This is the whole
+difference between a bar that discriminates and one that does not: a hand's wobble
+along a straight drag is noise, while a curve somebody *meant* deviates
+systematically, and averaging is exactly the operation that hides the second. A
+300px stroke bowed 40px reads as 4% RMS — indistinguishable from a shaky straight
+line — and as 9% at its worst, which is not close to anything. Every threshold is
+denominated in the gesture's **input tolerance** (§6.2), because "close enough to a
+line" fixed in canvas px would mean two different things at two zoom levels.
+
+Declining is a normal outcome. Dwelling at the end of a stroke that is neither a
+line nor an ellipse leaves it exactly as drawn and the gesture carries on through
+the fitter — a closed trace is offered to the ellipse fit first and *falls through*
+to the line fit if it misses, so a rough rectangle simply does not snap. The cost
+of a false positive (a considered stroke silently replaced) is far higher than the
+cost of a miss (hold it straighter and try again), and the bars are set from that
+asymmetry rather than from a hit rate.
+
+**Adjustment** — what the rest of the drag means. A line moves the end being held,
+*by the pointer's delta*: snapping moved that end off the hand by up to the fit
+residual, and driving it absolutely would jump it back on the first move. An
+ellipse turns and scales about its centre so the held point follows the pointer —
+turning is what the feature is for, and the scale rides along because a
+one-pointer drag has two degrees of freedom and the radius is the only other thing
+a hand at that position could mean. The eccentricity the drawn loop established is
+preserved. Both are always applied to the shape **as recognized** plus the total
+displacement since, never to the previous frame's shape, so a minute of adjustment
+is identical to the same drag made at once — the bargain §16.6 makes for transform.
+
+**Realization** — the shape as a fitted path, carrying the pen channels the stroke
+was actually drawn with, sampled at the same fraction of the way along. This is
+what keeps a snapped stroke *painted*: a line snapped out of a stroke that swelled
+in the middle still swells in the middle. Without it the feature would produce
+vector art with a brush texture on it.
+
+A **line** is placed in closed form — any collinear control polygon draws exactly
+that line, so there is nothing to solve. An **ellipse** is *fitted*, for a reason
+worth stating because it is not obvious: a clamped cubic B-spline's **first span is
+a straight chord**, since the clamp collapses three of its four Bézier points onto
+the first control point. Control points placed analytically on the ellipse
+therefore leave an `O(Δ²)` bulge exactly at the seam however many of them there
+are, and a least-squares solve over a dense sampling of the true ellipse is what
+places the end rows to cancel it. That solve is `CubicBSpline::fit_channels` — the
+same one the stroke fitter drives, at the same parameters, through the same arc
+profile.
+
+The leg count follows from that same end effect rather than from the interior
+ripple (`r·Δ⁴/384`, microscopic at any leg count worth using): the first leg's
+chord bows `r·Δ²/8` off the arc it stands for, the solve spreads it leaving a
+little under a quarter, so `r·Δ²/24 ≤ 0.4px` fixes the count — 12 legs for a
+thumbnail, 71 for a 1200px circle. Fewer control points than the fitter itself
+would spend on a stroke that long. The path also runs **two legs past** a full turn
+at each end, which puts the flat sixth-of-a-leg at the clamped ends underneath the
+far end's correctly-curved interior instead of beside it, and is what makes a
+closed loop join without a notch.
+
+### The hold itself is the frontend's
+
+The engine owns what a hold **means** (`GestureCommand::Hold`); noticing that the
+pointer has stopped is `stark-ui/src/input.rs`. The split is the one §18.1.2 draws
+for the navigator's rotate drag: how long a pause has to be and how still a hand
+has to hold is *gesture feel*, a property of the device and the hand — and the
+engine has no clock to measure it with anyway (§7). The dwell is measured in
+**screen** pixels, not canvas pixels: holding still is a fact about the hand, and
+on the canvas the same tremor would count as a hold at one zoom level and as
+movement at another.
+
+`Hold` is idempotent and a no-op for a gesture that has already snapped, for a
+selection drag, and for a stroke that resembles nothing, so the frontend may send
+it whenever it thinks the pointer has stopped without first asking what state the
+gesture is in. Pointer moves go on arriving as `GestureCommand::To` either way —
+what the drag *means* changed, how it arrives did not — so nothing about the dwell
+is mirrored in the pointer handling.
+
+Two consequences inside the session are worth naming, because both would be silent
+bugs:
+
+- A snap **bumps the gesture ordinal**. It is a discontinuity in a stream that is
+  otherwise append-only — the path is replaced, not extended — and that one
+  increment is what invalidates the renderer's cached head (§6.2) and makes peers
+  restart their assembly instead of splicing a delta onto a path that no longer
+  exists (§17.5).
+- A snapped stroke reports **zero frozen spans**. Steering a shape moves every
+  control point at once, so there is no settled prefix to retire — the same answer
+  a marquee gives, for the same reason.
+
+Assist can be turned off (Settings → Drawing), because it changes what an ordinary
+stroke does and somebody who wants their line left crooked has to be able to say
+so.
+
+**Not built, and each a local change here:** rectangles and polygons (another
+recognizer arm), arcs (an open trace with consistent turning), constraining to a
+circle or to 15° increments while adjusting (a modifier read at the same seam), and
+carrying the recognized shape into the action log so a committed stroke stays
+editable as a shape — which is a wire-format change and belongs with §18.2.1, not
+before it.
