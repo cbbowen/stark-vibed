@@ -11,8 +11,16 @@
 //! means **clipping**, and they are drawn as different marks because they are
 //! different facts — a layer can be in a group without being clipped to it, which is
 //! a state Photoshop's panel cannot draw at all.
+//!
+//! Because that picture already says where every layer sits, the moves between those
+//! places belong **on the rows** rather than in a pair of buttons above them: Carry at
+//! the head of a row's line, Release standing in the indent that row's membership
+//! opened, the fold triangle on the top edge it shares with what it carries. A
+//! selection-scoped button has to name the layer it would act on and go inert when
+//! there is none; a control drawn *in* the row has already named it, and simply is not
+//! there when the move it makes has nowhere to go.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use dioxus::html::Key;
 use dioxus::prelude::*;
@@ -26,6 +34,11 @@ use stark_core::command::{DocCommand, PeerCommand};
 use stark_core::document::BlendMode;
 use stark_core::{LayerId, LayerInfo};
 
+/// How far one level of membership indents a row, in pixels. Named because two
+/// things are measured in it: the row's own offset, and the slot the indent leaves
+/// empty to its left, which is where Release sits.
+const INDENT: usize = 14;
+
 /// A row as the panel draws it: the layer, plus what its neighbours in the flat
 /// list say about it that the layer alone cannot.
 #[derive(Clone, PartialEq)]
@@ -35,6 +48,15 @@ pub struct Row {
     hidden: bool,
     /// Shut, for a group. Meaningless for a layer that carries nothing.
     collapsed: bool,
+    /// The layer directly below this one *in its own stack* — what Carry would put
+    /// it on, and the layer a clip would be bounded by. `None` at the foot of a
+    /// stack, where there is nothing to be carried by.
+    carry_onto: Option<LayerId>,
+    /// The group this layer is in, and what carries *that* — between them, where
+    /// Release would put it: out of the group and directly above it. `None` for a
+    /// layer that is not in a group, which is the only state Release has nothing to
+    /// say about.
+    release_to: Option<(LayerId, Option<LayerId>)>,
 }
 
 #[component]
@@ -72,15 +94,6 @@ pub fn LayerPanel() -> Element {
     // Removing a group takes what it carries with it (§14.2), so the
     // floor is not "more than one row" but "something would be left".
     let can_remove = selected_id.is_some_and(|id| subtree_len(&layers, id) < layers.len());
-    // Carry puts the selection onto the layer below it *in its own stack*, which is
-    // the layer it would be clipped to. Nothing below it in its stack, nothing to
-    // carry it.
-    let carry_onto = selected.as_ref().and_then(|l| sibling_below(&layers, l));
-    // Release lifts it out of its group, to sit directly above the group.
-    let release_to = selected
-        .as_ref()
-        .and_then(|l| l.carrier)
-        .map(|c| (c, carrier_of(&layers, c)));
 
     rsx! {
         div { class: "layer-header",
@@ -117,54 +130,6 @@ pub fn LayerPanel() -> Element {
                 // and a frame is one.
                 {icon(icons::REMOVE_LAYER)}
                 "Remove"
-            }
-        }
-
-        // Grouping, in the two words it takes. There is no third command: "clip to
-        // the layer below" is Carry followed by the Clip toggle, because clipping to
-        // exactly one layer *is* that layer carrying this one (§14.4).
-        div { class: "layer-header",
-            button {
-                class: "layer-add",
-                title: match &carry_onto {
-                    Some(_) => "Put this layer on the one below it \u{2014} they become a group",
-                    None => "Nothing below this layer in its stack to put it on",
-                },
-                disabled: carry_onto.is_none(),
-                onclick: move |_| {
-                    if let (Some(id), Some(onto)) = (selected_id, carry_onto) {
-                        dispatch(state, DocCommand::MoveLayer {
-                            id,
-                            carrier: Some(onto),
-                            above: None,
-                        });
-                    }
-                },
-                // A folder gaining a member, against the same folder losing one. The
-                // two words are a pair nothing else in the panel is paired with, and
-                // the mirrored glyph is what says so at a glance — the header row above
-                // makes the same claim about its own two with the stack pair.
-                {icon(icons::CARRY)}
-                "Carry"
-            }
-            button {
-                class: "layer-add",
-                title: match &release_to {
-                    Some(_) => "Lift this layer out of its group",
-                    None => "This layer is not in a group",
-                },
-                disabled: release_to.is_none(),
-                onclick: move |_| {
-                    if let (Some(id), Some((group, outer))) = (selected_id, release_to) {
-                        dispatch(state, DocCommand::MoveLayer {
-                            id,
-                            carrier: outer,
-                            above: Some(group),
-                        });
-                    }
-                },
-                {icon(icons::RELEASE)}
-                "Release"
             }
         }
 
@@ -258,15 +223,26 @@ pub fn LayerPanel() -> Element {
 }
 
 /// The flat list decorated with what the panel needs and the projection does not
-/// carry: which rows are folded away under a shut group.
+/// carry: which rows are folded away under a shut group, and what the row's own
+/// Carry and Release would do.
 ///
 /// Walks bottom-to-top, the order `observe()` produces, keeping the depth at which
 /// the enclosing group was shut. Everything deeper than that is hidden until the
 /// walk comes back out — which is exactly "hidden iff some ancestor is collapsed",
 /// computed in one pass without ever looking a parent up.
+///
+/// The two move targets fall out of the same order for the same reason, which is why
+/// they are computed here rather than per row: the nearest sibling *below* a layer is
+/// simply the last one seen in its stack, and a group's base is walked before
+/// anything it carries, so what carries the group is known by the time a member asks.
+/// Both are one map lookup per row rather than a scan of the list per row.
 fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
     let mut out = Vec::with_capacity(layers.len());
     let mut shut_at: Option<usize> = None;
+    // The topmost layer seen so far in each stack.
+    let mut top_of: HashMap<Option<LayerId>, LayerId> = HashMap::new();
+    // What carries each layer, for the rows that will ask about their group.
+    let mut outer_of: HashMap<LayerId, Option<LayerId>> = HashMap::new();
     for info in layers {
         if shut_at.is_some_and(|d| info.depth <= d) {
             shut_at = None;
@@ -276,31 +252,23 @@ fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
         if !hidden && collapsed && info.is_group {
             shut_at = Some(info.depth);
         }
+        let carry_onto = top_of.get(&info.carrier).copied();
+        let release_to = info
+            .carrier
+            .map(|group| (group, outer_of.get(&group).copied().flatten()));
+        // After the reads, so neither answer is the layer itself. A collapsed group's
+        // members are still in their stack, so this happens for hidden rows too.
+        top_of.insert(info.carrier, info.id);
+        outer_of.insert(info.id, info.carrier);
         out.push(Row {
             info: info.clone(),
             hidden,
             collapsed,
+            carry_onto,
+            release_to,
         });
     }
     out
-}
-
-/// The layer directly below `layer` in its own stack — the one Carry would put it
-/// on, and the top of the stack a clip would inherit from.
-fn sibling_below(layers: &[LayerInfo], layer: &LayerInfo) -> Option<LayerId> {
-    // The last layer sharing its carrier before it appears — i.e. its nearest
-    // sibling below, which is also the top of the stack a clip would inherit from.
-    layers
-        .iter()
-        .take_while(|l| l.id != layer.id)
-        .filter(|l| l.carrier == layer.carrier)
-        .last()
-        .map(|l| l.id)
-}
-
-/// What carries `id`, from the flat list.
-fn carrier_of(layers: &[LayerInfo], id: LayerId) -> Option<LayerId> {
-    layers.iter().find(|l| l.id == id).and_then(|l| l.carrier)
 }
 
 /// How many rows `id` takes with it if removed: itself, plus everything it carries
@@ -470,9 +438,15 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
     } else {
         row_class.to_string()
     };
-    let indent = info.depth * 14;
+    let indent = info.depth * INDENT;
     let is_group = info.is_group;
     let collapsed = row.collapsed;
+    // The two moves the row can make of itself (§14.2). They were a pair of buttons
+    // acting on "the selected layer"; here each acts on the row it is drawn in, which
+    // is the layer being talked about anyway — and the row already knows both answers,
+    // so neither has an inapplicable state to sit in.
+    let carry_onto = row.carry_onto;
+    let release_to = row.release_to;
 
     let title = if matte {
         "Compose this frame — double-click to rename"
@@ -480,114 +454,183 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
         "Paint on this layer — double-click to rename"
     };
 
-    // A row is one line — the group's triangle if it has one, the name that selects
-    // it, and the eye that shows it, hard against the right edge. The per-layer
-    // opacity slider lives in the panel's single set of controls for whatever is
-    // selected.
+    // A row is one line — Carry, the name that selects it, and the eye that shows it
+    // hard against the right edge — with two marks outside that line: the group's
+    // triangle straddling its top edge, and Release standing in the indent. The
+    // per-layer opacity slider lives in the panel's single set of controls for
+    // whatever is selected.
     rsx! {
+        // The indent is padding on the wrapper rather than a margin on the row,
+        // because the space it opens is not empty any more: Release is drawn in it.
         div {
-            class: "{row_class} row",
-            style: "margin-left:{indent}px",
-            // Only a group gets a triangle, and the space is held either way so the
-            // names down the panel start in one column at each depth.
-            if is_group {
+            class: "layer-item",
+            style: "padding-left:{indent}px",
+            // Release, in the last step of the indent — the space this layer's own
+            // membership carved out, which is the only place in the panel that means
+            // "the group you are in" without a word. A layer in no group has no such
+            // space, and needs no Release; the control cannot exist where it would be
+            // inapplicable, rather than existing there greyed out. That is also what
+            // makes the offset safe to subtract: `carrier` is `Some` exactly when
+            // `depth` is at least one, both being read off the same walk in
+            // `observe()`, so the button never asks for a step the indent has not got.
+            if let Some((group, outer)) = release_to {
                 button {
-                    class: "layer-fold",
-                    title: if collapsed { "Show what this layer carries" }
-                           else { "Fold away what this layer carries" },
-                    onclick: move |_| ontoggle.call(id),
-                    if collapsed { "\u{25B8}" } else { "\u{25BE}" }
-                }
-            } else {
-                span { class: "layer-fold" }
-            }
-            if let Some(text) = draft() {
-                input {
-                    class: "layer-name",
-                    class: "layer-rename",
-                    r#type: "text",
-                    value: "{text}",
-                    placeholder: "{label}",
-                    // The field is the point of the double-click, so it takes focus
-                    // as it appears rather than asking for a second click. The DOM
-                    // node exists by the time `onmounted` runs, which is what the
-                    // `autofocus` attribute cannot promise for an element inserted
-                    // after load.
-                    onmounted: move |e: Event<MountedData>| {
-                        spawn(async move {
-                            let _ = e.set_focus(true).await;
-                            // Selected, not merely focused: the field opens on the
-                            // name the layer already has, and the usual reason to
-                            // open it is to replace that name rather than add to it.
-                            // Typing over is one keystroke; keeping a word of it is
-                            // one click. Ordered after the focus rather than left to
-                            // `select`'s own — awaiting it is what puts the two in a
-                            // known order.
-                            select_all(&e);
+                    class: "layer-release",
+                    style: "left:{indent - INDENT}px",
+                    title: "Lift this layer out of its group",
+                    onclick: move |_| {
+                        dispatch(state, DocCommand::MoveLayer {
+                            id,
+                            carrier: outer,
+                            above: Some(group),
                         });
                     },
-                    oninput: move |e| draft.set(Some(e.value())),
-                    // Committing on blur is what makes this feel like a label rather
-                    // than a form: clicking away is an ordinary way to be finished,
-                    // and nothing is lost by it.
-                    //
-                    // Enter commits directly rather than by blurring — a focused
-                    // element that is removed does not reliably fire `blur` (the very
-                    // thing `platform::on_window_key` exists to work around), so the
-                    // field closing itself cannot be the commit. The two paths cannot
-                    // double up: `commit` *takes* the draft, so whichever runs second
-                    // finds nothing to send.
-                    onblur: move |_| commit(),
-                    // Everything else typed here is left alone: the global shortcuts
-                    // already stand aside for a text field (`input::bind_shortcuts`),
-                    // which is what leaves the browser's own Ctrl+Z editing this text
-                    // instead of the document.
-                    onkeydown: move |e| match e.key() {
-                        Key::Enter => commit(),
-                        // Escape abandons the edit — dropping the draft first, so the
-                        // blur that follows the field's removal has nothing left to
-                        // commit.
-                        Key::Escape => draft.set(None),
-                        _ => {}
-                    },
+                    {icon(icons::RELEASE)}
                 }
-            } else {
+            }
+            div {
+                class: "{row_class} row",
+                // Only a group gets a triangle, and it sits centred on the row's top
+                // edge, aimed at what it carries — which this panel draws *above* the
+                // base (§14.6). Which way the caret points therefore says nothing; what
+                // the two states differ by is a lid (see `icons::FOLD_OPEN`). It is out
+                // of the line rather than in it because the line is now full: the slot a
+                // triangle used to hold at the head of the row is where Carry goes, and
+                // a mark about the rows above belongs on the edge it shares with them.
+                if is_group {
+                    button {
+                        class: "layer-fold",
+                        title: if collapsed { "Show what this layer carries" }
+                               else { "Fold away what this layer carries" },
+                        onclick: move |_| ontoggle.call(id),
+                        {icon(if collapsed { icons::FOLD_SHUT } else { icons::FOLD_OPEN })}
+                    }
+                }
+                // Carry, at the head of the line: put this layer on the one below it in
+                // its own stack, and the two become a group. There is no third command
+                // — "clip to the layer below" is Carry followed by the Clip toggle,
+                // because clipping to exactly one layer *is* that layer carrying this
+                // one (§14.4). The space is held either way, so the names down the panel
+                // still start in one column at each depth.
+                //
+                // Rests hidden and arrives with Release and the eye on hover, the three
+                // together (`.layer-item:hover` in `stark.css`) — a move and its undo
+                // should not be discovered one at a time. The glyph pair says the rest:
+                // an elbow turning right here, the same elbow turning left out in the
+                // indent, each drawn the way the row's own indent is about to move.
+                // They are the only pair in the panel drawn as one picture mirrored,
+                // which is what makes a move and its undo readable as such.
+                if let Some(onto) = carry_onto {
+                    button {
+                        class: "layer-carry",
+                        title: "Put this layer on the one below it \u{2014} they become a group",
+                        onclick: move |_| {
+                            dispatch(state, DocCommand::MoveLayer {
+                                id,
+                                carrier: Some(onto),
+                                above: None,
+                            });
+                        },
+                        {icon(icons::CARRY)}
+                    }
+                } else {
+                    span { class: "layer-carry" }
+                }
+                if let Some(text) = draft() {
+                    input {
+                        class: "layer-name",
+                        class: "layer-rename",
+                        r#type: "text",
+                        value: "{text}",
+                        placeholder: "{label}",
+                        // The field is the point of the double-click, so it takes focus
+                        // as it appears rather than asking for a second click. The DOM
+                        // node exists by the time `onmounted` runs, which is what the
+                        // `autofocus` attribute cannot promise for an element inserted
+                        // after load.
+                        onmounted: move |e: Event<MountedData>| {
+                            spawn(async move {
+                                let _ = e.set_focus(true).await;
+                                // Selected, not merely focused: the field opens on the
+                                // name the layer already has, and the usual reason to
+                                // open it is to replace that name rather than add to it.
+                                // Typing over is one keystroke; keeping a word of it is
+                                // one click. Ordered after the focus rather than left to
+                                // `select`'s own — awaiting it is what puts the two in a
+                                // known order.
+                                select_all(&e);
+                            });
+                        },
+                        oninput: move |e| draft.set(Some(e.value())),
+                        // Committing on blur is what makes this feel like a label rather
+                        // than a form: clicking away is an ordinary way to be finished,
+                        // and nothing is lost by it.
+                        //
+                        // Enter commits directly rather than by blurring — a focused
+                        // element that is removed does not reliably fire `blur` (the very
+                        // thing `platform::on_window_key` exists to work around), so the
+                        // field closing itself cannot be the commit. The two paths cannot
+                        // double up: `commit` *takes* the draft, so whichever runs second
+                        // finds nothing to send.
+                        onblur: move |_| commit(),
+                        // Everything else typed here is left alone: the global shortcuts
+                        // already stand aside for a text field (`input::bind_shortcuts`),
+                        // which is what leaves the browser's own Ctrl+Z editing this text
+                        // instead of the document.
+                        onkeydown: move |e| match e.key() {
+                            Key::Enter => commit(),
+                            // Escape abandons the edit — dropping the draft first, so the
+                            // blur that follows the field's removal has nothing left to
+                            // commit.
+                            Key::Escape => draft.set(None),
+                            _ => {}
+                        },
+                    }
+                } else {
+                    button {
+                        class: if matte { "layer-name layer-name-matte" } else { "layer-name" },
+                        title,
+                        onclick: move |_| dispatch(state, PeerCommand::SetActiveLayer(id)),
+                        ondoubleclick: move |_| draft.set(Some(seed.clone())),
+                        "{label}"
+                    }
+                }
+                // Who else is working here (§17.4). The selected layer is
+                // per-client, so this is the only place that answers "am I about to
+                // paint over what someone else is doing?" before it happens.
+                for peer in peers_on(state, id) {
+                    div {
+                        class: "peer-chip",
+                        style: "background:{peer.css_color()}",
+                        title: "{peer.name} is working on this layer",
+                        "{peer.initials()}"
+                    }
+                }
+                // Last on the line, so the eyes stand in one column down the whole panel
+                // however deep the tree goes: a row is indented from the left, and its right
+                // edge is where the panel's is. That column is the thing being bought — the
+                // tick-boxes this replaces marched *rightwards* with the indent, so reading
+                // "what is hidden?" off the panel meant reading every row rather than
+                // glancing down an edge. It shows the eye the layer *is*, not the one
+                // clicking would give you (see `icons::VISIBLE`).
+                //
+                // An open eye now rests hidden with Carry and Release, which is that same
+                // argument taken one step: a layer you did not hide is showing, and the
+                // legible row is already saying so. Leaving only the struck ones standing
+                // turns the column from one to scan into one to glance at. Nothing is lost
+                // that a hover does not give back, and the class is still on the button
+                // either way, so the state is what the DOM says it is.
                 button {
-                    class: if matte { "layer-name layer-name-matte" } else { "layer-name" },
-                    title,
-                    onclick: move |_| dispatch(state, PeerCommand::SetActiveLayer(id)),
-                    ondoubleclick: move |_| draft.set(Some(seed.clone())),
-                    "{label}"
+                    class: if visible { "layer-eye" } else { "layer-eye hidden" },
+                    title: match (is_group, visible) {
+                        (true, true) => "Hide this layer and what it carries",
+                        (true, false) => "Show this layer and what it carries",
+                        (false, true) => "Hide this layer",
+                        (false, false) => "Show this layer",
+                    },
+                    onclick: move |_| dispatch(state, DocCommand::SetLayerVisible(id, !visible)),
+                    {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
                 }
-            }
-            // Who else is working here (§17.4). The selected layer is
-            // per-client, so this is the only place that answers "am I about to
-            // paint over what someone else is doing?" before it happens.
-            for peer in peers_on(state, id) {
-                div {
-                    class: "peer-chip",
-                    style: "background:{peer.css_color()}",
-                    title: "{peer.name} is working on this layer",
-                    "{peer.initials()}"
-                }
-            }
-            // Last on the line, so the eyes stand in one column down the whole panel
-            // however deep the tree goes: a row is indented from the left, and its right
-            // edge is where the panel's is. That column is the thing being bought — the
-            // tick-boxes this replaces marched *rightwards* with the indent, so reading
-            // "what is hidden?" off the panel meant reading every row rather than
-            // glancing down an edge. It shows the eye the layer *is*, not the one
-            // clicking would give you (see `icons::VISIBLE`).
-            button {
-                class: if visible { "layer-eye" } else { "layer-eye hidden" },
-                title: match (is_group, visible) {
-                    (true, true) => "Hide this layer and what it carries",
-                    (true, false) => "Show this layer and what it carries",
-                    (false, true) => "Hide this layer",
-                    (false, false) => "Show this layer",
-                },
-                onclick: move |_| dispatch(state, DocCommand::SetLayerVisible(id, !visible)),
-                {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
             }
         }
     }

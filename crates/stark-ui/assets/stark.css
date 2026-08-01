@@ -794,8 +794,18 @@
   cursor: pointer;
 }
 
-.layer-row {
+/* One entry in the tree: the row, plus the indent its own membership opens to the
+   left of it. The indent is padding *here* rather than a margin on the row because
+   that space is not empty any more — its last step holds the row's Release, so it has
+   to be inside something the row and the button can both be measured against. */
+.layer-item {
+  position: relative;
   margin: 4px 0;
+}
+
+.layer-row {
+  /* The ground the fold triangle is positioned against; it hangs off the top edge. */
+  position: relative;
   padding: 5px 6px;
   border-radius: 6px;
   background: #33333a;
@@ -823,19 +833,123 @@
   border-left: 3px solid #6f8fd0;
 }
 
-/* The disclosure triangle on a layer that carries others. The empty span every
-   other row gets is the same width, which is what keeps the names in one column
-   among rows at the same depth. */
+/* --- the row's own three marks: fold, carry, release ---
+   Each sits where the fact it is about already lives. What a layer carries is drawn
+   *above* its row, so the fold triangle hangs off the top edge, on the seam it shares
+   with those rows. Carry is about the layer below, so it is at the head of the line
+   pointing into the stack. Release is about the group the row is inside, so it stands
+   in the indent — the one piece of the panel that already means "you are in
+   something". None of the three needed a word once it was standing in the right
+   place; between them they replace the two labelled buttons the panel used to carry
+   for whichever layer happened to be selected. */
+
+/* The disclosure mark on a layer that carries others, centred on the row's top edge.
+   Pulled up into the gap between rows so it clears the row's own line — the
+   horizontal padding is hit area, not spacing. */
 .layer-fold {
-  width: 12px;
-  flex: none;
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  padding: 1px 8px;
   background: none;
   border: none;
-  padding: 0;
-  font-size: 10px;
-  line-height: 1;
   color: #ffffffa6;
   cursor: pointer;
+}
+
+.layer-fold:hover {
+  color: #eee;
+}
+
+/* Smaller than the row's other glyphs: a hinge rather than a control you go looking
+   for, and at the 14px the eye and Carry wear it would read as a third icon on the
+   line it has just been lifted out of. */
+.layer-fold .icon svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* Carry, in the slot at the head of the line the fold triangle used to hold; Release,
+   out in the indent. One rule, because they are one pair — the same box, the same
+   weight, and the same appearing. Carry's slot is held by an empty span on a row with
+   nothing below it, which is what keeps the names in one column among rows at the same
+   depth; Release has no slot to hold, because a layer in no group has no indent. */
+.layer-carry,
+.layer-release {
+  width: 14px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: #ffffffa6;
+}
+
+button.layer-carry,
+button.layer-release {
+  cursor: pointer;
+}
+
+button.layer-carry:hover,
+button.layer-release:hover {
+  color: #eee;
+}
+
+/* The mirrored pair reads as a pair only at one weight, and it is a step under the
+   eye's: an elbow is a longer stroke than an eye is wide, so at a matched 14px the two
+   ends of the line stop looking like a name with marks either side of it. */
+.layer-carry .icon svg,
+.layer-release .icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* --- the row at rest says where the layer is; hovering asks what can be done to it ---
+   Carry, Release and the eye of a layer that *is* showing all rest hidden and arrive
+   together. At rest the panel's whole ink goes on the picture: the indent, the rail,
+   the name, and — the one survivor of this rule — the struck eye of a layer that is
+   hidden. Three glyphs per row on top of that is a second alphabet laid over the
+   first, with Release in particular competing with the clipping rail a few pixels to
+   its right. Hovering is already how you say which row you mean, so it is the same
+   gesture that asks "and what can I do with it?".
+
+   An open eye is the one thing here that was pure confirmation — every row you did not
+   hide is showing, which the row is already proving by being legible. What is worth a
+   mark is the *exception*, and now it is the only mark in that column: at rest the
+   panel's right edge is empty except beside the layers that are switched off, so
+   "what is hidden?" is answered without reading a single row.
+
+   Nothing moves when they appear — every slot is held either way. The pointer-events
+   go with the opacity, so an invisible control cannot be clicked; only Release can
+   actually be reached without hovering its row, but the pair is one rule. */
+.layer-carry,
+.layer-release,
+.layer-eye:not(.hidden) {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms ease-out;
+}
+
+/* The whole entry, indent included, is the hover target — reaching for a control in
+   the margin should not require finding it first. */
+.layer-item:hover .layer-carry,
+.layer-item:hover .layer-release,
+.layer-item:hover .layer-eye {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Release, in the last step of the row's indent — space only a layer that is *in*
+   something has. */
+.layer-release {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 /* Blend and clip, on one line: the picker takes the slack and the clip toggle sizes
@@ -856,9 +970,13 @@
 /* The per-row visibility toggle, hard against the right edge (`.layer-name` takes
    the slack, so nothing has to push it there). Bare — no chip's ground — because a
    row already carries one lit background of its own for selection, and a second
-   filled box on the same line would compete with it. The glyph alone carries the
-   state: an open eye at the row's own weight, a struck one dimmed, which is the
-   layer saying it is not contributing. */
+   filled box on the same line would compete with it.
+
+   The eyes stand in one column down the whole panel however deep the tree goes, which
+   is the thing being bought: the tick-boxes this replaces marched *rightwards* with
+   the indent, so reading "what is hidden?" meant reading every row rather than
+   glancing down an edge. That column is now mostly empty — an open eye rests hidden
+   with Carry and Release above — and a struck one is what is left standing in it. */
 .layer-eye {
   flex: none;
   display: flex;
@@ -875,7 +993,7 @@
 }
 
 .layer-eye.hidden {
-  color: #ffffff59;
+  color: #ffffffa6;
 }
 
 .layer-name {

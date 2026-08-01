@@ -59,13 +59,25 @@ icons! {
     // is not *about* the rectangle — it is about deciding what the piece is, which is
     // the one job a frame does and the reason it clips nothing.
     FRAME => "crop-bold",
-    // Grouping, as a folder gaining or losing a member. The pair has to read as one
-    // gesture and its undo, which is why it is one glyph mirrored rather than two
-    // pictures — the same argument the stack pair above is built on. A folder rather
-    // than a stack because these two commands are about *membership* (§14.2), which is
-    // the fact the panel draws as an indent; the stack pair is about existence.
-    CARRY => "folder-simple-plus-bold",
-    RELEASE => "folder-simple-minus-bold",
+    // Grouping, drawn as the move itself rather than as a picture of a group. The pair
+    // has to read as one gesture and its undo, which is why it is one glyph mirrored
+    // rather than two pictures — the same argument the stack pair above is built on.
+    // An elbow rather than a folder because what these commands change is *membership*
+    // (§14.2), and membership is a thing the panel already draws: the indent. So the
+    // arrow turns the way the row's own indent is about to turn — in to the right, out
+    // to the left — and the glyph is a preview of the panel after the click.
+    CARRY => "arrow-elbow-down-right-bold",
+    RELEASE => "arrow-elbow-up-left-bold",
+    // The disclosure mark on a group, centred on the top edge of its row. Both states
+    // point *up*, because in this panel what a layer carries is drawn above it
+    // (§14.6) — so the caret is aimed at the members either way, and what changes is
+    // whether it can get to them. Open, it is a bare caret pointing at rows that are
+    // there; shut, it runs into a lid, and what is behind the lid is what has been
+    // folded away. One picture with one thing added, which is the same argument the
+    // Carry/Release pair above is built on — a rotation would have said "shut" by
+    // pointing away from the very rows it is about.
+    FOLD_OPEN => "caret-up-bold",
+    FOLD_SHUT => "caret-line-up-bold",
     // The clip toggle. What a clipped layer is bounded by is the paint under it, so the
     // glyph is a picture in a frame — an image with a silhouette, which is the thing
     // doing the bounding. It sits beside the blend picker because both answer *how does
