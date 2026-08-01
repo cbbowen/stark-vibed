@@ -124,7 +124,7 @@ fn main() {
     for radius in [30.0, 100.0] {
         let mut plain = smear_brush(radius);
         plain.dynamics = Default::default();
-        let commit = bench_commit(&mut engine, plain.clone(), n);
+        let commit = bench_commit(&mut engine, plain, n);
         let (total, mean, p95) = bench_live(&mut engine, plain, n);
         println!(
             "plain r={radius:>5.1}: commit {commit:8.1} ms | live total {total:8.1} ms, \
