@@ -1247,7 +1247,7 @@ mod tests {
             // exactly on it.
             (
                 "straight, smearing tip",
-                52,
+                26,
                 record(smearing(20.0), &straight),
             ),
             // The same cadence on a tip four times as fat. The cap is a fraction of the
@@ -1256,7 +1256,7 @@ mod tests {
             // them both.
             (
                 "straight, fat smearing tip",
-                14,
+                6,
                 record(smearing(80.0), &straight),
             ),
             // `max_len` from `drain` (0.02 / 0.005 = 4px), tighter than the reservoir
@@ -1319,7 +1319,7 @@ mod tests {
                     &arc,
                 ),
             ),
-            ("arc, smearing tip", 55, record(smearing(20.0), &arc)),
+            ("arc, smearing tip", 31, record(smearing(20.0), &arc)),
             // The Euler spiral: `angle` again over 1.2 radians of total turning, but
             // with the fitter crossing the arc/chord threshold on each side of a
             // genuine inflection. Cheaper than the arc because it turns one way and
@@ -1350,7 +1350,7 @@ mod tests {
             // does, so a smearing tip pays the same price on a curve as on a line.
             (
                 "euler spiral, smearing tip",
-                50,
+                26,
                 record(smearing(20.0), &spiral),
             ),
         ];
