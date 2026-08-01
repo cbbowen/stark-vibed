@@ -42,7 +42,10 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::input::elem_xy;
+// The snap and the shortest way round are shared with the two-finger gesture
+// (§18.1.7): "how square is square enough" has to mean one thing however the canvas
+// is being turned.
+use crate::input::{elem_xy, shortest_turn, snap_quarter};
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
 use stark_core::command::ViewCommand;
@@ -196,15 +199,6 @@ enum Drag {
 /// exactly what it is told.
 const TURN_FOLLOW_PX: f32 = 64.0;
 
-/// How close to a quarter turn a turn-drag has to land to be pulled onto it, radians
-/// (about 5°).
-///
-/// The frontend's to decide, like the fitting tolerance: it is a property of dragging
-/// with a hand rather than of the view. Without it a canvas that has been turned could
-/// only be *approximately* straightened, and a piece left a degree off square reads as
-/// an accident rather than as a choice.
-const TURN_SNAP: f32 = 0.09;
-
 /// The angle a turn-drag of `v` (miniature px, measured from the press) asks the
 /// canvas to be at, having started the drag at `was`.
 ///
@@ -218,23 +212,6 @@ fn turn_to(view: stark_core::ViewTransform, v: Vec2, was: f32) -> Option<f32> {
     let target = snap_quarter(view.rotation_for_up(v)?);
     let ease = (v.length() / TURN_FOLLOW_PX).clamp(0.0, 1.0);
     Some(was + ease * shortest_turn(was, target))
-}
-
-/// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
-fn snap_quarter(to: f32) -> f32 {
-    let quarter = (to / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2;
-    if (to - quarter).abs() <= TURN_SNAP {
-        quarter
-    } else {
-        to
-    }
-}
-
-/// The signed turn from `from` to `to`, the short way round — so easing between two
-/// angles never takes the long way about, and 1° short of a full circle is 1°.
-fn shortest_turn(from: f32, to: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-    (to - from + PI).rem_euclid(TAU) - PI
 }
 
 /// The Navigator panel (see the module docs).

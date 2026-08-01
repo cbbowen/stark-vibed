@@ -218,7 +218,7 @@ pub fn TransformOverlay() -> Element {
     let snap = SNAP_PX / view.zoom;
 
     let mut follow = move |e: &Event<PointerData>| {
-        if nav.pan_move(e) {
+        if nav.advance(e) {
             return;
         }
         let pc = to_canvas(e);
@@ -264,7 +264,12 @@ pub fn TransformOverlay() -> Element {
             class: "{catcher_class}",
             style: "{cursor}",
             onpointerdown: move |e| {
-                if nav.start_pan(&e) {
+                if nav.begin(&e) {
+                    // A second finger turns the drag into navigation (§18.1.7).
+                    // The preview it had built stands — a transform commits on
+                    // "Done", not on release, so letting go to look around costs
+                    // nothing.
+                    drag.set(None);
                     return;
                 }
                 if e.trigger_button() != Some(MouseButton::Primary) {
@@ -280,8 +285,10 @@ pub fn TransformOverlay() -> Element {
                 }));
             },
             onpointermove: move |e| follow(&e),
-            onpointerup: move |e| finish(&e),
-            onpointercancel: move |_| { nav.stop(); drag.set(None); },
+            // Fingers still on the glass mean the gesture is not over — see the
+            // canvas's own release handler.
+            onpointerup: move |e| if !nav.release(&e) { finish(&e) },
+            onpointercancel: move |e| if !nav.release(&e) { nav.stop(); drag.set(None); },
             onwheel: move |e| nav.wheel(e),
         }
 

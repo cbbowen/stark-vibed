@@ -44,8 +44,8 @@ use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
 use input::{
-    Nav, bind_shortcuts, elem_xy, end_interaction, input_tolerance, pick_color, pointer_moved,
-    sample, watch_for_hold,
+    Nav, abandon_gesture, bind_shortcuts, elem_xy, end_interaction, input_tolerance, pick_color,
+    pointer_moved, sample, watch_for_hold,
 };
 use layout::{
     PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move, resize_end, resize_move,
@@ -343,11 +343,16 @@ fn Canvas() -> Element {
             // viewport anyway — and the interaction ends on release/cancel, never by
             // crossing the canvas edge.
             onpointerdown: move |e| {
-                // Navigation first: middle-drag, or space + the primary button
-                // (`input::Nav` — the one definition of the pan bindings, shared
-                // with the transform overlay). Taking it here is also what keeps
-                // space+Alt panning rather than sampling.
-                if nav.start_pan(&e) {
+                // Navigation first: a second finger on the glass, middle-drag, or
+                // space + the primary button (`input::Nav` — the one definition of
+                // the navigation bindings, shared with the transform overlay).
+                // Taking it here is also what keeps space+Alt panning rather than
+                // sampling.
+                if nav.begin(&e) {
+                    // Whatever was being drawn was never meant to be paint — it was
+                    // the opening half of a pinch (§18.1.7). Cancelled rather
+                    // than committed, so reaching for the canvas leaves no mark.
+                    abandon_gesture(state, &mut drawing, &mut action_restore);
                     canvas_active.set(true);
                     return;
                 }
@@ -425,6 +430,19 @@ fn Canvas() -> Element {
                 }
             },
             onpointermove: move |e| {
+                // Navigation is asked first, and **unconditionally** — including
+                // while a stroke is in flight. A lone finger's moves say nothing to
+                // the view (`Nav::advance` answers false and the stroke below sees
+                // them), but they still have to be *recorded*, because a second
+                // finger landing pairs with where the first one has got to rather
+                // than with where it pressed (§18.1.7).
+                if nav.advance(&e) {
+                    // The view moved, so nothing below applies: a sample taken here
+                    // would be mapped through the view as it was *before* the move,
+                    // and with two fingers down there is no single pointer to report
+                    // as a cursor anyway.
+                    return;
+                }
                 // The canvas takes pointer events from the first frame, while the
                 // engine is still being built asynchronously — so there may be no
                 // view to map through yet, and a move with nowhere to land simply
@@ -441,8 +459,6 @@ fn Canvas() -> Element {
                         // watching and the same `To` steers the shape instead.
                         pointer_moved(state, elem_xy(&e));
                         dispatch(state, GestureCommand::To { sample: s });
-                    } else {
-                        nav.pan_move(&e);
                     }
                     // Where collaborators see this client's pointer
                     // (§17.4). Quiet: it changes nothing *this* client renders — the
@@ -453,8 +469,19 @@ fn Canvas() -> Element {
                 }
             },
             onpointerleave: move |_| dispatch_quiet(state, PeerCommand::SetCursor(None)),
-            onpointerup: move |_| end_interaction(state, &mut drawing, nav, &mut action_restore),
-            onpointercancel: move |_| end_interaction(state, &mut drawing, nav, &mut action_restore),
+            // One finger of several lifting ends nothing — the rest are still
+            // navigating, and tearing down here would end the gesture on whichever
+            // finger the hand happened to raise first (§18.1.7).
+            onpointerup: move |e| {
+                if !nav.release(&e) {
+                    end_interaction(state, &mut drawing, nav, &mut action_restore);
+                }
+            },
+            onpointercancel: move |e| {
+                if !nav.release(&e) {
+                    end_interaction(state, &mut drawing, nav, &mut action_restore);
+                }
+            },
             onwheel: move |e| nav.wheel(e),
         }
     }

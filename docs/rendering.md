@@ -193,6 +193,14 @@ exactly as predicted: never logged, never sent, invisible to replay, absent from
 what a file or the navigator's overview shows — those frame the *piece*, not the
 easel (§18.1.2).
 
+Moving the view is `Pan`, `Zoom` and `SetRotation` separately, and
+`ViewTransform::pinch` — pan, scale and turn about one screen point, in one act —
+when they are not separable. Two fingers are the case that needs it: each of the
+three anchors against the view it is applied to, so sent in sequence the last two
+would be measured against a canvas the hand never saw and the paint would slide
+out from under the fingers. `zoom_about` is that same call with the fingers
+standing still (§18.1.7).
+
 For zoomed-out views, tile **mip/LOD** sampling is a future optimization (§13).
 The frontend owns the `wgpu::Surface`, acquires the frame texture, calls
 `render`, and presents.

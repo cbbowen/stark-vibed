@@ -1626,6 +1626,10 @@
   position: absolute;
   inset: 0;
   z-index: 9;
+  /* Same bargain as `.paint-canvas`: every touch is ours, including the
+     two-finger gesture (§18.1.7), so the browser must not scroll or zoom the
+     page out from under one. */
+  touch-action: none;
 }
 
 /* Space is held: the catcher is a pan surface until it lifts. */

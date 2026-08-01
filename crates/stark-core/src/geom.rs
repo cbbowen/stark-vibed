@@ -260,10 +260,35 @@ impl ViewTransform {
     /// Scale the zoom by `factor` while keeping the canvas point under `anchor`
     /// (a screen-pixel position) pinned in place — cursor-anchored zoom.
     pub fn zoom_about(&mut self, anchor: Vec2, factor: f32) {
-        let before = self.screen_to_canvas(anchor);
-        self.zoom = (self.zoom * factor).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
-        let after = self.screen_to_canvas(anchor);
-        self.center += before - after;
+        self.pinch(anchor, anchor, factor, 0.0)
+    }
+
+    /// Move, scale and turn the view **in one act**, about a screen-pixel point: the
+    /// canvas point under `anchor` ends up under `to`, having been scaled by `scale`
+    /// and turned by `turn` radians clockwise about it. The two-finger gesture
+    /// (§18.1.7), and — with `to == anchor` and no turn — the wheel's zoom.
+    ///
+    /// One command rather than a pan, a zoom and a turn, because a pinch is one motion
+    /// of one pair of fingers and the three are not independent: each of the three
+    /// anchors against the view it is applied to, so sending them in sequence would
+    /// have the second and third re-anchor against a view the hand never saw, and the
+    /// point being held would slide out from under it. Composed here, what the fingers
+    /// hold is held exactly.
+    ///
+    /// The mirror is left alone and the turn adds straight onto the angle, because the
+    /// gesture is stated in **screen** terms: a twist clockwise on the glass is a twist
+    /// clockwise on the screen at any angle and either handedness — the same
+    /// screen-relative sense [`mirror_screen_h`](Self::mirror_screen_h) is defined in.
+    /// (`R(δ)·R(θ)·M = R(θ+δ)·M`, so it stays a rotation-and-a-mirror.)
+    pub fn pinch(&mut self, anchor: Vec2, to: Vec2, scale: f32, turn: f32) {
+        // The canvas point the gesture is holding, read through the view as it stands.
+        let held = self.screen_to_canvas(anchor);
+        self.set_rotation(self.rotation + turn);
+        self.zoom = (self.zoom * scale).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
+        // ...and put back under the hand, through the view as it now is. Solving
+        // `screen_to_canvas(to) == held` for the centre, which is the one degree of
+        // freedom left once the angle and the zoom are set.
+        self.center = held - self.canvas_delta(to - self.half());
     }
 
     const MIN_ZOOM: f32 = 0.05;
@@ -311,6 +336,90 @@ mod tests {
             "anchor drifted: {canvas_under:?} -> {after:?}"
         );
         assert!((view.zoom - 2.5).abs() < 1e-4);
+    }
+
+    /// What the two-finger gesture promises (§18.1.7): the canvas stays stuck to the
+    /// fingers. Stated as the property rather than as a formula, because the property
+    /// is the whole reason the pan, the zoom and the turn are one command — and it is
+    /// what a caller composing them by hand would silently lose.
+    #[test]
+    fn a_pinch_leaves_the_canvas_under_both_fingers() {
+        // Fingers before and after, in screen px, arbitrarily placed and moved.
+        let from = [Vec2::new(240.0, 500.0), Vec2::new(560.0, 260.0)];
+        let to = [Vec2::new(310.0, 380.0), Vec2::new(500.0, 120.0)];
+        for flip_h in [false, true] {
+            for turn in [0.0, 0.4, FRAC_PI_2, 2.5, TAU - 0.1] {
+                let mut v = ViewTransform {
+                    center: Vec2::new(-30.0, 90.0),
+                    zoom: 1.75,
+                    rotation: turn,
+                    flip_h,
+                    viewport: Extent2::new(800, 600),
+                };
+                let held = from.map(|f| v.screen_to_canvas(f));
+                // Exactly what the frontend measures off the pair: the midpoint it
+                // travelled between, how much further apart the fingers ended up, and
+                // how far the line between them swung.
+                let (u, w) = (from[1] - from[0], to[1] - to[0]);
+                v.pinch(
+                    0.5 * (from[0] + from[1]),
+                    0.5 * (to[0] + to[1]),
+                    w.length() / u.length(),
+                    u.angle_to(w),
+                );
+                for (canvas, finger) in held.into_iter().zip(to) {
+                    let now = v.canvas_to_screen(canvas);
+                    assert!(
+                        (now - finger).length() < 1e-2,
+                        "flip {flip_h}, turn {turn}: {canvas:?} should be under \
+                         {finger:?}, is under {now:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A pinch broken into steps has to land where the whole one would — the fingers
+    /// report one at a time, so every gesture *is* a sequence of steps, and a
+    /// composition that drifted would leave the canvas sliding under a hand that had
+    /// come back to where it started.
+    #[test]
+    fn a_pinch_taken_in_steps_lands_where_one_step_would() {
+        let path = [
+            [Vec2::new(200.0, 400.0), Vec2::new(500.0, 300.0)],
+            [Vec2::new(220.0, 380.0), Vec2::new(540.0, 260.0)],
+            [Vec2::new(260.0, 300.0), Vec2::new(600.0, 240.0)],
+            [Vec2::new(200.0, 400.0), Vec2::new(500.0, 300.0)], // back to the start
+        ];
+        let start = ViewTransform {
+            center: Vec2::new(12.0, -7.0),
+            zoom: 0.8,
+            rotation: 1.1,
+            flip_h: true,
+            viewport: Extent2::new(800, 600),
+        };
+        let mut v = start;
+        for pair in path.windows(2) {
+            let (u, w) = (pair[0][1] - pair[0][0], pair[1][1] - pair[1][0]);
+            v.pinch(
+                0.5 * (pair[0][0] + pair[0][1]),
+                0.5 * (pair[1][0] + pair[1][1]),
+                w.length() / u.length(),
+                u.angle_to(w),
+            );
+        }
+        // The fingers ended where they began, so the view must have too.
+        assert!(
+            (v.center - start.center).length() < 1e-2,
+            "centre {:?}",
+            v.center
+        );
+        assert!((v.zoom - start.zoom).abs() < 1e-4, "zoom {}", v.zoom);
+        assert!(
+            (v.rotation - start.rotation).abs() < 1e-4,
+            "rotation {}",
+            v.rotation
+        );
     }
 
     /// The turn and the mirror are still a *view*: screen→canvas and canvas→screen

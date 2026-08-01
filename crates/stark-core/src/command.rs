@@ -267,6 +267,28 @@ pub enum ViewCommand {
         anchor: Vec2,
         factor: f32,
     },
+    /// Move, scale and turn the view together — the two-finger gesture
+    /// (§18.1.7). The canvas point under `anchor` (screen px) ends up under `to`,
+    /// scaled by `scale` and turned by `turn` radians clockwise about it.
+    ///
+    /// One command rather than a [`Pan`](Self::Pan), a [`Zoom`](Self::Zoom) and a
+    /// turn, because a pinch is one motion of one pair of fingers and the three are
+    /// not independent: each anchors against the view it is applied to, so sent in
+    /// sequence the last two would anchor against a view the hand never saw and the
+    /// canvas would slide out from under it. What the fingers hold, they hold —
+    /// see [`ViewTransform::pinch`](crate::geom::ViewTransform::pinch).
+    ///
+    /// **Incremental**, unlike [`SetRotation`](Self::SetRotation), and for the
+    /// opposite reason: a pinch does not know what angle it wants, only how far the
+    /// hand has turned since the last report. What the frontend keeps on its side is
+    /// gesture feel — the twist a gesture must earn before it turns the canvas at
+    /// all, and the pull onto a quarter turn — which it spends by choosing `turn`.
+    Pinch {
+        anchor: Vec2,
+        to: Vec2,
+        scale: f32,
+        turn: f32,
+    },
     /// Turn the canvas to this angle (radians, clockwise) — the navigator's
     /// right-drag (§18.1.2).
     ///

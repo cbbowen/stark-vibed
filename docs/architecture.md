@@ -253,6 +253,7 @@ pub enum DocCommand {              // each becomes an Action
 pub enum ViewCommand {             // never logged, never sent
     SetTool(Tool), SetBrush(BrushParams),
     Pan { delta: Vec2 }, Zoom { anchor: Vec2, factor: f32 },
+    Pinch { anchor: Vec2, to: Vec2, scale: f32, turn: f32 },  // two fingers (§18.1.7)
     SetRotation(f32), MirrorH,     // §18.1.2
     Resize(Extent2),
     SetSelectionMode(SelectionMode), SetSelectionFeather(f32),

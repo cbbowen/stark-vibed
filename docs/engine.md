@@ -185,6 +185,17 @@ which the engine draws into directly. DOM chrome surrounds it.
   fourth, `Hold`, is sent by the dwell watcher when the pointer stops moving
   mid-stroke — the drawing assist (§6.9). It is the frontend that has the clock,
   and the moves after it are still plain `To`s.
+- **Navigation is one vocabulary, asked three times.** `input::Nav` owns every
+  binding that moves the view — the two-finger gesture (§18.1.7), middle-drag and
+  space-drag pan, wheel zoom — and every surface over the canvas makes its own
+  (the canvas, the transform mode's catcher). Its three entry points are a
+  lifecycle, `begin` / `advance` / `release`, and each answers the same question:
+  *was this event mine?* So a surface routes its pointers by asking three times
+  and never by inspecting buttons or pointer types itself, and what "the pan
+  bindings" and "the zoom rate" mean cannot drift between surfaces. Policy stays
+  at the call site — the canvas fades the chrome while it navigates and cancels
+  the stroke a second finger interrupted, the transform overlay deliberately does
+  neither.
 - The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each
   command the engine renders **straight into the surface texture**
   (`get_current_texture` → `render` → `present`) — no readback, no encode. The

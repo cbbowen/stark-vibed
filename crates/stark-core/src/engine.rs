@@ -897,6 +897,12 @@ impl Engine {
             ViewCommand::Zoom { anchor, factor } => {
                 self.session.view.zoom_about(anchor, factor);
             }
+            ViewCommand::Pinch {
+                anchor,
+                to,
+                scale,
+                turn,
+            } => self.session.view.pinch(anchor, to, scale, turn),
             ViewCommand::Resize(viewport) => {
                 self.session.view.viewport = viewport;
             }

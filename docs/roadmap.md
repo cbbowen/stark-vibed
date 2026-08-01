@@ -228,6 +228,62 @@ Ten, shipped as **adjustment layers** (non-destructive, re-orderable, log-native
 is strictly better than Photoshop's destructive model and cheaper to build than
 it.
 
+#### 18.1.7 Touch: the two-finger gesture — built
+
+Middle-drag pans and the wheel zooms, and a tablet has neither. Everything
+§18.1.2 built was therefore unreachable by hand: on a touchscreen the canvas
+could be painted on and not moved.
+
+**Two fingers pan, zoom and turn the canvas at once** — the gesture every
+touch-first painting app shares, so it needs no discovery. One finger still
+paints, which is what makes the split work: the tool is what a single contact
+does, and navigation is what a *pair* does. A pen is deliberately not counted as
+a finger even on the same glass, so the canvas can be moved without putting it
+down.
+
+- **It is one command, not three.** `ViewCommand::Pinch { anchor, to, scale,
+  turn }` — the canvas point under `anchor` ends up under `to`, scaled and turned
+  about it. Sent as a pan, a zoom and a turn instead, each would anchor against
+  the view the one before it left, so the second and third would be measured
+  against a canvas the hand never saw and the paint would slide out from under
+  the fingers. Composed in `ViewTransform::pinch`, what the fingers hold they
+  hold — stated as a property and tested as one, over every angle and both
+  handednesses. `zoom_about` is now that same call with the fingers standing
+  still, so the wheel and the pinch cannot come to mean different things.
+- **The turn stays a rotation-and-a-mirror.** The gesture is stated in *screen*
+  terms — clockwise on the glass is clockwise on the screen at any angle and
+  either handedness, the sense `mirror_screen_h` is already defined in — and
+  `R(δ)·R(θ)·M = R(θ+δ)`·M, so the twist adds straight onto the angle and the
+  mirror is untouched.
+- **Two feel constants, both the frontend's**, for the reason §18.1.2 gives: a
+  **deadzone** (~6°) the twist must earn before the canvas turns at all, because
+  fingers closing on a target roll about the hand rather than travelling along
+  the line between them, and without a band to spend that in every zoom would
+  leave the piece a couple of degrees off true; and the **snap to a quarter
+  turn** the navigator already had, now shared, so "square enough" means one
+  thing however the canvas is being turned.
+- **The gesture outlives the second finger.** It is born when a second lands and
+  buried when the *last* one lifts, so a pinch that ends with one finger still on
+  the glass keeps panning instead of going dead under a hand that never left; and
+  one finger of several lifting ends nothing, or the gesture would end on
+  whichever finger the hand happened to raise first. A third finger is a
+  bystander — the pair is the first two — so a hand resting on the glass mid-pinch
+  does not fight it.
+- **A second finger cancels the stroke the first was drawing** (`Cancel`, not
+  `End`): reaching for the canvas must leave no mark. That is also now what a
+  middle-drag begun mid-stroke does, since both are the same question — `Nav`
+  answering "this press is navigation, not yours".
+- Stale fingers are ruled out rather than swept up: a *primary* touch is by
+  definition the first contact of its type, so anything still listed when one
+  arrives is a release that never came, and the set is cleared on that fact
+  instead of on a list of the ways a release can go missing. One stale entry
+  would make the next lone finger a pinch and stop touch painting for the rest of
+  the session.
+
+**Still missing** is everything else a tablet wants: a two-finger tap for undo, a
+long-press eyedropper, and hit targets sized for a thumb — the chrome is still
+laid out for a mouse.
+
 ### 18.2 Tier 2 — where we can beat the prior art
 
 Photoshop's history is a bounded, linear, destructive stack that vanishes when
