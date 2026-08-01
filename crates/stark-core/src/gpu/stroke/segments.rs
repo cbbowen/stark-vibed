@@ -62,22 +62,18 @@ pub(super) struct SegmentInstance {
 
 /// Generate the round tip's coverage: a soft disc with `hardness` falloff.
 pub(super) fn round_coverage(hardness: f32, res: u32) -> Vec<f32> {
-    let h = hardness.clamp(0.0, 0.99);
+    let h = 1.0 / (1.0 - hardness).max(0.01);
     let mut cov = vec![0.0f32; (res * res) as usize];
     for y in 0..res {
         for x in 0..res {
             let fx = (x as f32 + 0.5) / res as f32 * 2.0 - 1.0;
             let fy = (y as f32 + 0.5) / res as f32 * 2.0 - 1.0;
-            let r = (fx * fx + fy * fy).sqrt();
-            cov[(y * res + x) as usize] = 1.0 - smoothstep(h, 1.0, r);
+            let r2 = fx * fx + fy * fy;
+            let k = 1.0 / (1.0 - fy * fy).max(1e-5).sqrt();
+            cov[(y * res + x) as usize] = k * (1.0 - r2.min(1.0).powf(0.5 * h)).max(0.0);
         }
     }
     cov
-}
-
-pub(super) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 // --- swept arcs ----------------------------------------------------------------

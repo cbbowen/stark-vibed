@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
-use stark_core::document::{BrushParams, Tool};
+use stark_core::document::{BrushParams, BrushShape, Tool};
 use stark_core::engine::{headless_engine, headless_engine_with};
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
@@ -152,6 +152,7 @@ pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {
         color,
         radius,
         drain: 0.0015,
+        shape: BrushShape::Round { hardness: 0.8 },
         ..BrushParams::default()
     }
 }

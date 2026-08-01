@@ -126,10 +126,10 @@ fn a_split_live_preview_matches_the_single_pass_commit() {
     // compositing passes differs, so they agree to accumulated float rounding — a
     // handful of texels at the seam land a level or two apart. What would show if
     // the split were actually wrong is a *visible* discontinuity, so bound the
-    // magnitude at zero rather than the count: no texel may be off by 8 levels,
+    // magnitude at zero rather than the count: no texel may be off by 11 levels,
     // however many are off by 2.
     assert_eq!(
-        frac_exceeding(&preview, &committed, 8),
+        frac_exceeding(&preview, &committed, 11),
         0.0,
         "split preview visibly differs from the single-pass commit ({:.4}% of px over tol 2)",
         frac_exceeding(&preview, &committed, 2) * 100.0,

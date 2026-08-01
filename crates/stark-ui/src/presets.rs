@@ -59,7 +59,7 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
             brush: BrushParams {
                 radius: 100.0,
                 drain: 0.0015,
-                shape: BrushShape::Round { hardness: 0.95 },
+                shape: BrushShape::Round { hardness: 0.9 },
                 dynamics: BrushDynamics {
                     add: 1.0,
                     lift: 0.6,
@@ -108,6 +108,23 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
                     noise: NoiseKind::White,
                     frequency: [0.5, 0.0],
                     amplitude: [0.01, 0.0, 0.0],
+                },
+                ..BrushParams::default()
+            },
+        },
+        PresetEntry {
+            name: "Airbrush".to_string(),
+            brush: BrushParams {
+                radius: 500.0,
+                shape: BrushShape::Round { hardness: 0.5 },
+                dynamics: BrushDynamics {
+                    add: 0.1,
+                    ..BrushDynamics::default()
+                },
+                color_dynamics: ColorDynamics {
+                    noise: NoiseKind::Simplex,
+                    frequency: [0.05, 0.1],
+                    amplitude: [0.0, 0.025, 0.05],
                 },
                 ..BrushParams::default()
             },

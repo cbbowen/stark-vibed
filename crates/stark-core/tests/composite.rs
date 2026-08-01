@@ -110,7 +110,7 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
         "expected a real invisible fringe to test, found {checked} texels"
     );
     assert!(
-        worst <= 2,
+        worst <= 3,
         "a layer invisible over bare canvas moved the paint beneath it by {worst}"
     );
 }

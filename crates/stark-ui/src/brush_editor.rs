@@ -210,7 +210,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
                             oninput: move |v| edit(state, preview, move |b| b.radius = v) }
                         if let BrushShape::Round { hardness } = brush.shape {
-                            Slider { label: "Hardness", min: 0.0, max: 0.95, value: hardness,
+                            Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
                                 oninput: move |v| edit(state, preview, move |b| {
                                     if let BrushShape::Round { hardness } = &mut b.shape {
                                         *hardness = v;
