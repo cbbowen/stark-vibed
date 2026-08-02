@@ -237,18 +237,38 @@ const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// own value. Every brush relaxed to the travel cap ran there. See `dynamics.wesl::wick`
 /// for the measured eigenvalues across the range.
 ///
-/// The value is not a tolerance, it is the step one stencil can carry: the shader's
-/// separable `[w, 1−2w, w]²` realises `σ² = 2w` per axis against a target of
-/// `0.5 · WICK_RATE · lr`, so `w = 0.25 · WICK_RATE · lr`, and `w = 0.25` — where the
-/// checkerboard eigenvalue `(1 − 4w)²` reaches zero — is `lr = 1 / WICK_RATE`. **It must
-/// track `dynamics.wesl`'s `WICK_RATE`**, which is 4.
+/// The value is not a tolerance, it is the travel one pass of the stencil can carry.
+/// The shader's 1-D binomial `C(2m, m+k)/4^m` has variance `m/2` against a target of
+/// `0.5 · WICK_RATE · lr`, so `lr = m / WICK_RATE`. **It must track `dynamics.wesl`'s
+/// `WICK_HALF / WICK_RATE`**, which is 2/4.
 ///
 /// Because variance adds under composition, a stroke gets the same total smoothing
-/// whatever the segmentation, and the pass now costs `travel / quantum` dispatches
-/// rather than one per segment — fewer wherever the loop is expensive (a tight brush
-/// cuts segments at 0.125 radii, so half of them skip the pass) and more only where
-/// segments are long and therefore few.
-const WICK_TRAVEL_QUANTUM: f32 = 0.25;
+/// whatever the segmentation and whatever the quantum — widening the kernel and firing
+/// it less often is an exact trade, not an approximation, which is what makes this a
+/// free parameter to spend on cost.
+///
+/// `m = 1` is the tensor `[¼, ½, ¼]²` this started at, at a quantum of 0.25 radii and 8
+/// taps per firing. `m = 2` doubles the quantum and, run *separably* as two 1-D passes,
+/// costs 8 taps — so per unit of travel the wick does **half the work** for the same
+/// dispatch count. (A non-separable 2-D kernel of the same variance would want
+/// `(2m+1)² − 1 = 24` taps. Separability is what makes widening pay at all.)
+///
+/// **It stops at 2 on purpose, and the reason is a cost the variance argument cannot
+/// see.** A firing lands at the start of whichever segment its boundary fell in, so its
+/// position jitters by up to one segment length, and a kernel carrying more variance per
+/// firing amplifies that jitter proportionally. Measured on
+/// `a_carried_stroke_is_independent_of_how_the_path_was_cut`, an `m` of 1/2/4/8 gives
+/// 2/3/4/5 levels of cut-dependence. `m = 4` would halve the dispatches as well — but 4
+/// levels is the row [`RESERVOIR_EXCHANGE_STEP`] was tightened *away* from, and buying
+/// it back to save a wick dispatch is the wrong trade.
+///
+/// **The separability is what the stroke-space march needs**, and is the reason this is
+/// shaped as two passes rather than one wider gather — as well as the reason to hold the
+/// width here. A march that owns a lateral row runs the along-travel pass inside its own
+/// workgroup with no barrier, so only the across-row pass is a dispatch and only *it*
+/// wants a wide kernel. Here both axes are dispatches and must share one cadence, so
+/// widening now would bank the jitter on both to save on one.
+const WICK_TRAVEL_QUANTUM: f32 = 0.5;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
 ///

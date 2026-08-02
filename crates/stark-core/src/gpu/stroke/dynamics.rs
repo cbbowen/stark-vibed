@@ -81,9 +81,15 @@ pub(super) struct DynamicsKit {
     pub(super) exchange_pipeline: wgpu::ComputePipeline,
     pub(super) exchange_bgl: wgpu::BindGroupLayout,
     /// Paint migrating *within* the tip, ahead of both halves of the transfer
-    /// (`dynamics.wesl::wick`). Shares `exchange`'s bind group: it reads and writes the
-    /// same reservoir ping-pong and needs a strict subset of the same bindings.
-    pub(super) wick_pipeline: wgpu::ComputePipeline,
+    /// (`dynamics.wesl::wick_axis`). Shares `exchange`'s bind group: it reads and writes
+    /// the same reservoir ping-pong and needs a strict subset of the same bindings.
+    ///
+    /// Two pipelines because the stencil is **separable** and runs as one 1-D pass per
+    /// axis: `.0` along the tip's travel, `.1` across it. Splitting them is what lets
+    /// the kernel be four times as wide for the same work per unit travel — and it is
+    /// the shape a stroke-space march needs, where the along-travel pass lives inside a
+    /// lateral row's own workgroup and only the across-row pass is a barrier.
+    pub(super) wick_pipelines: (wgpu::ComputePipeline, wgpu::ComputePipeline),
     /// Integrates the reservoir along the segment's travel axis so the deposit can
     /// read the whole pass instead of one mid-pass sample (`dynamics.wesl::bake`).
     pub(super) bake_pipeline: wgpu::ComputePipeline,
@@ -739,18 +745,22 @@ impl<'a> DynamicsRun<'a> {
                 // Let the tool's own paint migrate across the tip before anything reads
                 // it. Ahead of *both* halves of the transfer, so `bake` and `exchange`
                 // still see one another's entry state and their shares still add up
-                // (`dynamics.wesl::wick`). Reads `cur` and writes the other half, like
-                // every reservoir pass, so each pass cycles the ping-pong once.
+                // (`dynamics.wesl::wick_axis`). Each pass reads `cur` and writes the
+                // other half, like every reservoir pass, so it cycles the ping-pong once.
                 //
-                // Zero, one or several passes: the wick runs on its own travel cadence
-                // ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)), so a segment
-                // shorter than the quantum usually skips it and a long one pays off
-                // every boundary it crossed.
+                // A firing is **two** passes, because the stencil is separable: one along
+                // the tip's travel, one across it. Zero or one firing per segment — the
+                // wick runs on its own travel cadence
+                // ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)), which is now the
+                // same as the longest segment the flattener will cut, so a segment either
+                // crosses one boundary or none.
                 for _ in 0..d.wick_steps {
-                    cpass.set_pipeline(&kit.wick_pipeline);
-                    cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
-                    cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
-                    cur = 1 - cur;
+                    for pipe in [&kit.wick_pipelines.0, &kit.wick_pipelines.1] {
+                        cpass.set_pipeline(pipe);
+                        cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
+                        cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
+                        cur = 1 - cur;
+                    }
                 }
                 // Bake this segment's swept reservoir prefix next — it folds in the
                 // tip's current orientation as well as the reservoir state.
@@ -1102,10 +1112,7 @@ fn dynamics_plan(
                 nfreq[0],
                 nfreq[1],
                 nfreq[2],
-                // f.w: the travel one `wick` step carries. It rides here because the
-                // colour-dynamics lookup this vector is otherwise for reads only .xyz
-                // (`noise.wesl::color_jitter`), and `nfreq[3]` was the spare.
-                WICK_TRAVEL_QUANTUM,
+                nfreq[3],
                 namp[0],
                 namp[1],
                 namp[2],
@@ -1172,10 +1179,7 @@ fn dynamics_plan(
                 nfreq[0],
                 nfreq[1],
                 nfreq[2],
-                // f.w: the travel one `wick` step carries. It rides here because the
-                // colour-dynamics lookup this vector is otherwise for reads only .xyz
-                // (`noise.wesl::color_jitter`), and `nfreq[3]` was the spare.
-                WICK_TRAVEL_QUANTUM,
+                nfreq[3],
                 namp[0],
                 namp[1],
                 namp[2],
@@ -1581,7 +1585,14 @@ pub(super) fn build_dynamics_kit(
     // The wick reads the reservoir and writes the other half of the ping-pong, which is
     // exactly what `exchange_bgl` already describes — the region and selection bindings
     // it also carries simply go unused, which a pipeline layout is free to do.
-    let wick_pipeline = cpipe("stark dynamics wick", "wick", &[Some(&exchange_bgl)]);
+    //
+    // One pipeline per axis: the stencil is separable, so a firing is two 1-D passes
+    // (`dynamics.wesl::wick_axis`). The axis rides in the entry point rather than the
+    // uniform because both passes of a firing share the segment's slot.
+    let wick_pipelines = (
+        cpipe("stark dynamics wick x", "wick_x", &[Some(&exchange_bgl)]),
+        cpipe("stark dynamics wick y", "wick_y", &[Some(&exchange_bgl)]),
+    );
     // The bake reads the prefix-τ volume too (group 1) — the exposure weights in
     // its integral are that volume's own differences.
     let bake_pipeline = cpipe(
@@ -1690,7 +1701,7 @@ pub(super) fn build_dynamics_kit(
         snapshot_bgl,
         exchange_pipeline,
         exchange_bgl,
-        wick_pipeline,
+        wick_pipelines,
         bake_pipeline,
         bake_bgl,
         deposit_pipeline,

@@ -102,9 +102,8 @@ struct Stamp {
     // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
     // f: noise frequency per lookup axis (across the stroke, along it) .xy,
-    //    1/NOISE_TILE_PX in .z; the travel one `wick` step carries (radii) in .w —
-    //    the host's quantum, not this segment's length, since the wick keeps its own
-    //    cadence (`wick`).
+    //    1/NOISE_TILE_PX in .z; .w unused. (The wick's step is not here: its kernel is
+    //    a compile-time binomial and its cadence is the host's, see `wick_axis`.)
     f: vec4<f32>,
     // g: per colour-channel noise amplitude .xyz (all 0 = off); arc length at
     //    the segment start (canvas px) in .w.
@@ -417,8 +416,9 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 // delivering a fraction of nominal at the step this loop actually runs at; with the
 // scheme honest the same smoothing costs about half the number.
 //
-// It also sets the wick's **cadence**: one step at the stability limit carries
-// `1 / WICK_RATE` of travel, which is what `stroke::WICK_TRAVEL_QUANTUM` must equal.
+// It also sets the wick's **cadence**: one pass of the kernel below carries
+// `WICK_HALF / WICK_RATE` of travel, which is what `stroke::WICK_TRAVEL_QUANTUM` must
+// equal.
 const WICK_RATE: f32 = 4.0;
 
 // **The wick keeps its own cadence, and that is what bounds the step.** It used to run
@@ -448,12 +448,46 @@ const WICK_RATE: f32 = 4.0;
 // where segments are long and therefore few. Total wick dispatches over a stroke are
 // `travel / quantum`, which no longer depends on the segmentation at all.
 //
-// **The stencil is separable, not a plain cross**, which is what makes the quantum as
-// large as it is. The tensor product of `[w, 1−2w, w]` on each axis reaches the same
-// per-axis variance `2w` as the cross, but its checkerboard eigenvalue is `(1−4w)²`
-// rather than `1−8w` — zero at the stability limit instead of −1. So the cross would
-// need half the quantum for the same damping, and the four diagonal partners buy that
-// back for four more taps of a pass that is 4096 threads to begin with.
+// **The stencil is a separable binomial, run as two 1-D passes**, and the quantum is
+// whatever that kernel's variance buys. The 1-D binomial `C(2m, m+k) / 4^m` has
+// variance `m/2` and frequency response `cos^{2m}(θ/2)` — exactly zero at Nyquist, so
+// the checkerboard mode is annihilated rather than merely damped, at every `m`. Setting
+// `m/2 = 0.5·WICK_RATE·lr` gives the travel one pass carries:
+//
+//     lr = m / WICK_RATE      →      WICK_TRAVEL_QUANTUM
+//
+// **`m = 1` is the stencil this replaced**, exactly: `C(2, 1+k)/4 = [¼, ½, ¼]`, which
+// is the old `[w, 1−2w, w]` at its `w = ¼` limit. So this is a strict generalisation of
+// a tuned behaviour rather than a new one, and the total variance a stroke receives is
+// unchanged — only how it is parcelled out.
+//
+// The two passes are each internally conservative (a 1-D symmetric flux exchange, one
+// thread adding what its partner subtracts), so composing them conserves exactly, and
+// the concentration form is re-derived between them. That is why this can be two passes
+// at all: a non-separable 2-D kernel of the same variance would need `(2m+1)² − 1` taps
+// in one pass — 80 at `m = 4` — to save a single dispatch.
+//
+// **`m` is deliberately not pushed as far as it will go.** Widening trades cost for a
+// coarser cadence, and the cadence has a price the variance argument does not see: a
+// firing happens at the *start of the segment* the boundary fell in, so its position
+// jitters by up to one segment length, and a kernel carrying four times the variance
+// per firing amplifies that jitter fourfold. Measured on
+// `a_carried_stroke_is_independent_of_how_the_path_was_cut`:
+//
+//     m       1     2     4     8
+//     levels  2     3     4     5      (the test's bound is 4)
+//
+// `m = 2` is where that stops being free: it halves the taps per unit of travel for one
+// level, and is dispatch-neutral. `m = 4` would halve the dispatches too, for another
+// level — but the previous constant to trade this same quantity, `RESERVOIR_EXCHANGE_STEP`,
+// was tightened *away* from that level once already, so doubling it back for a wick
+// saving is not the trade to make here.
+//
+// **The place to widen is the march, not this loop**, which is the other reason to hold
+// at 2. Here both axes are dispatches and so must share a cadence; in stroke space the
+// along-travel pass runs inside a lateral row's own workgroup for free, so only the
+// across-row pass is a barrier and only *it* wants a wide kernel. Committing to a wide
+// `m` now would bank the jitter on both axes to save dispatches on one.
 //
 // Offsets stay *integer*, which is load-bearing rather than convenient: the pair
 // `(x, x+d)` is then symmetric, so both threads compute one number and apply it with
@@ -461,16 +495,14 @@ const WICK_RATE: f32 = 4.0;
 // sampler would quietly break conservation, because the partner is a blend of four cells
 // whose reciprocal flux does not mirror it.
 
-// The separable stencil's per-axis weight for a step covering `lr` of travel. The
-// target is `σ² = 0.5·WICK_RATE·lr` per axis and the 1-D marginal `[w, 1−2w, w]` has
-// variance `2w`, so `w = 0.25·WICK_RATE·lr`. The host's cadence holds `lr` at the
-// quantum `1/WICK_RATE`, which is exactly `w = 0.25` — the stability limit, where the
-// checkerboard eigenvalue `(1−4w)²` reaches zero. The `min` is belt and braces: it can
-// only bind if the host's quantum and `WICK_RATE` ever disagree, and clamping is the
-// right failure (a step that smooths less than asked, never one that goes unstable).
-fn wick_weight(lr: f32) -> f32 {
-    return min(0.25 * WICK_RATE * lr, 0.25);
-}
+// Half-width of the 1-D binomial, and the kernel itself indexed by `|k|`. **Must match
+// `stroke::WICK_TRAVEL_QUANTUM`**, which is `WICK_HALF / WICK_RATE`.
+const WICK_HALF: i32 = 2;
+const WICK_KERNEL = array<f32, 3>(
+    6.0 / 16.0,
+    4.0 / 16.0,
+    1.0 / 16.0,
+);
 
 // One neighbour pair's parcel for this cell. `weight` is the share of the pair's
 // concentration difference that crosses, and the mobility folded in on top converts
@@ -532,25 +564,14 @@ fn brush_local_at(t: vec2<i32>, bdim: vec2<u32>) -> vec2<f32> {
     return (vec2<f32>(tc) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
 }
 
-// The separable stencil's two shells of partners: the four axis neighbours, which carry
-// `w·(1−2w)` each, and the four diagonals, which carry `w²`. Together with the cell's
-// own `(1−2w)²` that is exactly the tensor product of `[w, 1−2w, w]` on each axis, so
-// the shares sum to 1 for any `w` and the per-axis variance is `2w`.
-const WICK_EDGES = array<vec2<i32>, 4>(
-    vec2<i32>(1, 0),
-    vec2<i32>(-1, 0),
-    vec2<i32>(0, 1),
-    vec2<i32>(0, -1),
-);
-const WICK_DIAGONALS = array<vec2<i32>, 4>(
-    vec2<i32>(1, 1),
-    vec2<i32>(1, -1),
-    vec2<i32>(-1, 1),
-    vec2<i32>(-1, -1),
-);
-
-@compute @workgroup_size(8, 8)
-fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
+// One 1-D pass of the binomial along `axis`. Both entry points below are this with a
+// different axis, and running the two in sequence realises the separable 2-D kernel.
+//
+// Nothing here couples the two axes, which is the property the stroke-space march
+// depends on: the along-travel pass touches only cells of the same lateral row, so a
+// workgroup that owns a row can run it with no barrier, and only the across-row pass
+// has to be a dispatch of its own.
+fn wick_axis(gid: vec3<u32>, axis: vec2<i32>) {
     let bdim = textureDimensions(brush_src_color);
     if gid.x >= bdim.x || gid.y >= bdim.y {
         return;
@@ -559,13 +580,6 @@ fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
     let self_load = load_at(t, bdim);
     let cov_t = coverage_at(brush_local_at(t, bdim));
     let inv_t = 1.0 / max(cov_t, WICK_MIN_COV);
-
-    // The travel this step carries is the host's **quantum**, not the segment's own
-    // length: the wick has its own cadence now, so it is handed the interval it is
-    // paying off rather than whatever the flattener happened to cut (see `st.f.w`).
-    let w = wick_weight(st.f.w);
-    let w_edge = w * (1.0 - 2.0 * w);
-    let w_diag = w * w;
 
     // Every share is taken against the *entering* state on both sides, never against a
     // running total: that is what makes this thread's flux the exact negative of the
@@ -576,9 +590,10 @@ fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
     d.h = 0.0;
     d.m = 0.0;
     d.lm = vec3<f32>(0.0, 0.0, 0.0);
-    for (var k = 0u; k < 4u; k = k + 1u) {
-        let a = wick_pair(t, WICK_EDGES[k], bdim, cov_t, inv_t, self_load, w_edge);
-        let b = wick_pair(t, WICK_DIAGONALS[k], bdim, cov_t, inv_t, self_load, w_diag);
+    for (var k = 1; k <= WICK_HALF; k = k + 1) {
+        let w = WICK_KERNEL[k];
+        let a = wick_pair(t, axis * k, bdim, cov_t, inv_t, self_load, w);
+        let b = wick_pair(t, axis * -k, bdim, cov_t, inv_t, self_load, w);
         d.h += a.h + b.h;
         d.m += a.m + b.m;
         d.lm += a.lm + b.lm;
@@ -596,6 +611,18 @@ fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
+}
+
+// Along the tip's travel axis — the one a stroke-space row could run internally.
+@compute @workgroup_size(8, 8)
+fn wick_x(@builtin(global_invocation_id) gid: vec3<u32>) {
+    wick_axis(gid, vec2<i32>(1, 0));
+}
+
+// Across it — the one that couples lateral rows, and so must stay a dispatch.
+@compute @workgroup_size(8, 8)
+fn wick_y(@builtin(global_invocation_id) gid: vec3<u32>) {
+    wick_axis(gid, vec2<i32>(0, 1));
 }
 
 // ---- 1. Bake: the reservoir's swept prefix along the travel axis. ----------------
