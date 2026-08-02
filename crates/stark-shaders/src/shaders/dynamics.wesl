@@ -10,10 +10,17 @@
 //     it), `bake` (integrate the reservoir along the travel axis, so the deposit can
 //     read what the tip presented over a whole pass rather than at one point),
 //     `exchange` — one thread per **tool reservoir** texel, which settles the tool's
-//     half of the transfer — `snapshot` (copy the segment's footprint texels to an
-//     `under` scratch, so the deposit can read-modify-write the region) and `deposit`,
-//     one thread per footprint texel. `wick` and `exchange` each ping-pong the
-//     reservoir, so a segment cycles it twice.
+//     half of the transfer, and which also carries the `snapshot` (copy the segment's
+//     footprint texels to an `under` scratch, so the deposit can read-modify-write the
+//     region) in the tail of its own grid — and `deposit`, one thread per footprint
+//     texel. `wick` and `exchange` each ping-pong the reservoir, so a segment cycles it
+//     twice.
+//
+// **The snapshot is not a step of the loop, it is the read side of the deposit**, and
+// it depends on nothing the exchange writes. Giving it a dispatch of its own bought a
+// barrier neither pass wanted, so it rides in `exchange`'s grid instead: four
+// serialized dispatches per segment where there were five. The pen-up keeps the
+// standalone entry point, because there the `settle` *reads* what the snapshot writes.
 //
 // **`exchange` runs before `deposit`, not after.** The two are the two halves of one
 // transfer, and a transfer is a statement about a *single* pre-state: both dispatches
@@ -95,7 +102,9 @@ struct Stamp {
     // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
     // f: noise frequency per lookup axis (across the stroke, along it) .xy,
-    //    1/NOISE_TILE_PX in .z; .w unused.
+    //    1/NOISE_TILE_PX in .z; the travel one `wick` step carries (radii) in .w —
+    //    the host's quantum, not this segment's length, since the wick keeps its own
+    //    cadence (`wick`).
     f: vec4<f32>,
     // g: per colour-channel noise amplitude .xyz (all 0 = off); arc length at
     //    the segment start (canvas px) in .w.
@@ -194,15 +203,50 @@ const TAU: f32 = 6.283185307179586;
 //     never credited with — a tip-shaped disc of missing paint, worst where `lift` is
 //     high, and unmistakable because the tip's own hardness edge is frozen into it.
 //
-// The pair has one non-zero eigenvalue: it relaxes towards the split `k_dep : k_lift`
-// at rate `s = k_lift + k_dep`. So every coefficient below is written in terms of the
-// single window
+// **The two directions are solved as decoupled, not as a closed pair, and that is a
+// statement about the geometry rather than a linearisation.** The pair above describes
+// a canvas point and *one* reservoir cell held over it for the whole segment, which is
+// not what happens: the point slides through a whole stream of cells, each pairing
+// lasting the instant the cell is overhead. Over any single pairing the partner cannot
+// meaningfully relax, so what the point sees is `−k_lift·h` with the `+k_dep·R` supplied
+// by a *different* cell each moment — and symmetrically for the cell. Taking that limit
+// splits the system into two one-sided decays:
 //
-//     w(e) = (1 − exp(−s·e)) / s
+//     h(e) = h₀·exp(−k_lift·e)          each side's own loss, closed form
+//     R(e) = R₀·exp(−k_dep·e)
 //
-// which is also the plain `∫₀ᵉ exp(−k(e−u)) du` the source rides when nothing takes it
-// back, and the uniform-reservoir case of what `bake` integrates: with `R ≡ 1` the
-// swept prefix there evaluates to exactly this. One expression seen from three ends.
+// with each side's *gain* the integral of the other's loss over the track they shared.
+//
+// **This conserves exactly, and the proof is a change of variable rather than an
+// appeal to the matrix being stochastic.** Take the deposit direction. Cell `u` loses
+// `R₀(u)(1 − exp(−k_dep·τ(u)·lr))`; the canvas gains
+// `∫ k_dep·τ(x−p)·R₀(x−p)·exp(−k_dep·τ(x−p)·p) dp` along the pass. Integrating that
+// over `x` and substituting `u = x − p` gives back `∫R₀(u)(1 − exp(−k_dep·τ(u)·lr))du`
+// — the tool's loss, to the last term. The lift direction is the mirror image, with
+// `q = P(1) − P(u)` as the substitution: `∫k_lift·τ(u)·exp(−k_lift·q)du` telescopes to
+// `1 − exp(−k_lift·E)`, which is exactly the fraction the canvas gave up. So each
+// direction balances on its own, and neither needs the other to be evaluated at the
+// same instant for the books to close.
+//
+// What this buys over the pair is that the pair's `keep` **saturates at `k_lift/s`** —
+// half the canvas retained however long the segment, because the tool it is coupled to
+// keeps handing paint back — and that plateau is modelling a coupling that is not
+// there. The sliding form runs to zero instead. Measured, it converges to the same
+// answer as the pair and gets there faster.
+//
+// What it does *not* fix is the mean-field freeze either side of it: the canvas the
+// tool lifts from is still the segment's entry canvas, so the lift never sees the
+// deposit the same pass laid down. That residue is `O(k_lift·k_dep·e²)` — second order
+// in the rates, where the pair kernel's splitting error is first — and it is what
+// `RESERVOIR_EXCHANGE_STEP` is left bounding.
+//
+// The one thing to be careful of: the two sides evaluate their exponentials at
+// *different* quadratures of the same exposure (the canvas differences the prefix-τ,
+// the tool takes `τ(u)·lr`), and an exponential that saturates harder turns the same
+// small quadrature disagreement into a larger height disagreement than the pair's
+// gentler `1 − k·w(e)` did. That is the real content of the old note that the sliding
+// kernel "gives up column-stochasticity" — the shares still sum to one exactly; it is
+// the exposures underneath them that only agree approximately.
 
 // How one segment's exposure `e` splits the two boxes. Every field is a fraction of an
 // entering quantity, and the tool's share is the complement of each — so the canvas
@@ -223,23 +267,22 @@ struct Exchange {
 fn exchange_at(e: f32) -> Exchange {
     let kl = -st.b.z; // the lift rate; 0 when the brush does not lift
     let kd = -st.b.w; // the deposit rate
-    let s = kl + kd;
     var out: Exchange;
-    if s < 1e-6 {
-        // Neither box trades, so the source is all the canvas gets — and it keeps it.
-        out.keep = 1.0;
-        out.dep = 0.0;
+    // Each side's own one-sided decay over the exposure it saw. No `s = kl + kd`
+    // anywhere: the two directions do not share a relaxation, which is the whole point.
+    out.keep = exp(-kl * e);
+    out.dep = 1.0 - exp(-kd * e);
+    // The source rides the lift's decay and nothing else — `∫₀ᵉ A·exp(−k_lift·(e−q))dq`
+    // — so what settles is `(1 − exp(−k_lift·e))/k_lift` per unit rate, and the tool
+    // lifted the rest of the `e·A` minted back off before it set. A brush that does not
+    // lift keeps all of it, which is the limit of that quotient and not a special case
+    // in the physics; the branch is only because the quotient is 0/0 in floats.
+    if kl < 1e-6 {
         out.add_w = e;
-        out.src_w = 0.0;
-        return out;
+    } else {
+        out.add_w = (1.0 - out.keep) / kl;
     }
-    let w = (1.0 - exp(-s * e)) / s;
-    out.keep = 1.0 - kl * w;
-    out.dep = kd * w;
-    // `kl/s ≤ 1` bounds the second term, so no division here can run away as `s → 0`;
-    // the branch above is for exactness, not for conditioning.
-    out.add_w = (kd * e + kl * w) / s;
-    out.src_w = kl * (e - w) / s;
+    out.src_w = e - out.add_w;
     return out;
 }
 
@@ -367,48 +410,66 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 // it is a visible change to every paint-manipulating brush and not one to spend for
 // free, which is what makes the optimum an optimum rather than a floor.
 //
-// Read it as a **variance rate**: one step over `lr` of travel injects `σ² = 0.5 ·
-// WICK_RATE · lr` texels² per axis, and `wick_reach` plus the weight below realise
-// exactly that at any step size. It was 8 while the retired saturating form was
-// silently delivering a fraction of nominal at the step this loop actually runs at;
-// with the scheme honest the same smoothing costs about half the number.
+// Read it as a **variance rate**: travelling `lr` injects `σ² = 0.5 · WICK_RATE · lr`
+// texels² per axis, and since variance adds under composition, the total over a stroke
+// is proportional to the distance travelled however the path was cut and however the
+// cadence below chops it up. It was 8 while the retired saturating form was silently
+// delivering a fraction of nominal at the step this loop actually runs at; with the
+// scheme honest the same smoothing costs about half the number.
+//
+// It also sets the wick's **cadence**: one step at the stability limit carries
+// `1 / WICK_RATE` of travel, which is what `stroke::WICK_TRAVEL_QUANTUM` must equal.
 const WICK_RATE: f32 = 4.0;
 
-// **The step size rides the flux's *reach*, not its weight.** An explicit diffusion
-// step is stable only while the shares leaving a cell sum to ≤ 1 — that is a bound on
-// the *weight*, and it says nothing about how far the weight is allowed to reach. The
-// variance a step injects is `Σ w·d²`, so moving the same weight out to distance `d`
-// buys `d²` times the smoothing for free, at exactly the same stability bound.
+// **The wick keeps its own cadence, and that is what bounds the step.** It used to run
+// once per segment, whatever a segment happened to be, and carry however much travel
+// that was by pushing the flux's *reach* outwards — `d = sqrt(WICK_RATE·lr)`, on the
+// argument that variance is `Σ w·d²`, so moving the same weight further buys `d²` times
+// the smoothing under the same `Σw ≤ 1` stability bound.
 //
-// That matters because the alternative is worse in both directions. Holding the
-// neighbours at `d = 1` caps a step at `σ² = 0.5`, and a rate that wants more than that
-// simply saturates: the shares pile up against the ceiling, the smoothing stops growing
-// with the step, and the total over a stroke starts depending on how many segments
-// there were. This wick shipped that way and it cost a factor of 3.4 in total smoothing
-// the moment `drain` stopped pinning segments short. Sub-stepping in time would fix it
-// too, but only by dispatching the pass several times per segment, and this loop is
-// dispatch-bound.
+// The argument is true about variance and wrong about *conditioning*, and the failure is
+// not gradual. A four-point stencil at integer distance `d` couples a cell only to cells
+// of the same parity in `d`, so at even reach the grid's two sublattices stop talking:
+// the checkerboard mode `(−1)^(x+y)` has eigenvalue exactly **1** and never decays,
+// while `Σw = 1` leaves the cell *none* of its own value. That is not a corner —
+// `exchange_travel` caps at `MAX_EXCHANGE_TRAVEL = 1`, and `WICK_RATE · 1 = 4` puts the
+// reach at exactly 2, so **every brush at the relaxed end of the range ran there**.
+// Measured across `lift = deposit`: the checkerboard eigenvalue is 0 at 0.95/0.95 (the
+// point `WICK_RATE` was tuned at, and the only well-conditioned one), −0.86 at 0.8/0.8,
+// and 1.0 for anything relaxed to the cap.
 //
-// With the reach carrying the step instead, variance per step is proportional to travel
-// at any step size, and **variance adds under composition** — so the total over a stroke
-// is proportional to the distance travelled however the path was cut. That is the
-// property the old exponential form was reaching for and only half achieved (it stayed
-// bounded, which is what it claimed, but stopped composing once saturated).
+// So the reach is gone and the *cadence* carries the step instead: the host wicks once
+// per `WICK_TRAVEL_QUANTUM` of travel (`stroke::WICK_TRAVEL_QUANTUM`, in radii),
+// independent of where the segment boundaries fell, and each step is one fixed
+// nearest-neighbour stencil sized to exactly that quantum. Sub-stepping in time was
+// rejected before on the grounds that this loop is dispatch-bound — but the cadence is
+// *slower* than the old one wherever the loop is expensive (a tight brush's segments are
+// shorter than the quantum, so half of them now skip the pass entirely) and faster only
+// where segments are long and therefore few. Total wick dispatches over a stroke are
+// `travel / quantum`, which no longer depends on the segmentation at all.
 //
-// The shells sit at *integer* offsets, and that is load-bearing rather than convenient:
-// the pair `(x, x+d)` is then symmetric, so both threads compute one number and apply
-// it with opposite signs. Sampling a neighbour at a fractional distance through the
-// bilinear sampler would quietly break conservation, because the partner is a blend of
-// four cells whose reciprocal flux does not mirror it. Two shells, at `d` and `d+1`
-// with the fraction split between them, keep every offset integral while letting the
-// reach vary continuously.
+// **The stencil is separable, not a plain cross**, which is what makes the quantum as
+// large as it is. The tensor product of `[w, 1−2w, w]` on each axis reaches the same
+// per-axis variance `2w` as the cross, but its checkerboard eigenvalue is `(1−4w)²`
+// rather than `1−8w` — zero at the stability limit instead of −1. So the cross would
+// need half the quantum for the same damping, and the four diagonal partners buy that
+// back for four more taps of a pass that is 4096 threads to begin with.
+//
+// Offsets stay *integer*, which is load-bearing rather than convenient: the pair
+// `(x, x+d)` is then symmetric, so both threads compute one number and apply it with
+// opposite signs. Sampling a neighbour at a fractional distance through the bilinear
+// sampler would quietly break conservation, because the partner is a blend of four cells
+// whose reciprocal flux does not mirror it.
 
-// Reservoir texels the flux reaches over `lr` of travel. Diffusion length grows as the
-// square root of time, hence the `sqrt`; the floor of 1 is the nearest neighbour, below
-// which there is nowhere closer to put the weight and it goes back to being the weight
-// that carries the step.
-fn wick_reach(lr: f32) -> f32 {
-    return max(sqrt(WICK_RATE * lr), 1.0);
+// The separable stencil's per-axis weight for a step covering `lr` of travel. The
+// target is `σ² = 0.5·WICK_RATE·lr` per axis and the 1-D marginal `[w, 1−2w, w]` has
+// variance `2w`, so `w = 0.25·WICK_RATE·lr`. The host's cadence holds `lr` at the
+// quantum `1/WICK_RATE`, which is exactly `w = 0.25` — the stability limit, where the
+// checkerboard eigenvalue `(1−4w)²` reaches zero. The `min` is belt and braces: it can
+// only bind if the host's quantum and `WICK_RATE` ever disagree, and clamping is the
+// right failure (a step that smooths less than asked, never one that goes unstable).
+fn wick_weight(lr: f32) -> f32 {
+    return min(0.25 * WICK_RATE * lr, 0.25);
 }
 
 // One neighbour pair's parcel for this cell. `weight` is the share of the pair's
@@ -471,11 +532,21 @@ fn brush_local_at(t: vec2<i32>, bdim: vec2<u32>) -> vec2<f32> {
     return (vec2<f32>(tc) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
 }
 
-const WICK_NEIGHBOURS = array<vec2<i32>, 4>(
+// The separable stencil's two shells of partners: the four axis neighbours, which carry
+// `w·(1−2w)` each, and the four diagonals, which carry `w²`. Together with the cell's
+// own `(1−2w)²` that is exactly the tensor product of `[w, 1−2w, w]` on each axis, so
+// the shares sum to 1 for any `w` and the per-axis variance is `2w`.
+const WICK_EDGES = array<vec2<i32>, 4>(
     vec2<i32>(1, 0),
     vec2<i32>(-1, 0),
     vec2<i32>(0, 1),
     vec2<i32>(0, -1),
+);
+const WICK_DIAGONALS = array<vec2<i32>, 4>(
+    vec2<i32>(1, 1),
+    vec2<i32>(1, -1),
+    vec2<i32>(-1, 1),
+    vec2<i32>(-1, -1),
 );
 
 @compute @workgroup_size(8, 8)
@@ -489,23 +560,12 @@ fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cov_t = coverage_at(brush_local_at(t, bdim));
     let inv_t = 1.0 / max(cov_t, WICK_MIN_COV);
 
-    // The two shells this step reaches to, and the weight to hand them. `d_sq` is the
-    // `Σ w·d²` the pair of shells will realise, so dividing the target variance through
-    // by it lands the weight wherever the reach happens to have put it.
-    //
-    // The result is bounded by `0.25` without a clamp, which is worth seeing rather
-    // than asserting: `reach² = WICK_RATE·lr`, and interpolating `d²` between the two
-    // shells overshoots `reach²` by exactly `frac·(1 − frac) ≥ 0`, so `d_sq ≥
-    // WICK_RATE·lr` and the quotient below cannot exceed a quarter. Mobility ≤ 1 only
-    // takes it further down. That is the stability bound met by construction: four
-    // directions × two shells, summing to at most 1, so a cell's share of itself
-    // never goes negative.
-    let reach = wick_reach(st.b.y);
-    let d0 = floor(reach);
-    let frac = reach - d0;
-    let d_sq = d0 * d0 + frac * (2.0 * d0 + 1.0);
-    let weight = 0.25 * WICK_RATE * st.b.y / d_sq;
-    let i0 = i32(d0);
+    // The travel this step carries is the host's **quantum**, not the segment's own
+    // length: the wick has its own cadence now, so it is handed the interval it is
+    // paying off rather than whatever the flattener happened to cut (see `st.f.w`).
+    let w = wick_weight(st.f.w);
+    let w_edge = w * (1.0 - 2.0 * w);
+    let w_diag = w * w;
 
     // Every share is taken against the *entering* state on both sides, never against a
     // running total: that is what makes this thread's flux the exact negative of the
@@ -517,9 +577,8 @@ fn wick(@builtin(global_invocation_id) gid: vec3<u32>) {
     d.m = 0.0;
     d.lm = vec3<f32>(0.0, 0.0, 0.0);
     for (var k = 0u; k < 4u; k = k + 1u) {
-        let dir = WICK_NEIGHBOURS[k];
-        let a = wick_pair(t, dir * i0, bdim, cov_t, inv_t, self_load, weight * (1.0 - frac));
-        let b = wick_pair(t, dir * (i0 + 1), bdim, cov_t, inv_t, self_load, weight * frac);
+        let a = wick_pair(t, WICK_EDGES[k], bdim, cov_t, inv_t, self_load, w_edge);
+        let b = wick_pair(t, WICK_DIAGONALS[k], bdim, cov_t, inv_t, self_load, w_diag);
         d.h += a.h + b.h;
         d.m += a.m + b.m;
         d.lm += a.lm + b.lm;
@@ -666,13 +725,15 @@ fn outside_sweep(sw: Sweep) -> bool {
     return abs(sw.local.y) >= 1.0 || sw.local.x <= -1.0 || sw.local.x - sw.lr >= 1.0;
 }
 
-@compute @workgroup_size(8, 8)
-fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
+// One footprint texel's copy. Factored out because the segment loop runs this from the
+// tail of `exchange`'s grid rather than from a dispatch of its own — see there — while
+// the pen-up still needs it as a standalone pass.
+fn snapshot_at(gx: u32, gy: u32) {
     let udim = textureDimensions(under_color_w);
-    if gid.x >= udim.x || gid.y >= udim.y {
+    if gx >= udim.x || gy >= udim.y {
         return;
     }
-    let t = vec2<i32>(gid.xy);
+    let t = vec2<i32>(i32(gx), i32(gy));
     let rt = vec2<i32>(st.d.xy) + t;
     if outside_sweep(segment_frame(rt)) {
         return; // deposit never reads these texels of the snapshot
@@ -688,26 +749,33 @@ fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(under_aux_w, t, a);
 }
 
+// The standalone pass, which only the pen-up now dispatches: the `settle` reads the
+// snapshot, so unlike the segment case it cannot share a dispatch with its producer.
+@compute @workgroup_size(8, 8)
+fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
+    snapshot_at(gid.x, gid.y);
+}
+
 // How many sub-steps `exchange` walks its texel's track in. The canvas side gets its
 // sweep exactly, from the prefix-τ; the tool side has no prefix to difference — the
 // canvas under it is an arbitrary evolving field — so it is a quadrature, and this is
 // how fine.
 //
-// **Pinned at 1, and it is not a placeholder — raising it is wrong.** It looks like the
-// obvious refinement and it is a different model: over each sub-step the tool lifts its
-// share of a canvas held *fixed*, N times over, while the `deposit` gives up a single
-// share of the whole exposure — so the two halves stop being complements of one
-// solution and the transfer stops balancing. That is not a small bias. At a segment
-// length four times finer than the loop runs at, where discretization error is
-// negligible and the two schemes ought to agree, N = 8 lands **12 levels rms** away
-// from where N = 1 converges. (It is also what made N = 8 look good on a ringing
-// stroke: it drops the tool's per-segment retention from 0.5 to 0.007, which damps the
-// smear by destroying its memory.)
+// **Pinned at 1, and for a different reason than it used to be.** Under the closed-pair
+// kernel raising it was outright *wrong* — over each sub-step the tool lifted its share
+// of a canvas held fixed, N times over, while the `deposit` gave up a single share of
+// the whole exposure, so the two halves stopped being complements of one solution and
+// the transfer stopped balancing (N = 8 landed 12 levels rms from where N = 1 converged,
+// even at a segment length four times finer than the loop runs at).
 //
-// Averaging the canvas along the track and evaluating the kernel *once* — the version
-// that keeps the halves complementary — was also tried, and moves the result by less
-// than the 8-bit noise floor. The midpoint tap is simply not where the error is; see
-// `RESERVOIR_EXCHANGE_STEP`, which is.
+// The sliding kernel has no such objection: each direction is a plain exponential in
+// exposure, and `exp(−k·e/N)^N = exp(−k·e)` exactly, so splitting the exposure changes
+// the tool's own arithmetic not at all. All N > 1 buys is sampling the canvas at
+// several points along the texel's track instead of one — and that was measured, both
+// as sub-steps and as an average over the track, and moves the result by less than the
+// 8-bit noise floor. The midpoint tap is simply not where the error is; see
+// `RESERVOIR_EXCHANGE_STEP`, which is. So it stays at 1 because the taps are not worth
+// paying for, and it is now free to raise if that ever changes.
 const EXCHANGE_STEPS: u32 = 1u;
 
 // `sin(x)` and `1 − cos(x)` as the same truncated Maclaurin series `path::arc_at` uses,
@@ -795,13 +863,33 @@ fn tip_at(f: f32) -> vec4<f32> {
 // exposure changes nothing on its own — what the sub-steps buy is the *canvas* being
 // read where the texel actually was, which is the whole error term. The tip's frame is
 // re-evaluated at each one, so a curved sweep turns under the tool as it goes.
+// **The segment's `snapshot` rides in the tail of this dispatch.** The two are
+// independent — the snapshot only reads the region, which the previous segment's
+// `deposit` last wrote, and writes the `under` scratch; the exchange reads that same
+// region and writes the reservoir — so the barrier that used to separate them was
+// paying for an ordering neither needed. Both must finish before `deposit`, and
+// sharing one dispatch is the cheapest way to say exactly that.
+//
+// Workgroups `[0, ex_groups)` on x are the reservoir; the rest are the footprint,
+// re-based onto its own grid. The grid's y extent is whatever the taller of the two
+// needs, so a few groups fall outside both and return on the bounds checks — a handful
+// of early-out threads against one fewer serialized dispatch per segment, out of five.
 @compute @workgroup_size(8, 8)
-fn exchange(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn exchange(
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
     let bdim = textureDimensions(brush_src_color);
+    let ex_groups = (bdim.x + 7u) / 8u;
+    if wid.x >= ex_groups {
+        snapshot_at((wid.x - ex_groups) * 8u + lid.x, wid.y * 8u + lid.y);
+        return;
+    }
+    let gid = wid.xy * 8u + lid.xy;
     if gid.x >= bdim.x || gid.y >= bdim.y {
         return;
     }
-    let t = vec2<i32>(gid.xy);
+    let t = vec2<i32>(gid);
     let local = (vec2<f32>(t) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
 
     let b_c = textureLoad(brush_src_color, t, 0); // (latent, op) — straight, not premult

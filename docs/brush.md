@@ -293,33 +293,51 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
    semantics, and usage scopes are per-dispatch, so the region can be sampled by
    one dispatch and storage-written by the next with no copies and no pass churn.
    Per-dispatch parameters ride one dynamic-offset uniform buffer.
-   - Per segment: **bake** (integrate the reservoir along the travel axis),
-     **exchange** (the tool's half of the transfer, one thread per reservoir
-     texel), **snapshot** (copy the segment quad's region texels into an `under`
-     scratch, so the deposit can read-modify-write) and **deposit** — one thread
-     per footprint texel. The range that ends the stroke closes with one more
-     `snapshot` + **settle** over the final footprint (see *The pen-up* below). A texel's **exposure** to the segment is the prefix-τ
-     difference `e(x) = prefix(u) − prefix(u−d)`, and exposures add across
-     overlapping quads of consecutive segments, so what the loop applies must be
-     built from `e` in a way that survives re-cutting the path.
-   - **The exchange is one closed-form solution, evaluated by both halves.** Over
-     a segment a canvas point and the tool above it are a pair of coupled boxes
-     trading the one conserved quantity:
+   - Per segment: **wick** (paint migrating within the tip, on its own travel
+     cadence — often zero passes, see below), **bake** (integrate the reservoir
+     along the travel axis), **exchange** (the tool's half of the transfer, one
+     thread per reservoir texel, which also carries the **snapshot** — the copy of
+     the segment quad's region texels into an `under` scratch that lets the deposit
+     read-modify-write — in the tail of its own grid) and **deposit**, one thread
+     per footprint texel. The snapshot rides along because it depends on nothing
+     the exchange writes, so the barrier that used to separate them bought no
+     ordering: four serialized dispatches per segment where there were five. The
+     range that ends the stroke closes with a standalone `snapshot` + **settle**
+     over the final footprint (see *The pen-up* below) — standalone because there
+     the settle *reads* what the snapshot writes. A texel's **exposure** to the
+     segment is the prefix-τ difference `e(x) = prefix(u) − prefix(u−d)`, and
+     exposures add across overlapping quads of consecutive segments, so what the
+     loop applies must be built from `e` in a way that survives re-cutting the path.
+   - **The two directions are solved as decoupled one-sided decays, and that is a
+     statement about geometry rather than a linearisation.** The obvious model is a
+     closed pair — a canvas point and the tool above it trading the one conserved
+     quantity, `dh/de = −k_lift·h + k_dep·R + A` against
+     `dR/de = +k_lift·h − k_dep·R` — and that is what the loop used to solve, in
+     closed form, both halves reading one solution. But it describes a point held
+     under *one* reservoir cell for the whole segment, and that is not what happens:
+     the point slides through a stream of cells, each pairing lasting the instant
+     the cell is overhead, far too briefly for the partner to relax. Taking that
+     limit splits the system in two:
 
      ```
-     dh/de = −k_lift·h + k_dep·R + A      (canvas)
-     dR/de = +k_lift·h − k_dep·R          (tool)
+     h(e) = h₀·exp(−k_lift·e)        each side's own loss, closed form
+     R(e) = R₀·exp(−k_dep·e)
      ```
 
-     Their sum moves only by the source `A`, so with `add = 0` the pair conserves
-     height *identically*. The pair has one non-zero eigenvalue — it relaxes
-     towards the split `k_dep : k_lift` at rate `s = k_lift + k_dep` — so every
-     coefficient is a function of the single window `w(e) = (1 − exp(−s·e))/s`:
-     the canvas keeps `1 − k_lift·w` of its own height, takes `k_dep·w` of the
-     tool's load, and the tool takes exactly the complement of each. Being linear
-     and autonomous in `e`, running it over `e₁` then `e₂` *is* running it over
-     `e₁+e₂`: the whole stroke applies the continuous path integral whatever the
-     spacing, with no dabbing.
+     with each side's *gain* the integral of the other's loss over the track they
+     shared. So the canvas keeps `exp(−k_lift·e)` of its height and takes
+     `1 − exp(−k_dep·e)` of the tool's load, and the tool takes exactly the
+     complement of each. Being exponential in `e`, running it over `e₁` then `e₂`
+     *is* running it over `e₁+e₂`: the whole stroke applies `1 − (1−axis)^∫e`, the
+     continuous path integral whatever the spacing, with no dabbing.
+
+     **It conserves, and the proof is a change of variable rather than an appeal to
+     a stochastic matrix.** Cell `u` loses `R₀(u)(1 − exp(−k_dep·τ(u)·lr))`; the
+     canvas gains `∫k_dep·τ(x−p)·R₀(x−p)·exp(−k_dep·τ(x−p)·p)dp` along the pass, and
+     integrating that over `x` under `u = x−p` returns the tool's loss to the last
+     term. The lift direction telescopes the same way under `q = P(1)−P(u)`. Each
+     direction balances on its own, so neither needs the other evaluated at the same
+     instant for the books to close.
    - **Both halves read the same pre-state** — which is why `exchange` is
      dispatched *before* `deposit` rather than after. Solving only half the pair
      (the canvas relaxing towards a tool that never took anything back) and then
@@ -364,11 +382,32 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      than a large number. Wicking hands paint to shoulder cells that used to hold almost
      none — the same rate disparity that stranded the ring also starved them — so they
      now deposit and the stroke's own edge softens.
-   - **The splitting is first order in the segment length, and that is the open
-     defect.** Both halves read the state the segment *entered* with — the canvas side
-     integrates over which reservoir cell is above it (`bake`), the tool side reads the
-     canvas with a single tap at the segment's midpoint — so each is exact about the
-     geometry of the slide and stale about the partner's value. Halving
+
+     **The wick keeps its own travel cadence** (`WICK_TRAVEL_QUANTUM`), not the segment's.
+     It used to run once per segment and absorb whatever travel that was by widening the
+     flux's *reach*, `d = sqrt(WICK_RATE·lr)` — sound about variance, and badly
+     conditioned, because a four-point stencil at integer distance `d` couples only cells
+     of the same parity in `d`. At the reach of exactly 2 that `MAX_EXCHANGE_TRAVEL`
+     produces, the grid's two sublattices decouple outright: the checkerboard mode has
+     eigenvalue 1 and never decays, while the shares leave the cell none of its own
+     value. Every brush relaxed to the travel cap ran there — measured across
+     `lift = deposit`, the eigenvalue is 0 at 0.95/0.95 (the point `WICK_RATE` was tuned
+     at, and the only well-conditioned one), −0.86 at 0.8/0.8, and 1.0 at the cap.
+
+     So the reach is gone and the cadence carries the step: one pass per
+     `1/WICK_RATE` of travel, with a fixed nearest-neighbour stencil sized to exactly
+     that. The stencil is **separable** — the tensor product of `[w, 1−2w, w]` per axis
+     rather than a plain cross — which reaches the same per-axis variance with a
+     checkerboard eigenvalue of `(1−4w)²` instead of `1−8w`, i.e. zero at the stability
+     limit instead of −1, and so doubles the quantum for four extra taps. Variance still
+     adds under composition, so a stroke gets the same total smoothing however the path
+     was cut; and since the quantum is longer than a tight brush's segments, half of them
+     now skip the pass altogether.
+   - **What is left is first order in the segment length, and it is the loop's last
+     open defect.** Both halves still read the state the segment *entered* with — the
+     canvas side integrates over which reservoir cell is above it (`bake`), the tool side
+     reads the canvas with a single tap at the segment's midpoint — so each is exact
+     about the geometry of the slide and stale about the partner's value. Halving
      `RESERVOIR_EXCHANGE_STEP` halves the error, cleanly, with no knee to sit on.
 
      It prints. A tip lifts at a point and lays back down swept, so the smear
@@ -392,18 +431,29 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      *partner* is frozen across the sub-steps, and that is not a refinement but a
      one-parameter deformation away from the pair model.
 
-     So the error is not in the kernel. It is in the two mean-field approximations
-     either side of it, and those are bounded by the segment length alone.
+     So the error is not in the kernel *while the kernel is a closed pair*. It is in
+     the two mean-field approximations either side of it, and those are bounded by the
+     segment length alone. What the theorem really argues is for **leaving** the closed
+     pair — which is the decoupled sliding form above, whose `K → ∞` limit it is.
 
-     Where that deformation leads is a **sliding** kernel: `keep = exp(−k_lift·e)`
-     rather than `1 − k_lift·w(e)`, on the grounds that a canvas point does not stay
-     under one cell but slides through a stream of them, each pairing brief — so the
-     pair's saturation at `k_lift/s` is modelling a coupling that is not there. It
-     converges to the same answer and is ~2.5× more accurate at every step. What it
-     costs is the column-stochasticity above, which is precisely the failure the pair
-     kernel was introduced to fix, so it needs a conserving formulation — bake the
-     **flux** rather than the load, so the canvas receives what the tool gave up by
-     construction — before it can land.
+     That move was once recorded as blocked, on the grounds that the sliding form gives
+     up the column-stochasticity and so needs the **flux** baked rather than the load
+     before it can conserve. Too pessimistic on both counts. The shares still sum to one
+     identically — `keep + (1−keep)` is a tautology whatever `keep` is — so the
+     39%-of-height failure, which came of the two sides solving *different* equations,
+     cannot recur; and each direction balances in the aggregate on its own, by the
+     change of variable above, with no flux bookkeeping at all. What genuinely remains is
+     that the two sides evaluate their exponentials at different *quadratures* of the
+     same exposure, and a harder-saturating exponential turns a small quadrature
+     disagreement into a larger height one. Measured, that is worth one level: the worst
+     lightening of a smeared field goes 50 → 51 against a bound of 60, and a 240-sample
+     zig-zag smear's ink growth 0.97940 → 0.97938 against a bound of 1.0.
+
+     The gain — 2–4× at every step, converging to the same answer, the table is on
+     `RESERVOIR_EXCHANGE_STEP` — is banked as accuracy rather than spent as step size.
+     Sliding at 0.25 would halve the segment count and still beat the old kernel at
+     0.125 on absolute error, but its length-dependence is the row already weighed and
+     rejected once, and that is the column a user sees.
    - **What the step costs is scaled by the transfer rate**, not charged flat. The
      error is first order in the transfer a segment *completes*, `(k_lift + k_deposit)·τ·lr`,
      so holding that fixed is what makes one constant mean the same thing to every
@@ -427,12 +477,11 @@ weighted blends, and a parcel's blend weight is its own *visible* alpha
 (`1 − exp(−K·mass)`, the same translucent-slab law as the media pass), so thick
 deposits cover while thin glazes tint. The lift never touches the source's colour
 or alpha: the source fades because its **thickness** drops. Both sides of every
-transfer take complementary shares of the one solution above, over the same
-segment and from the same pre-state (the canvas side measuring its exposure
-through the prefix-τ, the reservoir side as `τ(l) · Δs/r` — two quadratures of the
-same bilinear form, which agree texel for paired texel), so with `add = 0` total
-height (canvas + tool) is conserved up to resampling error, whatever the segment
-length.
+transfer take complementary shares of the same decay, over the same segment and
+from the same pre-state (the canvas side measuring its exposure through the
+prefix-τ, the reservoir side as `τ(l) · Δs/r` — two quadratures of the same
+bilinear form, which agree texel for paired texel), so with `add = 0` total height
+(canvas + tool) is conserved up to resampling error, whatever the segment length.
 
 *The pen-up.* A stroke stops with the tip still in contact and the transfer still
 in flight. Everywhere else on the trail a point sees the whole footprint pass over
@@ -506,12 +555,19 @@ stored zero every pass paid for. Gloss is now a **uniform property of the paint*
 
 *Determinism* — a stroke is a pure function of `base` + the `StrokeRecord`, so
 replay and `preview == committed` hold and the log stays compact: only path +
-params are stored, never per-segment data. *Perf* — two footprint-sized
-dispatches per segment plus a reservoir-sized one per pickup, inside one pass; a
-live stroke re-renders only its tail, resuming the reservoir from the frozen
-head. What remains is per-segment dispatch overhead: a few hundred segments each
-costing four small serialized dispatches dominates a move. Batching the
-independent ones is the next win. *Paint never dries* — every texel stays as
+params are stored, never per-segment data. Note that the wick's cadence is keyed
+on **absolute arc length**, not accumulated across the loop, precisely so it
+carries no state across a range boundary: a live tail re-rendered from a span
+wicks a stretch of stroke identically to the commit that replaces it.
+*Perf* — one footprint-sized dispatch per segment plus the exchange (which
+carries the snapshot) and the bake, inside one pass; a live stroke re-renders only
+its tail, resuming the reservoir from the frozen head. What remains is per-segment
+dispatch overhead: a few hundred segments each costing four small serialized
+dispatches dominates a move, and the reservoir-side passes are sized by
+`BRUSH_RES` rather than by the tip, so a *small* tip pays them most often. Mapping
+the canvas into lateral × longitudinal stroke space, where the lateral rows
+decouple and a workgroup can march many steps in shared memory without a barrier,
+is the next structural win. *Paint never dries* — every texel stays as
 workable as the moment it was laid, which is what lets there be no wetness state
 at all; to glaze over "dry" paint the user adds a **new document layer**, which
 composites as if dry.

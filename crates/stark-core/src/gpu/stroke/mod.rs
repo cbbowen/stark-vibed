@@ -97,21 +97,27 @@ const MAX_STAMPS: usize = 4096;
 /// while the canvas was stripped every segment — and the lag between the two is what
 /// left a stroke's last footprint short of paint (`dynamics.wesl`).
 ///
-/// **The loop is first order in this constant, and nothing here is free.** Measured on
-/// `golden_drained_brush_length_independent` — a tip that runs dry and then *carries*
-/// paint 400px into view, so every visible pixel arrived through the reservoir and the
-/// transport error has nowhere to hide — against a reference at 0.03125:
+/// **Nothing here is free.** Measured on `golden_drained_brush_length_independent` — a
+/// tip that runs dry and then *carries* paint 400px into view, so every visible pixel
+/// arrived through the reservoir and the transport error has nowhere to hide — against
+/// a reference at 0.03125, and on the green channel (the one red paint moves furthest).
+/// The `sliding` column is what ships; `pair` is the closed-pair kernel it replaced, and
+/// is kept because the argument below is about the difference between them:
 ///
 /// ```text
-///   step     error vs reference     length-dependence     order
-///   1.0        93 max / 49.7 rms      15.8 max / 3.69
-///   0.5        51 max / 23.2 rms       8.0 max / 2.27      1.10
-///   0.25       24 max / 10.1 rms       3.6 max / 0.82      1.20
-///   0.125      13 max /  5.3 rms       1.6 max / 0.34      0.94
-///   0.0625      8 max /  2.7 rms       1.6 max / 0.28      0.96
+///           error vs reference          length-dependence
+///   step     pair          sliding      pair         sliding
+///   1.0      50 / 25.77    31 / 8.50    15 / 6.57    16 / 4.48
+///   0.5      24 / 10.69    12 / 2.57     8 / 3.22     7 / 1.58
+///   0.25     12 /  4.31     7 / 1.26     4 / 1.12     4 / 0.85
+///   0.125     7 /  2.38     6 / 1.21     2 / 0.53     2 / 0.57
 /// ```
 ///
-/// Clean first order, no knee to sit on. The second column is what makes it a bug and
+/// (max / rms levels. The two kernels converge to the *same* answer — their references
+/// differ by 2 max / 0.49 rms, which is the 8-bit floor — so the sliding form is a
+/// refinement of the pair, not a different brush.)
+///
+/// The second column pair is what makes it a bug and
 /// not a tolerance: the flattener bisects, so a span's segment length depends on the
 /// *whole path's* length, and the same visible stretch of stroke therefore renders
 /// differently depending on where the pen went afterwards. The error prints as one
@@ -178,22 +184,71 @@ const MAX_STAMPS: usize = 4096;
 /// from the pair model, whose `K → ∞` limit is exactly the sliding kernel below
 /// (`keep` runs 0.503 → 0.076 for the smear brush as K goes 1 → ∞).
 ///
-/// So the error is not in the kernel at all. It is in the two mean-field
-/// approximations either side of it — `bake` gives the canvas a reservoir frozen at the
-/// segment's entry, and `exchange` gives the tool a canvas frozen at the same instant —
-/// and those are bounded by the segment length and nothing else. Which is what this
-/// constant is.
+/// So the error is not in the kernel at all, *while the kernel is a closed pair*. It is
+/// in the two mean-field approximations either side of it — `bake` gives the canvas a
+/// reservoir frozen at the segment's entry, and `exchange` gives the tool a canvas
+/// frozen at the same instant — and those are bounded by the segment length and nothing
+/// else. Which is what this constant is.
 ///
-/// The one thing that does help is replacing the closed pair with a **sliding** kernel
-/// — `keep = exp(−k_lift·e)` rather than `1 − k_lift·w(e)`, on the grounds that a canvas
-/// point does not stay under one reservoir cell for a segment but slides through a
-/// stream of them, so the pair's saturation at `k_lift/s` is modelling a coupling that
-/// is not there. It converges to the same answer and is ~2.5× more accurate at every
-/// step. It also gives up the column-stochasticity above — the two sides' shares stop
-/// summing to one, which is the 39%-of-height-vanishing story in `dynamics.wesl` — so
-/// it needs a conserving formulation (bake the *flux*, not the load) before it can
-/// land, and it is not made here.
+/// **What the theorem really argues is for leaving the closed pair**, and that is what
+/// `dynamics.wesl::exchange_at` now does: a **sliding** kernel, `keep = exp(−k_lift·e)`
+/// and `dep = 1 − exp(−k_dep·e)`, on the grounds that a canvas point does not stay under
+/// one reservoir cell for a segment but slides through a stream of them, each pairing
+/// lasting an instant — so the pair's saturation at `k_lift/s` is modelling a coupling
+/// that is not there. Worth 2–4× at every step in the table above.
+///
+/// It was recorded here as blocked: the sliding form "gives up the column-stochasticity
+/// … so it needs a conserving formulation (bake the *flux*, not the load) before it can
+/// land". **That reading was too pessimistic, in two separate ways.** The shares still
+/// sum to one identically — `keep + (1−keep)` is a tautology whatever `keep` is, and the
+/// tool retains exactly the `1 − dep` the canvas does not receive — so the
+/// 39%-of-height failure in `dynamics.wesl`'s header, which came of the two sides
+/// solving *different equations*, cannot recur. And each direction balances in the
+/// aggregate on its own, with no flux bookkeeping at all: integrate the canvas's gain
+/// `∫k_dep·τ(x−p)·R₀(x−p)·exp(−k_dep·τ(x−p)·p)dp` over the canvas, substitute
+/// `u = x−p`, and what comes back is exactly `∫R₀(u)(1−exp(−k_dep·τ(u)·lr))du` — the
+/// tool's loss, to the last term. The lift direction telescopes the same way under
+/// `q = P(1)−P(u)`. The derivation sits on `exchange_at`.
+///
+/// What *is* left of the concern: the two sides evaluate their exponentials at different
+/// **quadratures** of the same exposure (the canvas differences the prefix-τ, the tool
+/// takes `τ(u)·lr`), and an exponential that saturates harder turns the same small
+/// quadrature disagreement into a larger height disagreement. Real, and it measured as
+/// nothing — on the two conservation tests in `tests/dynamics.rs`, the worst lightening
+/// of a smeared field goes 50 → 51 levels against a bound of 60, and a 240-sample
+/// zig-zag smear's ink growth goes 0.97940 → 0.97938 against a bound of 1.0.
+///
+/// **The gain is banked as accuracy rather than spent as step size**, deliberately.
+/// Sliding at 0.25 would halve the segment count and still beat the shipped pair kernel
+/// on absolute error (1.26 vs 2.38 rms) — but its length-dependence, 4 max / 0.85 rms,
+/// is the row that was already weighed and rejected once, when the pair kernel sat at
+/// 0.25. That is the column a user actually sees, so the answer has not changed.
+/// Spending it later is one constant, and the table above is the price list.
 const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
+/// How far the tip travels between `wick` passes, in radii (§6.2).
+///
+/// **The wick keeps a cadence of its own, decoupled from the segment cadence**, and
+/// this is it. It used to run once per segment and absorb whatever travel that was by
+/// widening the flux's reach — which is well founded about variance and badly
+/// conditioned in practice, because a four-point stencil at an integer distance `d`
+/// couples only cells of the same parity in `d`. At the reach of exactly 2 that
+/// `MAX_EXCHANGE_TRAVEL` produces, the grid's two sublattices decouple entirely: the
+/// checkerboard mode has eigenvalue 1 and never decays, and the cell keeps none of its
+/// own value. Every brush relaxed to the travel cap ran there. See `dynamics.wesl::wick`
+/// for the measured eigenvalues across the range.
+///
+/// The value is not a tolerance, it is the step one stencil can carry: the shader's
+/// separable `[w, 1−2w, w]²` realises `σ² = 2w` per axis against a target of
+/// `0.5 · WICK_RATE · lr`, so `w = 0.25 · WICK_RATE · lr`, and `w = 0.25` — where the
+/// checkerboard eigenvalue `(1 − 4w)²` reaches zero — is `lr = 1 / WICK_RATE`. **It must
+/// track `dynamics.wesl`'s `WICK_RATE`**, which is 4.
+///
+/// Because variance adds under composition, a stroke gets the same total smoothing
+/// whatever the segmentation, and the pass now costs `travel / quantum` dispatches
+/// rather than one per segment — fewer wherever the loop is expensive (a tight brush
+/// cuts segments at 0.125 radii, so half of them skip the pass) and more only where
+/// segments are long and therefore few.
+const WICK_TRAVEL_QUANTUM: f32 = 0.25;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
 ///

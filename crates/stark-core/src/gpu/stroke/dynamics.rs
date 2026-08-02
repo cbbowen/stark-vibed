@@ -25,7 +25,7 @@ use super::segments::{
 use super::swept::{TileInstance, ViewUniform};
 use super::{
     BAKE_FORMAT, BAKE_RES, BRUSH_RES, ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene,
-    StrokeSpans, TAU_PER_PASS, ToolState, flatten_tolerance,
+    StrokeSpans, TAU_PER_PASS, ToolState, WICK_TRAVEL_QUANTUM, flatten_tolerance,
 };
 
 /// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
@@ -36,18 +36,26 @@ struct SliceUniform {
 }
 
 /// One segment of the sequential swept-exchange loop (§6.2): its
-/// `bake`, `exchange`, `snapshot` and `deposit` dispatches. `slot` is the 128-byte
-/// `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as a pure function of
-/// the `StrokeRecord`, so replay is deterministic.
+/// `wick`, `bake`, `exchange` (which carries the snapshot) and `deposit` dispatches.
+/// `slot` is the 128-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
+/// a pure function of the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
     slot: [f32; 32],
-    /// Workgroup counts for the segment's `snapshot`/`deposit` dispatches: the
-    /// segment's own coverage box rather than the piece-wide worst-case square, so an
-    /// axis-aligned sweep pays for the ~4·r² texels its footprint can reach instead
-    /// of the ~10·r² a diagonal one might have needed.
+    /// Workgroup counts for the segment's footprint work — the `deposit`, and the
+    /// `snapshot` that rides in `exchange`'s grid. The segment's own coverage box
+    /// rather than the piece-wide worst-case square, so an axis-aligned sweep pays for
+    /// the ~4·r² texels its footprint can reach instead of the ~10·r² a diagonal one
+    /// might have needed.
     groups: (u32, u32),
-    /// Workgroup counts for `exchange`, which covers the reservoir instead.
+    /// Workgroup counts for the reservoir passes (`wick`, and `exchange`'s own half).
+    /// `exchange` is dispatched over these *plus* [`Self::groups`] on x, since the
+    /// snapshot shares its grid.
     exchange_groups: (u32, u32),
+    /// How many `wick` passes fall during this segment
+    /// ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)). Usually 0 or 1 — the wick
+    /// keeps its own cadence, so a segment shorter than the quantum often skips it
+    /// entirely and a long one pays for several.
+    wick_steps: u32,
 }
 
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
@@ -59,7 +67,13 @@ pub(super) struct DynamicsKit {
     pub(super) composite_view_bgl: wgpu::BindGroupLayout,
     pub(super) composite_tile_bgl: wgpu::BindGroupLayout,
     pub(super) composite_sampler: wgpu::Sampler,
-    // The stamp-loop dispatches (one compute shader, four entry points).
+    // The stamp-loop dispatches (one compute shader, several entry points).
+    /// The footprint copy that gives the `deposit`/`settle` something to read while
+    /// they storage-write the region. Dispatched on its own **only for the pen-up**: a
+    /// segment's snapshot rides in the tail of its `exchange` grid instead, since it
+    /// depends on nothing that pass writes (`dynamics.wesl::exchange`). The settle
+    /// cannot do the same, because it reads the snapshot rather than merely sharing a
+    /// consumer with it.
     pub(super) snapshot_pipeline: wgpu::ComputePipeline,
     pub(super) snapshot_bgl: wgpu::BindGroupLayout,
     /// The tool's own side of one segment's transfer — the complement of every share
@@ -618,6 +632,8 @@ impl<'a> DynamicsRun<'a> {
                         params(),
                         tex(1, &region_color),
                         tex(2, &region_aux),
+                        tex(3, &under_color),
+                        tex(4, &under_aux),
                         samp(),
                         tex(6, &self.cov),
                         tex(7, &self.brush_color[i]),
@@ -693,9 +709,9 @@ impl<'a> DynamicsRun<'a> {
             })
             .collect();
 
-        // ---- The loop: bake → exchange → snapshot → deposit per segment, in stroke
-        // order. One compute pass; the implicit barriers between dispatches give the
-        // sequential semantics, and usage scopes are per-dispatch, so the region
+        // ---- The loop: wick → bake → exchange (+ snapshot) → deposit per segment, in
+        // stroke order. One compute pass; the implicit barriers between dispatches give
+        // the sequential semantics, and usage scopes are per-dispatch, so the region
         // may be sampled by one dispatch and storage-written by the next.
         //
         // `exchange` comes *before* `deposit` and not after: the two are the two halves
@@ -724,11 +740,18 @@ impl<'a> DynamicsRun<'a> {
                 // it. Ahead of *both* halves of the transfer, so `bake` and `exchange`
                 // still see one another's entry state and their shares still add up
                 // (`dynamics.wesl::wick`). Reads `cur` and writes the other half, like
-                // every reservoir pass, so a segment cycles the ping-pong twice.
-                cpass.set_pipeline(&kit.wick_pipeline);
-                cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
-                cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
-                cur = 1 - cur;
+                // every reservoir pass, so each pass cycles the ping-pong once.
+                //
+                // Zero, one or several passes: the wick runs on its own travel cadence
+                // ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)), so a segment
+                // shorter than the quantum usually skips it and a long one pays off
+                // every boundary it crossed.
+                for _ in 0..d.wick_steps {
+                    cpass.set_pipeline(&kit.wick_pipeline);
+                    cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
+                    cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
+                    cur = 1 - cur;
+                }
                 // Bake this segment's swept reservoir prefix next — it folds in the
                 // tip's current orientation as well as the reservoir state.
                 cpass.set_pipeline(&kit.bake_pipeline);
@@ -741,12 +764,20 @@ impl<'a> DynamicsRun<'a> {
                 // as the segment found it. Reads `cur` and writes the other half, so
                 // the next segment's bake sees a tool that has actually travelled and
                 // reloaded.
+                //
+                // The footprint `snapshot` rides in the tail of this same grid: it
+                // depends on nothing the exchange writes and the deposit needs both, so
+                // the barrier that used to sit between them bought no ordering. Hence
+                // the widened x — reservoir groups first, footprint groups after — and
+                // a y tall enough for the taller of the two
+                // (`dynamics.wesl::exchange`).
                 cpass.set_pipeline(&kit.exchange_pipeline);
                 cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
-                cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
-                cpass.set_pipeline(&kit.snapshot_pipeline);
-                cpass.set_bind_group(0, &snapshot_bg, &[off]);
-                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                cpass.dispatch_workgroups(
+                    d.exchange_groups.0 + d.groups.0,
+                    d.exchange_groups.1.max(d.groups.1),
+                    1,
+                );
                 cpass.set_pipeline(&kit.deposit_pipeline);
                 cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
                 cpass.set_bind_group(1, prefix_bg, &[]);
@@ -1012,9 +1043,25 @@ fn dynamics_plan(
         // over the segment — second order, where either endpoint would be first.
         let mid =
             crate::path::arc_at(s.start, s.dir, s.curvature, s.length * 0.5).0 - region_origin;
+        // The `wick` passes falling during this segment. Counted off the segment's own
+        // **absolute** arc length rather than by accumulating a debt across the loop,
+        // and that is the whole reason it is written this way: a live tail re-renders
+        // from a span boundary, so anything carried between segments would have to be
+        // threaded through [`ToolState`] and would still have to agree with the commit
+        // that eventually replaces it. Keyed on the arc, the count is a pure function of
+        // the segment, so every render of a stretch of stroke wicks it identically
+        // (§6.2, live == committed).
+        //
+        // A segment's own radius sets its quantum, so a stroke whose radius varies can
+        // land a boundary twice or skip one where the pitch changes. That is a ±1 on a
+        // *smoothing* cadence, and it stays deterministic, which is the property that
+        // matters.
+        let quantum = WICK_TRAVEL_QUANTUM * s.radius;
+        let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
         plan.push(LoopDispatch {
             groups: (w.div_ceil(8), h.div_ceil(8)),
             exchange_groups: (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(8)),
+            wick_steps: wick_steps.max(0.0) as u32,
             slot: [
                 p.x,
                 p.y,
@@ -1055,7 +1102,10 @@ fn dynamics_plan(
                 nfreq[0],
                 nfreq[1],
                 nfreq[2],
-                nfreq[3],
+                // f.w: the travel one `wick` step carries. It rides here because the
+                // colour-dynamics lookup this vector is otherwise for reads only .xyz
+                // (`noise.wesl::color_jitter`), and `nfreq[3]` was the spare.
+                WICK_TRAVEL_QUANTUM,
                 namp[0],
                 namp[1],
                 namp[2],
@@ -1091,6 +1141,8 @@ fn dynamics_plan(
         plan.push(LoopDispatch {
             groups: (w.div_ceil(8), h.div_ceil(8)),
             exchange_groups: (0, 0), // the tool is not written back; nothing reads it
+            // Nor is there travel to wick over: a pen-up is a break of contact.
+            wick_steps: 0,
             slot: [
                 p.x,
                 p.y,
@@ -1120,7 +1172,10 @@ fn dynamics_plan(
                 nfreq[0],
                 nfreq[1],
                 nfreq[2],
-                nfreq[3],
+                // f.w: the travel one `wick` step carries. It rides here because the
+                // colour-dynamics lookup this vector is otherwise for reads only .xyz
+                // (`noise.wesl::color_jitter`), and `nfreq[3]` was the spare.
+                WICK_TRAVEL_QUANTUM,
                 namp[0],
                 namp[1],
                 namp[2],
@@ -1403,6 +1458,12 @@ pub(super) fn build_dynamics_kit(
             params_entry,
             ctex(1, true),
             ctex(2, true),
+            // The footprint snapshot's targets: the segment's `snapshot` runs from the
+            // tail of the `exchange` grid rather than from a dispatch of its own
+            // (`dynamics.wesl::exchange`), so its writes belong to this layout. The
+            // `wick`, which shares this layout, leaves them alone.
+            stor(3),
+            stor(4),
             csamp,
             ctex(6, true),
             ctex(7, false),

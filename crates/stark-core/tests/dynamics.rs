@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::{GestureCommand, InputSample, ViewCommand};
+use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, BrushParams, BrushShape, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
@@ -738,6 +738,91 @@ fn a_conservative_smear_does_not_destroy_paint_either() {
         worst < 60,
         "a conservative smear lightened the field it was smearing by {worst} levels —          the two halves of the exchange are not taking complementary shares of it"
     );
+}
+
+/// The same visible stretch of stroke, painted with five different tails, must come
+/// out the same however the flattener happened to cut it.
+///
+/// This is `golden_drained_brush_length_independent` asked as a *number* rather than as
+/// five blessed images. The golden pins the artifact but cannot say how far off it is,
+/// and the whole story on [`RESERVOIR_EXCHANGE_STEP`](stark_core) is a convergence
+/// table — so the quantity it converges in belongs in the suite, not just in a comment.
+///
+/// The five strokes are collinear, so the *geometry* of the visible stretch is
+/// identical in all five; the brush runs dry (`drain = 0.005`, so 200px) a whole tip
+/// before entering view, so every visible pixel arrived through the reservoir. All that
+/// differs is where the flattener's bisection put the segment boundaries, which depends
+/// on the whole path's length. Any spread at all is the loop's first-order splitting
+/// error printing as a delay line ringing at the segment cadence.
+///
+/// The bound is set above the 8-bit quantization floor the step was converged to and
+/// below the ~6.6 levels the step before it produced, so it fails on a regression of
+/// the transport accuracy without firing on rounding.
+#[test]
+fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let brush = BrushParams {
+        radius: 80.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        drain: 0.005,
+        dynamics: BrushDynamics {
+            add: 1.0,
+            lift: 0.95,
+            deposit: 0.95,
+            ..BrushDynamics::default()
+        },
+        ..BrushParams::default()
+    };
+    let renders: Vec<stark_core::RgbaImage> = [200.0f32, 300.0, 400.0, 500.0, 600.0]
+        .into_iter()
+        .map(|x| {
+            stroke_with(
+                &mut engine,
+                brush,
+                &[
+                    Vec2::new(-400.0, 0.0),
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(x, 0.0),
+                ],
+            );
+            let img = engine.render_to_image();
+            engine.process(DocCommand::Undo);
+            img
+        })
+        .collect();
+
+    let (worst, rms) = cut_spread(&renders);
+    eprintln!("length-independence: {worst} levels max, {rms:.2} rms");
+    assert!(
+        worst <= 4,
+        "the same visible stretch of stroke came out {worst} levels apart ({rms:.2} rms)          depending on where the pen went afterwards — the exchange's transport error is          tracking the segment cadence"
+    );
+}
+
+/// Worst and rms per-pixel spread across renders that are supposed to be identical.
+///
+/// Measured on green: the paint is red over a light grey ground, so green is the
+/// channel it moves furthest. No high-pass is needed the way there is when judging one
+/// image by eye — these five share a geometry, so the stroke's own gradient cancels in
+/// the spread and what is left is only the disagreement.
+fn cut_spread(imgs: &[stark_core::RgbaImage]) -> (u8, f64) {
+    let (w, h) = (imgs[0].width, imgs[0].height);
+    let mut worst = 0u8;
+    let mut sq = 0.0f64;
+    for y in 0..h {
+        for x in 0..w {
+            let (lo, hi) = imgs
+                .iter()
+                .map(|im| im.pixel(x, y)[1])
+                .fold((255u8, 0u8), |(lo, hi), g| (lo.min(g), hi.max(g)));
+            let d = hi - lo;
+            worst = worst.max(d);
+            sq += (d as f64) * (d as f64);
+        }
+    }
+    (worst, (sq / (w * h) as f64).sqrt())
 }
 
 /// Mean darkness over the image: with a fixed palette this rises as paint thickens,
