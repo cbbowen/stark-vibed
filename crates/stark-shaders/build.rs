@@ -56,6 +56,9 @@ fn main() {
     compiler.build_artifact(&"package::mask_region".parse().unwrap(), "mask_region");
     compiler.build_artifact(&"package::overlay".parse().unwrap(), "overlay");
 
+    // Drawing guides: the perspective-grid overlay, pass D (§20.4).
+    compiler.build_artifact(&"package::guides".parse().unwrap(), "guides");
+
     // Every module by name, not just the directory. A directory dependency is a
     // trap here: `generate_mixbox_poly` *writes into* `src/shaders`, so the
     // directory's own fingerprint is entangled with this script's output, and cargo

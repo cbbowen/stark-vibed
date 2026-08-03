@@ -4,6 +4,7 @@
 pub mod brush;
 pub mod color;
 pub mod frame;
+pub mod guides;
 pub mod layer;
 pub mod lighting;
 pub mod navigator;
@@ -15,6 +16,7 @@ pub mod transform;
 pub use brush::BrushPanel;
 pub use color::ColorPanel;
 pub use frame::{FrameBar, FrameOverlay};
+pub use guides::GuidesPanel;
 pub use layer::LayerPanel;
 pub use lighting::LightingPanel;
 pub use navigator::NavigatorPanel;

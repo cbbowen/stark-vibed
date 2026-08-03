@@ -90,3 +90,9 @@ pub fn mask_region() -> &'static str {
 pub fn overlay() -> &'static str {
     include_wesl!("overlay")
 }
+
+/// WGSL drawing-guides overlay: the perspective grid, drawn over everything —
+/// §20.4.
+pub fn guides() -> &'static str {
+    include_wesl!("guides")
+}

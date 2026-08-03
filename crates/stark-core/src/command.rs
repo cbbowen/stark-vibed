@@ -339,6 +339,18 @@ pub enum ViewCommand {
     /// a preference about what you look at, not a fact about the drawing.
     SetShowPeerSelections(bool),
 
+    /// Replace the perspective-grid drawing guide (§20) — the whole state at
+    /// once, the same read-modify-commit shape as [`SetMediaParams`](Self::SetMediaParams):
+    /// the panel reads the current guide off the projection, adjusts a field,
+    /// and sends it back, so the engine never needs one command per slider.
+    ///
+    /// View state *for now*: a guide is an aid for the hand holding the pen,
+    /// per-client like the pan and the zoom. If guides later become part of
+    /// what a document carries, that is a new `DocCommand` and an action —
+    /// this command would remain as the in-flight preview half, the bargain
+    /// [`PreviewMatteRect`](Self::PreviewMatteRect) strikes.
+    SetGuide(crate::guides::PerspectiveGuide),
+
     /// Show a matte at `min..max` **without logging it** — the in-flight half of a
     /// frame-handle drag (§15.7). `None` drops the preview.
     ///

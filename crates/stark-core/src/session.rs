@@ -219,6 +219,9 @@ pub struct Session {
     /// on every frame you look at it, and most of the time the answer to "what is
     /// that line?" should be "the one I drew".
     pub show_peer_selections: bool,
+    /// The perspective-grid drawing guide (§20). View state for now — an aid
+    /// for the hand holding the pen, per-client like the pan and the zoom.
+    pub guide: crate::guides::PerspectiveGuide,
 
     // --- the published half (§17.4) -------------------------
     //
@@ -268,6 +271,7 @@ impl Session {
             shape_action: ShapeAction::default(),
             selection_feather: 0.0,
             show_peer_selections: false,
+            guide: crate::guides::PerspectiveGuide::default(),
             name: String::new(),
             name_chosen: false,
             cursor: None,

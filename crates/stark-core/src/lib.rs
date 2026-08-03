@@ -49,6 +49,7 @@ pub mod engine;
 pub mod error;
 pub mod geom;
 pub mod gpu;
+pub mod guides;
 pub mod image;
 pub mod io;
 pub mod noise;
@@ -72,6 +73,7 @@ pub use gpu::{
     Compositor, CompositorPipeline, EnvironmentId, GpuContext, MediaParams, Offscreen,
     StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
 };
+pub use guides::{GuideScene, PerspectiveGuide};
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};
 pub use peer::{LiveGesture, Peer, PeerFrame, Peers};

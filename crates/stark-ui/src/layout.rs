@@ -13,7 +13,7 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 
 use crate::panels::{
-    BrushPanel, ColorPanel, LayerPanel, LightingPanel, NavigatorPanel, SelectPanel,
+    BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, NavigatorPanel, SelectPanel,
 };
 use crate::platform::sleep_ms;
 use crate::state::AppState;
@@ -27,6 +27,7 @@ pub enum PanelId {
     Brush,
     Select,
     Layers,
+    Guides,
     Lighting,
 }
 
@@ -34,18 +35,20 @@ impl PanelId {
     /// Every panel, in the default top-to-bottom order. The navigator leads: it is
     /// the only one that says where you *are* rather than what the next stroke will
     /// be, and it is read at a glance rather than operated.
-    pub const ALL: [PanelId; 6] = [
+    pub const ALL: [PanelId; 7] = [
         PanelId::Navigator,
         PanelId::Color,
         PanelId::Brush,
         PanelId::Select,
         PanelId::Layers,
+        PanelId::Guides,
         PanelId::Lighting,
     ];
 
-    /// The panels that start closed: lighting is a scene-setup control, not something
-    /// touched mid-painting, so it stays out of the stack until asked for.
-    pub const CLOSED_BY_DEFAULT: [PanelId; 1] = [PanelId::Lighting];
+    /// The panels that start closed: lighting is a scene-setup control, and a guide
+    /// is reached for when a drawing calls for one — neither is touched mid-painting,
+    /// so both stay out of the stack until asked for.
+    pub const CLOSED_BY_DEFAULT: [PanelId; 2] = [PanelId::Guides, PanelId::Lighting];
 
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
@@ -55,6 +58,7 @@ impl PanelId {
             PanelId::Brush => "Brush",
             PanelId::Select => "Select",
             PanelId::Layers => "Layers",
+            PanelId::Guides => "Drawing Guides",
             PanelId::Lighting => "Lighting",
         }
     }
@@ -267,6 +271,7 @@ pub fn PanelStack() -> Element {
                             PanelId::Color => rsx! { ColorPanel {} },
                             PanelId::Brush => rsx! { BrushPanel {} },
                             PanelId::Select => rsx! { SelectPanel {} },
+                            PanelId::Guides => rsx! { GuidesPanel {} },
                             PanelId::Lighting => rsx! { LightingPanel {} },
                             PanelId::Layers => rsx! { LayerPanel {} },
                         }

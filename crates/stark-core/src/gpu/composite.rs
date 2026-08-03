@@ -99,6 +99,49 @@ struct MatteInstance {
     _pad: [f32; 3],
 }
 
+/// Mirrors `Guide` in `guides.wesl` (240 bytes) — pass D, the drawing guides
+/// (§20.4).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct GuideUniform {
+    inv: [f32; 4],        // screen→canvas mat2, column-major
+    org: [f32; 4],        // canvas pos of screen (0,0), zoom, focal
+    cov: [f32; 4],        // center of view, fan step, master opacity
+    dirs: [[f32; 4]; 3],  // world axes in camera space + per-axis fan alpha
+    lines: [[f32; 4]; 3], // vanishing lines (unit normal, offset) + valid
+    vps: [[f32; 4]; 3],   // finite vanishing points + valid
+    sps: [[f32; 4]; 3],   // station points + valid
+}
+
+impl GuideUniform {
+    /// Pack the derived guide scene plus this render's view mapping (§20.4).
+    /// Absent elements become a zeroed slot with `valid = 0`, so the shader
+    /// branches on data rather than on pipeline variants.
+    fn pack(scene: &crate::guides::GuideScene, view: ViewTransform) -> Self {
+        let inv = view.inverse_linear();
+        let org = view.screen_to_canvas(crate::geom::Vec2::ZERO);
+        let point = |v: Option<crate::geom::Vec2>| match v {
+            Some(p) => [p.x, p.y, 1.0, 0.0],
+            None => [0.0; 4],
+        };
+        Self {
+            inv: inv.to_cols_array(),
+            org: [org.x, org.y, view.zoom, scene.focal],
+            cov: [scene.center.x, scene.center.y, scene.step, scene.opacity],
+            dirs: std::array::from_fn(|i| {
+                let d = scene.dirs[i];
+                [d.x, d.y, d.z, scene.axis_alpha[i]]
+            }),
+            lines: std::array::from_fn(|i| match scene.lines[i] {
+                Some(l) => [l.x, l.y, l.z, 1.0],
+                None => [0.0; 4],
+            }),
+            vps: std::array::from_fn(|i| point(scene.vps[i])),
+            sps: std::array::from_fn(|i| point(scene.stations[i])),
+        }
+    }
+}
+
 /// A matte layer's draw parameters (§15.4).
 #[derive(Copy, Clone, Debug)]
 pub struct MatteDraw {
@@ -412,6 +455,10 @@ pub struct CompositeScene<'a> {
     /// Leave the substrate out and carry the paint's own alpha to the target, for a
     /// cut-out export.
     pub transparent: bool,
+    /// The drawing guides drawn over everything (§20.4), when the screen has
+    /// them enabled. `None` for anything that is not the screen — chrome, on
+    /// the same argument as `outlines`.
+    pub guide: Option<crate::guides::GuideScene>,
 }
 
 /// Mirrors `Media` in `media_common.wesl` (80 bytes).
@@ -503,6 +550,13 @@ pub struct CompositorPipeline {
     overlay_pipeline: wgpu::RenderPipeline,
     overlay_view_bg: wgpu::BindGroup,
     overlay_tile_bgl: wgpu::BindGroupLayout,
+
+    // Pass D: the drawing guides, drawn over everything (§20.4). One
+    // fullscreen pass off one uniform, so the bind group is target-independent
+    // and lives here rather than per-Compositor.
+    guide_pipeline: wgpu::RenderPipeline,
+    guide_buf: wgpu::Buffer,
+    guide_bg: wgpu::BindGroup,
 
     // Pass B: media/lighting → final target.
     media_pipeline: wgpu::RenderPipeline,
@@ -1034,6 +1088,71 @@ impl CompositorPipeline {
             mapped_at_creation: false,
         });
 
+        // ---- Pass D: the drawing guides (§20.4). ----
+        let guide_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stark guides"),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::guides().into()),
+        });
+        let guide_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark guides bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let guide_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("stark guides layout"),
+            bind_group_layouts: &[Some(&guide_bgl)],
+            immediate_size: 0,
+        });
+        let guide_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark guides pipeline"),
+            layout: Some(&guide_layout),
+            vertex: wgpu::VertexState {
+                module: &guide_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &guide_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    // The shader accumulates its elements premultiplied, so
+                    // the pass composites `src + dst·(1 − src.a)`.
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let guide_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark guides uniform"),
+            size: std::mem::size_of::<GuideUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let guide_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark guides bg"),
+            layout: &guide_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: guide_buf.as_entire_binding(),
+            }],
+        });
+
         Self {
             ctx: ctx.clone(),
             composite_pipeline,
@@ -1047,6 +1166,9 @@ impl CompositorPipeline {
             overlay_pipeline,
             overlay_view_bg,
             overlay_tile_bgl,
+            guide_pipeline,
+            guide_buf,
+            guide_bg,
             media_pipeline,
             media_buf,
             media_bgl,
@@ -1646,6 +1768,7 @@ impl Compositor {
             groups,
             outlines,
             transparent,
+            guide,
         } = scene;
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
@@ -1820,6 +1943,37 @@ impl Compositor {
                 pass.set_bind_group(1, bg, &[]);
                 pass.draw(0..4, idx..idx + 1);
             }
+        }
+
+        // Pass D: the drawing guides, over the lit image and the outlines —
+        // the perspective grid is chrome the whole canvas is read *through*,
+        // so it is the topmost thing drawn (§20.4). One fullscreen triangle
+        // off one uniform; everything it shows is an analytic distance field.
+        if let Some(scene) = guide {
+            p.ctx.queue.write_buffer(
+                &p.guide_buf,
+                0,
+                bytemuck::bytes_of(&GuideUniform::pack(&scene, view)),
+            );
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark guides pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&p.guide_pipeline);
+            pass.set_bind_group(0, &p.guide_bg, &[]);
+            pass.draw(0..3, 0..1);
         }
 
         p.ctx.queue.submit([encoder.finish()]);
