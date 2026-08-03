@@ -458,6 +458,7 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
             lift: 1.0,
             deposit: 0.0,
             charge: 0.0,
+            bleed: 0.0,
         },
         ..BrushParams::default()
     };

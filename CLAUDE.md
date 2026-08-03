@@ -135,8 +135,9 @@ The workspace is on **nightly** for exactly one reason: `history`'s
   compensating fudge constants.
 - **Do not add inert scaffolding.** If a field, slider or shader hook cannot yet
   change a pixel, leave it out and add it with the implementation. `tooth`,
-  `drag`, `bleed`, `wetness` and the `wet` channel were all deleted rather than
-  carried; each is a local change to reintroduce when built.
+  `drag`, `wetness` and the `wet` channel were all deleted rather than
+  carried; each is a local change to reintroduce when built — `bleed` has since
+  been rebuilt that way as the real lateral-diffusion axis.
 - **Rule out a class rather than enumerate its instances.** Where a guarantee can
   be made structural — ownership derived from the action id, a representation
   that cannot express the wrong thing — it is, instead of a check a call site

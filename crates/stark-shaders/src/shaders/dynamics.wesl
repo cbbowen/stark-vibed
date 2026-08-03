@@ -110,7 +110,12 @@ struct Stamp {
     // g: per colour-channel noise amplitude .xyz (all 0 = off); arc length at
     //    the segment start (canvas px) in .w.
     g: vec4<f32>,
-    // h: per-stroke noise lookup translation .xy; .zw unused.
+    // h: per-stroke noise lookup translation .xy; .z unused; λ_bleed — the lateral
+    //    canvas diffusion rate (≤ 0, like the two λs in `b`) — in .w. Nonzero ONLY
+    //    on a dedicated **bleed slot** (§6.2): a quad the host emits per crossing of
+    //    the bleed cadence, whose sweep IS the firing's travel window and whose
+    //    vertical rates and source are all zero. Real segments carry 0 here and take
+    //    the plain-deposit path bit-for-bit.
     h: vec4<f32>,
 }
 
@@ -1024,6 +1029,89 @@ fn exchange(
 
 // ---- 4. Deposit: the swept exchange over one segment. ----------------------------
 
+// The `bleed` axis (§6.2): the paint already on the canvas diffusing laterally under
+// the tip. One share of a texel's difference from each neighbour crosses per
+// **firing**, keyed on the pair's swept exposure over the firing's travel window —
+// `1 − exp(−k_bleed·e)`, the same saturating form as every other rate, so
+// consecutive windows compose to first order and a texel the tip never covers never
+// moves.
+//
+// **The bleed runs on dedicated slots, not on the painting segments — the wick's
+// cadence, realised as geometry.** Real slow input is fitted at a control point per
+// pointer sample (a measured repro: 177 knots over 68 px, segments of 0.39 px), and
+// at that cut a per-segment bleed is broken twice over: the flux
+// `share·w·Δ ≈ 1e-4` sits under the f16 ULP of the heights it edits, so stores
+// either snap it away or ratchet a whole ULP into a directional drift (20 levels of
+// ghost at 176 spans against 2 at 44); and the per-texel exposure `dpre` is a
+// prefix difference over 3e-4 radii — cancellation noise, whose arbitrary sign
+// draws crescents of misclassified texels through the footprint. So the host emits
+// one **bleed slot** per crossing of `BLEED_TRAVEL_QUANTUM` of absolute arc
+// (`stroke::dynamics_plan`): a straight quad whose sweep IS the firing's travel
+// window — the chord over the last quantum of path — with every vertical rate and
+// the source zeroed, and λ_bleed alone nonzero. This dispatch then needs nothing
+// special: the slot's own `dpre`, over half a radius of travel, is the window's
+// exposure and is numerically healthy; participation, pairing and the no-flux wall
+// all sit at the window-sweep's rim, where the weight fades to zero smoothly.
+// Keyed on absolute arc, the cadence is a pure function of the record, so every
+// cut of the same path fires identically (§6.2, live == committed) — and painting
+// segments carry λ_bleed = 0, so between firings the canvas takes the no-bleed
+// path bit-for-bit.
+//
+// **Flux form, like the wick**: both threads of a pair compute the same number from
+// the same `under` snapshot — the neighbour's exposure is re-derived from the same
+// uniform, so the same floats — and apply it with opposite signs. The redistribution
+// is internal to the canvas, so it conserves height and optical mass to rounding
+// (not to the bit, as the wick does: the delta rides through this thread's own
+// `keep` multiply and selection lerp below) and needs no entry in the tool's books.
+//
+// `min(w, w_n)` is the pair's mobility, and it carries three boundaries at once:
+// a neighbour outside the sweep has `w_n = 0`, so no paint leaks to a texel whose
+// own thread never writes (which is also why the snapshot's `outside_sweep` skip
+// still covers every texel this reads); the sweep's rim fades the flux out
+// smoothly; and the un-written partner of a pair straddling `e = 0` agrees the
+// flux was zero. The neighbour's selection gates its side the same way the final
+// `sel` lerp gates this one, so a feathered mask scales the pair's flux by both
+// coverages and deselected paint neither gives nor takes (§6.8).
+//
+// **The reach scales with the tip, or the axis is decorative.** A stencil is
+// bounded: one application moves at most `Σshare·d²` texels² of variance, and the
+// per-firing blend saturates at 1, so a 1-texel stencil tops out near σ ≈ 1 px
+// per pass of the tip whatever the rate — imperceptible under any brush big
+// enough to blur with (measured: cranking the knob past its 0.95 λ-clamp changed
+// nothing visible, because nothing past the clamp *can*). So the longest tap is
+// a fixed fraction of the radius, which is what makes `bleed` mean the same
+// *look* at every brush size — the same property the tapers get from being
+// quoted in radii. At full crank a pass of the tip buys σ ≈ 0.3·radius.
+const BLEED_REACH: f32 = 0.25;
+
+// Three tap scales per direction — 1 px, a quarter of the reach, the reach —
+// because a sparse pair of ±d taps alone decouples the grid into d² sublattices
+// (the wick's parity failure, generalized): sub-d texture would ride through a
+// "blur" untouched. The 1 px taps couple every texel to its actual neighbours, so
+// every non-zero frequency strictly decays; the long taps carry the variance; the
+// middle scale fills the response in between. Shares are per tap, 12 taps total:
+// worst-case eigenvalue is `1 − 8·Σshare·w = 1 − w ≥ 0` (Σshare = 1/8), so at
+// full saturation the worst mode is annihilated rather than flipped — the same
+// margin the 5-point form had, spent on reach instead of slack. Total shed is
+// bounded by `4·Σshare·w = w/2`: no segment can overshoot, and positivity of
+// height and mass survives any rate.
+//
+// Per unit of exposure, in the composing regime, the stencil injects
+// `σ² ≈ 2·k_bleed·Σ(share·d²)` texels² per axis; at saturation each firing
+// contributes its capped share and scrubbing keeps buying variance linearly in
+// travel — like a real blender, more passes blur further.
+const BLEED_SHARES = array<f32, 3>(
+    1.0 / 64.0,
+    2.0 / 64.0,
+    5.0 / 64.0,
+);
+const BLEED_OFFS = array<vec2<i32>, 4>(
+    vec2<i32>(1, 0),
+    vec2<i32>(-1, 0),
+    vec2<i32>(0, 1),
+    vec2<i32>(0, -1),
+);
+
 @compute @workgroup_size(8, 8)
 fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let udim = textureDimensions(under_color);
@@ -1099,12 +1187,84 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tool_op = tool_m / max(tool_h, EPS);
     let tool_lat = latm * inv_pre / max(tool_m, EPS);
 
+    // The canvas as this segment found it — or, when the brush bleeds, that state
+    // relaxed towards its neighbours first (see `BLEED_REACH` above). Ahead of the
+    // lift rather than behind it: the flux's stability bound is a fraction of the
+    // *entering* height, and paint the lift has already taken must not also be shed
+    // sideways. The tool's own half sampled the un-bled region, so the two sides of
+    // the vertical transfer disagree by O(k_bleed·k_lift·e²) — second order, the
+    // same class as the mean-field freeze the loop already carries (`exchange_at`).
+    var h0 = ua.x;
+    var op0 = uc.a;
+    var lat0 = uc.rgb / max(uc.a, EPS);
+    var bled = false;
+    let kb = -st.h.w; // the bleed rate; nonzero only on a dedicated bleed slot
+    if kb > 0.0 {
+        let w_t = 1.0 - exp(-kb * e);
+        // Entering quantities in the mass-weighted form every flux moves (§6.1):
+        // height, optical mass, latent·mass — the same formula both threads of a
+        // pair evaluate, which is what makes the flux antisymmetric.
+        let m0 = uc.a * ua.x;
+        let lm0 = uc.rgb * ua.x;
+        var dh = 0.0;
+        var dm = 0.0;
+        var dlm = vec3<f32>(0.0, 0.0, 0.0);
+        // The tap distances, per BLEED_REACH above. Every thread derives the same
+        // three integers from the same uniform, so a pair at any scale still
+        // computes one number — the antisymmetry the conservation rests on.
+        let reach = max(i32(round(BLEED_REACH * st.b.x)), 1);
+        var dists = array<i32, 3>(1, max(reach / 4, 1), reach);
+        for (var k = 0; k < 3; k = k + 1) {
+            for (var i = 0; i < 4; i = i + 1) {
+                // Clamped into the snapshot rect. A clamped tap lands on the rect's
+                // border, which the margins put provably outside the sweep, so its
+                // exposure — and with it the flux — is exactly zero: a no-flux
+                // wall, like the wick's rim, at every scale.
+                let tn = clamp(
+                    t + BLEED_OFFS[i] * dists[k],
+                    vec2<i32>(0, 0),
+                    vec2<i32>(udim) - vec2<i32>(1, 1),
+                );
+                if all(tn == t) {
+                    continue; // a tiny tip's collapsed scale, or the wall itself
+                }
+                let rtn = vec2<i32>(st.d.xy) + tn;
+                // The neighbour's own exposure, from the same uniform its own thread
+                // reads it — same floats, same verdict, so the pair agrees on its flux.
+                let swn = segment_frame(rtn);
+                var w_n = 0.0;
+                if !outside_sweep(swn) {
+                    let dpn = max(
+                        prefix_at(swn.local.x, swn.local.y, st.d.z)
+                            - prefix_at(swn.local.x - swn.lr, swn.local.y, st.d.z),
+                        0.0,
+                    );
+                    w_n = 1.0 - exp(-kb * dpn * swn.warp);
+                }
+                let seln = textureLoad(sel_mask, min(rtn, mdim - vec2<i32>(1, 1)), 0).r;
+                let c = BLEED_SHARES[k] * min(w_t, w_n) * seln;
+                if c > 0.0 {
+                    let ucn = textureLoad(under_color, tn, 0);
+                    let uan = textureLoad(under_aux, tn, 0);
+                    dh += c * (uan.x - ua.x);
+                    dm += c * (ucn.a * uan.x - m0);
+                    dlm += c * (ucn.rgb * uan.x - lm0);
+                }
+            }
+        }
+        bled = dh != 0.0 || dm != 0.0 || any(dlm != vec3<f32>(0.0, 0.0, 0.0));
+        h0 = ua.x + dh;
+        let m1 = m0 + dm;
+        op0 = m1 / max(h0, EPS);
+        lat0 = (lm0 + dlm) / max(m1, EPS);
+    }
+
     // The lift's removal: height leaves; the remaining paint's latent and per-unit
     // opacity are unchanged — the source fades because its *thickness* drops,
     // never because its alpha is scaled (§6.1).
-    var h = ua.x * ex.keep;
-    var m = uc.a * h;
-    let canvas_lat = uc.rgb / max(uc.a, EPS);
+    var h = h0 * ex.keep;
+    var m = op0 * h;
+    let canvas_lat = lat0;
 
     // The brush's own colour at this texel: the stroke colour offset by the
     // colour-dynamics field, sampled at the same stroke-local (lateral, arc)
@@ -1135,6 +1295,23 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let add_h = st.e.x * drain * ex.add_w;
     let par_h = dep_h + add_h;
     let par_m = tool_op * dep_h + own_op * add_h;
+
+    // A texel this dispatch did not change must not be **re-stored** (§6.2). The
+    // write itself is not neutral: a storage write re-encodes f32 → f16, and a
+    // backend may truncate that conversion toward zero (D3D12's f32→f16 does), so
+    // re-storing an algebraically identical (premult, op, height) walks a channel
+    // down one ULP per rewrite wherever the recompute rounds a hair low — and
+    // `premult = (premult/op)·op` rounds low about half the time for any op ≠ 1.
+    // Iterated over the sub-pixel segments a slow hand is fitted at, that is a
+    // *directional* drift: measured at +28 8-bit levels of ghost over a 177-knot
+    // stroke whose every rate was zero. The guard is semantic, not a value
+    // comparison: `keep = 1` says the lift took nothing (exact — `exp(±0)` is
+    // exactly 1, and any nonzero rate gives `keep < 1`), a zero parcel says
+    // nothing landed, no flux says nothing moved sideways. What remains is the
+    // identity, whose only observable effect is the rounding above.
+    if ex.keep == 1.0 && par_h == 0.0 && par_m == 0.0 && !bled {
+        return;
+    }
     var par_lat = own_lat;
     if par_m > EPS {
         par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
@@ -1341,6 +1518,12 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     par_h *= share;
     par_m *= share;
     par_lm *= share;
+
+    // The deposit's rewrite guard, for the same reason (see there): a settle whose
+    // rates are all zero settles nothing, and must not re-round the texel.
+    if ex.keep == 1.0 && par_h == 0.0 && par_m == 0.0 {
+        return;
+    }
 
     let uc = textureLoad(under_color, t, 0);
     let ua = textureLoad(under_aux, t, 0);

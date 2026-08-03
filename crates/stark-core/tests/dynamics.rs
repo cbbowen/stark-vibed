@@ -304,6 +304,7 @@ fn a_carrying_stroke_ends_without_breaking_its_own_slope() {
                     lift: 0.0,
                     deposit: 0.12,
                     charge: 2.0,
+                    bleed: 0.0,
                 },
             )
         },
@@ -862,6 +863,7 @@ fn bar_then_glaze(add: f32, deposit: f32) -> Option<stark_core::RgbaImage> {
             lift: 0.0,
             deposit,
             charge: 0.0,
+            bleed: 0.0,
         },
     );
     // No falloff, so the glaze is one uniform parcel over its whole travel and both
@@ -935,5 +937,297 @@ fn a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs() {
         thin * 2 < thick,
         "a {GLAZE_ADD}-flow glaze moved the paint under it {thin} levels where full \
          flow moved it {thick} — `add` is not deciding how much paint lands"
+    );
+}
+
+/// The `bleed` axis is a *lateral* flux: it must move paint between neighbouring
+/// canvas texels and do nothing else. Run alone over a uniform field it therefore
+/// has to be very nearly the identity — every neighbourhood difference it trades
+/// on is zero — and, because it is not a source, none of the brush's own colour
+/// may reach the canvas however hard it scrubs. The brush is deliberately GREEN
+/// over RED paint so that failure mode has a colour.
+#[test]
+fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        RED,
+        80.0,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    let before = engine.render_to_image();
+    assert!(is_red(center(&before)), "the field never got painted");
+
+    let b = dyn_brush(
+        GREEN,
+        24.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    // Back and forth, so a compounding leak (a source term hiding in the flux)
+    // gets several passes to show itself.
+    stroke_with(
+        &mut engine,
+        b,
+        &[
+            Vec2::new(-50.0, 0.0),
+            Vec2::new(50.0, 0.0),
+            Vec2::new(-50.0, 0.0),
+            Vec2::new(50.0, 0.0),
+        ],
+    );
+    let after = engine.render_to_image();
+
+    assert!(
+        is_red(center(&after)),
+        "a bleed-only brush re-tinted the field towards its own colour: {:?}",
+        center(&after)
+    );
+    let frac = frac_exceeding(&before, &after, 40);
+    assert!(
+        frac < 0.2,
+        "diffusing a uniform field should move almost nothing, but {:.1}% of pixels \
+         differ by >40 levels",
+        frac * 100.0
+    );
+}
+
+/// The headline behaviour: scrubbing a bleed-only brush along the boundary between
+/// two colours softens it — the transition spreads, so its *steepest step* drops.
+/// Measured on the per-row difference of a signed red-vs-green signal, which is
+/// what "blur" means and does not care which side of the image either stripe
+/// landed on, or exactly where the dominance predicates would draw their lines.
+/// (A first cut counted rows that read as *neither* colour instead, and failed
+/// backwards: the stripes met over a sliver of paper, diffusion pulled paint into
+/// the gap, and the "mixed" band narrowed while the edge genuinely softened.)
+#[test]
+fn bleed_softens_a_colour_boundary() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // Two overlapping stripes — no paper gap at the boundary, so the transition
+    // is stripe against stripe and its slope belongs to the meeting edge.
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(-90.0, -16.0), Vec2::new(90.0, -16.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        20.0,
+        &[Vec2::new(-90.0, 16.0), Vec2::new(90.0, 16.0)],
+    );
+
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    // The steepest per-row step of (green − red) down the boundary's column.
+    let max_step = |img: &stark_core::RgbaImage| {
+        (cy - 12..cy + 12)
+            .map(|y| {
+                let s = |y: u32| {
+                    let p = img.pixel(cx, y);
+                    p[1] as i32 - p[0] as i32
+                };
+                (s(y + 1) - s(y)).abs()
+            })
+            .max()
+            .expect("non-empty window")
+    };
+    let before = engine.render_to_image();
+    let step_before = max_step(&before);
+    assert!(
+        step_before >= 25,
+        "the stripes should meet in a steep edge, got a max step of {step_before} \
+         levels/row — too soft for a blur to measure"
+    );
+
+    let b = dyn_brush(
+        RED,
+        28.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    // Several passes along the boundary: the axis is a rate, and each pass of the
+    // tip buys another helping of variance.
+    stroke_with(
+        &mut engine,
+        b,
+        &[
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+        ],
+    );
+    let after = engine.render_to_image();
+    let step_after = max_step(&after);
+
+    assert!(
+        step_after * 10 <= step_before * 8,
+        "scrubbing bleed = 0.95 along the boundary should soften its steepest step \
+         by at least a fifth, got {step_before} -> {step_after} levels/row"
+    );
+    // The diffusion is local: 15 px out from the boundary each stripe still reads
+    // as its own colour, so the edge softened by mixing rather than by erasure.
+    assert!(
+        is_red(after.pixel(cx, cy - 15)) && is_green(after.pixel(cx, cy + 15))
+            || is_green(after.pixel(cx, cy - 15)) && is_red(after.pixel(cx, cy + 15)),
+        "the stripes themselves should survive a boundary blur"
+    );
+}
+
+/// The property the reach fix exists for: `bleed`'s smoothing distance scales
+/// with the brush, so a big blender softens far from the boundary in one pass —
+/// where a fixed 1-texel stencil tops out near a pixel of σ per pass and cannot
+/// move a reading 10 px away no matter the rate (the regression this pins: the
+/// axis "worked" but was invisible at any usable brush size).
+///
+/// Measured as the red-vs-green contrast 10 px to each side of the boundary
+/// dropping materially after a single pass, which no orientation, colour-space
+/// or dominance-threshold detail can fake: only paint arriving from across the
+/// boundary moves those readings toward one another.
+#[test]
+fn bleed_reach_scales_with_the_brush() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(-90.0, -16.0), Vec2::new(90.0, -16.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        20.0,
+        &[Vec2::new(-90.0, 16.0), Vec2::new(90.0, 16.0)],
+    );
+
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    // Signed red-vs-green contrast at a pixel; |it| is purity of whichever side.
+    let contrast = |img: &stark_core::RgbaImage, y: u32| {
+        let p = img.pixel(cx, y);
+        (p[1] as i32 - p[0] as i32).abs()
+    };
+    let before = engine.render_to_image();
+    let (b_lo, b_hi) = (contrast(&before, cy - 10), contrast(&before, cy + 10));
+    assert!(
+        b_lo >= 60 && b_hi >= 60,
+        "10 px out each stripe should still read nearly pure, got {b_lo}/{b_hi}"
+    );
+
+    let b = dyn_brush(
+        RED,
+        60.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    // One pass. The reach has to come from the stencil scaling with the radius,
+    // not from scrubbing long enough that any stencil would get there.
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-70.0, 0.0), Vec2::new(70.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+    let (a_lo, a_hi) = (contrast(&after, cy - 10), contrast(&after, cy + 10));
+
+    assert!(
+        a_lo + 25 <= b_lo && a_hi + 25 <= b_hi,
+        "one pass of a radius-60 blur should mix the stripes 10 px out on both \
+         sides, got {b_lo} -> {a_lo} and {b_hi} -> {a_hi}"
+    );
+}
+
+/// The regression the bleed cadence's fire slots and the deposit's rewrite guard
+/// exist for (§6.2): a slow hand is fitted at a control point per pointer sample,
+/// so a bleed-only stroke can arrive as hundreds of **sub-pixel** knots — and over
+/// a flat coat it must change nothing at all. It used to brighten the coat by up
+/// to 28 levels: fired per segment, the per-texel exposure is prefix-cancellation
+/// noise and the flux sits under the f16 ULP of the heights it edits — and even at
+/// zero flux, re-storing an algebraically identical texel walks it down one ULP
+/// per rewrite on a backend whose f32→f16 storage conversion truncates (D3D12
+/// does). The dense record is appended to the log directly, exactly as the field
+/// repro's fitter produced it, rather than through the fitter.
+#[test]
+fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        RED,
+        80.0,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    let before = engine.render_to_image();
+
+    let mut doc = stark_core::io::DocumentFile::from_bytes(&engine.save_bytes().expect("save"))
+        .expect("parse own save");
+    let prev = doc.actions.last().expect("the coat stroke").id;
+    let mut brush = dyn_brush(
+        GREEN,
+        40.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    brush.drain = 0.0;
+    // A shallow 72 px arc over 200 knots — every span ~0.36 px, like the repro.
+    let path: Vec<stark_core::path::ControlPoint> = (0..200)
+        .map(|i| {
+            let ang = (i as f32 / 199.0 - 0.5) * 1.2;
+            let mut cp = stark_core::path::ControlPoint::at(Vec2::new(
+                ang.sin() * 60.0,
+                (ang.cos() - 1.0) * 60.0,
+            ));
+            cp.pressure = 0.5;
+            cp
+        })
+        .collect();
+    doc.actions.push(stark_core::document::Action {
+        id: stark_core::document::ActionId {
+            lamport: prev.lamport + 1,
+            actor: prev.actor,
+        },
+        kind: stark_core::document::ActionKind::CommitStroke(stark_core::document::StrokeRecord {
+            layer: engine.observe().active_layer,
+            tool: Tool::Brush,
+            brush,
+            path,
+            seed: 7,
+        }),
+    });
+
+    let Some(mut replayed) = engine_or_skip() else {
+        return;
+    };
+    replayed
+        .load_bytes(&doc.to_bytes().expect("encode"))
+        .expect("load + replay");
+    let after = replayed.render_to_image();
+    assert!(
+        images_match(&before, &after, 2),
+        "a dense bleed-only scribble over flat paint must leave it flat"
     );
 }

@@ -24,8 +24,9 @@ use super::segments::{
 };
 use super::swept::{TileInstance, ViewUniform};
 use super::{
-    BAKE_FORMAT, BAKE_RES, BRUSH_RES, ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene,
-    StrokeSpans, TAU_PER_PASS, ToolState, WICK_TRAVEL_QUANTUM, flatten_tolerance,
+    BAKE_FORMAT, BAKE_RES, BLEED_TRAVEL_QUANTUM, BRUSH_RES, ScopedResources, StrokeCarry,
+    StrokeRenderer, StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, WICK_TRAVEL_QUANTUM,
+    flatten_tolerance,
 };
 
 /// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
@@ -41,6 +42,12 @@ struct SliceUniform {
 /// a pure function of the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
     slot: [f32; 32],
+    /// A dedicated **bleed slot** (§6.2): a straight quad whose sweep is one firing
+    /// of the bleed cadence's travel window, with every vertical rate and the
+    /// source zeroed. Dispatched as `snapshot` + `deposit` alone — the tool plays
+    /// no part, so there is nothing to wick, bake or exchange, and the reservoir
+    /// ping-pong is left exactly where the previous segment put it.
+    bleed_only: bool,
     /// Workgroup counts for the segment's footprint work — the `deposit`, and the
     /// `snapshot` that rides in `exchange`'s grid. The segment's own coverage box
     /// rather than the piece-wide worst-case square, so an axis-aligned sweep pays for
@@ -554,6 +561,12 @@ impl<'a> DynamicsRun<'a> {
             view
         };
 
+        // ---- The bleed cadence's fire slots for this piece (§6.2), built before
+        // the snapshot scratch is sized: a firing's window sweeps up to
+        // [`BLEED_TRAVEL_QUANTUM`] radii where the piece's own segments may be
+        // sub-pixel, so its coverage box can be the largest in the piece.
+        let fires = bleed_fires(rec.brush.dynamics.bleed, segments);
+
         // ---- Footprint snapshot textures. The snapshot rect must cover any one
         // segment's coverage box — its swept arc plus the tip riding along it —
         // which is measured rather than bounded analytically, since `coverage_bounds`
@@ -563,10 +576,13 @@ impl<'a> DynamicsRun<'a> {
         //
         // +3 for the sampling margin `dynamics_plan` adds each side, +2 because a
         // per-segment rect then rounds outward by a texel each side.
-        let dmax = segments.iter().fold(1.0f32, |m, s| {
-            let (lo, hi) = coverage_bounds(s);
-            m.max(hi.x - lo.x).max(hi.y - lo.y)
-        });
+        let dmax = segments
+            .iter()
+            .chain(fires.iter().map(|(_, f)| f))
+            .fold(1.0f32, |m, s| {
+                let (lo, hi) = coverage_bounds(s);
+                m.max(hi.x - lo.x).max(hi.y - lo.y)
+            });
         let dsize = (dmax + 3.0).ceil() as u32 + 2;
         let mut under_tex = |label: &'static str| {
             scoped_view(
@@ -584,7 +600,15 @@ impl<'a> DynamicsRun<'a> {
         // ---- The dispatch plan, one segment each, one 256-byte
         // slot each (dynamic uniform offsets — the standard way to vary a uniform
         // across dispatches within one pass).
-        let plan = dynamics_plan(rec, segments, region_origin, dsize, channels, settle);
+        let plan = dynamics_plan(
+            rec,
+            segments,
+            &fires,
+            region_origin,
+            dsize,
+            channels,
+            settle,
+        );
         // The settle rides as one extra slot at the end of the plan; everything before
         // it is a segment, and the loop below dispatches the two differently.
         let segment_slots = plan.len() - usize::from(settle);
@@ -738,6 +762,22 @@ impl<'a> DynamicsRun<'a> {
             // reached only across such a switch.
             for (i, d) in plan.iter().take(segment_slots).enumerate() {
                 let off = (i * STRIDE) as u32;
+                // A bleed slot (§6.2): `snapshot` + `deposit` and nothing else. The
+                // tool plays no part in the lateral flux, so there is nothing to
+                // wick, bake or exchange, and `cur` — the reservoir ping-pong —
+                // stays exactly where the previous segment left it. The standalone
+                // snapshot pipeline rather than the exchange's tail, because there
+                // is no exchange dispatch to ride in.
+                if d.bleed_only {
+                    cpass.set_pipeline(&kit.snapshot_pipeline);
+                    cpass.set_bind_group(0, &snapshot_bg, &[off]);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                    cpass.set_pipeline(&kit.deposit_pipeline);
+                    cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                    continue;
+                }
                 // Let the tool's own paint migrate across the tip before anything reads
                 // it. Ahead of *both* halves of the transfer, so `bake` and `exchange`
                 // still see one another's entry state and their shares still add up
@@ -1015,6 +1055,7 @@ fn reservoir_desc(
 fn dynamics_plan(
     rec: &StrokeRecord,
     segments: &[Segment],
+    fires: &[(usize, Segment)],
     region_origin: Vec2,
     dsize: u32,
     channels: [f32; 4],
@@ -1028,12 +1069,14 @@ fn dynamics_plan(
     let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
     let l_lift = lambda(d.lift);
     let l_dep = lambda(d.deposit);
+    let l_bleed = lambda(d.bleed);
     // Colour dynamics for the `add` paint — the same uniform triplet as the fast
     // path, so both paths sample the identical field (§6.2).
     let (nfreq, namp, noff) = noise_uniform(rec);
 
     let mut plan = Vec::new();
-    for s in segments {
+    let mut fires = fires.iter().peekable();
+    for (si, s) in segments.iter().enumerate() {
         // The segment's swept exchange: the frame is (start, travel tangent at the
         // start, curvature), and the dispatch rect is the segment's own coverage box
         // plus a 1.5 px sampling margin — so an axis-aligned sweep dispatches ~4·r²
@@ -1071,6 +1114,7 @@ fn dynamics_plan(
         let quantum = WICK_TRAVEL_QUANTUM * s.radius;
         let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
         plan.push(LoopDispatch {
+            bleed_only: false,
             groups: (w.div_ceil(8), h.div_ceil(8)),
             exchange_groups: (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(8)),
             wick_steps: wick_steps.max(0.0) as u32,
@@ -1122,9 +1166,71 @@ fn dynamics_plan(
                 noff[0],
                 noff[1],
                 noff[2],
+                // No λ_bleed on a painting segment: the lateral flux runs only on
+                // the dedicated bleed slots below, so between firings the canvas
+                // takes the no-bleed path bit-for-bit.
                 0.0,
             ],
         });
+
+        // The bleed slots that fire at this segment's end (§6.2, `bleed_fires`):
+        // a straight quad whose sweep is the firing's travel window, with every
+        // vertical rate and the source zeroed — the dispatch is the identity
+        // everywhere except the lateral flux. The noise lanes are zeroed too, so
+        // the deposit skips its colour-jitter taps; `mid` is filled for form, since
+        // no exchange ever reads this slot.
+        while let Some((_, f)) = fires.next_if(|(after, _)| *after == si) {
+            let p = f.start - region_origin;
+            let (clo, chi) = coverage_bounds(f);
+            let lo = clo - region_origin - Vec2::splat(1.5);
+            let hi = chi - region_origin + Vec2::splat(1.5);
+            let (ox, oy) = (lo.x.floor(), lo.y.floor());
+            let (w, h) = (
+                (((hi.x - ox).ceil() as u32) + 1).min(dsize),
+                (((hi.y - oy).ceil() as u32) + 1).min(dsize),
+            );
+            let mid = f.start + f.dir * (f.length * 0.5) - region_origin;
+            plan.push(LoopDispatch {
+                bleed_only: true,
+                groups: (w.div_ceil(8), h.div_ceil(8)),
+                exchange_groups: (0, 0), // no exchange: the tool is not involved
+                wick_steps: 0,
+                slot: [
+                    p.x,
+                    p.y,
+                    f.dir.x,
+                    f.dir.y,
+                    f.radius,
+                    f.length / f.radius,
+                    0.0, // λ_lift = 0: the canvas keeps everything…
+                    0.0, // …and λ_deposit = 0: the (uninvolved) tool lays nothing
+                    channels[0],
+                    channels[1],
+                    channels[2],
+                    b.color[3],
+                    ox,
+                    oy,
+                    f.orient,
+                    0.0, // no drain: nothing is laid, so nothing runs dry
+                    0.0, // no `add`: the slot is not a stretch of painting
+                    0.0, // straight chord: no curvature
+                    mid.x,
+                    mid.y,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    f.dist,
+                    0.0,
+                    0.0,
+                    0.0,
+                    l_bleed,
+                ],
+            });
+        }
     }
 
     // The pen-up (`dynamics.wesl::settle`), as one more slot on the same uniform: the
@@ -1148,6 +1254,7 @@ fn dynamics_plan(
             (((hi.y - oy).ceil() as u32) + 1).min(dsize),
         );
         plan.push(LoopDispatch {
+            bleed_only: false,
             groups: (w.div_ceil(8), h.div_ceil(8)),
             exchange_groups: (0, 0), // the tool is not written back; nothing reads it
             // Nor is there travel to wick over: a pen-up is a break of contact.
@@ -1189,11 +1296,87 @@ fn dynamics_plan(
                 noff[0],
                 noff[1],
                 noff[2],
+                // No λ_bleed either: the axis carries no reservoir — every firing
+                // already applied its window as the tip passed — so a break of
+                // contact strands nothing for a settle to finish (unlike the
+                // vertical transfer, whose in-flight half lives on the tool).
                 0.0,
             ],
         });
     }
     plan
+}
+
+/// The bleed cadence (§6.2): one dedicated **bleed slot** per crossing of
+/// [`BLEED_TRAVEL_QUANTUM`] of absolute arc, as `(after, window)` pairs — the index
+/// of the piece segment the firing follows, and a straight synthetic segment whose
+/// sweep is the firing's travel window (the chord over the last quantum of path,
+/// ending where the crossing segment ends).
+///
+/// Counted off the **absolute** arc exactly as the wick's crossings are, and for
+/// the same reason: the firings, and the windows they sweep, are then a pure
+/// function of the record, independent of how the path was cut (§6.2, live ==
+/// committed). Why the lateral flux cannot simply ride the painting segments is a
+/// numeric story told at the shader (`dynamics.wesl`, the bleed-slot note): on real
+/// slow input the fitter emits sub-pixel segments, whose per-texel exposure is
+/// prefix-cancellation noise and whose per-segment fluxes sit under the f16 ULP of
+/// the heights they edit — measured as a 20-level directional ghost on a 177-knot
+/// repro. A half-radius window has neither problem.
+///
+/// The chord stands in for up to a quantum of curved travel — sagitta-class error,
+/// bounded by [`MAX_TIP_TURN`](super::MAX_TIP_TURN) like every other straightening
+/// in the loop — and a window is truncated at the piece's own start, since an
+/// earlier piece's geometry is no longer in hand (piece cuts are themselves a pure
+/// function of the record, so this stays deterministic).
+fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
+    let mut fires = Vec::new();
+    if bleed <= 0.0 {
+        return fires;
+    }
+    let piece_start = segments.first().map_or(0.0, |s| s.dist);
+    for (i, s) in segments.iter().enumerate() {
+        let bq = BLEED_TRAVEL_QUANTUM * s.radius;
+        let crossings = ((s.dist + s.length) / bq).floor() - (s.dist / bq).floor();
+        if crossings < 1.0 {
+            continue;
+        }
+        let end_arc = s.dist + s.length;
+        let start_arc = (end_arc - crossings * bq).max(piece_start);
+        let (end, _) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
+        let start = position_at(segments, start_arc);
+        let chord = end - start;
+        let len = chord.length();
+        if len <= 1e-3 {
+            continue; // a stationary hand: nothing swept, nothing to relax
+        }
+        fires.push((
+            i,
+            Segment {
+                start,
+                dir: chord / len,
+                curvature: 0.0,
+                radius: s.radius,
+                length: len,
+                orient: s.orient,
+                dist: start_arc,
+            },
+        ));
+    }
+    fires
+}
+
+/// The tip's centre at absolute arc `arc`, walked along the piece's own segments.
+/// `arc` at or past the last segment's end clamps to that end — the only caller
+/// asks about arcs inside the piece by construction.
+fn position_at(segments: &[Segment], arc: f32) -> Vec2 {
+    for s in segments {
+        if arc <= s.dist + s.length {
+            return crate::path::arc_at(s.start, s.dir, s.curvature, (arc - s.dist).max(0.0)).0;
+        }
+    }
+    segments.last().map_or(Vec2::new(0.0, 0.0), |s| {
+        crate::path::arc_at(s.start, s.dir, s.curvature, s.length).0
+    })
 }
 
 /// The travel direction the pen-up settle measures `owed` and `received` along: the
@@ -1274,7 +1457,7 @@ pub(super) enum StrokePath {
 /// one segment's own footprint — which is [`segment_fits_region`]'s question.
 pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePath {
     let d = rec.brush.dynamics;
-    if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 {
+    if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 && d.bleed <= 0.0 {
         return StrokePath::Swept;
     }
     // The same flattened segments as the fast path, at the same budget: a long stroke

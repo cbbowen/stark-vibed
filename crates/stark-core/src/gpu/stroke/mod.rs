@@ -269,6 +269,31 @@ const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// wants a wide kernel. Here both axes are dispatches and must share one cadence, so
 /// widening now would bank the jitter on both to save on one.
 const WICK_TRAVEL_QUANTUM: f32 = 0.5;
+/// How much travel (in radii) the `bleed` stencil carries per firing (§6.2) — the
+/// same cadence pattern as [`WICK_TRAVEL_QUANTUM`], and adopted for the same reason
+/// the wick has one: **the cadence carries the step, so the segmentation cannot.**
+///
+/// Firing per segment was measured non-conservative on real input, and the failure is
+/// numeric rather than conceptual. A hand that draws slowly is fitted at a control
+/// point per pointer sample — the repro's stroke carries 177 knots over 68 px, mean
+/// span 0.39 px — and at that cut a texel's per-segment flux is
+/// `share · w · Δ ≈ 1e-4` of a height whose f16 ULP is ~4e-3: deep in the regime
+/// where every store either snaps the flux away or ratchets a whole ULP, and the
+/// nonlinear rebuild of `(premult, op, height)` between segments turns that into a
+/// *directional* drift. Measured on the repro: 20 levels of ghost at 176 spans, 2 at
+/// 44, bit-exact zero on a uniform coat at any cut — so the arithmetic is right and
+/// the quantization regime is the whole defect.
+///
+/// Keyed on **absolute arc length**, exactly like the wick's crossings, so the
+/// firings — and the windows they sweep — are a pure function of the record,
+/// independent of how the path was cut (§6.2, live == committed). Each firing is a
+/// dedicated **bleed slot** in the dispatch plan (`dynamics::bleed_fires`): a
+/// straight quad whose sweep *is* the window, so its exposure is an ordinary,
+/// well-conditioned prefix difference over half a radius of travel, and one firing
+/// moves the paint 176 micro-segments would have tried to move — in one step that
+/// sits far above the f16 noise floor. The painting segments themselves carry
+/// λ_bleed = 0 and take the no-bleed path bit-for-bit.
+const BLEED_TRAVEL_QUANTUM: f32 = 0.5;
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
 ///
@@ -783,7 +808,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // fine enough. The cap also bounds the snapshot scratch, which is sized by the
     // longest segment.
     let d = b.dynamics;
-    if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 {
+    if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 || d.bleed > 0.0 {
         tol.max_len = tol.max_len.min((exchange_travel(d) * b.radius).max(0.5));
     }
     tol
@@ -822,6 +847,10 @@ fn exchange_travel(d: BrushDynamics) -> f32 {
     // Mirrors `dynamics.rs`'s own clamp, so the flattener prices the rates the shader
     // will actually run — an axis at 1.0 is `−∞` otherwise.
     let rate_of = |axis: f32| -(1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0);
+    // `bleed` is deliberately *not* in this sum: it fires on its own travel cadence
+    // with the window's exposure ([`BLEED_TRAVEL_QUANTUM`]), so segment length does
+    // not set its step and shortening segments buys it nothing — the same reasoning
+    // that keeps the wick's quantum out of here.
     let rate = rate_of(d.lift) + rate_of(d.deposit);
     if rate <= 0.0 {
         return MAX_EXCHANGE_TRAVEL;

@@ -570,13 +570,63 @@ falls out naturally; and there is no band, column or stamp structure to alias.
   true mass-conserving smudge).
 - `charge` — a finite glob pre-loaded onto the tool (the palette-knife scoop); it
   depletes as the tool deposits and refills as it lifts.
+- `bleed` — **lateral** flux within the canvas itself: the paint already under the
+  tip relaxes towards a neighbourhood **a fixed fraction of the tip wide** at
+  `1 − exp(−k_bleed·e)`, the same saturating form as the vertical rates, keyed on
+  the same swept exposure — so a texel the tip never covers never moves, and
+  overlapping segments compose to first order. Alone it is a blur brush; under
+  `add` it melts the height ridges of the strokes being painted over instead of
+  embossing them through the new paint.
+  It runs inside `deposit` in **flux form** (both threads of a neighbour pair
+  compute one number from the same `under` snapshot and apply it with opposite
+  signs, `min` of the pair's exposures as the mobility, the wick's own scheme), so
+  it is a pure internal redistribution: height is conserved, the tool's books are
+  untouched, and no paint leaks to texels outside the sweep, whose threads never
+  write. Ahead of the lift, since its stability bound is a share of the *entering*
+  height; the tool's half sampled the un-bled canvas, a disagreement of
+  `O(k_bleed·k_lift·e²)` — second order, the class the loop already carries. The
+  pen-up settles none of it: the axis has no reservoir, so a break of contact
+  strands nothing.
+  **It fires on dedicated slots at the wick's kind of cadence, not on the painting
+  segments** (`BLEED_TRAVEL_QUANTUM`, `stroke::dynamics::bleed_fires`): one
+  straight quad per crossing of half a radius of *absolute arc*, whose sweep is
+  the firing's travel window (the chord over the last quantum of path) and whose
+  vertical rates and source are all zero — so its exposure is an ordinary,
+  well-conditioned prefix difference, and the painting segments carry
+  `λ_bleed = 0` and take the no-bleed path bit-for-bit. Per-segment firing is
+  broken twice over on real slow input, which the fitter keeps at a control point
+  per pointer sample (a field repro: 177 knots over 68 px): the per-texel exposure
+  of a 0.4 px segment is prefix-cancellation noise, and the per-segment flux sits
+  under the f16 ULP of the heights it edits. That second failure exposed a defect
+  older than the axis — a storage write re-encodes f32→f16, and a backend may
+  truncate that conversion toward zero (D3D12 does), so *re-storing an
+  algebraically identical texel* walks it down one ULP per rewrite — which is why
+  the `deposit` (and the settle) now end with a **rewrite guard**: when the lift
+  kept everything, the parcel is empty and no flux moved, the texel is not
+  re-stored at all. Measured on the repro, the guard alone took a 28-level
+  directional ghost to bit-exact zero.
+  The stencil's taps sit at three scales per direction — 1 px, a quarter of the
+  reach, the reach (`BLEED_REACH = 0.25` of the radius) — because any stencil is
+  bounded (one application moves at most `Σshare·d²` of variance and the blend
+  saturates at 1), so a fixed-pixel kernel tops out near a pixel of σ per pass
+  and is invisible under any brush big enough to blur with. Scaling the reach
+  with the tip is what makes the axis **resolution-independent**: at full crank a
+  pass of the tip buys σ ≈ 0.3·radius whatever the canvas resolution, the same
+  property the tapers get from being quoted in radii. The 1 px taps are the floor
+  rather than the rate — sparse ±d taps alone decouple the grid into d²
+  sublattices (the wick's parity failure generalized) and would let sub-reach
+  texture ride through a "blur" untouched; coupling every texel to its true
+  neighbours makes every non-zero frequency strictly decay. Shares sum to 1/8, so
+  the worst mode's eigenvalue at full saturation is exactly 0 — annihilated, not
+  flipped — and no segment can overshoot.
 
-That is the whole set. `drag`, `bleed`, `ridge`, `load_pressure` and
+That is the whole set. `drag`, `ridge`, `load_pressure` and
 `deposit_tilt` were listed as inert placeholders and were **removed** rather than
 carried. Each remains a local change to reintroduce when built (the loop already
-carries per-dispatch state): a forward deposit offset for the bow-wave drag, a
-footprint-local blur for bleed, edge displacement for ridge, per-segment
-pressure/tilt modulation of the rates. Likewise `BrushParams` no longer carries
+carries per-dispatch state): a forward deposit offset for the bow-wave drag, edge
+displacement for ridge, per-segment pressure/tilt modulation of the rates.
+(`bleed` was on that list, and its reintroduction as the footprint-local blur
+above is the pattern working as intended.) Likewise `BrushParams` no longer carries
 `spacing`, `flow`, `height` or `wetness`: with swept rendering there are no dabs
 for `spacing` to space, and `flow`/`height` were redundant multipliers on `add` —
 `flow` doubly so, since it also carried the `drain` factor into `τ` and applied

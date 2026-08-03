@@ -113,15 +113,19 @@ pub enum OrientationSource {
 /// that is already on the canvas, so with `add = 0` the tool conserves height (it only
 /// moves paint around). The everyday brush is just `add` with the rest 0 (the default).
 ///
-/// The two remaining axes are **vertical** flux between the canvas and a transient
+/// Two axes are **vertical** flux between the canvas and a transient
 /// per-stroke *tool* reservoir — Lagrangian, giving crisp long-range *directed*
 /// transport:
 /// - [`lift`](Self::lift)       — lift canvas paint up onto the tool,
 /// - [`deposit`](Self::deposit) — lay tool paint back down.
 ///
+/// One is **lateral** flux within the canvas itself, never touching the tool:
+/// - [`bleed`](Self::bleed) — the paint under the tip diffuses towards its
+///   neighbours (a blur brush alone; wet-softening under `add`).
+///
 /// `lift`-only is an eraser; `lift`+`deposit` (`add = 0`) a conservative smudge;
-/// `add`-only ordinary paint. All flow runs with fixed iteration counts, so replay
-/// stays deterministic (§6.2).
+/// `bleed`-only a blur; `add`-only ordinary paint. All flow runs with fixed
+/// iteration counts, so replay stays deterministic (§6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushDynamics {
     /// The brush's own paint laid directly: the paint **height** deposited per unit of
@@ -154,6 +158,22 @@ pub struct BrushDynamics {
     /// [`add`](Self::add) source (§6.2).
     #[serde(default)]
     pub charge: f32,
+    /// Canvas paint **diffusing under the tip** per step, as a fraction of full smoothing,
+    /// in [0, 1]: 0 = the paint under the stroke holds still, 1 = it relaxes towards its
+    /// neighbourhood as fast as the loop can carry. The one **lateral** flux, and it is
+    /// internal to the canvas — the tool neither takes nor gives (§6.2).
+    ///
+    /// The neighbourhood is **a fixed fraction of the tip** (`BLEED_REACH`,
+    /// dynamics.wesl), not a pixel count, so the axis is resolution-independent: at
+    /// full crank a pass of the tip blurs by roughly a third of the radius whatever
+    /// the canvas resolution — the same property the tapers get from being quoted
+    /// in radii.
+    ///
+    /// Alone it is a blur brush; alongside [`add`](Self::add) it melts the ridges of the
+    /// strokes being painted over instead of leaving their height profile embossed
+    /// through the new paint.
+    #[serde(default)]
+    pub bleed: f32,
 }
 
 impl Default for BrushDynamics {
@@ -164,6 +184,7 @@ impl Default for BrushDynamics {
             lift: 0.0,
             deposit: 0.0,
             charge: 0.0,
+            bleed: 0.0,
         }
     }
 }

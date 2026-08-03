@@ -278,12 +278,18 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     }
 
                     Section {
-                        title: "Pickup", desc: "Canvas paint moving on and off the tool — smudge, knife, eraser.",
+                        title: "Pickup", desc: "Canvas paint on the move — smudge, knife, eraser, blur.",
                         open: pickup_open,
                         Slider { label: "Lift", min: 0.0, max: 0.95, value: d.lift,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.lift = v) }
                         Slider { label: "Deposit", min: 0.0, max: 0.95, value: d.deposit,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.deposit = v) }
+                        // The lateral axis: the paint under the tip diffuses towards its
+                        // neighbours (§6.2). Alone it is a blur brush; under `add` it
+                        // melts the ridges of the strokes being painted over. Capped at
+                        // 0.95 like the two vertical rates — the λ diverges at 1.
+                        Slider { label: "Bleed", min: 0.0, max: 0.95, value: d.bleed,
+                            oninput: move |v| edit(state, preview, move |b| b.dynamics.bleed = v) }
                         More { open: pickup_more,
                             // The finite glob pre-loaded on the tool (palette knife, §6.2).
                             Slider { label: "Charge", min: 0.0, max: 2.0, value: d.charge,
