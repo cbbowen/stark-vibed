@@ -180,24 +180,29 @@ const MAX_PICK_RADIUS: u32 = 32;
 /// and dividing by it would amplify float noise into an arbitrary hue.
 const PICK_MIN_OPACITY: f32 = 1e-3;
 
-/// Longest layer name that will be recorded, in `char`s. Not a taste limit but a
-/// bound on the log: a name is replicated to every peer and saved with the
+/// Longest name that will be recorded, in `char`s. Not a taste limit but a bound
+/// on the log: a layer's name is replicated to every peer and saved with the
 /// document, and nothing about a text field stops a paste from being a megabyte.
 /// Truncated by `char` rather than by byte so the cut can never land inside one.
-const MAX_LAYER_NAME: usize = 64;
+const MAX_NAME: usize = 64;
 
-/// The name to record for a layer, given what a frontend collected: surrounding
-/// whitespace trimmed, length capped, and anything that comes out empty treated as
-/// *no name* rather than as a name that happens to be blank.
+/// The name to record, given what a frontend collected: surrounding whitespace
+/// trimmed, length capped, and anything that comes out empty treated as *no name*
+/// rather than as a name that happens to be blank.
 ///
 /// One funnel for every source — the panel's field, a script, a peer's command —
-/// so "a layer's name is either absent or something you can read" is a property of
-/// the model rather than a habit of the UI. The logged action carries the result,
-/// so replay reproduces it without re-running these rules.
-fn normalize_layer_name(name: Option<String>) -> Option<String> {
+/// so "a name is either absent or something you can read" is a property of the
+/// model rather than a habit of the UI. The logged action carries the result, so
+/// replay reproduces it without re-running these rules.
+///
+/// Shared by layers and drawing guides, which is the whole reason it is not called
+/// `normalize_layer_name` any more: the two are named through different commands —
+/// one logged, one view state — and the rule for what a name *is* should not be a
+/// property of which command carried it.
+fn normalize_name(name: Option<String>) -> Option<String> {
     let name = name?;
     let trimmed = name.trim();
-    let capped: String = trimmed.chars().take(MAX_LAYER_NAME).collect();
+    let capped: String = trimmed.chars().take(MAX_NAME).collect();
     (!capped.is_empty()).then_some(capped)
 }
 
@@ -854,7 +859,7 @@ impl Engine {
                 self.commit(ActionKind::SetLayerVisible(id, visible))
             }
             DocCommand::SetLayerName(id, name) => {
-                let name = normalize_layer_name(name);
+                let name = normalize_name(name);
                 // A rename to the name it already has is not an edit, and logging it
                 // would spend an undo step that appears to do nothing when reached.
                 // Commit-on-blur makes this the common case: leaving a field you only
@@ -914,7 +919,16 @@ impl Engine {
                 self.session.selection_feather = feather.max(0.0)
             }
             ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
-            ViewCommand::SetGuides(guides) => self.session.guides = guides,
+            ViewCommand::SetGuides(mut guides) => {
+                // The whole list arrives on every edit (§20.5), so the names are
+                // normalized here rather than in a rename command of their own —
+                // there is no path to a guide's name that does not come through
+                // this arm, which is what makes the guarantee structural.
+                for g in &mut guides {
+                    g.name = normalize_name(g.name.take());
+                }
+                self.session.guides = guides;
+            }
             ViewCommand::PreviewMatteRect(drag) => {
                 let preview =
                     drag.map(|(id, min, max)| self.timeline.current().set_matte_rect(id, min, max));

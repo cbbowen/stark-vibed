@@ -48,8 +48,19 @@ const SNAP_COS: f32 = 0.966;
 /// The perspective-grid guide: a camera, plus how densely to dress it
 /// (§20.1). View state — per-client, never logged, never sent — one entry of
 /// the list the `Session` carries (§20.5).
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PerspectiveGuide {
+    /// What the artist calls this guide, or `None` for one never named — the
+    /// panel then shows its *place* in the list ("Perspective 2"), which is a
+    /// description rather than a name and is why it is not stored as one
+    /// (the same distinction [`LayerInfo::name`](crate::LayerInfo::name) draws).
+    ///
+    /// Normalized on the way in by the engine's [`SetGuides`] handler, so
+    /// "either absent or something you can read" is a property of the model
+    /// rather than a habit of whichever frontend collected it.
+    ///
+    /// [`SetGuides`]: crate::command::ViewCommand::SetGuides
+    pub name: Option<String>,
     /// Whether this guide is drawn — the list row's eye (§20.5).
     pub visible: bool,
     /// The **center of view** (principal point): where the view axis meets the
@@ -78,11 +89,12 @@ pub struct PerspectiveGuide {
 }
 
 impl Default for PerspectiveGuide {
-    /// Visible, centred on the canvas origin, at a moderate lens, turned to
-    /// the most-reached-for case (2-point), with 15° fans. The caller placing
-    /// a new guide moves `center` to where the artist is looking.
+    /// Unnamed and visible, centred on the canvas origin, at a moderate lens,
+    /// turned to the most-reached-for case (2-point), with 15° fans. The caller
+    /// placing a new guide moves `center` to where the artist is looking.
     fn default() -> Self {
         Self {
+            name: None,
             visible: true,
             center: Vec2::ZERO,
             focal: 900.0,
@@ -133,7 +145,7 @@ impl PerspectiveGuide {
     #[must_use]
     pub fn dragged(&self, from: Vec2, to: Vec2, locked: [bool; 3]) -> Self {
         if locked.iter().filter(|l| **l).count() >= 2 {
-            return *self;
+            return self.clone();
         }
         let (r0, r1) = (self.ray(from), self.ray(to));
         let dirs = self.axis_dirs();
@@ -158,7 +170,7 @@ impl PerspectiveGuide {
         };
         Self {
             rotation: (delta * self.rotation).normalize(),
-            ..*self
+            ..self.clone()
         }
     }
 

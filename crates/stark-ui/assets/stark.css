@@ -1038,6 +1038,11 @@ button.layer-remove:hover {
   flex: 1;
   min-width: 0;
   padding: 0;
+  /* Carried by both the name button and the rename field that stands in for it, so
+     it is what makes their "same text metrics" claim true: a `<button>` and an
+     `<input>` each arrive with a font of their own, and the row's is neither. */
+  font: inherit;
+  font-size: 12px;
   text-align: left;
   background: none;
   border: none;
@@ -1861,12 +1866,34 @@ button.layer-remove:hover {
   background: #3a6ea5;
 }
 
+/* The name — a button that selects, and (while renaming) the field standing in its
+   place. One rule for both, so opening the field reads as the label becoming
+   editable rather than as a form appearing in the row; `font: inherit` is what
+   makes that true of a `<button>` and an `<input>`, which otherwise each bring a
+   font of their own. */
 .guide-name {
   flex: 1;
+  min-width: 0;
+  font: inherit;
   font-size: 12px;
+  text-align: left;
   color: #eee;
+  background: none;
+  border: none;
+  cursor: pointer;
   /* The row's full height stays clickable through the name. */
   padding: 2px 0;
+}
+
+.guide-rename {
+  outline: none;
+}
+
+/* A guide that has never been named opens on an empty field, so the placeholder is
+   carrying what the row said a moment ago — dimmed, because it is a description
+   rather than text you are about to edit. */
+.guide-rename::placeholder {
+  color: #eeeeee59;
 }
 
 .guide-eye,

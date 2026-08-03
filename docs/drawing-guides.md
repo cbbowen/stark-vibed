@@ -163,9 +163,15 @@ rather than one rewritten buffer for the reason `BLEND_SLOT` records.
 The **Drawing Guides panel** is the roster, shaped like the Layers panel
 because it answers the same question about a different stack: "Add
 Perspective" (placed at the view center, so the grid lands where you look),
-one row per guide carrying the same two per-row controls a layer row does, in
-the same order and glyphs: remove, then the eye. Selecting a row — or adding —
-enters the **edit mode**: a full-viewport catcher owns the pointer for the
+one row per guide, carrying what a layer row carries in the same order and
+glyphs: the name, then remove, then the eye. The name renames on a
+double-click, exactly as a layer's does — one draft per row, committed on Enter
+or blur, abandoned on Escape, and a field left empty is *no name* rather than a
+blank one, so the row goes back to describing its position ("Perspective 2").
+That last rule is `normalize_name` in the engine, shared with layers and
+applied to every guide the `SetGuides` arm accepts: the list arrives whole, so
+there is no path to a guide's name that avoids it. Selecting a row — or
+adding — enters the **edit mode**: a full-viewport catcher owns the pointer for the
 mode's duration (the transform-mode bargain, §16.6; navigation still works),
 and the **Perspective Guide bar** stands at the bottom with the per-axis
 locks, per-axis visibility, density, opacity, and "Done". Which of 1/2/3-point

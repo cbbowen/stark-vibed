@@ -2,8 +2,10 @@
 //! shapes one guide, and the bar that serves the mode.
 //!
 //! Three pieces, one list. The **panel** is the roster — add a perspective,
-//! show or hide one, pick one up to work on — deliberately shaped like the
-//! Layers panel, because it answers the same question about a different stack.
+//! name one, remove one, show or hide one, pick one up to work on —
+//! deliberately shaped like the Layers panel, because it answers the same
+//! question about a different stack, down to the row's controls and the
+//! double-click that renames.
 //! Selecting a row (or adding a guide) enters the **edit mode**: a
 //! full-viewport catcher owns the pointer, exactly as transform mode does
 //! (§16.6), and dragging on the canvas *is* the manipulation:
@@ -22,12 +24,14 @@
 //! in is something the canvas *shows* (the count of finite vanishing points),
 //! not something a control stores.
 
+use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
+use crate::platform::select_all;
 use crate::state::{AppState, GuideEdit, dispatch};
 use stark_core::PerspectiveGuide;
 use stark_core::command::ViewCommand;
@@ -123,8 +127,24 @@ fn remove_guide(state: AppState, index: usize) {
     mode.set(adjusted);
 }
 
+/// What to call a guide that has never been named: its place in the list.
+///
+/// The Layers panel's counterpart numbers by [`LayerId::ordinal`], which is stable
+/// for the layer's whole life; a guide has no id, so this numbers by *position* and
+/// the labels below a removed guide shift up. That is the honest reading either
+/// way — an unnamed row is being described, not named, and the description of the
+/// second row is "the second one". Naming it is how you stop it moving.
+///
+/// [`LayerId::ordinal`]: stark_core::LayerId::ordinal
+fn guide_label(index: usize, guide: &PerspectiveGuide) -> String {
+    match &guide.name {
+        Some(name) => name.clone(),
+        None => format!("Perspective {}", index + 1),
+    }
+}
+
 /// The Drawing Guides panel: the roster of guides, shaped like the Layers
-/// panel — a header that adds, rows that select, an eye per row.
+/// panel — a header that adds, rows that select, rename, remove and hide.
 #[component]
 pub fn GuidesPanel() -> Element {
     let state = use_context::<AppState>();
@@ -147,34 +167,105 @@ pub fn GuidesPanel() -> Element {
             }
         }
         for (i, g) in guides.into_iter().enumerate() {
-            div {
-                key: "{i}",
-                class: if editing == Some(i) { "guide-row active" } else { "guide-row" },
-                // The name selects: picking a guide up to look at it and
-                // picking it up to shape it are the same act here, because
-                // shaping is all there is to do to one.
-                span {
+            GuideRow { key: "{i}", index: i, guide: g, active: editing == Some(i) }
+        }
+    }
+}
+
+/// One guide in the roster. A component rather than markup inlined in the loop
+/// above for the reason [`LayerRow`](super::layer::LayerRow) is one: the rename
+/// field's draft is *row-local* state, so opening one leaves every other row alone
+/// and closing it needs nothing cleaned up — and a hook cannot live inside a `for`.
+#[component]
+fn GuideRow(index: usize, guide: PerspectiveGuide, active: bool) -> Element {
+    let state = use_context::<AppState>();
+    // The rename in progress on this row, or `None` while the row is just a row.
+    // Held here rather than read back off the field on commit because both commit
+    // paths — Enter and blur — need it, and one of them fires while the field is on
+    // its way out.
+    let mut draft = use_signal(|| None::<String>);
+    // `take` is what makes the two commit paths safe to both fire: whichever runs
+    // second finds no draft. An emptied field is a *removed* name rather than a
+    // blank one, which is the engine's rule for every name (`normalize_name`), so
+    // the row goes back to describing its position.
+    let mut commit = move || {
+        let text = draft.write().take();
+        if let Some(text) = text {
+            update_guide(state, index, move |g| g.name = Some(text));
+        }
+    };
+    let label = guide_label(index, &guide);
+    // What the field opens on: the guide's *name*, which for one never named is
+    // empty. Deliberately not the label — seeding with the generated "Perspective 2"
+    // would turn opening the field and pressing Enter into a rename to "Perspective
+    // 2", quietly making a description into a name, and this panel's descriptions
+    // move when a guide is removed. The placeholder carries the label instead.
+    let seed = guide.name.clone().unwrap_or_default();
+    let visible = guide.visible;
+
+    rsx! {
+        div {
+            class: if active { "guide-row active" } else { "guide-row" },
+            if let Some(text) = draft() {
+                input {
                     class: "guide-name",
-                    onclick: move |_| begin_guide_edit(state, i),
-                    "Perspective {i + 1}"
+                    class: "guide-rename",
+                    r#type: "text",
+                    value: "{text}",
+                    placeholder: "{label}",
+                    // The field is the point of the double-click, so it takes focus
+                    // as it appears rather than asking for a second click.
+                    onmounted: move |e: Event<MountedData>| {
+                        spawn(async move {
+                            let _ = e.set_focus(true).await;
+                            // Selected, not merely focused: the usual reason to open
+                            // the field is to replace the name rather than add to it.
+                            select_all(&e);
+                        });
+                    },
+                    oninput: move |e| draft.set(Some(e.value())),
+                    // Committing on blur is what makes this feel like a label rather
+                    // than a form. Enter commits directly rather than by blurring — a
+                    // focused element that is removed does not reliably fire `blur`.
+                    onblur: move |_| commit(),
+                    onkeydown: move |e| match e.key() {
+                        Key::Enter => commit(),
+                        // Escape abandons the edit — dropping the draft first, so the
+                        // blur that follows has nothing left to commit.
+                        Key::Escape => draft.set(None),
+                        _ => {}
+                    },
                 }
-                // Remove then the eye, the order the Layers panel's rows put them in
-                // — the two rosters answer the same question about different stacks,
-                // so a hand that has learned one has learned the other. The ✕ this
-                // wore was the one mark in either panel drawn as a character rather
-                // than a glyph; it is `icons::REMOVE` in both places now.
+            } else {
+                // The name selects, and selecting *is* picking the guide up to shape
+                // it, because shaping is all there is to do to one. Double-click
+                // renames, as it does on a layer row — the first click of the pair
+                // landing you in the edit mode is no cost, since the guide you are
+                // renaming is the one you were about to work on.
                 button {
-                    class: "guide-remove",
-                    title: "Remove this guide",
-                    onclick: move |_| remove_guide(state, i),
-                    {icon(icons::REMOVE)}
+                    class: "guide-name",
+                    title: "Shape this guide \u{2014} double-click to rename",
+                    onclick: move |_| begin_guide_edit(state, index),
+                    ondoubleclick: move |_| draft.set(Some(seed.clone())),
+                    "{label}"
                 }
-                button {
-                    class: if g.visible { "guide-eye" } else { "guide-eye hidden" },
-                    title: if g.visible { "Hide this guide" } else { "Show this guide" },
-                    onclick: move |_| update_guide(state, i, |g| g.visible = !g.visible),
-                    {icon(if g.visible { icons::VISIBLE } else { icons::HIDDEN })}
-                }
+            }
+            // Remove then the eye, the order the Layers panel's rows put them in —
+            // the two rosters answer the same question about different stacks, so a
+            // hand that has learned one has learned the other. The ✕ this wore was
+            // the one mark in either panel drawn as a character rather than a glyph;
+            // it is `icons::REMOVE` in both places now.
+            button {
+                class: "guide-remove",
+                title: "Remove this guide",
+                onclick: move |_| remove_guide(state, index),
+                {icon(icons::REMOVE)}
+            }
+            button {
+                class: if visible { "guide-eye" } else { "guide-eye hidden" },
+                title: if visible { "Hide this guide" } else { "Show this guide" },
+                onclick: move |_| update_guide(state, index, |g| g.visible = !g.visible),
+                {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
             }
         }
     }
@@ -190,17 +281,21 @@ pub fn PerspectiveGuideBar() -> Element {
         return rsx! {};
     };
     let guides = guides_of(state);
-    let Some(g) = guides.get(edit.index).copied() else {
+    let Some(g) = guides.get(edit.index) else {
         // The guide went away under the mode (a stale index would edit the
         // wrong guide); fold the bar rather than pointing it at nothing.
         end_guide_edit(state);
         return rsx! {};
     };
     let index = edit.index;
+    // The bar names the guide the same way its row does, so a renamed guide is
+    // called the same thing in both places.
+    let label = guide_label(index, g);
+    let (density, opacity, axes) = (g.density, g.opacity, g.axes);
 
     rsx! {
         div { class: chrome_class(state, "guide-bar"),
-            span { class: "bar-label", "Perspective {index + 1}" }
+            span { class: "bar-label", "{label}" }
             // Locks: hold a world axis fixed, constraining the canvas drag to
             // turns about it — lock the vertical and every gesture keeps the
             // verticals parallel. Colored as the axis's own lines are.
@@ -223,7 +318,7 @@ pub fn PerspectiveGuideBar() -> Element {
             span { class: "bar-sub", "Show" }
             for i in 0..3 {
                 button {
-                    class: if g.axes[i] { "chip axis-chip active" } else { "chip axis-chip" },
+                    class: if axes[i] { "chip axis-chip active" } else { "chip axis-chip" },
                     style: "--axis: {AXIS_CSS[i]}",
                     title: "Show the {AXIS_NAMES[i]} axis's fan of guide lines",
                     onclick: move |_| update_guide(state, index, move |g| g.axes[i] = !g.axes[i]),
@@ -235,7 +330,7 @@ pub fn PerspectiveGuideBar() -> Element {
             input {
                 class: "slider",
                 r#type: "range", min: "4", max: "36", step: "1",
-                value: "{g.density}",
+                value: "{density}",
                 title: "Guide lines per half turn",
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() {
@@ -247,7 +342,7 @@ pub fn PerspectiveGuideBar() -> Element {
             input {
                 class: "slider",
                 r#type: "range", min: "0.1", max: "1", step: "any",
-                value: "{g.opacity}",
+                value: "{opacity}",
                 title: "How strongly the guide reads over the paint",
                 oninput: move |e| {
                     if let Ok(v) = e.value().parse::<f32>() {
@@ -281,7 +376,7 @@ enum GuideRegion {
 /// the same discipline as the transform drag (§16.6), and here it is also
 /// what keeps the axis *snap* stable: the snap classifies the whole drag from
 /// its origin, so it cannot flicker between axes mid-gesture.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Drag {
     region: GuideRegion,
     from: Vec2,
@@ -305,20 +400,25 @@ pub fn GuideEditOverlay() -> Element {
     };
     let (view, guide) = match state.obs.read().as_ref() {
         Some(o) => match o.guides.get(edit.index) {
-            Some(g) => (o.view, *g),
+            Some(g) => (o.view, g.clone()),
             None => return rsx! {},
         },
         None => return rsx! {},
     };
     let index = edit.index;
     let locked = edit.locked;
+    // The two camera numbers the hit test needs, read out here. Taken as values
+    // rather than off `guide` so the closures below capture nothing that is not
+    // `Copy` — a guide carries a name now, and a handler that captured the whole
+    // guide could not be shared between the move and the release.
+    let (center, focal) = (guide.center, guide.focal);
 
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
-    let classify = move |g: &PerspectiveGuide, pc: Vec2| {
-        let on_screen = view.canvas_to_screen(g.center);
+    let classify = move |pc: Vec2| {
+        let on_screen = view.canvas_to_screen(center);
         if (on_screen - view.canvas_to_screen(pc)).length() < CENTER_GRAB_PX {
             GuideRegion::Center
-        } else if ((pc - g.center).length() - g.focal).abs() * view.zoom < CIRCLE_BAND_PX {
+        } else if ((pc - center).length() - focal).abs() * view.zoom < CIRCLE_BAND_PX {
             GuideRegion::Focal
         } else {
             GuideRegion::Orbit
@@ -331,7 +431,7 @@ pub fn GuideEditOverlay() -> Element {
         }
         let pc = to_canvas(e);
         let Some(d) = drag() else {
-            hover.set(Some(classify(&guide, pc)));
+            hover.set(Some(classify(pc)));
             return;
         };
         match d.region {
@@ -343,8 +443,13 @@ pub fn GuideEditOverlay() -> Element {
                     .length()
                     .clamp(FOCAL_RANGE.0, FOCAL_RANGE.1);
             }),
+            // The turn only, rather than the whole guide the drag was started
+            // from: a drag is a statement about the camera's orientation, and
+            // writing back a snapshot would also write back the name, opacity and
+            // density as they stood at the press. Assigning the one field the drag
+            // computes leaves nothing for a mid-drag edit elsewhere to lose.
             GuideRegion::Orbit => update_guide(state, index, move |g| {
-                *g = d.start.dragged(d.from, pc, locked);
+                g.rotation = d.start.dragged(d.from, pc, locked).rotation;
             }),
         }
     };
@@ -391,9 +496,9 @@ pub fn GuideEditOverlay() -> Element {
                 crate::platform::capture_pointer(&e);
                 let pc = to_canvas(&e);
                 drag.set(Some(Drag {
-                    region: classify(&guide, pc),
+                    region: classify(pc),
                     from: pc,
-                    start: guide,
+                    start: guide.clone(),
                 }));
             },
             onpointermove: move |e| follow(&e),
