@@ -97,8 +97,9 @@ pub(super) struct DynamicsKit {
     pub(super) deposit_pipeline: wgpu::ComputePipeline,
     pub(super) deposit_bgl: wgpu::BindGroupLayout,
     /// The pen-up: settles the transfer the tip was still in the middle of when the
-    /// stroke stopped (`dynamics.wesl::settle`). Reads the reservoir directly rather
-    /// than through the bake — a settle has no travel to integrate along.
+    /// stroke stopped (`dynamics.wesl::settle`). Reads the reservoir through its own
+    /// `bake` dispatch — the zero-travel slot bakes the *remaining pass's* delivery
+    /// integral, not a per-segment window — never the cell that sits overhead.
     pub(super) settle_pipeline: wgpu::ComputePipeline,
     pub(super) settle_bgl: wgpu::BindGroupLayout,
     /// The deposit's prefix-τ volume binding (group 1) — the same texture the
@@ -693,27 +694,22 @@ impl<'a> DynamicsRun<'a> {
                 })
             })
             .collect();
-        // The pen-up, which reads the reservoir itself — hence one bind group per
-        // ping-pong half, like `exchange`.
-        let settle_bgs: Vec<wgpu::BindGroup> = (0..2)
-            .map(|i| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark dynamics settle bg"),
-                    layout: &kit.settle_bgl,
-                    entries: &[
-                        params(),
-                        samp(),
-                        tex(7, &self.brush_color[i]),
-                        tex(8, &self.brush_aux[i]),
-                        tex(11, &under_color),
-                        tex(12, &under_aux),
-                        tex(13, &region_color),
-                        tex(14, &region_aux),
-                        tex(21, &sel_mask),
-                    ],
-                })
-            })
-            .collect();
+        // The pen-up, which reads the reservoir only through its own `bake` — so unlike
+        // `exchange` it needs no bind group per ping-pong half; the bake's does that.
+        let settle_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark dynamics settle bg"),
+            layout: &kit.settle_bgl,
+            entries: &[
+                params(),
+                tex(19, &self.bake_load),
+                tex(20, &self.bake_latm),
+                tex(11, &under_color),
+                tex(12, &under_aux),
+                tex(13, &region_color),
+                tex(14, &region_aux),
+                tex(21, &sel_mask),
+            ],
+        });
 
         // ---- The loop: wick → bake → exchange (+ snapshot) → deposit per segment, in
         // stroke order. One compute pass; the implicit barriers between dispatches give
@@ -794,16 +790,22 @@ impl<'a> DynamicsRun<'a> {
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 cur = 1 - cur;
             }
-            // The pen-up: snapshot the final footprint, then settle the transfer the
-            // stroke stopped in the middle of (`dynamics.wesl::settle`). `cur` now names
-            // the reservoir the last segment left, which is what the tip is holding.
+            // The pen-up: snapshot the final footprint, bake the standing tip's
+            // remaining-pass delivery off the reservoir the last segment left (`cur`
+            // still names it — the slot's zero travel switches the bake onto the
+            // settle's weighted integral), then settle the transfer the stroke stopped
+            // in the middle of (`dynamics.wesl::settle`).
             if let Some(d) = plan.get(segment_slots) {
                 let off = (segment_slots * STRIDE) as u32;
                 cpass.set_pipeline(&kit.snapshot_pipeline);
                 cpass.set_bind_group(0, &snapshot_bg, &[off]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                cpass.set_pipeline(&kit.bake_pipeline);
+                cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
+                cpass.set_bind_group(1, prefix_bg, &[]);
+                cpass.dispatch_workgroups(1, BAKE_RES, 1);
                 cpass.set_pipeline(&kit.settle_pipeline);
-                cpass.set_bind_group(0, &settle_bgs[cur], &[off]);
+                cpass.set_bind_group(0, &settle_bg, &[off]);
                 cpass.set_bind_group(1, prefix_bg, &[]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
             }
@@ -1492,16 +1494,16 @@ pub(super) fn build_dynamics_kit(
             stor32(18),
         ],
     });
-    // The pen-up settle: the deposit's targets and snapshot, but reading the reservoir
-    // itself (bilinearly — a canvas texel sits over an arbitrary spot of it) instead of
-    // the bake, since a settle integrates along no travel.
+    // The pen-up settle: the deposit's targets and snapshot, and the deposit's *baked*
+    // reservoir reads too — its parcel is the delivery integral of the remaining pass,
+    // which the settle slot's own `bake` dispatch stores (`dynamics.wesl::settle`),
+    // not the cell that happens to sit overhead.
     let settle_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("stark dynamics settle bgl"),
         entries: &[
             params_entry,
-            csamp,
-            ctex(7, true),
-            ctex(8, true),
+            ctex(19, false),
+            ctex(20, false),
             ctex(11, false),
             ctex(12, false),
             stor(13),

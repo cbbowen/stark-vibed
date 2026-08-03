@@ -302,9 +302,9 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      per footprint texel. The snapshot rides along because it depends on nothing
      the exchange writes, so the barrier that used to separate them bought no
      ordering: four serialized dispatches per segment where there were five. The
-     range that ends the stroke closes with a standalone `snapshot` + **settle**
-     over the final footprint (see *The pen-up* below) — standalone because there
-     the settle *reads* what the snapshot writes. A texel's **exposure** to the
+     range that ends the stroke closes with a standalone `snapshot` + `bake` +
+     **settle** over the final footprint (see *The pen-up* below) — standalone
+     because there the settle *reads* what the snapshot and the bake write. A texel's **exposure** to the
      segment is the prefix-τ difference `e(x) = prefix(u) − prefix(u−d)`, and
      exposures add across overlapping quads of consecutive segments, so what the
      loop applies must be built from `e` in a way that survives re-cutting the path.
@@ -509,6 +509,38 @@ the *trail*, which got no settle at all, right where the two meet. They vanish o
 the footprint's rim (`owed` at the trailing edge, `received` at the leading one,
 the row total itself laterally), so the settle fades to nothing all the way round,
 and they cross at the tip centre where the kernel is already deep in saturation.
+
+**The parcel is the remaining pass's delivery, not the cell overhead.** At the end
+of a long smear the reservoir is radially skewed: interior cells trade fast, so
+they sit near equilibrium with the thin mid-pass canvas under them — nearly empty —
+while the trailing shoulder, whose `τ` is a hundredth of the interior's, still
+carries paint lifted hundreds of px back and pays it out slowly. That slow payout
+is what the visible trail is *made of*, so a settle that pairs each canvas texel
+with the cell that happens to sit above it lays almost nothing exactly where the
+continued pass would have slid the loaded trailing cells over every interior
+point — the whole footprint printed as a tip-shaped disc of missing paint, stepped
+where the kernel saturates (`golden_lift_end_regression` pins all three lengths).
+So the settle walks the delivery integral instead — per texel, along the row of a
+pen-up `bake` whose free channel carries the bare exposure prefix:
+
+```
+delivered(l) = k_dep · ∫ R·dτ · exp(−k_dep·τ(u)·(l−u)) · exp(−k_lift·P(u))
+```
+
+The first exponential is the cell **spending itself en route** — what it lays on
+the points between its pen-up position and this one comes out of the same load —
+which confines a saturated interior cell to its own neighbourhood while letting a
+shoulder cell carry its payout the whole way across the footprint; summed over
+every point a cell serves, it telescopes to at most the cell's own load, so the
+settle cannot mint for any pair of rates. The second is the parcel's **survival**
+under the lift of the cells that serve after it — the same change of variable the
+sliding kernel's conservation argument runs on. The `min(owed, received)` bound
+lands as the smooth ratio `dep(e)/dep(owed)` scaling the whole delivery — cutting
+the pass where the truncation falls was tried and prints a fresh cliff mid-
+footprint, because the ring serves last and drops out all at once. The en-route
+factor couples cell to served point, so no single baked prefix carries it; the
+settle runs once per stroke, which is what makes O(`BAKE_RES`) taps per texel the
+right trade where the per-segment deposit could never afford it.
 
 **Why the prefix and not `τ`.** The instantaneous depth would put the fall-off
 across the few pixels of the tip's coverage knee — `κ = −ln(1−coverage)` rises

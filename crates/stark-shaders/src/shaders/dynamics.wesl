@@ -20,7 +20,9 @@
 // it depends on nothing the exchange writes. Giving it a dispatch of its own bought a
 // barrier neither pass wanted, so it rides in `exchange`'s grid instead: four
 // serialized dispatches per segment where there were five. The pen-up keeps the
-// standalone entry point, because there the `settle` *reads* what the snapshot writes.
+// standalone entry point, because there the `settle` *reads* what the snapshot writes —
+// and it runs a `bake` of its own, whose zero-travel slot stores the remaining pass's
+// delivery integral rather than a per-segment window (see `settle`).
 //
 // **`exchange` runs before `deposit`, not after.** The two are the two halves of one
 // transfer, and a transfer is a statement about a *single* pre-state: both dispatches
@@ -696,9 +698,12 @@ fn bake(
 
     // Carried height and optical mass (opacity·height), each weighted by the
     // exposure they are presented with; latent rides as a mass weight so a
-    // ratio of the two prefixes recovers it (§6.1).
+    // ratio of the two prefixes recovers it (§6.1). The bare exposure rides in
+    // `.z`, so the prefix `P` itself comes back with the same reads — the segment
+    // deposit never looks at it, but the pen-up `settle` walks its delivery
+    // integral against exactly this row.
     let m = b_c.a * b_a.x;
-    ws_load[i] = vec4<f32>(b_a.x, m, 0.0, 0.0) * de;
+    ws_load[i] = vec4<f32>(b_a.x, m, 1.0, 0.0) * de;
     ws_latm[i] = vec4<f32>(b_c.rgb * m, 0.0) * de;
     workgroupBarrier();
 
@@ -1229,28 +1234,131 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let ex = exchange_at(e);
 
-    // The tool over this texel. The reservoir lives in the shape frame, so rotate out
-    // of travel exactly as `bake` does — these are the two directions of one map.
-    let theta = st.d.z * TAU;
-    let cs = cos(theta);
-    let sn = sin(theta);
-    let sl = vec2<f32>(xl * cs + yl * sn, -xl * sn + yl * cs);
-    let buv = clamp(sl * 0.5 + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-    let b_c = textureSampleLevel(brush_src_color, samp, buv, 0.0);
-    let b_a = textureSampleLevel(brush_src_aux, samp, buv, 0.0);
+    // The parcel is **what the rest of the pass would have delivered**, not the cell
+    // overhead. At the end of a long smear the reservoir is radially skewed: the
+    // interior cells trade fast, so they sit near equilibrium with the thin mid-pass
+    // canvas under them — nearly empty — while the trailing shoulder, whose τ is a
+    // hundredth of the interior's, still carries paint lifted hundreds of px back and
+    // pays it out slowly. That slow payout is precisely what the visible trail is made
+    // of, so pairing each canvas texel with the (empty) cell directly above it deposits
+    // almost nothing where the continued pass would have slid the loaded trailing
+    // cells over every interior point: the whole footprint printed as a tip-shaped
+    // disc of *missing* paint, stepped exactly where this kernel saturates.
+    //
+    // So the parcel is the sliding kernel's own gain integral over the remaining
+    // pass, cell by cell along this row of the pen-up's `bake`:
+    //
+    //     delivered(xl) = k_dep · ∫₋₁^xl R·dτ · exp(−k_dep·τ(u)·(xl−u)) · exp(−k_lift·P(u))
+    //
+    // The first exponential is the cell **spending itself en route** — everything it
+    // lays on the points between its pen-up position and this one comes out of the
+    // same load — which is what confines a saturated interior cell to the few px
+    // under it while letting a shoulder cell, whose τ is a hundredth of that, carry
+    // its payout the whole way across the footprint. The second is the parcel's
+    // **survival**: cells nearer the rim serve later, so what cell `u` lays here is
+    // then re-lifted by everything after it, `P` the same prefix `owed` reads.
+    // Dropping the en-route factor is not an option even though the artifact's ring
+    // cells barely feel it: for a brush with `deposit ≫ lift` the survival factor no
+    // longer saturates the sum, and a settle without the spend-down would mint
+    // several times the tool's whole load. With it, a cell's payout summed over
+    // every point it serves telescopes to at most its own load — the same
+    // change-of-variable bound the segment kernel rests on (`exchange_at`) — so the
+    // settle cannot mint, for any pair of rates, by construction.
+    //
+    // `min(owed, received)` still bounds it: the delivery above assumes the pass
+    // completes, and on the leading half it must not (that is the bound's whole
+    // argument). The bound lands as the **ratio of the two deposit saturations**,
+    // `dep(e) / dep(owed)` — 1 exactly on the trailing half, fading with `received`
+    // on the leading one — scaling the whole delivery rather than cutting the pass
+    // where the truncation falls. Cutting is the more literal reading and was tried
+    // first: the ring serves *last*, so a truncated pass drops its entire payout the
+    // moment `received` dips below `owed`, and the settle prints a fresh cliff down
+    // the middle of the footprint. A ratio of two smooth readings of one prefix
+    // moves nothing discontinuously, and it can only shrink the parcel, so the
+    // no-minting bound survives it.
+    //
+    // A per-texel walk of the row, not a prefix — the en-route factor couples the
+    // cell to the point it serves, so no single baked integral carries it. The
+    // settle runs once per stroke, which is what makes O(BAKE_RES) taps per texel
+    // the right trade here where the per-segment deposit could never afford it.
+    let kd = -st.b.w;
+    let kl = -st.b.z;
+    let bdimf = vec2<f32>(textureDimensions(bake_load));
+    // The bake row pair this texel sits between — `bake_at`'s own addressing, kept
+    // linear through the differencing below (a difference of blends is a blend of
+    // differences).
+    let uy = clamp(yl * 0.5 + 0.5, 0.0, 1.0) * bdimf.y - 0.5;
+    let fy = uy - floor(uy);
+    let yi0 = clamp(i32(floor(uy)), 0, i32(bdimf.y) - 1);
+    let yi1 = clamp(i32(floor(uy)) + 1, 0, i32(bdimf.y) - 1);
+    let dx = 2.0 / bdimf.x; // one bake column, radius units
+    var prev = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var prev_lm = vec3<f32>(0.0, 0.0, 0.0);
+    var par_h = 0.0;
+    var par_m = 0.0;
+    var par_lm = vec3<f32>(0.0, 0.0, 0.0);
+    for (var i = 0; i < i32(BAKE_RES); i = i + 1) {
+        let xr = (f32(i) + 1.0) / bdimf.x * 2.0 - 1.0;
+        // The fraction of this column that lies below the point — columns ascend, so
+        // the first one wholly above it ends the walk.
+        let cover = clamp((xl - (xr - dx)) / dx, 0.0, 1.0);
+        if cover <= 0.0 {
+            break;
+        }
+        let cur = mix(
+            textureLoad(bake_load, vec2<i32>(i, yi0), 0),
+            textureLoad(bake_load, vec2<i32>(i, yi1), 0),
+            fy,
+        );
+        let cur_lm = mix(
+            textureLoad(bake_latm, vec2<i32>(i, yi0), 0),
+            textureLoad(bake_latm, vec2<i32>(i, yi1), 0),
+            fy,
+        ).xyz;
+        // Height and mass prefixes are monotone, so a negative difference is
+        // rounding; the latent's is not (Oklab a/b are signed) and stays unclamped.
+        let d_h = max(cur.x - prev.x, 0.0);
+        let d_m = max(cur.y - prev.y, 0.0);
+        let d_e = max(cur.z - prev.z, 0.0);
+        let d_lm = cur_lm - prev_lm;
+        let pr = cur.z;
+        prev = cur;
+        prev_lm = cur_lm;
+        if d_e <= 0.0 {
+            continue; // outside the footprint: nothing carried, nothing served
+        }
+        let tau = d_e / dx;
+        let xc = xr - 0.5 * dx;
+        let en_route = exp(-kd * tau * max(xl - xc, 0.0));
+        let survive = exp(-kl * max(pr - 0.5 * d_e, 0.0));
+        let c = kd * en_route * survive * cover;
+        par_h += d_h * c;
+        par_m += d_m * c;
+        par_lm += d_lm * c;
+    }
+    // The `min(owed, received)` bound, as the smooth share it lands as (see above).
+    let share = ex.dep / max(1.0 - exp(-kd * owed), 1e-6);
+    par_h *= share;
+    par_m *= share;
+    par_lm *= share;
 
     let uc = textureLoad(under_color, t, 0);
     let ua = textureLoad(under_aux, t, 0);
 
-    // The same parcel stacking as the deposit, with the tool's own load as the parcel:
-    // no `add` source, because a settle is a break of contact and not a stretch of
-    // travel, and the source is a rate per unit of travel.
+    // The same parcel stacking as the deposit, with the delivery integral as the
+    // parcel: no `add` source, because a settle is a break of contact and not a
+    // stretch of travel, and the source is a rate per unit of travel. Colour comes
+    // back out of the optical-mass weight it was integrated under, so the parcel
+    // carries the mixture of the cells that would have served this point, each in
+    // proportion to what it would have delivered (§6.1).
     var h = ua.x * ex.keep;
     var m = uc.a * h;
     let canvas_lat = uc.rgb / max(uc.a, EPS);
-    let par_h = b_a.x * ex.dep;
-    let par_m = b_c.a * par_h;
-    let lat = blend_latent(canvas_lat, m, b_c.rgb, par_m);
+    var par_lat = canvas_lat;
+    if par_m > EPS {
+        par_lat = par_lm / par_m;
+    }
+    let lat = blend_latent(canvas_lat, m, par_lat, par_m);
     h += par_h;
     m += par_m;
     let op = m / max(h, EPS);
