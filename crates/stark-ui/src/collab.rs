@@ -30,6 +30,7 @@ use stark_net::{
     actor_from_endpoint_id,
 };
 
+use crate::icons::{self, icon};
 use crate::state::AppState;
 
 /// How often this client publishes its presence, in ms. Fast enough that another
@@ -588,6 +589,10 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                         readonly: true,
                                         value: "{url}",
                                     }
+                                    // The glyph is the half of this button that holds
+                                    // still: the word swaps to "Copied" and back on a
+                                    // timer, so what says *what the button is* has to
+                                    // be the part that does not change.
                                     button {
                                         class: "btn btn-primary",
                                         onclick: move |_| {
@@ -600,6 +605,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                                 copied.set(false);
                                             });
                                         },
+                                        {icon(icons::COPY)}
                                         if copied() { "Copied" } else { "Copy" }
                                     }
                                 }
@@ -654,6 +660,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                     button {
                         class: "btn btn-primary",
                         onclick: move |_| on_close.call(()),
+                        {icon(icons::DONE)}
                         "Done"
                     }
                 }

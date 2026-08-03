@@ -274,6 +274,7 @@ pub fn FrameBar() -> Element {
                 class: "chip",
                 title: "Stop composing and go back to painting (the frame stays)",
                 onclick: move |_| done_composing(state),
+                {icon(icons::DONE)}
                 "Done"
             }
         }

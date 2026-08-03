@@ -123,9 +123,26 @@ pub fn LayerPanel() -> Element {
             }
         }
 
+        // Top of the document first, which is what a stack looks like from in front
+        // of it — and within a group, what it carries above its base.
+        for row in rows.iter().rev().filter(|r| !r.hidden).cloned() {
+            LayerRow {
+                row: row.clone(),
+                ontoggle: move |id| {
+                    let mut shut = collapsed.write();
+                    if !shut.remove(&id) {
+                        shut.insert(id);
+                    }
+                },
+            }
+        }
+
+        hr {}
+
         if let Some(l) = selected {
             div { class: "slider-row",
                 div { class: "slider-label",
+                    {icon(icons::OPACITY)}
                     if l.is_group { "Opacity \u{2014} of the group" } else { "Opacity" }
                 }
                 input {
@@ -142,6 +159,7 @@ pub fn LayerPanel() -> Element {
             }
             div { class: "slider-row",
                 div { class: "slider-label",
+                    {icon(icons::BLEND)}
                     if l.is_group { "Blend \u{2014} of the group" } else { "Blend" }
                 }
                 // Blend and clip are one row because they are one question — *how does
@@ -193,20 +211,6 @@ pub fn LayerPanel() -> Element {
                         {icon(icons::CLIP)}
                     }
                 }
-            }
-        }
-
-        // Top of the document first, which is what a stack looks like from in front
-        // of it — and within a group, what it carries above its base.
-        for row in rows.iter().rev().filter(|r| !r.hidden).cloned() {
-            LayerRow {
-                row: row.clone(),
-                ontoggle: move |id| {
-                    let mut shut = collapsed.write();
-                    if !shut.remove(&id) {
-                        shut.insert(id);
-                    }
-                },
             }
         }
     }
@@ -364,10 +368,17 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
 /// not a fact about the document — which is exactly why an unnamed layer stores no
 /// name (see [`LayerInfo::name`]). A layer the author has named shows that name,
 /// frame or not.
+///
+/// The word alone, with no mark in it. The `\u{25F1}` that used to lead an unnamed
+/// frame's label was the last character in either roster standing in for a glyph the
+/// set has (`icons::FRAME`, which the frame bar already wears), and putting it in the
+/// *string* had a second cost: this label is also the rename field's placeholder, so
+/// opening the field on a frame showed a corner mark inside a text box. The row draws
+/// the glyph now, which leaves the placeholder a name.
 fn layer_label(info: &LayerInfo) -> String {
     match (&info.name, info.matte.is_some()) {
         (Some(name), _) => name.to_string(),
-        (None, true) => "\u{25F1} Frame".to_string(),
+        (None, true) => "Frame".to_string(),
         (None, false) => format!("Layer {}", info.id.ordinal()),
     }
 }
@@ -584,6 +595,15 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                         title,
                         onclick: move |_| dispatch(state, PeerCommand::SetActiveLayer(id)),
                         ondoubleclick: move |_| draft.set(Some(seed.clone())),
+                        // The frame's crop marks, on the row as on the bar — the only
+                        // kind of layer that is a *what* rather than a place to paint,
+                        // and the one row in the panel whose dashed border is already
+                        // saying so. It leads the name whether or not the frame has
+                        // been renamed, because the mark is about what the layer is
+                        // and the name is about what the author calls it.
+                        if matte {
+                            {icon(icons::FRAME)}
+                        }
                         "{label}"
                     }
                 }

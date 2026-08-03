@@ -15,6 +15,7 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
 use crate::panels::frame::selected_frame;
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
@@ -192,6 +193,9 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
                                 }
                             });
                         },
+                        // The same mark the menu entry that opened this dialog wears,
+                        // and it stays put while the word swaps to "Exporting…".
+                        {icon(icons::EXPORT)}
                         if busy() { "Exporting\u{2026}" } else { "Export" }
                     }
                 }

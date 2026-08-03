@@ -295,11 +295,26 @@ pub fn PerspectiveGuideBar() -> Element {
 
     rsx! {
         div { class: chrome_class(state, "guide-bar"),
-            span { class: "bar-label", "{label}" }
+            // The Guides panel's own mark, on the bar its rows raise — and the reason
+            // the label can stay the guide's *name*: the glyph says what kind of thing
+            // is being shaped, so the words are free to say which one.
+            span { class: "bar-label",
+                {icon(icons::PERSPECTIVE)}
+                "{label}"
+            }
             // Locks: hold a world axis fixed, constraining the canvas drag to
             // turns about it — lock the vertical and every gesture keeps the
             // verticals parallel. Colored as the axis's own lines are.
-            span { class: "bar-sub", "Lock" }
+            //
+            // All four of the bar's group labels wear a mark, and it is the *label*
+            // that is the optional half rather than the glyph. That is not a rule
+            // about this bar: a mark is what a control still has when its word is
+            // taken away, so anything that can be reached for has to carry one, and a
+            // label with nothing but a word is a control that would vanish.
+            span { class: "bar-sub",
+                {icon(icons::LOCK)}
+                "Lock"
+            }
             for i in 0..3 {
                 button {
                     class: if edit.locked[i] { "chip axis-chip active" } else { "chip axis-chip" },
@@ -315,7 +330,12 @@ pub fn PerspectiveGuideBar() -> Element {
                 }
             }
             span { class: "bar-sep" }
-            span { class: "bar-sub", "Show" }
+            // The same eye the guide's own row wears, asked of a fan of guide lines
+            // rather than of the whole guide.
+            span { class: "bar-sub",
+                {icon(icons::VISIBLE)}
+                "Show"
+            }
             for i in 0..3 {
                 button {
                     class: if axes[i] { "chip axis-chip active" } else { "chip axis-chip" },
@@ -326,7 +346,13 @@ pub fn PerspectiveGuideBar() -> Element {
                 }
             }
             span { class: "bar-sep" }
-            span { class: "bar-sub", "Density" }
+            // A fan of lines from a point, which is what this number counts: the
+            // guide's fans are its parametrization (§20.5), so the mark is a picture
+            // of the thing the slider makes more or fewer of.
+            span { class: "bar-sub",
+                {icon(icons::DENSITY)}
+                "Density"
+            }
             input {
                 class: "slider",
                 r#type: "range", min: "4", max: "36", step: "1",
@@ -338,7 +364,12 @@ pub fn PerspectiveGuideBar() -> Element {
                     }
                 },
             }
-            span { class: "bar-sub", "Opacity" }
+            // The ghost the Layers panel and the brush editor wear: how much of what
+            // is under this shows through, asked of a guide over the paint.
+            span { class: "bar-sub",
+                {icon(icons::OPACITY)}
+                "Opacity"
+            }
             input {
                 class: "slider",
                 r#type: "range", min: "0.1", max: "1", step: "any",
@@ -355,6 +386,7 @@ pub fn PerspectiveGuideBar() -> Element {
                 class: "chip",
                 title: "Leave the guide as it stands",
                 onclick: move |_| end_guide_edit(state),
+                {icon(icons::DONE)}
                 "Done"
             }
         }

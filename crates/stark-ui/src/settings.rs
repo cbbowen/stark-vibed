@@ -26,6 +26,7 @@
 use dioxus::prelude::*;
 
 use crate::collab::CollabPhase;
+use crate::icons::{self, icon};
 use crate::state::{AppState, dispatch};
 use stark_core::command::ViewCommand;
 
@@ -92,6 +93,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     button {
                         class: "btn btn-primary",
                         onclick: move |_| on_close.call(()),
+                        {icon(icons::DONE)}
                         "Done"
                     }
                 }

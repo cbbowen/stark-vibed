@@ -13,6 +13,14 @@
   --panel-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E"), rgba(21, 20, 19, 0.9);
 }
 
+hr {
+  border: none;
+  border-top: 1px solid #ffffff14;
+  width: 100%;
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+
 /* --- app shell --- */
 .app-root {
   position: absolute;
@@ -132,7 +140,13 @@
   margin-bottom: 10px;
 }
 
+/* Title bar = the panel's mark, its name, and the whole thing is the drag handle
+   (`PanelId::glyph`). The glyph is inside the grip rather than beside it, so there is
+   no part of the header that looks draggable and is not. */
 .panel-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-weight: 600;
   font-size: 13px;
   letter-spacing: 0.02em;
@@ -228,12 +242,13 @@
 }
 
 .panel-close {
+  display: flex;
+  align-items: center;
   border: none;
   background: transparent;
   color: #e8e8ea;
   opacity: 0.45;
   cursor: pointer;
-  font-size: 12px;
   line-height: 1;
   padding: 3px 5px;
   margin: -3px -5px -3px 0;
@@ -246,10 +261,34 @@
   background: #ffffff1f;
 }
 
-/* Trailing ✓ on a "Panels" menu item when that panel is shown. */
+/* A step under the panel's own mark: closing is not what the header is for, and at a
+   matched size the ✕ competes with the glyph that names the panel. */
+.panel-close .icon svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* A menu entry's mark and its word, held together as the item's leading half — the
+   menubar item is `space-between`, so a shortcut or a ✓ still sits hard right while
+   these two stay a unit. Defined here rather than in the menubar's stylesheet
+   because that one is a css_module and hashes what it declares; this class is set on
+   an element the app builds, so it has to be global. */
+.menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Trailing ✓ on a menu item for a panel that is shown, or a mode you are in. */
 .menu-check {
+  display: flex;
+  justify-content: flex-end;
+  width: 14px;
+}
+
+.menu-check .icon svg {
   width: 12px;
-  text-align: right;
+  height: 12px;
 }
 
 /* --- generic flex row --- */
@@ -264,7 +303,13 @@
   margin-bottom: 8px;
 }
 
+/* Flex so the few sliders that carry a mark (`widgets::Slider`'s `glyph`) sit it
+   beside the word rather than on a line box of its own. The unmarked majority are a
+   single text child, for which this is exactly the same layout as before. */
 .slider-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
   opacity: 0.7;
   margin-bottom: 2px;
@@ -418,6 +463,15 @@
   height: 14px;
 }
 
+/* The command rail's weight (`icons::icon_large`). 40px of button carrying one mark
+   and no word is different company from a 14px glyph beside a label, and a glyph
+   sized for the latter reads as lost in the former — which is what the 18px
+   characters the rail used to wear were already compensating for. */
+.icon.icon-lg svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* A glyph holding a paint colour (`icons::icon_tinted`): the paint laid over an
    untinted copy of the same path, which is what lets a low-opacity wash read as thin
    rather than as dark — see the doc comment there, which owns this reasoning. Absolute
@@ -444,8 +498,6 @@
 .preset-section {
   display: flex;
   flex-direction: column;
-  margin-top: 10px;
-  border-top: 1px solid #ffffff14;
 }
 
 /* Section title with Save on the same line: the button costs no row of its own, and
@@ -547,7 +599,13 @@
   text-overflow: ellipsis;
 }
 
+/* The trash the layer and guide rows wear, in the third roster that has rows to take
+   things out of. Smaller than theirs, because it is inside an 18px disc rather than
+   standing in a row's own column. */
 .preset-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 18px;
   height: 18px;
   padding: 0;
@@ -555,19 +613,28 @@
   border-radius: 50%;
   background: transparent;
   color: #e8e8ea;
-  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
   transition: opacity 120ms, background 80ms;
 }
 
+.preset-remove .icon svg,
+.shape-remove .icon svg {
+  width: 11px;
+  height: 11px;
+}
+
 .preset-row:hover .preset-remove {
   opacity: 0.8;
 }
 
+/* Answers a hover in red *ink*, as the layer and guide rows' trash does — not with a
+   red disc behind it. The disc was left over from when this was a ✕ character: a
+   small glyph needed a filled target to look pressable, and a trash does not. Three
+   rosters, one destructive control, one way of saying so. */
 .preset-remove:hover {
-  background: #a53a3a;
+  color: #e8757a;
   opacity: 1;
 }
 
@@ -646,6 +713,8 @@
    chips' — the mark is part of the indicator, not a control you can press. */
 .bar-label {
   display: inline-flex;
+  flex-wrap: nowrap;
+  white-space: nowrap;
   align-items: center;
   gap: 5px;
   font-size: 12px;
@@ -1382,6 +1451,10 @@ button.layer-remove:hover {
 
 /* "Edit brush…" entry point at the bottom of the Brush panel. */
 .be-open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   width: 100%;
   margin-top: 4px;
   padding: 6px 0;
@@ -1438,16 +1511,19 @@ button.layer-remove:hover {
   user-select: none;
 }
 
+/* Sits *on* the preview, which is light — hence the dark ink, which the glyph
+   inherits like everything else `currentColor`. */
 .be-preview-reset {
   position: absolute;
   top: 6px;
   right: 6px;
+  display: flex;
+  align-items: center;
   border: none;
   border-radius: 6px;
-  padding: 3px 7px;
+  padding: 4px 7px;
   background: #00000014;
   color: #000000a6;
-  font-size: 14px;
   line-height: 1;
   cursor: pointer;
 }
@@ -1577,12 +1653,18 @@ button.layer-remove:hover {
   background: radial-gradient(circle, #e8e8ea 0%, #e8e8ea 52%, transparent 71%);
 }
 
+/* The import tile's plus, drawn rather than typed — and big, because it stands in a
+   thumbnail slot instead of beside a word. */
 .shape-thumb.plus {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
   opacity: 0.55;
+}
+
+.shape-thumb.plus .icon svg {
+  width: 22px;
+  height: 22px;
 }
 
 .shape-name {
@@ -1599,6 +1681,9 @@ button.layer-remove:hover {
   position: absolute;
   top: 3px;
   right: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 18px;
   height: 18px;
   padding: 0;
@@ -1606,7 +1691,6 @@ button.layer-remove:hover {
   border-radius: 50%;
   background: #000000a0;
   color: #e8e8ea;
-  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -1639,7 +1723,14 @@ button.layer-remove:hover {
 }
 
 /* --- buttons --- */
+/* A dialog's action button. Flex so the ones that carry a mark (Copy, Export) put it
+   beside the word rather than on a line box of their own — and so those two stay the
+   same shape as the bare ones (Done, Cancel) beside them. */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   padding: 8px 16px;
   border: none;
   border-radius: 8px;
@@ -1668,7 +1759,14 @@ button.layer-remove:hover {
   padding: 5px;
 }
 
+/* A frame's row leads with the crop marks the frame bar wears (`icons::FRAME`), so
+   this one name in the panel is a glyph and a word. Only the button gets the flex —
+   the rename field that stands in for it carries `.layer-name` alone, and a field's
+   placeholder is text, not a mark. */
 .layer-name-matte {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   flex: 1;
   text-align: left;
   color: #ffffffa6;
@@ -1821,9 +1919,20 @@ button.layer-remove:hover {
 /* Quiet group labels inside a bar ("Lock", "Show", "Density"…): smaller and
    dimmer than `.bar-label`, which names the mode itself. */
 .bar-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   color: #ffffff8c;
   padding-left: 2px;
+}
+
+/* A step under the 14px the bar's chips wear: these mark a *group label*, which is
+   already the quietest text in the bar, and at a matched size the lock and the eye
+   would outweigh the axis letters they are introducing. */
+.bar-sub .icon svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* An axis chip, tinted the axis's own hue (`--axis`, set inline): the letter
@@ -2249,11 +2358,19 @@ button.layer-remove:hover {
   font-size: 12px;
 }
 
-.timeline-bar .timeline-play {
-  width: 34px;
+/* Transport and close: square, because each carries one mark and no word. The chip's
+   own `padding: 4px 12px` would make them oblong, which is what a word-shaped chip
+   that lost its word looks like. */
+.timeline-bar .timeline-play,
+.timeline-bar .timeline-close {
+  width: 30px;
   padding: 4px 0;
-  font-size: 13px;
   line-height: 1;
+}
+
+.timeline-bar .timeline-close .icon svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* The track: a ruler of per-action ticks, a fill showing how far the playhead has

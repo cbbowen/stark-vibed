@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
 use crate::panels::{
     BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, NavigatorPanel, SelectPanel,
 };
@@ -60,6 +61,29 @@ impl PanelId {
             PanelId::Layers => "Layers",
             PanelId::Guides => "Drawing Guides",
             PanelId::Lighting => "Lighting",
+        }
+    }
+
+    /// The panel's mark, worn by its title bar and by the entry that reopens it in
+    /// the Panels menu.
+    ///
+    /// A stack of panels is read down its left edge, and a column of seven words is
+    /// read one word at a time; a column of seven marks is read at once. That is the
+    /// whole argument — the glyph is not decoration on the title, it is what makes
+    /// the stack scannable at the glance the title bar is actually given.
+    ///
+    /// Three of these are shared with a bar or a dialog elsewhere (see
+    /// [`crate::icons`]), on purpose: a panel and the bar that serves it are two
+    /// views of one subject, so they are one mark.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            PanelId::Navigator => icons::NAVIGATOR,
+            PanelId::Color => icons::COLOR,
+            PanelId::Brush => icons::BRUSH,
+            PanelId::Select => icons::SELECTION,
+            PanelId::Layers => icons::LAYERS,
+            PanelId::Guides => icons::PERSPECTIVE,
+            PanelId::Lighting => icons::LIGHTING,
         }
     }
 
@@ -342,9 +366,13 @@ pub fn Panel(id: PanelId, children: Element) -> Element {
                 refs.write().insert(id, e.data());
             },
             div { class: "panel-header",
+                // The mark is inside the drag handle rather than beside it: the whole
+                // title *is* the grip, and a glyph sitting outside it would be the one
+                // part of the header that looks draggable and is not.
                 div {
                     class: "panel-title",
                     onpointerdown: move |e| start_drag(layout, id, &e),
+                    {icon(id.glyph())}
                     "{id.title()}"
                 }
                 button {
@@ -354,7 +382,7 @@ pub fn Panel(id: PanelId, children: Element) -> Element {
                         let mut hidden = layout.hidden;
                         hidden.write().insert(id);
                     },
-                    "\u{2715}"
+                    {icon(icons::CLOSE)}
                 }
             }
             {children}

@@ -24,6 +24,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
 use crate::layout::chrome_class;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch};
@@ -213,7 +214,7 @@ pub fn TimelineBar() -> Element {
             class: "chip timeline-close",
             title: "Leave Timeline mode",
             onclick: move |_| set_open(state, false),
-            "\u{2715}"
+            {icon(icons::CLOSE)}
         }
     };
 
@@ -224,7 +225,10 @@ pub fn TimelineBar() -> Element {
     let Some((at, total)) = range() else {
         return rsx! {
             div { class: chrome_class(state, "timeline-bar"),
-                span { class: "bar-label", "Timeline" }
+                span { class: "bar-label",
+                    {icon(icons::TIMELINE)}
+                    "Timeline"
+                }
                 span { class: "timeline-note",
                     "Unavailable while the drawing is shared \u{2014} the history is everyone's."
                 }
@@ -259,11 +263,11 @@ pub fn TimelineBar() -> Element {
     } else {
         "Play the history from here"
     };
-    let play_glyph = if playing {
-        "\u{275A}\u{275A}"
-    } else {
-        "\u{25B6}"
-    };
+    // The transport shows the act clicking would perform, not the state it is in —
+    // the opposite of the layer eye (`icons::VISIBLE`), and right for the same reason
+    // that one is: what a running playhead *is* is already said by the bar moving,
+    // so the button is free to say what pressing it would do.
+    let play_glyph = if playing { icons::PAUSE } else { icons::PLAY };
     let count_class = if behind {
         "timeline-count behind"
     } else {
@@ -282,7 +286,7 @@ pub fn TimelineBar() -> Element {
                 title: "{play_title}",
                 disabled: total == 0,
                 onclick: move |_| if playing { stop(state) } else { play(state) },
-                "{play_glyph}"
+                {icon(play_glyph)}
             }
 
             div { class: "timeline-track",

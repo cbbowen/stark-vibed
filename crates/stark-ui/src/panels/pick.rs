@@ -13,6 +13,7 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
 use crate::layout::chrome_class;
 use crate::panels::select::current_tool;
 use crate::state::AppState;
@@ -49,7 +50,14 @@ pub fn PickBar() -> Element {
 
     rsx! {
         div { class: chrome_class(state, "pick-bar"),
-            span { class: "bar-label", "Eyedropper" }
+            // The tool Alt has just armed, drawn as well as named. This bar exists to
+            // make a modifier binding discoverable (see the module docs), and a picture
+            // of the eyedropper appearing beside the cursor is the shortest version of
+            // that argument the bar can make.
+            span { class: "bar-label",
+                {icon(icons::EYEDROPPER)}
+                "Eyedropper"
+            }
             button {
                 class: chip(all),
                 title: "Sample the colour the canvas shows, through every visible layer",

@@ -13,6 +13,8 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
+
 /// Phosphor's licence, read from the copy vendored beside the icons it covers.
 ///
 /// `include_str!` and not a string literal in this file, so the text on screen and
@@ -54,6 +56,7 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                     button {
                         class: "btn btn-primary",
                         onclick: move |_| on_close.call(()),
+                        {icon(icons::DONE)}
                         "Done"
                     }
                 }

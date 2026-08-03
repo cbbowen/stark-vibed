@@ -28,6 +28,7 @@ use stark_core::{ColorSpaceId, InputSample};
 
 use dioxus::html::HasFileData;
 
+use crate::icons::{self, icon};
 use crate::panels::brush::{MAX_RADIUS, MAX_TAPER, set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::{self, Renderer};
@@ -158,7 +159,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
                 div { class: "be-header",
                     div { class: "modal-title", "Brush" }
-                    button { class: "btn btn-primary", onclick: move |_| on_close.call(()), "Done" }
+                    button { class: "btn btn-primary", onclick: move |_| on_close.call(()),
+                        {icon(icons::DONE)}
+                        "Done"
+                    }
                 }
 
                 // Live test canvas: draw on it to replace the test stroke; ↺ restores
@@ -181,17 +185,21 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         onpointercancel: move |_| cancel_preview_stroke(state, preview),
                     }
                     div { class: "be-preview-hint", "Test stroke — draw here to replace it" }
+                    // The turning arrow Undo wears, because putting the preview back
+                    // *is* an undo — narrowed to the one stroke this dialog owns
+                    // (`icons::RESET`).
                     button {
                         class: "be-preview-reset",
                         title: "Restore the default test stroke",
                         onclick: move |_| reset_stroke(state, preview),
-                        "\u{21BA}"
+                        {icon(icons::RESET)}
                     }
                 }
 
                 div { class: "be-sections",
                     Section {
                         title: "Tip", desc: "The footprint the stroke sweeps along the path.",
+                        glyph: icons::TIP,
                         open: tip_open,
                         ShapeGallery {}
                         // Orientation only matters for non-round tips (per-orientation
@@ -228,13 +236,17 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
                     Section {
                         title: "Paint", desc: "The brush's own paint: how much goes down and how far it lasts.",
+                        glyph: icons::PAINT,
                         open: paint_open,
                         // `add` is the tool's only source term (§6.2) and its only amount
                         // knob: the paint height laid per unit swept optical depth.
                         Slider { label: "Flow", min: 0.0, max: 3.0, value: d.add,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.add = v) }
                         // Per-unit opacity, independent of the amount laid (§6.1).
-                        Slider { label: "Opacity", min: 0.0, max: 1.0, value: brush.color[3],
+                        // The ghost the Layers panel's opacity wears: the same question
+                        // — how much of what is under this shows through — asked of the
+                        // paint a stroke lays rather than of a whole layer.
+                        Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.color[3],
                             oninput: move |v| edit(state, preview, move |b| b.color[3] = v) }
                         // Depletion per px travelled — the stroke runs dry. 0 is what a
                         // pen or a digital brush wants; not behind "Show more", because
@@ -245,6 +257,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
                     Section {
                         title: "Color dynamics", desc: "The colour wanders across the brush and along the stroke, following a noise field.",
+                        glyph: icons::COLOR,
                         open: color_open,
                         div { class: "brush-shapes",
                             button { class: chip(cd.noise == NoiseKind::Simplex),
@@ -279,6 +292,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
 
                     Section {
                         title: "Pickup", desc: "Canvas paint on the move — smudge, knife, eraser, blur.",
+                        glyph: icons::PICKUP,
                         open: pickup_open,
                         Slider { label: "Lift", min: 0.0, max: 0.95, value: d.lift,
                             oninput: move |v| edit(state, preview, move |b| b.dynamics.lift = v) }
@@ -399,6 +413,8 @@ fn ShapeGallery() -> Element {
                     onclick: move |_| crate::shapes::select(state, id),
                     div { class: "shape-thumb", style: "background-image: url({url});" }
                     div { class: "shape-name", title: "{name}", "{name}" }
+                    // `icons::REMOVE`, as on every other row the application lets you
+                    // take something out of — the library of stamps is one more roster.
                     button {
                         class: "shape-remove",
                         title: "Remove from library",
@@ -406,7 +422,7 @@ fn ShapeGallery() -> Element {
                             e.stop_propagation();
                             crate::shapes::remove(state, id);
                         },
-                        "\u{00D7}"
+                        {icon(icons::REMOVE)}
                     }
                 }
             }
@@ -417,7 +433,7 @@ fn ShapeGallery() -> Element {
                         crate::shapes::import_file(state, name, bytes);
                     });
                 },
-                div { class: "shape-thumb plus", "+" }
+                div { class: "shape-thumb plus", {icon(icons::ADD)} }
                 div { class: "shape-name", "Import\u{2026}" }
             }
         }
@@ -433,8 +449,24 @@ fn ShapeGallery() -> Element {
 // --- grouping chrome ---
 
 /// A collapsible settings group: a chevron header (click toggles) over the body.
+///
+/// `glyph` says what the group is *about* — the same job the `desc` sentence does,
+/// except that the sentence is inside the fold and the mark is not. A shut section
+/// is a word on a line, and four words in a column are read one at a time; four
+/// marks are read at once, which is what makes the dialog navigable while collapsed.
+///
+/// The chevron beside it stays a character on purpose. It is the one mark here whose
+/// meaning is its *rotation*, and the set has no right-pointing caret to rotate —
+/// borrowing the Layers panel's would put the glyph that deliberately refuses to
+/// rotate (`icons::FOLD_OPEN`) into a control that must.
 #[component]
-fn Section(title: String, desc: String, open: Signal<bool>, children: Element) -> Element {
+fn Section(
+    title: String,
+    desc: String,
+    glyph: &'static str,
+    open: Signal<bool>,
+    children: Element,
+) -> Element {
     let mut open = open;
     rsx! {
         div { class: "be-section",
@@ -442,6 +474,7 @@ fn Section(title: String, desc: String, open: Signal<bool>, children: Element) -
                 class: "be-section-header",
                 onclick: move |_| { let v = open(); open.set(!v); },
                 span { class: if open() { "be-chevron open" } else { "be-chevron" }, "\u{25B8}" }
+                {icon(glyph)}
                 "{title}"
             }
             if open() {

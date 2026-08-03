@@ -146,7 +146,7 @@ pub fn SelectPanel() -> Element {
                 }
             }
         }
-        Slider { label: "Feather", min: 0.0, max: 64.0, value: feather,
+        Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
             oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
     }
 }
@@ -180,11 +180,20 @@ pub fn SelectionBar() -> Element {
     rsx! {
         if active && !transforming {
             div { class: chrome_class(state, "selection-bar"),
-                span { class: "bar-label", "Selection" }
+                // The Select panel's own mark, on the bar the panel's gestures raise —
+                // the bar is *this panel's* state made visible, so it says so with the
+                // panel's glyph rather than a second picture of a marquee.
+                span { class: "bar-label",
+                    {icon(icons::SELECTION)}
+                    "Selection"
+                }
+                // Arrows out of a centre, not a box of grips: the widget this opens is
+                // an ellipse and has no handles to promise (see `icons::TRANSFORM`).
                 button {
                     class: "chip",
                     title: "Move, scale or flip the selected paint (§16)",
                     onclick: move |_| crate::panels::transform::begin_transform(state),
+                    {icon(icons::TRANSFORM)}
                     "Transform"
                 }
                 // The other reach for the same word. With a selection in force the

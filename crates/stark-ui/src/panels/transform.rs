@@ -106,7 +106,13 @@ pub fn TransformBar() -> Element {
 
     rsx! {
         div { class: chrome_class(state, "transform-bar"),
-            span { class: "bar-label", "Transform" }
+            // The same mark the selection bar's Transform chip wears — this bar stands
+            // in for that one for the gesture's duration, so it carries the glyph of
+            // the button that raised it.
+            span { class: "bar-label",
+                {icon(icons::TRANSFORM)}
+                "Transform"
+            }
             // The axis was already the only thing distinguishing these two buttons, and
             // it was already carried by a glyph — the arrow that used to trail the word.
             // Leading it instead puts the pair in the same shape every other chip in the
@@ -146,6 +152,7 @@ pub fn TransformBar() -> Element {
                     let mut mode = state.transform;
                     mode.set(None);
                 },
+                {icon(icons::DONE)}
                 "Done"
             }
         }

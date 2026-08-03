@@ -43,6 +43,7 @@ use dioxus::prelude::*;
 use brush_editor::BrushEditorModal;
 use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, MenubarTrigger};
 use credits::CreditsModal;
+use icons::{icon, icon_large};
 use input::{
     Nav, abandon_gesture, bind_shortcuts, elem_xy, end_interaction, input_tolerance, pick_color,
     pointer_moved, sample, watch_for_hold,
@@ -572,32 +573,32 @@ fn CommandRail() -> Element {
         div { class: chrome_class(state, "command-rail"),
             Menubar {
                 MenubarMenu { index: 0usize,
-                    // ☰ — the catch-all menu for infrequent commands.
-                    MenubarTrigger { "\u{2630}" }
+                    // The catch-all menu for infrequent commands.
+                    MenubarTrigger { {icon_large(icons::MENU)} }
                     MenubarContent {
                         MenubarItem {
                             index: 2usize,
                             value: "new-document".to_string(),
                             on_select: move |_| show_new_doc.set(true),
-                            span { "New document…" }
+                            span { class: "menu-item", {icon(icons::ADD)} "New document…" }
                         }
                         MenubarItem {
                             index: 3usize,
                             value: "open-document".to_string(),
                             on_select: move |_| files::open_document(state),
-                            span { "Open\u{2026}" }
+                            span { class: "menu-item", {icon(icons::OPEN_DOC)} "Open\u{2026}" }
                         }
                         MenubarItem {
                             index: 4usize,
                             value: "save-document".to_string(),
                             on_select: move |_| files::save_document(state),
-                            span { "Save" }
+                            span { class: "menu-item", {icon(icons::SAVE)} "Save" }
                         }
                         MenubarItem {
                             index: 5usize,
                             value: "export-image".to_string(),
                             on_select: move |_| show_export.set(true),
-                            span { "Export image\u{2026}" }
+                            span { class: "menu-item", {icon(icons::EXPORT)} "Export image\u{2026}" }
                         }
                         MenubarItem {
                             index: 6usize,
@@ -609,14 +610,17 @@ fn CommandRail() -> Element {
                                 collab::share(state);
                                 show_session.set(true);
                             },
-                            span { if live { "Share \u{25CF}" } else { "Share…" } }
+                            span { class: "menu-item",
+                                {icon(icons::SHARE)}
+                                if live { "Share \u{25CF}" } else { "Share…" }
+                            }
                         }
                         MenubarItem {
                             index: 0usize,
                             value: "undo".to_string(),
                             disabled: !can_undo,
                             on_select: move |_| dispatch(state, DocCommand::Undo),
-                            span { "Undo" }
+                            span { class: "menu-item", {icon(icons::UNDO)} "Undo" }
                             span { class: "menu-shortcut", "Ctrl+Z" }
                         }
                         MenubarItem {
@@ -624,9 +628,13 @@ fn CommandRail() -> Element {
                             value: "redo".to_string(),
                             disabled: !can_redo,
                             on_select: move |_| dispatch(state, DocCommand::Redo),
-                            span { "Redo" }
+                            span { class: "menu-item", {icon(icons::REDO)} "Redo" }
                             span { class: "menu-shortcut", "Ctrl+Y" }
                         }
+                        // The same two glyphs the selection bar's chips wear. One
+                        // command reached two ways has to look like one command,
+                        // and these are the only entries in the menu that have a
+                        // second home elsewhere in the chrome.
                         MenubarItem {
                             index: 7usize,
                             value: "deselect".to_string(),
@@ -634,7 +642,7 @@ fn CommandRail() -> Element {
                             on_select: move |_| {
                                 dispatch(state, DocCommand::Select(SelectionOp::select_all()))
                             },
-                            span { "Deselect" }
+                            span { class: "menu-item", {icon(icons::SELECTION_NONE)} "Deselect" }
                             span { class: "menu-shortcut", "Ctrl+D" }
                         }
                         MenubarItem {
@@ -642,7 +650,10 @@ fn CommandRail() -> Element {
                             value: "invert-selection".to_string(),
                             disabled: !has_selection,
                             on_select: move |_| dispatch(state, DocCommand::InvertSelection),
-                            span { "Invert selection" }
+                            span { class: "menu-item",
+                                {icon(icons::SELECTION_INVERT)}
+                                "Invert selection"
+                            }
                             span { class: "menu-shortcut", "Ctrl+Shift+I" }
                         }
                         // A mode rather than a command, so it carries a check like
@@ -655,9 +666,9 @@ fn CommandRail() -> Element {
                             on_select: move |_| {
                                 panels::timeline::set_open(state, !timeline_open)
                             },
-                            span { "Timeline" }
+                            span { class: "menu-item", {icon(icons::TIMELINE)} "Timeline" }
                             span { class: "menu-check",
-                                if timeline_open { "\u{2713}" } else { "" }
+                                if timeline_open { {icon(icons::CHECK)} }
                             }
                         }
                         // Last, and last for a reason: it is the only entry here that
@@ -666,13 +677,16 @@ fn CommandRail() -> Element {
                             index: 10usize,
                             value: "credits".to_string(),
                             on_select: move |_| show_credits.set(true),
-                            span { "Credits\u{2026}" }
+                            span { class: "menu-item", {icon(icons::CREDITS)} "Credits\u{2026}" }
                         }
                     }
                 }
                 MenubarMenu { index: 1usize,
-                    // ▤ — toggle which floating panels are shown.
-                    MenubarTrigger { "\u{25A4}" }
+                    // Toggle which floating panels are shown. Each entry wears the
+                    // panel's own mark, which is the same one its title bar wears —
+                    // so the menu is a picture of the stack rather than a list of
+                    // its names (`PanelId::glyph`).
+                    MenubarTrigger { {icon_large(icons::PANELS)} }
                     MenubarContent {
                         for (i, id) in PanelId::ALL.into_iter().enumerate() {
                             MenubarItem {
@@ -683,17 +697,17 @@ fn CommandRail() -> Element {
                                     let mut h = hidden.write();
                                     if !h.remove(&id) { h.insert(id); }
                                 },
-                                span { "{id.title()}" }
+                                span { class: "menu-item", {icon(id.glyph())} "{id.title()}" }
                                 span { class: "menu-check",
-                                    if hidden.contains(&id) { "" } else { "\u{2713}" }
+                                    if !hidden.contains(&id) { {icon(icons::CHECK)} }
                                 }
                             }
                         }
                     }
                 }
-                // ⚙ — this client's preferences. A plain button inside the rail
-                // rather than a third `MenubarMenu`: it opens a dialog on the
-                // click, so there is no dropdown for the menubar to manage.
+                // This client's preferences. A plain button inside the rail rather
+                // than a third `MenubarMenu`: it opens a dialog on the click, so
+                // there is no dropdown for the menubar to manage.
                 button {
                     class: "rail-button",
                     // The menubar's own triggers carry `role="menuitem"`; matching
@@ -703,7 +717,7 @@ fn CommandRail() -> Element {
                     r#type: "button",
                     title: "Settings",
                     onclick: move |_| show_settings.set(true),
-                    "\u{2699}"
+                    {icon_large(icons::SETTINGS)}
                 }
             }
         }

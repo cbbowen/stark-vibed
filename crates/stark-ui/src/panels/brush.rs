@@ -3,6 +3,7 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::{self, icon};
 use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
@@ -32,18 +33,26 @@ pub fn BrushPanel() -> Element {
         .unwrap_or_default();
 
     rsx! {
-        Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
+        // The panel's two sliders are the two knobs a hand reaches for without looking
+        // away from the canvas, which is what earns them their marks (`icons::SIZE`).
+        Slider { label: "Size", glyph: icons::SIZE, min: 1.0, max: MAX_RADIUS, value: brush.radius,
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
-        Slider { label: "Flow", min: 0.0, max: 3.0, value: brush.dynamics.add,
+        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: 3.0, value: brush.dynamics.add,
             oninput: move |v| update_brush(state, move |b| b.dynamics.add = v) }
+        // A wrench, not a brush: the panel this button sits in is already the brush,
+        // and what the dialog opens is the place it gets adjusted (`icons::EDIT_BRUSH`).
         button {
             class: "be-open",
             onclick: move |_| {
                 let mut open = state.brush_editor_open;
                 open.set(true);
             },
+            {icon(icons::EDIT_BRUSH)}
             "Edit brush\u{2026}"
         }
+
+        hr {}
+
         PresetSection {}
     }
 }
@@ -87,6 +96,7 @@ fn PresetSection() -> Element {
                         let mut open = state.preset_save_open;
                         open.set(true);
                     },
+                    {icon(icons::SAVE)}
                     "Save"
                 }
             }
@@ -105,6 +115,11 @@ fn PresetSection() -> Element {
                                 class: if active { "preset-row active" } else { "preset-row" },
                                 onclick: move |_| presets::apply(state, &apply_name),
                                 span { class: "preset-row-name", title: "{entry.name}", "{entry.name}" }
+                                // The same trash the Layers and Guides rows wear
+                                // (`icons::REMOVE`): a third roster, and removing a
+                                // row from it is the same control, so it is the same
+                                // mark. The × it replaces was a character standing in
+                                // for a glyph the set already had.
                                 button {
                                     class: "preset-remove",
                                     title: "Remove preset",
@@ -112,7 +127,7 @@ fn PresetSection() -> Element {
                                         e.stop_propagation();
                                         presets::remove(state, &remove_name);
                                     },
-                                    "\u{00D7}"
+                                    {icon(icons::REMOVE)}
                                 }
                             }
                         }

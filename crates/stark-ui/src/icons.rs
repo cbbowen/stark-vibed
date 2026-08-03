@@ -11,6 +11,13 @@
 //!
 //! Inlining also spends no fetch, which is worth more here than elsewhere: this is
 //! the wasm build, and these are ~200-byte files.
+//!
+//! "Every icon in that directory" is a claim about files nobody reviews — a Phosphor
+//! download arrives with `fill="#000000"` baked in, and an icon that keeps it looks
+//! *right* in a file browser and paints a black glyph on near-black chrome. Nothing
+//! about the call site would say which happened, so [`tests::every_icon_inherits_its_colour`]
+//! checks the directory rather than the table: an icon added and not yet wired up is
+//! caught before it is ever drawn, which is when a wrong fill is cheapest to fix.
 
 use dioxus::prelude::*;
 
@@ -88,6 +95,10 @@ icons! {
     // pointing away from the very rows it is about.
     FOLD_OPEN => "caret-up-bold",
     FOLD_SHUT => "caret-line-up-bold",
+    // Opacity sliders.
+    OPACITY => "ghost-bold",
+    // The blend mode drop-down.
+    BLEND => "waves-bold",
     // The clip toggle. What a clipped layer is bounded by is the paint under it, so the
     // glyph is a picture in a frame — an image with a silhouette, which is the thing
     // doing the bounding. It sits beside the blend picker because both answer *how does
@@ -107,6 +118,134 @@ icons! {
     // in a way a row of "would-hide" glyphs is not.
     VISIBLE => "eye-bold",
     HIDDEN => "eye-slash-bold",
+    // Dismissal, everywhere: a panel's header, Timeline mode's bar. One constant
+    // rather than a glyph per site, because closing is one control wherever it is
+    // drawn — the same argument [`REMOVE`] is one mark across two rosters.
+    CLOSE => "x-bold",
+    // The command rail's two triggers and its one button. A rail is read as a column
+    // of destinations rather than of verbs, so these say *where* rather than what:
+    // a list of commands, a grid of panels, the preferences.
+    MENU => "list-bold",
+    PANELS => "dots-nine-bold",
+    SETTINGS => "gear-bold",
+    // The history, in both directions. Deliberately *not* the elbow arrows above —
+    // those already mean membership in the Layers panel, and a glyph that means two
+    // things means neither. A turning arrow is what undo is drawn as everywhere, and
+    // the pair differs only in which way it turns, which is the whole difference
+    // between the two commands.
+    UNDO => "arrow-counter-clockwise-bold",
+    REDO => "arrow-clockwise-bold",
+    // The brush editor's "restore the default test stroke". The same file as [`UNDO`],
+    // and that is the point rather than an oversight: putting the preview back is an
+    // undo narrowed to the one thing the dialog owns. Named for the control, as
+    // everything here is, so the call site says what it does and not where the glyph
+    // came from.
+    RESET => "arrow-counter-clockwise-bold",
+    // The file commands. Nothing in the drawing looks like these, so they are the
+    // conventional pictures — the ones a hand arrives already knowing — rather than
+    // anything derived from what Stark does with them.
+    OPEN_DOC => "folder-open-bold",
+    SAVE => "floppy-disk-bold",
+    EXPORT => "export-bold",
+    SHARE => "share-network-bold",
+    // The invite link's Copy. A clipboard is what the act *is* here, which is worth
+    // saying because the button's label changes to "Copied" and back: the glyph is
+    // the half that holds still.
+    COPY => "clipboard-bold",
+    // Timeline mode and its transport (§18.2.4). A slideshow for the mode, because
+    // what the mode offers is the log played back rather than a clock or a strip of
+    // film; play and pause for the transport, which have no second reading.
+    TIMELINE => "slideshow-bold",
+    PLAY => "play-bold",
+    PAUSE => "pause-bold",
+    // A menu entry that is a *mode* carries a tick (§18.2.4). Like [`VISIBLE`] and
+    // unlike everything else here, it answers "am I in it?" rather than naming an act
+    // — which is why it is a state where its neighbours in the menu are verbs.
+    CHECK => "check-bold",
+    // The same file, and a second name because the *control* is a different one: every
+    // "Done" in the application — the transform, guide and frame bars, and the dialogs
+    // that have nothing to cancel. A tick is what it means to be finished, so this is
+    // the one act in the set drawn as its own outcome.
+    //
+    // Not `CHECK` at the call sites, even though the bytes are identical: a Done button
+    // is a verb and a menu tick is a state, and reading `icons::CHECK` on a button
+    // would invite someone to "unify" the two the next time either wants to change.
+    // The same argument [`RESET`] and [`UNDO`] are two names for one arrow.
+    DONE => "check-bold",
+    // Last in the commands menu, and the only entry there that is not a thing to do
+    // to the drawing — so it gets the one glyph in the set that is not about one.
+    CREDITS => "heart-bold",
+    // Making one, wherever there is no stack to add to and no region to bound: a new
+    // document, a brush shape imported into the gallery. A bare plus rather than one
+    // of the two loaded "add" marks above, because neither a document nor a stamp is
+    // a layer or a frame.
+    ADD => "plus-bold",
+    // The transform gesture (§16.6). Arrows out of a centre rather than a box of
+    // handles, deliberately: the widget is an ellipse and the module's whole claim is
+    // that there are no handles — a glyph of eight grips would promise a control that
+    // is not there. What the four arrows say instead is that the paint is about to be
+    // moved and reshaped, which is true of all three of the mode's gestures.
+    TRANSFORM => "arrows-out-cardinal-bold",
+    // Alt over the brush (§18.0.2). The bar comes up on the modifier and names itself
+    // with the tool it arms — which is the whole discoverability argument that bar is
+    // built on, made in a picture as well as a word.
+    EYEDROPPER => "eyedropper-bold",
+    // The brush editor, off the Brush panel. A wrench rather than a brush: the panel
+    // that hosts the button already wears the brush ([`BRUSH`]), and what this opens
+    // is the place where the brush is *adjusted*, not another brush.
+    EDIT_BRUSH => "wrench-bold",
+    // The brush editor's parameter groups. Each says what the group is *about* — the
+    // footprint the stroke sweeps, the paint the brush carries down, and the canvas
+    // paint it lifts and moves — which is the same job the group's sentence does, in
+    // the space beside the chevron. Its fourth group, colour, takes [`COLOR`] below.
+    //
+    // `PAINT` is the *outline* twin of [`PAINT_BUCKET`], and that is the reason both
+    // files are here: the solid one is the Fill action, the one glyph in the set that
+    // ever carries a colour, and letting a section header wear it would spend that
+    // distinction on a heading.
+    TIP => "shapes-bold",
+    PAINT => "paint-bucket-bold",
+    PICKUP => "drop-simple-bold",
+    // Sliders. Each says what the number *does* rather than naming the parameter: a
+    // rule for how wide, moving air for how much the brush lets go, a feather for an
+    // edge that stops being an edge.
+    //
+    // An earlier note here said a slider's word and track already identify it and so
+    // only the two or three reached for mid-stroke needed marking. That was true of a
+    // chrome whose words are always on screen, and it stops being true the moment the
+    // words can be turned off: a control's mark is what survives its label, so a bare
+    // label is a control that would disappear. Marks lead now, and the word is the
+    // half that is optional.
+    SIZE => "ruler-bold",
+    FLOW => "wind-bold",
+    FEATHER => "feather-bold",
+    // Two of the perspective bar's four group heads (§20.5). `LOCK` and "Show" label
+    // three identical X/Y/Z chips each, so the word was carrying the whole difference
+    // between two triplets that look the same; `DENSITY` draws a fan of lines from a
+    // point, which is exactly what its number counts — the fan *is* the guide's
+    // parametrization. The fourth, Opacity, takes [`OPACITY`].
+    //
+    // "Show" has no constant of its own: it takes the eye the layer and guide rows
+    // wear ([`VISIBLE`]), because it is the same question asked of a fan of guide
+    // lines instead of of a layer.
+    LOCK => "lock-bold",
+    DENSITY => "vector-three-bold",
+    // The nouns the floating panels are about (§11), worn by the title bar and by the
+    // entry that opens that panel in the Panels menu — so a panel and the way back to
+    // it are one picture rather than two names that happen to match.
+    //
+    // Three of them are shared rather than duplicated, and the sharing is the claim:
+    // `SELECTION` and `PERSPECTIVE` also head the bars that serve those panels, and
+    // `COLOR` also heads the brush editor's colour-dynamics group. A panel, its bar
+    // and the dialog that expands it are three views of one subject, so they are one
+    // mark — the same argument the frame bar's crop marks are the frame's.
+    NAVIGATOR => "magnifying-glass-bold",
+    COLOR => "palette-bold",
+    BRUSH => "paint-brush-bold",
+    SELECTION => "selection-bold",
+    LAYERS => "stack-bold",
+    PERSPECTIVE => "perspective-bold",
+    LIGHTING => "sphere-bold",
 }
 
 /// One icon, sized and coloured by whatever it sits in (`.icon` in `stark.css`).
@@ -115,6 +254,18 @@ icons! {
 /// compiled in from a file in this repo, so no untrusted string comes near it.
 pub fn icon(svg: &'static str) -> Element {
     rsx! { span { class: "icon", dangerous_inner_html: svg } }
+}
+
+/// The same icon at the command rail's weight (`.icon.icon-lg`).
+///
+/// The rail is 40px of button carrying one mark and no word, where every other icon
+/// in the application sits beside a label at a shared 14px. A glyph sized for that
+/// company reads as lost in a button nearly three times its height — which is what
+/// the 18px characters the rail wore were already compensating for. One extra class
+/// rather than a second `icons!` table: it is the *setting*, not the glyph, that is
+/// different here.
+pub fn icon_large(svg: &'static str) -> Element {
+    rsx! { span { class: "icon icon-lg", dangerous_inner_html: svg } }
 }
 
 /// The same icon holding a paint colour rather than the colour of its control — for
@@ -139,5 +290,53 @@ pub fn icon_tinted(svg: &'static str, color: [f32; 4]) -> Element {
             span { dangerous_inner_html: svg }
             span { class: "icon-paint", style: "{paint}", dangerous_inner_html: svg }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every file in `assets/icons` paints with `currentColor` — the one property the
+    /// module is built on (see the module docs).
+    ///
+    /// The *directory*, not the table above, and that is the whole value: the table
+    /// only holds icons someone has already wired up, and an icon is at its most
+    /// fixable in the commit that adds the file. Checking the table would move the
+    /// failure to whenever the glyph first got a call site, which may be a different
+    /// change by a different hand.
+    ///
+    /// It reads bytes rather than parsing SVG on purpose. A hard fill is the one way
+    /// these files go wrong — Phosphor exports `fill="#000000"` — and the check that
+    /// catches it is "no colour literal anywhere in the file", which is stricter than
+    /// "the root fill is right" and cannot be fooled by a colour further down a path.
+    #[test]
+    fn every_icon_inherits_its_colour() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("assets/icons is readable") {
+            let path = entry.expect("directory entry").path();
+            if path.extension().is_none_or(|e| e != "svg") {
+                continue;
+            }
+            let svg = std::fs::read_to_string(&path).expect("icon is UTF-8");
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                svg.contains(r#"fill="currentColor""#),
+                "{name} does not paint with currentColor, so it will ignore the colour \
+                 of the control it sits in"
+            );
+            // A `#` in one of these files is a hex colour and nothing else — the paths
+            // are numbers and letters, and there is no `url(#…)` or gradient in the set.
+            // Whatever it painted would be worn *instead* of the control's colour, which
+            // on Stark's dark chrome is usually a black mark on a near-black chip.
+            assert!(
+                !svg.contains('#'),
+                "{name} carries a hard-coded colour; icons take their colour from the \
+                 control around them"
+            );
+            checked += 1;
+        }
+        // A rename or a moved directory must fail loudly rather than pass by finding
+        // nothing to check.
+        assert!(checked > 0, "no icons found in {}", dir.display());
     }
 }
