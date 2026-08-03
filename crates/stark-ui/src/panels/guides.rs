@@ -158,17 +158,22 @@ pub fn GuidesPanel() -> Element {
                     onclick: move |_| begin_guide_edit(state, i),
                     "Perspective {i + 1}"
                 }
+                // Remove then the eye, the order the Layers panel's rows put them in
+                // — the two rosters answer the same question about different stacks,
+                // so a hand that has learned one has learned the other. The ✕ this
+                // wore was the one mark in either panel drawn as a character rather
+                // than a glyph; it is `icons::REMOVE` in both places now.
+                button {
+                    class: "guide-remove",
+                    title: "Remove this guide",
+                    onclick: move |_| remove_guide(state, i),
+                    {icon(icons::REMOVE)}
+                }
                 button {
                     class: if g.visible { "guide-eye" } else { "guide-eye hidden" },
                     title: if g.visible { "Hide this guide" } else { "Show this guide" },
                     onclick: move |_| update_guide(state, i, |g| g.visible = !g.visible),
                     {icon(if g.visible { icons::VISIBLE } else { icons::HIDDEN })}
-                }
-                button {
-                    class: "guide-remove",
-                    title: "Remove this guide",
-                    onclick: move |_| remove_guide(state, i),
-                    "\u{2715}"
                 }
             }
         }

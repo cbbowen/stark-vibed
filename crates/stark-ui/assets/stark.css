@@ -762,26 +762,16 @@
   margin-bottom: 8px;
 }
 
-/* Remove sits apart from the two "add" buttons: it is the destructive one, and a
-   gap is cheaper than a confirmation. */
-.layer-remove {
-  margin-left: auto;
-}
-
-.layer-remove:hover:enabled {
-  background: #7a3535;
-}
-
 .layer-add:disabled {
   opacity: 0.4;
   cursor: default;
 }
 
-/* The three header buttons: glyph then noun. 12px rather than the UA button default,
-   which is what makes the row fit — three icons and three words in 252px of panel is
-   comfortable at 12px and within a few pixels of overflowing at 13.33px, and the panel's
-   own rows are 12px anyway. `nowrap` so a squeeze breaks the row's alignment visibly
-   rather than silently wrapping a word inside its button. */
+/* The header's "add" buttons: glyph then noun. 12px rather than the UA button default,
+   which is what makes the row fit — it held three icons and three words in 252px of
+   panel comfortably at 12px and within a few pixels of overflowing at 13.33px, and the
+   panel's own rows are 12px anyway. `nowrap` so a squeeze breaks the row's alignment
+   visibly rather than silently wrapping a word inside its button. */
 .layer-add {
   display: flex;
   align-items: center;
@@ -814,8 +804,13 @@
   font-size: 12px;
 }
 
+/* The selected layer, in the one blue every other list in the application marks a
+   selection with — a guide row, a brush preset, a shape card, a lit chip. The green
+   this wore was a second vocabulary for the same word: nothing else in the chrome
+   ever meant "selected" in green, so the panel was asking to be read on its own
+   terms while sitting beside two lists that were not. */
 .layer-row.active {
-  background: #2f6f4f;
+  background: #3a6ea5;
 }
 
 /* --- groups and clipping (§14.6) ---
@@ -827,6 +822,16 @@
 .layer-row.clipped {
   border-left: 3px solid #6f8fd0;
   padding-left: 3px;
+}
+
+/* The rail on the selected row. Now that selection is blue, the resting rail is a
+   blue a step lighter than its own ground — about 1.7:1, which is the rail going
+   quiet on exactly the row you are working on. Lifted here to the contrast it has
+   everywhere else (~4:1) rather than the rail being re-hued: what the mark must not
+   be confusable with is the *indent* (§14.6), so it stays in the blue family, and
+   what changed is only the ground under one row. */
+.layer-row.active.clipped {
+  border-left-color: #cfe0ff;
 }
 
 /* The frame's dashed border already claims the whole edge, so a clipped matte gets
@@ -911,9 +916,38 @@ button.layer-release:hover {
   height: 12px;
 }
 
+/* Remove, in the row it removes, one slot in from the eye. Bare and 14px like Carry,
+   because the slot has to be held on the one row that has no Remove — the eyes are a
+   column to glance down, and a single row's eye stepping right would cost exactly what
+   that column buys.
+
+   Red only under the pointer. At rest it is a glyph like its neighbours; the moment it
+   is the thing being reached for it says what kind of thing it is. That, plus resting
+   hidden until the row is hovered, is the whole safety story — history makes the click
+   undoable (§5), so a confirmation would be paying a dialog for nothing. */
+.layer-remove {
+  width: 14px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: #ffffffa6;
+}
+
+button.layer-remove {
+  cursor: pointer;
+}
+
+button.layer-remove:hover {
+  color: #e8757a;
+}
+
 /* --- the row at rest says where the layer is; hovering asks what can be done to it ---
-   Carry, Release and the eye of a layer that *is* showing all rest hidden and arrive
-   together. At rest the panel's whole ink goes on the picture: the indent, the rail,
+   Carry, Remove, Release and the eye of a layer that *is* showing all rest hidden and
+   arrive together. At rest the panel's whole ink goes on the picture: the indent, the rail,
    the name, and — the one survivor of this rule — the struck eye of a layer that is
    hidden. Three glyphs per row on top of that is a second alphabet laid over the
    first, with Release in particular competing with the clipping rail a few pixels to
@@ -930,6 +964,7 @@ button.layer-release:hover {
    go with the opacity, so an invisible control cannot be clicked; only Release can
    actually be reached without hovering its row, but the pair is one rule. */
 .layer-carry,
+.layer-remove,
 .layer-release,
 .layer-eye:not(.hidden) {
   opacity: 0;
@@ -940,6 +975,7 @@ button.layer-release:hover {
 /* The whole entry, indent included, is the hover target — reaching for a control in
    the margin should not require finding it first. */
 .layer-item:hover .layer-carry,
+.layer-item:hover .layer-remove,
 .layer-item:hover .layer-release,
 .layer-item:hover .layer-eye {
   opacity: 1;
@@ -1799,7 +1835,9 @@ button.layer-release:hover {
 }
 
 /* The Drawing Guides panel's roster (§20.5): one row per guide, shaped like
-   a layer row — the name selects, the eye shows/hides, ✕ removes. */
+   a layer row — the name selects, Remove takes the guide away, the eye shows and
+   hides. Same two controls in the same order wearing the same glyphs, because the two
+   panels answer the same question about different stacks. */
 .guide-empty {
   font-size: 12px;
   color: #ffffff70;
@@ -1841,12 +1879,15 @@ button.layer-release:hover {
   background: none;
   color: #ffffffa6;
   cursor: pointer;
-  font-size: 11px;
 }
 
-.guide-eye:hover,
-.guide-remove:hover {
+.guide-eye:hover {
   color: #eee;
+}
+
+/* The destructive one answers a hover in red, as it does on a layer row. */
+.guide-remove:hover {
+  color: #e8757a;
 }
 
 /* Like the layer eyes: an open eye rests hidden and appears on hover, a

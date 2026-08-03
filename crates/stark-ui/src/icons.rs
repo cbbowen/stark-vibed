@@ -53,8 +53,18 @@ icons! {
     // gains a member, versus a single bordered region coming into being — which is what
     // a frame is (§15.7), and why it is a square rather than a stack.
     ADD_LAYER => "stack-plus-bold",
-    REMOVE_LAYER => "stack-minus-bold",
     ADD_FRAME => "plus-square-bold",
+    // Take this one away, drawn in the row it would take: a layer in the Layers panel,
+    // a perspective in the Guides panel. One glyph for both, because it is one control
+    // — the two rosters differ in what they list, not in what removing means.
+    //
+    // A trash rather than the stack-minus that mirrored "+ Layer". That mirror was an
+    // argument about *header* buttons — one stack gaining a member, the other losing
+    // one — and it stopped being true when Remove moved onto the rows, where there is
+    // no "+" beside it to mirror and no stack in a guide to lose from. What the glyph
+    // has to say now is that this is the destructive control, which is the one thing a
+    // trash says everywhere.
+    REMOVE => "trash-bold",
     // The frame bar's own mark. Crop marks rather than a frame outline, because the bar
     // is not *about* the rectangle — it is about deciding what the piece is, which is
     // the one job a frame does and the reason it clips nothing.

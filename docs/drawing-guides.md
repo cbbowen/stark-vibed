@@ -163,7 +163,8 @@ rather than one rewritten buffer for the reason `BLEND_SLOT` records.
 The **Drawing Guides panel** is the roster, shaped like the Layers panel
 because it answers the same question about a different stack: "Add
 Perspective" (placed at the view center, so the grid lands where you look),
-one row per guide with an eye and a remove. Selecting a row — or adding —
+one row per guide carrying the same two per-row controls a layer row does, in
+the same order and glyphs: remove, then the eye. Selecting a row — or adding —
 enters the **edit mode**: a full-viewport catcher owns the pointer for the
 mode's duration (the transform-mode bargain, §16.6; navigation still works),
 and the **Perspective Guide bar** stands at the bottom with the per-axis

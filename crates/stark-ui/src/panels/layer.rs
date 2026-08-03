@@ -19,6 +19,12 @@
 //! selection-scoped button has to name the layer it would act on and go inert when
 //! there is none; a control drawn *in* the row has already named it, and simply is not
 //! there when the move it makes has nowhere to go.
+//!
+//! Remove is there for the same reason, and it was the last header button to move: it
+//! acted on "the selected layer" and had to grey out when removing that layer would
+//! empty the document. On a row it names its own layer, and the row that would empty
+//! the document simply has no Remove — which is also what makes the Guides panel's
+//! rows and these ones one shape rather than two (`panels::guides`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -57,6 +63,11 @@ pub struct Row {
     /// layer that is not in a group, which is the only state Release has nothing to
     /// say about.
     release_to: Option<(LayerId, Option<LayerId>)>,
+    /// Whether Remove would leave a document behind. Removing a group takes what it
+    /// carries with it (§14.2), so the floor is not "more than one row" but
+    /// "something would be left" — which for a row deep in a group is nearly always
+    /// true, and for the sole top-level stack never is.
+    removable: bool,
 }
 
 #[component]
@@ -91,9 +102,6 @@ pub fn LayerPanel() -> Element {
         selected.as_ref().map(|l| l.carrier).unwrap_or(None),
         selected_id,
     );
-    // Removing a group takes what it carries with it (§14.2), so the
-    // floor is not "more than one row" but "something would be left".
-    let can_remove = selected_id.is_some_and(|id| subtree_len(&layers, id) < layers.len());
 
     rsx! {
         div { class: "layer-header",
@@ -112,24 +120,6 @@ pub fn LayerPanel() -> Element {
                 },
                 {icon(icons::ADD_LAYER)}
                 "Layer"
-            }
-            button {
-                class: "layer-add layer-remove",
-                title: if can_remove { "Remove the selected layer, and anything it carries" }
-                       else { "A document needs at least one layer" },
-                disabled: !can_remove,
-                onclick: move |_| {
-                    if let Some(id) = selected_id {
-                        dispatch(state, DocCommand::RemoveLayer(id));
-                    }
-                },
-                // The `−` this replaces was the mirror of "+ Layer" in text; the two
-                // glyphs are the same mirror, drawn — one stack gaining a member, the
-                // other losing one. Which is also why Remove wears a *stack* glyph
-                // though a frame is removable too: it takes the selected layer away,
-                // and a frame is one.
-                {icon(icons::REMOVE_LAYER)}
-                "Remove"
             }
         }
 
@@ -266,6 +256,7 @@ fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
             collapsed,
             carry_onto,
             release_to,
+            removable: subtree_len(layers, info.id) < layers.len(),
         });
     }
     out
@@ -447,6 +438,7 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
     // so neither has an inapplicable state to sit in.
     let carry_onto = row.carry_onto;
     let release_to = row.release_to;
+    let removable = row.removable;
 
     let title = if matte {
         "Compose this frame — double-click to rename"
@@ -454,7 +446,7 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
         "Paint on this layer — double-click to rename"
     };
 
-    // A row is one line — Carry, the name that selects it, and the eye that shows it
+    // A row is one line — Carry, the name that selects it, then Remove and the eye
     // hard against the right edge — with two marks outside that line: the group's
     // triangle straddling its top edge, and Release standing in the indent. The
     // per-layer opacity slider lives in the panel's single set of controls for
@@ -605,6 +597,29 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                         title: "{peer.name} is working on this layer",
                         "{peer.initials()}"
                     }
+                }
+                // Remove, next to last: the destructive control on the row it destroys.
+                // It rests hidden and arrives on hover with Carry, Release and an open
+                // eye, which is also the whole safety story — a control you have to
+                // reach for is cheaper than a confirmation, and the history makes the
+                // click undoable anyway (§5).
+                //
+                // Absent rather than inert on the row whose removal would empty the
+                // document, on the same argument Release is: a control that cannot
+                // apply here has nothing to say, and the last stack standing is
+                // already legible as the last one. Its slot is still held, the way
+                // Carry's is — the eyes are a column to glance down, and one row's
+                // eye stepping right would cost exactly what that column buys.
+                if removable {
+                    button {
+                        class: "layer-remove",
+                        title: if is_group { "Remove this layer, and everything it carries" }
+                               else { "Remove this layer" },
+                        onclick: move |_| dispatch(state, DocCommand::RemoveLayer(id)),
+                        {icon(icons::REMOVE)}
+                    }
+                } else {
+                    span { class: "layer-remove" }
                 }
                 // Last on the line, so the eyes stand in one column down the whole panel
                 // however deep the tree goes: a row is indented from the left, and its right
