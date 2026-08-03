@@ -339,9 +339,9 @@ pub struct ObservableState {
     pub selection_feather: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     pub show_peer_selections: bool,
-    /// The perspective-grid drawing guide (§20) — projected so the Drawing
-    /// Guides panel reads the engine's state rather than a shadow of its own.
-    pub guide: crate::guides::PerspectiveGuide,
+    /// The drawing guides (§20.5) — projected so the Drawing Guides panel and
+    /// the edit bar read the engine's list rather than a shadow of their own.
+    pub guides: Vec<crate::guides::PerspectiveGuide>,
 
     // --- view settings (per-client, never historized) ---------------------
     //
@@ -914,7 +914,7 @@ impl Engine {
                 self.session.selection_feather = feather.max(0.0)
             }
             ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
-            ViewCommand::SetGuide(guide) => self.session.guide = guide,
+            ViewCommand::SetGuides(guides) => self.session.guides = guides,
             ViewCommand::PreviewMatteRect(drag) => {
                 let preview =
                     drag.map(|(id, min, max)| self.timeline.current().set_matte_rect(id, min, max));
@@ -1075,17 +1075,26 @@ impl Engine {
                 tint: *tint,
             })
             .collect();
+        // Chrome, on the same argument as the outlines: a guide is a thing to
+        // draw *with*, so an export or a miniature never carries one (§20.4).
+        // Derived fresh per render — the camera math is a handful of products,
+        // and a cached copy would shadow the session's state.
+        let guide_scenes: Vec<crate::guides::GuideScene> = match chrome {
+            Chrome::Hidden => Vec::new(),
+            Chrome::Shown => self
+                .session
+                .guides
+                .iter()
+                .filter(|g| g.visible)
+                .map(|g| g.scene())
+                .collect(),
+        };
         let scene = CompositeScene {
             background: bg_channels,
             groups: &groups,
             outlines: &outlines,
             transparent: background == Background::Transparent,
-            // Chrome, on the same argument as the outlines: a guide is a thing
-            // to draw *with*, so an export or a miniature never carries it
-            // (§20.4). Derived fresh per render — the camera math is a handful
-            // of products, and a cached copy would shadow the session's state.
-            guide: (chrome == Chrome::Shown && self.session.guide.enabled)
-                .then(|| self.session.guide.scene()),
+            guides: &guide_scenes,
         };
         match attachments {
             Attachments::Surface => {
@@ -1673,7 +1682,7 @@ impl Engine {
             shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather,
             show_peer_selections: self.session.show_peer_selections,
-            guide: self.session.guide,
+            guides: self.session.guides.clone(),
             media: self.compositor_pipeline.media(),
             environment: self.environment.id(),
             color_space: self.color_space.id(),

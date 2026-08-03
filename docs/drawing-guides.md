@@ -24,8 +24,11 @@ split. The guide's state is exactly a projective camera (`guides.rs`):
   picture plane, in canvas px;
 - a **focal length** `f` — the eye's distance from the picture plane, in canvas
   px;
-- an **orientation** — yaw, pitch and roll turning the world's orthogonal axis
-  frame relative to the camera.
+- an **orientation** — one quaternion turning the world's orthogonal axis frame
+  relative to the camera. A quaternion rather than Euler angles because the
+  orientation is *composed*, not set: every canvas drag multiplies a small
+  rotation onto it (§20.5), and there is no slider left that would want an
+  angle read back out.
 
 Everything else is projection. The vanishing point of world axis `a` (a unit
 direction in camera space — x right, y down to match the canvas, z forward) is
@@ -100,7 +103,7 @@ equal turns of the eye, `π / density` apart. That choice is uniform across all
 three cases (nothing about it mentions whether the VP is finite), degrades
 gracefully to evenly-stepped parallel lines as the VP goes to infinity, and
 bunches near a pair's vanishing line exactly the way receding structure
-forshortens — the fan carries its own horizon-crowding.
+foreshortens — the fan carries its own horizon-crowding.
 
 A texel's pencil coordinate is computed from the eye's ray through it,
 `r = ((p − c)/f, 1)`: the plane through the eye containing both `a` and `r`
@@ -119,10 +122,10 @@ this path — the fans work entirely in direction space, which is what makes the
 Rendering is one fullscreen triangle drawn after the selection outline —
 pass D (`guides.wesl`, wired in `composite.rs`), over the lit image, because
 the grid is chrome the whole canvas is read *through*. It is gated exactly as
-pass C is: screen renders carry the derived `GuideScene` in their
+pass C is: screen renders carry the derived `GuideScene`s in their
 `CompositeScene`, exports and the navigator's miniature never do (§15.6), and
-`render_to_image` sees it only if a test turns the guide on — the default-off
-guide leaves every golden untouched.
+`render_to_image` sees them only if a test adds a guide — the default-empty
+list leaves every golden untouched.
 
 Every element is an analytic distance field, evaluated at the fragment's
 *canvas* position (the uniform carries the screen→canvas map) and converted to
@@ -143,27 +146,56 @@ the dashed 45° circle) ride in the same pass as more distance fields, packed
 as `position + valid` uniform slots so the shader branches on data, never on
 pipeline variants. Axis hues follow the X/Y/Z semantics every 3D tool taught.
 
-## 20.5 State, panel, and what is deliberately deferred
+## 20.5 The list, the edit mode, and the drag
 
-The guide is **view state** (`Session::guide`, `ViewCommand::SetGuide`,
-projected through `ObservableState`): per-client, unlogged, unsent — an aid for
-the hand holding the pen, like the pan and the zoom. If guides later become
-part of what a document carries (a shared scaffold peers should see), that is a
-new `DocCommand` and an action; `SetGuide` would remain as the in-flight
-preview half, the same bargain the matte-rect drag strikes (§4).
+Guides are a **list** (`Session::guides`), and the whole list is view state:
+per-client, unlogged, unsent — an aid for the hand holding the pen, like the
+pan and the zoom. Every mutation — a slider, a drag sample, a row toggle —
+travels as one `ViewCommand::SetGuides` carrying the whole list, the same
+read-modify-commit shape `SetMediaParams` uses; the engine never needs one
+command per control. If guides later become part of what a document carries (a
+shared scaffold peers should see), that is a new `DocCommand` and an action;
+`SetGuides` would remain as the in-flight preview half, the same bargain the
+matte-rect drag strikes (§4). Rendering-side, each visible guide gets a
+dynamic-offset uniform slot and its own fullscreen draw in pass D — slots
+rather than one rewritten buffer for the reason `BLEND_SLOT` records.
 
-The Drawing Guides panel edits the camera read-modify-commit, like the
-lighting panel edits `MediaParams`. Its case chips are presets that *turn* the
-camera — set yaw/pitch/roll, bring `c` to the view center, enable — and light
-up from the derived finite-VP count, never from a stored mode.
+The **Drawing Guides panel** is the roster, shaped like the Layers panel
+because it answers the same question about a different stack: "Add
+Perspective" (placed at the view center, so the grid lands where you look),
+one row per guide with an eye and a remove. Selecting a row — or adding —
+enters the **edit mode**: a full-viewport catcher owns the pointer for the
+mode's duration (the transform-mode bargain, §16.6; navigation still works),
+and the **Perspective Guide bar** stands at the bottom with the per-axis
+locks, per-axis visibility, density, opacity, and "Done". Which of 1/2/3-point
+you are in is never stored or displayed as a mode: the canvas shows it, as the
+count of finite vanishing points.
+
+The drag *is* the manipulation, classified by what the press lands on:
+
+- **Anywhere: grab the world.** The world direction under the pointer follows
+  it — `PerspectiveGuide::dragged` rotates the frame by the arc from the
+  press's eye-ray to the current one, always recomputed from the drag's start
+  so nothing drifts and nothing flickers. When the implied rotation axis lies
+  within ~15° of a world axis, the drag **snaps** to a pure turn about it: a
+  roughly-horizontal drag orbits the vertical axis and a 2-point setup stays
+  exactly 2-point, without a mode.
+- **Locks** are the same constraint made deliberate: rotations fixing an axis
+  are exactly the turns about it, so one locked axis confines the drag to its
+  orbit, and two pin the frame (the identity is the only rotation fixing two
+  axes). Locks are gesture state, held by the mode and released with it.
+- **The 45° circle: drag the lens.** The circle's radius *is* the focal
+  length, so `f` becomes the distance from the center to the pointer and the
+  ring follows the hand exactly — the §20.1 identity made into a handle.
+- **The crosshair: move the construction.** The center of view follows the
+  drag, grab-offset preserved.
 
 Deferred, deliberately (§18 discipline — nothing inert ships):
 
-- **Direct manipulation** — dragging VPs, the horizon, the CoV and the 45°
-  circle on the canvas, which will subsume most of the panel's sliders. Its
-  design is the next step and owns questions like "what does dragging a VP
-  hold fixed?"
-- **Snapping** — strokes constrained to the nearest fan line; the assist layer
-  (§6.9) is where it will live.
+- **Dragging vanishing points themselves** — a real design question (what does
+  it hold fixed: the focal length? the other VPs?) that the orbit-with-locks
+  vocabulary may make unnecessary.
+- **Snapping strokes** to the nearest fan line; the assist layer (§6.9) is
+  where it will live.
 - **Other guide kinds** (isometric, ellipse/vanishing-scale, symmetry): each a
-  new derivation over the same pass-D machinery.
+  new derivation over the same pass-D machinery and the same list.

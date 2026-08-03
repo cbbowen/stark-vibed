@@ -16,7 +16,7 @@ pub mod transform;
 pub use brush::BrushPanel;
 pub use color::ColorPanel;
 pub use frame::{FrameBar, FrameOverlay};
-pub use guides::GuidesPanel;
+pub use guides::{GuideEditOverlay, GuidesPanel, PerspectiveGuideBar};
 pub use layer::LayerPanel;
 pub use lighting::LightingPanel;
 pub use navigator::NavigatorPanel;

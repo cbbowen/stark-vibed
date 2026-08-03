@@ -54,7 +54,8 @@ use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{
-    FrameBar, FrameOverlay, PickBar, SelectionBar, TimelineBar, TransformBar, TransformOverlay,
+    FrameBar, FrameOverlay, GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar,
+    TimelineBar, TransformBar, TransformOverlay,
 };
 use platform::capture_pointer;
 use render::CANVAS_ID;
@@ -219,6 +220,13 @@ fn app() -> Element {
             // catcher blocks canvas painting for the mode's duration.
             TransformOverlay {}
 
+            // The drawing-guide edit mode's catcher, while a perspective grid
+            // is being composed (§20.5): dragging orbits the camera, the 45°
+            // circle drags the lens, the crosshair moves the construction.
+            // After TransformOverlay in the DOM, so if both modes are somehow
+            // live at once the transform keeps the pointer.
+            GuideEditOverlay {}
+
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.
             PeerCursors {}
@@ -239,6 +247,10 @@ fn app() -> Element {
                 // The transform gesture's flips and "Done", standing in for the
                 // selection bar while one is composing (§16.6).
                 TransformBar {}
+                // The drawing-guide edit mode's controls — locks, axis
+                // visibility, density, opacity — while a perspective grid is
+                // being composed (§20.5).
+                PerspectiveGuideBar {}
                 // The frame's composition controls, present only while a frame is
                 // selected for composing (§15.7).
                 FrameBar {}

@@ -341,6 +341,11 @@ fn blend_code(mode: BlendMode) -> u32 {
 /// edge case, so the buffer holds them all and each pass binds its own offset.
 const BLEND_SLOT: u64 = 256;
 
+/// One dynamic-offset slot of the guide uniform (pass D), padded like
+/// [`BLEND_SLOT`] and for the same reason: every visible guide's slot is
+/// written before the single submit, and each draw binds its own offset.
+const GUIDE_SLOT: u64 = 256;
+
 /// The extra viewport-sized targets **one level** of isolation needs
 /// (§18.0.4).
 ///
@@ -455,10 +460,10 @@ pub struct CompositeScene<'a> {
     /// Leave the substrate out and carry the paint's own alpha to the target, for a
     /// cut-out export.
     pub transparent: bool,
-    /// The drawing guides drawn over everything (§20.4), when the screen has
-    /// them enabled. `None` for anything that is not the screen — chrome, on
-    /// the same argument as `outlines`.
-    pub guide: Option<crate::guides::GuideScene>,
+    /// The visible drawing guides, drawn over everything (§20.4). Empty for
+    /// anything that is not the screen — chrome, on the same argument as
+    /// `outlines`.
+    pub guides: &'a [crate::guides::GuideScene],
 }
 
 /// Mirrors `Media` in `media_common.wesl` (80 bytes).
@@ -551,12 +556,11 @@ pub struct CompositorPipeline {
     overlay_view_bg: wgpu::BindGroup,
     overlay_tile_bgl: wgpu::BindGroupLayout,
 
-    // Pass D: the drawing guides, drawn over everything (§20.4). One
-    // fullscreen pass off one uniform, so the bind group is target-independent
-    // and lives here rather than per-Compositor.
+    // Pass D: the drawing guides, drawn over everything (§20.4). The uniform
+    // slots live per-Compositor (they grow with the guide list); what is shared
+    // is the pipeline and the layout the per-render bind group is built from.
     guide_pipeline: wgpu::RenderPipeline,
-    guide_buf: wgpu::Buffer,
-    guide_bg: wgpu::BindGroup,
+    guide_bgl: wgpu::BindGroupLayout,
 
     // Pass B: media/lighting → final target.
     media_pipeline: wgpu::RenderPipeline,
@@ -635,6 +639,9 @@ pub struct Compositor {
     // Pass C's, grown to the outlined mask-tile count.
     overlay_instances: wgpu::Buffer,
     overlay_cap: usize,
+    // Pass D's, one dynamic-offset slot per visible guide.
+    guide_buf: wgpu::Buffer,
+    guide_slots: usize,
 }
 
 /// Somewhere for a render that is **not** the surface's to keep its attachments
@@ -1100,8 +1107,11 @@ impl CompositorPipeline {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                    // One slot per visible guide in the frame; see `GUIDE_SLOT`.
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<GuideUniform>() as u64
+                    ),
                 },
                 count: None,
             }],
@@ -1138,21 +1148,6 @@ impl CompositorPipeline {
             multiview_mask: None,
             cache: None,
         });
-        let guide_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark guides uniform"),
-            size: std::mem::size_of::<GuideUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let guide_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark guides bg"),
-            layout: &guide_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: guide_buf.as_entire_binding(),
-            }],
-        });
-
         Self {
             ctx: ctx.clone(),
             composite_pipeline,
@@ -1167,8 +1162,7 @@ impl CompositorPipeline {
             overlay_view_bg,
             overlay_tile_bgl,
             guide_pipeline,
-            guide_buf,
-            guide_bg,
+            guide_bgl,
             media_pipeline,
             media_buf,
             media_bgl,
@@ -1251,6 +1245,8 @@ impl Compositor {
             blend_slots: 1,
             overlay_instances: alloc_overlay(device, 1),
             overlay_cap: 1,
+            guide_buf: alloc_guides(device, 1),
+            guide_slots: 1,
         }
     }
 
@@ -1768,7 +1764,7 @@ impl Compositor {
             groups,
             outlines,
             transparent,
-            guide,
+            guides,
         } = scene;
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
@@ -1947,14 +1943,36 @@ impl Compositor {
 
         // Pass D: the drawing guides, over the lit image and the outlines —
         // the perspective grid is chrome the whole canvas is read *through*,
-        // so it is the topmost thing drawn (§20.4). One fullscreen triangle
-        // off one uniform; everything it shows is an analytic distance field.
-        if let Some(scene) = guide {
-            p.ctx.queue.write_buffer(
-                &p.guide_buf,
-                0,
-                bytemuck::bytes_of(&GuideUniform::pack(&scene, view)),
-            );
+        // so it is the topmost thing drawn (§20.4). One render pass; one
+        // fullscreen triangle per visible guide, each off its own uniform
+        // slot (see `GUIDE_SLOT` for why they cannot share one).
+        if !guides.is_empty() {
+            if guides.len() > self.guide_slots {
+                self.guide_buf = alloc_guides(device, guides.len());
+                self.guide_slots = guides.len();
+            }
+            for (i, scene) in guides.iter().enumerate() {
+                p.ctx.queue.write_buffer(
+                    &self.guide_buf,
+                    i as u64 * GUIDE_SLOT,
+                    bytemuck::bytes_of(&GuideUniform::pack(scene, view)),
+                );
+            }
+            // Per render rather than kept, like the blend bind group: it has
+            // to follow the buffer through reallocation, and a bind group over
+            // one small uniform is cheap beside everything else in the frame.
+            let guide_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark guides bg"),
+                layout: &p.guide_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.guide_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(std::mem::size_of::<GuideUniform>() as u64),
+                    }),
+                }],
+            });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark guides pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1972,8 +1990,10 @@ impl Compositor {
                 multiview_mask: None,
             });
             pass.set_pipeline(&p.guide_pipeline);
-            pass.set_bind_group(0, &p.guide_bg, &[]);
-            pass.draw(0..3, 0..1);
+            for i in 0..guides.len() {
+                pass.set_bind_group(0, &guide_bg, &[(i as u64 * GUIDE_SLOT) as u32]);
+                pass.draw(0..3, 0..1);
+            }
         }
 
         p.ctx.queue.submit([encoder.finish()]);
@@ -2104,6 +2124,15 @@ fn alloc_overlay(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
             count.max(1)
         ]),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    })
+}
+
+fn alloc_guides(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark guides uniform"),
+        size: GUIDE_SLOT * count.max(1) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     })
 }
 

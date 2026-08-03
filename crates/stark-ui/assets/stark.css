@@ -628,7 +628,8 @@
    and the right-hand panel stack, and near the canvas it describes. It is only as
    wide as its contents, so it never blocks a drag it isn't over. */
 .selection-bar,
-.transform-bar {
+.transform-bar,
+.guide-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -656,6 +657,7 @@
 .selection-bar .chip,
 .frame-bar .chip,
 .transform-bar .chip,
+.guide-bar .chip,
 .pick-bar .chip {
   flex: none;
   padding: 4px 12px;
@@ -1753,6 +1755,113 @@ button.layer-release:hover {
 /* Space is held: the catcher is a pan surface until it lifts. */
 .transform-catcher.pan {
   cursor: grab;
+}
+
+/* Drawing-guide edit mode (§20.5): the same full-viewport catcher bargain as
+   transform mode — while a guide is being composed, the pointer shapes the
+   camera, it does not paint. */
+.guide-catcher {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  touch-action: none;
+}
+
+.guide-catcher.pan {
+  cursor: grab;
+}
+
+/* The guide bar's inline sliders: narrow enough that the bar stays a bar. */
+.guide-bar .slider {
+  width: 84px;
+  flex: none;
+}
+
+/* Quiet group labels inside a bar ("Lock", "Show", "Density"…): smaller and
+   dimmer than `.bar-label`, which names the mode itself. */
+.bar-sub {
+  font-size: 11px;
+  color: #ffffff8c;
+  padding-left: 2px;
+}
+
+/* An axis chip, tinted the axis's own hue (`--axis`, set inline): the letter
+   is the color of the lines it governs, and a lit chip fills with it. */
+.chip.axis-chip {
+  color: var(--axis);
+  min-width: 30px;
+  font-weight: 600;
+}
+
+.chip.axis-chip.active {
+  background: var(--axis);
+  color: #101014;
+}
+
+/* The Drawing Guides panel's roster (§20.5): one row per guide, shaped like
+   a layer row — the name selects, the eye shows/hides, ✕ removes. */
+.guide-empty {
+  font-size: 12px;
+  color: #ffffff70;
+  padding: 6px 2px 2px;
+}
+
+.guide-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.guide-row:hover {
+  background: #ffffff12;
+}
+
+.guide-row.active {
+  background: #3a6ea5;
+}
+
+.guide-name {
+  flex: 1;
+  font-size: 12px;
+  color: #eee;
+  /* The row's full height stays clickable through the name. */
+  padding: 2px 0;
+}
+
+.guide-eye,
+.guide-remove {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #ffffffa6;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.guide-eye:hover,
+.guide-remove:hover {
+  color: #eee;
+}
+
+/* Like the layer eyes: an open eye rests hidden and appears on hover, a
+   struck one stands so "what is hidden?" reads at a glance down the column. */
+.guide-eye:not(.hidden),
+.guide-remove {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms ease-out;
+}
+
+.guide-row:hover .guide-eye,
+.guide-row:hover .guide-remove {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* The transform widget's ellipse (§16.6): purely visual — the

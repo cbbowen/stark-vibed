@@ -79,6 +79,11 @@ pub struct AppState {
     /// the engine sees only the previews it produces and the one commit on
     /// "Done".
     pub transform: Signal<Option<TransformState>>,
+    /// The drawing-guide edit mode (§20.5): `Some` while a guide is selected
+    /// for composing — the canvas drags the camera, and the Perspective Guide
+    /// bar stands in at the bottom. View state through and through: the engine
+    /// sees only the `SetGuides` lists the gestures produce.
+    pub guide_edit: Signal<Option<GuideEdit>>,
     /// Whether a [`request_paint`] is already waiting on the next animation frame.
     /// The latch that turns any number of paint requests into one paint per frame.
     /// Read and written only from non-component code (`peek`/`set`), so no
@@ -94,6 +99,24 @@ pub struct AppState {
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
+}
+
+/// A drawing guide selected for composing (§20.5): which entry of the
+/// engine's guide list the mode edits, and the per-axis locks constraining
+/// the canvas drag.
+///
+/// The locks live here rather than on the guide because they are *gesture*
+/// state — a constraint on the hand for the duration of the mode, not a fact
+/// about the guide worth keeping (or, later, saving). Leaving the mode
+/// releases them.
+#[derive(Clone, Copy, PartialEq)]
+pub struct GuideEdit {
+    /// Index into the engine's guide list ([`ObservableState::guides`]).
+    pub index: usize,
+    /// World axes held fixed under the orbit drag: one lock constrains the
+    /// drag to turning about that axis, two pin the frame entirely
+    /// ([`PerspectiveGuide::dragged`](stark_core::PerspectiveGuide::dragged)).
+    pub locked: [bool; 3],
 }
 
 /// The drag-and-hold drawing assist's signals (§6.9).
@@ -172,6 +195,7 @@ impl AppState {
                 task: root_signal(|| None),
             },
             transform: root_signal(|| None),
+            guide_edit: root_signal(|| None),
             paint_queued: root_signal(|| false),
             collab: CollabState {
                 session: root_signal(|| None),

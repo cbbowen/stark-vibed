@@ -17,12 +17,16 @@
 //!   about each vanishing line — each sits on the Thales circle over its two
 //!   vanishing points, which is why it sees them at a right angle (§20.2).
 //!
-//! [`PerspectiveGuide`] is the view-state the session holds and the panel
-//! edits; [`PerspectiveGuide::scene`] derives the [`GuideScene`] the
-//! compositor's guide pass draws (§20.4). Everything here is plain CPU math,
+//! [`PerspectiveGuide`] is one guide; the session carries a list of them
+//! (§20.5) and the panel edits it whole through
+//! [`ViewCommand::SetGuides`](crate::command::ViewCommand::SetGuides).
+//! [`PerspectiveGuide::scene`] derives the [`GuideScene`] the compositor's
+//! guide pass draws (§20.4), and [`PerspectiveGuide::dragged`] is the direct
+//! manipulation: the grabbed direction follows the pointer, snapping to and
+//! lockable about the world axes (§20.5). Everything here is plain CPU math,
 //! computed once per render and unit-tested against the classical theorems.
 
-use glam::{Mat3, Vec2, Vec3};
+use glam::{Mat3, Quat, Vec2, Vec3};
 
 /// A world-axis direction whose camera-space `z` is smaller than this is taken
 /// to vanish *at infinity* — its lines are drawn parallel. At any plausible
@@ -36,14 +40,18 @@ const VP_FINITE_EPS: f32 = 1e-4;
 /// square-on), so there is no line — and no station point — to draw.
 const LINE_EPS: f32 = 1e-4;
 
+/// How close a free drag's rotation axis must lie to a world axis before the
+/// drag snaps to turning purely about it (§20.5): cos 15°. Wide enough to
+/// fall into deliberately, narrow enough that a diagonal drag stays free.
+const SNAP_COS: f32 = 0.966;
+
 /// The perspective-grid guide: a camera, plus how densely to dress it
-/// (§20.1). View state — per-client, never logged, never sent — carried by
-/// the `Session` and edited through
-/// [`ViewCommand::SetGuide`](crate::command::ViewCommand::SetGuide).
+/// (§20.1). View state — per-client, never logged, never sent — one entry of
+/// the list the `Session` carries (§20.5).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PerspectiveGuide {
-    /// Whether the guide is drawn at all.
-    pub enabled: bool,
+    /// Whether this guide is drawn — the list row's eye (§20.5).
+    pub visible: bool,
     /// The **center of view** (principal point): where the view axis meets the
     /// picture plane, in canvas px. The one point of the drawing seen without
     /// obliquity, and the center of the 45° circle.
@@ -51,16 +59,12 @@ pub struct PerspectiveGuide {
     /// Focal length in canvas px: the eye's distance from the picture plane,
     /// and therefore also the radius of the 45° circle (`tan 45° = 1`).
     pub focal: f32,
-    /// Turn of the world about its vertical axis, radians. Zero looks straight
-    /// down the world Z axis: 1-point perspective.
-    pub yaw: f32,
-    /// Tilt of the view up/down, radians. Zero keeps the verticals parallel:
-    /// with any yaw, 2-point perspective.
-    pub pitch: f32,
-    /// Roll of the camera about its own view axis, radians. Turns the whole
-    /// figure on the canvas without changing which case it is — the count of
-    /// finite vanishing points is roll-invariant, and the guide shows that.
-    pub roll: f32,
+    /// The camera's orientation: rotates the world's orthogonal axis frame
+    /// into camera space (x right, y down to match the canvas, z forward).
+    /// Identity looks straight down the world Z axis — 1-point perspective —
+    /// and every other case is a turn of this one quaternion; the *count of
+    /// finite vanishing points* is the only thing "1/2/3-point" ever names.
+    pub rotation: Quat,
     /// Fan lines per half-turn of each axis's plane pencil (§20.3). The step
     /// between guide lines is `π / density` of *visual angle* — equal steps as
     /// the eye turns, not equal spacing on the canvas, which is what makes the
@@ -74,16 +78,15 @@ pub struct PerspectiveGuide {
 }
 
 impl Default for PerspectiveGuide {
-    /// Off, centred on the canvas origin, at a moderate lens, turned to the
-    /// most-reached-for case (2-point), with 15° fans.
+    /// Visible, centred on the canvas origin, at a moderate lens, turned to
+    /// the most-reached-for case (2-point), with 15° fans. The caller placing
+    /// a new guide moves `center` to where the artist is looking.
     fn default() -> Self {
         Self {
-            enabled: false,
+            visible: true,
             center: Vec2::ZERO,
             focal: 900.0,
-            yaw: 30f32.to_radians(),
-            pitch: 0.0,
-            roll: 0.0,
+            rotation: Quat::from_rotation_y(30f32.to_radians()),
             density: 12,
             opacity: 0.65,
             axes: [true; 3],
@@ -92,19 +95,71 @@ impl Default for PerspectiveGuide {
 }
 
 impl PerspectiveGuide {
-    /// The world axes as directions in **camera space** (§20.1) — x right,
-    /// y down (canvas-aligned), z forward into the scene. Columns of
-    /// `Rz(roll)·Rx(pitch)·Ry(yaw)`; at rest the world axes coincide with the
-    /// camera's and the guide reads as 1-point.
+    /// The world axes as directions in **camera space** (§20.1) — the columns
+    /// of [`rotation`](Self::rotation) as a matrix.
     ///
     /// Directions, not points: everything downstream treats them projectively,
     /// so an axis and its negation describe the same pencil of lines and no
     /// consumer depends on a sign.
     pub fn axis_dirs(&self) -> [Vec3; 3] {
-        let r = Mat3::from_rotation_z(self.roll)
-            * Mat3::from_rotation_x(self.pitch)
-            * Mat3::from_rotation_y(self.yaw);
-        [r.x_axis, r.y_axis, r.z_axis]
+        let m = Mat3::from_quat(self.rotation);
+        [m.x_axis, m.y_axis, m.z_axis]
+    }
+
+    /// The eye's ray through canvas point `p`, unit, in camera space. The
+    /// shared first step of projection and of every canvas gesture: what the
+    /// hand touches on the picture plane *is* a direction in the world.
+    pub fn ray(&self, p: Vec2) -> Vec3 {
+        Vec3::new(
+            (p.x - self.center.x) / self.focal,
+            (p.y - self.center.y) / self.focal,
+            1.0,
+        )
+        .normalize()
+    }
+
+    /// The orbit drag (§20.5): the world direction grabbed at `from` follows
+    /// the pointer to `to`, by rotating the whole frame — always computed from
+    /// the drag's *start* state, so a long drag cannot drift and the snap
+    /// decision cannot flicker.
+    ///
+    /// `locked` axes are held fixed. Rotations fixing one axis are exactly the
+    /// turns about it, so one lock constrains the drag to that axis's orbit —
+    /// lock the vertical and a 2-point setup stays 2-point under any drag —
+    /// and two locks pin the frame entirely (the identity is the only rotation
+    /// fixing two axes). Unlocked, the drag is a free grab, *snapping* to a
+    /// pure axis turn whenever the rotation it implies lies within
+    /// [`SNAP_COS`] of a world axis.
+    #[must_use]
+    pub fn dragged(&self, from: Vec2, to: Vec2, locked: [bool; 3]) -> Self {
+        if locked.iter().filter(|l| **l).count() >= 2 {
+            return *self;
+        }
+        let (r0, r1) = (self.ray(from), self.ray(to));
+        let dirs = self.axis_dirs();
+        let delta = if let Some(i) = locked.iter().position(|l| *l) {
+            axis_turn(dirs[i], r0, r1)
+        } else {
+            let w = r0.cross(r1);
+            if w.length_squared() < 1e-12 {
+                Quat::IDENTITY
+            } else {
+                // Snap to the closest world axis the free rotation nearly is.
+                let w = w.normalize();
+                let close = (0..3)
+                    .map(|i| (w.dot(dirs[i]).abs(), i))
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+                    .filter(|(d, _)| *d > SNAP_COS);
+                match close {
+                    Some((_, i)) => axis_turn(dirs[i], r0, r1),
+                    None => Quat::from_rotation_arc(r0, r1),
+                }
+            }
+        };
+        Self {
+            rotation: (delta * self.rotation).normalize(),
+            ..*self
+        }
     }
 
     /// Everything the guide pass draws, derived from the camera (§20.2). Cheap
@@ -176,6 +231,19 @@ impl PerspectiveGuide {
     }
 }
 
+/// The turn about `axis` that best carries ray `r0` toward ray `r1`: the
+/// signed angle between their projections onto the plane the axis pierces.
+/// A ray lying along the axis has no projection and asks for nothing.
+fn axis_turn(axis: Vec3, r0: Vec3, r1: Vec3) -> Quat {
+    let u = r0 - axis * axis.dot(r0);
+    let v = r1 - axis * axis.dot(r1);
+    if u.length_squared() < 1e-8 || v.length_squared() < 1e-8 {
+        return Quat::IDENTITY;
+    }
+    let (u, v) = (u.normalize(), v.normalize());
+    Quat::from_axis_angle(axis, u.cross(v).dot(axis).atan2(u.dot(v)))
+}
+
 /// The derived, draw-ready guide: what the compositor's guide pass uniform
 /// carries (§20.4). All canvas-space; the pass adds the view mapping.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -208,14 +276,16 @@ pub struct GuideScene {
 mod tests {
     use super::*;
 
+    /// A guide at the classical Euler pose — the tests state poses this way
+    /// because the theorems are stated this way; the *state* is one
+    /// quaternion.
     fn guide(yaw: f32, pitch: f32, roll: f32) -> PerspectiveGuide {
         PerspectiveGuide {
-            enabled: true,
             center: Vec2::new(320.0, -140.0),
             focal: 800.0,
-            yaw,
-            pitch,
-            roll,
+            rotation: Quat::from_rotation_z(roll)
+                * Quat::from_rotation_x(pitch)
+                * Quat::from_rotation_y(yaw),
             ..Default::default()
         }
     }
@@ -340,5 +410,74 @@ mod tests {
         let d = Vec3::new(0.0, 1.0, 1.0).normalize(); // 45° from +z
         let p = g.center + Vec2::new(d.x, d.y) * (g.focal / d.z);
         assert!(((p - g.center).length() - g.focal).abs() < 1e-3);
+    }
+
+    // --- the orbit drag (§20.5) --------------------------------------------
+
+    /// The drag's contract: the world direction under the pointer at the start
+    /// is under it at the end. (A diagonal drag, chosen away from every axis
+    /// so the snap stays out of the way.)
+    #[test]
+    fn a_drag_keeps_the_grabbed_direction_under_the_pointer() {
+        let g = guide(0.5, 0.35, 0.2);
+        let (from, to) = (
+            g.center + Vec2::new(120.0, -60.0),
+            g.center + Vec2::new(-152.0, 217.0),
+        );
+        let g2 = g.dragged(from, to, [false; 3]);
+        // The grabbed direction, in *world* coordinates…
+        let world = g.rotation.inverse() * g.ray(from);
+        // …projected through the dragged camera, lands at `to`.
+        let now = g2.rotation * world;
+        assert!((now.normalize() - g2.ray(to)).length() < 1e-4);
+    }
+
+    /// One locked axis constrains the drag to turning about it: the axis's
+    /// own direction — and with it its vanishing point — cannot move. Lock
+    /// the vertical and 2-point stays exactly 2-point.
+    #[test]
+    fn a_locked_axis_survives_any_drag() {
+        let g = guide(0.6, 0.0, 0.0);
+        let before = g.axis_dirs()[1];
+        let g2 = g.dragged(
+            g.center + Vec2::new(40.0, 30.0),
+            g.center + Vec2::new(-180.0, 95.0),
+            [false, true, false],
+        );
+        assert!((g2.axis_dirs()[1] - before).length() < 1e-4);
+        // Still 2-point: the verticals still vanish at infinity.
+        assert!(g2.scene().vps[1].is_none());
+    }
+
+    /// Two locks pin the frame: the identity is the only rotation fixing two
+    /// distinct axes, so the drag must change nothing.
+    #[test]
+    fn two_locks_pin_the_frame() {
+        let g = guide(0.5, 0.35, 0.2);
+        let g2 = g.dragged(
+            g.center + Vec2::new(40.0, 30.0),
+            g.center + Vec2::new(300.0, -200.0),
+            [true, true, false],
+        );
+        assert_eq!(g.rotation, g2.rotation);
+    }
+
+    /// The snap: a horizontal drag through the center of view implies a
+    /// rotation about the (near-vertical) Y axis, well within the snap cone —
+    /// so it turns purely about Y and the verticals stay parallel, without
+    /// any lock being held.
+    #[test]
+    fn a_near_axis_drag_snaps_to_a_pure_axis_turn() {
+        let g = guide(0.6, 0.0, 0.0);
+        let g2 = g.dragged(
+            g.center + Vec2::new(-100.0, 0.0),
+            g.center + Vec2::new(140.0, 0.0),
+            [false; 3],
+        );
+        let before = g.axis_dirs()[1];
+        assert!((g2.axis_dirs()[1] - before).length() < 1e-4, "snapped turn");
+        assert!(g2.scene().vps[1].is_none(), "still 2-point");
+        // And it did actually turn.
+        assert!((g2.rotation.dot(g.rotation).abs() - 1.0).abs() > 1e-4);
     }
 }
