@@ -186,6 +186,7 @@ icons! {
     // is not there. What the four arrows say instead is that the paint is about to be
     // moved and reshaped, which is true of all three of the mode's gestures.
     TRANSFORM => "arrows-out-cardinal-bold",
+    PERSPECTIVE => "perspective-bold",
     // The transform bar's Warp family (§16.9). A curve with its control
     // points, which is what the gesture *is*: a smooth surface bent by the
     // handles through it. Perspective takes [`PERSPECTIVE`] — the same subject
@@ -241,7 +242,7 @@ icons! {
     // it are one picture rather than two names that happen to match.
     //
     // Three of them are shared rather than duplicated, and the sharing is the claim:
-    // `SELECTION` and `PERSPECTIVE` also head the bars that serve those panels, and
+    // `SELECTION` and `PERSPECTIVE_GRID` also head the bars that serve those panels, and
     // `COLOR` also heads the brush editor's colour-dynamics group. A panel, its bar
     // and the dialog that expands it are three views of one subject, so they are one
     // mark — the same argument the frame bar's crop marks are the frame's.
@@ -250,7 +251,7 @@ icons! {
     BRUSH => "paint-brush-bold",
     SELECTION => "selection-bold",
     LAYERS => "stack-bold",
-    PERSPECTIVE => "perspective-bold",
+    PERSPECTIVE_GRID => "vector-three-bold",
     LIGHTING => "sphere-bold",
 }
 

@@ -82,7 +82,7 @@ impl PanelId {
             PanelId::Brush => icons::BRUSH,
             PanelId::Select => icons::SELECTION,
             PanelId::Layers => icons::LAYERS,
-            PanelId::Guides => icons::PERSPECTIVE,
+            PanelId::Guides => icons::PERSPECTIVE_GRID,
             PanelId::Lighting => icons::LIGHTING,
         }
     }

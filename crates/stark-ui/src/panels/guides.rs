@@ -307,7 +307,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // this one standing would make the guide bar the odd bar out for a word that
             // is legible one panel away.
             span { class: "bar-label",
-                {icon(icons::PERSPECTIVE)}
+                {icon(icons::PERSPECTIVE_GRID)}
                 {name}
             }
             // Locks: hold a world axis fixed, constraining the canvas drag to
