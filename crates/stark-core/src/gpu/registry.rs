@@ -32,11 +32,22 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Self::Gpu;
 }
 
-/// The registered bytes for a resource, the id in use, and the object built for it.
+/// The registered bytes for a resource, the id in use, and the objects built so far.
 pub struct Registry<R: Resource> {
     bytes: HashMap<R, Vec<u8>>,
     id: R,
-    current: R::Gpu,
+    /// Everything built, keyed by id; `built[&id]` is the one in use and is always
+    /// present.
+    ///
+    /// A **cache**, not a set of live resources, and it exists for the canvas
+    /// surface's sake. Once the deposition tooth reads the surface (§6.4), a stroke
+    /// replayed from before a `SetSurface` has to deposit against the ground it was
+    /// actually painted on rather than the one in use now — so [`get`](Self::get)
+    /// can be asked for any id at any time, and re-decoding a multi-megabyte PNG
+    /// every time the log crosses that boundary is not a thing to do on an undo
+    /// step. Bounded by the number of distinct ids a document ever names, which is
+    /// the size of the id enum.
+    built: HashMap<R, R::Gpu>,
 }
 
 impl<R: Resource> Registry<R> {
@@ -47,7 +58,7 @@ impl<R: Resource> Registry<R> {
         Self {
             bytes: HashMap::new(),
             id,
-            current: id.build(gpu, None),
+            built: HashMap::from([(id, id.build(gpu, None))]),
         }
     }
 
@@ -56,9 +67,25 @@ impl<R: Resource> Registry<R> {
         self.id
     }
 
-    /// The live GPU object.
+    /// The live GPU object — the one `id()` names.
     pub fn current(&self) -> &R::Gpu {
-        &self.current
+        self.built
+            .get(&self.id)
+            .expect("the id in use is always built")
+    }
+
+    /// The object for **any** `id`, built on demand and cached — without changing
+    /// which one is in use.
+    ///
+    /// This is what a replay asks: the surface a stroke deposits against is the one
+    /// the document was on *at that point in the log* (§6.4), which is a question
+    /// about the action being applied, not about what the compositor is showing.
+    pub fn get(&mut self, gpu: &GpuContext, id: R) -> &R::Gpu {
+        if !self.built.contains_key(&id) {
+            let obj = self.make(gpu, id);
+            self.built.insert(id, obj);
+        }
+        &self.built[&id]
     }
 
     /// Whether `id` is ready to use: builtins always are, everything else once its
@@ -72,10 +99,14 @@ impl<R: Resource> Registry<R> {
     /// it wherever it is sampled.
     pub fn register(&mut self, gpu: &GpuContext, id: R, bytes: Vec<u8>) -> bool {
         self.bytes.insert(id, bytes);
+        // Whatever was built for this id was built from the *old* bytes — usually the
+        // builtin fallback, standing in while the fetch was in flight. Dropping it is
+        // what makes `get` return the real thing from now on.
+        self.built.remove(&id);
         if id != self.id {
             return false;
         }
-        self.rebuild(gpu);
+        self.ensure(gpu, id);
         true
     }
 
@@ -86,15 +117,22 @@ impl<R: Resource> Registry<R> {
             return false;
         }
         self.id = id;
-        self.rebuild(gpu);
+        self.ensure(gpu, id);
         true
     }
 
-    fn rebuild(&mut self, gpu: &GpuContext) {
-        let bytes = self.bytes.get(&self.id);
-        if bytes.is_none() && !self.id.is_builtin() {
-            tracing::warn!(id = ?self.id, "no registered bytes; falling back to the builtin");
+    fn ensure(&mut self, gpu: &GpuContext, id: R) {
+        if !self.built.contains_key(&id) {
+            let obj = self.make(gpu, id);
+            self.built.insert(id, obj);
         }
-        self.current = self.id.build(gpu, bytes.map(|b| b.as_slice()));
+    }
+
+    fn make(&self, gpu: &GpuContext, id: R) -> R::Gpu {
+        let bytes = self.bytes.get(&id);
+        if bytes.is_none() && !id.is_builtin() {
+            tracing::warn!(id = ?id, "no registered bytes; falling back to the builtin");
+        }
+        id.build(gpu, bytes.map(|b| b.as_slice()))
     }
 }

@@ -137,8 +137,9 @@ The workspace is on **nightly** for exactly one reason: `history`'s
 - **Do not add inert scaffolding.** If a field, slider or shader hook cannot yet
   change a pixel, leave it out and add it with the implementation. `tooth`,
   `drag`, `wetness` and the `wet` channel were all deleted rather than
-  carried; each is a local change to reintroduce when built — `bleed` has since
-  been rebuilt that way as the real lateral-diffusion axis.
+  carried; each is a local change to reintroduce when built — `bleed` came back
+  that way as the real lateral-diffusion axis, and `tooth` as the deposition gate
+  (§6.4), each with the model its placeholder never had.
 - **Rule out a class rather than enumerate its instances.** Where a guarantee can
   be made structural — ownership derived from the action id, a representation
   that cannot express the wrong thing — it is, instead of a check a call site

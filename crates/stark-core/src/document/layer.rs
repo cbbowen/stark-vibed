@@ -247,8 +247,9 @@ impl BlendMode {
 /// One variant, because one is built. This is the seam where the `SelectionOp`
 /// algebra lands (§15.9, P4), bringing comic gutters, lasso mattes
 /// and whole-plane slabs at once. Per this codebase's own precedent (§1 —
-/// `tooth`, `drag`, `bleed` were deleted rather than kept inert), no variant
-/// appears here before it does something.
+/// `drag` and `wetness` were deleted rather than kept inert, and `bleed` and
+/// `tooth` came back only once each had a model), no variant appears here before
+/// it does something.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MatteRegion {
     /// Everything *outside* this canvas-space rect — the frame / mat board.

@@ -16,6 +16,16 @@ use crate::gpu::context::{GpuContext, MAX_TEXTURE_DIM_2D};
 /// and shading passes must use the same value for the texture to line up.
 pub const SURFACE_TILE_PX: f32 = 1024.0;
 
+/// Canvas px → surface-tile uv, which is all a shader needs of [`SURFACE_TILE_PX`].
+///
+/// A function rather than a second constant so the deposition tooth (§6.4) and the
+/// media pass cannot end up quoting different scales: the weave the paint catches on
+/// and the weave the light catches on have to be the *same* weave, or the highlights
+/// sit beside the grain instead of on it.
+pub fn grain_uv_scale() -> f32 {
+    1.0 / SURFACE_TILE_PX
+}
+
 /// Which physical surface a document is painted on. Saved in `CanvasMeta` (§8)
 /// because which canvas a piece was painted on is part of the document, so it is
 /// reproducible. The set is open — future custom/uploaded surfaces slot in here.
@@ -32,6 +42,13 @@ pub enum SurfaceId {
     Flat,
     /// The built-in tileable linen canvas weave.
     Linen,
+    /// Built-in tileable **gesso** — a brushed acrylic ground. Where `Linen` is a
+    /// regular woven grid, this is irregular: broad knife strokes with a fine
+    /// crackle over them, so its height histogram has a long tail rather than a
+    /// periodic peak. That is what makes it the interesting one for the deposition
+    /// tooth (§6.4) — a periodic weave prints a periodic mark, which reads as a
+    /// screen; an irregular ground reads as paper.
+    Gesso,
 }
 
 /// A canvas surface: a single-channel height texture plus a tiling sampler.

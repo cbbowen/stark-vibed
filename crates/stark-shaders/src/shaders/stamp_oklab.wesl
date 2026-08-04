@@ -43,7 +43,8 @@
 //             (height)) — (height, optical mass, unused, unused)
 
 import package::stamp_common::{
-    VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain, xf,
+    VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
+    surface_tooth, xf,
 };
 import package::paint_common::{OPACITY_K};
 
@@ -54,8 +55,9 @@ fn vs_main(
     @location(1) dir: vec2<f32>,
     @location(2) geom: vec2<f32>,
     @location(3) extra: vec4<f32>,
+    @location(4) tooth: f32,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, extra);
+    return sweep_vertex(vi, start, dir, geom, extra, tooth);
 }
 
 @fragment
@@ -77,11 +79,20 @@ fn fs_main(in: VsOut) -> FsOut {
     // the canvas alone. Height is linear in `τ`, and the per-unit opacity is a
     // property of the pigment rather than of how much of it there is, so the mass
     // (their product) is linear in `τ` too.
+    // The ground's share of this texel (§6.4): where the canvas weave stands below
+    // the level this tip presses to, the paint simply does not land. A per-*fragment*
+    // factor on `τ`, exactly like `drain` — so the deposit stays linear in `τ` and
+    // exactly independent of how the path was cut, which a factor on the finished
+    // parcel would not be.
+    let tooth = surface_tooth(in);
     // `add` comes off the *instance*: it is the one paint rate the swept path reads,
     // and the pen can drive it (§6.2), so it varies segment to segment exactly as the
     // radius does. Constant within the segment either way, which is all the argument
     // above needs — the deposit is still linear in this segment's `τ`.
-    let h = in.extra.w * drain * tau;
+    //
+    // The tooth gates the **height** and not the opacity beside it (§6.1): it decides
+    // how much paint arrives, not what the pigment is.
+    let h = in.extra.w * drain * tooth * tau;
     let op = xf.color.w * drain;
     let m = op * h;
 

@@ -425,6 +425,10 @@ pub struct Modulations {
     pub deposit: Option<Modulation>,
     /// Scales [`BrushDynamics::bleed`].
     pub bleed: Option<Modulation>,
+    /// Scales [`BrushParams::tooth`] — how deep the tool bites into the canvas's
+    /// weave (§6.4). Mapped to pressure this is the charcoal behaviour: bear down and
+    /// the tip flattens into the valleys, so the grain fills in.
+    pub tooth: Option<Modulation>,
 }
 
 impl Modulations {
@@ -441,6 +445,7 @@ impl Modulations {
         lift: None,
         deposit: None,
         bleed: None,
+        tooth: None,
     };
 
     /// [`Self::PRESSURE_SIZE`] as a function, for `#[serde(default = "…")]` — which
@@ -469,10 +474,20 @@ impl Modulations {
     pub fn bleed(&self, pen: PenState) -> f32 {
         Self::factor(self.bleed, pen)
     }
+    pub fn tooth(&self, pen: PenState) -> f32 {
+        Self::factor(self.tooth, pen)
+    }
 
     /// Every target at once, in the order they are declared above.
-    fn all(&self) -> [Option<Modulation>; 5] {
-        [self.size, self.flow, self.lift, self.deposit, self.bleed]
+    fn all(&self) -> [Option<Modulation>; 6] {
+        [
+            self.size,
+            self.flow,
+            self.lift,
+            self.deposit,
+            self.bleed,
+            self.tooth,
+        ]
     }
 
     /// Whether any target is mapped.
@@ -552,6 +567,22 @@ pub struct BrushParams {
     /// way to turn it off or point it anywhere else.
     #[serde(default = "Modulations::pressure_size")]
     pub modulation: Modulations,
+    /// How deeply this tool bites into the **canvas surface's tooth** (§6.4), in
+    /// [0, 1]: 0 = the tip reaches everywhere and the ground does not break the mark
+    /// up at all (the historical behaviour, and the default); 1 = it touches only the
+    /// very tops of the weave, so the mark is what a dry brush leaves.
+    ///
+    /// The *ground* is document state ([`SurfaceId`]) — a pencil and a loaded brush
+    /// on the same canvas see the same tooth, which is why the grain lives there and
+    /// only this knob lives on the brush. What it scales is the paint the brush lays
+    /// per unit swept optical depth, gated per texel by whether the ground clears the
+    /// level this tool presses to (`paint_common.wesl::tooth_gate`).
+    ///
+    /// Exactly 0 on a `Flat` canvas whatever this says, because `Surface::relief` is
+    /// 0 there — so the axis is orthogonal to every golden that paints on `Flat`, the
+    /// same way the media pass's weave already is.
+    #[serde(default)]
+    pub tooth: f32,
 }
 
 impl Default for BrushParams {
@@ -567,6 +598,7 @@ impl Default for BrushParams {
             start_taper_length: 0.0,
             end_taper_length: 0.0,
             modulation: Modulations::PRESSURE_SIZE,
+            tooth: 0.0,
         }
     }
 }
@@ -854,7 +886,6 @@ pub struct Action {
 /// Side-channel passed to [`history::Action::apply`]: the GPU resources needed
 /// to render a stroke (§5). It owns cheap `Arc`-backed clones, so it
 /// has no borrow lifetime — which is what lets it be the `Action::Context`.
-#[derive(Clone)]
 pub struct ApplyCtx {
     pub pool: TilePool,
     pub stroke: StrokeRenderer,
@@ -862,6 +893,33 @@ pub struct ApplyCtx {
     pub selection: SelectionRenderer,
     pub transform: crate::gpu::transform::TransformRenderer,
     pub fill: crate::gpu::fill::FillRenderer,
+    /// The device, so a canvas surface can be built here on demand.
+    pub gpu: crate::gpu::context::GpuContext,
+    /// The canvas surfaces and the bytes registered for them (§6.4).
+    ///
+    /// It lives here, rather than beside the compositor it also feeds, because the
+    /// **deposit reads it**: the tooth gates the paint a stroke lays by the ground
+    /// under it, so which surface a stroke sees is part of applying that stroke.
+    /// Asked with [`DocState::surface`](super::state::DocState) *as the log stood at
+    /// that action*, which is the whole reason `SetSurface` was made a logged action
+    /// rather than a view setting — a stroke from before a mid-document switch
+    /// deposits against the ground it was actually painted on, on replay and on a
+    /// peer alike.
+    pub surfaces: crate::gpu::registry::Registry<SurfaceId>,
+}
+
+impl ApplyCtx {
+    /// The canvas surface `id` names, built on demand ([`Registry::get`]).
+    ///
+    /// Returns an owned handle rather than a borrow — `Surface` is a pair of
+    /// reference-counted wgpu objects, so the clone is two atomic bumps — because
+    /// the caller then borrows other fields of `self` to build the scene around it.
+    ///
+    /// [`Registry::get`]: crate::gpu::registry::Registry::get
+    pub fn surface(&mut self, id: SurfaceId) -> crate::gpu::surface::Surface {
+        let gpu = self.gpu.clone();
+        self.surfaces.get(&gpu, id).clone()
+    }
 }
 
 impl history::Action for Action {
@@ -905,12 +963,19 @@ impl history::Action for Action {
                         // so replay reproduces it exactly; keyed by the author, so a
                         // collaborator's lasso never clips this stroke.
                         let selection = state.selection_of(self.id.actor);
+                        // The ground this stroke was painted on, as the log stood
+                        // here — not as it stands now (§6.4). The tooth gates the
+                        // deposit by it, so a mid-document `SetSurface` changes what
+                        // comes *after* it and nothing before, on replay exactly as
+                        // it did live.
+                        let surface = ctx.surface(state.surface);
                         let tiles = ctx.stroke.render(
                             crate::gpu::stroke::StrokeScene {
                                 pool: &ctx.pool,
                                 assets: &ctx.assets,
                                 base: &base,
                                 selection: &selection,
+                                surface: &surface,
                             },
                             rec,
                         );

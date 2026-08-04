@@ -2797,3 +2797,14 @@ button.layer-remove:hover {
 .timeline-close {
   margin-left: auto;
 }
+
+/* An in-section note: a setting that is on but has nothing to act on. Quieter than
+   a warning — it is a fact about the document, not a mistake. */
+.be-note {
+  margin: -2px 0 10px 12px;
+  padding-left: 10px;
+  border-left: 2px solid #d8a24d55;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.7;
+}

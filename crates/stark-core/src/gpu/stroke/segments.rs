@@ -63,6 +63,10 @@ pub(super) struct Segment {
     pub(super) lift: f32,
     pub(super) deposit: f32,
     pub(super) bleed: f32,
+    /// How deep this segment's tip bites into the canvas weave (§6.4) — the brush's
+    /// `tooth`, likewise modulated. Not a paint rate: it gates `add` per *texel* from
+    /// the ground under it, in the shader.
+    pub(super) tooth: f32,
 }
 
 /// Per-segment instance data for the sweep shader. Carries what actually varies from
@@ -79,6 +83,10 @@ pub(super) struct SegmentInstance {
     // and the `add` source rate — the one paint rate the swept path reads, here
     // because a modulation can point at it (§6.2).
     pub(super) extra: [f32; 4],
+    /// How deep this segment's tip bites into the canvas weave (§6.4). Its own
+    /// attribute rather than a lane of `extra`, because `extra` is full and a
+    /// five-float vector would be three unused lanes to carry one number.
+    pub(super) tooth: f32,
 }
 
 /// Generate the round tip's coverage: a soft disc with `hardness` falloff.
@@ -362,6 +370,7 @@ pub(super) fn generate_segments_in(
             lift: d.lift * m.lift(pen),
             deposit: d.deposit * m.deposit(pen),
             bleed: d.bleed * m.bleed(pen),
+            tooth: b.tooth * m.tooth(pen),
         }
     };
 
@@ -1716,6 +1725,7 @@ mod tests {
             lift: 0.0,
             deposit: 0.0,
             bleed: 0.0,
+            tooth: 0.0,
         }
     }
 

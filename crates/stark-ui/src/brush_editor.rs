@@ -27,7 +27,7 @@ use stark_core::document::{
     PenState, Tool,
 };
 use stark_core::geom::Vec2;
-use stark_core::{ColorSpaceId, InputSample};
+use stark_core::{ColorSpaceId, InputSample, SurfaceId};
 
 use dioxus::html::HasFileData;
 
@@ -78,6 +78,7 @@ type BrushEdit = Box<dyn FnOnce(&mut BrushParams)>;
 enum ModRow {
     Size,
     Flow,
+    Tooth,
     Lift,
     Deposit,
     Bleed,
@@ -90,6 +91,7 @@ impl ModRow {
         match self {
             Self::Size => "Size",
             Self::Flow => "Flow",
+            Self::Tooth => "Tooth",
             Self::Lift => "Lift",
             Self::Deposit => "Deposit",
             Self::Bleed => "Bleed",
@@ -102,6 +104,7 @@ impl ModRow {
         match self {
             Self::Size => (1.0, MAX_RADIUS),
             Self::Flow => (0.0, 3.0),
+            Self::Tooth => (0.0, 1.0),
             Self::Lift | Self::Deposit | Self::Bleed => (0.0, 0.95),
         }
     }
@@ -110,6 +113,7 @@ impl ModRow {
         match self {
             Self::Size => b.radius,
             Self::Flow => b.dynamics.add,
+            Self::Tooth => b.tooth,
             Self::Lift => b.dynamics.lift,
             Self::Deposit => b.dynamics.deposit,
             Self::Bleed => b.dynamics.bleed,
@@ -120,6 +124,7 @@ impl ModRow {
         match self {
             Self::Size => b.radius = v,
             Self::Flow => b.dynamics.add = v,
+            Self::Tooth => b.tooth = v,
             Self::Lift => b.dynamics.lift = v,
             Self::Deposit => b.dynamics.deposit = v,
             Self::Bleed => b.dynamics.bleed = v,
@@ -130,6 +135,7 @@ impl ModRow {
         match self {
             Self::Size => &mut m.size,
             Self::Flow => &mut m.flow,
+            Self::Tooth => &mut m.tooth,
             Self::Lift => &mut m.lift,
             Self::Deposit => &mut m.deposit,
             Self::Bleed => &mut m.bleed,
@@ -140,6 +146,7 @@ impl ModRow {
         match self {
             Self::Size => m.size,
             Self::Flow => m.flow,
+            Self::Tooth => m.tooth,
             Self::Lift => m.lift,
             Self::Deposit => m.deposit,
             Self::Bleed => m.bleed,
@@ -247,6 +254,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         .as_ref()
         .map(|r| r.color_space())
         .unwrap_or(ColorSpaceId::Oklab);
+    // The ground the document is on (§6.4) — what the tooth has to bite into.
+    let surface = state
+        .renderer
+        .read()
+        .as_ref()
+        .map(|r| r.surface())
+        .unwrap_or_default();
     let ch_labels = match space {
         ColorSpaceId::Mixbox => ["Pigment 1", "Pigment 2", "Pigment 3"],
         _ => ["Lightness", "Green \u{2194} red", "Blue \u{2194} yellow"],
@@ -343,6 +357,21 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // `add` is the tool's only source term (§6.2) and its only amount
                         // knob: the paint height laid per unit swept optical depth.
                         {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
+                        // How deeply the tip bites into the canvas's own tooth
+                        // (§6.4): at 0 the ground is irrelevant and the mark is solid,
+                        // and turned up the paint catches on the weave's peaks and
+                        // skips its valleys, which is what a dry brush leaves.
+                        {mod_slider(state, preview, mod_open, ModRow::Tooth, brush)}
+                        // The ground is the *document's*, not the brush's — a pencil
+                        // and a loaded brush on one canvas see one tooth — so on a
+                        // smooth canvas this knob has nothing to bite and says so,
+                        // rather than moving and changing nothing.
+                        if brush.tooth > 0.0 && surface == SurfaceId::Flat {
+                            div { class: "be-note",
+                                "This canvas is smooth, so there is no tooth to catch on. \
+                                 Pick a surface in the Lighting panel."
+                            }
+                        }
                         // Per-unit opacity, independent of the amount laid (§6.1).
                         // The ghost the Layers panel's opacity wears: the same question
                         // — how much of what is under this shows through — asked of the

@@ -395,6 +395,15 @@ pub struct StrokeScene<'a> {
     pub base: &'a HashTrieMap<TileCoord, TilePairHandle>,
     /// The selection in force, which gates the deposit (§6.8).
     pub selection: &'a Selection,
+    /// The canvas surface the document was on when this stroke was made (§6.4) —
+    /// the ground whose tooth gates how much of the brush's own paint lands
+    /// (`BrushParams::tooth`).
+    ///
+    /// Handed in per call, like everything else here, rather than held on the
+    /// renderer: it is *document* state, and a renderer that cached it would answer
+    /// a replayed stroke with whatever the compositor happens to be showing. That is
+    /// the shape the deleted `StrokeRenderer::set_surface` had (§6.4).
+    pub surface: &'a crate::gpu::surface::Surface,
 }
 
 /// What a range render leaves behind for the range that resumes after it.
@@ -537,6 +546,27 @@ impl StrokeRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // The canvas surface's height map + its own repeat sampler — the
+                // deposition tooth (§6.4). In this group rather than one of its own
+                // because it is the same kind of thing as the noise beside it: a
+                // tileable field the deposit samples per fragment, resolved per
+                // stroke.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         // Wrapping on both axes — the noise tile tiles (that's the whole point).
@@ -567,7 +597,8 @@ impl StrokeRenderer {
                     array_stride: std::mem::size_of::<SegmentInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4,
+                        4 => Float32
                     ],
                 })],
             },

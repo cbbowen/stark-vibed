@@ -6,6 +6,7 @@
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::noise::{color_jitter};
+import package::paint_common::{tooth_gate};
 
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
@@ -15,11 +16,13 @@ struct TileXform {
     // (.w). Constant across the stroke — colour dynamics (below) jitter the channels
     // per fragment, and `drain` fades the opacity per fragment (see `stroke_drain`).
     color: vec4<f32>,
-    // The `drain` falloff per canvas px in .x; .yzw unused. A stroke constant in the
-    // only sense that matters — it is a function of arc length, which every fragment
-    // knows, so it is evaluated there (`stroke_drain`). The `add` source used to sit
-    // beside it and does not any more: it is pen-driven (§6.2) and rides the segment
-    // instance, like the radius.
+    // The `drain` falloff per canvas px in .x, and the canvas → surface-tile uv scale
+    // (1/SURFACE_TILE_PX, zero when the ground has no relief to gate with) in .y;
+    // .zw unused. Both stroke constants in the only sense that matters — each is a
+    // function of something the fragment already knows, so it is evaluated there
+    // (`stroke_drain`, `surface_tooth`). The `add` source used to sit beside them and
+    // does not any more: it is pen-driven (§6.2) and rides the segment instance, like
+    // the radius.
     paint: vec4<f32>,
     // Colour dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
@@ -42,6 +45,14 @@ struct TileXform {
 // A 1×1 zero tile is bound when the brush's jitter is off.
 @group(2) @binding(0) var noise_tex: texture_2d<f32>;
 @group(2) @binding(1) var noise_samp: sampler;
+// The canvas surface's tileable height map and its repeat sampler (§6.4) — the
+// ground whose tooth gates the deposit. Sampled in *canvas* space, so the grain
+// belongs to the canvas and successive strokes register with each other; that is
+// also what keeps the gate a pure function of canvas position and the tile aprons
+// bit-consistent. A `Flat` canvas binds its 1×1 texel and arrives here with the uv
+// scale zeroed, so the gate is exactly 1.
+@group(2) @binding(2) var surface_tex: texture_2d<f32>;
+@group(2) @binding(3) var surface_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -62,6 +73,10 @@ struct VsOut {
     // segment's signed curvature (1/canvas px); and the `add` source rate — height
     // per unit swept optical depth, as the pen asked for it here (§6.2).
     @location(4) @interpolate(flat) extra: vec4<f32>,
+    // How deep this segment's tip bites into the weave (§6.4). Per segment, not per
+    // stroke, because the pen can drive it — bearing down flattens the tip into the
+    // valleys, which is the charcoal behaviour.
+    @location(5) @interpolate(flat) tooth: f32,
 }
 
 struct FsOut {
@@ -167,7 +182,8 @@ fn sweep_vertex(
     start: vec2<f32>,
     dir: vec2<f32>,   // unit tangent at the segment start
     geom: vec2<f32>,  // radius, arc length
-    extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, _
+    extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, `add`
+    tooth: f32,       // how deep this tip bites into the weave (§6.4)
 ) -> VsOut {
     let radius = geom.x;
     let len = geom.y;
@@ -217,6 +233,7 @@ fn sweep_vertex(
     out.dir = dir;
     out.geom = geom;
     out.extra = extra;
+    out.tooth = tooth;
     return out;
 }
 
@@ -275,6 +292,28 @@ fn stroke_arc(in: VsOut, sw: Sweep) -> f32 {
 // correction at all.
 fn stroke_drain(arc: f32) -> f32 {
     return max(1.0 - xf.paint.x * arc, 0.0);
+}
+
+// The share of its paint this fragment's texel receives from the ground under it
+// (§6.4) — the deposition tooth, `paint_common.wesl::tooth_gate` fed the canvas
+// surface's height here.
+//
+// Sampled at the fragment's own canvas position, so it is a pure function of that
+// position and nothing else: a tile's apron is rewritten identically to its
+// neighbour's interior with no copy pass, and — since it does not depend on the
+// segment — it factors straight out of the sum over overlapping segment quads,
+// leaving the deposit exactly as independent of the flattening as it was.
+//
+// `xf.paint.y` is zero on a canvas with no relief (`Surface::relief`), which sends
+// `tooth_gate` a level of 0 and returns exactly 1.0: a `Flat` document deposits
+// bit-for-bit what it always did whatever the brush's tooth says.
+fn surface_tooth(in: VsOut) -> f32 {
+    let uv_scale = xf.paint.y;
+    if uv_scale <= 0.0 || in.tooth <= 0.0 {
+        return 1.0;
+    }
+    let s = textureSampleLevel(surface_tex, surface_samp, in.canvas * uv_scale, 0.0).r;
+    return tooth_gate(s, in.tooth);
 }
 
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0

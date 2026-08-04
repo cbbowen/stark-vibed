@@ -38,10 +38,10 @@ struct SliceUniform {
 
 /// One segment of the sequential swept-exchange loop (§6.2): its
 /// `wick`, `bake`, `exchange` (which carries the snapshot) and `deposit` dispatches.
-/// `slot` is the 128-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
+/// `slot` is the 144-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
 /// a pure function of the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
-    slot: [f32; 32],
+    slot: [f32; 36],
     /// A dedicated **bleed slot** (§6.2): a straight quad whose sweep is one firing
     /// of the bleed cadence's travel window, with every vertical rate and the
     /// source zeroed. Dispatched as `snapshot` + `deposit` alone — the tool plays
@@ -600,6 +600,10 @@ impl<'a> DynamicsRun<'a> {
         // ---- The dispatch plan, one segment each, one 256-byte
         // slot each (dynamic uniform offsets — the standard way to vary a uniform
         // across dispatches within one pass).
+        // Zero on a ground with no relief, which zeroes the tooth's level and leaves
+        // the deposit bit-for-bit what it was (§6.4) — the same orthogonality the
+        // swept path takes from the same field.
+        let grain_uv = self.scene.surface.relief * crate::gpu::surface::grain_uv_scale();
         let plan = dynamics_plan(
             rec,
             segments,
@@ -608,12 +612,13 @@ impl<'a> DynamicsRun<'a> {
             dsize,
             channels,
             settle,
+            grain_uv,
         );
         // The settle rides as one extra slot at the end of the plan; everything before
         // it is a segment, and the loop below dispatches the two differently.
         let segment_slots = plan.len() - usize::from(settle);
         const STRIDE: usize = 256;
-        const SLOT: usize = 128; // sizeof the `Stamp` uniform (8 × vec4)
+        const SLOT: usize = 144; // sizeof the `Stamp` uniform (9 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
         for (i, d) in plan.iter().enumerate() {
             data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::cast_slice(&d.slot));
@@ -714,6 +719,14 @@ impl<'a> DynamicsRun<'a> {
                             resource: wgpu::BindingResource::Sampler(&r.noise_sampler),
                         },
                         tex(21, &sel_mask),
+                        wgpu::BindGroupEntry {
+                            binding: 22,
+                            resource: wgpu::BindingResource::TextureView(&self.scene.surface.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 23,
+                            resource: wgpu::BindingResource::Sampler(&self.scene.surface.sampler),
+                        },
                     ],
                 })
             })
@@ -1052,6 +1065,7 @@ fn reservoir_desc(
 ///
 /// Every dispatch is a segment: the tool exchanges once per segment rather than on a
 /// cadence of its own, so there is no interval state to carry between ranges.
+#[allow(clippy::too_many_arguments)]
 fn dynamics_plan(
     rec: &StrokeRecord,
     segments: &[Segment],
@@ -1060,8 +1074,14 @@ fn dynamics_plan(
     dsize: u32,
     channels: [f32; 4],
     settle: bool,
+    grain_uv: f32,
 ) -> Vec<LoopDispatch> {
     let b = &rec.brush;
+    // Canvas px → surface-tile uv, folded so the shader can go straight from its
+    // *region* texel to the ground under it: `uv = rt · grain_uv + grain_bias`
+    // (§6.4). The region origin is a piece constant, so this is where it belongs —
+    // the shader never learns where the piece sits, only where the weave does.
+    let grain_bias = region_origin * grain_uv;
     // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
     // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
     // which is what a 0..1 knob should mean, rather than per unit optical depth.
@@ -1174,6 +1194,12 @@ fn dynamics_plan(
                 // the dedicated bleed slots below, so between firings the canvas
                 // takes the no-bleed path bit-for-bit.
                 0.0,
+                // i: the deposition tooth (§6.4) — how deep this segment's tip bites,
+                // and the canvas → weave map the texel needs to look its own ground up.
+                s.tooth,
+                grain_uv,
+                grain_bias.x,
+                grain_bias.y,
             ],
         });
 
@@ -1237,6 +1263,12 @@ fn dynamics_plan(
                     // the plan a pure function of the segmentation is worth more than
                     // the dispatch it would save.
                     lambda(f.bleed),
+                    // No tooth: this slot lays no `add`, so there is nothing for the
+                    // ground to gate. The weave map is filled for form.
+                    0.0,
+                    grain_uv,
+                    grain_bias.x,
+                    grain_bias.y,
                 ],
             });
         }
@@ -1313,6 +1345,13 @@ fn dynamics_plan(
                 // contact strands nothing for a settle to finish (unlike the
                 // vertical transfer, whose in-flight half lives on the tool).
                 0.0,
+                // No tooth either, for the same reason there is no `add`: the settle
+                // lays the tool's *carried* paint, which the ground already gated on
+                // its way up. Gating it again would charge the weave twice.
+                0.0,
+                grain_uv,
+                grain_bias.x,
+                grain_bias.y,
             ],
         });
     }
@@ -1384,6 +1423,7 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
                 lift: s.lift,
                 deposit: s.deposit,
                 bleed: s.bleed,
+                tooth: s.tooth,
             },
         ));
     }
@@ -1621,7 +1661,7 @@ pub(super) fn build_dynamics_kit(
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: true,
-            min_binding_size: wgpu::BufferSize::new(128), // sizeof `Stamp` (8 × vec4)
+            min_binding_size: wgpu::BufferSize::new(144), // sizeof `Stamp` (9 × vec4)
         },
         count: None,
     };
@@ -1757,6 +1797,17 @@ pub(super) fn build_dynamics_kit(
             // The selection mask over the region (§6.8) — read 1:1 with the region
             // here, so `textureLoad` suffices.
             ctex(21, false),
+            // The canvas surface's height map + its repeat sampler — the deposition
+            // tooth (§6.4). Only `deposit` lays the brush's own paint, so only its
+            // layout carries them; the other entry points in this module never name
+            // the bindings and so never need them bound.
+            ctex(22, true),
+            wgpu::BindGroupLayoutEntry {
+                binding: 23,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
     });
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's

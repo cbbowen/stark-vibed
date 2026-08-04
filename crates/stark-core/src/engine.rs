@@ -463,12 +463,6 @@ pub struct Engine {
     /// media pass reads have one owner, so two consumers cannot disagree about the
     /// canvas weave or the lighting.
     compositor_pipeline: CompositorPipeline,
-    /// The physical canvas surface (relief) and the bytes registered for
-    /// it. Colour-space-independent, so it survives colour-space rebuilds. Which
-    /// surface is in use is a *cache* of `document().surface`, kept in step by
-    /// [`Engine::apply_document_surface`] — the document is the source of truth
-    /// (§6.4).
-    surface: Registry<SurfaceId>,
     /// The surface the action log starts from, written to `CanvasMeta` and used to
     /// seed the document. Plays the same role as `CanvasMeta::color_space`: it
     /// describes the empty document that the log is replayed onto, and is not
@@ -568,6 +562,7 @@ impl Engine {
         let _environment_id = EnvironmentId::default();
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
+        let gpu_for_ctx = gpu.clone();
         let (pool, stroke, compositor_pipeline, compositor, transform, fill) =
             build_gpu(GpuBuild {
                 gpu: &gpu,
@@ -596,11 +591,12 @@ impl Engine {
                 selection,
                 transform,
                 fill,
+                gpu: gpu_for_ctx,
+                surfaces: surface,
             },
             compositor,
             compositor_pipeline,
             initial_surface,
-            surface,
             environment,
             timeline,
             session,
@@ -2147,13 +2143,13 @@ impl Engine {
     /// Whether `id` is ready to use — `Flat` always is; an image-backed surface
     /// is ready once its bytes have been [`register_surface`](Self::register_surface)ed.
     pub fn surface_loaded(&self, id: SurfaceId) -> bool {
-        self.surface.is_loaded(id)
+        self.apply.surfaces.is_loaded(id)
     }
 
     /// Provide (frontend-fetched) image bytes for a surface. If it's the one in
     /// use, the surface is rebuilt so the bytes take effect immediately.
     pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
-        if self.surface.register(&self.gpu, id, png_bytes) {
+        if self.apply.surfaces.register(&self.gpu, id, png_bytes) {
             self.apply_surface();
         }
     }
@@ -2166,7 +2162,7 @@ impl Engine {
     /// (§6.4), so it changes by logging an action like anything else.
     fn apply_document_surface(&mut self) {
         let id = self.document().surface;
-        if self.surface.set(&self.gpu, id) {
+        if self.apply.surfaces.set(&self.gpu, id) {
             self.apply_surface();
         }
     }
@@ -2175,7 +2171,7 @@ impl Engine {
     /// it. No pipeline or pool rebuild, no document reset.
     fn apply_surface(&mut self) {
         self.compositor_pipeline
-            .set_surface(self.surface.current().clone());
+            .set_surface(self.apply.surfaces.current().clone());
     }
 
     /// The current lighting environment (§6.3).
@@ -2219,13 +2215,17 @@ impl Engine {
     /// document is already empty (no tiles of the old format are referenced).
     fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
         let cs = id.make();
+        // Cloned out before the rebuild: the registry lives on `self.apply`, whose
+        // fields are reassigned below, and a `Surface` is two reference-counted wgpu
+        // handles.
+        let surface = self.apply.surfaces.current().clone();
         let (pool, stroke, compositor_pipeline, compositor, transform, fill) =
             build_gpu(GpuBuild {
                 gpu: &self.gpu,
                 target_format: self.target_format,
                 viewport: self.session.view.viewport,
                 cs: &cs,
-                surface: self.surface.current(),
+                surface: &surface,
                 environment: self.environment.current(),
                 selection: &self.apply.selection,
             });
@@ -2625,12 +2625,30 @@ impl Engine {
         // lets one client's live stroke be reproduced faithfully on another's screen
         // while their selections differ (§17.3).
         let selection = base.selection_of(author);
+        // The ground this stroke is being laid on (§6.4) — the same texture
+        // `CommitStroke`'s apply will resolve, which is what `preview == committed`
+        // needs of the tooth.
+        //
+        // The registry's *in-use* surface, not a lookup by `base.surface`, and the two
+        // are the same thing here rather than nearly so: `apply_document_surface`
+        // holds `current()` equal to `document().surface` after every commit, undo,
+        // load and merge, and a live gesture cannot straddle a `SetSurface` because a
+        // gesture is not a logged action — any merge that switched the surface bumped
+        // `doc_epoch` and threw every frozen head away with it. Asserted rather than
+        // only argued, since it is a `&self` path that cannot build one on demand.
+        debug_assert_eq!(
+            base.surface,
+            self.apply.surfaces.id(),
+            "a live stroke is being drawn against a surface the document is not on",
+        );
+        let surface = self.apply.surfaces.current();
         let (tiles, carry) = self.apply.stroke.render_range(
             crate::gpu::stroke::StrokeScene {
                 pool: &self.apply.pool,
                 assets: &self.apply.assets,
                 base: tiles_base,
                 selection: &selection,
+                surface,
             },
             rec,
             spans,

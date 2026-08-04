@@ -78,7 +78,7 @@
 
 import package::stamp_common::{prefix_at, Sweep, sweep_at};
 import package::noise::{color_jitter};
-import package::paint_common::{blend_latent, EPS};
+import package::paint_common::{blend_latent, tooth_gate, EPS};
 
 struct Stamp {
     // a: position .xy (region px) + frame x-axis .zw (unit vector). For a segment
@@ -117,6 +117,13 @@ struct Stamp {
     //    vertical rates and source are all zero. Real segments carry 0 here and take
     //    the plain-deposit path bit-for-bit.
     h: vec4<f32>,
+    // i: the deposition tooth (§6.4). How deep this segment's tip bites into the
+    //    canvas weave .x (0 = the ground does not gate the deposit at all), and the
+    //    map from this dispatch's *region* texel to the weave: `uv = rt·.y + .zw`,
+    //    with the piece's own origin already folded into the bias. `.y` is zero on a
+    //    ground with no relief, which is what makes a `Flat` canvas deposit exactly
+    //    what it always did.
+    i: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
@@ -169,6 +176,12 @@ struct Stamp {
 // read-modify-write back towards the untouched region, so paint outside the selection
 // is neither taken nor laid and the two sides of the transfer still balance.
 @group(0) @binding(21) var sel_mask: texture_2d<f32>;
+
+// The canvas surface's tileable height map and its repeat sampler (§6.4) — the
+// ground whose tooth gates the brush's own `add` paint. Named only by `deposit`,
+// which is the only entry point that lays any, so only its layout carries them.
+@group(0) @binding(22) var surface_tex: texture_2d<f32>;
+@group(0) @binding(23) var surface_samp: sampler;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const TAU: f32 = 6.283185307179586;
@@ -1278,6 +1291,16 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let arc = st.g.w + xl * st.b.x;
     let drain = stroke_drain(arc);
     let own_op = st.c.w * drain;
+    // The ground's share of this texel (§6.4) — the same gate the swept path applies,
+    // from the same function and the same height map, so a brush's tooth reads the
+    // same whether or not some other axis put it on this path. Sampled in *canvas*
+    // space (the region origin is folded into `st.i.zw`), so it is a pure function of
+    // canvas position exactly as the fast path's is.
+    var tooth = 1.0;
+    if st.i.y > 0.0 && st.i.x > 0.0 {
+        let uv = vec2<f32>(rt) * st.i.y + st.i.zw;
+        tooth = tooth_gate(textureSampleLevel(surface_tex, surface_samp, uv, 0.0).r, st.i.x);
+    }
 
     var own_lat = st.c.xyz;
     if any(st.g.xyz != vec3<f32>(0.0, 0.0, 0.0)) {
@@ -1292,7 +1315,12 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // paint — the latter linear in exposure, i.e. exactly the plain deposit's
     // path-integral height.
     let dep_h = tool_h * ex.dep;
-    let add_h = st.e.x * drain * ex.add_w;
+    // The tooth gates the **source** and not the transfer beside it. `dep_h` is the
+    // canvas's half of an exchange whose other half already happened — the tool gave
+    // that paint up in the dispatch before this one — so withholding it here would
+    // destroy paint and break the conservation §6.1 rests on. `add` has no partner:
+    // it is the one term with nowhere else to be.
+    let add_h = st.e.x * drain * tooth * ex.add_w;
     let par_h = dep_h + add_h;
     let par_m = tool_op * dep_h + own_op * add_h;
 

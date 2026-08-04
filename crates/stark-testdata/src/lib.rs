@@ -2430,4 +2430,11 @@ pub mod assets {
     pub fn linen() -> Vec<u8> {
         read("surface/Linen.png")
     }
+
+    /// The built-in gesso ground (§6.4) — the irregular one, which is what the
+    /// deposition tooth's tests want: a regular weave's bearing curve is a few
+    /// discrete levels, so a level-set test on it proves much less.
+    pub fn gesso() -> Vec<u8> {
+        read("surface/Gesso.png")
+    }
 }

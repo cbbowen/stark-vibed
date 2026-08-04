@@ -13,13 +13,17 @@ use stark_core::{EnvironmentId, MediaParams, SurfaceId};
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
 pub const SURFACE_LINEN: Asset = asset!("/assets/surface/Linen.png");
+pub const SURFACE_GESSO: Asset = asset!("/assets/surface/Gesso.png");
 pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 
 /// The selectable canvas surfaces, in display order (§6.4). Adding a
 /// surface = one row here (plus its asset fetch in [`set_surface`]); the Lighting
 /// panel's drop-down renders this table.
-pub const SURFACES: &[(SurfaceId, &str)] =
-    &[(SurfaceId::Flat, "Smooth"), (SurfaceId::Linen, "Linen")];
+pub const SURFACES: &[(SurfaceId, &str)] = &[
+    (SurfaceId::Flat, "Smooth"),
+    (SurfaceId::Linen, "Linen"),
+    (SurfaceId::Gesso, "Gesso"),
+];
 
 /// The selectable lighting environments, in display order (§6.3). Same
 /// shape as [`SURFACES`]: one row per environment, its bytes (if any) resolved by
@@ -162,6 +166,7 @@ pub fn surface_asset(id: SurfaceId) -> Option<Asset> {
     match id {
         SurfaceId::Flat => None,
         SurfaceId::Linen => Some(SURFACE_LINEN),
+        SurfaceId::Gesso => Some(SURFACE_GESSO),
     }
 }
 

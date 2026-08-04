@@ -255,9 +255,11 @@ pub enum DocCommand {
     ///
     /// Document state, not view state: which canvas a piece was painted on is part
     /// of what the document *is* — it is saved, and reopening on a different weave
-    /// would be a different painting. It will also gate deposition again if the
-    /// tooth idea returns (§6.4); logging it now means that would be a rendering
-    /// change rather than a history one.
+    /// would be a different painting. It also **gates deposition** (§6.4): the tooth
+    /// reads the surface in force at each action's point in the log, so a switch
+    /// part-way through changes the strokes after it and not the ones before. That
+    /// this was already a logged action is what made the tooth a rendering change
+    /// rather than a history one, exactly as this note anticipated.
     SetSurface(SurfaceId),
 }
 

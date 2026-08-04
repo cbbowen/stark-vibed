@@ -46,7 +46,10 @@ Two habits that recur throughout and are worth naming as principles:
   nothing were deleted rather than carried as scaffolding (`tooth`, `drag`,
   `bleed`, `wetness`, the `wet` channel, `TernaryPad`). Each is a local change to
   reintroduce when it is actually built; a serialized field that does nothing
-  costs more in confusion than it saves in future typing.
+  costs more in confusion than it saves in future typing. Two of them have since
+  come back that way — `bleed` as the lateral-diffusion axis (§6.2) and `tooth`
+  as the deposition gate (§6.4), each with the model the placeholder never had,
+  which is the argument working rather than an exception to it.
 
 ## 2. Crate / workspace layout
 

@@ -240,45 +240,113 @@ identically to the same stroke shifted half a tile into one tile's interior.
 
 **The canvas surface.** Paint sits on a physical surface — a tileable height/bump
 map (`gpu/surface.rs`), an `R8Unorm` texture sampled in *canvas* space (so the
-weave is fixed to the canvas and pans/zooms with it). It feeds the normal
-everywhere (`height_at` = impasto + `surface_strength·(h−½)`), so the weave
+weave is fixed to the canvas and pans/zooms with it). It is read twice: the
+deposition tooth gates what a brush lays through it (below), and it feeds the
+normal everywhere (`height_at` = impasto + `surface_strength·(h−½)`), so the weave
 catches light across the whole viewport — including the bare substrate, whose
 shading is *normalized* so a flat surface leaves it unchanged. `surface_strength`
 is a view setting; it does not touch stored pixels.
 
-The surface is **document state** (`SurfaceId { Flat, Linen }`): which canvas a
-piece was painted on is part of what the document *is*, it is saved, and
+The surface is **document state** (`SurfaceId { Flat, Linen, Gesso }`): which
+canvas a piece was painted on is part of what the document *is*, it is saved, and
 reopening on a different weave would be a different painting. A fresh document
 starts on `DEFAULT_SURFACE` = `Linen` — the honest substrate — while
 `SurfaceId::default()` stays `Flat`, the builtin the registry falls back to before
 the frontend's bytes arrive. `CanvasMeta` records the surface the log *starts*
 from; a mid-document switch is a logged `ActionKind::SetSurface`, so it undoes,
-replays and replicates like any other edit. Today only the media pass reads it,
-so a switch changes no stored pixel — logging it anyway is what would let a
-future deposition gate read it without that becoming a history change. `Flat` is
-a 1×1 *full-height* texel — a constant height has zero gradient, so it is
-*exactly* equivalent to having no surface. That orthogonality is deliberate: most
-goldens use `Flat` to test other features in isolation, and a dedicated golden
-(`linen_surface`) exercises the weave. The engine **embeds no image bytes**:
+replays and replicates like any other edit. The deposition tooth reads it, so a
+switch changes the strokes made after it — logging it is what made that a
+rendering change rather than a history one.
+
+`Linen` is a regular woven grid; `Gesso` a brushed acrylic ground, irregular,
+whose height histogram is a broad spread rather than a periodic peak — which is
+what makes it the interesting one for the tooth below, since a periodic weave
+prints a periodic mark and reads as a screen. `Flat` is a 1×1 *full-height* texel
+— a constant height has zero gradient, so it is *exactly* equivalent to having no
+surface. That orthogonality is deliberate: most goldens use `Flat` to test other
+features in isolation, and a dedicated golden (`linen_surface`) exercises the
+weave. The engine **embeds no image bytes**:
 image-backed surfaces are fetched at runtime and handed over via
 `register_surface` (§6.6), which builds the texture (downsampling by an integer
 factor to fit the 2048 limit, preserving tileability); one bump tile spans
 `SURFACE_TILE_PX` canvas px. A surface with unregistered bytes falls back to
 `Flat`.
 
-> **Deposition tooth — removed, may return.** The idea was to gate deposited
-> coverage by the surface height at each fragment,
-> `cov ·= 1 − tooth·(1−h)·(1−cov)`, so light strokes catch on the weave's peaks
-> and skip its valleys. It was never implemented: `surface_tooth` was a
-> pass-through stub, no stamp shader ever read the surface, and
-> `BrushParams::tooth` reached a slider that moved and changed nothing. All of it
-> — the field, the stub, the `TileXform::surf` uniform nothing read, the
-> `group(2)` surface bindings and `StrokeRenderer::set_surface` that existed only
-> to keep a texture bound for a function that ignored it — was deleted. Every
-> golden was unchanged, which is the proof it was inert. If it returns it needs a
-> design first (the formula above is a guess, not a model), and `BrushParams`
-> would carry a strength again. The surface is already document state, so that
-> would be a rendering change, not a history one.
+**The deposition tooth.** Paint lands where the tip touches the ground, and on a
+rough ground the tip touches the peaks before the valleys. `BrushParams::tooth`
+is how deep a tool reaches — 0 = everywhere (the mark is solid, and the default),
+1 = the very tops only, which is what a dry brush leaves.
+
+The model is the substrate's **bearing-area curve** (Abbott–Firestone): the
+fraction of a rough surface standing above a given level. The tip presses to a
+level set by the knob, and a texel takes paint where the ground clears it. Per
+texel that is one *sample* of the curve, so the mean over a footprint is the true
+contact fraction — a prediction that can be checked against the height map's own
+histogram rather than a curve tuned until it looked right. The transition is
+softened over a band (`TOOTH_SOFTNESS`) because a hard threshold is a binary
+indicator per texel: correct in the mean, and at canvas resolution it aliases
+into speckle that reads as dither. A cubic smoothstep, for the reason
+`taper_profile` is a polynomial; both ends of the knob map to exact limits, so
+`tooth = 0` puts the whole band below the map's range and the gate is `1.0` to
+the bit.
+
+Three decisions do most of the work, and each is about *where* it is applied
+rather than what it computes:
+
+- **The grain is the canvas's, not the brush's.** A pencil and a loaded brush on
+  one ground see one tooth; the brush says only how far into it it reaches. That
+  is why `SurfaceId` is where the texture lives and `tooth` is the only thing on
+  `BrushParams`. Painter and Procreate put the grain on the brush, which is why
+  switching brushes there changes the paper under a half-finished painting.
+- **It multiplies swept optical depth τ**, in the slot `stroke_drain` occupies —
+  not the finished parcel. `add·g·τ` is still additive in τ and
+  `1 − exp(−K·op·add·g·τ)` still of the permitted form (§6.2), and `g` does not
+  depend on the segment, so `Σᵢ g·τᵢ = g·Στᵢ`: the gate is *exactly* independent
+  of how the path was cut, and adaptive flattening stays free. It is sampled at
+  the fragment's own canvas position, so tile aprons stay bit-consistent with no
+  copy pass, and — the reason the mark reads as paper rather than as noise —
+  successive strokes catch on the same peaks and register with each other.
+- **It gates height, never the per-unit opacity** (§6.1), and only the brush's own
+  `add`. The stamp loop's `deposit` is one half of a transfer whose other half
+  already happened, so withholding it would destroy paint the tool has given up;
+  `add` is the one term with no partner. Both render paths call the same
+  `tooth_gate` in `paint_common.wesl`, so nudging `lift` off zero cannot change
+  what the ground does.
+
+Orthogonality is structural rather than checked. `Surface::relief` is 0 on `Flat`
+and on any surface whose bytes have not arrived, which zeroes the uv scale the
+shaders gate on before the brush's number is consulted — so every golden that
+paints on `Flat` is untouched by the axis existing, exactly as it is by the media
+pass's weave.
+
+Because deposition reads the surface, **which** surface is a question about the
+action being applied rather than about what the compositor is showing: the
+registry lives on `ApplyCtx`, and `CommitStroke` asks it for `DocState::surface`
+*as the log stood at that action*. A switch part-way through a document changes
+the strokes after it and none before, on replay and on a peer alike. That is what
+logging `SetSurface` bought, long before there was anything to spend it on — the
+note this paragraph replaced said as much. It also means the ground a document
+names has to be registered before its log is replayed, or its strokes bake with
+no tooth and stay that way; the frontend fetches and re-replays when it finds it
+has opened a file whose ground had not arrived.
+
+> **Still open: the tooth does not fill.** `g` reads the substrate alone, so
+> overpainting never uses the weave up — the same grain prints through every
+> layer, which is the tell that gives a static grain multiply away. The fix is to
+> read `max(R·s(x), paint_height(x))`, the media pass's own `height_at`, so a
+> valley full of paint stops being a valley. It needs two things this version does
+> not have: a relief scale `R` in paint-height units (today `surface_strength` is
+> a *view* setting, and deposition cannot read one without making stored pixels
+> depend on the viewport), and an answer to associativity — the commit renders a
+> whole stroke in one range against the committed base while the live path renders
+> head-then-tail, so a gate reading the evolving base breaks `preview ==
+> committed` wherever a stroke crosses itself. The way out is to make the deposit
+> a **flow**, `dh/dτ = add·g(h, x)`, which composes exactly under any subdivision
+> of τ by construction; the stamp loop can integrate that (it is sequential and
+> already solves this shape for lift/deposit) and the order-independent swept path
+> cannot. Meanwhile `bleed` is the wet-paint valley-filler that already exists:
+> charcoal is tooth with no bleed and stays broken, oil is tooth with bleed and
+> levels out.
 
 ## 6.5 Colour management (Oklab)
 

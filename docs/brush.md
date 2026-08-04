@@ -708,14 +708,22 @@ clamped (`MIN_BIAS = 0.1`, so the slope tops out at 9) rather than left open. Th
 unmodulated brush and every plain linear mapping come out at exactly 1 and
 flatten on the budget they always had.
 
+The one thing the pen cannot reach is the **ground**: `tooth` is on the brush and
+mappable like the rest, but the grain it bites into is the *canvas* (§6.4), so a
+pencil and a loaded brush on one paper break up on the same peaks. Mapping tooth
+to pressure is the charcoal behaviour — bear down and the tip flattens into the
+valleys, so the grain fills in.
+
 **Resolution happens in one place**: `generate_segments_in`, alongside the taper,
 where the pen attributes are already interpolated per segment. Both render paths
 flatten through it, so a live tail and the commit that replaces it cannot read
-the pen differently. Downstream, the four rates ride the `Segment` — the stamp
-loop already carried its λs per dispatch and needed no change at all, and the
-swept path moved `add` off the per-tile uniform onto the segment instance
-(`extra.w`), leaving `drain` behind because `drain` is a function of arc length
-that every fragment recovers for itself. `hardness` and `charge` are deliberately
+the pen differently. Downstream, the four rates and the tooth ride the
+`Segment` — the stamp loop already carried its λs per dispatch and needed no
+change at all, and the swept path moved `add` off the per-tile uniform onto the
+segment instance (`extra.w`), leaving `drain` behind because `drain` is a
+function of arc length that every fragment recovers for itself. The tooth is a
+per-*fragment* gate on `τ` in the same slot `drain` occupies, for the same
+composition reason (§6.4). `hardness` and `charge` are deliberately
 not targets: hardness is baked into a prefix-τ texture per value, and `charge` is
 an initial condition rather than a rate, so neither has a per-segment form to
 modulate. Adding the field bumped the wire version to 3 (§8): postcard writes no

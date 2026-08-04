@@ -35,13 +35,16 @@ const SWEEP_VERTS: u32 = 18;
 struct TileXform {
     params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
     color: [f32; 4],  // brush channels (.xyz), per-unit opacity (.w)
-    /// The `drain` falloff per canvas px in `.x`; `.yzw` unused.
+    /// The `drain` falloff per canvas px in `.x`, and the canvas → surface-tile uv
+    /// scale in `.y` (0 on a ground with no relief, which makes the tooth exactly 1);
+    /// `.zw` unused.
     ///
-    /// It is here, and the `add` source is not, because of what each is a function
-    /// of. `drain` depends on arc length alone, which every fragment already knows,
-    /// so it is recovered per fragment and is a stroke constant in the only sense
-    /// that matters. `add` is a *pen*-driven quantity now (§6.2) and varies segment
-    /// to segment like the radius does, so it rides the instance.
+    /// These are here, and the `add` source is not, because of what each is a
+    /// function of. `drain` depends on arc length and the tooth on canvas position —
+    /// both things the fragment already knows — so each is recovered there and is a
+    /// stroke constant in the only sense that matters. `add` is a *pen*-driven
+    /// quantity now (§6.2) and varies segment to segment like the radius does, so it
+    /// rides the instance, as does the brush's `tooth`.
     paint: [f32; 4],
     noise_freq: [f32; 4], // colour-dynamics frequency (across, along), 1/NOISE_TILE_PX, _
     noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
@@ -86,6 +89,7 @@ impl StrokeRenderer {
             assets,
             base,
             selection,
+            surface,
         } = scene;
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let channels = self.color_space.rgb_to_channels(rgb);
@@ -126,6 +130,9 @@ impl StrokeRenderer {
         // colour.
         let noise_view = self.noise_view(&rec.brush.color_dynamics);
         let (nfreq, namp, noff) = noise_uniform(rec);
+        // The canvas ground beside it (§6.4): the deposition tooth's height map, in
+        // the same group because it is the same kind of thing — a field the deposit
+        // samples per fragment.
         let noise_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep noise bg"),
             layout: &self.noise_bgl,
@@ -138,8 +145,22 @@ impl StrokeRenderer {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.noise_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&surface.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&surface.sampler),
+                },
             ],
         });
+        // Zero on a ground with no relief — a `Flat` canvas, or one whose bytes have
+        // not arrived — which sends the shader's gate to exactly 1.0 and leaves the
+        // deposit bit-for-bit what it was before the tooth existed. The orthogonality
+        // is the same one `Flat` already gives the media pass, taken from the same
+        // field rather than restated (§6.4).
+        let grain_uv = surface.relief * crate::gpu::surface::grain_uv_scale();
 
         let instances: Vec<SegmentInstance> = segments
             .iter()
@@ -148,6 +169,7 @@ impl StrokeRenderer {
                 dir: s.dir.to_array(),
                 geom: [s.radius, s.length],
                 extra: [s.orient, s.dist, s.curvature, s.add],
+                tooth: s.tooth,
             })
             .collect();
         // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
@@ -220,7 +242,7 @@ impl StrokeRenderer {
                     0.0,
                 ],
                 color: [channels[0], channels[1], channels[2], rec.brush.color[3]],
-                paint: [rec.brush.drain, 0.0, 0.0, 0.0],
+                paint: [rec.brush.drain, grain_uv, 0.0, 0.0],
                 noise_freq: nfreq,
                 noise_amp: namp,
                 noise_off: noff,

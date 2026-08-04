@@ -41,8 +41,8 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// to preserve the layout would have put the duplication this design exists to
 /// remove straight back into the log.
 ///
-/// **3** — brush parameter modulation (§6.2). `BrushParams` grew a `modulation`
-/// field. It is *appended*, but that is no help here for the reason above: postcard
+/// **3** — brush parameter modulation (§6.2) and the deposition tooth (§6.4).
+/// `BrushParams` grew a `modulation` field and a `tooth`. It is *appended*, but that is no help here for the reason above: postcard
 /// writes no field names and no length, so a version-2 reader would run straight off
 /// the end of a brush and into the path behind it. `#[serde(default)]` is likewise
 /// no help — it fills a field the *format* left out, which a self-describing format
