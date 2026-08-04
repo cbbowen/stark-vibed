@@ -37,8 +37,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{
     BlendMode, BrushParams, FillOp, LayerId, MatteRegion, SelectionOp, ShapeAction, Tool,
+    TransformMap,
 };
-use crate::geom::{Affine2, Extent2, Vec2};
+use crate::geom::{Extent2, Vec2};
 use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
 
 /// One pen/mouse sample in canvas space.
@@ -231,13 +232,15 @@ pub enum DocCommand {
     /// what the piece was painted on, and it is saved.
     SetBackground([f32; 3]),
 
-    /// Affine-transform this client's selected paint on `layer`, carrying the
-    /// selection along with it (§16). A universal selection moves
-    /// the whole layer. One action per gesture — the interactive drag builds in
-    /// view state and commits once on release, like the frame drag.
+    /// Transform this client's selected paint on `layer` — affine, perspective
+    /// or warp (§16, §16.8, §16.9) — carrying the selection along with it. A
+    /// universal selection moves the whole layer. One action per gesture — the
+    /// interactive drag builds in view state and commits once on "Done", like
+    /// the frame drag. The engine routes each map family to its own action
+    /// kind, so the log stays wire-stable.
     Transform {
         layer: LayerId,
-        affine: Affine2,
+        map: TransformMap,
     },
 
     /// Switch the canvas surface (§6.4).
@@ -372,8 +375,8 @@ pub enum ViewCommand {
     /// The preview runs the *same renderer* as the commit over the committed
     /// tiles, so what is shown is what committing would produce — and because
     /// each preview resamples from the committed tiles under the accumulated
-    /// affine, a long drag never compounds resampling loss.
-    PreviewTransform(Option<(LayerId, Affine2)>),
+    /// map, a long drag never compounds resampling loss.
+    PreviewTransform(Option<(LayerId, TransformMap)>),
 
     /// Show a substrate colour **without logging it** — the in-flight half of a
     /// canvas-colour drag (§15.5). `None` drops the preview.

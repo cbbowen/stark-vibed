@@ -499,6 +499,36 @@ pub enum ActionKind {
     /// group to what lies under the group (§14.4.3) — the same outward reading its
     /// blend mode gets, which is why this needs no second action for groups.
     SetLayerClip(LayerId, bool),
+
+    /// Perspective transform of the selected paint on `layer` within the map's
+    /// source rect (§16.8): cut what the **author's** selection holds inside the
+    /// rect, resample it once under the homography the map's corners define,
+    /// stack it back over what remained — and carry the covered part of the
+    /// author's mask along, unioned with what stayed outside the rect. Twelve
+    /// floats in the log; every peer re-derives the same matrix from them.
+    /// Appended last so postcard keeps decoding older files.
+    ///
+    /// Deterministically **rejected** (the document is left unchanged) when the
+    /// map is unusable — a non-convex target quad, a degenerate rect — or the
+    /// rewrite exceeds the tile caps (§16.1).
+    TransformPerspective {
+        layer: LayerId,
+        map: super::transform::PerspectiveMap,
+    },
+
+    /// Warp of the selected paint on `layer` within the mesh's source rect
+    /// (§16.9): the same cut/stack/carry as
+    /// [`TransformPerspective`](Self::TransformPerspective), under the smooth
+    /// surface through the map's control grid. The log carries only the grid —
+    /// a few dozen floats — and every peer subdivides it identically. Appended
+    /// last so postcard keeps decoding older files.
+    ///
+    /// Deterministically **rejected** when the mesh folds (any sub-cell's
+    /// Jacobian runs non-positive), is malformed, or exceeds the tile caps.
+    TransformWarp {
+        layer: LayerId,
+        map: super::warp::WarpMap,
+    },
 }
 
 impl ActionKind {
@@ -514,6 +544,8 @@ impl ActionKind {
             ActionKind::CommitStroke(_) => "Stroke",
             ActionKind::Fill { .. } => "Fill",
             ActionKind::Transform { .. } => "Transform",
+            ActionKind::TransformPerspective { .. } => "Perspective",
+            ActionKind::TransformWarp { .. } => "Warp",
             ActionKind::Select(_) => "Select",
             ActionKind::InvertSelection => "Invert selection",
             ActionKind::AddLayer { .. } => "Add layer",
@@ -669,25 +701,30 @@ impl history::Action for Action {
             // folded over, the actor off the action's own id. A matte or absent
             // layer refuses it, like a stroke; an unusable or oversized transform
             // is rejected deterministically, so peers and replays agree.
-            ActionKind::Transform { layer, affine } => {
-                match state.layer(*layer).and_then(|l| l.tiles()).cloned() {
-                    Some(base) => {
-                        let selection = state.selection_of(self.id.actor);
-                        match ctx.transform.apply(&ctx.pool, &base, &selection, *affine) {
-                            Some((tiles, moved_selection)) => state
-                                .map_layer(*layer, |l| l.with_tiles(tiles))
-                                .with_selection(self.id.actor, moved_selection),
-                            None => {
-                                tracing::warn!(
-                                    "transform rejected (unusable affine or too many tiles); ignored"
-                                );
-                                state
-                            }
-                        }
-                    }
-                    None => state,
-                }
-            }
+            ActionKind::Transform { layer, affine } => transform_apply(
+                state,
+                ctx,
+                self.id.actor,
+                *layer,
+                &crate::document::transform::TransformMap::Affine(*affine),
+            ),
+            // The rect-scoped siblings (§16.8, §16.9): identical shape — cut,
+            // restack, carry the mask — differing only in the map handed to
+            // the renderer.
+            ActionKind::TransformPerspective { layer, map } => transform_apply(
+                state,
+                ctx,
+                self.id.actor,
+                *layer,
+                &crate::document::transform::TransformMap::Perspective(*map),
+            ),
+            ActionKind::TransformWarp { layer, map } => transform_apply(
+                state,
+                ctx,
+                self.id.actor,
+                *layer,
+                &crate::document::transform::TransformMap::Warp(map.clone()),
+            ),
             // Lay a parcel of paint through the region's coverage, gated by the
             // author's selection — the same gate a stroke passes through, so a fill
             // is clipped by a selection exactly as a brush is
@@ -712,5 +749,35 @@ impl history::Action for Action {
                 }
             }
         })
+    }
+}
+
+/// The shared body of the three transform actions (§16): cut the author's
+/// selected paint, restack it under `map`, and carry the author's mask with it.
+/// Gated and keyed exactly as a stroke is — the mask comes off the state being
+/// folded over, the actor off the action's own id. A matte or absent layer
+/// refuses it, like a stroke; an unusable or oversized map is rejected
+/// deterministically, so peers and replays agree.
+fn transform_apply(
+    state: DocState,
+    ctx: &ApplyCtx,
+    actor: ActorId,
+    layer: LayerId,
+    map: &crate::document::transform::TransformMap,
+) -> DocState {
+    match state.layer(layer).and_then(|l| l.tiles()).cloned() {
+        Some(base) => {
+            let selection = state.selection_of(actor);
+            match ctx.transform.apply(&ctx.pool, &base, &selection, map) {
+                Some((tiles, moved_selection)) => state
+                    .map_layer(layer, |l| l.with_tiles(tiles))
+                    .with_selection(actor, moved_selection),
+                None => {
+                    tracing::warn!("transform rejected (unusable map or too many tiles); ignored");
+                    state
+                }
+            }
+        }
+        None => state,
     }
 }

@@ -1,21 +1,27 @@
-//! GPU execution of the affine transform (§16).
+//! GPU execution of the transforms (§16): the whole-plane affine, and the
+//! rect-scoped perspective (§16.8) and warp (§16.9).
 //!
 //! [`TransformRenderer::apply`] takes a layer's tile map, the author's selection,
-//! and six floats, and produces the transformed tile map plus the carried
+//! and a [`TransformMap`], and produces the transformed tile map plus the carried
 //! selection — copy-on-write like every stroke, so old history versions keep
 //! their tiles and the pool reclaims what falls out of reach.
 //!
 //! The plan (which tiles, which quads) is CPU-side and pure
-//! ([`crate::document::transform`]); this module owns only the three passes of
+//! ([`crate::document::transform`]); this module owns only the passes of
 //! `transform.wesl`:
 //!
 //! - **parcel** — the selected source interiors forward-rasterized as transformed
 //!   quads into a scratch pair, one destination tile at a time. Source interiors
 //!   tile the plane, so their images are disjoint and the pass needs no blending
-//!   and no order.
+//!   and no order. The gated families draw *pieces* (`tile ∩ rect`, further split
+//!   per warp sub-cell) with CPU-precomputed corners, watertight the same way.
 //! - **combine** — cut the destination's own base by its mask (the lift law) and
-//!   stack the parcel by the shared parcel-deposit law (`paint_common.wesl`).
-//! - **mask** — the selection mask itself resampled under the same affine.
+//!   stack the parcel by the shared parcel-deposit law (`paint_common.wesl`);
+//!   for the gated families the cut is additionally scoped by the source rect's
+//!   coverage.
+//! - **mask** — the selection mask resampled under the same map: pure Replace
+//!   for the affine, residue-plus-max-blended-union for the gated families
+//!   (§16.8).
 //!
 //! Like [`StrokeRenderer`](super::stroke::StrokeRenderer) this holds only
 //! immutable GPU objects, so it is cheap to `Clone` and rides in the
@@ -29,8 +35,11 @@ use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
-use crate::document::transform::{plan_mask, plan_paint};
-use crate::geom::{Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+use crate::document::transform::{
+    FragMap, GatedKind, Homography, SourceUnit, TransformMap, gated_geometry, plan_gated_mask,
+    plan_gated_paint, plan_mask, plan_paint,
+};
+use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TilePairHandle, TilePool};
@@ -74,6 +83,109 @@ impl QuadUniform {
     }
 }
 
+/// Mirrors `Gated` in `transform.wesl` — one drawn piece of a rect-scoped map
+/// (§16.8, §16.9).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct GatedUniform {
+    a: [f32; 4],  // dest tex origin .xy, TILE_TEX, fragment mode
+    c0: [f32; 4], // piece corners (00, 10)
+    c1: [f32; 4], // piece corners (01, 11)
+    i0: [f32; 4], // inverse homography rows (mode 0)
+    i1: [f32; 4],
+    i2: [f32; 4],
+    g0: [f32; 4], // warp cell corner images (00, 10) (mode 1)
+    g1: [f32; 4], // (01, 11)
+    s: [f32; 4],  // warp cell source sub-rect: min .xy, size .zw
+    r: [f32; 4],  // gate rect: min .xy, max .zw
+    t: [f32; 4],  // src tile texture origin .xy
+}
+
+impl GatedUniform {
+    /// One [`SourceUnit`] drawn into `dest`'s texture. `inv` is the map's
+    /// shared inverse homography (perspective); warp cells carry their own
+    /// fragment map in the unit.
+    fn new(
+        unit: &SourceUnit,
+        inv: Option<&Homography>,
+        rect: (Vec2, Vec2),
+        dest: TileCoord,
+    ) -> Self {
+        let mut u = Self::base(rect, dest);
+        let c = &unit.corners;
+        u.c0 = [c[0].x, c[0].y, c[1].x, c[1].y];
+        u.c1 = [c[2].x, c[2].y, c[3].x, c[3].y];
+        let src_tex_origin = unit.src.origin() - Vec2::splat(TILE_APRON as f32);
+        u.t = [src_tex_origin.x, src_tex_origin.y, 0.0, 0.0];
+        match &unit.frag {
+            FragMap::Persp => {
+                let h = inv.expect("perspective units carry a shared inverse");
+                u.set_rows(&h.rows);
+            }
+            FragMap::Cell { g, min, size } => {
+                let d = g[3] - g[1] - g[2] + g[0];
+                if d == Vec2::ZERO {
+                    // The cell is a parallelogram — an affine, inverted through
+                    // the same arithmetic the affine action trusts, so an
+                    // untouched cell (whose map is exactly the identity) keeps
+                    // §16.4's tap exactness.
+                    let m = Mat2::from_cols((g[1] - g[0]) / size.x, (g[2] - g[0]) / size.y);
+                    let fwd = Affine2::from_mat2_translation(m, g[0] - m * *min);
+                    u.set_rows(&Homography::from_affine(fwd.inverse()).rows);
+                } else {
+                    u.a[3] = 1.0; // inverse-bilinear mode
+                    u.g0 = [g[0].x, g[0].y, g[1].x, g[1].y];
+                    u.g1 = [g[2].x, g[2].y, g[3].x, g[3].y];
+                    u.s = [min.x, min.y, size.x, size.y];
+                }
+            }
+        }
+        u
+    }
+
+    /// The uniform for `fs_mask_base`: only the destination origin and the
+    /// gate rect matter — the residue pass has no piece.
+    fn base(rect: (Vec2, Vec2), dest: TileCoord) -> Self {
+        let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+        let mut u = Self::zeroed();
+        u.a = [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0];
+        u.r = [rect.0.x, rect.0.y, rect.1.x, rect.1.y];
+        u
+    }
+
+    fn set_rows(&mut self, rows: &[[f32; 3]; 3]) {
+        self.i0 = [rows[0][0], rows[0][1], rows[0][2], 0.0];
+        self.i1 = [rows[1][0], rows[1][1], rows[1][2], 0.0];
+        self.i2 = [rows[2][0], rows[2][1], rows[2][2], 0.0];
+    }
+}
+
+/// Mirrors `Combine` in `transform.wesl`: whether (and where) the cut is gated
+/// by a source rect. The affine path binds the zero gate, whose arithmetic is
+/// untouched from before the gate existed.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct CombineUniform {
+    a: [f32; 4],
+    r: [f32; 4],
+}
+
+impl CombineUniform {
+    fn new(dest: TileCoord, gate: Option<(Vec2, Vec2)>) -> Self {
+        let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+        match gate {
+            Some(rect) => Self {
+                a: [dest_origin.x, dest_origin.y, 1.0, 0.0],
+                r: [rect.0.x, rect.0.y, rect.1.x, rect.1.y],
+            },
+            None => Self {
+                a: [dest_origin.x, dest_origin.y, 0.0, 0.0],
+                r: [0.0; 4],
+            },
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TransformRenderer {
     ctx: GpuContext,
@@ -82,6 +194,11 @@ pub struct TransformRenderer {
     parcel_pipeline: wgpu::RenderPipeline,
     mask_pipeline: wgpu::RenderPipeline,
     combine_pipeline: wgpu::RenderPipeline,
+    /// The rect-scoped maps' passes (§16.8, §16.9): pieces through `vs_gated`,
+    /// and the mask's residue + max-blended moved coverage.
+    parcel_gated_pipeline: wgpu::RenderPipeline,
+    mask_gated_pipeline: wgpu::RenderPipeline,
+    mask_base_pipeline: wgpu::RenderPipeline,
     quad_bgl: wgpu::BindGroupLayout,
     src_bgl: wgpu::BindGroupLayout,
     mask_src_bgl: wgpu::BindGroupLayout,
@@ -172,6 +289,18 @@ impl TransformRenderer {
                 load_tex(4),
                 load_tex(5),
                 load_tex(6),
+                // The gate rect (binding 7): zeroed for the affine's
+                // whole-plane cut, the source rect for perspective/warp.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -270,6 +399,90 @@ impl TransformRenderer {
             cache: None,
         });
 
+        let parcel_gated_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("stark transform parcel gated"),
+                layout: Some(&quad_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_gated"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: strip,
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_parcel_gated"),
+                    compilation_options: Default::default(),
+                    targets: &[target(color_format), target(aux_format)],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+        // Moved mask coverage lands with **max** blending over the residue:
+        // the soft union of what stayed and what arrived (§16.8), and — unlike
+        // the paint parcels — safe under any draw order.
+        let mask_union = Some(wgpu::ColorTargetState {
+            format: MASK_FORMAT,
+            blend: Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Max,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Max,
+                },
+            }),
+            write_mask: wgpu::ColorWrites::ALL,
+        });
+        let mask_gated_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark transform mask gated"),
+            layout: Some(&mask_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_gated"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: strip,
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_mask_gated"),
+                compilation_options: Default::default(),
+                targets: std::slice::from_ref(&mask_union),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let mask_base_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark transform mask base"),
+            layout: Some(&mask_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_fill"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_mask_base"),
+                compilation_options: Default::default(),
+                targets: &[target(MASK_FORMAT)],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("stark transform sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -289,6 +502,9 @@ impl TransformRenderer {
             parcel_pipeline,
             mask_pipeline,
             combine_pipeline,
+            parcel_gated_pipeline,
+            mask_gated_pipeline,
+            mask_base_pipeline,
             quad_bgl,
             src_bgl,
             mask_src_bgl,
@@ -301,10 +517,27 @@ impl TransformRenderer {
     }
 
     /// Transform `base` (one layer's tiles) and `selection` (the author's mask)
-    /// under `affine`. `None` rejects the whole action — unusable affine, or more
+    /// under `map`. `None` rejects the whole action — an unusable map, or more
     /// tiles than the caps allow — deterministically, so peers and replays agree
     /// (§16.1).
     pub fn apply(
+        &self,
+        pool: &TilePool,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        selection: &Selection,
+        map: &TransformMap,
+    ) -> Option<(HashTrieMap<TileCoord, TilePairHandle>, Selection)> {
+        match map {
+            TransformMap::Affine(affine) => self.apply_affine(pool, base, selection, *affine),
+            TransformMap::Perspective(_) | TransformMap::Warp(_) => {
+                self.apply_gated(pool, base, selection, map)
+            }
+        }
+    }
+
+    /// The whole-plane affine (§16), untouched: one quad per selected source
+    /// tile, pure Replace on the mask.
+    fn apply_affine(
         &self,
         pool: &TilePool,
         base: &HashTrieMap<TileCoord, TilePairHandle>,
@@ -341,7 +574,15 @@ impl TransformRenderer {
                 pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
             );
-            self.combine(&mut encoder, base, selection, *dest, parcel.as_ref(), &dst);
+            self.combine(
+                &mut encoder,
+                base,
+                selection,
+                *dest,
+                parcel.as_ref(),
+                &dst,
+                None,
+            );
             if let Some((c, a)) = parcel {
                 scratch.push(c);
                 scratch.push(a);
@@ -377,6 +618,281 @@ impl TransformRenderer {
         self.ctx.queue.submit([encoder.finish()]);
         drop(scratch); // now safe to recycle
         Some((tiles, moved_selection))
+    }
+
+    /// The rect-scoped maps (§16.8, §16.9): pieces of `tile ∩ rect` (further
+    /// split per warp sub-cell) forward-rasterized through `vs_gated`, the cut
+    /// gated by the rect's coverage, and the mask carried as
+    /// `max(old · (1 − box), moved)` — the residue unioned with what landed.
+    fn apply_gated(
+        &self,
+        pool: &TilePool,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        selection: &Selection,
+        map: &TransformMap,
+    ) -> Option<(HashTrieMap<TileCoord, TilePairHandle>, Selection)> {
+        let (rect, geo) = gated_geometry(map)?;
+        let plan = plan_gated_paint(base, selection, rect, &geo)?;
+        let mask_plan = plan_gated_mask(selection, rect, &geo)?;
+        let inv = match &geo.kind {
+            GatedKind::Persp { inv, .. } => Some(*inv),
+            GatedKind::Warp { .. } => None,
+        };
+
+        let device = &self.ctx.device;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("stark transform gated"),
+        });
+
+        let mut src_bgs: BTreeMap<TileCoord, wgpu::BindGroup> = BTreeMap::new();
+        let mut scratch: Vec<TexHandle> = Vec::new();
+
+        let mut tiles = base.clone();
+        for (dest, unit_idxs) in &plan.rewrites {
+            let parcel = self.render_gated_parcel(
+                &mut encoder,
+                pool,
+                base,
+                selection,
+                &plan.units,
+                unit_idxs,
+                inv.as_ref(),
+                rect,
+                *dest,
+                &mut src_bgs,
+            );
+            let dst = (
+                pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
+                pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
+            );
+            self.combine(
+                &mut encoder,
+                base,
+                selection,
+                *dest,
+                parcel.as_ref(),
+                &dst,
+                Some(rect),
+            );
+            if let Some((c, a)) = parcel {
+                scratch.push(c);
+                scratch.push(a);
+            }
+            tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1));
+        }
+        for coord in &plan.drops {
+            tiles = tiles.remove(coord);
+        }
+
+        // The mask: tiles outside the rect keep their handles; touched and
+        // receiving tiles are rebuilt as residue + moved coverage. A universal
+        // selection plans no mask work at all and stays universal.
+        let moved_selection = if selection.is_universal() {
+            selection.clone()
+        } else {
+            let mut mask_tiles = selection.tile_map().clone();
+            for coord in &mask_plan.drops {
+                mask_tiles = mask_tiles.remove(coord);
+            }
+            for (dest, unit_idxs) in &mask_plan.rewrites {
+                let dst = pool.acquire_mask(AllocSource::TransformMask);
+                self.render_gated_mask(
+                    &mut encoder,
+                    selection,
+                    &mask_plan.units,
+                    unit_idxs,
+                    inv.as_ref(),
+                    rect,
+                    *dest,
+                    &dst,
+                );
+                mask_tiles = mask_tiles.insert(*dest, dst);
+            }
+            // The hull rides along: what stayed plus wherever the map can have
+            // carried coverage, conservatively.
+            let hull = selection
+                .hull()
+                .map(|(lo, hi)| (lo.min(geo.image_aabb.0), hi.max(geo.image_aabb.1)));
+            Selection::from_parts(mask_tiles, selection.outside() > 0.5, hull)
+        };
+
+        self.ctx.queue.submit([encoder.finish()]);
+        drop(scratch); // now safe to recycle
+        Some((tiles, moved_selection))
+    }
+
+    /// Rasterize the pieces reaching `dest` into a fresh scratch pair —
+    /// [`render_parcel`](Self::render_parcel)'s shape, with quads generalized
+    /// to [`SourceUnit`]s and the deposit gated by the source rect.
+    #[allow(clippy::too_many_arguments)]
+    fn render_gated_parcel(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pool: &TilePool,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        selection: &Selection,
+        units: &[SourceUnit],
+        unit_idxs: &[usize],
+        inv: Option<&Homography>,
+        rect: (Vec2, Vec2),
+        dest: TileCoord,
+        src_bgs: &mut BTreeMap<TileCoord, wgpu::BindGroup>,
+    ) -> Option<(TexHandle, TexHandle)> {
+        if unit_idxs.is_empty() {
+            return None;
+        }
+        let device = &self.ctx.device;
+        let color = pool.acquire_tex(self.color_format, AllocSource::TransformScratch);
+        let aux = pool.acquire_tex(self.aux_format, AllocSource::TransformScratch);
+
+        let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
+        for idx in unit_idxs {
+            let unit = &units[*idx];
+            let Some(tile) = base.get(&unit.src) else {
+                continue;
+            };
+            let src_bg = src_bgs
+                .entry(unit.src)
+                .or_insert_with(|| {
+                    let mask = self.selection.mask_for(selection, unit.src);
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("stark transform src bg"),
+                        layout: &self.src_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(tile.color_view()),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(tile.aux_view()),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(&mask),
+                            },
+                        ],
+                    })
+                })
+                .clone();
+            draws.push((self.gated_bg(unit, inv, rect, dest), src_bg));
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark transform parcel gated"),
+            color_attachments: &[
+                Some(clear_attachment(color.view())),
+                Some(clear_attachment(aux.view())),
+            ],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.parcel_gated_pipeline);
+        for (quad_bg, src_bg) in &draws {
+            pass.set_bind_group(0, quad_bg, &[]);
+            pass.set_bind_group(1, src_bg, &[]);
+            pass.draw(0..4, 0..1);
+        }
+        drop(pass);
+        Some((color, aux))
+    }
+
+    /// One destination mask tile under a rect-scoped map: the residue
+    /// `old · (1 − box)` laid down fullscreen, then the moved coverage pieces
+    /// drawn over with max blending — the soft union (§16.8).
+    #[allow(clippy::too_many_arguments)]
+    fn render_gated_mask(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        selection: &Selection,
+        units: &[SourceUnit],
+        unit_idxs: &[usize],
+        inv: Option<&Homography>,
+        rect: (Vec2, Vec2),
+        dest: TileCoord,
+        dst: &crate::gpu::tile::MaskHandle,
+    ) {
+        let device = &self.ctx.device;
+        let mask_bg = |view: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark transform mask src bg"),
+                layout: &self.mask_src_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(view),
+                }],
+            })
+        };
+        // The residue reads the destination's *old* coverage — a real tile or
+        // the outside constant, through the same clamped-read pattern.
+        let old = self.selection.mask_for(selection, dest);
+        let base_draw = (self.gated_base_bg(rect, dest), mask_bg(&old));
+        let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
+        for idx in unit_idxs {
+            let unit = &units[*idx];
+            let src = self.selection.mask_for(selection, unit.src);
+            draws.push((self.gated_bg(unit, inv, rect, dest), mask_bg(&src)));
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark transform mask gated"),
+            color_attachments: &[Some(clear_attachment(dst.view()))],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.mask_base_pipeline);
+        pass.set_bind_group(0, &base_draw.0, &[]);
+        pass.set_bind_group(1, &base_draw.1, &[]);
+        pass.draw(0..3, 0..1);
+        pass.set_pipeline(&self.mask_gated_pipeline);
+        for (quad_bg, src_bg) in &draws {
+            pass.set_bind_group(0, quad_bg, &[]);
+            pass.set_bind_group(1, src_bg, &[]);
+            pass.draw(0..4, 0..1);
+        }
+    }
+
+    /// The group-0 bind for one gated piece draw.
+    fn gated_bg(
+        &self,
+        unit: &SourceUnit,
+        inv: Option<&Homography>,
+        rect: (Vec2, Vec2),
+        dest: TileCoord,
+    ) -> wgpu::BindGroup {
+        self.gated_uniform_bg(GatedUniform::new(unit, inv, rect, dest))
+    }
+
+    /// The group-0 bind for the mask residue pass.
+    fn gated_base_bg(&self, rect: (Vec2, Vec2), dest: TileCoord) -> wgpu::BindGroup {
+        self.gated_uniform_bg(GatedUniform::base(rect, dest))
+    }
+
+    fn gated_uniform_bg(&self, uniform: GatedUniform) -> wgpu::BindGroup {
+        let device = &self.ctx.device;
+        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("stark transform gated uniform"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark transform gated bg"),
+            layout: &self.quad_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ubuf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
     }
 
     /// Rasterize the transformed source quads reaching `dest` into a fresh
@@ -453,7 +969,10 @@ impl TransformRenderer {
     }
 
     /// Cut `dest`'s base by its own mask and stack the parcel over it, into the
-    /// fresh CoW `(color, aux)` pair `dst`.
+    /// fresh CoW `(color, aux)` pair `dst`. `gate` scopes the cut to a source
+    /// rect (§16.8); `None` is the affine's whole-plane cut, arithmetically
+    /// untouched.
+    #[allow(clippy::too_many_arguments)]
     fn combine(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -462,8 +981,14 @@ impl TransformRenderer {
         dest: TileCoord,
         parcel: Option<&(TexHandle, TexHandle)>,
         dst: &(TexHandle, TexHandle),
+        gate: Option<(Vec2, Vec2)>,
     ) {
         let device = &self.ctx.device;
+        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("stark transform combine uniform"),
+            contents: bytemuck::bytes_of(&CombineUniform::new(dest, gate)),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         let (base_color, base_aux) = match base.get(&dest) {
             Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
             None => (self.zero_color.clone(), self.zero_aux.clone()),
@@ -496,6 +1021,10 @@ impl TransformRenderer {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&parcel_aux),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: ubuf.as_entire_binding(),
                 },
             ],
         });

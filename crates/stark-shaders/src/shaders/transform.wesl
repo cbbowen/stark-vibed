@@ -1,4 +1,5 @@
-// Affine transform of the selected paint (§16).
+// Transforms of the selected paint: the whole-plane affine (§16), and the
+// rect-scoped perspective (§16.8) and warp (§16.9).
 //
 // Two passes per rewritten tile, plus one for the mask:
 //
@@ -126,6 +127,157 @@ fn fs_mask(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(m, 0.0, 0.0, 0.0);
 }
 
+// ---- The rect-scoped maps: perspective (§16.8) and warp (§16.9). ----
+//
+// Same architecture as the affine — forward-rasterized source pieces, an
+// inverse map per fragment — with two differences: piece corners arrive
+// precomputed (the CPU shares corner values between adjacent pieces, which is
+// what keeps rasterization watertight when the map is not affine), and every
+// deposit is additionally scaled by the source rect's coverage `box(s)`, so
+// paint outside the rect is neither cut nor carried.
+
+struct Gated {
+    // a: destination tile texture's top-left in canvas px .xy; .z = TILE_TEX;
+    //    .w = fragment mode: 0 = homography (i0..i2 are the inverse's rows —
+    //    affine pieces embed a (0,0,1) bottom row, so their divide is by
+    //    exactly 1 and the §16.4 tap exactness carries over); 1 = inverse
+    //    bilinear over the cell corners in g0/g1.
+    a: vec4<f32>,
+    // The piece's corner images in canvas px: (00, 10) and (01, 11).
+    c0: vec4<f32>,
+    c1: vec4<f32>,
+    // Inverse homography rows (mode 0): s = (i0·p̃, i1·p̃) / (i2·p̃).
+    i0: vec4<f32>,
+    i1: vec4<f32>,
+    i2: vec4<f32>,
+    // Warp cell corner images (mode 1): (g00, g10) and (g01, g11).
+    g0: vec4<f32>,
+    g1: vec4<f32>,
+    // Warp cell source sub-rect: min .xy, size .zw.
+    s: vec4<f32>,
+    // The map's source rect: min .xy, max .zw — the coverage gate.
+    r: vec4<f32>,
+    // Source tile texture origin .xy (interior origin − apron, canvas px).
+    t: vec4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> qg: Gated;
+
+// Coverage of an axis-aligned box with a half-pixel antialiasing ramp: exactly
+// 1 deeper than half a pixel inside, exactly 0 outside, a 1-px ramp on the
+// boundary. A pure function of canvas position, so the cut side and the paste
+// side compute the identical gate and identity recombines exactly (§16.4).
+fn box_coverage(p: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> f32 {
+    let d = min(p - lo, hi - p);
+    return clamp(min(d.x, d.y) + 0.5, 0.0, 1.0);
+}
+
+// The piece's corners arrive precomputed rather than transformed here: under a
+// warp adjacent pieces belong to *different* bilinear cells, and only the CPU,
+// evaluating shared corners once from shared lattice values, can guarantee the
+// bitwise equality watertight rasterization needs.
+@vertex
+fn vs_gated(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+    var c: vec2<f32>;
+    switch vi {
+        case 0u: { c = qg.c0.xy; }
+        case 1u: { c = qg.c0.zw; }
+        case 2u: { c = qg.c1.xy; }
+        default: { c = qg.c1.zw; }
+    }
+    let tex_px = (c - qg.a.xy) / qg.a.z;
+    return vec4<f32>(tex_px.x * 2.0 - 1.0, 1.0 - tex_px.y * 2.0, 0.0, 1.0);
+}
+
+fn cross2(a: vec2<f32>, b: vec2<f32>) -> f32 {
+    return a.x * b.y - a.y * b.x;
+}
+
+// The source canvas position for this fragment: its own canvas centre mapped
+// back through the inverse of the piece's map.
+fn gated_src(frag: vec2<f32>) -> vec2<f32> {
+    let p = qg.a.xy + frag;
+    if qg.a.w < 0.5 {
+        // Homography (or embedded affine, whose w is exactly 1).
+        let w = qg.i2.x * p.x + qg.i2.y * p.y + qg.i2.z;
+        return vec2<f32>(
+            (qg.i0.x * p.x + qg.i0.y * p.y + qg.i0.z) / w,
+            (qg.i1.x * p.x + qg.i1.y * p.y + qg.i1.z) / w,
+        );
+    }
+    // Inverse bilinear over the cell's corner images. Everything is computed
+    // in differences (cell-sized numbers), so large canvas coordinates never
+    // meet a cross product. The quadratic uses the numerically stable split;
+    // validity (positive Jacobian, §16.9) puts exactly one root in the cell.
+    let e = qg.g0.zw - qg.g0.xy;
+    let f = qg.g1.xy - qg.g0.xy;
+    let g = qg.g1.zw - qg.g0.zw - qg.g1.xy + qg.g0.xy;
+    let h = p - qg.g0.xy;
+    let k2 = cross2(g, f);
+    let k1 = cross2(e, f) + cross2(h, g);
+    let k0 = cross2(h, e);
+    var v: f32;
+    if abs(k2) < 1e-10 {
+        v = -k0 / k1;
+    } else {
+        let disc = max(k1 * k1 - 4.0 * k0 * k2, 0.0);
+        let sq = sqrt(disc);
+        var s: f32;
+        if k1 >= 0.0 { s = 1.0; } else { s = -1.0; }
+        let q = -0.5 * (k1 + s * sq);
+        let va = q / k2;
+        var vb: f32;
+        if abs(q) > 1e-20 { vb = k0 / q; } else { vb = va; }
+        if abs(va - 0.5) <= abs(vb - 0.5) { v = va; } else { v = vb; }
+    }
+    let den = e + g * v;
+    var u: f32;
+    if abs(den.x) >= abs(den.y) {
+        u = (h.x - f.x * v) / den.x;
+    } else {
+        u = (h.y - f.y * v) / den.y;
+    }
+    return qg.s.xy + vec2<f32>(u, v) * qg.s.zw;
+}
+
+// The moved parcel under a rect-scoped map: the lift law's `(latent, op,
+// h·m·box)` — coverage of the author's mask *and* of the source rect scale the
+// height, never the colour (§16.2).
+@fragment
+fn fs_parcel_gated(@builtin(position) frag: vec4<f32>) -> ParcelOut {
+    let s = gated_src(frag.xy);
+    let uv = (s - qg.t.xy) / qg.a.z;
+    let c = textureSampleLevel(src_color, samp, uv, 0.0);
+    let h = textureSampleLevel(src_aux, samp, uv, 0.0).x;
+    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r * box_coverage(s, qg.r.xy, qg.r.zw);
+    var out: ParcelOut;
+    out.color = c;
+    out.aux = vec4<f32>(h * m, 0.0, 0.0, 0.0);
+    return out;
+}
+
+// The moved selection coverage — drawn with **max** blending over the residue
+// `fs_mask_base` lays down, the soft union of what stayed and what landed
+// (§16.8).
+@fragment
+fn fs_mask_gated(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let s = gated_src(frag.xy);
+    let uv = (s - qg.t.xy) / qg.a.z;
+    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r * box_coverage(s, qg.r.xy, qg.r.zw);
+    return vec4<f32>(m, 0.0, 0.0, 0.0);
+}
+
+// The residue: what the destination's old coverage keeps where the rect's cut
+// did not reach — `old · (1 − box)`. Fullscreen, drawn before the moved quads.
+@fragment
+fn fs_mask_base(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = qg.a.xy + frag.xy;
+    let c = vec2<i32>(floor(frag.xy));
+    let dim = vec2<i32>(textureDimensions(src_mask));
+    let m = textureLoad(src_mask, min(c, dim - vec2<i32>(1, 1)), 0).r;
+    return vec4<f32>(m * (1.0 - box_coverage(p, qg.r.xy, qg.r.zw)), 0.0, 0.0, 0.0);
+}
+
 @vertex
 fn vs_fill(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
@@ -137,6 +289,18 @@ struct FsOut {
     @location(1) aux: vec4<f32>,
 }
 
+// The combine's one map-dependent fact: whether the cut is gated by a source
+// rect (perspective/warp), and by which. `a.z = 0` is the affine's whole-plane
+// cut, arithmetically untouched from before the gate existed.
+struct Combine {
+    // a: destination tile texture origin .xy; .z = 1 to gate the cut.
+    a: vec4<f32>,
+    // r: the gate rect, min .xy, max .zw.
+    r: vec4<f32>,
+}
+
+@group(0) @binding(7) var<uniform> qc: Combine;
+
 @fragment
 fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     let c = vec2<i32>(floor(frag.xy));
@@ -147,7 +311,13 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     let adim = vec2<i32>(textureDimensions(base_aux));
     let ba = textureLoad(base_aux, min(c, adim - vec2<i32>(1, 1)), 0);
     let mdim = vec2<i32>(textureDimensions(base_mask));
-    let m = textureLoad(base_mask, min(c, mdim - vec2<i32>(1, 1)), 0).r;
+    var m = textureLoad(base_mask, min(c, mdim - vec2<i32>(1, 1)), 0).r;
+    if qc.a.z > 0.5 {
+        // The cut only reaches inside the map's source rect (§16.8): the
+        // effective coverage is m·box, the same gate the parcel side applied
+        // at the source — so an identity map recombines exactly.
+        m = m * box_coverage(qc.a.xy + frag.xy, qc.r.xy, qc.r.zw);
+    }
     let pdim = vec2<i32>(textureDimensions(parcel_color));
     let pc = textureLoad(parcel_color, min(c, pdim - vec2<i32>(1, 1)), 0);
     let hdim = vec2<i32>(textureDimensions(parcel_aux));

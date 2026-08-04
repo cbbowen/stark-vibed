@@ -191,7 +191,7 @@ pub fn SelectionBar() -> Element {
                 // an ellipse and has no handles to promise (see `icons::TRANSFORM`).
                 button {
                     class: "chip",
-                    title: "Move, scale or flip the selected paint (§16)",
+                    title: "Move, scale, flip, perspective or warp the selected paint (§16)",
                     onclick: move |_| crate::panels::transform::begin_transform(state),
                     {icon(icons::TRANSFORM)}
                     {label("Transform")}

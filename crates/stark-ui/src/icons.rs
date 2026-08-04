@@ -186,6 +186,12 @@ icons! {
     // is not there. What the four arrows say instead is that the paint is about to be
     // moved and reshaped, which is true of all three of the mode's gestures.
     TRANSFORM => "arrows-out-cardinal-bold",
+    // The transform bar's Warp family (§16.9). A curve with its control
+    // points, which is what the gesture *is*: a smooth surface bent by the
+    // handles through it. Perspective takes [`PERSPECTIVE`] — the same subject
+    // the guides panel wears, and the sharing is the claim: both are one
+    // projective space looked at two ways.
+    WARP => "bezier-curve-bold",
     // Alt over the brush (§18.0.2). The bar comes up on the modifier and names itself
     // with the tool it arms — which is the whole discoverability argument that bar is
     // built on, made in a picture as well as a word.

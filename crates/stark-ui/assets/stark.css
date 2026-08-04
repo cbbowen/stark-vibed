@@ -2134,6 +2134,50 @@ button.layer-remove:hover {
   box-shadow: 0 0 0 1px #00000040, inset 0 0 0 1px #00000040;
 }
 
+/* The perspective quad and warp mesh (§16.8, §16.9): one full-viewport SVG,
+   purely visual — the catcher owns every pointer event and classifies it
+   mathematically, exactly as it does for the ellipse. The lines are sampled
+   from the same maps the paint resamples through, so the drawing *is* the
+   deformation. */
+.transform-svg {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* The quad's outline: the transform's own edge, at the ellipse's weight. */
+.transform-svg .transform-outline {
+  fill: none;
+  stroke: #ffffffbf;
+  stroke-width: 1.5px;
+  stroke-dasharray: 5 4;
+}
+
+/* The receding grid inside the quad: quieter than the outline — context, not
+   a control. */
+.transform-svg .transform-grid {
+  fill: none;
+  stroke: #ffffff59;
+  stroke-width: 1px;
+}
+
+/* The warp mesh's curves: between the outline and the grid in weight — every
+   one of them is draggable paint, not decoration. */
+.transform-svg .transform-mesh {
+  fill: none;
+  stroke: #ffffff8c;
+  stroke-width: 1px;
+}
+
+/* Corner and control-point handles, at the north dot's weight and colour so
+   the three families read as one widget vocabulary. */
+.transform-svg .transform-handle {
+  fill: #ffffffd9;
+  stroke: #00000040;
+  stroke-width: 1px;
+}
+
 /* The north dot: marks the reference ellipse's "up" through the deformation
    (it rides the parent's CSS matrix), so rotation is visible on a shape that
    would otherwise hide it. */

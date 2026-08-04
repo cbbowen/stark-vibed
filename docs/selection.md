@@ -1,6 +1,6 @@
 # Selections, fill, and transform
 
-The soft-mask coverage field every tool acts through, the fifth shape action, and moving paint under an affine — §6.8, §16.
+The soft-mask coverage field every tool acts through, the fifth shape action, and moving paint under an affine, a perspective, or a warp — §6.8, §16.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -367,6 +367,133 @@ shortcuts (Ctrl+D / invert) still fire mid-mode and change what Done would cut.
   the ingredient, the clipboard policy is not designed here.
 - **Better minification** (EWA / mips) — a parcel-shader-local upgrade.
 - **Snapping** (angles, integer translations) — a gesture-layer refinement.
+
+### 16.8 Perspective — moving paint under a homography
+
+The second transform family (numbered after §16.7 to keep citations stable;
+thematically it follows §16.6). Where the affine acts on the whole plane,
+a perspective is **rect-scoped**:
+
+```rust
+ActionKind::TransformPerspective { layer, map: PerspectiveMap { min, max, corners } }
+```
+
+The wire form is the four **corners the hand placed** — the images of the
+rect's corners, twelve floats — and every peer re-derives the same homography
+from them (identity → the literal identity matrix; a parallelogram target →
+built and inverted through `Affine2` and embedded with a `(0,0,1)` bottom row,
+so the projective divide is by exactly 1 and §16.4's tap exactness carries
+over; a general quad → derived in f64, square-to-quad composed with the rect
+normalization, inverse by adjugate, rounded to f32 once).
+
+**The rect gate.** The map cuts and carries only the paint under
+`mask · box(rect)`, where `box` is the rect's coverage with a half-pixel
+antialiasing ramp — a pure function of canvas position, computed identically
+on the cut side (the combine's new gate uniform) and the paste side (the
+parcel fragment), so an identity map recombines exactly. Paint and mask
+outside the rect are untouched *by construction*: tiles the rect never
+overlaps are not even planned. This is also what tames the horizon — validity
+requires a **strictly convex, positively oriented** target quad, which is
+exactly the condition under which `w > 0` on the whole source rect, so
+nothing inside the gate can be flung through infinity, and nothing outside it
+ever meets the map. Concave, crossed, or mirrored quads are rejected
+deterministically, like a degenerate affine (§16.1).
+
+**Rendering** rides §16.5's machinery with one generalization: piece corners
+(`tile ∩ rect` under the map) are computed on the CPU from shared values by
+shared formulas and handed to the vertex stage precomputed, so adjacent
+pieces stay bitwise-watertight even though the map is not affine; the
+fragment maps its canvas centre back through the inverse homography. The
+combine pass is the same shader with the gate uniform; the parcel law, the
+lift law and the CoW discipline are untouched.
+
+**The mask** cannot be pure Replace under a gate: coverage inside the rect
+travels, coverage outside stays. Per destination tile the GPU computes
+`max(old · (1 − box), moved)` — the residue laid down fullscreen, the moved
+coverage drawn over with **max blending** (the soft union, §6.8's algebra, and
+safe under any draw order). Mask tiles the rect never touches keep their
+handles. A universal selection stays universal — there is no outline to
+carry, matching the affine's behaviour.
+
+**The gesture.** The widget is the quad itself, with corner handles: the map
+is *defined* as "the homography putting the corners where the hand put them",
+so the widget cannot disagree with the paint — the grabbed corner follows the
+pointer exactly, §16.6's exact-follow promise in its purest form. Edges shift
+whole sides (the foreshortening gesture), inside translates, and the receding
+grid drawn through the quad is the transformed space itself (lines stay
+straight under a homography, so two endpoints each). A drag that would run
+the quad concave **holds at the last valid shape** rather than tearing
+through the horizon — the same stance as the rim gesture's determinant floor.
+
+### 16.9 Warp — moving paint through a mesh
+
+The third family, same action shape:
+
+```rust
+ActionKind::TransformWarp { layer, map: WarpMap { min, max, cols, rows, points } }
+```
+
+The wire form is a coarse **control grid** (the UI uses 4×4; the format
+allows up to 8×8) — the images of the rect's uniform grid, a few dozen
+floats. Everything else is derived deterministically: a Catmull-Rom tensor
+surface through the control points, sampled onto a fine lattice of 8×8
+bilinear sub-cells per control cell. The GPU consumes only the lattice, whose
+cells are straight-edged quads (a bilinear map keeps axis-aligned lines
+straight), so the parcel machinery carries over piecewise: each drawn piece
+is `sub-cell ∩ tile`, and the fragment inverts the cell's bilinear map (the
+stable quadratic, computed entirely in cell-sized differences so large canvas
+coordinates never meet a cross product).
+
+**Identity is bit-exact by construction.** The surface is evaluated in
+*deviation form*: control points split into `base + delta`, only the deltas
+go through the Hermite arithmetic (every term a multiple of a delta
+difference), and the bases are added back untouched. An untouched mesh has
+all-zero deltas, so every lattice point lands exactly on its base, every
+sub-cell is detected as a parallelogram and takes an exact inverse-affine
+path — and the whole action is a byte-for-byte no-op, extending §16.4's
+identity invariant to the mesh. Cell-edge lattice geometry is computed by
+shared formulas from shared values (`lerp` with an exact `t == 1` branch), so
+adjacent pieces rasterize watertight.
+
+**No folds.** The Jacobian of a bilinear cell is bilinear in its parameters,
+so its extrema are at the corners: four cross products per sub-cell decide
+the whole cell, and a mesh with any non-positive corner Jacobian is rejected
+deterministically — resampling through a crease would be last-write-wins
+noise, and the gesture never offers it (below). The rect gate, the mask
+union, and the caps are exactly §16.8's.
+
+**The gesture.** The mesh curves the overlay draws are sampled from the very
+surface the paint resamples through — a straight grid says "untouched", and
+every bend in the curves is a bend the paint has taken. Two ways to shape it,
+both exact-follow:
+
+- **drag a control point** — it follows the pointer exactly;
+- **grab the surface anywhere** — the least-norm control move that keeps the
+  grabbed *paint* under the pointer: `Δpᵢ = Bᵢ·Δ / ΣB²`, with `B` the
+  surface's basis weights at the grab. The hand holds the painting, not a
+  handle — §6.9's "the tool disappears" applied to deformation.
+
+Outside the mesh, dragging translates it whole. A drag that would fold the
+mesh holds at the last valid shape; a sub-2-screen-px jiggle snaps back
+(§16.6's rule — touching the widget never resamples by accident).
+
+### 16.10 One bar, three families
+
+The transform bar grows a selector: **Free / Perspective / Warp**, plus the
+affine-only flips and "Done". Switching families mid-gesture **carries** the
+accumulated deformation when the new family contains the old one exactly — an
+orientation-preserving affine is exactly a parallelogram perspective, and
+exactly a mesh whose smooth surface reproduces it (cubic interpolation
+reproduces affine functions) — and otherwise **commits** it first, one honest
+undo step, reopening fresh around the moved paint. Never a silent
+approximation: a lossy carry would change what "Done" produces without the
+hand having done anything.
+
+Every family previews through the same `ViewCommand::PreviewTransform`
+bargain (§16.6), now carrying a `TransformMap` (affine / perspective / warp);
+the engine routes each family to its own action kind, so the in-process
+command enum never touches the wire format. `preview == committed` holds for
+all three, pinned by test.
 
 ---
 

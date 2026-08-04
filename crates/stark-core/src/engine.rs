@@ -781,15 +781,24 @@ impl Engine {
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
             DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
-            DocCommand::Transform { layer, affine } => {
+            DocCommand::Transform { layer, map } => {
                 // The commit supersedes whatever the gesture was previewing, for
                 // the same reason `SetMatteRect` drops its preview.
                 self.doc_preview = None;
-                // A degenerate or non-finite affine would be rejected by `apply`
+                // A degenerate or non-finite map would be rejected by `apply`
                 // anyway (deterministically — §16.1); refusing it
                 // here as well keeps a knowably-dead action out of the log.
-                if crate::document::affine_usable(affine) {
-                    self.commit(ActionKind::Transform { layer, affine });
+                // Each family goes to its own action kind — the wire format
+                // never carries the routing enum, only the map it named.
+                if map.usable() {
+                    use crate::document::TransformMap;
+                    self.commit(match map {
+                        TransformMap::Affine(affine) => ActionKind::Transform { layer, affine },
+                        TransformMap::Perspective(map) => {
+                            ActionKind::TransformPerspective { layer, map }
+                        }
+                        TransformMap::Warp(map) => ActionKind::TransformWarp { layer, map },
+                    });
                 }
             }
             DocCommand::SetSurface(id) => {
@@ -939,7 +948,7 @@ impl Engine {
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewTransform(t) => {
-                let preview = t.and_then(|(layer, affine)| self.preview_transform(layer, affine));
+                let preview = t.and_then(|(layer, map)| self.preview_transform(layer, &map));
                 self.set_doc_preview(preview);
             }
             ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),
@@ -2260,20 +2269,24 @@ impl Engine {
 
     /// Install (or, with `None`, drop) the stand-in document for an unlogged edit
     /// in flight — the shared tail of every `Preview*` command.
-    /// The document as a `Transform { layer, affine }` commit would leave it,
-    /// built through the **same renderer** the commit uses — which is what makes
+    /// The document as a `Transform` commit of `map` would leave it, built
+    /// through the **same renderer** the commit uses — which is what makes
     /// the preview lossless and exact: what is shown is what "Done" will produce
     /// (§16.6). `None` when the layer cannot be transformed (a
     /// matte, absent) or the transform is rejected — the preview then simply
     /// shows the committed document, matching the commit's refusal.
-    fn preview_transform(&self, layer: LayerId, affine: crate::geom::Affine2) -> Option<DocState> {
+    fn preview_transform(
+        &self,
+        layer: LayerId,
+        map: &crate::document::TransformMap,
+    ) -> Option<DocState> {
         let doc = self.timeline.current();
         let base = doc.layer(layer)?.tiles()?;
         let selection = doc.selection_of(self.actor);
-        let (tiles, moved) =
-            self.apply
-                .transform
-                .apply(&self.apply.pool, base, &selection, affine)?;
+        let (tiles, moved) = self
+            .apply
+            .transform
+            .apply(&self.apply.pool, base, &selection, map)?;
         Some(
             doc.map_layer(layer, |l| l.with_tiles(tiles))
                 .with_selection(self.actor, moved),

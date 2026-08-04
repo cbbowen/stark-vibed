@@ -96,7 +96,9 @@ impl StatePatch {
             ActionKind::Fill { layer, .. } => {
                 tile_diff(*layer, paint_rect(action, *layer), to, from, &mut ops);
             }
-            ActionKind::Transform { layer, .. } => {
+            ActionKind::Transform { layer, .. }
+            | ActionKind::TransformPerspective { layer, .. }
+            | ActionKind::TransformWarp { layer, .. } => {
                 tile_diff(*layer, paint_rect(action, *layer), to, from, &mut ops);
                 ops.push(PatchOp::Selection(actor, to.selection_of(actor)));
             }

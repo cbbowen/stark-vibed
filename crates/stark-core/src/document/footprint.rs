@@ -19,7 +19,7 @@
 
 use super::action::{Action, ActionKind, ActorId, BrushParams, StrokeRecord};
 use super::layer::LayerId;
-use crate::geom::TILE_SIZE;
+use crate::geom::{TILE_SIZE, Vec2};
 
 /// An inclusive tile-coordinate rectangle. `min > max` on either axis is the
 /// empty rect (overlapping nothing).
@@ -263,6 +263,29 @@ pub fn footprint(action: &Action) -> Footprint {
                 Resource::Selection(actor),
             ],
         },
+        // The rect-scoped transforms (§16.8, §16.9) cut only inside their rect
+        // and paste only inside the map's image, so unlike the whole-plane
+        // affine they can claim an honest box: the union of the two, padded a
+        // tile for the apron reach. An unusable warp (whose image is unknown)
+        // falls back to the whole layer — it will be rejected by `apply`, and
+        // a too-big footprint is the safe direction.
+        ActionKind::TransformPerspective { layer, map } => Footprint {
+            reads: vec![Resource::Existence(*layer)],
+            writes: vec![
+                Resource::Paint(
+                    *layer,
+                    gated_rect((map.min, map.max), Some(map.image_aabb())),
+                ),
+                Resource::Selection(actor),
+            ],
+        },
+        ActionKind::TransformWarp { layer, map } => Footprint {
+            reads: vec![Resource::Existence(*layer)],
+            writes: vec![
+                Resource::Paint(*layer, gated_rect((map.min, map.max), map.image_aabb())),
+                Resource::Selection(actor),
+            ],
+        },
         // A fill reads the mask that bounds it and writes the paint its region
         // reaches — the same shape of footprint a stroke has. A fill bounded only
         // by the selection has no analytic box, so it claims the whole layer, the
@@ -272,6 +295,22 @@ pub fn footprint(action: &Action) -> Footprint {
             writes: vec![Resource::Paint(*layer, fill_rect(op))],
         },
         ActionKind::Undo(_) => Footprint::default(),
+    }
+}
+
+/// The tile-aligned reach of a rect-scoped transform: its source rect unioned
+/// with its image bound, padded one tile so apron rewrites are covered.
+/// `None` for the image (an unusable map) claims everything.
+fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
+    let Some(image) = image else {
+        return TileRect::ALL;
+    };
+    let lo = rect.0.min(image.0);
+    let hi = rect.1.max(image.1);
+    let tile = |v: f32| ((v / TILE_SIZE as f32).floor().clamp(-1e9, 1e9)) as i32;
+    TileRect {
+        min: (tile(lo.x) - 1, tile(lo.y) - 1),
+        max: (tile(hi.x) + 1, tile(hi.y) + 1),
     }
 }
 

@@ -9,6 +9,7 @@ pub mod selection;
 pub mod state;
 pub mod timeline;
 pub mod transform;
+pub mod warp;
 
 pub use action::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
@@ -21,4 +22,7 @@ pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState, Lay
 pub use timeline::{
     LinearTimeline, ReplicatedTimeline, Timeline, TimelineStats, effective_actions,
 };
-pub use transform::{MAX_TRANSFORM_TILES, affine_usable};
+pub use transform::{
+    Homography, MAX_TRANSFORM_TILES, PerspectiveMap, TransformMap, affine_usable, rect_corners,
+};
+pub use warp::{MAX_WARP_GRID, WarpMap};
