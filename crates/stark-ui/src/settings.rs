@@ -79,12 +79,14 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 div { class: "modal-section-label", "APPEARANCE" }
                 SettingToggle {
                     id: "minimal-chrome",
-                    label: "Minimal chrome",
+                    label: "Minimal UI",
                     // Says which text goes, because "minimal" on its own could mean
                     // anything from a smaller font to hiding the panels outright — and
                     // the one thing somebody needs to know before turning it on is that
-                    // the controls all stay exactly where they were (§11).
-                    description: "Drop the words from the panels and the bars over the canvas, keeping the icons. Nothing moves and nothing is removed — the same controls, in the same places, quieter.",
+                    // nothing is taken away (§11). The panels closing up into one column
+                    // is the one thing that does move, so it is said rather than left to
+                    // be noticed.
+                    description: "Drop the words from the panels and the bars over the canvas, keeping the icons. Nothing is removed — the same controls, quieter, with the panels closed up into a single column.",
                     // The reassurance that makes it safe to try, and the answer to the
                     // question it raises: dialogs, menus, panel titles and anything you
                     // have named keep their text, so nothing becomes unreadable.

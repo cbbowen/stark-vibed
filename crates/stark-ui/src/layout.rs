@@ -285,20 +285,27 @@ pub fn PanelStack() -> Element {
     let layout = use_context::<PanelLayout>();
     let state = use_context::<AppState>();
     let hidden = (layout.hidden)();
+    // Filtered here rather than by an `if` inside the loop, so the stack's children are
+    // exactly the visible panels: a conditional leaves a placeholder node behind for
+    // every closed panel, and minimal mode rounds the ends of the stack with
+    // `:first-child` / `:last-child` (`.app-root.minimal .panel` in `stark.css`), which
+    // a placeholder standing at either end would silently take instead.
+    let visible: Vec<PanelId> = (layout.order)()
+        .into_iter()
+        .filter(|id| !hidden.contains(id))
+        .collect();
     rsx! {
         div { class: chrome_class(state, "panel-stack"),
-            for id in (layout.order)() {
-                if !hidden.contains(&id) {
-                    Panel { key: "{id:?}", id,
-                        match id {
-                            PanelId::Navigator => rsx! { NavigatorPanel {} },
-                            PanelId::Color => rsx! { ColorPanel {} },
-                            PanelId::Brush => rsx! { BrushPanel {} },
-                            PanelId::Select => rsx! { SelectPanel {} },
-                            PanelId::Guides => rsx! { GuidesPanel {} },
-                            PanelId::Lighting => rsx! { LightingPanel {} },
-                            PanelId::Layers => rsx! { LayerPanel {} },
-                        }
+            for id in visible {
+                Panel { key: "{id:?}", id,
+                    match id {
+                        PanelId::Navigator => rsx! { NavigatorPanel {} },
+                        PanelId::Color => rsx! { ColorPanel {} },
+                        PanelId::Brush => rsx! { BrushPanel {} },
+                        PanelId::Select => rsx! { SelectPanel {} },
+                        PanelId::Guides => rsx! { GuidesPanel {} },
+                        PanelId::Lighting => rsx! { LightingPanel {} },
+                        PanelId::Layers => rsx! { LayerPanel {} },
                     }
                 }
             }
