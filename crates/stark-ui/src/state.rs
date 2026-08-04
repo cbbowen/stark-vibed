@@ -74,6 +74,19 @@ pub struct AppState {
     pub pick: PickState,
     /// The drag-and-hold drawing assist (§6.9; `crate::input`).
     pub assist: AssistState,
+    /// Minimal mode: the chrome over the canvas drops its words and keeps its marks
+    /// (§11).
+    ///
+    /// A client preference like [`AssistState::enabled`], not document state — it is a
+    /// way of *looking* at the application, so it is never saved, never replicated, and
+    /// a collaborator's copy is theirs to set.
+    ///
+    /// Nothing reads this but the app root, which turns it into a class on `.app-root`;
+    /// what the class hides is decided in the stylesheet against the `.label` spans the
+    /// components emit. Deliberately not a prop threaded through the tree: every
+    /// control would then have to be handed a boolean it does nothing with but pass on,
+    /// and a control that forgot to would be the one that kept its word.
+    pub minimal: Signal<bool>,
     /// The transform gesture in flight (§16.6): `Some` while the
     /// user is composing a move/scale/flip of the selected paint. View state —
     /// the engine sees only the previews it produces and the one commit on
@@ -194,6 +207,9 @@ impl AppState {
                 dwell: root_signal(|| None),
                 task: root_signal(|| None),
             },
+            // Off by default: the words are how the chrome is *learned*, and minimal
+            // mode is what you turn on once you no longer need them.
+            minimal: root_signal(|| false),
             transform: root_signal(|| None),
             guide_edit: root_signal(|| None),
             paint_queued: root_signal(|| false),

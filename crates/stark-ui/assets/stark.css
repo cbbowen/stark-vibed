@@ -472,6 +472,83 @@ hr {
   height: 18px;
 }
 
+/* --- minimal mode (`AppState::minimal`, §11) ---
+
+   The chrome over the canvas drops its words and keeps its marks.
+
+   Two facts decide whether a word goes, and they are carried by two different things
+   on purpose. The `.label` wrapper (`icons::label`) says *this text is a control's
+   name* — as opposed to prose, a value, or a name the artist chose, none of which any
+   mark can stand in for. The container says *names may be dropped here*. Neither alone
+   is enough: the wrapper cannot know where it will be rendered, and the container
+   cannot tell a label from a layer name.
+
+   Which is exactly why the dialog rule below is not a patch. `widgets::Slider` is used
+   in the panels *and* in the brush editor, so the same component emits `.label` on both
+   sides of the line the rules draw — and a dialog obscures the canvas anyway, so there
+   is nothing minimal mode could win there. Scoping the exception to `.modal-backdrop`
+   covers every dialog there is, including the editor's remaining sliders as they get
+   their marks.
+
+   `display: none` rather than `visibility` or a zero width: the word has to stop being
+   a flex item, or every chip would keep the `gap` that sat between its mark and its
+   label, and the row would be spaced for text that is not there.
+
+   Menus, panel titles and user-chosen names need no rule at all — they are simply not
+   wrapped. That is the safe direction to fail in: a forgotten wrapper leaves a word on
+   screen, where a forgotten exception would strip a control of its only description. */
+.app-root.minimal .label {
+  display: none;
+}
+
+/* Dialogs keep their words, whoever rendered them. */
+.app-root.minimal .modal-backdrop .label {
+  display: inline;
+}
+
+/* A marked slider folds onto one line — glyph to the left of the track rather than
+   over it (`widgets::Slider`). This is where the mode's vertical saving comes from:
+   dropping a word shortens a row by nothing on its own, since the label sat on a line
+   of its own above the track and that line stays there holding an icon.
+
+   Scoped to `.panel` rather than written globally with a dialog exception, because
+   here the container is not a proxy for "may lose text" — it is the actual subject.
+   The saving being bought is height in the panel *stack*, where one panel's rows are
+   height every panel under it does not get; a bar is already a single line, and a
+   dialog has a window's worth of room and its own scroll. `.marked` is the other half:
+   a row that kept its word cannot fold, because the words differ in length and the
+   tracks would start at a ragged left edge. */
+.app-root.minimal .panel .slider-row.marked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-root.minimal .panel .slider-row.marked .slider-label {
+  margin-bottom: 0;
+}
+
+/* `min-width: 0` so the track may shrink below its intrinsic width — without it a
+   flex item refuses, and a narrow panel would push the row wider than the panel. */
+.app-root.minimal .panel .slider-row.marked .slider,
+.app-root.minimal .panel .slider-row.marked .blend-row {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+/* A chip that has lost its word should be a square around its mark, not a pill still
+   shaped for the text. The panel rows keep `flex: 1` and simply share the width out
+   between narrower chips; the bars, whose chips size to their own content, need their
+   text-era side padding taken back. */
+.app-root.minimal .selection-bar .chip,
+.app-root.minimal .frame-bar .chip,
+.app-root.minimal .transform-bar .chip,
+.app-root.minimal .guide-bar .chip,
+.app-root.minimal .pick-bar .chip {
+  padding: 4px 8px;
+}
+
 /* A glyph holding a paint colour (`icons::icon_tinted`): the paint laid over an
    untinted copy of the same path, which is what lets a low-opacity wash read as thin
    rather than as dark — see the doc comment there, which owns this reasoning. Absolute

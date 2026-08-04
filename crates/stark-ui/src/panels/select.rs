@@ -4,7 +4,7 @@
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, icon_tinted};
+use crate::icons::{self, icon, icon_tinted, label};
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
@@ -109,7 +109,7 @@ pub fn SelectPanel() -> Element {
         // is about arming, not about combining; neither row can ever have two lit at
         // once, which is the thing the shape is claiming.
         div { class: "tool-row stacked segmented",
-            for (t, glyph, label) in TOOLS {
+            for (t, glyph, word) in TOOLS {
                 button {
                     class: chip(tool == t),
                     title: "Draw a selection with this tool, once",
@@ -120,12 +120,12 @@ pub fn SelectPanel() -> Element {
                         dispatch(state, ViewCommand::SetTool(next));
                     },
                     {icon(glyph)}
-                    "{label}"
+                    {label(word)}
                 }
             }
         }
         div { class: "tool-row stacked segmented",
-            for (a, glyph, label, hint) in ACTIONS {
+            for (a, glyph, word, hint) in ACTIONS {
                 button {
                     class: chip(action == a),
                     title: "{hint}",
@@ -142,7 +142,7 @@ pub fn SelectPanel() -> Element {
                     } else {
                         {icon(glyph)}
                     }
-                    "{label}"
+                    {label(word)}
                 }
             }
         }
@@ -185,7 +185,7 @@ pub fn SelectionBar() -> Element {
                 // panel's glyph rather than a second picture of a marquee.
                 span { class: "bar-label",
                     {icon(icons::SELECTION)}
-                    "Selection"
+                    {label("Selection")}
                 }
                 // Arrows out of a centre, not a box of grips: the widget this opens is
                 // an ellipse and has no handles to promise (see `icons::TRANSFORM`).
@@ -194,7 +194,7 @@ pub fn SelectionBar() -> Element {
                     title: "Move, scale or flip the selected paint (§16)",
                     onclick: move |_| crate::panels::transform::begin_transform(state),
                     {icon(icons::TRANSFORM)}
-                    "Transform"
+                    {label("Transform")}
                 }
                 // The other reach for the same word. With a selection in force the
                 // region is already drawn, so a fill needs no gesture at all —
@@ -209,7 +209,14 @@ pub fn SelectionBar() -> Element {
                     title: "Fill the selection with the brush's paint",
                     onclick: move |_| fill_selection(state),
                     {icon_tinted(icons::PAINT_BUCKET, brush_color)}
-                    "Fill"
+                    {label("Fill")}
+                }
+                button {
+                    class: "chip",
+                    title: "Invert selection (Ctrl+Shift+I)",
+                    onclick: move |_| dispatch(state, DocCommand::InvertSelection),
+                    {icon(icons::SELECTION_INVERT)}
+                    {label("Invert")}
                 }
                 button {
                     class: "chip",
@@ -218,14 +225,7 @@ pub fn SelectionBar() -> Element {
                         dispatch(state, DocCommand::Select(SelectionOp::select_all()))
                     },
                     {icon(icons::SELECTION_NONE)}
-                    "Deselect"
-                }
-                button {
-                    class: "chip",
-                    title: "Invert selection (Ctrl+Shift+I)",
-                    onclick: move |_| dispatch(state, DocCommand::InvertSelection),
-                    {icon(icons::SELECTION_INVERT)}
-                    "Invert"
+                    {label("Deselect")}
                 }
             }
         }

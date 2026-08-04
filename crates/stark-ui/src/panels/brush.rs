@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::{self, icon, label};
 use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
@@ -48,7 +48,7 @@ pub fn BrushPanel() -> Element {
                 open.set(true);
             },
             {icon(icons::EDIT_BRUSH)}
-            "Edit brush\u{2026}"
+            {label("Edit brush\u{2026}")}
         }
 
         hr {}
@@ -97,7 +97,7 @@ fn PresetSection() -> Element {
                         open.set(true);
                     },
                     {icon(icons::SAVE)}
-                    "Save"
+                    {label("Save")}
                 }
             }
             div { class: "preset-list",

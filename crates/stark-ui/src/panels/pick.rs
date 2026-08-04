@@ -13,7 +13,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::panels::select::current_tool;
 use crate::state::AppState;
@@ -56,7 +56,7 @@ pub fn PickBar() -> Element {
             // that argument the bar can make.
             span { class: "bar-label",
                 {icon(icons::EYEDROPPER)}
-                "Eyedropper"
+                {label("Eyedropper")}
             }
             button {
                 class: chip(all),

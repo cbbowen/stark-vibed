@@ -28,7 +28,7 @@ use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::platform::select_all;
@@ -158,7 +158,7 @@ pub fn GuidesPanel() -> Element {
                 title: "Add a perspective grid where you are looking",
                 onclick: move |_| add_perspective(state),
                 {icon(icons::ADD_LAYER)}
-                "Perspective"
+                {label("Perspective")}
             }
         }
         if guides.is_empty() {
@@ -290,17 +290,25 @@ pub fn PerspectiveGuideBar() -> Element {
     let index = edit.index;
     // The bar names the guide the same way its row does, so a renamed guide is
     // called the same thing in both places.
-    let label = guide_label(index, g);
+    let name = guide_label(index, g);
     let (density, opacity, axes) = (g.density, g.opacity, g.axes);
 
     rsx! {
         div { class: chrome_class(state, "guide-bar"),
             // The Guides panel's own mark, on the bar its rows raise — and the reason
-            // the label can stay the guide's *name*: the glyph says what kind of thing
-            // is being shaped, so the words are free to say which one.
+            // the words here can be the guide's *name*: the glyph says what kind of
+            // thing is being shaped, so the text is free to say which one.
+            //
+            // Hideable, even though a named guide's name is the artist's own. The rule
+            // that protects names is about the places a name is *kept* — the roster in
+            // the panel, which is where a guide is found, chosen and renamed, and which
+            // keeps its text. This bar is not that; it is the mode indicator for the one
+            // guide already in hand, and every other bottom bar's label goes. Leaving
+            // this one standing would make the guide bar the odd bar out for a word that
+            // is legible one panel away.
             span { class: "bar-label",
                 {icon(icons::PERSPECTIVE)}
-                "{label}"
+                {name}
             }
             // Locks: hold a world axis fixed, constraining the canvas drag to
             // turns about it — lock the vertical and every gesture keeps the
@@ -313,7 +321,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // label with nothing but a word is a control that would vanish.
             span { class: "bar-sub",
                 {icon(icons::LOCK)}
-                "Lock"
+                {label("Lock")}
             }
             for i in 0..3 {
                 button {
@@ -334,7 +342,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // rather than of the whole guide.
             span { class: "bar-sub",
                 {icon(icons::VISIBLE)}
-                "Show"
+                {label("Show")}
             }
             for i in 0..3 {
                 button {
@@ -351,7 +359,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // of the thing the slider makes more or fewer of.
             span { class: "bar-sub",
                 {icon(icons::DENSITY)}
-                "Density"
+                {label("Density")}
             }
             input {
                 class: "slider",
@@ -368,7 +376,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // is under this shows through, asked of a guide over the paint.
             span { class: "bar-sub",
                 {icon(icons::OPACITY)}
-                "Opacity"
+                {label("Opacity")}
             }
             input {
                 class: "slider",
@@ -387,7 +395,7 @@ pub fn PerspectiveGuideBar() -> Element {
                 title: "Leave the guide as it stands",
                 onclick: move |_| end_guide_edit(state),
                 {icon(icons::DONE)}
-                "Done"
+                {label("Done")}
             }
         }
     }

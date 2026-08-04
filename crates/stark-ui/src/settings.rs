@@ -42,6 +42,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
         .is_some_and(|o| o.show_peer_selections);
     let mut assist_enabled = state.assist.enabled;
     let assist = assist_enabled();
+    let mut minimal_enabled = state.minimal;
+    let minimal = minimal_enabled();
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
     let shared = (state.collab.phase)() == CollabPhase::Shared;
@@ -72,6 +74,23 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     note: Some("Strokes that aren't close to a line or an ellipse are left exactly as you drew them.".to_string()),
                     checked: assist,
                     onchange: move |v| assist_enabled.set(v),
+                }
+
+                div { class: "modal-section-label", "APPEARANCE" }
+                SettingToggle {
+                    id: "minimal-chrome",
+                    label: "Minimal chrome",
+                    // Says which text goes, because "minimal" on its own could mean
+                    // anything from a smaller font to hiding the panels outright — and
+                    // the one thing somebody needs to know before turning it on is that
+                    // the controls all stay exactly where they were (§11).
+                    description: "Drop the words from the panels and the bars over the canvas, keeping the icons. Nothing moves and nothing is removed — the same controls, in the same places, quieter.",
+                    // The reassurance that makes it safe to try, and the answer to the
+                    // question it raises: dialogs, menus, panel titles and anything you
+                    // have named keep their text, so nothing becomes unreadable.
+                    note: Some("Dialogs, menus, panel titles and your own layer and preset names keep their text. Hover any control for its name.".to_string()),
+                    checked: minimal,
+                    onchange: move |v| minimal_enabled.set(v),
                 }
 
                 div { class: "modal-section-label", "COLLABORATION" }

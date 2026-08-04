@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use dioxus::html::Key;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::{self, icon, label};
 use crate::panels::frame::AddFrameButton;
 use crate::platform::select_all;
 use crate::render::PeerInfo;
@@ -119,7 +119,7 @@ pub fn LayerPanel() -> Element {
                     dispatch(state, DocCommand::AddLayer { carrier, above });
                 },
                 {icon(icons::ADD_LAYER)}
-                "Layer"
+                {label("Layer")}
             }
         }
 
@@ -140,10 +140,18 @@ pub fn LayerPanel() -> Element {
         hr {}
 
         if let Some(l) = selected {
-            div { class: "slider-row",
+            // `marked`, as `widgets::Slider` sets it on the rows it builds: these two are
+            // hand-rolled (one drives a command per sample, the other holds a picker and a
+            // chip rather than a track), but they wear a glyph, so they fold onto one line
+            // in minimal mode exactly as the component's rows do.
+            div { class: "slider-row marked",
+                // The "— of the group" qualifier rides inside the hideable word rather
+                // than beside it. It is not a second fact about the control; it is the
+                // sentence saying what *this* opacity fades (§14.3), and half a
+                // sentence left standing in minimal mode would read as a bug.
                 div { class: "slider-label",
                     {icon(icons::OPACITY)}
-                    if l.is_group { "Opacity \u{2014} of the group" } else { "Opacity" }
+                    {label(if l.is_group { "Opacity \u{2014} of the group" } else { "Opacity" })}
                 }
                 input {
                     class: "slider",
@@ -157,10 +165,10 @@ pub fn LayerPanel() -> Element {
                     },
                 }
             }
-            div { class: "slider-row",
+            div { class: "slider-row marked",
                 div { class: "slider-label",
                     {icon(icons::BLEND)}
-                    if l.is_group { "Blend \u{2014} of the group" } else { "Blend" }
+                    {label(if l.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
                 }
                 // Blend and clip are one row because they are one question — *how does
                 // this layer meet what is below it* — and they share the answer's two

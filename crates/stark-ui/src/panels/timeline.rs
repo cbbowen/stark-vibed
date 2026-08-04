@@ -24,7 +24,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch};
@@ -227,7 +227,7 @@ pub fn TimelineBar() -> Element {
             div { class: chrome_class(state, "timeline-bar"),
                 span { class: "bar-label",
                     {icon(icons::TIMELINE)}
-                    "Timeline"
+                    {label("Timeline")}
                 }
                 span { class: "timeline-note",
                     "Unavailable while the drawing is shared \u{2014} the history is everyone's."

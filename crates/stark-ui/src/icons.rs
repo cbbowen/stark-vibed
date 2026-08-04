@@ -256,6 +256,38 @@ pub fn icon(svg: &'static str) -> Element {
     rsx! { span { class: "icon", dangerous_inner_html: svg } }
 }
 
+/// A control's word, marked as the half that minimal mode may take away (§11).
+///
+/// The rule this encodes is about *where* a control is, not what it does. Chrome over
+/// the canvas — the panels and the bottom bars — is what minimal mode quiets, because
+/// there the mark and the slot already say which control this is and the words are
+/// what stands between the artist and the painting. Four kinds of text are left alone:
+///
+/// - **dialogs**, which obscure the canvas anyway, so there is nothing to win;
+/// - **anything transient** — an open menu, an expanded drop-down — which is on screen
+///   only because it was asked for, and is read rather than recognised;
+/// - **panel titles**, whose space is the drag handle and would be spent either way;
+/// - **names the user chose** — layers, guides, presets — which no mark can stand in
+///   for, since the whole point of them is that they are not predictable.
+///
+/// So the failure mode is chosen deliberately: a word that is *not* wrapped keeps
+/// itself. Forgetting the wrapper leaves a label on screen in minimal mode, which is
+/// merely untidy; the opposite default would make a forgotten exception erase a
+/// control's only description, and nothing on screen would say which had happened.
+/// That is also why this is a wrapper rather than a `font-size: 0` on the container:
+/// hiding text by inheritance would put every piece of kept text one missed override
+/// away from vanishing.
+///
+/// What this wrapper claims is only that the text *is a control's name* — not that it
+/// will be hidden. Where it is rendered decides that, because a shared component cannot
+/// know: [`crate::widgets::Slider`] is used in the panels and in the brush editor
+/// alike, and the same `.label` has to go in the first and stay in the second. The
+/// stylesheet holds that half, scoped to the dialog backdrop rather than to any
+/// particular control.
+pub fn label(text: &str) -> Element {
+    rsx! { span { class: "label", "{text}" } }
+}
+
 /// The same icon at the command rail's weight (`.icon.icon-lg`).
 ///
 /// The rail is 40px of button carrying one mark and no word, where every other icon

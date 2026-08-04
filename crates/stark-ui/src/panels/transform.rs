@@ -37,7 +37,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use super::frame::{content_rect, view_rect};
-use crate::icons::{self, icon};
+use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::state::{AppState, TransformRegion, TransformState, dispatch};
@@ -111,7 +111,7 @@ pub fn TransformBar() -> Element {
             // the button that raised it.
             span { class: "bar-label",
                 {icon(icons::TRANSFORM)}
-                "Transform"
+                {label("Transform")}
             }
             // The axis was already the only thing distinguishing these two buttons, and
             // it was already carried by a glyph — the arrow that used to trail the word.
@@ -123,14 +123,14 @@ pub fn TransformBar() -> Element {
                 title: "Mirror left \u{2194} right",
                 onclick: move |_| update(state, ts.flipped_h()),
                 {icon(icons::FLIP_H)}
-                "Flip"
+                {label("Flip")}
             }
             button {
                 class: "chip",
                 title: "Mirror top \u{2195} bottom",
                 onclick: move |_| update(state, ts.flipped_v()),
                 {icon(icons::FLIP_V)}
-                "Flip"
+                {label("Flip")}
             }
             span { class: "bar-sep" }
             button {
@@ -153,7 +153,7 @@ pub fn TransformBar() -> Element {
                     mode.set(None);
                 },
                 {icon(icons::DONE)}
-                "Done"
+                {label("Done")}
             }
         }
     }

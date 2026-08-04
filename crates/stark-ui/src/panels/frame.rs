@@ -20,7 +20,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::{self, icon, label};
 use crate::input::page_xy;
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
@@ -169,7 +169,7 @@ pub fn AddFrameButton() -> Element {
             // The glyph carries the plus the label used to, so the word is just the
             // noun: "+ Frame" beside a bordered-square-with-a-plus said it twice.
             {icon(icons::ADD_FRAME)}
-            "Frame"
+            {label("Frame")}
         }
     }
 }
@@ -197,7 +197,7 @@ pub fn FrameBar() -> Element {
             // identifies is the bar, and through it the mode you are in.
             span { class: "bar-label",
                 {icon(icons::FRAME)}
-                "Frame"
+                {label("Frame")}
             }
             span { class: "frame-dim",
                 "{w.round() as i64} \u{00D7} {h.round() as i64}"
@@ -275,7 +275,7 @@ pub fn FrameBar() -> Element {
                 title: "Stop composing and go back to painting (the frame stays)",
                 onclick: move |_| done_composing(state),
                 {icon(icons::DONE)}
-                "Done"
+                {label("Done")}
             }
         }
     }
