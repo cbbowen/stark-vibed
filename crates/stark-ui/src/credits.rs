@@ -23,6 +23,10 @@ use crate::icons::{self, icon};
 /// a transcription of it.
 const PHOSPHOR_LICENSE: &str = include_str!("../assets/icons/LICENSE-phosphor");
 
+const IROH_SOCKET_LICENSE: &str = include_str!("../assets/licenses/LICENSE-iroh-socket");
+
+const IROH_LICENSE: &str = include_str!("../assets/licenses/LICENSE-iroh");
+
 /// The credits dialog, opened from the ☰ menu and dismissed by Done or by clicking
 /// the backdrop (as the other dialogs are).
 #[component]
@@ -44,28 +48,44 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                     "Other people's work that Stark is built on, and the terms it comes under."
                 }
 
-                div { class: "modal-section-label", "SOFTWARE" }
-                Credit {
-                    name: "Björn Ottosson",
-                    url: "https://bottosson.github.io/posts/oklab",
-                    description: "Oklab color space.",
-                    license: "Public domain",
-                }
-                Credit {
-                    name: "Secret Weapons",
-                    url: "https://scrtwpns.com/mixbox",
-                    description: "Mixbox color mixing.",
-                    license: "Creative Commons Attribution-NonCommercial 4.0 International Public License",
-                }
+                div {
+                    class: "credits",
 
-                hr {}
+                    div { class: "modal-section-label", "SOFTWARE" }
+                    Credit {
+                        name: "Björn Ottosson",
+                        url: "https://bottosson.github.io/posts/oklab",
+                        description: "Oklab color space.",
+                        license: "Public domain",
+                    }
+                    Credit {
+                        name: "Secret Weapons",
+                        url: "https://scrtwpns.com/mixbox",
+                        description: "Mixbox color mixing.",
+                        license: "Creative Commons Attribution-NonCommercial 4.0 International Public License",
+                    }
+                    Credit {
+                        name: "N0",
+                        url: "https://www.iroh.computer",
+                        description: "Iroh peer-to-peer networking stack.",
+                        license: IROH_LICENSE,
+                    }
+                    Credit {
+                        name: "Tailscale",
+                        url: "https://tailscale.com",
+                        description: "Parts of Iroh's socket implementation.",
+                        license: IROH_SOCKET_LICENSE,
+                    }
 
-                div { class: "modal-section-label", "ICONS" }
-                Credit {
-                    name: "Phosphor Icons",
-                    url: "https://phosphoricons.com",
-                    description: "Every glyph in Stark's panels, bars and menus.",
-                    license: PHOSPHOR_LICENSE,
+                    hr {}
+
+                    div { class: "modal-section-label", "ICONS" }
+                    Credit {
+                        name: "Phosphor Icons",
+                        url: "https://phosphoricons.com",
+                        description: "Every glyph in Stark's panels, bars and menus.",
+                        license: PHOSPHOR_LICENSE,
+                    }
                 }
 
                 div { class: "modal-actions",

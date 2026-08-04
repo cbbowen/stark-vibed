@@ -1437,7 +1437,7 @@ button.layer-remove:hover {
    to be *available* rather than to be the first thing the eye lands on. */
 .credit-license {
   margin: 0;
-  max-height: 34vh;
+  max-height: 8vh;
   overflow-y: auto;
   padding: 10px 12px;
   border-radius: 8px;
@@ -1449,6 +1449,12 @@ button.layer-remove:hover {
   font-size: 11px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.credits {
+  overflow-y: auto;
+  max-height: 50vh;
+  padding-right: 16px;
 }
 
 /* --- share dialog (collab.rs) --- */
