@@ -60,6 +60,44 @@ pub struct Surface {
     /// the procedural `Flat`. Lets effects keyed on surface relief (e.g. the knife's
     /// scrape, §6.2) be a no-op on `Flat`, whose height is a constant 0.
     pub relief: f32,
+    /// The height map's own histogram: the fraction of texels at each of the 256
+    /// levels an `R8Unorm` can hold.
+    ///
+    /// It exists to answer one question — [`bearing`](Self::bearing) — and that
+    /// question is what makes a **toothed smear conserve paint** (§6.4). The canvas
+    /// side of the exchange gates each texel by the ground under *it*; the tool has
+    /// no per-texel ground, so it books its side against the mean, and the mean of a
+    /// gate over a height field is a sum over this histogram. Exact rather than
+    /// sampled, which is why the shaders tap the map with nearest and not bilinear:
+    /// the distribution they draw from is then this one, texel for texel.
+    ///
+    /// `Arc` so a `Surface` stays two atomic bumps to clone — it is cloned per
+    /// stroke, and 1 KB per clone is not the shape of this type.
+    hist: std::sync::Arc<[f32; 256]>,
+}
+
+/// Width of the tooth's contact transition, in the height map's [0, 1] units.
+///
+/// **Must match `TOOTH_SOFTNESS` in `paint_common.wesl`.** The pair below is a
+/// deliberate mirror of the shader's, and the mirror is load-bearing rather than
+/// convenient: the canvas evaluates the gate per texel on the GPU while the tool
+/// books its side against [`Surface::bearing`] on the CPU, so if the two functions
+/// disagree the two halves of the transfer disagree and a smear stops conserving.
+/// That is also what guards it — `tests/dynamics.rs`'s conservation pair is sensitive
+/// to exactly this, so a drift here fails a test rather than quietly leaking paint.
+const TOOTH_SOFTNESS: f32 = 0.15;
+
+/// The contact level the tip presses to, from the `tooth` knob (see
+/// `paint_common.wesl::tooth_level`).
+fn tooth_level(tooth: f32) -> f32 {
+    tooth * (1.0 + TOOTH_SOFTNESS) - 0.5 * TOOTH_SOFTNESS
+}
+
+/// The share of its paint a texel at ground height `s` receives
+/// (`paint_common.wesl::tooth_gate`).
+fn tooth_gate(s: f32, tooth: f32) -> f32 {
+    let t = ((s - tooth_level(tooth)) / TOOTH_SOFTNESS + 0.5).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 impl Surface {
@@ -71,6 +109,33 @@ impl Surface {
             relief: 0.0,
             ..Self::from_height(ctx, &[0u8], 1, 1)
         }
+    }
+
+    /// The **bearing fraction** at a given tooth: what share of the ground stands
+    /// above the level a tip with this `tooth` presses to, averaged over the whole
+    /// height map (§6.4).
+    ///
+    /// This is the model's own central quantity — the Abbott–Firestone curve
+    /// evaluated at one level — and it is where paint conservation comes from. A
+    /// canvas texel gates its half of the exchange by the ground under itself; the
+    /// tool has no ground of its own, so it gates its half by this. The two agree in
+    /// expectation over any footprint that spans many grain features, which is every
+    /// usable tip, and the residual is the ground's sampling fluctuation under the
+    /// tip — the same order as the mean-field freeze the loop already carries.
+    ///
+    /// Exactly 1 where there is nothing to bite: no tooth, or no relief. Not
+    /// *approximately* 1 — the sum over a histogram would land a rounding error away,
+    /// and that error would be a systematic leak on every stroke of every ordinary
+    /// brush.
+    pub fn bearing(&self, tooth: f32) -> f32 {
+        if tooth <= 0.0 || self.relief <= 0.0 {
+            return 1.0;
+        }
+        let mut mean = 0.0;
+        for (level, share) in self.hist.iter().enumerate() {
+            mean += share * tooth_gate(level as f32 / 255.0, tooth);
+        }
+        mean
     }
 
     /// Decode a grayscale PNG height map into an `R8Unorm` tileable texture.
@@ -143,10 +208,17 @@ impl Surface {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let mut counts = [0u32; 256];
+        for byte in height {
+            counts[*byte as usize] += 1;
+        }
+        let n = height.len().max(1) as f32;
+        let hist = std::array::from_fn(|i| counts[i] as f32 / n);
         Self {
             view,
             sampler,
             relief: 1.0,
+            hist: std::sync::Arc::new(hist),
         }
     }
 }

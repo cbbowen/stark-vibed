@@ -6,7 +6,7 @@
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::noise::{color_jitter};
-import package::paint_common::{tooth_gate};
+import package::paint_common::{ground_at, tooth_gate};
 
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
@@ -45,14 +45,14 @@ struct TileXform {
 // A 1×1 zero tile is bound when the brush's jitter is off.
 @group(2) @binding(0) var noise_tex: texture_2d<f32>;
 @group(2) @binding(1) var noise_samp: sampler;
-// The canvas surface's tileable height map and its repeat sampler (§6.4) — the
-// ground whose tooth gates the deposit. Sampled in *canvas* space, so the grain
-// belongs to the canvas and successive strokes register with each other; that is
-// also what keeps the gate a pure function of canvas position and the tile aprons
-// bit-consistent. A `Flat` canvas binds its 1×1 texel and arrives here with the uv
-// scale zeroed, so the gate is exactly 1.
+// The canvas surface's tileable height map (§6.4) — the ground whose tooth gates the
+// deposit. Read in *canvas* space, so the grain belongs to the canvas and successive
+// strokes register with each other; that is also what keeps the gate a pure function
+// of canvas position and the tile aprons bit-consistent. A `Flat` canvas binds its
+// 1×1 texel and arrives here with the uv scale zeroed, so the gate is exactly 1.
+//
+// No sampler: the tap is nearest (`ground_at`), for the reasons given there.
 @group(2) @binding(2) var surface_tex: texture_2d<f32>;
-@group(2) @binding(3) var surface_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -312,7 +312,8 @@ fn surface_tooth(in: VsOut) -> f32 {
     if uv_scale <= 0.0 || in.tooth <= 0.0 {
         return 1.0;
     }
-    let s = textureSampleLevel(surface_tex, surface_samp, in.canvas * uv_scale, 0.0).r;
+    let dims = textureDimensions(surface_tex);
+    let s = textureLoad(surface_tex, ground_at(in.canvas * uv_scale, dims), 0).r;
     return tooth_gate(s, in.tooth);
 }
 

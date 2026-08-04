@@ -303,3 +303,255 @@ fn a_stroke_keeps_the_ground_it_was_painted_on() {
         "the replay did not put each stroke back on the ground it was painted on",
     );
 }
+
+// --- the toothed transfer, and whether it still conserves ------------------------
+
+/// **A toothed transfer must still conserve paint**, and this is the test the
+/// exposure-scaling formulation exists to pass.
+///
+/// The tooth gates a *transfer*, and a transfer has two halves computed in two
+/// different dispatches: the canvas gives up `1 − keep` and takes `dep` of the tool's
+/// load, while the tool takes and gives the exact complements. Gate one half and not
+/// the other and the books stop closing. Gating the **exposure** rather than the
+/// shares is what keeps them complementary — `exchange_at` is solved once at `g·e`,
+/// so its four fractions still sum to what went in.
+///
+/// **Measured on a finite glob, and that shape is the point.** A smear inside a field
+/// is the obvious test and it is nearly blind here: lift and deposit run at the same
+/// place, so a tool that both takes and gives too much is wrong twice in opposite
+/// directions and the canvas ink barely moves. (Checked — that version of this test
+/// passes with the tool's half of the gate deleted.) A pre-`charge`d tool with **no
+/// lift** has only one direction to be wrong in: it starts holding a known amount and
+/// the canvas is the only place that amount can go, so a tool that gives up more than
+/// the canvas accepts destroys the difference, and one that gives up less than the
+/// canvas takes mints it. Run long enough to empty, the total delivered is the charge
+/// whatever the ground does — the tooth decides *where* it lands, not how much there
+/// was.
+#[test]
+fn a_toothed_transfer_delivers_the_whole_glob() {
+    let Some(mut engine) = gesso_engine() else {
+        return;
+    };
+    // **Lighting flat.** The measure below is a stand-in for mass, and a lit render is
+    // not one: the media pass takes its normals from the height gradient (§6.3), so
+    // the same paint laid bumpily catches more light than the same paint laid smooth —
+    // which is the whole visible point of the tooth, and here it is the contaminant.
+    // At `height_strength = 0` and `surface_strength = 0` the pass is the reference
+    // identity and the deviation from bare tracks visible alpha, which tracks mass.
+    engine.process(stark_core::command::ViewCommand::SetMediaParams(
+        stark_core::MediaParams {
+            height_strength: 0.0,
+            surface_strength: 0.0,
+            ..Default::default()
+        },
+    ));
+    // `add = 0`, no lift: the only paint in play is the pre-loaded glob, and the only
+    // place it can go is the canvas. A long stroke at a brisk deposit rate, so the
+    // tool is empty well before the end either way and the total delivered is the
+    // whole charge rather than however far each got.
+    let glob = |tooth: f32| BrushParams {
+        tooth,
+        dynamics: BrushDynamics {
+            add: 0.0,
+            lift: 0.0,
+            deposit: 0.6,
+            charge: 0.25,
+            ..Default::default()
+        },
+        ..BrushParams {
+            drain: 0.0,
+            shape: BrushShape::Round { hardness: 0.9 },
+            modulation: Default::default(),
+            ..brush([1.0, 0.0, 0.0, 0.25], 30.0)
+        }
+    };
+    let path = [Vec2::new(-150.0, 0.0), Vec2::new(150.0, 0.0)];
+
+    let bare = engine.render_to_image();
+    stroke_with(&mut engine, glob(0.0), &path);
+    let (plain, plain_ink) = far_share(&bare, &engine.render_to_image());
+    engine.process(DocCommand::Undo);
+    stroke_with(&mut engine, glob(0.6), &path);
+    let (toothed, toothed_ink) = far_share(&bare, &engine.render_to_image());
+
+    assert!(
+        plain_ink > 0.0 && toothed_ink > 0.0,
+        "a glob laid nothing at all"
+    );
+    // The un-toothed tool empties inside the first third and never reaches here.
+    assert!(
+        plain < 0.01,
+        "the un-toothed glob was still going past the two-thirds mark ({plain:.3}) —          it is not emptying fast enough for this test to say anything"
+    );
+    // The toothed one trades at reduced contact, so the same charge lasts longer and
+    // some of it is still being laid out there. If the tool drained at the *ungated*
+    // rate while the canvas accepted only the gated share, it would run out in the
+    // same place as the un-toothed one and the difference would simply be gone.
+    assert!(
+        toothed > 0.025,
+        "the toothed glob ran out where the un-toothed one did ({toothed:.3} of its          ink past the two-thirds mark) — the tool is draining at the ungated rate          while the canvas accepts the gated share, so the difference is destroyed"
+    );
+}
+
+/// How much of a mark's ink lands past the two-thirds mark of the stroke — where the
+/// glob got to before it ran out — and the mark's total, to catch a test measuring
+/// nothing.
+///
+/// A *distribution* measure rather than a total, and that is deliberate. Total ink
+/// cannot answer a conservation question here: the slab law is concave in thickness,
+/// so the same mass spread thinner measures as more, and the tooth changes exactly
+/// how spread out the glob is. Where the glob dies is immune to that — it is set by
+/// the rate the tool drains at, which is the half of the transfer under test.
+fn far_share(before: &stark_core::RgbaImage, after: &stark_core::RgbaImage) -> (f64, f64) {
+    let w = before.width as usize;
+    let (mut far, mut all) = (0.0, 0.0);
+    for (i, (a, b)) in before
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.pixels.as_chunks::<4>().0)
+        .enumerate()
+    {
+        let d = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (*x as i32 - *y as i32).abs())
+            .max()
+            .unwrap_or(0) as f64;
+        all += d;
+        if i % w > w * 2 / 3 {
+            far += d;
+        }
+    }
+    (if all > 0.0 { far / all } else { 0.0 }, all)
+}
+
+/// The bearing fraction is the mean of the gate over the ground, so it has to *be*
+/// that: monotone down in the tooth, exactly 1 where there is nothing to bite.
+///
+/// It is a CPU mirror of a GPU function (`Surface::bearing` against
+/// `paint_common.wesl::tooth_gate`), and a mirror is only as good as what notices it
+/// drifting. What notices is the conservation test above; this one pins the shape so
+/// a failure there points at the right half.
+#[test]
+fn the_bearing_fraction_tracks_the_ground() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let flat = engine.surface_bearing(SurfaceId::Flat, 0.5);
+    assert_eq!(flat, 1.0, "a smooth ground is full contact at any tooth");
+
+    engine.register_surface(SurfaceId::Gesso, stark_testdata::assets::gesso());
+    let mut at = |t| engine.surface_bearing(SurfaceId::Gesso, t);
+    assert_eq!(at(0.0), 1.0, "no tooth is full contact, exactly");
+    let (a, b, c) = (at(0.25), at(0.5), at(0.75));
+    assert!(
+        1.0 > a && a > b && b > c && c > 0.0,
+        "contact must fall as the tip reaches for higher ground: {a} {b} {c}"
+    );
+}
+
+/// **`preview == committed` with a tooth** (§1.3). The live path renders a frozen
+/// head and then a tail over it; the commit renders the whole stroke in one range.
+/// A gate that is a pure function of canvas position factors out of the sum over
+/// segments, so the two must agree — this is where that claim is checked, since the
+/// suite's existing split-preview test runs on a ground with no relief.
+#[test]
+fn a_toothed_live_preview_matches_the_commit() {
+    let Some(mut engine) = gesso_engine() else {
+        return;
+    };
+    engine.process(stark_core::command::ViewCommand::SetBrush(toothed(0.55)));
+    let path: Vec<Vec2> = (0..120)
+        .map(|i| {
+            let t = i as f32 * 0.05;
+            Vec2::new(t * 22.0 - 60.0, (t * 1.1).sin() * 30.0)
+        })
+        .collect();
+    let mut it = path.iter();
+    engine.process(stark_core::command::GestureCommand::Start {
+        tool: stark_core::document::Tool::Brush,
+        sample: stark_core::command::InputSample::at(*it.next().unwrap()),
+        tolerance: stark_core::path::DEFAULT_TOLERANCE,
+    });
+    for &p in it {
+        engine.process(stark_core::command::GestureCommand::To {
+            sample: stark_core::command::InputSample::at(p),
+        });
+    }
+    let preview = engine.render_to_image();
+    engine.process(stark_core::command::GestureCommand::End);
+    let committed = engine.render_to_image();
+
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 11),
+        0.0,
+        "a toothed live preview visibly differs from its commit ({:.4}% of px over 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}
+
+/// The same, on the **stamp loop** — which is the path the shipped presets take
+/// (`Hard Round` lifts and deposits), and the one where a live tail carries state:
+/// the tool reservoir is threaded from the frozen head into the tail, while the
+/// commit runs the whole stroke from an empty tool in one go.
+#[test]
+fn a_toothed_smear_previews_as_it_commits() {
+    let Some(mut engine) = gesso_engine() else {
+        return;
+    };
+    // Something to smear, so the tool has a load to carry across the cut.
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            drain: 0.0,
+            modulation: Default::default(),
+            ..brush(RED, 60.0)
+        },
+        &[Vec2::new(-140.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let smear = BrushParams {
+        tooth: 0.5,
+        dynamics: BrushDynamics {
+            add: 0.6,
+            lift: 0.6,
+            deposit: 0.95,
+            ..Default::default()
+        },
+        ..BrushParams {
+            drain: 0.0,
+            shape: BrushShape::Round { hardness: 0.9 },
+            modulation: Default::default(),
+            ..brush(RED, 26.0)
+        }
+    };
+    engine.process(stark_core::command::ViewCommand::SetBrush(smear));
+    let path: Vec<Vec2> = (0..100)
+        .map(|i| {
+            let t = i as f32 * 0.06;
+            Vec2::new(t * 24.0 - 130.0, (t * 1.3).sin() * 26.0)
+        })
+        .collect();
+    let mut it = path.iter();
+    engine.process(stark_core::command::GestureCommand::Start {
+        tool: stark_core::document::Tool::Brush,
+        sample: stark_core::command::InputSample::at(*it.next().unwrap()),
+        tolerance: stark_core::path::DEFAULT_TOLERANCE,
+    });
+    for &p in it {
+        engine.process(stark_core::command::GestureCommand::To {
+            sample: stark_core::command::InputSample::at(p),
+        });
+    }
+    let preview = engine.render_to_image();
+    engine.process(stark_core::command::GestureCommand::End);
+    let committed = engine.render_to_image();
+
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 11),
+        0.0,
+        "a toothed smear previews differently from its commit ({:.4}% of px over 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}

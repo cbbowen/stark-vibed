@@ -40,20 +40,32 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // (tests/tooth.rs) rather than a curve tuned until it looked right, which is what
 // §6.4 asked for before this could return.
 //
-// Two things follow from where it is applied rather than from what it computes, and
-// both are why it goes here rather than onto a coverage:
+// **It scales the exposure, not the transfer**, and that one choice is what makes it
+// compose and what makes it conserve. Every rate in this engine is a function of
+// swept optical depth τ — additive in it, or `1 − exp(−k·τ)` — because those are the
+// two forms independent of how the path was cut (§6.2). Multiply τ itself by a
+// per-texel `g` and every one of them stays in its form: `exp(−k·g·τ₁)·exp(−k·g·τ₂) =
+// exp(−k·g·(τ₁+τ₂))`, and `Σᵢ g·τᵢ = g·Στᵢ`, because `g` belongs to the *canvas* and
+// not to the segment. Applied to the finished shares instead — `g·(1 − exp(−k·τ))` —
+// none of that holds, and a toothed lift would fade at a rate that depended on where
+// the flattener happened to cut.
 //
-//   * It multiplies **swept optical depth τ**, in the slot `stroke_drain` occupies.
-//     `add·g·τ` is still additive in τ and `1 − exp(−K·op·add·g·τ)` is still of the
-//     permitted form (§6.2), and `g` does not depend on the segment — so
-//     `Σᵢ g·τᵢ = g·Στᵢ` and the gate is exactly independent of how the path was cut.
-//   * It is a pure function of **canvas position**, so a tile's apron is still
-//     bit-identical to its neighbour's interior with no copy pass (§6.4).
+// The same choice is what closes the books. The exchange's four shares are exact
+// complements of one exposure (`dynamics.wesl::Exchange`), so scaling the exposure
+// keeps them complementary and the canvas takes exactly what the tool gives up. The
+// two sides evaluate `g` differently — the canvas per texel, the tool against the
+// ground's mean bearing (`Surface::bearing`), since a reservoir cell has no ground of
+// its own — and they agree in expectation over any footprint spanning many grain
+// features. That residual is the same order as the mean-field freeze either side of
+// the kernel already carries.
+//
+// It is a pure function of **canvas position**, so a tile's apron is still
+// bit-identical to its neighbour's interior with no copy pass (§6.4), and — the
+// reason the mark reads as paper rather than as noise — successive strokes catch on
+// the same peaks and register with each other.
 //
 // It gates **height, never the per-unit opacity** (§6.1): the tooth decides how much
-// paint arrives, not what the pigment is. And it gates only the brush's own `add`
-// source — the tool's `deposit` is one half of a transfer whose other half already
-// happened, so gating it would destroy paint the tool has given up.
+// paint arrives, not what the pigment is.
 
 // Width of the contact transition, in the height map's own [0, 1] units.
 //
@@ -61,7 +73,25 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // canvas resolution it aliases into hard-edged speckle that reads as dither rather
 // than as tooth. Too wide and the bearing curve is smeared into a flat grey and the
 // grain stops reading at all. 0.15 is a little under a quarter of the useful range.
+// **Must match `TOOTH_SOFTNESS` in `gpu::surface`.**
 const TOOTH_SOFTNESS: f32 = 0.15;
+
+// The ground height at a canvas position, sampled **nearest** rather than bilinear.
+//
+// Not a shortcut — bilinear would be wrong twice over. The map is minified (about two
+// texels per canvas px at `SURFACE_TILE_PX`), so filtering averages the peaks the
+// tooth exists to catch on and washes the grain toward its mean. And the distribution
+// the shader draws from has to be the map's own histogram, because that histogram is
+// what the CPU integrates to get the bearing fraction the tool books against; a
+// filtered tap draws from a narrower distribution and the two halves of the transfer
+// stop agreeing. Nearest also sidesteps the reduced-precision filter weights
+// `stamp_common.wesl::prefix_slice` documents, so the tap is bit-reproducible.
+//
+// `dims` is the map's size; the modulo is the Repeat the sampler would have done.
+fn ground_at(uv: vec2<f32>, dims: vec2<u32>) -> vec2<i32> {
+    let d = vec2<f32>(dims);
+    return vec2<i32>(fract(uv - floor(uv)) * d);
+}
 
 // The contact level the tip presses to, from the `tooth` knob.
 //
@@ -79,6 +109,11 @@ fn tooth_level(tooth: f32) -> f32 {
 // there. A cubic smoothstep, for the reason `taper_profile` is a polynomial: this
 // decides stored pixels, and replay, goldens and peers have to agree on it to the
 // last bit (§12.1).
+//
+// **Mirrored on the CPU** in `gpu::surface`, which averages it over a height map's
+// histogram to get the bearing fraction the tool books against. The two must be the
+// same function or the two halves of a toothed transfer disagree; the conservation
+// pair in `tests/dynamics.rs` is what notices if they drift.
 fn tooth_gate(s: f32, tooth: f32) -> f32 {
     let t = clamp((s - tooth_level(tooth)) / TOOTH_SOFTNESS + 0.5, 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);

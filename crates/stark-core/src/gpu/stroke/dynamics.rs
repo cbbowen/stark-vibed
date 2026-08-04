@@ -600,10 +600,6 @@ impl<'a> DynamicsRun<'a> {
         // ---- The dispatch plan, one segment each, one 256-byte
         // slot each (dynamic uniform offsets — the standard way to vary a uniform
         // across dispatches within one pass).
-        // Zero on a ground with no relief, which zeroes the tooth's level and leaves
-        // the deposit bit-for-bit what it was (§6.4) — the same orthogonality the
-        // swept path takes from the same field.
-        let grain_uv = self.scene.surface.relief * crate::gpu::surface::grain_uv_scale();
         let plan = dynamics_plan(
             rec,
             segments,
@@ -612,7 +608,7 @@ impl<'a> DynamicsRun<'a> {
             dsize,
             channels,
             settle,
-            grain_uv,
+            self.scene.surface,
         );
         // The settle rides as one extra slot at the end of the plan; everything before
         // it is a segment, and the loop below dispatches the two differently.
@@ -723,10 +719,6 @@ impl<'a> DynamicsRun<'a> {
                             binding: 22,
                             resource: wgpu::BindingResource::TextureView(&self.scene.surface.view),
                         },
-                        wgpu::BindGroupEntry {
-                            binding: 23,
-                            resource: wgpu::BindingResource::Sampler(&self.scene.surface.sampler),
-                        },
                     ],
                 })
             })
@@ -745,6 +737,9 @@ impl<'a> DynamicsRun<'a> {
                 tex(13, &region_color),
                 tex(14, &region_aux),
                 tex(21, &sel_mask),
+                // The ground: the pen-up delivery is a deposit like any other, and is
+                // gated by the same tooth (§6.4).
+                tex(22, &self.scene.surface.view),
             ],
         });
 
@@ -1074,14 +1069,22 @@ fn dynamics_plan(
     dsize: u32,
     channels: [f32; 4],
     settle: bool,
-    grain_uv: f32,
+    surface: &crate::gpu::surface::Surface,
 ) -> Vec<LoopDispatch> {
     let b = &rec.brush;
     // Canvas px → surface-tile uv, folded so the shader can go straight from its
     // *region* texel to the ground under it: `uv = rt · grain_uv + grain_bias`
     // (§6.4). The region origin is a piece constant, so this is where it belongs —
-    // the shader never learns where the piece sits, only where the weave does.
+    // the shader never learns where the piece sits, only where the weave does. Zero on
+    // a ground with no relief, which sends the tooth to exactly 1 and leaves every
+    // rate below the float it always was.
+    let grain_uv = surface.relief * crate::gpu::surface::grain_uv_scale();
     let grain_bias = region_origin * grain_uv;
+    // What share of the ground a tip with this tooth stands on, per segment because
+    // the tooth is modulated per segment (§6.2). The canvas side of the exchange asks
+    // the ground under each texel; the tool has none of its own and books against this
+    // mean, which is what makes a toothed smear conserve (`Surface::bearing`).
+    let bearing = |tooth: f32| surface.bearing(tooth);
     // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
     // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
     // which is what a 0..1 knob should mean, rather than per unit optical depth.
@@ -1189,7 +1192,7 @@ fn dynamics_plan(
                 s.dist,
                 noff[0],
                 noff[1],
-                noff[2],
+                bearing(s.tooth),
                 // No λ_bleed on a painting segment: the lateral flux runs only on
                 // the dedicated bleed slots below, so between firings the canvas
                 // takes the no-bleed path bit-for-bit.
@@ -1256,7 +1259,9 @@ fn dynamics_plan(
                     f.dist,
                     0.0,
                     0.0,
-                    0.0,
+                    // No exchange runs on a bleed slot, so nothing reads the bearing;
+                    // 1 is the value that would leave one alone if it did.
+                    1.0,
                     // The firing's own rate, as the pen asked for it at the crossing
                     // (`bleed_fires`). A firing whose modulated rate has fallen to
                     // zero still dispatches: λ = 0 makes it the identity, and keeping
@@ -1339,16 +1344,20 @@ fn dynamics_plan(
                 s.dist + s.length,
                 noff[0],
                 noff[1],
-                noff[2],
+                // The tool is not written back at pen-up, so nothing reads this; the
+                // settle's own gate is per texel, from `i` below.
+                1.0,
                 // No λ_bleed either: the axis carries no reservoir — every firing
                 // already applied its window as the tip passed — so a break of
                 // contact strands nothing for a settle to finish (unlike the
                 // vertical transfer, whose in-flight half lives on the tool).
                 0.0,
-                // No tooth either, for the same reason there is no `add`: the settle
-                // lays the tool's *carried* paint, which the ground already gated on
-                // its way up. Gating it again would charge the weave twice.
-                0.0,
+                // The last segment's tooth: the settle delivers what the pass still
+                // owed, and it owes it through the same ground the pass was laying
+                // through. What the valleys do not take stays on the tool, which is
+                // discarded — a knife lifted off a canvas keeps what it did not
+                // reach (§6.4).
+                s.tooth,
                 grain_uv,
                 grain_bias.x,
                 grain_bias.y,
@@ -1764,6 +1773,8 @@ pub(super) fn build_dynamics_kit(
             stor(13),
             stor(14),
             ctex(21, false),
+            // The ground (§6.4): the settle lays paint, so it reads the tooth too.
+            ctex(22, false),
         ],
     });
     let deposit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1797,17 +1808,9 @@ pub(super) fn build_dynamics_kit(
             // The selection mask over the region (§6.8) — read 1:1 with the region
             // here, so `textureLoad` suffices.
             ctex(21, false),
-            // The canvas surface's height map + its repeat sampler — the deposition
-            // tooth (§6.4). Only `deposit` lays the brush's own paint, so only its
-            // layout carries them; the other entry points in this module never name
-            // the bindings and so never need them bound.
-            ctex(22, true),
-            wgpu::BindGroupLayoutEntry {
-                binding: 23,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
+            // The canvas surface's height map — the deposition tooth (§6.4). Read
+            // nearest, so it needs no sampler and is not filterable.
+            ctex(22, false),
         ],
     });
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's

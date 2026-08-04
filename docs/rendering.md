@@ -298,20 +298,40 @@ rather than what it computes:
   is why `SurfaceId` is where the texture lives and `tooth` is the only thing on
   `BrushParams`. Painter and Procreate put the grain on the brush, which is why
   switching brushes there changes the paper under a half-finished painting.
-- **It multiplies swept optical depth τ**, in the slot `stroke_drain` occupies —
-  not the finished parcel. `add·g·τ` is still additive in τ and
-  `1 − exp(−K·op·add·g·τ)` still of the permitted form (§6.2), and `g` does not
-  depend on the segment, so `Σᵢ g·τᵢ = g·Στᵢ`: the gate is *exactly* independent
-  of how the path was cut, and adaptive flattening stays free. It is sampled at
-  the fragment's own canvas position, so tile aprons stay bit-consistent with no
-  copy pass, and — the reason the mark reads as paper rather than as noise —
+- **It scales the exposure, not the transfer**, and that one choice is what makes
+  it both compose and conserve. Every rate here is a function of swept optical
+  depth τ — additive in it, or `1 − exp(−k·τ)` — so multiplying τ itself by a
+  per-texel `g` leaves every one of them in its form: `exp(−k·g·τ₁)·exp(−k·g·τ₂) =
+  exp(−k·g·(τ₁+τ₂))`, and `Σᵢ g·τᵢ = g·Στᵢ`, because `g` belongs to the canvas and
+  not to the segment. Applied to the finished shares instead, a toothed lift would
+  fade at a rate that depended on where the flattener cut. It is read at the
+  fragment's own canvas position, so tile aprons stay bit-consistent with no copy
+  pass, and — the reason the mark reads as paper rather than as noise —
   successive strokes catch on the same peaks and register with each other.
-- **It gates height, never the per-unit opacity** (§6.1), and only the brush's own
-  `add`. The stamp loop's `deposit` is one half of a transfer whose other half
-  already happened, so withholding it would destroy paint the tool has given up;
-  `add` is the one term with no partner. Both render paths call the same
+- **It gates height, never the per-unit opacity** (§6.1). The tooth decides how
+  much paint arrives, not what the pigment is. Both render paths call the same
   `tooth_gate` in `paint_common.wesl`, so nudging `lift` off zero cannot change
   what the ground does.
+- **The tool books against the ground's mean, and that is what conserves paint.**
+  A transfer has two halves in two dispatches — the canvas gives up `1 − keep` and
+  takes `dep` of the tool's load, the tool takes and gives the exact complements
+  (`dynamics.wesl::Exchange`). Gate one half and not the other and the books stop
+  closing. Scaling the *exposure* keeps them complementary, because `exchange_at`
+  is solved once at `g·e` and its four shares still sum to what went in. But a
+  reservoir cell has no ground of its own — it is dragged over fresh canvas at
+  every sub-step — so where a canvas texel scales by the ground beneath it, the
+  cell scales by the **bearing fraction**: the mean of the gate over the whole
+  height map, which `Surface::bearing` computes from the map's own histogram. The
+  two agree in expectation over any footprint spanning many grain features, which
+  is every usable tip, and the residual is the same order as the mean-field freeze
+  either side of the kernel already carries.
+
+That last point is why the height map is read with **nearest** rather than
+bilinear. Filtering would average away the peaks the tooth exists to catch on, and
+— worse — it would draw from a narrower distribution than the histogram the CPU
+integrates, so the two halves of the transfer would disagree systematically. It
+also sidesteps the reduced-precision filter weights `prefix_slice` documents, so
+the tap is bit-reproducible.
 
 Orthogonality is structural rather than checked. `Surface::relief` is 0 on `Flat`
 and on any surface whose bytes have not arrived, which zeroes the uv scale the

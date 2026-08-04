@@ -2146,6 +2146,18 @@ impl Engine {
         self.apply.surfaces.is_loaded(id)
     }
 
+    /// What share of a ground a tip with this `tooth` stands on (§6.4) — the
+    /// bearing fraction the tool books its half of a toothed transfer against.
+    ///
+    /// Exposed because it is the model's own falsifiable quantity: it is the height
+    /// map's histogram integrated against the contact curve, so it can be checked
+    /// against the map rather than taken on trust (`tests/tooth.rs`). Builds the
+    /// surface if this is the first time it has been asked for.
+    pub fn surface_bearing(&mut self, id: SurfaceId, tooth: f32) -> f32 {
+        let gpu = self.gpu.clone();
+        self.apply.surfaces.get(&gpu, id).bearing(tooth)
+    }
+
     /// Provide (frontend-fetched) image bytes for a surface. If it's the one in
     /// use, the surface is rebuilt so the bytes take effect immediately.
     pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
