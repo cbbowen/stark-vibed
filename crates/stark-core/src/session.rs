@@ -13,7 +13,7 @@ use crate::document::{
     Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
-use crate::guides::{AxisPencil, PerspectiveGuide};
+use crate::guides::{PerspectiveGuide, Scaffold};
 use crate::path::{ControlPoint, PathFitter};
 use crate::peer::{
     GestureView, HEARTBEAT, Identity, LiveGesture, PeerFrame, StrokeHead, default_name,
@@ -588,24 +588,20 @@ impl Session {
     /// peers restart their assembly (§17.5) instead of splicing a delta onto a path
     /// that no longer exists.
     ///
-    /// A recognized line is offered the axes of whatever perspective guides are on the
-    /// screen, and takes one if it is near enough (§20.6). That is the only coupling
-    /// between the two features, and it runs one way: the guides are read, never
-    /// touched, and a document with none up gathers an empty list.
+    /// A recognized shape is offered whatever perspective guides are on the screen: a
+    /// line takes an axis it is aimed near (§20.6), a loop becomes a circle on a plane
+    /// it nearly lies on (§20.7). That is the only coupling between the two features,
+    /// and it runs one way — the guides are read, never touched, and a document with
+    /// none up puts up an empty scaffold.
     pub fn assist_stroke(&mut self) -> bool {
-        let pencils: Vec<AxisPencil> = self
-            .guides
-            .iter()
-            .flat_map(PerspectiveGuide::pencils)
-            .flatten()
-            .collect();
+        let guides = Scaffold::of(&self.guides);
         let Some(b) = self.in_flight.as_mut() else {
             return false;
         };
         if b.assist.is_some() {
             return false;
         }
-        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance, &pencils) else {
+        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance, &guides) else {
             return false;
         };
         let drawn = b.fitter.path();

@@ -302,6 +302,114 @@ fn steering_an_axis_line_stays_on_the_axis() {
     );
 }
 
+/// A loop drawn roughly where a circle on the ground would be commits a stroke that
+/// **pulls back to a constant radius on that plane** (§20.7) — the statement the canvas
+/// shape alone cannot make, and the one the feature is for.
+///
+/// Asserted on the committed path rather than on the shape, so it covers the whole
+/// route: recognition, the realization into control points, and the release.
+#[test]
+fn a_held_loop_becomes_a_circle_on_a_visible_plane() {
+    let mut session = session();
+    let guide = PerspectiveGuide {
+        center: Vec2::new(90.0, -40.0),
+        focal: 700.0,
+        rotation: Quat::from_rotation_x(0.35) * Quat::from_rotation_y(0.5),
+        ..Default::default()
+    };
+    // Pair 2 spans (Z, X): the ground. A circle on it, sized to draw at ~180px.
+    let plane = guide.planes()[2].expect("the ground plane");
+    let at = Vec2::new(0.05, -0.04);
+    let probe = plane.circle_seen(at, 0.02).expect("a bounded image");
+    let radius = 0.02 * 180.0 / (0.5 * (probe.1.x + probe.1.y));
+    let (center, radii, angle) = plane.circle_seen(at, radius).expect("a bounded image");
+    session.guides.push(guide);
+
+    // Drawn a tenth too round and leaning 3° off — the two things a hand gets wrong.
+    let (u, v) = (
+        Vec2::from_angle(angle + 0.05),
+        Vec2::from_angle(angle + 0.05).perp(),
+    );
+    drag(&mut session, 90, |t| {
+        let a = t * std::f32::consts::TAU;
+        center
+            + u * (radii.x * a.cos())
+            + v * (radii.y * 1.1 * a.sin())
+            + wobble((t * 89.0) as usize)
+    });
+    assert!(session.assist_stroke(), "a rough loop is an ellipse");
+
+    let record = session.end_stroke().expect("a stroke to commit");
+    let poly = flatten(&record.path, FLATTEN_TOLERANCE);
+    let flat: Vec<Vec2> = poly
+        .iter()
+        .map(|s| plane.to_plane(s.pos).expect("on the plane"))
+        .collect();
+    // Measured off the outline's own extent rather than its centroid: the flattened
+    // polyline is evenly spaced on the *canvas*, which perspective makes wildly uneven
+    // on the plane, so a centroid would sit well off the centre. A bounding box only
+    // needs the extremes, and for a circle it is a square about the centre.
+    let (lo, hi) = flat.iter().fold(
+        (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)),
+        |(lo, hi), q| (lo.min(*q), hi.max(*q)),
+    );
+    let (hub, span) = ((lo + hi) * 0.5, hi - lo);
+    assert!(
+        (span.x - span.y).abs() < 0.02 * span.x,
+        "the committed stroke spans {span} on the plane — not square, so not a circle"
+    );
+    let r = 0.25 * (span.x + span.y);
+    let worst = flat
+        .iter()
+        .map(|q| (q.distance(hub) - r).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst < 0.02 * r,
+        "the outline strays {worst} off a radius of {r} on the plane"
+    );
+    assert!(
+        hub.distance(at) < 0.2 * radius,
+        "the circle landed at {hub}, not {at}"
+    );
+}
+
+/// The same drag with the guide's eye shut stays the ellipse it was drawn as, wonky
+/// eccentricity and all.
+#[test]
+fn a_hidden_plane_leaves_the_loop_alone() {
+    let mut session = session();
+    let guide = PerspectiveGuide {
+        center: Vec2::new(90.0, -40.0),
+        focal: 700.0,
+        rotation: Quat::from_rotation_x(0.35) * Quat::from_rotation_y(0.5),
+        visible: false,
+        ..Default::default()
+    };
+    assert!(guide.planes()[2].is_none(), "a hidden guide put up a plane");
+    session.guides.push(guide);
+
+    let (center, radii) = (Vec2::new(40.0, -20.0), Vec2::new(200.0, 90.0));
+    drag(&mut session, 90, |t| {
+        let a = t * std::f32::consts::TAU;
+        center + Vec2::new(radii.x * a.cos(), radii.y * a.sin()) + wobble((t * 89.0) as usize)
+    });
+    assert!(session.assist_stroke());
+
+    // Still the drawn ellipse: 200×90, not something a plane chose.
+    let record = session.end_stroke().expect("a stroke to commit");
+    let poly = flatten(&record.path, FLATTEN_TOLERANCE);
+    let worst = poly
+        .iter()
+        .map(|s| {
+            let q = s.pos - center;
+            let (a2, b2) = (radii.x * radii.x, radii.y * radii.y);
+            let residual = q.x * q.x / a2 + q.y * q.y / b2 - 1.0;
+            residual.abs() / (2.0 * Vec2::new(q.x / a2, q.y / b2).length())
+        })
+        .fold(0.0f32, f32::max);
+    assert!(worst < 4.0, "the loop was reshaped, sitting {worst}px off");
+}
+
 #[test]
 fn a_hold_with_nothing_in_flight_is_a_no_op() {
     let mut session = session();

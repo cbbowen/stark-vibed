@@ -41,8 +41,8 @@ use std::f32::consts::TAU;
 
 use nalgebra::{Const, Dyn, OMatrix};
 
-use crate::geom::Vec2;
-use crate::guides::AxisPencil;
+use crate::geom::{Vec2, principal_axis};
+use crate::guides::{AxisPencil, AxisPlane, Scaffold};
 use crate::path::{ControlPoint, FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
 use crate::spline::CubicBSpline;
 
@@ -83,7 +83,25 @@ const ELLIPSE_RESIDUAL: f32 = 0.10;
 /// to be within a few degrees, and a fraction of the length is a fixed cone: 0.1 is
 /// 5.7°, so three axes claim a sixth of the compass and a deliberately diagonal line
 /// is left alone.
-const GUIDE_RESIDUAL: f32 = 0.1;
+const GUIDE_LINE_RESIDUAL: f32 = 0.1;
+
+/// The same bar for a **perspective circle** (§20.7), as a fraction of the drawn loop's
+/// mean radius: how far the trace may sit from the circle-on-a-plane that claims it.
+///
+/// Wider again than [`ELLIPSE_RESIDUAL`], and this is where the feature actually lives.
+/// The hard part of drawing a circle in perspective is not its size or its place, which
+/// a hand gets about right, but its **eccentricity and its tilt** — both fixed by where
+/// on the plane it sits, and both exactly what the eye cannot judge. A bar that only
+/// accepted loops already correct in the two would help nobody.
+///
+/// Measured, on ellipses a few hundred px across: 0.18 admits a loop about a sixth too
+/// round, or leaning 5° out of the tilt its position calls for, or a lesser mix of the
+/// two — and declines at around a fifth and 8°, so a loop drawn deliberately across the
+/// grid stays the ellipse it is. The cost of the bar being an isotropic fraction of the
+/// mean radius is that it forgives eccentricity more readily than tilt on a strongly
+/// foreshortened circle, which is the right way round: how *open* a near-edge-on
+/// ellipse should be is genuinely hard to see, and which way it leans is not.
+const GUIDE_CIRCLE_RESIDUAL: f32 = 0.18;
 
 /// Residual floor, in input tolerances. Without it the fractional bars above scale to
 /// nothing on a small shape and no short stroke could ever snap, however straight the
@@ -185,6 +203,15 @@ pub enum AssistShape {
         radii: Vec2,
         /// Rotation of that frame, radians clockwise in canvas space.
         angle: f32,
+        /// The perspective plane this is a **circle** on, if it is one (§20.7).
+        ///
+        /// The ellipse above stays the truth — it is what is drawn, and every
+        /// consumer below reads it without knowing a guide exists. This says only
+        /// which family the shape came out of and may not leave, which is all
+        /// [`adjust`](Self::adjust) needs to go on steering it a circle. The same
+        /// bit of bookkeeping [`Line::on_axis`](Self::Line::on_axis) is, for the
+        /// same reason.
+        plane: Option<AxisPlane>,
         /// Where on the ellipse the loop starts and ends, in the ellipse's **own**
         /// frame — so turning the shape carries the seam with it, and the join stays
         /// where the hand put it rather than sliding round under a rotation.
@@ -199,20 +226,21 @@ pub enum AssistShape {
 /// The shape `trace` resembles, or `None` to leave the stroke as it was drawn.
 ///
 /// `tolerance` is the gesture's input tolerance in canvas px — the device's own grain,
-/// which is the unit every bar here is quoted in. `pencils` are the guide axes on the
-/// screen (§20.6), which a recognized *line* may be turned onto; pass none and the
-/// answer is the hand's own line.
+/// which is the unit every bar here is quoted in. `guides` is what the grids on the
+/// screen offer: axes a line may be aimed along (§20.6) and planes a loop may be a
+/// circle on (§20.7). Pass an empty one and the answer is the hand's own shape.
 ///
 /// A closed trace is offered to the ellipse fit first and **falls through** to the line
 /// fit if it misses the bar, rather than being refused outright: that is one rule
 /// instead of a decision tree, and it means a rough rectangle (closed, but no ellipse
 /// and no line) simply does not snap.
 ///
-/// The guide question is asked strictly *after* the stroke has been accepted as a line,
-/// never instead: recognition decides whether this is a line, and only then does the
-/// grid get to say which one. A curve that happens to bow along a fan line is still a
-/// curve, and the two bars cannot be traded against each other.
-pub fn recognize(trace: &[Vec2], tolerance: f32, pencils: &[AxisPencil]) -> Option<AssistShape> {
+/// The guide question is asked strictly *after* the stroke has been accepted as a
+/// shape, never instead: recognition decides whether this is a line or an ellipse, and
+/// only then does the grid get to say *which* line, or on which plane the ellipse is a
+/// circle. A curve that happens to bow along a fan line is still a curve, and the two
+/// bars cannot be traded against each other.
+pub fn recognize(trace: &[Vec2], tolerance: f32, guides: &Scaffold) -> Option<AssistShape> {
     if trace.len() < MIN_SAMPLES {
         return None;
     }
@@ -224,7 +252,10 @@ pub fn recognize(trace: &[Vec2], tolerance: f32, pencils: &[AxisPencil]) -> Opti
     {
         let size = 0.5 * (fit.radii.x + fit.radii.y);
         if size >= min_size && fit.worst <= (ELLIPSE_RESIDUAL * size).max(floor) {
-            return Some(fit.seamed(trace));
+            let bar = (GUIDE_CIRCLE_RESIDUAL * size).max(floor);
+            return Some(
+                snap_to_plane(trace, &guides.planes, bar).unwrap_or_else(|| fit.seamed(trace)),
+            );
         }
     }
 
@@ -233,8 +264,8 @@ pub fn recognize(trace: &[Vec2], tolerance: f32, pencils: &[AxisPencil]) -> Opti
     if size < min_size || free.worst > (LINE_RESIDUAL * size).max(floor) {
         return None;
     }
-    let bar = (GUIDE_RESIDUAL * size).max(floor);
-    Some(match snap_to_pencil(trace, free.a, pencils, bar) {
+    let bar = (GUIDE_LINE_RESIDUAL * size).max(floor);
+    Some(match snap_to_pencil(trace, free.a, &guides.axes, bar) {
         Some(on) => AssistShape::Line {
             a: on.a,
             b: on.b,
@@ -271,6 +302,54 @@ fn snap_to_pencil(
         .min_by(|x, y| x.worst.total_cmp(&y.worst))
 }
 
+/// The **perspective circle** the trace reads as, if any (§20.7): among the planes on
+/// the screen, the one whose circle explains the loop best, if that is within `bar`.
+///
+/// Each plane is asked in its own coordinates, where the question is not "which ellipse
+/// is this" but "which *circle*" — and answering it is one call to the same
+/// [`fit_ellipse`], because a circle is an ellipse whose radii agree and the measure
+/// corrections that fit earned (speed, overshoot, undershoot) are exactly as necessary
+/// on a pulled-back trace as on a drawn one. Its two radii are then collapsed to the
+/// one of equal area: a loop drawn as a circle in perspective pulls back to a circle,
+/// so they already agree, and where they do not it is the canvas score below that
+/// declines rather than this choice.
+///
+/// **Scored on the canvas, never in the plane.** A plane's own metric is stretched by
+/// the perspective — unboundedly, toward its vanishing line — so a residual measured
+/// there would mean something different at every depth, and the far half of a loop
+/// would count for orders of magnitude more than the near half. What decides is the
+/// same residual the free ellipse was judged by, in the space the artist drew it in.
+fn snap_to_plane(trace: &[Vec2], planes: &[AxisPlane], bar: f32) -> Option<AssistShape> {
+    let mut best: Option<(f32, AssistShape)> = None;
+    for plane in planes {
+        let Some(flat) = plane.chart(trace).and_then(|pulled| fit_ellipse(&pulled)) else {
+            continue;
+        };
+        let radius = (flat.radii.x * flat.radii.y).sqrt();
+        let Some((center, radii, angle)) = plane.circle_seen(flat.center, radius) else {
+            continue;
+        };
+        let frame = Frame::new(center, radii, angle);
+        let worst = trace.iter().map(|p| frame.distance(*p)).fold(0.0, f32::max);
+        if worst > bar || best.as_ref().is_some_and(|(seen, _)| *seen <= worst) {
+            continue;
+        }
+        let (phase, winding) = seam_of(&frame, trace);
+        best = Some((
+            worst,
+            AssistShape::Ellipse {
+                center,
+                radii,
+                angle,
+                phase,
+                winding,
+                plane: Some(*plane),
+            },
+        ));
+    }
+    best.map(|(_, shape)| shape)
+}
+
 impl AssistShape {
     /// The shape as the pointer's travel from `grip` to `pointer` leaves it.
     ///
@@ -291,6 +370,11 @@ impl AssistShape {
     ///   because a one-pointer drag has two degrees of freedom and the radius is the
     ///   only other thing a hand at that position could mean. The eccentricity the
     ///   drawn loop established is preserved.
+    /// - A **perspective circle** (§20.7) is sized, and only sized, in the plane it is
+    ///   a circle on: turning a circle does nothing, so the turn the free arm spends a
+    ///   degree of freedom on is not there to spend. Its eccentricity and tilt on the
+    ///   canvas then follow from where on the plane it sits — which is the point of the
+    ///   thing, and is why it cannot be done by scaling the drawn ellipse.
     pub fn adjust(self, grip: Vec2, pointer: Vec2) -> Self {
         match self {
             Self::Line { a, b, on_axis } => {
@@ -313,6 +397,45 @@ impl AssistShape {
                 angle,
                 phase,
                 winding,
+                plane: Some(plane),
+            } => {
+                // A circle has no orientation, so there is nothing here for the drag to
+                // turn: what is left of the ellipse's two degrees of freedom is the
+                // size, taken in the plane's own coordinates about the centre it has
+                // *there*. The canvas ellipse's centre is not the image of the circle's
+                // centre, so scaling the drawn shape about it would leave the plane at
+                // once.
+                let sized = plane
+                    .circle_behind(center, radii, angle)
+                    .zip(plane.to_plane(grip).zip(plane.to_plane(pointer)))
+                    .and_then(|((flat, radius), (from, to))| {
+                        let l0 = (from - flat).length();
+                        (l0 > 0.0)
+                            .then(|| plane.circle_seen(flat, radius * (to - flat).length() / l0))
+                            .flatten()
+                    });
+                match sized {
+                    Some((center, radii, angle)) => Self::Ellipse {
+                        center,
+                        radii,
+                        angle,
+                        phase,
+                        winding,
+                        plane: Some(plane),
+                    },
+                    // Nothing to draw at the far end of that drag — the circle has been
+                    // pulled through its own vanishing line, or down to a point. Holding
+                    // still is the honest answer, and dragging back recovers.
+                    None => self,
+                }
+            }
+            Self::Ellipse {
+                center,
+                radii,
+                angle,
+                phase,
+                winding,
+                plane: None,
             } => {
                 let (from, to) = (grip - center, pointer - center);
                 let (l0, l1) = (from.length(), to.length());
@@ -325,6 +448,7 @@ impl AssistShape {
                     angle: angle + from.perp_dot(to).atan2(from.dot(to)),
                     phase,
                     winding,
+                    plane: None,
                 }
             }
         }
@@ -402,6 +526,7 @@ impl AssistShape {
                 angle,
                 phase,
                 winding,
+                ..
             } => {
                 let u = phase + winding * t;
                 let local = Vec2::new(radii.x * u.cos(), radii.y * u.sin()) * bulge;
@@ -666,16 +791,30 @@ impl EllipseFit {
     /// loop starts where the hand started it and travels the way the hand went.
     fn seamed(&self, trace: &[Vec2]) -> AssistShape {
         let frame = Frame::new(self.center, self.radii, self.angle);
-        let ts: Vec<f32> = trace.iter().map(|p| frame.param(*p)).collect();
-        let turned: f32 = ts.windows(2).map(|w| wrap_pi(w[1] - w[0])).sum();
+        let (phase, winding) = seam_of(&frame, trace);
         AssistShape::Ellipse {
             center: self.center,
             radii: self.radii,
             angle: self.angle,
-            phase: ts.first().copied().unwrap_or(0.0),
-            winding: if turned < 0.0 { -1.0 } else { 1.0 },
+            phase,
+            winding,
+            plane: None,
         }
     }
+}
+
+/// Where a loop starts on `frame` and which way round it travels, read off the trace.
+///
+/// Shared by the free fit and the perspective one (§20.7), because the seam is a fact
+/// about the *hand* — where it began and which way it went — and not about which
+/// ellipse the recognizer settled on.
+fn seam_of(frame: &Frame, trace: &[Vec2]) -> (f32, f32) {
+    let ts: Vec<f32> = trace.iter().map(|p| frame.param(*p)).collect();
+    let turned: f32 = ts.windows(2).map(|w| wrap_pi(w[1] - w[0])).sum();
+    (
+        ts.first().copied().unwrap_or(0.0),
+        if turned < 0.0 { -1.0 } else { 1.0 },
+    )
 }
 
 /// An ellipse's own frame: what turns a canvas point into the parameter it sits at.
@@ -922,27 +1061,6 @@ fn resample(trace: &[Vec2], n: usize) -> Option<Vec<Vec2>> {
     )
 }
 
-/// Eigenvalues of the symmetric 2×2 `[[sxx, sxy], [sxy, syy]]`, larger first, with the
-/// unit eigenvector of the larger — in closed form, since a 2×2 needs no iteration.
-///
-/// The eigenvector is read off whichever column of `M − λ₂I` is longer: both span the
-/// same line, and taking the longer is what keeps it defined when the scatter is nearly
-/// isotropic (a circle, where the axes are genuinely arbitrary but must still be
-/// *some* orthogonal pair).
-fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) {
-    let half_trace = 0.5 * (sxx + syy);
-    let disc = (0.25 * (sxx - syy).powi(2) + sxy * sxy).max(0.0).sqrt();
-    let (major, minor) = (half_trace + disc, half_trace - disc);
-    let c0 = Vec2::new(sxx - minor, sxy);
-    let c1 = Vec2::new(sxy, syy - minor);
-    let v = if c0.length_squared() >= c1.length_squared() {
-        c0
-    } else {
-        c1
-    };
-    (major, minor, v.try_normalize().or(Some(Vec2::X)))
-}
-
 /// `x` folded into `(-π, π]` — the shortest way round.
 fn wrap_pi(x: f32) -> f32 {
     let mut x = x % TAU;
@@ -961,9 +1079,9 @@ mod tests {
     const TOL: f32 = 1.0;
 
     /// The recognizer with no guides on the screen — what every test but the §20.6
-    /// ones is asking about.
+    /// and §20.7 ones is asking about.
     fn free(trace: &[Vec2]) -> Option<AssistShape> {
-        recognize(trace, TOL, &[])
+        recognize(trace, TOL, &Scaffold::default())
     }
 
     /// A trace along an ideal shape, with `wobble` px of deterministic zig-zag across
@@ -1160,6 +1278,7 @@ mod tests {
                 angle: 0.0,
                 phase: 0.3,
                 winding: 1.0,
+                plane: None,
             };
             let pen = PenProfile::of(&[ControlPoint::at(Vec2::ZERO), ControlPoint::at(Vec2::X)]);
             let path = shape.to_path(&pen, 8);
@@ -1210,6 +1329,7 @@ mod tests {
             angle: 0.0,
             phase: 0.0,
             winding: 1.0,
+            plane: None,
         };
         let grip = shape.grip();
         let target = Vec2::new(0.0, 140.0);
@@ -1287,12 +1407,12 @@ mod tests {
     fn a_line_aimed_near_an_axis_snaps_onto_it() {
         let g = guide();
         let vps = g.scene().vps;
-        let pencils: Vec<AxisPencil> = g.pencils().into_iter().flatten().collect();
+        let up = Scaffold::of(std::slice::from_ref(&g));
         let start = Vec2::new(-260.0, 210.0);
         for (axis, vp) in vps.iter().enumerate() {
             let vp = vp.expect("3-point: all finite");
             let trace = aimed(&g, axis, start, 420.0, 0.05, 2.5);
-            let (a, b, on_axis) = as_line(recognize(&trace, TOL, &pencils).expect("a line"));
+            let (a, b, on_axis) = as_line(recognize(&trace, TOL, &up).expect("a line"));
             assert!(on_axis, "axis {axis} was not taken");
             assert_eq!(a, start, "the drawn start moved to {a}");
             let (u, to_vp) = ((b - a).normalize(), (vp - a).normalize());
@@ -1308,12 +1428,12 @@ mod tests {
     #[test]
     fn a_line_across_the_grid_keeps_its_own_direction() {
         let g = guide();
-        let pencils: Vec<AxisPencil> = g.pencils().into_iter().flatten().collect();
+        let up = Scaffold::of(std::slice::from_ref(&g));
         let start = Vec2::new(-260.0, 210.0);
         // A fifth of a turn off the X axis — and, in this pose, well away from the
         // other two as well.
         let trace = aimed(&g, 0, start, 420.0, 0.6, 2.5);
-        let (a, b, on_axis) = as_line(recognize(&trace, TOL, &pencils).expect("a line"));
+        let (a, b, on_axis) = as_line(recognize(&trace, TOL, &up).expect("a line"));
         assert!(!on_axis, "a deliberate diagonal was pulled onto an axis");
         let drawn = (trace[trace.len() - 1] - trace[0]).normalize();
         assert!((b - a).normalize().perp_dot(drawn).abs() < 0.02);
@@ -1325,16 +1445,16 @@ mod tests {
     #[test]
     fn the_snap_window_is_an_angle() {
         let g = guide();
-        let pencils: Vec<AxisPencil> = g.pencils().into_iter().flatten().collect();
+        let up = Scaffold::of(std::slice::from_ref(&g));
         let start = Vec2::new(40.0, 320.0);
         for len in [120.0f32, 400.0, 1600.0] {
             // Inside the cone at every length…
             let near = aimed(&g, 2, start, len, 0.04, 0.0);
-            let (_, _, on) = as_line(recognize(&near, TOL, &pencils).expect("a line"));
+            let (_, _, on) = as_line(recognize(&near, TOL, &up).expect("a line"));
             assert!(on, "{len}px missed an axis 2.3° away");
             // …and outside it at every length.
             let far = aimed(&g, 2, start, len, 0.25, 0.0);
-            let (_, _, on) = as_line(recognize(&far, TOL, &pencils).expect("a line"));
+            let (_, _, on) = as_line(recognize(&far, TOL, &up).expect("a line"));
             assert!(!on, "{len}px was claimed by an axis 14° away");
         }
     }
@@ -1346,14 +1466,20 @@ mod tests {
         let mut g = guide();
         let start = Vec2::new(-260.0, 210.0);
         let trace = aimed(&g, 1, start, 420.0, 0.05, 2.5);
-        assert!(as_line(recognize(&trace, TOL, &pencils_of(&g)).expect("a line")).2);
+        assert!(
+            as_line(
+                recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("a line")
+            )
+            .2
+        );
 
         g.visible = false;
-        assert!(!as_line(recognize(&trace, TOL, &pencils_of(&g)).expect("a line")).2);
-    }
-
-    fn pencils_of(g: &PerspectiveGuide) -> Vec<AxisPencil> {
-        g.pencils().into_iter().flatten().collect()
+        assert!(
+            !as_line(
+                recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("a line")
+            )
+            .2
+        );
     }
 
     /// A curve is still a curve. The grid may only choose *which* line a line is, and
@@ -1368,7 +1494,10 @@ mod tests {
         let trace = trace_of(40, 0.0, |t| {
             start + u * (300.0 * t) + u.perp() * (160.0 * t * (1.0 - t))
         });
-        assert_eq!(recognize(&trace, TOL, &pencils_of(&g)), None);
+        assert_eq!(
+            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))),
+            None
+        );
     }
 
     /// Steering a line that took an axis runs it out along that axis: the pointer's
@@ -1397,6 +1526,198 @@ mod tests {
         );
 
         // And, like every adjustment, it is a function of the total travel (§16.6).
+        let stepped = (1..=8).fold(shape, |_, i| {
+            shape.adjust(shape.grip(), shape.grip().lerp(target, i as f32 / 8.0))
+        });
+        assert_eq!(shape.adjust(shape.grip(), target), stepped);
+    }
+
+    // --- circles on a plane (§20.7) ----------------------------------------
+
+    /// Where the §20.7 tests put their circles: near the foot of each plane's normal,
+    /// which is the part of a plane that is squarely in front of the eye. Out toward a
+    /// plane's own vanishing line a circle straddles it and has no bounded image at
+    /// all — a real answer (`circle_seen` declines), and not the case under test.
+    const ON_PLANE: Vec2 = Vec2::new(0.05, -0.04);
+
+    /// Mean radius, in canvas px, of the *image* every §20.7 test draws around.
+    ///
+    /// Sized on the canvas rather than in the plane, because a plane radius is not a
+    /// comparable quantity across three planes lying at three depths: the same 0.12 in
+    /// plane units images to 130px on one of this guide's planes and to 1500px on
+    /// another, and a residual bar quoted as a fraction of the shape means something
+    /// quite different at those two sizes. What a hand draws is a few hundred px
+    /// across, so that is what these ask about.
+    const DRAWN_SIZE: f32 = 180.0;
+
+    fn as_ellipse(shape: AssistShape) -> (Vec2, Vec2, f32, Option<AxisPlane>) {
+        match shape {
+            AssistShape::Ellipse {
+                center,
+                radii,
+                angle,
+                plane,
+                ..
+            } => (center, radii, angle, plane),
+            other => panic!("recognized {other:?}, not an ellipse"),
+        }
+    }
+
+    /// The circle at [`ON_PLANE`] on plane `k` whose image is [`DRAWN_SIZE`] across the
+    /// mean: the plane, its radius there, and the ellipse it is seen as.
+    fn perspective_circle(g: &PerspectiveGuide, k: usize) -> (AxisPlane, f32, (Vec2, Vec2, f32)) {
+        let plane = g.planes()[k].expect("plane shown");
+        let probe = plane.circle_seen(ON_PLANE, 0.02).expect("a bounded image");
+        let radius = 0.02 * DRAWN_SIZE / (0.5 * (probe.1.x + probe.1.y));
+        let seen = plane
+            .circle_seen(ON_PLANE, radius)
+            .expect("a bounded image");
+        (plane, radius, seen)
+    }
+
+    /// A hand-drawn loop around that circle's image, with its eccentricity stretched by
+    /// `wrong` and its tilt turned by `tilt` — exactly the pair of things a hand gets
+    /// wrong about a circle in perspective, and the two the snap exists to fix.
+    fn perspective_loop(g: &PerspectiveGuide, k: usize, wrong: f32, tilt: f32) -> Vec<Vec2> {
+        let (_, _, (center, radii, angle)) = perspective_circle(g, k);
+        loop_trace(
+            center,
+            Vec2::new(radii.x, radii.y * wrong),
+            angle + tilt,
+            2.0,
+            0.0,
+        )
+    }
+
+    /// The feature: a loop drawn roughly where a circle on the grid would be comes back
+    /// as *that circle*, not as the ellipse the hand actually managed.
+    #[test]
+    fn a_loop_drawn_in_perspective_snaps_to_a_circle() {
+        let g = guide();
+        let up = Scaffold::of(std::slice::from_ref(&g));
+        for k in 0..3 {
+            let (plane, radius, _) = perspective_circle(&g, k);
+            // A tenth too round and leaning 3° off — a hand that saw it about right.
+            let trace = perspective_loop(&g, k, 1.1, 0.05);
+            let (center, radii, angle, on) =
+                as_ellipse(recognize(&trace, TOL, &up).expect("an ellipse"));
+            let on = on.unwrap_or_else(|| panic!("plane {k} was not taken"));
+            assert_eq!(Some(plane), Some(on), "plane {k}: another plane claimed it");
+
+            // ...and it is a circle *there*: at the place and the size it was drawn at.
+            let (flat, r) = on
+                .circle_behind(center, radii, angle)
+                .expect("a circle behind it");
+            assert!(
+                flat.distance(ON_PLANE) < 0.15 * radius,
+                "plane {k}: the circle sits at {flat}, not {ON_PLANE}"
+            );
+            assert!(
+                (r - radius).abs() < 0.2 * radius,
+                "plane {k}: radius {r}, drawn around {radius}"
+            );
+        }
+    }
+
+    /// The snapped shape has to *be* the perspective circle, not merely resemble one:
+    /// its whole outline pulls back to one constant radius. That is the statement the
+    /// canvas ellipse on its own cannot make.
+    #[test]
+    fn the_snapped_loop_is_round_in_its_plane() {
+        let g = guide();
+        let trace = perspective_loop(&g, 2, 1.1, -0.05);
+        let (center, radii, angle, plane) = as_ellipse(
+            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("an ellipse"),
+        );
+        let plane = plane.expect("a perspective circle");
+        let (flat, r) = plane.circle_behind(center, radii, angle).expect("a circle");
+
+        let frame = Frame::new(center, radii, angle);
+        let worst = (0..64)
+            .map(|i| {
+                let p = frame.point(i as f32 / 64.0 * TAU);
+                let q = plane.to_plane(p).expect("on the plane");
+                (q.distance(flat) - r).abs()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-3 * r, "the outline strays {worst} off round");
+    }
+
+    /// And it has to decline. A loop no plane would put there is the ellipse it was
+    /// drawn as — an ellipse is a shape somebody can mean.
+    #[test]
+    fn a_loop_no_plane_would_put_there_stays_an_ellipse() {
+        let g = guide();
+        // Twice as eccentric as the plane calls for, and turned 40° out of its tilt.
+        let trace = perspective_loop(&g, 2, 1.6, 0.5);
+        let (_, _, _, plane) = as_ellipse(
+            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("an ellipse"),
+        );
+        assert!(plane.is_none(), "a deliberate ellipse was made a circle");
+    }
+
+    /// What the artist cannot see cannot reshape a loop — and a plane needs *both* of
+    /// its axes shown, being the thing the two of them span.
+    #[test]
+    fn an_unshown_plane_does_not_snap() {
+        let mut g = guide();
+        let trace = perspective_loop(&g, 2, 1.1, -0.05);
+        let claimed = |g: &PerspectiveGuide| {
+            as_ellipse(
+                recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(g))).expect("an ellipse"),
+            )
+            .3
+            .is_some()
+        };
+        assert!(claimed(&g));
+
+        // Pair 2 spans axes (2, 0); hiding either takes the plane with it.
+        g.axes = [true, true, false];
+        assert!(!claimed(&g), "a plane survived losing an axis");
+        g.axes = [true; 3];
+        g.visible = false;
+        assert!(!claimed(&g), "a plane survived the guide's eye");
+    }
+
+    /// Steering a perspective circle sizes it *in its plane* and leaves it there, so
+    /// the canvas ellipse's eccentricity and tilt go on following the grid rather than
+    /// the hand — which is the whole reason the plane is carried at all.
+    ///
+    /// The pointer is put on the circle half again as wide, at a place of its own
+    /// choosing: the drag is therefore mostly *across* the shape, and the answer has to
+    /// be exactly the circle half again as wide, because sideways travel means nothing
+    /// to a shape with no orientation to turn.
+    #[test]
+    fn a_perspective_circle_is_steered_in_its_plane() {
+        let g = guide();
+        let trace = perspective_loop(&g, 2, 1.08, 0.04);
+        let shape =
+            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("an ellipse");
+        let (center, radii, angle, plane) = as_ellipse(shape);
+        let plane = plane.expect("a perspective circle");
+        let (flat, r) = plane
+            .circle_behind(center, radii, angle)
+            .expect("a circle behind it");
+
+        let (bc, br, ba) = plane.circle_seen(flat, r * 1.5).expect("a wider circle");
+        let target = Frame::new(bc, br, ba).point(1.0);
+        let (center, radii, angle, kept) = as_ellipse(shape.adjust(shape.grip(), target));
+        assert_eq!(kept, Some(plane), "the circle left its plane");
+
+        let (moved, wider) = plane
+            .circle_behind(center, radii, angle)
+            .expect("still a circle");
+        assert!(
+            moved.distance(flat) < 1e-3 * r,
+            "the centre wandered from {flat} to {moved}"
+        );
+        assert!(
+            (wider - 1.5 * r).abs() < 1e-3 * r,
+            "radius {wider}, expected {}",
+            1.5 * r
+        );
+
+        // ...and it is a function of the total travel, like every adjustment (§16.6).
         let stepped = (1..=8).fold(shape, |_, i| {
             shape.adjust(shape.grip(), shape.grip().lerp(target, i as f32 / 8.0))
         });

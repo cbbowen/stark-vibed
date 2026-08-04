@@ -1,7 +1,7 @@
 # Drawing guides
 
 The perspective grid: one projective camera, three familiar cases — §20.
-What a stroke aligns to is in §20.6.
+What a stroke aligns to is in §20.6 and §20.7.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -266,3 +266,86 @@ The whole coupling is `AssistShape::Line`'s one extra bool. A guided line is
 still a segment — the pencil's line through a point *is* a straight canvas line
 — so nothing about realization, the path, the wire format or the goldens
 changes, and the guides are read but never touched.
+
+## 20.7 Circles on a plane
+
+The other half, and the harder one: draw a rough loop where a circle on the
+grid would be and hold, and what snaps is **the circle on that plane**, seen
+from here. Not the ellipse the hand managed — the circle it was trying to draw.
+
+This is the construction art teaching spends the most time on and gets the
+least far with, because the two things that make a perspective circle right are
+the two an eye cannot judge: how **open** it is and which way it **leans**, both
+fixed entirely by where on the plane it sits. Its size and its position, which a
+hand does get about right, are the free parameters. So the snap corrects exactly
+what is hard and keeps exactly what was meant.
+
+**A plane is a chart.** `AxisPlane` — one *pair* of axes — is the map between
+the canvas and the plane's own flat, metric coordinates, both ways. A pair plane
+needs no depth chosen for it, because scaling the depth scales every circle on
+it by the same factor and leaves the images alone; taken at unit distance along
+the plane's normal it is one 3×3:
+
+```
+canvas_from_plane = K · [ a_i | a_j | a_i × a_j ]
+```
+
+with `K` the lens. The three planes of a guide are that product with the axis
+frame's columns *cyclically shifted* — one matrix read three ways — and it is
+invertible for every pose, since a lens and a rotation both are. **There is no
+degenerate plane to guard against**, which is the whole reason the chart is the
+representation and not, say, a basis and a fallback.
+
+**The question is asked in the plane, and answered on the canvas.** A trace is
+pulled back through the chart, where "which circle is this" is a question with a
+closed-form answer — and it is answered by the *same* `fit_ellipse` §6.9 already
+has, because a circle is an ellipse whose radii agree, and the measure
+corrections that fit earned (speed, overshoot, undershoot) are as necessary on a
+pulled-back trace as on a drawn one. Its two radii are then collapsed to the one
+of equal area.
+
+But the **residual is measured on the canvas**, never in the plane. A plane's
+own metric is stretched by the perspective, unboundedly toward its vanishing
+line, so a residual measured there would mean something different at every depth
+and the far half of a loop would count for orders of magnitude more than the
+near half. What decides is the same worst-sample distance the free ellipse was
+judged by, in the space the artist drew in.
+
+**What comes back is an ellipse like any other.** The image of a conic under a
+homography is a conic — `Hᵀ C H` on the matrix — so the circle is carried to the
+canvas in closed form rather than fitted from sampled points, and the *same*
+operation the other way recovers the circle from the ellipse. That exactness is
+what lets the shape stay a plain `AssistShape::Ellipse`: realization, the path,
+the wire format and the goldens are untouched, and the plane rides along as one
+`Option` field that only the adjustment reads. It is `on_axis` again, with more
+in it.
+
+Two things fall out of the conic classification rather than being cases:
+
+- a circle crossing its plane's vanishing line images to a **hyperbola**, which
+  is not something a stroke can be — so `circle_seen` declines, and the
+  positive-definiteness test *is* the check;
+- a trace crossing that line has no preimage on one piece of the plane, so the
+  chart declines it, because no circle in front of the eye is ever seen across
+  the image of that plane's infinity.
+
+**Steering sizes it, and only sizes it.** A circle has no orientation, so the
+turn the free ellipse spends a degree of freedom on is not there to spend: the
+drag's travel resolves onto the radius, in the plane, about the centre it has
+*there*. It cannot be done by scaling the drawn ellipse, because the image of a
+circle is **not centred on the image of its centre** — the classical fact, and a
+unit test. Eccentricity and tilt then keep following the grid for the rest of the
+drag, which is the whole reason the plane is carried at all.
+
+**The bar** (`GUIDE_CIRCLE_RESIDUAL`, 0.18 of the drawn loop's mean radius) is
+wider again than the free ellipse's, for §20.6's reason: it is not asking
+whether a loop was drawn but which circle it meant. Measured, on ellipses a few
+hundred px across, it admits a loop about a sixth too round or leaning 5° out of
+true, and declines at around a fifth and 8°. Being an isotropic fraction of the
+mean radius, it forgives eccentricity more readily than tilt on a strongly
+foreshortened circle — which is the right way round, since how open a
+near-edge-on ellipse should be is genuinely hard to see and which way it leans
+is not.
+
+Gating is §20.6's, with one addition: a plane needs **both** of its axes shown,
+being the thing the two of them span.

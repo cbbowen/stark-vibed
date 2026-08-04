@@ -195,11 +195,16 @@ frontend — because a snapped stroke is still a `Vec<ControlPoint>` and nothing
 downstream of the fitter had to learn what it was.
 
 **Perspective shipped at the same seam** — the guide and its overlay in §20, and
-the snap in §20.6, which cost the assist one bool: a line that lands near a
-visible guide's axis is aimed along it, and steering runs the end out on the grid
-line. The guides are read, never touched, and nothing below `StrokeRecord::path`
-learned that either. **Still missing: symmetry**, the remaining arm — one gesture
-emitting N records, or one record carrying its mirror axes.
+the snapping in §20.6–§20.7, which cost the assist one bool and one `Option`: a
+line that lands near a visible guide's axis is aimed along it, and a loop that
+lands where a circle on one of its planes would be *becomes* that circle. Both
+are still a `Vec<ControlPoint>`, the guides are read and never touched, and
+nothing below `StrokeRecord::path` learned about either. The perspective-circle
+arm is the best evidence yet for the seam: the hardest construction in the
+drawing-office repertoire arrived as one chart, one conic congruence and a
+residual measured where the artist can see it. **Still missing: symmetry**, the
+remaining arm — one gesture emitting N records, or one record carrying its
+mirror axes.
 
 #### 18.1.4 Brush parameter mapping — inputs → parameters
 

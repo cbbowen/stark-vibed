@@ -9,6 +9,32 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 pub use glam::{Affine2, Mat2, Vec2};
 
+/// Eigenvalues of the symmetric 2×2 `[[sxx, sxy], [sxy, syy]]`, larger first, with the
+/// unit eigenvector of the larger — in closed form, since a 2×2 needs no iteration.
+///
+/// The eigenvector is read off whichever column of `M − λ₂I` is longer: both span the
+/// same line, and taking the longer is what keeps it defined when the matrix is nearly
+/// isotropic (a circle, where the axes are genuinely arbitrary but must still be
+/// *some* orthogonal pair).
+///
+/// Here rather than beside either caller because both a scatter of samples and a conic
+/// are the same 2×2 question: [`assist`](crate::assist) reads an ellipse off the second
+/// moments of a trace, and [`guides`](crate::guides) reads one off the quadratic part
+/// of a conic (§20.7).
+pub(crate) fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) {
+    let half_trace = 0.5 * (sxx + syy);
+    let disc = (0.25 * (sxx - syy).powi(2) + sxy * sxy).max(0.0).sqrt();
+    let (major, minor) = (half_trace + disc, half_trace - disc);
+    let c0 = Vec2::new(sxx - minor, sxy);
+    let c1 = Vec2::new(sxy, syy - minor);
+    let v = if c0.length_squared() >= c1.length_squared() {
+        c0
+    } else {
+        c1
+    };
+    (major, minor, v.try_normalize().or(Some(Vec2::X)))
+}
+
 /// Apron (halo) width in pixels carried around each tile's interior, replicated
 /// from the neighboring canvas content (§6.4). The compositor samples a
 /// tile's interior with bilinear filtering; without an apron the filter clamps at

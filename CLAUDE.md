@@ -42,7 +42,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [engine.md](docs/engine.md) | §7–§11 | The actor target, the save format, golden tests, the extensibility map, the Dioxus frontend |
 | [collaboration.md](docs/collaboration.md) | §12, §17 | The CRDT over the action log, iroh transport, owned selections, the presence roster |
 | [roadmap.md](docs/roadmap.md) | §13, §18, §19 | Build order and status, the gap analysis against the prior art, file-format stability |
-| [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis |
+| [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
 path is in [brush.md](docs/brush.md), the compositing path in
