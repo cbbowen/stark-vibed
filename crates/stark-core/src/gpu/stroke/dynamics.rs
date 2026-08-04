@@ -1385,9 +1385,10 @@ fn dynamics_plan(
 ///
 /// The chord stands in for up to a quantum of curved travel — sagitta-class error,
 /// bounded by [`MAX_TIP_TURN`](super::MAX_TIP_TURN) like every other straightening
-/// in the loop — and a window is truncated at the piece's own start, since an
-/// earlier piece's geometry is no longer in hand (piece cuts are themselves a pure
-/// function of the record, so this stays deterministic).
+/// in the loop. Its start is walked **back along the crossing segment's own arc**
+/// rather than looked up among the segments in hand, so a window is never truncated
+/// by where the range being drawn happens to begin — see the note at the walk itself
+/// for what that truncation cost.
 fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
     let mut fires = Vec::new();
     // The brush's own axis, so *which* windows fire stays a function of the geometry
@@ -1397,17 +1398,36 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
     if bleed <= 0.0 {
         return fires;
     }
-    let piece_start = segments.first().map_or(0.0, |s| s.dist);
     for (i, s) in segments.iter().enumerate() {
         let bq = BLEED_TRAVEL_QUANTUM * s.radius;
         let crossings = ((s.dist + s.length) / bq).floor() - (s.dist / bq).floor();
         if crossings < 1.0 {
             continue;
         }
-        let end_arc = s.dist + s.length;
-        let start_arc = (end_arc - crossings * bq).max(piece_start);
-        let (end, _) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
-        let start = position_at(segments, start_arc);
+        // The window's travel, and where on the path it began.
+        let span = crossings * bq;
+        let start_arc = s.dist + s.length - span;
+        let (end, end_dir) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
+        // Walked **back along the crossing segment's own arc**, rather than looked up
+        // in the segments this piece happens to hold. Reversing an arc is negating
+        // both its direction and its curvature, so this is the same circle traced the
+        // other way and is exact for any path the segment itself describes.
+        //
+        // It is history-free, and that is the point. Looking the position up meant
+        // clamping to the first segment in hand, so a window reaching further back
+        // than the range being drawn came out short — and a live tail always starts at
+        // a span boundary while the commit renders the whole stroke from zero, so the
+        // two relaxed different amounts of paint at exactly that seam. That is a
+        // `preview == committed` break (§1.3), in the one place it cannot be
+        // repainted, and it was visible: a bleeding stroke lightened when the pointer
+        // came up.
+        //
+        // What it costs is extrapolating one segment's curvature over up to a quantum
+        // — half a radius — where the old form used the true path. Sagitta-class, the
+        // same straightening the window already was (it is a chord either way), and
+        // smaller than that chord's own error over the same span since this one at
+        // least bends.
+        let start = crate::path::arc_at(end, end_dir * -1.0, -s.curvature, span).0;
         let chord = end - start;
         let len = chord.length();
         if len <= 1e-3 {
@@ -1437,20 +1457,6 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
         ));
     }
     fires
-}
-
-/// The tip's centre at absolute arc `arc`, walked along the piece's own segments.
-/// `arc` at or past the last segment's end clamps to that end — the only caller
-/// asks about arcs inside the piece by construction.
-fn position_at(segments: &[Segment], arc: f32) -> Vec2 {
-    for s in segments {
-        if arc <= s.dist + s.length {
-            return crate::path::arc_at(s.start, s.dir, s.curvature, (arc - s.dist).max(0.0)).0;
-        }
-    }
-    segments.last().map_or(Vec2::new(0.0, 0.0), |s| {
-        crate::path::arc_at(s.start, s.dir, s.curvature, s.length).0
-    })
 }
 
 /// The travel direction the pen-up settle measures `owed` and `received` along: the

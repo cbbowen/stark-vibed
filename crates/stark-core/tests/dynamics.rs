@@ -1231,3 +1231,61 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
         "a dense bleed-only scribble over flat paint must leave it flat"
     );
 }
+
+/// A bleeding stroke must **preview as it commits** (§1.3).
+///
+/// The bleed cadence fires on crossings of absolute arc and each firing sweeps a
+/// window reaching back one quantum (`bleed_fires`). The window's start used to be
+/// looked up among the segments the piece being drawn happened to hold, clamped to
+/// the first of them — so a window reaching further back than the range came out
+/// short. A live tail always starts at a span boundary while the commit renders the
+/// whole stroke from zero, so the two relaxed different amounts of paint at exactly
+/// that seam, and a bleeding stroke visibly changed when the pointer came up.
+///
+/// The window is walked back along the crossing segment's own arc now, which needs no
+/// history at all. This is the test that says so.
+#[test]
+fn a_bleeding_stroke_previews_as_it_commits() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let b = dyn_brush(
+        RED,
+        26.0,
+        BrushDynamics {
+            add: 0.8,
+            bleed: 0.9,
+            ..Default::default()
+        },
+    );
+    engine.process(ViewCommand::SetBrush(b));
+    let path: Vec<Vec2> = (0..140)
+        .map(|i| {
+            let t = i as f32 * 0.05;
+            Vec2::new(t * 20.0 - 60.0, (t * 1.1).sin() * 28.0)
+        })
+        .collect();
+    let mut it = path.iter();
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().expect("a first sample")),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    for &p in it {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+    }
+    let preview = engine.render_to_image();
+    engine.process(GestureCommand::End);
+    let committed = engine.render_to_image();
+
+    // The same bound the untoothed split-preview test uses: a level or two of
+    // accumulated float rounding at the seam is fine, a visible discontinuity is not.
+    assert_eq!(
+        frac_exceeding(&preview, &committed, 11),
+        0.0,
+        "a bleeding live preview visibly differs from its commit ({:.4}% of px over 2)",
+        frac_exceeding(&preview, &committed, 2) * 100.0,
+    );
+}
