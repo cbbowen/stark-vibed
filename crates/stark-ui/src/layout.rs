@@ -8,7 +8,6 @@
 //! moved it.
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 use dioxus::prelude::*;
 
@@ -16,7 +15,7 @@ use crate::icons::{self, icon};
 use crate::panels::{
     BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, NavigatorPanel, SelectPanel,
 };
-use crate::platform::sleep_ms;
+use crate::platform;
 use crate::state::AppState;
 
 /// Identity of a floating tool panel. The set is fixed; `PanelLayout` tracks their
@@ -115,16 +114,17 @@ impl PanelId {
 const MIN_PANEL_HEIGHT: f32 = 260.0;
 
 /// Shared `Copy` layout state for the floating panels: their display order, which are
-/// hidden, the in-flight title-bar drag, and each panel's mounted node (for measuring).
-/// Closed panels stay in `order` (so reopening restores their slot); the stack renders
-/// `order` minus `hidden`. Provided via context to the panel chrome and the menu.
+/// hidden, and the two in-flight gestures. Closed panels stay in `order` (so reopening
+/// restores their slot); the stack renders `order` minus `hidden`. Provided via context
+/// to the panel chrome and the menu.
+///
+/// No panel geometry is kept here — a drag reads it off the DOM at the moment it starts
+/// ([`platform::panel_boxes`]), so there is no cached measurement to fall out of date.
 #[derive(Clone, Copy)]
 pub struct PanelLayout {
     pub order: Signal<Vec<PanelId>>,
     pub hidden: Signal<HashSet<PanelId>>,
     pub drag: Signal<Option<DragState>>,
-    /// Each visible panel's mounted node, so a drag can measure their positions.
-    pub refs: Signal<HashMap<PanelId, Rc<MountedData>>>,
     /// The current height of each resizable panel ([`PanelId::default_height`]),
     /// seeded with those defaults by [`PanelLayout::default_heights`]. A panel that
     /// is not resizable never appears here and never gets a height at all.
@@ -160,9 +160,15 @@ pub struct ResizeState {
 
 /// An in-flight title-bar drag. `panels` is the visible panels' `(id, top, height)`
 /// measured once at drag start (client px, top-to-bottom); everything else is derived
-/// from the live pointer so the math never feeds back on the shifting layout. Once the
-/// pointer is released, `release` holds the dragged panel's target offset and it settles
-/// there (sliding back to 0 if nothing reordered) before the new order is committed.
+/// from the live pointer so the math never feeds back on the shifting layout.
+///
+/// This state exists **only while a pointer is down on a title bar** — [`drag_end`]
+/// commits the reorder and clears it in the same write. It used to outlive the gesture by
+/// 180ms so the dropped panel could ease into its slot, with a timer committing the order
+/// once it landed; when that timer failed to fire the panels were left wearing the
+/// preview's transforms over a stack that had never reordered, which is a whole panel of
+/// displacement and no way back. A gesture the browser itself delimits cannot get stuck
+/// that way, and that is worth more than the ease (§11).
 #[derive(Clone, PartialEq)]
 pub struct DragState {
     id: PanelId,
@@ -172,7 +178,6 @@ pub struct DragState {
     gap: f32,
     anchor_y: f32,
     pointer_y: f32,
-    release: Option<f32>,
 }
 
 impl DragState {
@@ -190,14 +195,14 @@ impl DragState {
         self.dragged_top() + self.height
     }
 
-    /// The vertical offset to render panel `id` at. The dragged panel follows the pointer
-    /// (or eases to its settle target on release); the others slide by ±`step` to open
-    /// the landing slot. A neighbour yields once the dragged panel's **leading edge** —
-    /// its top going up, its bottom going down — crosses that neighbour's centre, so a
-    /// panel can always be dragged all the way to the top or bottom.
+    /// The vertical offset to render panel `id` at. The dragged panel follows the pointer;
+    /// the others slide by ±`step` to open the landing slot. A neighbour yields once the
+    /// dragged panel's **leading edge** — its top going up, its bottom going down —
+    /// crosses that neighbour's centre, so a panel can always be dragged all the way to
+    /// the top or bottom.
     fn offset(&self, id: PanelId) -> f32 {
         if id == self.id {
-            return self.release.unwrap_or(self.pointer_y - self.anchor_y);
+            return self.pointer_y - self.anchor_y;
         }
         let Some(k) = self.panels.iter().position(|p| p.0 == id) else {
             return 0.0;
@@ -232,24 +237,6 @@ impl DragState {
             })
             .count()
     }
-
-    /// The dragged panel's offset from its original slot to its final slot (0 if the
-    /// order is unchanged), so it can ease into place on release. Sums the slot extents
-    /// of the panels it jumps over — using their own heights, since they need not match.
-    fn target_offset(&self) -> f32 {
-        let ins = self.insert_index();
-        if ins == self.from {
-            return 0.0;
-        }
-        let others: Vec<f32> = self
-            .panels
-            .iter()
-            .filter(|p| p.0 != self.id)
-            .map(|p| p.2 + self.gap)
-            .collect();
-        let sum = |r: std::ops::Range<usize>| others[r].iter().sum::<f32>();
-        sum(0..ins) - sum(0..self.from)
-    }
 }
 
 /// The class list for a floating-chrome container (the panel stack, the command rail,
@@ -269,10 +256,18 @@ pub fn chrome_class(state: AppState, base: &str) -> String {
     }
 }
 
-/// The floating tool panels, top-right. Data-driven: renders `layout.order` minus the
-/// hidden set, each wrapped in the unified [`Panel`] chrome (keyed by id so reordering
-/// moves nodes rather than recreating them — preserves per-panel state and, later,
-/// enables the drag animation).
+/// The floating tool panels, top-right. Renders the open panels in a **fixed** sequence —
+/// [`PanelId::ALL`], always — and states the user's order as a flex `order` on each one.
+///
+/// So the stack's order is not in the DOM: slot *k* renders panel *k* for the life of the
+/// app, and a reorder changes an integer rather than moving anything. What that buys is
+/// that a panel keeps its own element and its own subtree — the navigator's canvas and the
+/// layer list survive being dragged up the stack, where reordering the children would
+/// rebuild whichever panels changed slots.
+///
+/// It costs the stack `:first-child` / `:last-child`, since the first child is now
+/// whichever panel leads `PanelId::ALL` rather than the top of the column; `Panel` names
+/// the ends with `.stack-first` / `.stack-last` instead.
 ///
 /// A stack taller than the window scrolls, and that is the stylesheet's job alone
 /// (`.panel-stack`) — no wheel handler here. The canvas's zoom hangs off the `<canvas>`
@@ -285,27 +280,37 @@ pub fn PanelStack() -> Element {
     let layout = use_context::<PanelLayout>();
     let state = use_context::<AppState>();
     let hidden = (layout.hidden)();
-    // Filtered here rather than by an `if` inside the loop, so the stack's children are
-    // exactly the visible panels: a conditional leaves a placeholder node behind for
-    // every closed panel, and minimal mode rounds the ends of the stack with
-    // `:first-child` / `:last-child` (`.app-root.minimal .panel` in `stark.css`), which
-    // a placeholder standing at either end would silently take instead.
+    // The open panels top to bottom — the order the *user* sees, which each panel then
+    // carries as its own `order` slot. Everything below iterates the constant instead.
     let visible: Vec<PanelId> = (layout.order)()
         .into_iter()
         .filter(|id| !hidden.contains(id))
         .collect();
+    let count = visible.len();
+    // The drag preview is resolved to a number here, alongside each panel's slot, so a
+    // panel is handed its offset rather than reading the gesture itself. Only the panels
+    // whose offset actually changed then re-render as the pointer moves.
+    let drag = (layout.drag)();
+    let live = drag.as_ref();
     rsx! {
         div { class: chrome_class(state, "panel-stack"),
-            for id in visible {
-                Panel { key: "{id:?}", id,
-                    match id {
-                        PanelId::Navigator => rsx! { NavigatorPanel {} },
-                        PanelId::Color => rsx! { ColorPanel {} },
-                        PanelId::Brush => rsx! { BrushPanel {} },
-                        PanelId::Select => rsx! { SelectPanel {} },
-                        PanelId::Guides => rsx! { GuidesPanel {} },
-                        PanelId::Lighting => rsx! { LightingPanel {} },
-                        PanelId::Layers => rsx! { LayerPanel {} },
+            for id in PanelId::ALL {
+                if let Some(slot) = visible.iter().position(|p| *p == id) {
+                    Panel {
+                        id,
+                        slot,
+                        count,
+                        offset: live.map(|d| d.offset(id)),
+                        dragging: live.is_some_and(|d| d.id == id),
+                        match id {
+                            PanelId::Navigator => rsx! { NavigatorPanel {} },
+                            PanelId::Color => rsx! { ColorPanel {} },
+                            PanelId::Brush => rsx! { BrushPanel {} },
+                            PanelId::Select => rsx! { SelectPanel {} },
+                            PanelId::Guides => rsx! { GuidesPanel {} },
+                            PanelId::Lighting => rsx! { LightingPanel {} },
+                            PanelId::Layers => rsx! { LayerPanel {} },
+                        }
                     }
                 }
             }
@@ -323,12 +328,27 @@ pub fn PanelStack() -> Element {
 /// its bottom edge. The height is set here rather than in the stylesheet because it is
 /// live state; what the stylesheet owns is what the panel does with it — see
 /// `.panel.resizable`, which turns the panel into a column so its list can take the slack.
+///
+/// `slot` is where this panel sits in the stack, `count` how many are open. The first is a
+/// flex `order`, which is the whole of how the stack is ordered ([`PanelStack`]); the two
+/// together name the ends of the column, which minimal mode rounds. Those have to be
+/// classes rather than `:first-child` / `:last-child` — the DOM child order is the fixed
+/// one now, so the first child is whichever panel happens to lead `PanelId::ALL`.
+///
+/// `offset` is the drag preview — `Some(dy)` while a drag is in flight, `None` at rest.
+/// The panel is handed it rather than reading the gesture, so the offsets and the slots
+/// are decided together in [`PanelStack`] and only the panels that actually move
+/// re-render as the pointer travels.
 #[component]
-pub fn Panel(id: PanelId, children: Element) -> Element {
+pub fn Panel(
+    id: PanelId,
+    slot: usize,
+    count: usize,
+    offset: Option<f32>,
+    dragging: bool,
+    children: Element,
+) -> Element {
     let layout = use_context::<PanelLayout>();
-    let drag = (layout.drag)();
-    let dragging = drag.as_ref().is_some_and(|d| d.id == id);
-    let dy = drag.as_ref().map_or(0.0, |d| d.offset(id));
     // `map` on the default, so a panel that is not resizable never reads either signal
     // and so never re-renders for someone else's resize.
     let height = id
@@ -346,39 +366,64 @@ pub fn Panel(id: PanelId, children: Element) -> Element {
     if resizing {
         class.push_str(" resizing");
     }
+    if slot == 0 {
+        class.push_str(" stack-first");
+    }
+    if slot + 1 == count {
+        class.push_str(" stack-last");
+    }
 
-    let mut style = String::new();
-    if let Some(h) = height {
-        style.push_str(&format!("height: {h}px;"));
-    }
-    if let Some(d) = &drag {
-        // Track the pointer 1:1 only while actively dragging this panel; the sliding
-        // neighbours — and the dragged panel as it settles on release — transition.
-        let tracking = d.id == id && d.release.is_none();
-        let trans = if tracking {
-            "none"
-        } else {
-            "transform 180ms ease"
-        };
-        style.push_str(&format!(
-            "transform: translateY({dy}px); transition: {trans};"
-        ));
-    }
+    // **Every declaration, every render, including the ones that are "off".**
+    //
+    // Inline styles are applied property by property, not by replacing the attribute, so a
+    // declaration left out of this string is not removed from the element — it keeps
+    // whatever value the last render that *did* mention it gave it. Omitting `transform`
+    // when no drag is in flight therefore does not clear the drag's transform: it strands
+    // it, over a stack that has since reordered, which is the whole of this bug
+    // (`2026-08-03`). Writing the resting values explicitly is what clears them.
+    //
+    // The rule is easy to break by adding a conditional declaration here, and the breakage
+    // is invisible until some *other* state change makes the stale value wrong.
+    let h = match height {
+        Some(h) => format!("{h}px"),
+        None => "auto".to_string(),
+    };
+    // The panel under the pointer tracks it 1:1; the neighbours slide; at rest there is
+    // nothing to animate, and the reorder lands in the same frame as the reset.
+    let (dy, trans) = match offset {
+        Some(dy) if dragging => (dy, "none"),
+        Some(dy) => (dy, "transform 180ms ease"),
+        None => (0.0, "none"),
+    };
+    let style =
+        format!("order: {slot}; height: {h}; transform: translateY({dy}px); transition: {trans};");
     rsx! {
         div {
             class,
             style,
-            onmounted: move |e| {
-                let mut refs = layout.refs;
-                refs.write().insert(id, e.data());
-            },
+            // Which panel this element is, for `platform::panel_boxes` to read back. The
+            // drag measures the DOM and writes `order`, so it needs the two to agree; this
+            // is what lets it check rather than assume.
+            "data-panel": "{id:?}",
             div { class: "panel-header",
                 // The mark is inside the drag handle rather than beside it: the whole
                 // title *is* the grip, and a glyph sitting outside it would be the one
                 // part of the header that looks draggable and is not.
                 div {
                     class: "panel-title",
-                    onpointerdown: move |e| start_drag(layout, id, &e),
+                    // The grip captures the pointer and owns the whole gesture, as every
+                    // other drag in the app does (`platform::capture_pointer`). Capture is
+                    // what makes the release certain — it is delivered to the capturing
+                    // element whatever the pointer is over by then, and this is a drag
+                    // where the thing under the pointer moves as you drag it. Left to
+                    // bubble to the app root instead, the release did not arrive at all.
+                    onpointerdown: move |e| {
+                        platform::capture_pointer(&e);
+                        start_drag(layout, id, &e);
+                    },
+                    onpointermove: move |e| drag_move(layout, &e),
+                    onpointerup: move |_| drag_end(layout),
+                    onpointercancel: move |_| drag_end(layout),
                     {icon(id.glyph())}
                     "{id.title()}"
                 }
@@ -444,54 +489,70 @@ pub fn resize_end(layout: PanelLayout) {
     resize.set(None);
 }
 
-/// Begin dragging panel `id` by its title bar. Measures the visible panels' positions
-/// (async, via their mounted nodes) and arms the drag; the actual pointer tracking +
-/// reorder happen in [`drag_move`] / [`drag_end`] at the app root.
+/// Begin dragging panel `id` by its title bar: measure the visible panels and arm the
+/// drag. The pointer tracking and the reorder follow in [`drag_move`] / [`drag_end`].
+///
+/// Every box comes from [`platform::panel_boxes`] and is matched to its panel **by the id
+/// on the same element**, never by position — the stack's children are in a fixed sequence,
+/// not the user's order ([`PanelStack`]).
+///
+/// Synchronous, so the drag is armed on the press rather than a JS round trip later —
+/// which also means no pointer movement is dropped between the two.
 pub fn start_drag(layout: PanelLayout, id: PanelId, e: &Event<PointerData>) {
-    let anchor_y = e.client_coordinates().y as f32;
-    let order = layout.order.peek().clone();
     let hidden = layout.hidden.peek().clone();
-    let refs = layout.refs.peek().clone();
-    let mounted: Vec<(PanelId, Rc<MountedData>)> = order
-        .into_iter()
+    let visible: Vec<PanelId> = layout
+        .order
+        .peek()
+        .iter()
+        .copied()
         .filter(|p| !hidden.contains(p))
-        .filter_map(|p| refs.get(&p).map(|m| (p, m.clone())))
         .collect();
+    let boxes = platform::panel_boxes();
+    // Each panel's own box, found by the id it wears. `None` if the DOM has not caught up
+    // with `order` — a press in the frame before a newly-opened panel has mounted, or
+    // off-wasm, where there is no DOM to read at all.
+    let Some(panels) = visible
+        .iter()
+        .map(|p| {
+            let key = format!("{p:?}");
+            boxes
+                .iter()
+                .find(|(k, ..)| *k == key)
+                .map(|&(_, top, h)| (*p, top, h))
+        })
+        .collect::<Option<Vec<(PanelId, f32, f32)>>>()
+    else {
+        return;
+    };
+    let Some(from) = visible.iter().position(|p| *p == id) else {
+        return;
+    };
+    let height = panels[from].2;
+    // The inter-panel gap (so a slide closes the slot exactly): the space between the
+    // first two panels, or 0 if there's only one (then nothing can reorder anyway).
+    let gap = if panels.len() > 1 {
+        (panels[1].1 - panels[0].1 - panels[0].2).max(0.0)
+    } else {
+        0.0
+    };
+    let anchor_y = e.client_coordinates().y as f32;
     let mut drag = layout.drag;
-    spawn(async move {
-        let mut panels = Vec::with_capacity(mounted.len());
-        for (pid, m) in &mounted {
-            if let Ok(rect) = m.get_client_rect().await {
-                panels.push((*pid, rect.origin.y as f32, rect.size.height as f32));
-            }
-        }
-        let Some(from) = panels.iter().position(|p| p.0 == id) else {
-            return;
-        };
-        let height = panels[from].2;
-        // The inter-panel gap (so a slide closes the slot exactly): the space between the
-        // first two panels, or 0 if there's only one (then nothing can reorder anyway).
-        let gap = if panels.len() > 1 {
-            (panels[1].1 - panels[0].1 - panels[0].2).max(0.0)
-        } else {
-            0.0
-        };
-        drag.set(Some(DragState {
-            id,
-            from,
-            panels,
-            height,
-            gap,
-            anchor_y,
-            pointer_y: anchor_y,
-            release: None,
-        }));
-    });
+    drag.set(Some(DragState {
+        id,
+        from,
+        panels,
+        height,
+        gap,
+        anchor_y,
+        pointer_y: anchor_y,
+    }));
 }
 
-/// Track the pointer for an in-flight panel drag (no-op when idle or already settling).
+/// Track the pointer for an in-flight panel drag (no-op when idle — the check is what
+/// keeps every pointer move over the app from dirtying the whole stack).
 pub fn drag_move(layout: PanelLayout, e: &Event<PointerData>) {
-    if !matches!(layout.drag.peek().as_ref(), Some(d) if d.release.is_none()) {
+    let armed = layout.drag.peek().is_some();
+    if !armed {
         return;
     }
     let y = e.client_coordinates().y as f32;
@@ -501,33 +562,27 @@ pub fn drag_move(layout: PanelLayout, e: &Event<PointerData>) {
     }
 }
 
-/// Release a panel drag: enter the settle state (the dragged panel eases to its final
-/// slot — back to 0 if nothing reordered), then commit the new order once it lands.
-/// No-op if no drag is active or one is already settling.
+/// End a panel drag: disarm, then write the panel's landing slot into `order`. No-op if
+/// no drag is active.
+///
+/// **The disarm goes first.** A panel's offset is a transform stated against the layout as
+/// it stood when the drag began, so a frame carrying the new `order` while the transforms
+/// are still on would be the reorder applied twice — every affected panel a slot from where
+/// it belongs. Cleared first, the worst an in-between frame can show is the stack exactly as
+/// it was before the gesture: a glitch the next render corrects rather than a wrong layout.
+/// Taking the state *out* of the signal is what disarms it, so that is one write and not
+/// two things to keep in step.
+///
+/// Nothing is deferred here on purpose. The dragged panel used to ease into its slot over
+/// 180ms with a timer committing the order afterwards — a settle whose timer never fired,
+/// and a dropped panel is the one moment in the gesture where the user is looking at the
+/// *slot*, not at the panel.
 pub fn drag_end(layout: PanelLayout) {
-    let target = match layout.drag.peek().as_ref() {
-        Some(d) if d.release.is_none() => d.target_offset(),
-        _ => return,
-    };
     let mut drag = layout.drag;
-    if let Some(d) = drag.write().as_mut() {
-        d.release = Some(target);
-    }
-    spawn(async move {
-        sleep_ms(180).await;
-        commit_drag(layout);
-    });
-}
-
-/// Commit a settled drag: write the new order and disarm. Skips if a fresh drag has
-/// replaced the settling one in the meantime.
-pub fn commit_drag(layout: PanelLayout) {
-    let Some(d) = layout.drag.peek().clone() else {
+    let taken = drag.write().take();
+    let Some(d) = taken else {
         return;
     };
-    if d.release.is_none() {
-        return; // a new drag started during the settle — leave it be
-    }
     let ins = d.insert_index();
     let hidden = layout.hidden.peek().clone();
     let mut order = layout.order;
@@ -545,6 +600,4 @@ pub fn commit_drag(layout: PanelLayout) {
         let at = visible.get(ins).copied().unwrap_or(ord.len());
         ord.insert(at, d.id);
     }
-    let mut drag = layout.drag;
-    drag.set(None);
 }

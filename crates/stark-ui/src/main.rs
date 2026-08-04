@@ -33,7 +33,7 @@ mod shapes;
 mod state;
 mod widgets;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::Modifiers;
@@ -48,9 +48,7 @@ use input::{
     Nav, abandon_gesture, bind_shortcuts, elem_xy, end_interaction, input_tolerance, pick_color,
     pointer_moved, sample, watch_for_hold,
 };
-use layout::{
-    PanelId, PanelLayout, PanelStack, chrome_class, drag_end, drag_move, resize_end, resize_move,
-};
+use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
@@ -96,7 +94,6 @@ fn app() -> Element {
         order: use_signal(|| PanelId::ALL.to_vec()),
         hidden: use_signal(|| HashSet::from(PanelId::CLOSED_BY_DEFAULT)),
         drag: use_signal(|| None),
-        refs: use_signal(HashMap::new),
         heights: use_signal(PanelLayout::default_heights),
         resize: use_signal(|| None),
     };
@@ -200,22 +197,16 @@ fn app() -> Element {
 
         div {
             class: root_class,
-            // A panel drag — a reorder by the title bar, or a resize by the bottom-edge
-            // grip — is driven here (events bubble up even over the canvas), so it keeps
-            // tracking wherever the pointer goes. Both are no-ops unless armed; leaving
-            // the window ends them so neither can get stuck.
-            onpointermove: move |e| {
-                drag_move(panels, &e);
-                resize_move(panels, &e);
-            },
-            onpointerup: move |_| {
-                drag_end(panels);
-                resize_end(panels);
-            },
-            onpointerleave: move |_| {
-                drag_end(panels);
-                resize_end(panels);
-            },
+            // A panel resize by the bottom-edge grip is driven here — events bubble up even
+            // over the canvas, so it keeps tracking wherever the pointer goes, and leaving
+            // the window ends it so it cannot get stuck. A no-op unless armed.
+            //
+            // The title-bar *reorder* drag is not here: it captures the pointer and handles
+            // its own move and release (`layout::Panel`), which is the only way to be sure
+            // of getting the release.
+            onpointermove: move |e| resize_move(panels, &e),
+            onpointerup: move |_| resize_end(panels),
+            onpointerleave: move |_| resize_end(panels),
 
             Canvas {}
 

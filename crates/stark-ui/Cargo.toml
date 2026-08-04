@@ -28,6 +28,11 @@ web-sys = { version = "0.3", features = [
     "Window",
     "Document",
     "Element",
+    # Measuring the panel stack at drag start (platform::panel_boxes): the panels
+    # are read off the DOM in DOM order, which is the visible panel order.
+    "NodeList",
+    "Node",
+    "DomRect",
     "HtmlCanvasElement",
     "PointerEvent",
     # The app's shortcuts are bound to the window rather than to an element

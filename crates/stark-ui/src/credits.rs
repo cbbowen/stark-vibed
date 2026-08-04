@@ -47,13 +47,13 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                 div { class: "modal-section-label", "SOFTWARE" }
                 Credit {
                     name: "Björn Ottosson",
-                    url: "https://bottosson.github.io/posts/oklab/",
+                    url: "https://bottosson.github.io/posts/oklab",
                     description: "Oklab color space.",
                     license: "Public domain",
                 }
                 Credit {
                     name: "Secret Weapons",
-                    url: "https://scrtwpns.com/mixbox/",
+                    url: "https://scrtwpns.com/mixbox",
                     description: "Mixbox color mixing.",
                     license: "Creative Commons Attribution-NonCommercial 4.0 International Public License",
                 }

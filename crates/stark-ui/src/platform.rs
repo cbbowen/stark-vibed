@@ -18,6 +18,42 @@ pub async fn sleep_ms(ms: i32) {
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn sleep_ms(_ms: i32) {}
 
+/// The panel stack's panels: each one's `data-panel` id and its `(top, height)` in client
+/// px. Empty off-wasm, and empty before the stack has mounted.
+///
+/// In DOM order, which is *not* the order they appear in — the stack's children are a
+/// fixed sequence and the column is ordered by a flex `order` on each one
+/// ([`crate::layout::PanelStack`]). Hence the id: it travels **with** the box, off the same
+/// element, so a caller matches on identity rather than on position. Matched by position a
+/// panel would be measured through its neighbour's box in silence, because a box is a
+/// plausible box whichever panel it came from (§11).
+#[cfg(target_arch = "wasm32")]
+pub fn panel_boxes() -> Vec<(String, f32, f32)> {
+    use wasm_bindgen::JsCast;
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return Vec::new();
+    };
+    let Ok(nodes) = doc.query_selector_all(".panel-stack > .panel") else {
+        return Vec::new();
+    };
+    (0..nodes.length())
+        .filter_map(|i| nodes.item(i))
+        .filter_map(|n| n.dyn_into::<web_sys::Element>().ok())
+        .map(|el| {
+            let r = el.get_bounding_client_rect();
+            (
+                el.get_attribute("data-panel").unwrap_or_default(),
+                r.top() as f32,
+                r.height() as f32,
+            )
+        })
+        .collect()
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn panel_boxes() -> Vec<(String, f32, f32)> {
+    Vec::new()
+}
+
 /// Route the window's `kind` events ("keydown" / "keyup") to `handler`.
 ///
 /// The shortcuts hang off the **window** rather than off an element, so they keep

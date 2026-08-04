@@ -63,6 +63,7 @@ hr {
 
 .panel-stack {
   position: absolute;
+  height: 100%;
   /* Explicit, and matching the rail/bars: without it the stack sits at auto level,
      where *any* positioned sibling with a z-index (the frame overlay) wins over it
      no matter what the DOM order is. */
@@ -544,10 +545,11 @@ hr {
    round at every internal seam would cut four little notches of canvas through the middle
    of a surface that is meant to read as continuous.
 
-   `:first-child` / `:last-child` are exact because `layout::PanelStack` filters the
-   hidden panels out before rendering, so the stack's children are the visible panels and
-   nothing else. A panel mid-drag keeps its DOM slot until release, so the round follows
-   the committed order while the slide previews the new one. */
+   The ends are named by `.stack-first` / `.stack-last` rather than by `:first-child` /
+   `:last-child`, because the stack's DOM children are in a fixed sequence and its visible
+   order is a flex `order` on each panel (`layout::PanelStack`) — the first child is
+   whichever panel leads `PanelId::ALL`, which is not where the column starts. One panel
+   open wears both, and rounds all four corners. */
 .app-root.minimal .panel-stack {
   gap: 0;
 }
@@ -556,20 +558,14 @@ hr {
   border-radius: 0;
 }
 
-.app-root.minimal .panel:first-child {
+.app-root.minimal .panel.stack-first {
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
 }
 
-.app-root.minimal .panel:last-child {
+.app-root.minimal .panel.stack-last {
   border-bottom-left-radius: 12px;
   border-bottom-right-radius: 12px;
-}
-
-/* One panel open is both ends of the stack at once — it has no seam to protect, and
-   `:last-child` alone would leave it lit from below and dark along the top. */
-.app-root.minimal .panel:first-child:last-child {
-  box-shadow: var(--panel-shadow);
 }
 
 /* A chip that has lost its word should be a square around its mark, not a pill still
