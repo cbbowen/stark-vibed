@@ -494,7 +494,7 @@ fn mod_slider(
                 onclick: move |_| open.set(if expanded { None } else { Some(row) }),
                 match m {
                     Some(m) => rsx! { "{source_label(m.source)}" },
-                    None => rsx! { {icon(icons::ADD)} },
+                    None => rsx! { {icon(icons::MODULATE)} },
                 }
             }
         }
