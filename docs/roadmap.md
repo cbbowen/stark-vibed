@@ -39,6 +39,7 @@ Status lives here and nowhere else.
 | — | Timeline mode / scrubber (§18.2.4) | done |
 | — | Groups & clipping (§14) | done |
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
+| — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/lift/deposit/bleed; more sources and targets are variants away |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
 
 Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
@@ -209,22 +210,35 @@ residual measured where the artist can see it. **Still missing: symmetry**, the
 remaining arm — one gesture emitting N records, or one record carrying its
 mirror axes.
 
-#### 18.1.4 Brush parameter mapping — inputs → parameters
+#### 18.1.4 Brush parameter mapping — inputs → parameters — built
 
-The structural gap in the brush engine. `BrushParams` holds fixed scalars, and
-§6.2 records that per-segment pressure/tilt modulation of the dynamics rates was
-*removed* as inert scaffolding. What CSP, Procreate and Painter all have and we
-do not is a **mapping matrix**: any input (pressure, tilt, azimuth, velocity,
-stroke-relative position, random) driving any parameter (radius, opacity, `add`,
-`lift`, angle, hue) through a user-editable curve.
+Was the structural gap in the brush engine: `BrushParams` held fixed scalars with
+pressure → radius wired into the segment generator, and §6.2 recorded that
+per-segment pressure/tilt modulation of the dynamics rates had been *removed* as
+inert scaffolding. `BrushParams.modulation` is now the mapping — see §6.2, "Pen
+mapping" — with **pressure and tilt** driving **size, flow, lift, deposit and
+bleed** through a bounded rational response curve, and the pressure → size rule
+demoted to the default entry in it rather than a rule.
 
-Every other axis of our brush model is more sophisticated than theirs. This one
-is what makes a brush feel *authored* rather than configured — and it is what
-makes a brush **library** worth shipping, which is the thing users actually shop
-for. (The library's skeleton exists: named per-user presets persist in
-`localStorage` and apply from the Brush panel, `stark-ui/src/presets.rs`; shape
-import/persistence is done, §6.6. Preset previews and preset import/export do
-not.)
+The decision that made it cheap: a modulation is a **multiplier in [0, 1]**, so
+every bound the engine derives from a brush stays sound without learning that
+modulation exists. That is what kept the change to one place in the renderer
+(`generate_segments_in`) and none at all in the stamp loop, which already carried
+its rates per dispatch.
+
+What is deliberately not built: **azimuth, velocity, stroke-relative position and
+random** as sources, and **opacity and angle** as targets. Each is a variant on
+existing enums plus a line in the segment generator; velocity needs a
+normalisation constant argued for rather than picked, and azimuth is signed and
+so wants a different response shape than the two [0, 1] sources share. Multiple
+mappings onto one target is likewise a `Vec` away, and would multiply.
+
+It is what makes a brush feel *authored* rather than configured — and what makes
+a brush **library** worth shipping, which is the thing users actually shop for.
+(The library's skeleton exists: named per-user presets persist in `localStorage`
+and apply from the Brush panel, `stark-ui/src/presets.rs`, where the shipped
+Pencil now maps tilt → size and pressure → flow; shape import/persistence is
+done, §6.6. Preset previews and preset import/export do not.)
 
 #### 18.1.5 A mixing palette
 

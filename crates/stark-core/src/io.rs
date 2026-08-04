@@ -40,7 +40,16 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// the middle of an existing variant cannot, and inventing a second `MoveLayer`
 /// to preserve the layout would have put the duplication this design exists to
 /// remove straight back into the log.
-const WIRE_VERSION: u32 = 2;
+///
+/// **3** — brush parameter modulation (§6.2). `BrushParams` grew a `modulation`
+/// field. It is *appended*, but that is no help here for the reason above: postcard
+/// writes no field names and no length, so a version-2 reader would run straight off
+/// the end of a brush and into the path behind it. `#[serde(default)]` is likewise
+/// no help — it fills a field the *format* left out, which a self-describing format
+/// can signal and postcard cannot. A brush's parameters decide its pixels, so the
+/// mapping had to be in the record rather than in session state; the version is what
+/// that costs. Files are alpha (§19), so old ones are refused rather than migrated.
+const WIRE_VERSION: u32 = 3;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

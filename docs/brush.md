@@ -624,9 +624,11 @@ That is the whole set. `drag`, `ridge`, `load_pressure` and
 `deposit_tilt` were listed as inert placeholders and were **removed** rather than
 carried. Each remains a local change to reintroduce when built (the loop already
 carries per-dispatch state): a forward deposit offset for the bow-wave drag, edge
-displacement for ridge, per-segment pressure/tilt modulation of the rates.
-(`bleed` was on that list, and its reintroduction as the footprint-local blur
-above is the pattern working as intended.) Likewise `BrushParams` no longer carries
+displacement for ridge. (`bleed` was on that list, and its reintroduction as the
+footprint-local blur above is the pattern working as intended; `load_pressure`
+and `deposit_tilt` came back as the general mapping below, which is the same
+pattern again — the two specific knobs turned out to be one general one.)
+Likewise `BrushParams` no longer carries
 `spacing`, `flow`, `height` or `wetness`: with swept rendering there are no dabs
 for `spacing` to space, and `flow`/`height` were redundant multipliers on `add` —
 `flow` doubly so, since it also carried the `drain` factor into `τ` and applied
@@ -653,6 +655,77 @@ is the next structural win. *Paint never dries* — every texel stays as
 workable as the moment it was laid, which is what lets there be no wetness state
 at all; to glaze over "dry" paint the user adds a **new document layer**, which
 composites as if dry.
+
+### Pen mapping — what drives which parameter
+
+A brush is not a set of fixed numbers plus one hard-wired rule. Pressure scaling
+the radius is what an ordinary brush wants; a palette knife wants pressure on
+`lift` and tilt on `deposit`; a pencil wants pressure on `flow` and tilt on
+`size`; a marker wants nothing on anything. `BrushParams.modulation` is the
+mapping, one optional entry per target:
+
+```rust
+struct Modulation { source: ModSource, floor: f32, curve: f32 }   // ModSource = Pressure | Tilt
+struct Modulations { size, flow, lift, deposit, bleed: Option<Modulation> }
+```
+
+**A modulation is a multiplier in [0, 1], never a remap.** The value the renderer
+sees is `param · factor(input)`, `factor(0) = floor`, `factor(1) = 1`. That bound
+is the design, not a simplification of it. Every guarantee the engine derives
+from a brush is stated against the brush's own numbers — the frozen-span radius
+bound (`safe_frozen`), the region fit, the swept-vs-loop choice
+(`dynamics_setup`), the flattener's exchange step (`exchange_travel`) — and each
+one stays sound with no part of it learning that modulation exists, because a
+parameter can only ever be *smaller* than its slider says. A remap that could
+also scale up would put a correction into all of them, and a missed one is a
+stroke that renders differently live and committed (§1.3). It costs nothing in
+expressiveness: a pencil that widens as the pen leans over is the widest radius
+on the slider, mapped to tilt, with the floor at the narrow end. **The slider is
+the maximum and the pen takes it away.**
+
+Two consequences fall straight out and are worth stating, because they are what
+would otherwise need checking at each call site. An axis the brush leaves at zero
+is zero at every point of every stroke it could draw, so `dynamics_setup` and
+`bleed_fires` can gate on the brush's own rate and be exactly right. And a
+modulated rate is never above the brush's, so `exchange_travel` prices the worst
+case and every segment comes in under it.
+
+**The response curve is rational**, `x / (m(1 − x) + 1)` with `m = 1/k − 2` and
+`k = (curve + 1)/2` — Schlick's bias, monotone from (0,0) to (1,1). Not `xᵞ`:
+this decides stored pixels, so replay, goldens and peers must agree on it to the
+last bit (§12.1), and IEEE-754 pins `+ − × ÷` where `powf` is specified nowhere.
+It is the same argument that makes `taper_profile` a polynomial. `curve = 0`
+lands on `m = 0` through steps that are all exact in binary, and the linear case
+returns `x` itself — so the default brush's radius is the exact product
+`radius · pressure · taper` it always was, and every golden holds.
+
+**A steep response is paid for in segments.** A segment sweeps at one value of
+everything, so the flattener's attribute budget — 2% of a pen unit — has to be 2%
+of the *parameter*, and a curve stretches the one into the other. So
+`flatten_tolerance` divides the budget by `Modulations::max_slope`, the largest
+`|d factor / d input|` across the mapped targets, which is why the bias is
+clamped (`MIN_BIAS = 0.1`, so the slope tops out at 9) rather than left open. The
+unmodulated brush and every plain linear mapping come out at exactly 1 and
+flatten on the budget they always had.
+
+**Resolution happens in one place**: `generate_segments_in`, alongside the taper,
+where the pen attributes are already interpolated per segment. Both render paths
+flatten through it, so a live tail and the commit that replaces it cannot read
+the pen differently. Downstream, the four rates ride the `Segment` — the stamp
+loop already carried its λs per dispatch and needed no change at all, and the
+swept path moved `add` off the per-tile uniform onto the segment instance
+(`extra.w`), leaving `drain` behind because `drain` is a function of arc length
+that every fragment recovers for itself. `hardness` and `charge` are deliberately
+not targets: hardness is baked into a prefix-τ texture per value, and `charge` is
+an initial condition rather than a rate, so neither has a per-segment form to
+modulate. Adding the field bumped the wire version to 3 (§8): postcard writes no
+field names, so an appended field is still a break, and `#[serde(default)]`
+cannot fill what a non-self-describing format never marked as absent.
+
+In the UI (§11) the mapping lives **on the parameter's own row** — a chip naming
+what drives it, opening source / floor / curve in place, one row at a time — so a
+brush with no mapping looks exactly as it did, and reading a brush does not mean
+holding a separate matrix against the sliders.
 
 ### Colour dynamics (colour jitter)
 

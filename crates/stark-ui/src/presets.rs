@@ -16,7 +16,8 @@
 use dioxus::prelude::*;
 
 use stark_core::document::{
-    BrushDynamics, BrushParams, BrushShape, ColorDynamics, NoiseKind, OrientationSource,
+    BrushDynamics, BrushParams, BrushShape, ColorDynamics, ModSource, Modulation, Modulations,
+    NoiseKind, OrientationSource,
 };
 
 use crate::builtins;
@@ -95,12 +96,32 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
         // A pencil: a broken-edged stamp held at the pen's own angle, laying
         // very little paint per pass so the tooth of the paper shows and a
         // second pass over the same line reads as darker.
+        //
+        // The one preset that maps the pen somewhere other than the default
+        // (§6.2), because a pencil is the tool where the two axes visibly do
+        // different jobs: **tilt widens it** — laying a pencil over is how you get
+        // a shading stroke out of the same point — and **pressure darkens it**,
+        // which is the graphite the lead gives up rather than the width of the
+        // contact patch. Size off tilt rather than pressure is the whole reason
+        // `size` is a mapping and not a rule.
         PresetEntry {
             name: "Pencil".to_string(),
             brush: BrushParams {
                 radius: 18.0,
                 shape: stamp(builtins::BRISTLES),
                 orientation: OrientationSource::Pen,
+                modulation: Modulations {
+                    // Upright is a point but not a hairline; flat is the full
+                    // radius. The floor is what keeps it drawable with a mouse,
+                    // which reports no tilt at all.
+                    size: Some(Modulation {
+                        source: ModSource::Tilt,
+                        floor: 0.25,
+                        curve: 0.0,
+                    }),
+                    flow: Some(Modulation::linear(ModSource::Pressure)),
+                    ..Modulations::default()
+                },
                 dynamics: BrushDynamics {
                     add: 0.2,
                     ..BrushDynamics::default()
@@ -118,6 +139,15 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
             brush: BrushParams {
                 radius: 500.0,
                 shape: BrushShape::Round { hardness: 0.5 },
+                modulation: Modulations {
+                    size: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.6,
+                        curve: 0.0,
+                    }),
+                    flow: Some(Modulation::linear(ModSource::Pressure)),
+                    ..Modulations::default()
+                },
                 dynamics: BrushDynamics {
                     add: 0.1,
                     ..BrushDynamics::default()

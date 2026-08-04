@@ -22,7 +22,10 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use stark_core::document::{BrushParams, BrushShape, NoiseKind, OrientationSource, Tool};
+use stark_core::document::{
+    BrushParams, BrushShape, ModSource, Modulation, Modulations, NoiseKind, OrientationSource,
+    PenState, Tool,
+};
 use stark_core::geom::Vec2;
 use stark_core::{ColorSpaceId, InputSample};
 
@@ -62,6 +65,102 @@ const EDIT_THROTTLE_MS: i32 = 50;
 
 /// A deferred brush mutation: the latest slider edit during a throttle window.
 type BrushEdit = Box<dyn FnOnce(&mut BrushParams)>;
+
+/// The parameters the pen can drive (§6.2) — one variant per field of
+/// [`Modulations`], and the addressing for the one open mapping row.
+///
+/// It carries everything about a row that differs: its word, its range, where its
+/// base value lives on the brush, and which mapping slot belongs to it. That is what
+/// lets [`mod_slider`] take a `ModRow` and nothing else, and it is why the rows
+/// cannot drift out of step with the engine's set — adding a target to
+/// `Modulations` and not here fails to compile at [`Self::slot`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ModRow {
+    Size,
+    Flow,
+    Lift,
+    Deposit,
+    Bleed,
+}
+
+impl ModRow {
+    /// The word on the row, which is also the word the section already used for the
+    /// parameter — "Flow" for `add`, not "Add".
+    fn label(self) -> &'static str {
+        match self {
+            Self::Size => "Size",
+            Self::Flow => "Flow",
+            Self::Lift => "Lift",
+            Self::Deposit => "Deposit",
+            Self::Bleed => "Bleed",
+        }
+    }
+
+    /// The base slider's range. The three pickup axes stop at 0.95 for the reason
+    /// they always did — λ diverges at 1 (§6.2).
+    fn range(self) -> (f32, f32) {
+        match self {
+            Self::Size => (1.0, MAX_RADIUS),
+            Self::Flow => (0.0, 3.0),
+            Self::Lift | Self::Deposit | Self::Bleed => (0.0, 0.95),
+        }
+    }
+
+    fn get(self, b: &BrushParams) -> f32 {
+        match self {
+            Self::Size => b.radius,
+            Self::Flow => b.dynamics.add,
+            Self::Lift => b.dynamics.lift,
+            Self::Deposit => b.dynamics.deposit,
+            Self::Bleed => b.dynamics.bleed,
+        }
+    }
+
+    fn set(self, b: &mut BrushParams, v: f32) {
+        match self {
+            Self::Size => b.radius = v,
+            Self::Flow => b.dynamics.add = v,
+            Self::Lift => b.dynamics.lift = v,
+            Self::Deposit => b.dynamics.deposit = v,
+            Self::Bleed => b.dynamics.bleed = v,
+        }
+    }
+
+    fn slot(self, m: &mut Modulations) -> &mut Option<Modulation> {
+        match self {
+            Self::Size => &mut m.size,
+            Self::Flow => &mut m.flow,
+            Self::Lift => &mut m.lift,
+            Self::Deposit => &mut m.deposit,
+            Self::Bleed => &mut m.bleed,
+        }
+    }
+
+    fn of(self, m: &Modulations) -> Option<Modulation> {
+        match self {
+            Self::Size => m.size,
+            Self::Flow => m.flow,
+            Self::Lift => m.lift,
+            Self::Deposit => m.deposit,
+            Self::Bleed => m.bleed,
+        }
+    }
+}
+
+/// The class a two-state chip wears. Shared by every chip row in the dialog, so a
+/// selected shape, a selected noise kind and a selected pen source all light the
+/// same way.
+fn chip(active: bool) -> &'static str {
+    if active { "chip active" } else { "chip" }
+}
+
+/// The word a source wears on its chip.
+fn source_label(s: ModSource) -> &'static str {
+    match s {
+        ModSource::Pressure => "Pressure",
+        ModSource::Tilt => "Tilt",
+    }
+}
 
 /// Shared `Copy` handle to the preview's signals.
 #[derive(Clone, Copy)]
@@ -125,6 +224,11 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     let _surface_open = use_signal(|| false);
     // Per-section "Show more" for the rarely-touched knobs.
     let pickup_more = use_signal(|| false);
+    // Which parameter's pen mapping is open, at most one at a time — so the dialog
+    // grows by one sub-row while a mapping is being edited and by nothing otherwise
+    // (see [`mod_slider`]). Held here rather than per row because the rows are plain
+    // calls, not components, and because "one at a time" is the behaviour wanted.
+    let mod_open = use_signal(|| None::<ModRow>);
 
     let brush = state
         .obs
@@ -147,7 +251,6 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         ColorSpaceId::Mixbox => ["Pigment 1", "Pigment 2", "Pigment 3"],
         _ => ["Lightness", "Green \u{2194} red", "Blue \u{2194} yellow"],
     };
-    let chip = |active: bool| if active { "chip active" } else { "chip" };
 
     rsx! {
         div {
@@ -215,8 +318,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                                     "Pen angle" }
                             }
                         }
-                        Slider { label: "Size", min: 1.0, max: MAX_RADIUS, value: brush.radius,
-                            oninput: move |v| edit(state, preview, move |b| b.radius = v) }
+                        {mod_slider(state, preview, mod_open, ModRow::Size, brush)}
                         if let BrushShape::Round { hardness } = brush.shape {
                             Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
                                 oninput: move |v| edit(state, preview, move |b| {
@@ -240,8 +342,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         open: paint_open,
                         // `add` is the tool's only source term (§6.2) and its only amount
                         // knob: the paint height laid per unit swept optical depth.
-                        Slider { label: "Flow", min: 0.0, max: 3.0, value: d.add,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.add = v) }
+                        {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
                         // Per-unit opacity, independent of the amount laid (§6.1).
                         // The ghost the Layers panel's opacity wears: the same question
                         // — how much of what is under this shows through — asked of the
@@ -294,16 +395,17 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         title: "Pickup", desc: "Canvas paint on the move — smudge, knife, eraser, blur.",
                         glyph: icons::PICKUP,
                         open: pickup_open,
-                        Slider { label: "Lift", min: 0.0, max: 0.95, value: d.lift,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.lift = v) }
-                        Slider { label: "Deposit", min: 0.0, max: 0.95, value: d.deposit,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.deposit = v) }
+                        // The three axes a palette knife is built out of, and the three
+                        // most worth mapping onto the pen: a knife that lifts with
+                        // pressure and lays back with tilt is those two chips
+                        // (§6.2).
+                        {mod_slider(state, preview, mod_open, ModRow::Lift, brush)}
+                        {mod_slider(state, preview, mod_open, ModRow::Deposit, brush)}
                         // The lateral axis: the paint under the tip diffuses towards its
                         // neighbours (§6.2). Alone it is a blur brush; under `add` it
                         // melts the ridges of the strokes being painted over. Capped at
                         // 0.95 like the two vertical rates — the λ diverges at 1.
-                        Slider { label: "Bleed", min: 0.0, max: 0.95, value: d.bleed,
-                            oninput: move |v| edit(state, preview, move |b| b.dynamics.bleed = v) }
+                        {mod_slider(state, preview, mod_open, ModRow::Bleed, brush)}
                         More { open: pickup_more,
                             // The finite glob pre-loaded on the tool (palette knife, §6.2).
                             Slider { label: "Charge", min: 0.0, max: 2.0, value: d.charge,
@@ -312,6 +414,156 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     }
 
                 }
+            }
+        }
+    }
+}
+
+/// A parameter slider with its **pen mapping** hung off the end (§6.2): the base
+/// slider exactly as it was, plus a chip naming what drives it, which opens the
+/// mapping's own controls in place.
+///
+/// The chip is the whole design decision. A brush with no mapping on this row reads
+/// as one word and one track, as it always did; the mapping is a second line only
+/// while it is being edited, and only ever one row at a time (`open` holds a single
+/// [`ModRow`]). The alternative — a "pen response" section listing every target —
+/// puts the control a fold away from the parameter it drives, so reading a brush
+/// means holding two lists against each other.
+///
+/// **A plain function, not a `#[component]`.** The sub-row's own sliders write their
+/// `oninput` closures wherever this is expanded, and [`edit`]'s throttle task is
+/// `spawn`ed into that scope. A child component would be unmounted by a section fold
+/// or by the chip closing, killing the task with `cooling` stuck at `true` and gating
+/// every later edit — the same hazard [`edit`]'s own note describes. Called inline it
+/// runs in `BrushEditorModal`'s scope, which is where the state it touches lives.
+fn mod_slider(
+    state: AppState,
+    preview: Preview,
+    open: Signal<Option<ModRow>>,
+    row: ModRow,
+    brush: BrushParams,
+) -> Element {
+    let mut open = open;
+    let (min, max) = row.range();
+    let m = row.of(&brush.modulation);
+    let expanded = open() == Some(row);
+    // The chip says what is driving the parameter, which is the one thing a glance
+    // needs; unmapped it is a bare "+", the same invitation it wears everywhere else.
+    let chip_class = if m.is_some() {
+        "mod-chip active"
+    } else {
+        "mod-chip"
+    };
+
+    rsx! {
+        div { class: "mod-slider",
+            Slider { label: row.label().to_string(), min, max, value: row.get(&brush),
+                oninput: move |v| edit(state, preview, move |b| row.set(b, v)) }
+            button {
+                class: chip_class,
+                title: "What the pen drives this with",
+                onclick: move |_| open.set(if expanded { None } else { Some(row) }),
+                match m {
+                    Some(m) => rsx! { "{source_label(m.source)}" },
+                    None => rsx! { {icon(icons::ADD)} },
+                }
+            }
+        }
+        if expanded {
+            div { class: "be-sub mod-panel",
+                div { class: "brush-shapes",
+                    button { class: chip(m.is_none()),
+                        onclick: move |_| set_source(state, preview, row, None),
+                        "Off" }
+                    for src in [ModSource::Pressure, ModSource::Tilt] {
+                        button {
+                            key: "{source_label(src)}",
+                            class: chip(m.is_some_and(|m| m.source == src)),
+                            onclick: move |_| set_source(state, preview, row, Some(src)),
+                            "{source_label(src)}"
+                        }
+                    }
+                }
+                if let Some(m) = m {
+                    // The two shape knobs, and the curve they describe drawn beside
+                    // them — the factor is what actually reaches the renderer, and a
+                    // number pair for a curve is the one thing a picture reads better.
+                    div { class: "mod-shape",
+                        div { class: "mod-shape-knobs",
+                            // What survives a feather touch (or an upright pen). This
+                            // is what makes a tilt-driven brush usable with a mouse,
+                            // which reports no tilt at all.
+                            Slider { label: "At zero".to_string(), min: 0.0, max: 1.0, value: m.floor,
+                                oninput: move |v| edit(state, preview, move |b| {
+                                    if let Some(m) = row.slot(&mut b.modulation) { m.floor = v; }
+                                }) }
+                            // Negative = late, positive = early; 0 is linear,
+                            // exactly. Unlabelled at its ends because the plot
+                            // beside it moves as the knob does, which says which
+                            // way is which better than two words either side of a
+                            // track this narrow.
+                            Slider { label: "Response".to_string(),
+                                min: -1.0, max: 1.0, value: m.curve,
+                                oninput: move |v| edit(state, preview, move |b| {
+                                    if let Some(m) = row.slot(&mut b.modulation) { m.curve = v; }
+                                }) }
+                        }
+                        {curve_plot(m)}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Set (or clear) a row's mapping source, keeping the shape it already had — so
+/// switching pressure → tilt is one edit rather than three.
+fn set_source(state: AppState, preview: Preview, row: ModRow, source: Option<ModSource>) {
+    edit(state, preview, move |b| {
+        let held = row.of(&b.modulation);
+        *row.slot(&mut b.modulation) = source.map(|source| Modulation {
+            source,
+            ..held.unwrap_or(Modulation::linear(source))
+        });
+    });
+}
+
+/// The mapping's response drawn as a curve: input left → right, the factor it
+/// multiplies the parameter by bottom → top.
+///
+/// Sampled from [`Modulation::factor`] itself rather than redrawn from the formula,
+/// so the picture cannot disagree with the renderer — including about the floor and
+/// about the clamps. Both sources are fed the same sweep, which is what makes one
+/// plot serve either.
+fn curve_plot(m: Modulation) -> Element {
+    const N: usize = 25;
+    const W: f32 = 56.0;
+    const H: f32 = 30.0;
+    let pad = 1.5;
+    let pts: String = (0..N)
+        .map(|i| {
+            let x = i as f32 / (N - 1) as f32;
+            let f = m.factor(PenState {
+                pressure: x,
+                tilt: x,
+            });
+            let px = pad + x * (W - 2.0 * pad);
+            let py = H - pad - f * (H - 2.0 * pad);
+            format!("{px:.2},{py:.2} ")
+        })
+        .collect();
+    rsx! {
+        svg {
+            class: "mod-curve",
+            view_box: "0 0 {W} {H}",
+            width: "{W}",
+            height: "{H}",
+            polyline {
+                points: "{pts}",
+                fill: "none",
+                stroke: "currentColor",
+                stroke_width: "1.5",
+                stroke_linejoin: "round",
             }
         }
     }

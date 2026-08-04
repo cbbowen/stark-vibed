@@ -10,7 +10,7 @@ use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::document::{BrushParams, OrientationSource, StrokeRecord};
+use crate::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::noise::NOISE_TILE_PX;
 
@@ -45,18 +45,39 @@ pub(super) struct Segment {
     /// Arc length from the stroke start to this segment's start (canvas px) — the
     /// third axis of the colour-dynamics noise lookup (§6.2).
     pub(super) dist: f32,
+    /// The brush's paint rates **as the pen asked for them here** (§6.2): the four
+    /// axes of [`BrushDynamics`](crate::document::BrushDynamics) scaled by whatever
+    /// [`Modulations`](crate::document::Modulations) maps onto each.
+    ///
+    /// They live on the segment rather than on the stroke because that is now what
+    /// they are — the pen attributes they follow are interpolated per segment, and
+    /// the flattener already holds their step to
+    /// [`FlattenTolerance::attribute`](crate::path::FlattenTolerance::attribute).
+    /// Each is at most the brush's own value, never more, which is what lets every
+    /// bound taken against `rec.brush` stay a bound (see
+    /// [`Modulation`](crate::document::Modulation)).
+    ///
+    /// `charge` is absent on purpose: it is the tool's *initial* load, one number for
+    /// the whole stroke, and there is no per-segment version of it to carry.
+    pub(super) add: f32,
+    pub(super) lift: f32,
+    pub(super) deposit: f32,
+    pub(super) bleed: f32,
 }
 
-/// Per-segment instance data for the sweep shader. Carries only what actually varies
-/// from segment to segment — the paint rates are stroke constants and ride the
-/// `TileXform` uniform instead (see [`generate_segments_in`]).
+/// Per-segment instance data for the sweep shader. Carries what actually varies from
+/// segment to segment; `drain` is the one rate that does not, and rides the
+/// `TileXform` uniform because it is recovered per *fragment* from its own arc
+/// length rather than being a segment constant at all (see [`generate_segments_in`]).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub(super) struct SegmentInstance {
     pub(super) start: [f32; 2],
     pub(super) dir: [f32; 2],  // unit tangent at the segment start
     pub(super) geom: [f32; 2], // radius, arc length
-    // orientation (turns ∈ [0,1)), arc length at segment start, signed curvature, _
+    // orientation (turns ∈ [0,1)), arc length at segment start, signed curvature,
+    // and the `add` source rate — the one paint rate the swept path reads, here
+    // because a modulation can point at it (§6.2).
     pub(super) extra: [f32; 4],
 }
 
@@ -246,8 +267,13 @@ impl Taper {
 }
 
 /// Build swept segments from the fitted control points (§6.2): flatten
-/// the curve adaptively, then make each polyline edge a segment. Radius follows
-/// pressure and the stroke's start/end tapers.
+/// the curve adaptively, then make each polyline edge a segment. This is where the
+/// brush's fixed numbers become the per-segment ones the shaders read: the radius
+/// follows the size mapping and the stroke's start/end tapers, and each paint rate
+/// follows whatever [`Modulations`](crate::document::Modulations) points at it
+/// (§6.2). **It is the only place a modulation is resolved** — both render paths
+/// flatten through here, so a live tail and the commit that replaces it cannot read
+/// the pen differently.
 ///
 /// **The `drain` falloff is deliberately not here.** It is a function of arc length
 /// alone, and every shader that reads a segment already knows the arc length of the
@@ -307,18 +333,35 @@ pub(super) fn generate_segments_in(
                 len: f32,
                 dist: f32,
                 tap: f32| {
+        // The pen as the modulations read it, at this segment's own attributes
+        // (§6.2). Both axes are already clamped to what a pen can report — the
+        // fitter clamps the *curve* and not just the control polygon
+        // (`PathFitter::path`) — so the factors below are honest without a second
+        // guard, and `Modulation::factor` clamps anyway.
+        let pen = PenState {
+            pressure,
+            tilt: tilt.length(),
+        };
+        let m = &b.modulation;
+        let d = b.dynamics;
         Segment {
             start: pos,
             dir,
             curvature: kappa,
-            // Pressure and the taper both scale the tip; the floor keeps a tapered
-            // tip a hairline at its very point rather than a degenerate zero-width
-            // sweep (which would also divide by zero in the dynamics loop's
-            // reservoir cadence).
-            radius: (b.radius * pressure * tap).max(0.5),
+            // The size mapping and the taper both scale the tip; the floor keeps a
+            // tapered tip a hairline at its very point rather than a degenerate
+            // zero-width sweep (which would also divide by zero in the dynamics
+            // loop's reservoir cadence). With the default brush the mapping is
+            // pressure, linearly, so this is the product it has always been — to the
+            // bit (`Modulation::factor`).
+            radius: (b.radius * m.size(pen) * tap).max(0.5),
             length: len,
             orient: orientation_turns(b.orientation, mid_dir, tilt),
             dist,
+            add: d.add * m.flow(pen),
+            lift: d.lift * m.lift(pen),
+            deposit: d.deposit * m.deposit(pen),
+            bleed: d.bleed * m.bleed(pen),
         }
     };
 
@@ -385,10 +428,12 @@ pub(super) fn generate_segments_in(
     // until the stroke has travelled a whole dab, so a partial range is always one
     // whose dab is zero, and the commit computes zero for it too.
     //
-    // `dab_bound` is the longest dwell any stroke of this brush could owe — pressure
-    // and the taper only ever scale the tip *down*, and the fitter clamps both to the
-    // curve as well as to its control points. So a stroke past it is past every dab,
-    // and an ordinary stroke leaves here without so much as walking its own polyline.
+    // `dab_bound` is the longest dwell any stroke of this brush could owe — the size
+    // mapping and the taper only ever scale the tip *down* (a modulation is a factor
+    // in [0, 1] by construction, `Modulation`), and the fitter clamps the pen
+    // attributes to the curve as well as to its control points. So a stroke past it
+    // is past every dab, and an ordinary stroke leaves here without so much as
+    // walking its own polyline.
     let dab_bound = DAB_TRAVEL * b.radius.max(0.5);
     if reaches_end && from_start && end_dist < dab_bound {
         // `range.start == 0` is what makes `end_dist` the whole stroke's arc length:
@@ -401,7 +446,11 @@ pub(super) fn generate_segments_in(
         // `factor` is exactly 1 and a tapered brush dots at full size rather than
         // leaving the invisible speck a taper read literally would give.
         let tap = taper.factor(mid);
-        let dwell = DAB_TRAVEL * (b.radius * pressure * tap).max(0.5) - end_dist;
+        let size = b.modulation.size(PenState {
+            pressure,
+            tilt: tilt.length(),
+        });
+        let dwell = DAB_TRAVEL * (b.radius * size * tap).max(0.5) - end_dist;
         if dwell > 0.0 {
             segs.insert(
                 0,
@@ -1660,6 +1709,13 @@ mod tests {
             length,
             orient: 0.0,
             dist: 0.0,
+            // The region measurements are geometry: they read the frame and the
+            // radius and nothing else, so the paint rates are left at zero rather
+            // than given values that would imply they were consulted.
+            add: 0.0,
+            lift: 0.0,
+            deposit: 0.0,
+            bleed: 0.0,
         }
     }
 

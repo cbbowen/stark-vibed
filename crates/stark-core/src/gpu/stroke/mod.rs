@@ -791,6 +791,18 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
     tol.position = tol.position.max(0.01 * b.radius);
+    // The `attribute` bound is a step in the **pen's** own units, and every quantity
+    // it was sized for used to be linear in one: radius followed pressure directly,
+    // so 2% of pressure was 2% of radius. A modulation puts a curve between the two
+    // (§6.2), and a steep one turns that 2% into as much as 18% of the parameter —
+    // which draws a ramp as a staircase, since a segment sweeps at one value of
+    // everything. So the budget is charged the curve's own slope, which is bounded by
+    // construction (`document::MIN_BIAS`) precisely so this bill is.
+    //
+    // Exactly 1 for the unmodulated brush and for every plain linear mapping,
+    // including the default pressure → size: those brushes flatten on the budget they
+    // always did, to the bit.
+    tol.attribute /= b.modulation.max_slope();
     // The tightest arc this tip may be swept along (§6.2). Both the
     // flattener and the segment generator get it from here, so an edge too tight to
     // sweep as an arc is priced as a chord as well as drawn as one.
@@ -843,6 +855,11 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
 /// about as hard as the transfer gets — comes out at exactly
 /// [`RESERVOIR_EXCHANGE_STEP`], leaving every golden that uses it untouched. A gentler
 /// brush earns its relaxation and nothing else changes.
+///
+/// Priced off the brush's own rates, not the modulated ones. A modulation only ever
+/// scales an axis down (`document::Modulation`), which lowers the transfer a segment
+/// completes and so the error the step bounds — the brush is charged its worst case
+/// and every segment of every stroke it draws comes in under it.
 fn exchange_travel(d: BrushDynamics) -> f32 {
     // Mirrors `dynamics.rs`'s own clamp, so the flattener prices the rates the shader
     // will actually run — an axis at 1.0 is `−∞` otherwise.

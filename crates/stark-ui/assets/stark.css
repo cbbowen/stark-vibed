@@ -1724,6 +1724,86 @@ button.layer-remove:hover {
   border-left: 2px solid #ffffff1f;
 }
 
+/* --- brush editor: pen mappings (§6.2) --- */
+
+/* A parameter slider with its mapping chip at the end of the row. The slider takes
+   the space it always had; the chip is what the row grew by. Baseline-aligned to the
+   track rather than centred on the row, because the row is two lines (label over
+   track) and centring would float the chip between them. */
+.mod-slider {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.mod-slider .slider-row {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Unmapped it is a bare "+" and recedes; mapped it carries the source's word and
+   lights, so which parameters the pen drives is legible without opening anything. */
+.mod-chip {
+  flex: none;
+  margin-bottom: 8px;
+  padding: 2px 7px;
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  background: none;
+  color: #e8e8ea;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 80ms, border-color 80ms, background 80ms;
+}
+
+.mod-chip:hover {
+  opacity: 1;
+}
+
+.mod-chip.active {
+  opacity: 1;
+  border-color: #3a6ea5;
+  background: #3a6ea533;
+}
+
+.mod-chip svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+
+.mod-panel {
+  margin-bottom: 10px;
+}
+
+/* The two shape knobs beside the curve they describe. */
+.mod-shape {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.mod-shape-knobs {
+  flex: 1;
+  min-width: 0;
+}
+
+.mod-shape-knobs .slider-row:last-child {
+  margin-bottom: 0;
+}
+
+.mod-curve {
+  flex: none;
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  background: #ffffff08;
+  color: #9fc3e8;
+}
+
 /* In-section "Show more / Show less" disclosure. */
 .be-more {
   border: none;

@@ -15,9 +15,11 @@ struct TileXform {
     // (.w). Constant across the stroke — colour dynamics (below) jitter the channels
     // per fragment, and `drain` fades the opacity per fragment (see `stroke_drain`).
     color: vec4<f32>,
-    // The stroke's paint rates: the `add` source in .x (height per unit swept optical
-    // depth) and the `drain` falloff per canvas px in .y; .zw unused. Both are
-    // stroke constants — see `stroke_drain` for why they are not per-segment.
+    // The `drain` falloff per canvas px in .x; .yzw unused. A stroke constant in the
+    // only sense that matters — it is a function of arc length, which every fragment
+    // knows, so it is evaluated there (`stroke_drain`). The `add` source used to sit
+    // beside it and does not any more: it is pen-driven (§6.2) and rides the segment
+    // instance, like the radius.
     paint: vec4<f32>,
     // Colour dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
@@ -52,13 +54,13 @@ struct VsOut {
     // interpolating them across a curved sweep would be meaningless.
     @location(1) @interpolate(flat) start: vec2<f32>,
     @location(2) @interpolate(flat) dir: vec2<f32>,
-    // radius, arc length. The paint rates that used to ride here are stroke constants
-    // on the uniform instead (`xf.paint`, `stroke_drain`).
+    // radius, arc length.
     @location(3) @interpolate(flat) geom: vec2<f32>,
     // Shape orientation in turns ∈ [0,1) (the relative angle between the shape's
     // native axis and the travel direction, picking the prefix-τ slice, §6.6); the
     // arc length of the segment's start from the stroke start (canvas px); the
-    // segment's signed curvature (1/canvas px).
+    // segment's signed curvature (1/canvas px); and the `add` source rate — height
+    // per unit swept optical depth, as the pen asked for it here (§6.2).
     @location(4) @interpolate(flat) extra: vec4<f32>,
 }
 
@@ -272,7 +274,7 @@ fn stroke_arc(in: VsOut, sw: Sweep) -> f32 {
 // in arc length, and a linear function sampled at the fragment's own position needs no
 // correction at all.
 fn stroke_drain(arc: f32) -> f32 {
-    return max(1.0 - xf.paint.y * arc, 0.0);
+    return max(1.0 - xf.paint.x * arc, 0.0);
 }
 
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0

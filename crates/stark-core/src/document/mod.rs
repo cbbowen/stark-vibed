@@ -13,7 +13,8 @@ pub mod warp;
 
 pub use action::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
-    ColorDynamics, NoiseKind, OrientationSource, StrokeRecord, Tool,
+    ColorDynamics, ModSource, Modulation, Modulations, NoiseKind, OrientationSource, PenState,
+    StrokeRecord, Tool,
 };
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
 pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion};

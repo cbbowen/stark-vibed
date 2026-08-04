@@ -1062,14 +1062,15 @@ fn dynamics_plan(
     settle: bool,
 ) -> Vec<LoopDispatch> {
     let b = &rec.brush;
-    let d = b.dynamics;
     // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
     // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
     // which is what a 0..1 knob should mean, rather than per unit optical depth.
+    //
+    // Taken **per segment**, off the rates the segment generator resolved from the
+    // pen (§6.2), rather than once for the stroke. Nothing else about the loop
+    // changes: every dispatch already carried its own λs in its slot, because a
+    // segment is where the exchange happens.
     let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
-    let l_lift = lambda(d.lift);
-    let l_dep = lambda(d.deposit);
-    let l_bleed = lambda(d.bleed);
     // Colour dynamics for the `add` paint — the same uniform triplet as the fast
     // path, so both paths sample the identical field (§6.2).
     let (nfreq, namp, noff) = noise_uniform(rec);
@@ -1125,8 +1126,8 @@ fn dynamics_plan(
                 s.dir.y,
                 s.radius,
                 s.length / s.radius,
-                l_lift,
-                l_dep,
+                lambda(s.lift),
+                lambda(s.deposit),
                 channels[0],
                 channels[1],
                 channels[2],
@@ -1150,7 +1151,10 @@ fn dynamics_plan(
                 // the flow. The tuning it claimed is already met without it: a pass of
                 // the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so `add = 1` lays 6.9
                 // of height, which the slab law reads as 0.999 coverage.
-                d.add,
+                //
+                // Off the segment, since the pen can drive it (§6.2) — the same
+                // number the swept path now reads off its instance.
+                s.add,
                 s.curvature,
                 mid.x,
                 mid.y,
@@ -1227,7 +1231,12 @@ fn dynamics_plan(
                     0.0,
                     0.0,
                     0.0,
-                    l_bleed,
+                    // The firing's own rate, as the pen asked for it at the crossing
+                    // (`bleed_fires`). A firing whose modulated rate has fallen to
+                    // zero still dispatches: λ = 0 makes it the identity, and keeping
+                    // the plan a pure function of the segmentation is worth more than
+                    // the dispatch it would save.
+                    lambda(f.bleed),
                 ],
             });
         }
@@ -1266,8 +1275,11 @@ fn dynamics_plan(
                 tan.y,
                 s.radius,
                 0.0, // no travel: a pen-up is a break of contact, not a stretch of it
-                l_lift,
-                l_dep,
+                // The rates the *last* segment ran at, which is where the pen was
+                // when it left the page — the same segment this slot takes its radius
+                // and orientation from.
+                lambda(s.lift),
+                lambda(s.deposit),
                 channels[0],
                 channels[1],
                 channels[2],
@@ -1330,6 +1342,10 @@ fn dynamics_plan(
 /// function of the record, so this stays deterministic).
 fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
     let mut fires = Vec::new();
+    // The brush's own axis, so *which* windows fire stays a function of the geometry
+    // and the brush alone; how hard each one relaxes is the pen's business, and comes
+    // off the crossing segment below. A brush at zero bleed can be modulated nowhere
+    // above zero, so this early-out is exact (`document::Modulation`).
     if bleed <= 0.0 {
         return fires;
     }
@@ -1359,6 +1375,15 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
                 length: len,
                 orient: s.orient,
                 dist: start_arc,
+                // The window inherits the crossing segment's rates: it is that
+                // segment's own firing, and `bleed` is the only one it will use —
+                // every other axis is zeroed in the slot it becomes. Reading them
+                // from one point of the window is the same approximation the wick's
+                // cadence already makes about the radius it fires at.
+                add: s.add,
+                lift: s.lift,
+                deposit: s.deposit,
+                bleed: s.bleed,
             },
         ));
     }
@@ -1457,6 +1482,13 @@ pub(super) enum StrokePath {
 /// one segment's own footprint — which is [`segment_fits_region`]'s question.
 pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePath {
     let d = rec.brush.dynamics;
+    // The brush's **own** rates, not the modulated ones — and that is sound rather
+    // than an oversight the pen could catch out. A modulation is a factor in [0, 1]
+    // (`document::Modulation`), so an axis the brush leaves at zero is zero at every
+    // point of every stroke it could ever draw, and one it leaves positive is
+    // positive *somewhere*. There is no segment this test could be asked about that
+    // would answer differently — which is exactly the property the function's
+    // contract above needs, and the reason a modulation was built as a multiplier.
     if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 && d.bleed <= 0.0 {
         return StrokePath::Swept;
     }

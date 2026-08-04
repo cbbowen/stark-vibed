@@ -35,11 +35,13 @@ const SWEEP_VERTS: u32 = 18;
 struct TileXform {
     params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
     color: [f32; 4],  // brush channels (.xyz), per-unit opacity (.w)
-    /// The stroke's paint rates, all constant along it: the `add` source (height per
-    /// unit swept optical depth), the `drain` falloff per canvas px, and two spare.
-    /// They live here rather than on the segment instance because that is what they
-    /// are — properties of the brush, not of any one segment. The fragment applies
-    /// `drain` at its own arc length (see `generate_segments_in`).
+    /// The `drain` falloff per canvas px in `.x`; `.yzw` unused.
+    ///
+    /// It is here, and the `add` source is not, because of what each is a function
+    /// of. `drain` depends on arc length alone, which every fragment already knows,
+    /// so it is recovered per fragment and is a stroke constant in the only sense
+    /// that matters. `add` is a *pen*-driven quantity now (§6.2) and varies segment
+    /// to segment like the radius does, so it rides the instance.
     paint: [f32; 4],
     noise_freq: [f32; 4], // colour-dynamics frequency (across, along), 1/NOISE_TILE_PX, _
     noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
@@ -145,7 +147,7 @@ impl StrokeRenderer {
                 start: s.start.to_array(),
                 dir: s.dir.to_array(),
                 geom: [s.radius, s.length],
-                extra: [s.orient, s.dist, s.curvature, 0.0],
+                extra: [s.orient, s.dist, s.curvature, s.add],
             })
             .collect();
         // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
@@ -218,7 +220,7 @@ impl StrokeRenderer {
                     0.0,
                 ],
                 color: [channels[0], channels[1], channels[2], rec.brush.color[3]],
-                paint: [rec.brush.dynamics.add, rec.brush.drain, 0.0, 0.0],
+                paint: [rec.brush.drain, 0.0, 0.0, 0.0],
                 noise_freq: nfreq,
                 noise_amp: namp,
                 noise_off: noff,

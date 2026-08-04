@@ -251,6 +251,250 @@ impl ColorDynamics {
     }
 }
 
+/// What a [`Modulation`] reads off the pen (§6.2).
+///
+/// Both are already carried per point of the fitted curve
+/// ([`ControlPoint`](crate::path::ControlPoint)) and interpolated per swept segment,
+/// so a source here costs the renderer nothing to evaluate and nothing to store.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ModSource {
+    /// Pen pressure: 0 (barely touching) … 1 (pressed home). A mouse reports 1, so a
+    /// pressure-driven brush reads as *pressed* rather than as absent — which is why
+    /// this is the one that can be the default.
+    #[default]
+    Pressure,
+    /// How far the pen is leaned over: the **length** of the tilt vector, 0 (upright)
+    /// … 1 (flat on the page).
+    ///
+    /// A mouse reports 0, so a tilt-driven parameter sits at its
+    /// [`floor`](Modulation::floor) for the whole stroke. That is the honest reading
+    /// of "the pen is upright", not a degenerate case to special-case away — a brush
+    /// meant to be usable without a tablet says so by leaving the floor off zero.
+    Tilt,
+}
+
+/// The pen's state at one point of a stroke, as the modulations read it: both
+/// sources reduced to the [0, 1] each is quoted in.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PenState {
+    pub pressure: f32,
+    /// `tilt.length()` — the pen's lean, which is what a modulation asks about.
+    /// The *direction* it leans is a separate question, and the one
+    /// [`OrientationSource::Pen`] already answers.
+    pub tilt: f32,
+}
+
+/// One input driving one brush parameter, as a **multiplier** (§6.2).
+///
+/// The value that reaches the renderer is `param · factor(input)`, and the factor is
+/// held to `[0, 1]` by construction: a modulation can only ever scale a parameter
+/// *down* from the value its slider shows. **That bound is the whole design.** Every
+/// guarantee the rest of the engine derives from `BrushParams` — the frozen-span
+/// rule's radius bound ([`safe_frozen`](crate::gpu::stroke::safe_frozen)), the
+/// region fit, the choice of render path
+/// ([`dynamics_setup`](crate::gpu::stroke)), the flattener's exchange step — is
+/// stated against the brush's own numbers, and stays sound with no part of it
+/// learning that modulation exists. A remap that could also scale *up* would put a
+/// correction into every one of those places, and a missed one is a stroke that
+/// renders differently live and committed (§1.3).
+///
+/// It costs nothing in expressiveness: a pencil that widens as the pen leans over is
+/// the widest radius on the slider with `source = Tilt` and `floor` at the narrow
+/// end. The slider is the maximum, and the pen takes it away.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Modulation {
+    /// Which pen axis drives it.
+    pub source: ModSource,
+    /// The factor at **zero** input, in [0, 1]: how much of the parameter survives a
+    /// feather-light touch (or an upright pen). 0 = the parameter vanishes there, 1 =
+    /// the modulation does nothing at all.
+    pub floor: f32,
+    /// Response shape in [-1, 1]. 0 is linear; positive responds **early** (most of
+    /// the parameter's range is reached in the first part of the input's), negative
+    /// **late**.
+    pub curve: f32,
+}
+
+/// Clamp on [`Modulation::curve`]'s underlying bias, and so on how steep a response
+/// can be: the factor's slope reaches `(1 − k)/k` at one end of the input and
+/// `k/(1 − k)` at the other, which at 0.1 is **9**.
+///
+/// A bound rather than taste. A segment sweeps at *one* value of every parameter, so
+/// a steep response is paid for in segments — [`flatten_tolerance`] divides the
+/// attribute budget by [`Modulations::max_slope`] to keep a modulated ramp from
+/// drawing as a staircase, exactly as the taper's own slope buys pieces
+/// (`gpu::stroke::segments::Taper`). Unbounded steepness would be an unbounded bill.
+///
+/// [`flatten_tolerance`]: crate::gpu::stroke::flatten_tolerance
+const MIN_BIAS: f32 = 0.1;
+
+impl Modulation {
+    /// A plain linear modulation from `source`, scaling the parameter all the way to
+    /// zero — what "size follows pressure" has always meant here.
+    pub const fn linear(source: ModSource) -> Self {
+        Self {
+            source,
+            floor: 0.0,
+            curve: 0.0,
+        }
+    }
+
+    /// The multiplier in force at `pen`.
+    pub fn factor(&self, pen: PenState) -> f32 {
+        let x = match self.source {
+            ModSource::Pressure => pen.pressure,
+            ModSource::Tilt => pen.tilt,
+        };
+        let floor = clamp01(self.floor);
+        // `floor = 0` leaves this `0.0 + 1.0 * shape(x)`, which is `shape(x)` to the
+        // bit — so the default brush's radius is exactly the product it always was,
+        // and every golden holds.
+        floor + (1.0 - floor) * self.shape(clamp01(x))
+    }
+
+    /// The response curve: a **rational** bias, `x / (m(1 − x) + 1)`, monotone from
+    /// (0, 0) to (1, 1) for every `m > −1`.
+    ///
+    /// Rational rather than the usual `xᵞ` because this decides stored pixels, so
+    /// replay, goldens and peers have to agree on it to the last bit (§12.1) — the
+    /// same requirement that makes `taper_profile` a polynomial. IEEE-754 pins
+    /// `+ − × ÷` to a correctly-rounded result; `powf` is not specified at all.
+    fn shape(&self, x: f32) -> f32 {
+        let m = self.bias();
+        if m == 0.0 {
+            // The linear case, exactly — not `x / 1.0`, so nothing depends on the
+            // division being the identity it happens to be.
+            return x;
+        }
+        x / (m * (1.0 - x) + 1.0)
+    }
+
+    /// `m` in [`shape`](Self::shape), from the `[-1, 1]` knob the UI shows. `curve = 0`
+    /// lands on `k = 0.5` and so on `m = 0` — every step of which is exact in binary,
+    /// which is what makes the linear case unconditional rather than lucky.
+    fn bias(&self) -> f32 {
+        let k = (0.5 * (self.curve.clamp(-1.0, 1.0) + 1.0)).clamp(MIN_BIAS, 1.0 - MIN_BIAS);
+        1.0 / k - 2.0
+    }
+
+    /// A bound on `|d factor / d input|`, for the flattener (see [`MIN_BIAS`]).
+    ///
+    /// `shape`'s derivative is `(m + 1)/(m(1 − x) + 1)²`, monotone in `x`, so it is
+    /// largest at one end or the other: `k/(1 − k)` at 0 and `(1 − k)/k` at 1. The
+    /// floor scales the whole factor by `1 − floor`, so it scales the slope too.
+    pub fn max_slope(&self) -> f32 {
+        let k = (0.5 * (self.curve.clamp(-1.0, 1.0) + 1.0)).clamp(MIN_BIAS, 1.0 - MIN_BIAS);
+        let ends = (k / (1.0 - k)).max((1.0 - k) / k);
+        (1.0 - clamp01(self.floor)) * ends
+    }
+}
+
+/// `x` into [0, 1], with NaN landing on 0 — these arrive from files, presets and
+/// peers, and a NaN factor would propagate straight into a radius.
+///
+/// `max`-then-`min` rather than `clamp`, which is what makes that true:
+/// `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN. Same
+/// argument as [`BrushParams::taper_px`], and the reason clippy's suggestion here is
+/// the wrong one.
+#[allow(clippy::manual_clamp)]
+fn clamp01(x: f32) -> f32 {
+    x.max(0.0).min(1.0)
+}
+
+/// Which brush parameters the pen drives, and how (§6.2) — the mapping from pen
+/// input to brush parameter that makes one tool a brush and another a palette knife.
+///
+/// Exactly the parameters that already vary **per swept segment**, and no others. A
+/// segment carries one radius, one set of paint rates and one orientation (§6.6), so
+/// these are the quantities a modulation can reach without changing what a segment
+/// *is*; `hardness` (baked into the prefix-τ texture per value) and `charge` (an
+/// initial condition, not a rate) cannot be modulated at all, and are left out rather
+/// than carried as knobs that would do nothing.
+///
+/// `None` on a target is not "a modulation with no effect" — it is skipped entirely,
+/// so the parameter reaches the renderer as the exact float the slider holds.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct Modulations {
+    /// Scales [`BrushParams::radius`].
+    pub size: Option<Modulation>,
+    /// Scales [`BrushDynamics::add`] — the brush's own paint, "Flow" in the UI.
+    pub flow: Option<Modulation>,
+    /// Scales [`BrushDynamics::lift`].
+    pub lift: Option<Modulation>,
+    /// Scales [`BrushDynamics::deposit`].
+    pub deposit: Option<Modulation>,
+    /// Scales [`BrushDynamics::bleed`].
+    pub bleed: Option<Modulation>,
+}
+
+impl Modulations {
+    /// The everyday brush: **size follows pressure**, linearly, all the way to
+    /// nothing — the one mapping that used to be wired into the segment generator,
+    /// now stated where every other one is.
+    ///
+    /// Not [`Default`], which is "no mapping at all". Both are wanted:
+    /// [`BrushParams::default`] takes this, while a preset that means to hold its
+    /// width whatever the hand does asks for the empty set and gets it.
+    pub const PRESSURE_SIZE: Self = Self {
+        size: Some(Modulation::linear(ModSource::Pressure)),
+        flow: None,
+        lift: None,
+        deposit: None,
+        bleed: None,
+    };
+
+    /// [`Self::PRESSURE_SIZE`] as a function, for `#[serde(default = "…")]` — which
+    /// takes a path to call and cannot name a constant.
+    pub fn pressure_size() -> Self {
+        Self::PRESSURE_SIZE
+    }
+
+    /// The multiplier for one target — 1 exactly where there is no modulation.
+    fn factor(m: Option<Modulation>, pen: PenState) -> f32 {
+        m.map_or(1.0, |m| m.factor(pen))
+    }
+
+    pub fn size(&self, pen: PenState) -> f32 {
+        Self::factor(self.size, pen)
+    }
+    pub fn flow(&self, pen: PenState) -> f32 {
+        Self::factor(self.flow, pen)
+    }
+    pub fn lift(&self, pen: PenState) -> f32 {
+        Self::factor(self.lift, pen)
+    }
+    pub fn deposit(&self, pen: PenState) -> f32 {
+        Self::factor(self.deposit, pen)
+    }
+    pub fn bleed(&self, pen: PenState) -> f32 {
+        Self::factor(self.bleed, pen)
+    }
+
+    /// Every target at once, in the order they are declared above.
+    fn all(&self) -> [Option<Modulation>; 5] {
+        [self.size, self.flow, self.lift, self.deposit, self.bleed]
+    }
+
+    /// Whether any target is mapped.
+    pub fn is_active(&self) -> bool {
+        self.all().iter().any(Option::is_some)
+    }
+
+    /// The steepest response across every active target — how much finer the path has
+    /// to be flattened for a modulated ramp to stay smooth (see [`MIN_BIAS`] and
+    /// [`flatten_tolerance`](crate::gpu::stroke::flatten_tolerance)).
+    ///
+    /// 1 for the unmodulated brush *and* for the plain linear mappings, so the
+    /// everyday brush flattens on exactly the budget it always did.
+    pub fn max_slope(&self) -> f32 {
+        self.all()
+            .iter()
+            .flatten()
+            .map(Modulation::max_slope)
+            .fold(1.0, f32::max)
+    }
+}
+
 /// Brush configuration. `color` is straight **sRGB** RGBA; it is converted to
 /// the Oklab working space at stamp time (§6.5).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -302,6 +546,12 @@ pub struct BrushParams {
     /// rather than a sliver (see `gpu::stroke::segments::Taper`).
     #[serde(default)]
     pub end_taper_length: f32,
+    /// What the pen drives, and how (§6.2) — the mapping from pen input to brush
+    /// parameter. [`Modulations::PRESSURE_SIZE`] by default, which is the pressure →
+    /// radius scaling that was previously wired into the segment generator with no
+    /// way to turn it off or point it anywhere else.
+    #[serde(default = "Modulations::pressure_size")]
+    pub modulation: Modulations,
 }
 
 impl Default for BrushParams {
@@ -316,6 +566,7 @@ impl Default for BrushParams {
             color_dynamics: ColorDynamics::default(),
             start_taper_length: 0.0,
             end_taper_length: 0.0,
+            modulation: Modulations::PRESSURE_SIZE,
         }
     }
 }
@@ -811,5 +1062,163 @@ fn transform_apply(
             }
         }
         None => state,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pen(x: f32) -> PenState {
+        PenState {
+            pressure: x,
+            tilt: x,
+        }
+    }
+
+    /// A sweep of curve/floor pairs covering both directions of the bias and both
+    /// ends of the floor, plus the exact defaults.
+    fn shapes() -> Vec<Modulation> {
+        let mut out = Vec::new();
+        for source in [ModSource::Pressure, ModSource::Tilt] {
+            for curve in [-1.5, -1.0, -0.6, -0.2, 0.0, 0.2, 0.6, 1.0, 1.5] {
+                for floor in [0.0, 0.15, 0.5, 0.9, 1.0] {
+                    out.push(Modulation {
+                        source,
+                        floor,
+                        curve,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The property every bound elsewhere in the engine rests on: a modulation can
+    /// only take a parameter *away* (see [`Modulation`]). If this ever fails, the
+    /// frozen-span radius bound, the region fit and the exchange step are all being
+    /// computed against a number the renderer can exceed.
+    #[test]
+    fn a_factor_never_leaves_the_unit_interval() {
+        for m in shapes() {
+            // Deliberately fed values outside what a pen reports, and NaN: these
+            // arrive from files, presets and peers.
+            for x in [-5.0, -0.001, 0.0, 0.3, 0.7, 1.0, 1.001, 9.0, f32::NAN] {
+                let f = m.factor(pen(x));
+                assert!(
+                    (0.0..=1.0).contains(&f),
+                    "factor({x}) = {f} escaped [0, 1] for {m:?}"
+                );
+            }
+        }
+    }
+
+    /// `curve = 0` is the identity, **to the bit** — which is what keeps the default
+    /// brush's radius the exact product `radius · pressure · taper` it always was,
+    /// and every golden with it.
+    #[test]
+    fn a_linear_mapping_is_the_bare_input() {
+        let m = Modulation::linear(ModSource::Pressure);
+        for i in 0..=1000 {
+            let x = i as f32 / 1000.0;
+            assert_eq!(
+                m.factor(pen(x)).to_bits(),
+                x.to_bits(),
+                "the linear mapping moved {x}"
+            );
+        }
+    }
+
+    /// No mapping is not a mapping with no effect: the parameter is untouched.
+    #[test]
+    fn an_unmapped_target_is_exactly_one() {
+        let none = Modulations::default();
+        assert!(!none.is_active());
+        for x in [0.0, 0.25, 1.0] {
+            assert_eq!(none.flow(pen(x)), 1.0);
+            assert_eq!(none.lift(pen(x)), 1.0);
+        }
+        // …and the everyday brush maps size alone.
+        let m = Modulations::PRESSURE_SIZE;
+        assert_eq!(m.size(pen(0.4)).to_bits(), 0.4f32.to_bits());
+        assert_eq!(m.flow(pen(0.4)), 1.0);
+    }
+
+    /// The curve is a response, so it has to be one: monotone, at the floor when the
+    /// pen gives nothing, and at the full parameter when it gives everything.
+    #[test]
+    fn the_response_is_monotone_between_its_two_ends() {
+        for m in shapes() {
+            let floor = m.floor.clamp(0.0, 1.0);
+            assert!(
+                (m.factor(pen(0.0)) - floor).abs() < 1e-6,
+                "zero input should give the floor for {m:?}"
+            );
+            assert!(
+                (m.factor(pen(1.0)) - 1.0).abs() < 1e-6,
+                "full input should give the whole parameter for {m:?}"
+            );
+            let mut prev = f32::NEG_INFINITY;
+            for i in 0..=200 {
+                let f = m.factor(pen(i as f32 / 200.0));
+                assert!(f >= prev - 1e-6, "the response fell back at {i} for {m:?}");
+                prev = f;
+            }
+        }
+    }
+
+    /// [`Modulation::max_slope`] is what the flattener buys segments against
+    /// (`gpu::stroke::flatten_tolerance`), so it has to be a true bound rather than a
+    /// typical value — an under-estimate draws a ramp as a staircase.
+    #[test]
+    fn max_slope_bounds_the_response() {
+        for m in shapes() {
+            let bound = m.max_slope();
+            let h = 1.0 / 4096.0;
+            for i in 0..4096 {
+                let x = i as f32 * h;
+                let slope = (m.factor(pen(x + h)) - m.factor(pen(x))) / h;
+                assert!(
+                    slope <= bound + 1e-3,
+                    "slope {slope} at {x} exceeds the bound {bound} for {m:?}"
+                );
+            }
+        }
+    }
+
+    /// The unmodulated brush and every plain linear mapping cost the flattener
+    /// nothing: `attribute / 1.0` is the budget it always had.
+    #[test]
+    fn a_linear_brush_pays_no_extra_flattening() {
+        assert_eq!(Modulations::default().max_slope(), 1.0);
+        assert_eq!(Modulations::PRESSURE_SIZE.max_slope(), 1.0);
+        // A steep one does pay, and the bill is bounded (`MIN_BIAS`).
+        let steep = Modulations {
+            flow: Some(Modulation {
+                source: ModSource::Tilt,
+                floor: 0.0,
+                curve: -1.0,
+            }),
+            ..Modulations::default()
+        };
+        let slope = steep.max_slope();
+        assert!(
+            (1.0..=9.0 + 1e-4).contains(&slope),
+            "an extreme curve should cost something, and a bounded something: {slope}"
+        );
+    }
+
+    /// A modulation is a pure function of floats, so replay, goldens and peers agree
+    /// on it — which is only true while it stays clear of the unspecified library
+    /// transcendentals (`Modulation::shape`). Cheap standing check that the value is
+    /// reproducible within a build at least.
+    #[test]
+    fn a_factor_is_reproducible() {
+        for m in shapes() {
+            for i in 0..=64 {
+                let x = i as f32 / 64.0;
+                assert_eq!(m.factor(pen(x)).to_bits(), m.factor(pen(x)).to_bits());
+            }
+        }
     }
 }
