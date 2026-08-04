@@ -312,6 +312,35 @@ impl DocState {
         }
     }
 
+    /// Copy a layer — and everything it carries — and splice the copy into the
+    /// source's own stack, directly above it (§14.8).
+    ///
+    /// `ids` pairs every layer of the subtree with the id its copy takes, root
+    /// first; see [`ActionKind::DuplicateLayer`] for why the map travels in the
+    /// action rather than being minted here. The copy is the source *record*, id
+    /// replaced — same tiles, same name, same opacity — because that is what a
+    /// duplicate is. The name comes along rather than being decorated into
+    /// "Sky copy": a name in the document is the author's own word, and inventing
+    /// one here would be the engine writing a name nobody typed (see
+    /// [`Layer::name`]).
+    ///
+    /// Nothing happens — deterministically, so peers and replays agree — when the
+    /// source is absent, or when the subtree holds a layer `ids` does not name.
+    ///
+    /// [`ActionKind::DuplicateLayer`]: super::action::ActionKind::DuplicateLayer
+    pub fn duplicate_layer(&self, ids: &[(LayerId, LayerId)]) -> Self {
+        let Some((source, _)) = ids.first() else {
+            return self.clone();
+        };
+        let Some(layer) = self.layer(*source) else {
+            return self.clone();
+        };
+        let Some(copy) = copy_subtree(layer, ids) else {
+            return self.clone();
+        };
+        self.insert(copy, self.carrier_of(*source), Some(*source))
+    }
+
     /// Put `layer` back at `site` — the inverse of removing it
     /// (§14.8). It comes back carrying whatever it carried, because a `Layer` owns
     /// its subtree.
@@ -541,6 +570,28 @@ fn map_in(
         }
     }
     None
+}
+
+/// `layer` and everything it carries, re-identified through `ids` — or `None`
+/// if the map does not name every layer in the subtree, which is the one way a
+/// duplicate declines.
+///
+/// All-or-nothing on purpose: a partially re-identified subtree would share ids
+/// with the layers it was copied from, and two layers under one id is the state
+/// [`LayerId::mint`] exists to make impossible.
+fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)]) -> Option<Layer> {
+    let id = ids
+        .iter()
+        .find_map(|(src, copy)| (*src == layer.id).then_some(*copy))?;
+    let mut carries = Vector::new();
+    for l in layer.carries.iter() {
+        carries = carries.push_back(copy_subtree(l, ids)?);
+    }
+    Some(Layer {
+        id,
+        carries,
+        ..layer.clone()
+    })
 }
 
 /// `layers` without the layer `id`, plus the subtree that came out of it.

@@ -215,6 +215,37 @@ pub fn footprint(action: &Action) -> Footprint {
                 .collect(),
             writes: vec![Resource::Existence(*id), Resource::StackOrder],
         },
+        // A copy is a function of *everything it copies* — every tile and every
+        // property of every layer in the subtree — which is the whole reason the
+        // action names its sources rather than only its root (§14.8). Claiming
+        // less would let a duplicate commute with a stroke inside the group it
+        // copied, and the two orders give different paint.
+        //
+        // The tree's own shape is read too, since the subtree is walked and the
+        // copy lands beside its source; `StackOrder` is written here, and a write
+        // covers the read.
+        ActionKind::DuplicateLayer { ids } => Footprint {
+            reads: ids
+                .iter()
+                .flat_map(|(src, _)| {
+                    [
+                        Resource::Existence(*src),
+                        Resource::Paint(*src, TileRect::ALL),
+                        Resource::Prop(*src, Prop::Blend),
+                        Resource::Prop(*src, Prop::Clip),
+                        Resource::Prop(*src, Prop::Opacity),
+                        Resource::Prop(*src, Prop::Visible),
+                        Resource::Prop(*src, Prop::Name),
+                        Resource::Prop(*src, Prop::Matte),
+                    ]
+                })
+                .collect(),
+            writes: ids
+                .iter()
+                .map(|(_, copy)| Resource::Existence(*copy))
+                .chain([Resource::StackOrder])
+                .collect(),
+        },
         // A removal takes the whole subtree, so it writes the existence of layers
         // it does not name. `StackOrder` is the coarse resource that covers them:
         // anything touching another layer's place in the tree conflicts here

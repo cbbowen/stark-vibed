@@ -166,7 +166,11 @@ The **Drawing Guides panel** is the roster, shaped like the Layers panel
 because it answers the same question about a different stack: "Add
 Perspective" (placed at the view center, so the grid lands where you look),
 one row per guide, carrying what a layer row carries in the same order and
-glyphs: the name, then remove, then the eye. The name renames on a
+glyphs: the name, then duplicate, then remove, then the eye. Duplicating drops
+the copy in the row below and picks it up, because duplicating a guide is asking
+to shape a variant of it — the same argument that has "Add Perspective" open the
+mode on what it made. The copy keeps the source's name for the reason the layer
+duplicate does (§14.8): a name is the author's own word. The name renames on a
 double-click, exactly as a layer's does — one draft per row, committed on Enter
 or blur, abandoned on Escape, and a field left empty is *no name* rather than a
 blank one, so the row goes back to describing its position ("Perspective 2").

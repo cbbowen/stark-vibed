@@ -161,6 +161,14 @@ pub enum DocCommand {
         carrier: Option<LayerId>,
         above: Option<LayerId>,
     },
+    /// Copy a layer **and everything it carries** into its own stack, directly
+    /// above it (§14.8) — the subtree travels as one, for the reason
+    /// [`RemoveLayer`](Self::RemoveLayer)'s does.
+    ///
+    /// The engine mints the copies' ids, as it does for
+    /// [`AddLayer`](Self::AddLayer) — one per layer of the subtree — and the copy
+    /// becomes the active layer when it can be painted on.
+    DuplicateLayer(LayerId),
     /// Remove a layer **and everything it carries** — the subtree is the group
     /// (§14.2). To keep what it carried, release those layers with
     /// [`MoveLayer`](Self::MoveLayer) first.

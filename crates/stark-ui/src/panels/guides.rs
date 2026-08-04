@@ -107,6 +107,25 @@ fn add_perspective(state: AppState) {
     begin_guide_edit(state, index);
 }
 
+/// Copy a guide into the row directly below the one it was copied from, and pick
+/// the copy up — duplicating one is asking to shape a variant of it, which is the
+/// same reason [`add_perspective`] opens the mode on what it made.
+///
+/// The copy carries the source's name as it stands, if it has one. The engine's
+/// layer duplicate makes the same choice for the same reason (§14.8): a name is
+/// the author's own word, and decorating it into "Horizon copy" would be inventing
+/// one they never typed. An unnamed guide keeps being described by its position,
+/// so the copy simply reads as the row it now is.
+fn duplicate_guide(state: AppState, index: usize) {
+    let mut guides = guides_of(state);
+    let Some(guide) = guides.get(index).cloned() else {
+        return;
+    };
+    guides.insert(index + 1, guide);
+    dispatch(state, ViewCommand::SetGuides(guides));
+    begin_guide_edit(state, index + 1);
+}
+
 /// Remove a guide, keeping the edit mode pointed at the row it was on: the
 /// indices above the removed one all shift down, and the mode follows —
 /// unless it was the removed guide itself, in which case it ends.
@@ -249,6 +268,15 @@ fn GuideRow(index: usize, guide: PerspectiveGuide, active: bool) -> Element {
                     ondoubleclick: move |_| draft.set(Some(seed.clone())),
                     "{label}"
                 }
+            }
+            // Duplicate, then Remove, then the eye — the order the Layers panel's rows
+            // put them in, and the same three glyphs, because the two rosters differ in
+            // what they list rather than in what these controls mean.
+            button {
+                class: "guide-duplicate",
+                title: "Duplicate this guide",
+                onclick: move |_| duplicate_guide(state, index),
+                {icon(icons::DUPLICATE)}
             }
             // Remove then the eye, the order the Layers panel's rows put them in —
             // the two rosters answer the same question about different stacks, so a

@@ -605,7 +605,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                                 copied.set(false);
                                             });
                                         },
-                                        {icon(icons::COPY)}
+                                        {icon(icons::COPY_TO_CLIPBOARD)}
                                         if copied() { "Copied" } else { "Copy" }
                                     }
                                 }

@@ -140,10 +140,13 @@ The non-destructive workflow, and we are closer than it looks: `Selection` is
 is exactly a layer mask. Alpha lock is a per-layer flag read by the compositor.
 
 **Groups and clipping shipped as one feature** (§14), reusing the per-layer
-isolation blend modes already had, recursed. **Still missing: layer masks proper,
-alpha lock, thumbnails, duplicate, and merge/flatten.** Merge is load-bearing
-twice: it is a workflow staple *and* it is how an append-only action log stops
-growing forever.
+isolation blend modes already had, recursed. **Duplicate** shipped with them
+(§14.8) and cost almost nothing, which is the copy-on-write tile map paying out:
+the copy holds the source's own handles, so duplicating a layer allocates no GPU
+memory at all until one of the two is painted on. **Still missing: layer masks
+proper, alpha lock, thumbnails, and merge/flatten.** Merge is load-bearing twice:
+it is a workflow staple *and* it is how an append-only action log stops growing
+forever.
 
 #### 18.1.2 Mirror and rotate the canvas view — built
 

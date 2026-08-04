@@ -112,6 +112,104 @@ fn reordering_changes_which_layer_wins() {
     );
 }
 
+/// Duplicating a layer puts a copy of it directly above it, holding the same paint
+/// and the same name, and arms the copy (§14.8).
+///
+/// The paint half is asserted by *hiding* the copy rather than by hiding the source:
+/// the two layers hold the same stroke, and a stroke composited over itself is not
+/// the stroke — its antialiased edge gains coverage. So "the copy is the only
+/// difference" is the exact claim, and it is exact to the byte.
+#[test]
+fn duplicating_a_layer_copies_it_above_itself() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+    let before = engine.render_to_image();
+
+    engine.process(DocCommand::DuplicateLayer(TOP));
+    let obs = engine.observe();
+    let copy = obs.active_layer;
+    assert_eq!(obs.layers.len(), 3, "root, the layer, and its copy");
+    assert_ne!(
+        copy, TOP,
+        "the copy is armed for the next stroke, not the source"
+    );
+    assert_eq!(
+        obs.layers.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![ROOT, TOP, copy],
+        "the copy sits directly above the layer it was copied from"
+    );
+    // The author's own word travels with the copy rather than being decorated into
+    // one they never typed.
+    assert_eq!(name_of(&engine, copy), Some("Sky".to_string()));
+
+    engine.process(DocCommand::SetLayerVisible(copy, false));
+    assert!(
+        images_match(&before, &engine.render_to_image(), 0),
+        "the copy holds exactly what the source holds"
+    );
+
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Undo);
+    assert_eq!(engine.observe().layers.len(), 2, "undo takes the copy back");
+    assert!(images_match(&before, &engine.render_to_image(), 0));
+}
+
+/// The copy shares its source's tiles (copy-on-write, §5.2) — which must be
+/// invisible: painting on one leaves the other alone.
+#[test]
+fn painting_on_a_copy_leaves_its_source_alone() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    engine.process(DocCommand::DuplicateLayer(TOP));
+    let copy = engine.observe().active_layer;
+
+    // A red stroke over the copy's green, then hide the copy. The source must still
+    // be green at the center: the stroke went to one layer's tiles, not to the pair
+    // of handles they were sharing a moment ago.
+    paint(&mut engine, RED, 20.0, V_STROKE);
+    assert!(red_dominant(center(&engine.render_to_image())));
+
+    engine.process(DocCommand::SetLayerVisible(copy, false));
+    assert!(
+        green_dominant(center(&engine.render_to_image())),
+        "the source still holds only what it held"
+    );
+}
+
+/// A duplicate mints an id per copied layer, and those ids are in the log — so a
+/// reloaded document must resume its counter past them (§17.9). Reusing one would
+/// put two layers under a single id, which `layer_index` resolves to whichever
+/// comes first.
+#[test]
+fn a_duplicates_ids_are_not_reused_after_a_reload() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    engine.process(DocCommand::DuplicateLayer(TOP));
+    let bytes = engine.save_bytes().expect("serialize");
+
+    let mut loaded = engine_or_skip_blue().expect("adapter");
+    loaded.load_bytes(&bytes).expect("load");
+    let existing: Vec<LayerId> = loaded.observe().layers.iter().map(|l| l.id).collect();
+    assert_eq!(existing.len(), 3, "the copy came back with the log");
+
+    loaded.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let added = loaded.observe().active_layer;
+    assert!(
+        !existing.contains(&added),
+        "the next layer takes a fresh id: {added:?} against {existing:?}"
+    );
+}
+
 /// What `id` is called right now, or `None` if it has never been named.
 fn name_of(engine: &Engine, id: LayerId) -> Option<String> {
     engine

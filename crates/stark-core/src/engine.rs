@@ -853,6 +853,35 @@ impl Engine {
                 self.doc_preview = None;
                 self.commit(ActionKind::SetBackground(rgb));
             }
+            DocCommand::DuplicateLayer(source) => {
+                // One minted id per layer of the subtree, paired with the layer it
+                // copies, in composite order — the map the action carries
+                // (§14.8). Collected off the document before any minting, because
+                // `mint_layer` needs `&mut self` and the walk is borrowing it.
+                let mut sources = Vec::new();
+                if let Some(l) = self.document().layer(source) {
+                    l.visit(0, &mut |l, _| sources.push(l.id));
+                }
+                if !sources.is_empty() {
+                    let ids: Vec<_> = sources
+                        .into_iter()
+                        .map(|src| (src, self.mint_layer()))
+                        .collect();
+                    let copy = ids[0].1;
+                    self.commit(ActionKind::DuplicateLayer { ids });
+                    // The copy is what you go on to work on — but only if it
+                    // landed and can take a stroke. A matte cannot (§15.7), and
+                    // arming one would swallow the next stroke, which is the same
+                    // reason `AddMatte` arms nothing.
+                    if self
+                        .document()
+                        .layer(copy)
+                        .is_some_and(|l| l.is_paintable())
+                    {
+                        self.session.active_layer = copy;
+                    }
+                }
+            }
             DocCommand::RemoveLayer(id) => {
                 self.commit(ActionKind::RemoveLayer(id));
                 self.repoint_active_layer();
@@ -2246,12 +2275,20 @@ impl Engine {
         let mut max_ordinal = 0u64;
         for a in actions {
             max_lamport = Some(max_lamport.map_or(a.id.lamport, |m: u64| m.max(a.id.lamport)));
-            let id = match &a.kind {
-                ActionKind::AddLayer { id, .. } | ActionKind::AddMatte { id, .. } => Some(*id),
-                _ => None,
+            let mut note = |id: LayerId| {
+                if id.minted_by(self.actor) {
+                    max_ordinal = max_ordinal.max(id.ordinal());
+                }
             };
-            if let Some(id) = id.filter(|id| id.minted_by(self.actor)) {
-                max_ordinal = max_ordinal.max(id.ordinal());
+            // Every action that *mints* an id, which is not the same set as the
+            // ones that name one: a duplicate mints one per layer it copied, and
+            // missing them would hand the next add an ordinal already in the log.
+            match &a.kind {
+                ActionKind::AddLayer { id, .. } | ActionKind::AddMatte { id, .. } => note(*id),
+                ActionKind::DuplicateLayer { ids } => {
+                    ids.iter().for_each(|(_, copy)| note(*copy));
+                }
+                _ => {}
             }
         }
         self.clock = max_lamport.map_or(0, |m| m + 1);

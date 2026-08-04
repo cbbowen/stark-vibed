@@ -529,6 +529,32 @@ pub enum ActionKind {
         layer: LayerId,
         map: super::warp::WarpMap,
     },
+
+    /// Copy a layer — **and everything it carries** — into its own stack,
+    /// directly above the layer it was copied from (§14.8). The subtree travels
+    /// as one for the reason [`RemoveLayer`](Self::RemoveLayer)'s does: the
+    /// subtree *is* the group (§14.2).
+    ///
+    /// `ids` pairs every layer of that subtree, in composite order, with the id
+    /// its copy takes; the first pair's source is the layer being duplicated.
+    /// The copies' ids are minted by the author and travel in the log for the
+    /// reason [`AddLayer`](Self::AddLayer)'s does — a replay must mint what the
+    /// run that recorded it minted, and two peers duplicating at once must not
+    /// land on one id (§17.9).
+    ///
+    /// Naming the **sources** as well is what lets the footprint be honest: a
+    /// copy is a function of every tile and every property of every layer it
+    /// copies, so a duplicate does not commute with a stroke or a rename inside
+    /// the group, and an action that named only the root could not say so
+    /// (§12.6).
+    ///
+    /// Deterministically **rejected** (the document is left unchanged) when the
+    /// subtree holds a layer `ids` does not name — which is what a concurrent add
+    /// into the group looks like from here. Appended last so postcard, which
+    /// encodes an enum by variant *index*, keeps decoding older files.
+    DuplicateLayer {
+        ids: Vec<(LayerId, LayerId)>,
+    },
 }
 
 impl ActionKind {
@@ -549,6 +575,7 @@ impl ActionKind {
             ActionKind::Select(_) => "Select",
             ActionKind::InvertSelection => "Invert selection",
             ActionKind::AddLayer { .. } => "Add layer",
+            ActionKind::DuplicateLayer { .. } => "Duplicate layer",
             ActionKind::RemoveLayer(_) => "Remove layer",
             ActionKind::MoveLayer { .. } => "Reorder layer",
             ActionKind::SetLayerBlend(..) => "Blend mode",
@@ -649,6 +676,11 @@ impl history::Action for Action {
             ActionKind::AddLayer { id, carrier, above } => {
                 state.insert_layer(*id, *carrier, *above)
             }
+            // The copy's tiles are the shared handles the source already holds, so
+            // duplicating a layer costs no GPU memory until one of the two is
+            // painted on — copy-on-write is what makes this a cheap action rather
+            // than a re-render of everything under it (§5.2).
+            ActionKind::DuplicateLayer { ids } => state.duplicate_layer(ids),
             ActionKind::RemoveLayer(id) => state.remove_layer(*id),
             ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
             ActionKind::SetLayerClip(id, clip) => state.set_layer_clip(*id, *clip),

@@ -260,6 +260,14 @@ one below) and **Release** (promote what a layer carries into its parent stack).
 "Clip to the layer below" is Carry plus the clip toggle, and can be one menu item
 that does both.
 
+Everything a row can do to its own layer is drawn *in* the row — Carry at the head
+of the line, Release out in the indent, then **Duplicate**, **Remove** and the eye
+against the right edge — rather than in header buttons acting on "the selected
+layer". A control drawn in the row has already named what it acts on, so it needs
+no inapplicable state: Release is simply absent on a layer that is in no group,
+Remove on the row whose removal would empty the document, and Duplicate on neither,
+because every layer can be copied.
+
 ### 14.7 Compositing
 
 `CompositeGroup` is a tree, and the existing fast path is an invariant of its
@@ -335,6 +343,18 @@ resource is already coarse.
   **no actions of their own**: carrying *is* a move to a position inside another
   layer, so `MoveLayer` covers reorder, carry and release by which of its two
   anchors changes. One structural action, one inverse.
+- **Duplicate.** `DuplicateLayer { ids: Vec<(LayerId, LayerId)> }`: the copy lands
+  in the source's own stack directly above it, and the subtree travels as one, for
+  the reason removing it does. The action pairs every layer of that subtree with
+  the id its copy takes — the author mints them, as for `AddLayer`, so a replay
+  mints what the recording run minted. Naming the *sources* as well is what lets
+  the footprint be honest: a copy is a function of every tile and every property of
+  every layer it copies, so it does not commute with a stroke or a rename inside
+  the group, and an action naming only the root could not say so. Tiles come along
+  as the shared handles they already are, so a duplicate costs no GPU memory until
+  one of the two is painted on. The copy keeps the source's **name** verbatim: a
+  name in the document is the author's own word, and "Sky copy" would be the engine
+  writing one nobody typed.
 - **The file format.** A field in the middle of an existing struct variant is not
   something postcard can absorb (§8), so this was the first change here that
   could not be *appended*, and `WIRE_VERSION` went to 2. The alternative — a
@@ -377,6 +397,10 @@ resource is already coarse.
 8. A blend mode on a bottom-most layer with nothing beneath it is still the
    `Normal` render — the existing `tests/blend.rs` assertion, which this design
    depends on and must not break.
+9. Duplicating a group copies the **whole subtree**, nested the same way, beside
+   the group it copied — and hiding the copy is bit-identical to never having made
+   it. Copy-on-write is asserted from the other side in `tests/layers.rs`: paint
+   one of the two and the other must not change.
 
 ### 14.10 Open
 

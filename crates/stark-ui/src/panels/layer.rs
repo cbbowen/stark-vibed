@@ -465,8 +465,8 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
         "Paint on this layer — double-click to rename"
     };
 
-    // A row is one line — Carry, the name that selects it, then Remove and the eye
-    // hard against the right edge — with two marks outside that line: the group's
+    // A row is one line — Carry, the name that selects it, then Duplicate, Remove and
+    // the eye hard against the right edge — with two marks outside that line: the group's
     // triangle straddling its top edge, and Release standing in the indent. The
     // per-layer opacity slider lives in the panel's single set of controls for
     // whatever is selected.
@@ -625,6 +625,19 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                         title: "{peer.name} is working on this layer",
                         "{peer.initials()}"
                     }
+                }
+                // Duplicate, beside Remove: a second copy of this layer directly above
+                // it, carrying its tiles, its name and everything it carries
+                // (§14.8). On the row for the same reason every other move is —
+                // it names its own layer, so there is no "the selected layer" to
+                // read and no inapplicable state to grey out. Unlike Remove it has
+                // none: every row can be copied, including the last one standing.
+                button {
+                    class: "layer-duplicate",
+                    title: if is_group { "Duplicate this layer, and everything it carries" }
+                           else { "Duplicate this layer" },
+                    onclick: move |_| dispatch(state, DocCommand::DuplicateLayer(id)),
+                    {icon(icons::DUPLICATE)}
                 }
                 // Remove, next to last: the destructive control on the row it destroys.
                 // It rests hidden and arrives on hover with Carry, Release and an open

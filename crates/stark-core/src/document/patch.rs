@@ -115,6 +115,21 @@ impl StatePatch {
                     _ => {}
                 }
             }
+            // Every layer the copy brought into being, gone again. Removing the
+            // root takes the rest of the subtree with it, so the later ops are
+            // no-ops — but the copies are what this action *wrote*, and a patch
+            // that named only the root would be claiming the others were
+            // somebody else's.
+            ActionKind::DuplicateLayer { ids } => {
+                for (_, copy) in ids {
+                    // Absent in `to` and present in `from` is the only direction a
+                    // duplicate can go: the state it was applied to predates every
+                    // one of these ids.
+                    if to.site_of(*copy).is_none() && from.contains_layer(*copy) {
+                        ops.push(PatchOp::Absent(*copy));
+                    }
+                }
+            }
             ActionKind::MoveLayer { .. } => ops.push(PatchOp::Structure(structure(to))),
             ActionKind::SetLayerBlend(id, _) => {
                 if let Some(l) = to.layer(*id) {

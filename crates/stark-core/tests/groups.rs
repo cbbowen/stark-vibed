@@ -277,6 +277,59 @@ fn carry_then_release_returns_the_same_picture() {
     assert_identical(&before, &after, "carry then release is the identity");
 }
 
+/// Duplicating a group copies the **whole subtree** — one copy per carried layer,
+/// nested the way the original is — and lands it beside the group (§14.8). The
+/// subtree travels as one for the reason removing it does: the subtree *is* the
+/// group (§14.2).
+#[test]
+fn duplicating_a_group_copies_the_whole_subtree() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let base = add_layer(&mut engine);
+    paint(&mut engine, COOL, 44.0, V_STROKE);
+    let carried = add_layer(&mut engine);
+    paint(&mut engine, PALE, 20.0, AWAY);
+    engine.process(DocCommand::MoveLayer {
+        id: carried,
+        carrier: Some(base),
+        above: None,
+    });
+    let before = engine.render_to_image();
+
+    engine.process(DocCommand::DuplicateLayer(base));
+    let ls = layers(&engine);
+    assert_eq!(ls.len(), 5, "root, the group's two layers, and two copies");
+    let base_copy = engine.observe().active_layer;
+    let carried_copy = ls
+        .iter()
+        .find(|l| l.carrier == Some(base_copy))
+        .expect("the copy carries a copy")
+        .id;
+    assert_eq!(
+        ls.iter().map(|l| (l.id, l.depth)).collect::<Vec<_>>(),
+        vec![
+            (ROOT, 0),
+            (base, 0),
+            (carried, 1),
+            (base_copy, 0),
+            (carried_copy, 1)
+        ],
+        "the copied group sits directly above the group it was copied from, \
+         nested the same way"
+    );
+
+    // Hiding the copy hides everything it carries, so what is left is the document
+    // as it stood — the copy is the only difference, byte for byte.
+    engine.process(DocCommand::SetLayerVisible(base_copy, false));
+    assert_identical(
+        &before,
+        &engine.render_to_image(),
+        "a hidden copy of a group leaves the original picture",
+    );
+}
+
 /// **The cost of having no pass-through, asserted rather than assumed** (§14.5).
 ///
 /// A group is always isolated, so a blend mode *inside* one blends against the group

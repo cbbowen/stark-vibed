@@ -150,8 +150,17 @@ icons! {
     SHARE => "share-network-bold",
     // The invite link's Copy. A clipboard is what the act *is* here, which is worth
     // saying because the button's label changes to "Copied" and back: the glyph is
-    // the half that holds still.
-    COPY => "clipboard-bold",
+    // the half that holds still. Named for the destination rather than for the verb,
+    // because the verb is shared: [`DUPLICATE`] below is also a copy, and the two are
+    // different acts — one puts a string somewhere else, the other puts a second
+    // layer in the document.
+    COPY_TO_CLIPBOARD => "clipboard-bold",
+    // Duplicate, in the row it would duplicate — a layer in the Layers panel, a
+    // perspective in the Guides panel, one glyph for both on the argument [`REMOVE`]
+    // is one mark across the two rosters. Two sheets, one behind the other: the
+    // picture is the panel *after* the click, which is the same thing the Carry and
+    // Release elbows are drawn to say.
+    DUPLICATE => "copy-bold",
     // Timeline mode and its transport (§18.2.4). A slideshow for the mode, because
     // what the mode offers is the log played back rather than a clock or a strip of
     // film; play and pause for the transport, which have no second reading.
