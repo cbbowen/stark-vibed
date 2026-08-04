@@ -1,16 +1,18 @@
 # Drawing guides
 
 The perspective grid: one projective camera, three familiar cases — §20.
+What a stroke aligns to is in §20.6.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
 
 ## 20 Drawing guides
 
-Guides are chrome for the hand: geometry drawn over the canvas that no tool yet
-snaps to and no pixel ever records. The first guide is the classical perspective
-grid, and its design principle is the one this chapter keeps returning to:
-**the guide is a camera, and everything the artist sees is derived from it.**
+Guides are scaffolding for the hand: geometry drawn over the canvas that a
+stroke can be aligned to (§20.6) and that no pixel ever records. The first
+guide is the classical perspective grid, and its design principle is the one
+this chapter keeps returning to: **the guide is a camera, and everything the
+artist sees is derived from it.**
 
 ## 20.1 One camera, three special cases
 
@@ -202,7 +204,65 @@ Deferred, deliberately (§18 discipline — nothing inert ships):
 - **Dragging vanishing points themselves** — a real design question (what does
   it hold fixed: the focal length? the other VPs?) that the orbit-with-locks
   vocabulary may make unnecessary.
-- **Snapping strokes** to the nearest fan line; the assist layer (§6.9) is
-  where it will live.
 - **Other guide kinds** (isometric, ellipse/vanishing-scale, symmetry): each a
   new derivation over the same pass-D machinery and the same list.
+
+## 20.6 Strokes on the grid
+
+The grid earns its keep when the hand can put a line on it. Drag out a rough
+line and hold (§6.9): if it lands near an axis of a guide that is on the
+screen, the stroke that snaps is aimed exactly along that axis, and the rest of
+the drag runs the end out **along** it.
+
+**What a stroke aligns to is a pencil, not a direction.** `AxisPencil` — one
+axis of one guide — is the whole of a perspective guide that `assist.rs` sees,
+and the one thing it can answer is a direction *at a point*:
+
+```
+through(p) = f·(a.x, a.y) + a.z·(c − p)
+```
+
+which is `V(a) − p` cleared of the denominator the vanishing point divides by.
+It stays finite as `a.z → 0`, where it becomes the parallel direction of an
+axis lying in the picture plane, so no vanishing point is computed on this path
+and the 1/2/3-point uniformity is again structural rather than asserted —
+exactly as for the fans (§20.3).
+
+**The line is turned, not moved.** The pencil is evaluated at the stroke's
+*start*, which §6.9 already treats as the deliberate end of a drag, and the
+line keeps it. So a snapped stroke stays where the hand put it and only its
+angle comes from the grid. That is also why it snaps to the axis rather than to
+the nearest **fan line**, which is what §20.5 originally deferred: the fans are
+a sampling of the pencil at whatever the density slider says, and there is no
+reason a stroke's position should quantize to a display setting. Every line of
+the pencil is equally a line of the grid.
+
+**How near is near enough is an angle, spelled as a residual.** The trace is
+re-scored against the pencil's line by exactly the measure that just accepted
+it as a line — worst perpendicular distance, as a fraction of its own length —
+against a bar (`GUIDE_RESIDUAL`, 0.1 ≈ 5.7°) wider than the recognizer's own.
+The two bars are asking different questions and are deliberately not
+interchangeable: `LINE_RESIDUAL` asks *whether the hand drew a line*, where a
+false positive replaces a considered curve; this one asks *which line it
+meant*, after the artist has dwelt to ask for an ideal one with a grid up to
+answer with. So the guide question is put strictly **after** recognition has
+accepted the stroke, never instead of it — a curve that happens to bow along a
+fan line is still a curve — and among the axes that pass, the closest wins.
+
+**Only what is shown may bend a stroke.** `PerspectiveGuide::pencils` is gated
+on the guide's eye, the per-axis fans, and the overlay opacity, in one place:
+a snap the artist cannot see coming reads as the tool bending a considered
+line, so anything invisible offers nothing. A document with no guides up
+gathers an empty list and the assist behaves precisely as it did before.
+
+**The axis is held for the rest of the drag.** Steering resolves the pointer's
+travel onto the line and drops the rest, so the far end runs out and back along
+the grid line while the hand wanders. Adjustment preserving what recognition
+established is the same bargain that keeps a drawn loop's eccentricity (§6.9),
+and it is what makes the feature usable at all: an alignment a single sideways
+nudge could break would not be one. To escape, lift and draw again.
+
+The whole coupling is `AssistShape::Line`'s one extra bool. A guided line is
+still a segment — the pencil's line through a point *is* a straight canvas line
+— so nothing about realization, the path, the wire format or the goldens
+changes, and the guides are read but never touched.

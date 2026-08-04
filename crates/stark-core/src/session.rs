@@ -13,6 +13,7 @@ use crate::document::{
     Tool,
 };
 use crate::geom::{Vec2, ViewTransform};
+use crate::guides::{AxisPencil, PerspectiveGuide};
 use crate::path::{ControlPoint, PathFitter};
 use crate::peer::{
     GestureView, HEARTBEAT, Identity, LiveGesture, PeerFrame, StrokeHead, default_name,
@@ -222,7 +223,7 @@ pub struct Session {
     /// The drawing guides (§20.5) — every perspective grid the artist has set
     /// up, visible or not. View state for now: an aid for the hand holding
     /// the pen, per-client like the pan and the zoom.
-    pub guides: Vec<crate::guides::PerspectiveGuide>,
+    pub guides: Vec<PerspectiveGuide>,
 
     // --- the published half (§17.4) -------------------------
     //
@@ -586,14 +587,25 @@ impl Session {
     /// one increment is what invalidates the renderer's cached head (§6.2) and makes
     /// peers restart their assembly (§17.5) instead of splicing a delta onto a path
     /// that no longer exists.
+    ///
+    /// A recognized line is offered the axes of whatever perspective guides are on the
+    /// screen, and takes one if it is near enough (§20.6). That is the only coupling
+    /// between the two features, and it runs one way: the guides are read, never
+    /// touched, and a document with none up gathers an empty list.
     pub fn assist_stroke(&mut self) -> bool {
+        let pencils: Vec<AxisPencil> = self
+            .guides
+            .iter()
+            .flat_map(PerspectiveGuide::pencils)
+            .flatten()
+            .collect();
         let Some(b) = self.in_flight.as_mut() else {
             return false;
         };
         if b.assist.is_some() {
             return false;
         }
-        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance) else {
+        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance, &pencils) else {
             return false;
         };
         let drawn = b.fitter.path();

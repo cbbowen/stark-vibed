@@ -6,14 +6,18 @@
 //! part that only exists once a [`Session`] is holding a gesture: that a hold replaces
 //! the path in flight, that the rest of the same drag *steers* rather than extends,
 //! that the release commits what was previewed, and that a stroke the recognizer
-//! declines is left exactly as it was drawn.
+//! declines is left exactly as it was drawn. The guide snap (§20.6) is here for the
+//! same reason: the axes a line may take come off the session's own guide list, so
+//! whether the feature is wired up at all is a question about this level.
 //!
 //! No GPU: everything here is the session's own bookkeeping over the fitter, which is
 //! the level the whole feature lives at.
 
+use glam::Quat;
 use stark_core::command::InputSample;
 use stark_core::document::{LayerId, Tool};
 use stark_core::geom::{Extent2, Vec2, ViewTransform};
+use stark_core::guides::PerspectiveGuide;
 use stark_core::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten};
 use stark_core::session::Session;
 
@@ -196,6 +200,106 @@ fn holding_twice_is_one_snap() {
     );
     assert_eq!(session.gesture_ordinal(), ordinal);
     assert_eq!(session.preview_record().expect("in flight").path, path);
+}
+
+/// A rough drag toward a vanishing point of a guide the artist has up commits a line
+/// that aims exactly at it (§20.6) — the whole feature, through the gesture it is made
+/// with, and with the guide read off the session rather than handed in.
+#[test]
+fn a_held_line_takes_the_axis_of_a_visible_guide() {
+    let mut session = session();
+    let guide = PerspectiveGuide {
+        center: Vec2::new(90.0, -40.0),
+        focal: 700.0,
+        rotation: Quat::from_rotation_x(0.3) * Quat::from_rotation_y(0.55),
+        ..Default::default()
+    };
+    let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
+    session.guides.push(guide);
+
+    // Drawn from `start`, 400px toward the vanishing point but 4° off it.
+    let start = Vec2::new(-240.0, 180.0);
+    let aim = Vec2::from_angle(4f32.to_radians()).rotate((vp - start).normalize());
+    drag(&mut session, 40, |t| {
+        start + aim * (400.0 * t) + wobble((t * 39.0) as usize)
+    });
+    assert!(session.assist_stroke(), "a rough drag is a line");
+
+    let record = session.end_stroke().expect("a stroke to commit");
+    let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
+    assert!(a.distance(start) < 4.0, "the drawn start moved to {a}");
+    let (u, to_vp) = ((b - a).normalize(), (vp - a).normalize());
+    assert!(
+        u.perp_dot(to_vp).abs() < 1e-2,
+        "the committed line points {u}, and the vanishing point is at {to_vp}"
+    );
+}
+
+/// The guide has to be *on the screen* to bend anything: the same drag, with the guide
+/// list empty, keeps the direction the hand gave it.
+#[test]
+fn the_same_drag_without_a_guide_keeps_its_own_direction() {
+    let mut session = session();
+    let start = Vec2::new(-240.0, 180.0);
+    let aim = Vec2::from_angle(0.9).rotate(Vec2::X);
+    drag(&mut session, 40, |t| {
+        start + aim * (400.0 * t) + wobble((t * 39.0) as usize)
+    });
+    assert!(session.assist_stroke());
+
+    let record = session.end_stroke().expect("a stroke to commit");
+    let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
+    assert!(
+        (b - a).normalize().perp_dot(aim).abs() < 0.02,
+        "the line was turned to {}",
+        (b - a).normalize()
+    );
+}
+
+/// Once a line has taken an axis it keeps it for the rest of the drag: steering runs
+/// the end out **along** the grid line, so the alignment survives the hand wandering
+/// off it. Without this the feature would last exactly one pointer move.
+#[test]
+fn steering_an_axis_line_stays_on_the_axis() {
+    let mut session = session();
+    let guide = PerspectiveGuide {
+        center: Vec2::new(90.0, -40.0),
+        focal: 700.0,
+        rotation: Quat::from_rotation_x(0.3) * Quat::from_rotation_y(0.55),
+        ..Default::default()
+    };
+    let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
+    session.guides.push(guide);
+
+    let start = Vec2::new(-240.0, 180.0);
+    let aim = Vec2::from_angle(4f32.to_radians()).rotate((vp - start).normalize());
+    let end = start + aim * 400.0;
+    drag(&mut session, 40, |t| {
+        start + aim * (400.0 * t) + wobble((t * 39.0) as usize)
+    });
+    assert!(session.assist_stroke());
+
+    // Swing the pointer a long way off the line, as a hand steering the far end does.
+    let moved = end + Vec2::new(60.0, 220.0);
+    for i in 1..=10 {
+        session.stroke_to(InputSample::at(end.lerp(moved, i as f32 / 10.0)));
+    }
+
+    let record = session.end_stroke().expect("a stroke to commit");
+    let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
+    let to_vp = (vp - a).normalize();
+    assert!(
+        (b - a).normalize().perp_dot(to_vp).abs() < 1e-2,
+        "the end was steered off the axis, to {b}"
+    );
+    // It did move — along the line, by the pointer's travel resolved onto it.
+    let along = (moved - end).dot(to_vp);
+    assert!(
+        ((b - a).length() - (400.0 + along)).abs() < 6.0,
+        "the end ran to {} rather than {}",
+        (b - a).length(),
+        400.0 + along
+    );
 }
 
 #[test]

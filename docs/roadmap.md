@@ -192,8 +192,14 @@ Perspective snapping attaches at the same seam.
 claim above: drag out a rough line or ellipse, hold the pen still, and the stroke
 snaps and becomes steerable, in one new module plus a dwell watcher in the
 frontend — because a snapped stroke is still a `Vec<ControlPoint>` and nothing
-downstream of the fitter had to learn what it was. **Still missing: symmetry,
-perspective and the guide overlay**, which is the larger half.
+downstream of the fitter had to learn what it was.
+
+**Perspective shipped at the same seam** — the guide and its overlay in §20, and
+the snap in §20.6, which cost the assist one bool: a line that lands near a
+visible guide's axis is aimed along it, and steering runs the end out on the grid
+line. The guides are read, never touched, and nothing below `StrokeRecord::path`
+learned that either. **Still missing: symmetry**, the remaining arm — one gesture
+emitting N records, or one record carrying its mirror axes.
 
 #### 18.1.4 Brush parameter mapping — inputs → parameters
 

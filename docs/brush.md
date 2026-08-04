@@ -857,9 +857,20 @@ of a false positive (a considered stroke silently replaced) is far higher than t
 cost of a miss (hold it straighter and try again), and the bars are set from that
 asymmetry rather than from a hit rate.
 
+A recognized line is then offered the axes of whatever **perspective guides** are
+on the screen, and takes the nearest if it is within a few degrees of one — a
+line drawn roughly toward a vanishing point comes back aimed exactly at it, from
+where the hand started it. That question is put strictly *after* the stroke has
+been accepted as a line and never instead of it, so the grid may only choose
+which line a line is; the bar, the pencil it is measured against, and why the
+snap is an alignment rather than a move are §20.6.
+
 **Adjustment** — what the rest of the drag means. A line moves the end being held,
 *by the pointer's delta*: snapping moved that end off the hand by up to the fit
-residual, and driving it absolutely would jump it back on the first move. An
+residual, and driving it absolutely would jump it back on the first move. A line
+that took a guide axis keeps it and takes only the travel *along* it, so the end
+runs out and back on the grid line while the hand wanders off it — an alignment
+a single sideways nudge could break would not be one. An
 ellipse turns and scales about its centre so the held point follows the pointer —
 turning is what the feature is for, and the scale rides along because a
 one-pointer drag has two degrees of freedom and the radius is the only other thing
@@ -930,7 +941,9 @@ stroke does and somebody who wants their line left crooked has to be able to say
 so.
 
 **Not built, and each a local change here:** rectangles and polygons (another
-recognizer arm), arcs (an open trace with consistent turning), constraining to a
+recognizer arm), arcs (an open trace with consistent turning), snapping an
+*ellipse* to a guide (the vanishing-scale construction, which is a real design
+question rather than a second call to the same code), constraining to a
 circle or to 15° increments while adjusting (a modifier read at the same seam), and
 carrying the recognized shape into the action log so a committed stroke stays
 editable as a shape — which is a wire-format change and belongs with §18.2.1, not

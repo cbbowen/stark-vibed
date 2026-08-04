@@ -19,7 +19,9 @@
 //!   It answers `None` freely: dwelling at the end of a stroke that is *not* a line or
 //!   an ellipse has to leave that stroke exactly as it was drawn, because a false
 //!   positive (a considered stroke silently replaced) costs far more than a miss
-//!   (hold it a little straighter and try again).
+//!   (hold it a little straighter and try again). A line that lands near an axis of a
+//!   perspective guide the artist has up is turned onto it (§20.6) — the only place
+//!   this module knows a guide exists.
 //! - **Adjustment** ([`AssistShape::adjust`]) — what the rest of the drag means. Both
 //!   arms are derived from the shape *as recognized* plus the pointer's travel since,
 //!   never from the previous frame's shape, so a long adjustment cannot accumulate
@@ -40,6 +42,7 @@ use std::f32::consts::TAU;
 use nalgebra::{Const, Dyn, OMatrix};
 
 use crate::geom::Vec2;
+use crate::guides::AxisPencil;
 use crate::path::{ControlPoint, FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
 use crate::spline::CubicBSpline;
 
@@ -67,6 +70,20 @@ const LINE_RESIDUAL: f32 = 0.035;
 /// line's on purpose: the same hand movement is spread over a radius rather than over
 /// a length, so the same absolute wobble is a larger fraction of it.
 const ELLIPSE_RESIDUAL: f32 = 0.10;
+
+/// How far a recognized line may sit from a **guide axis** and still be read as one of
+/// that axis's lines (§20.6), as a fraction of the line's own length.
+///
+/// Quoted the same way [`LINE_RESIDUAL`] is, and for the same reason — a bar in canvas
+/// px would mean two things at two zoom levels — but wider, because it is not the same
+/// question. `LINE_RESIDUAL` asks whether the hand drew a line at all, where a false
+/// positive replaces a considered curve; this asks *which* line it meant, at a moment
+/// when the artist has already dwelt to ask for an ideal one and has a grid up to
+/// answer with. A hand aiming at a vanishing point a metre off the page is doing well
+/// to be within a few degrees, and a fraction of the length is a fixed cone: 0.1 is
+/// 5.7°, so three axes claim a sixth of the compass and a deliberately diagonal line
+/// is left alone.
+const GUIDE_RESIDUAL: f32 = 0.1;
 
 /// Residual floor, in input tolerances. Without it the fractional bars above scale to
 /// nothing on a small shape and no short stroke could ever snap, however straight the
@@ -151,7 +168,16 @@ const MIN_GRIP: f32 = 1.0;
 pub enum AssistShape {
     /// A straight segment from `a` to `b`. `b` is the end the stroke finished at —
     /// the end under the pointer, and so the end a drag moves.
-    Line { a: Vec2, b: Vec2 },
+    Line {
+        a: Vec2,
+        b: Vec2,
+        /// Whether the direction is a perspective guide's rather than the hand's
+        /// (§20.6). One bit, because that is all the difference amounts to: the
+        /// pencil's line through `a` *is* a straight canvas line, so a guided line
+        /// is the same segment held to a direction it may not leave, and the rest
+        /// of the drag runs **along** it instead of steering it off.
+        on_axis: bool,
+    },
     /// An ellipse, drawn as one closed loop.
     Ellipse {
         center: Vec2,
@@ -173,13 +199,20 @@ pub enum AssistShape {
 /// The shape `trace` resembles, or `None` to leave the stroke as it was drawn.
 ///
 /// `tolerance` is the gesture's input tolerance in canvas px — the device's own grain,
-/// which is the unit every bar here is quoted in.
+/// which is the unit every bar here is quoted in. `pencils` are the guide axes on the
+/// screen (§20.6), which a recognized *line* may be turned onto; pass none and the
+/// answer is the hand's own line.
 ///
 /// A closed trace is offered to the ellipse fit first and **falls through** to the line
 /// fit if it misses the bar, rather than being refused outright: that is one rule
 /// instead of a decision tree, and it means a rough rectangle (closed, but no ellipse
 /// and no line) simply does not snap.
-pub fn recognize(trace: &[Vec2], tolerance: f32) -> Option<AssistShape> {
+///
+/// The guide question is asked strictly *after* the stroke has been accepted as a line,
+/// never instead: recognition decides whether this is a line, and only then does the
+/// grid get to say which one. A curve that happens to bow along a fan line is still a
+/// curve, and the two bars cannot be traded against each other.
+pub fn recognize(trace: &[Vec2], tolerance: f32, pencils: &[AxisPencil]) -> Option<AssistShape> {
     if trace.len() < MIN_SAMPLES {
         return None;
     }
@@ -195,10 +228,47 @@ pub fn recognize(trace: &[Vec2], tolerance: f32) -> Option<AssistShape> {
         }
     }
 
-    let fit = fit_line(trace)?;
-    let size = fit.a.distance(fit.b);
-    (size >= min_size && fit.worst <= (LINE_RESIDUAL * size).max(floor))
-        .then_some(AssistShape::Line { a: fit.a, b: fit.b })
+    let free = fit_line(trace)?;
+    let size = free.a.distance(free.b);
+    if size < min_size || free.worst > (LINE_RESIDUAL * size).max(floor) {
+        return None;
+    }
+    let bar = (GUIDE_RESIDUAL * size).max(floor);
+    Some(match snap_to_pencil(trace, free.a, pencils, bar) {
+        Some(on) => AssistShape::Line {
+            a: on.a,
+            b: on.b,
+            on_axis: true,
+        },
+        None => AssistShape::Line {
+            a: free.a,
+            b: free.b,
+            on_axis: false,
+        },
+    })
+}
+
+/// The guide axis the trace reads as, if any: among the pencils' lines through the
+/// anchor, the one it strays least from, provided that is within `bar`.
+///
+/// Through the **anchor** and not through the trace's middle, because that is the point
+/// the line is already anchored at — the start, placed deliberately (see [`fit_line`]).
+/// Aligning about it turns the stroke onto the grid without sliding it off where the
+/// hand began, which is also why this snaps to a *direction* rather than to the nearest
+/// drawn fan line: the fans are a sampling of the pencil at whatever density the slider
+/// says, and there is no reason a stroke's position should quantize to it.
+fn snap_to_pencil(
+    trace: &[Vec2],
+    anchor: Vec2,
+    pencils: &[AxisPencil],
+    bar: f32,
+) -> Option<LineFit> {
+    pencils
+        .iter()
+        .filter_map(|pencil| pencil.through(anchor))
+        .map(|dir| line_along(trace, anchor, dir))
+        .filter(|fit| fit.worst <= bar)
+        .min_by(|x, y| x.worst.total_cmp(&y.worst))
 }
 
 impl AssistShape {
@@ -211,6 +281,11 @@ impl AssistShape {
     /// - A **line** moves the end the pointer is holding. By the pointer's delta rather
     ///   than to the pointer itself: snapping moved that end off the hand by up to the
     ///   fit residual, and driving it absolutely would jump it back on the first move.
+    ///   A line that snapped to a **guide axis** keeps that direction and takes only
+    ///   the component of the travel along it, so the end runs out and back along the
+    ///   grid line for the rest of the drag. Adjustment preserves what recognition
+    ///   established — the same bargain that keeps a drawn loop's eccentricity — and
+    ///   an alignment that a single sideways nudge could break would not be one.
     /// - An **ellipse** turns and scales about its centre, so that the point being held
     ///   follows the pointer. Turning is what the feature is for; the scale rides along
     ///   because a one-pointer drag has two degrees of freedom and the radius is the
@@ -218,10 +293,20 @@ impl AssistShape {
     ///   drawn loop established is preserved.
     pub fn adjust(self, grip: Vec2, pointer: Vec2) -> Self {
         match self {
-            Self::Line { a, b } => Self::Line {
-                a,
-                b: b + (pointer - grip),
-            },
+            Self::Line { a, b, on_axis } => {
+                let end = b + (pointer - grip);
+                // The base direction, so the constraint is a fixed line and the result
+                // stays a pure function of the total travel.
+                let held = (b - a).try_normalize().filter(|_| on_axis);
+                Self::Line {
+                    a,
+                    b: match held {
+                        Some(u) => a + u * (end - a).dot(u),
+                        None => end,
+                    },
+                    on_axis,
+                }
+            }
             Self::Ellipse {
                 center,
                 radii,
@@ -274,7 +359,7 @@ impl AssistShape {
     /// rows to cancel it. The pen channels are fitted either way.
     pub fn to_path(&self, pen: &PenProfile, knots: usize) -> Vec<ControlPoint> {
         let (seed, targets, fit_geometry) = match *self {
-            Self::Line { a, b } => {
+            Self::Line { a, b, .. } => {
                 let m = knots.clamp(2, MAX_KNOTS);
                 let along = |f: f32| a.lerp(b, f);
                 let seed = spread(m, along);
@@ -310,7 +395,7 @@ impl AssistShape {
     /// to `b`; for an ellipse it is radians past the seam, signed by the winding.
     fn at(&self, t: f32, bulge: f32) -> Vec2 {
         match *self {
-            Self::Line { a, b } => a.lerp(b, t),
+            Self::Line { a, b, .. } => a.lerp(b, t),
             Self::Ellipse {
                 center,
                 radii,
@@ -534,8 +619,7 @@ struct LineFit {
 /// The far end is the last sample projected onto the line: it is where the pointer is
 /// holding, and so what the rest of the drag moves.
 fn fit_line(trace: &[Vec2]) -> Option<LineFit> {
-    let n = trace.len();
-    if n < 2 {
+    if trace.len() < 2 {
         return None;
     }
     let anchor = trace[0];
@@ -547,15 +631,25 @@ fn fit_line(trace: &[Vec2]) -> Option<LineFit> {
         syy += d.y * d.y;
     }
     let (_, _, dir) = principal_axis(sxx, sxy, syy);
-    let dir = dir?;
-    Some(LineFit {
+    Some(line_along(trace, anchor, dir?))
+}
+
+/// The trace read as a line from `anchor` along `dir` (unit): where it ends, and how
+/// far it strays at its worst.
+///
+/// The scoring half of [`fit_line`], with the direction supplied rather than solved
+/// for — so a guide axis is judged by exactly the measure the free fit is judged by,
+/// which is what makes the two residuals comparable at all (§20.6).
+fn line_along(trace: &[Vec2], anchor: Vec2, dir: Vec2) -> LineFit {
+    let last = trace.last().copied().unwrap_or(anchor);
+    LineFit {
         a: anchor,
-        b: anchor + dir * (trace[n - 1] - anchor).dot(dir),
+        b: anchor + dir * (last - anchor).dot(dir),
         worst: trace
             .iter()
             .map(|p| (*p - anchor).perp_dot(dir).abs())
             .fold(0.0, f32::max),
-    })
+    }
 }
 
 /// An ellipse through the trace, and how far the trace sits from it.
@@ -866,6 +960,12 @@ mod tests {
 
     const TOL: f32 = 1.0;
 
+    /// The recognizer with no guides on the screen — what every test but the §20.6
+    /// ones is asking about.
+    fn free(trace: &[Vec2]) -> Option<AssistShape> {
+        recognize(trace, TOL, &[])
+    }
+
     /// A trace along an ideal shape, with `wobble` px of deterministic zig-zag across
     /// it — a stand-in for a hand.
     fn trace_of(n: usize, wobble: f32, f: impl Fn(f32) -> Vec2) -> Vec<Vec2> {
@@ -897,18 +997,24 @@ mod tests {
     #[test]
     fn a_rough_drag_is_a_line() {
         let (a, b) = (Vec2::new(10.0, 20.0), Vec2::new(310.0, 90.0));
-        let shape = recognize(&line_trace(a, b, 3.0), TOL).expect("a line");
-        let AssistShape::Line { a: fa, b: fb } = shape else {
+        let shape = free(&line_trace(a, b, 3.0)).expect("a line");
+        let AssistShape::Line {
+            a: fa,
+            b: fb,
+            on_axis,
+        } = shape
+        else {
             panic!("recognized {shape:?}, not a line");
         };
         assert!(fa.distance(a) < 6.0, "start moved to {fa}");
         assert!(fb.distance(b) < 6.0, "end moved to {fb}");
+        assert!(!on_axis, "there were no guides to be on the axis of");
     }
 
     #[test]
     fn a_rough_loop_is_an_ellipse() {
         let (center, radii) = (Vec2::new(100.0, -40.0), Vec2::new(120.0, 60.0));
-        let shape = recognize(&ellipse_trace(center, radii, 0.4, 3.0), TOL).expect("an ellipse");
+        let shape = free(&ellipse_trace(center, radii, 0.4, 3.0)).expect("an ellipse");
         let AssistShape::Ellipse {
             center: c,
             radii: r,
@@ -939,7 +1045,7 @@ mod tests {
     fn a_long_thin_loop_is_still_an_ellipse() {
         for ratio in [2.0f32, 4.0, 8.0] {
             let radii = Vec2::new(400.0, 400.0 / ratio);
-            let shape = recognize(&ellipse_trace(Vec2::ZERO, radii, -1.2, 4.0), TOL)
+            let shape = free(&ellipse_trace(Vec2::ZERO, radii, -1.2, 4.0))
                 .unwrap_or_else(|| panic!("{ratio}:1 declined"));
             let AssistShape::Ellipse { radii: r, .. } = shape else {
                 panic!("{ratio}:1 recognized as {shape:?}");
@@ -964,8 +1070,8 @@ mod tests {
             for ratio in [1.0f32, 4.0] {
                 let radii = Vec2::new(400.0, 400.0 / ratio);
                 let trace = loop_trace(Vec2::ZERO, radii, 0.6, 4.0, turns);
-                let shape = recognize(&trace, TOL)
-                    .unwrap_or_else(|| panic!("{ratio}:1 at {turns:+} turns declined"));
+                let shape =
+                    free(&trace).unwrap_or_else(|| panic!("{ratio}:1 at {turns:+} turns declined"));
                 let AssistShape::Ellipse {
                     center, radii: r, ..
                 } = shape
@@ -991,7 +1097,7 @@ mod tests {
     fn a_snapped_line_starts_where_the_stroke_started() {
         let (a, b) = (Vec2::new(10.0, 20.0), Vec2::new(310.0, 90.0));
         let trace = line_trace(a, b, 3.0);
-        let AssistShape::Line { a: start, .. } = recognize(&trace, TOL).expect("a line") else {
+        let AssistShape::Line { a: start, .. } = free(&trace).expect("a line") else {
             panic!("not a line");
         };
         assert_eq!(start, trace[0], "the drawn start was moved to {start}");
@@ -1007,21 +1113,21 @@ mod tests {
             let r = 100.0 * (1.0 + 0.45 * (2.0 * u).cos());
             Vec2::new(r * u.cos(), r * u.sin())
         });
-        assert_eq!(recognize(&trace, TOL), None);
+        assert_eq!(free(&trace), None);
     }
 
     #[test]
     fn a_bowed_stroke_is_not_a_line() {
         // 300px across with a 40px sagitta — a curve somebody meant.
         let trace = trace_of(40, 0.0, |t| Vec2::new(300.0 * t, 160.0 * t * (1.0 - t)));
-        assert_eq!(recognize(&trace, TOL), None);
+        assert_eq!(free(&trace), None);
     }
 
     #[test]
     fn a_twitch_is_not_a_shape() {
-        assert_eq!(recognize(&[Vec2::ZERO; 4], TOL), None);
+        assert_eq!(free(&[Vec2::ZERO; 4]), None);
         let tiny = line_trace(Vec2::ZERO, Vec2::new(6.0, 0.0), 0.0);
-        assert_eq!(recognize(&tiny, TOL), None);
+        assert_eq!(free(&tiny), None);
     }
 
     /// The realized path has to *be* the shape, not merely resemble it — including at
@@ -1030,7 +1136,12 @@ mod tests {
     fn a_snapped_line_is_straight() {
         let (a, b) = (Vec2::new(-50.0, 30.0), Vec2::new(250.0, 130.0));
         let pen = PenProfile::of(&[ControlPoint::at(a), ControlPoint::at(b)]);
-        let path = AssistShape::Line { a, b }.to_path(&pen, 12);
+        let path = AssistShape::Line {
+            a,
+            b,
+            on_axis: false,
+        }
+        .to_path(&pen, 12);
         let poly = flatten(&path, FLATTEN_TOLERANCE);
         let dir = (b - a).normalize();
         let worst = poly
@@ -1080,6 +1191,7 @@ mod tests {
         let path = AssistShape::Line {
             a: Vec2::ZERO,
             b: Vec2::new(300.0, 0.0),
+            on_axis: false,
         }
         .to_path(&pen, drawn.len());
         let mid = path[path.len() / 2].pressure;
@@ -1113,14 +1225,181 @@ mod tests {
         let shape = AssistShape::Line {
             a: Vec2::ZERO,
             b: Vec2::new(100.0, 0.0),
+            on_axis: false,
         };
         let moved = shape.adjust(shape.grip(), Vec2::new(100.0, 60.0));
         assert_eq!(
             moved,
             AssistShape::Line {
                 a: Vec2::ZERO,
-                b: Vec2::new(100.0, 60.0)
+                b: Vec2::new(100.0, 60.0),
+                on_axis: false,
             }
         );
+    }
+
+    // --- lines on a guide axis (§20.6) -------------------------------------
+
+    use crate::guides::PerspectiveGuide;
+
+    /// A guide in general position: three finite vanishing points, none of its axes
+    /// level, so nothing here can pass by accidentally agreeing with the canvas.
+    fn guide() -> PerspectiveGuide {
+        PerspectiveGuide {
+            center: Vec2::new(120.0, -60.0),
+            focal: 700.0,
+            rotation: glam::Quat::from_rotation_z(0.2)
+                * glam::Quat::from_rotation_x(0.3)
+                * glam::Quat::from_rotation_y(0.55),
+            ..Default::default()
+        }
+    }
+
+    /// A trace drawn from `a`, `len` px long, `off` radians away from the guide line of
+    /// `axis` through `a` — the shape of every question here: how far off may a hand be?
+    fn aimed(
+        g: &PerspectiveGuide,
+        axis: usize,
+        a: Vec2,
+        len: f32,
+        off: f32,
+        wobble: f32,
+    ) -> Vec<Vec2> {
+        let u = g.pencils()[axis]
+            .expect("axis shown")
+            .through(a)
+            .expect("a line through a");
+        let dir = Vec2::from_angle(off).rotate(u);
+        line_trace(a, a + dir * len, wobble)
+    }
+
+    fn as_line(shape: AssistShape) -> (Vec2, Vec2, bool) {
+        match shape {
+            AssistShape::Line { a, b, on_axis } => (a, b, on_axis),
+            other => panic!("recognized {other:?}, not a line"),
+        }
+    }
+
+    /// The feature itself: a line drawn roughly toward a vanishing point comes back
+    /// aimed exactly at it, *from where the hand started it* — turned onto the grid,
+    /// not moved onto it.
+    #[test]
+    fn a_line_aimed_near_an_axis_snaps_onto_it() {
+        let g = guide();
+        let vps = g.scene().vps;
+        let pencils: Vec<AxisPencil> = g.pencils().into_iter().flatten().collect();
+        let start = Vec2::new(-260.0, 210.0);
+        for (axis, vp) in vps.iter().enumerate() {
+            let vp = vp.expect("3-point: all finite");
+            let trace = aimed(&g, axis, start, 420.0, 0.05, 2.5);
+            let (a, b, on_axis) = as_line(recognize(&trace, TOL, &pencils).expect("a line"));
+            assert!(on_axis, "axis {axis} was not taken");
+            assert_eq!(a, start, "the drawn start moved to {a}");
+            let (u, to_vp) = ((b - a).normalize(), (vp - a).normalize());
+            assert!(
+                u.perp_dot(to_vp).abs() < 1e-3,
+                "axis {axis}: the snapped line points {u} and the VP is at {to_vp}"
+            );
+        }
+    }
+
+    /// ...and it has to decline. A line drawn deliberately across the grid is a line
+    /// the artist meant, and the grid does not get to claim it.
+    #[test]
+    fn a_line_across_the_grid_keeps_its_own_direction() {
+        let g = guide();
+        let pencils: Vec<AxisPencil> = g.pencils().into_iter().flatten().collect();
+        let start = Vec2::new(-260.0, 210.0);
+        // A fifth of a turn off the X axis — and, in this pose, well away from the
+        // other two as well.
+        let trace = aimed(&g, 0, start, 420.0, 0.6, 2.5);
+        let (a, b, on_axis) = as_line(recognize(&trace, TOL, &pencils).expect("a line"));
+        assert!(!on_axis, "a deliberate diagonal was pulled onto an axis");
+        let drawn = (trace[trace.len() - 1] - trace[0]).normalize();
+        assert!((b - a).normalize().perp_dot(drawn).abs() < 0.02);
+    }
+
+    /// The snap is one question about direction, so it cannot depend on how the trace
+    /// was *scaled*: the bar is a fraction of the line's own length, which is the same
+    /// cone for a short stroke and a long one.
+    #[test]
+    fn the_snap_window_is_an_angle() {
+        let g = guide();
+        let pencils: Vec<AxisPencil> = g.pencils().into_iter().flatten().collect();
+        let start = Vec2::new(40.0, 320.0);
+        for len in [120.0f32, 400.0, 1600.0] {
+            // Inside the cone at every length…
+            let near = aimed(&g, 2, start, len, 0.04, 0.0);
+            let (_, _, on) = as_line(recognize(&near, TOL, &pencils).expect("a line"));
+            assert!(on, "{len}px missed an axis 2.3° away");
+            // …and outside it at every length.
+            let far = aimed(&g, 2, start, len, 0.25, 0.0);
+            let (_, _, on) = as_line(recognize(&far, TOL, &pencils).expect("a line"));
+            assert!(!on, "{len}px was claimed by an axis 14° away");
+        }
+    }
+
+    /// What the artist cannot see cannot bend a line: the same trace, with the guide's
+    /// eye shut, is the hand's own.
+    #[test]
+    fn a_hidden_guide_does_not_snap() {
+        let mut g = guide();
+        let start = Vec2::new(-260.0, 210.0);
+        let trace = aimed(&g, 1, start, 420.0, 0.05, 2.5);
+        assert!(as_line(recognize(&trace, TOL, &pencils_of(&g)).expect("a line")).2);
+
+        g.visible = false;
+        assert!(!as_line(recognize(&trace, TOL, &pencils_of(&g)).expect("a line")).2);
+    }
+
+    fn pencils_of(g: &PerspectiveGuide) -> Vec<AxisPencil> {
+        g.pencils().into_iter().flatten().collect()
+    }
+
+    /// A curve is still a curve. The grid may only choose *which* line a line is, and
+    /// never promote something that was not one — the two bars are not interchangeable.
+    #[test]
+    fn a_bowed_stroke_near_an_axis_is_still_not_a_line() {
+        let g = guide();
+        let start = Vec2::new(-260.0, 210.0);
+        let u = g.pencils()[0].unwrap().through(start).unwrap();
+        // 300px along the axis with a 40px sagitta across it — the §6.9 curve, laid on
+        // the grid.
+        let trace = trace_of(40, 0.0, |t| {
+            start + u * (300.0 * t) + u.perp() * (160.0 * t * (1.0 - t))
+        });
+        assert_eq!(recognize(&trace, TOL, &pencils_of(&g)), None);
+    }
+
+    /// Steering a line that took an axis runs it out along that axis: the pointer's
+    /// travel across the line is dropped, and what it means is where along the line the
+    /// end lands. An alignment a sideways nudge could break would not be one.
+    #[test]
+    fn an_axis_line_is_steered_along_its_axis() {
+        let (a, b) = (Vec2::new(10.0, 10.0), Vec2::new(210.0, 110.0));
+        let shape = AssistShape::Line {
+            a,
+            b,
+            on_axis: true,
+        };
+        let u = (b - a).normalize();
+        // A pointer that has wandered a long way off the line, and some way along it.
+        let target = b + u * 90.0 + u.perp() * 140.0;
+        let (a2, b2, on) = as_line(shape.adjust(shape.grip(), target));
+        assert_eq!((a2, on), (a, true));
+        assert!(
+            (b2 - a).perp_dot(u).abs() < 1e-3,
+            "the end left the axis, at {b2}"
+        );
+        assert!(
+            ((b2 - a).dot(u) - ((b - a).length() + 90.0)).abs() < 1e-3,
+            "the end did not run out along the axis, at {b2}"
+        );
+
+        // And, like every adjustment, it is a function of the total travel (§16.6).
+        let stepped = (1..=8).fold(shape, |_, i| {
+            shape.adjust(shape.grip(), shape.grip().lerp(target, i as f32 / 8.0))
+        });
+        assert_eq!(shape.adjust(shape.grip(), target), stepped);
     }
 }

@@ -23,8 +23,10 @@
 //! [`PerspectiveGuide::scene`] derives the [`GuideScene`] the compositor's
 //! guide pass draws (§20.4), and [`PerspectiveGuide::dragged`] is the direct
 //! manipulation: the grabbed direction follows the pointer, snapping to and
-//! lockable about the world axes (§20.5). Everything here is plain CPU math,
-//! computed once per render and unit-tested against the classical theorems.
+//! lockable about the world axes (§20.5). [`PerspectiveGuide::pencils`] is the
+//! other direction — what the drawing assist aligns a snapped line to (§20.6).
+//! Everything here is plain CPU math, computed once per render and unit-tested
+//! against the classical theorems.
 
 use glam::{Mat3, Quat, Vec2, Vec3};
 
@@ -174,6 +176,26 @@ impl PerspectiveGuide {
         }
     }
 
+    /// The pencils a stroke may align to (§20.6): one per world axis, and
+    /// `None` for an axis that is not on the screen.
+    ///
+    /// Gated on what is *shown* rather than on what exists, because a snap the
+    /// artist cannot see coming reads as the tool bending a considered line. A
+    /// hidden guide, an axis whose fan is switched off, and an overlay turned
+    /// down to nothing all offer nothing — the same rule stated once, over the
+    /// same three controls the panel puts on the bar.
+    pub fn pencils(&self) -> [Option<AxisPencil>; 3] {
+        let shown = self.visible && self.opacity > 0.0;
+        let dirs = self.axis_dirs();
+        std::array::from_fn(|i| {
+            (shown && self.axes[i]).then_some(AxisPencil {
+                center: self.center,
+                focal: self.focal,
+                dir: dirs[i],
+            })
+        })
+    }
+
     /// Everything the guide pass draws, derived from the camera (§20.2). Cheap
     /// — a rotation and a handful of products — so it is recomputed per render
     /// rather than cached beside the state it would shadow.
@@ -254,6 +276,41 @@ fn axis_turn(axis: Vec3, r0: Vec3, r1: Vec3) -> Quat {
     }
     let (u, v) = (u.normalize(), v.normalize());
     Quat::from_axis_angle(axis, u.cross(v).dot(axis).atan2(u.dot(v)))
+}
+
+/// One axis of one guide, as the thing a stroke can be aligned to: the
+/// **pencil** of images of every world line along that axis (§20.6).
+///
+/// This is the whole of a perspective guide that the drawing assist sees, and
+/// it is deliberately not a direction — a pencil converges, so what it can
+/// answer is a direction *at a point*. That is also what makes the snap an
+/// alignment rather than a move: the line the assist takes is the pencil's
+/// line through the point the hand started from, so a stroke is turned onto
+/// the grid without being slid along it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AxisPencil {
+    center: Vec2,
+    focal: f32,
+    dir: Vec3,
+}
+
+impl AxisPencil {
+    /// The pencil's line through canvas point `p`, as a unit direction —
+    /// unsigned, like every direction here, since an axis and its negation
+    /// name the same pencil.
+    ///
+    /// It is `V(a) − p` cleared of its denominator: multiplying through by the
+    /// `d.z` that the vanishing point divides by leaves
+    /// `f·(d.x, d.y) + d.z·(c − p)`, which stays finite as `d.z → 0` and
+    /// becomes the parallel direction of an axis lying in the picture plane.
+    /// So no vanishing point is ever computed on this path and there is no
+    /// case to branch on — the same reason §20.3's fans work in direction
+    /// space. `None` only *at* a vanishing point, where the pencil determines
+    /// no line.
+    pub fn through(&self, p: Vec2) -> Option<Vec2> {
+        (Vec2::new(self.dir.x, self.dir.y) * self.focal + (self.center - p) * self.dir.z)
+            .try_normalize()
+    }
 }
 
 /// The derived, draw-ready guide: what the compositor's guide pass uniform
@@ -422,6 +479,68 @@ mod tests {
         let d = Vec3::new(0.0, 1.0, 1.0).normalize(); // 45° from +z
         let p = g.center + Vec2::new(d.x, d.y) * (g.focal / d.z);
         assert!(((p - g.center).length() - g.focal).abs() < 1e-3);
+    }
+
+    // --- the pencils strokes align to (§20.6) ------------------------------
+
+    /// A pencil's line through a point aims at that axis's vanishing point.
+    /// That is the §20.1 identity again, checked through the expression the
+    /// assist actually uses — which reaches it without computing a VP at all.
+    #[test]
+    fn a_pencil_aims_at_its_vanishing_point() {
+        let g = guide(0.5, 0.35, 0.2);
+        let s = g.scene();
+        for (i, pencil) in g.pencils().into_iter().enumerate() {
+            let pencil = pencil.expect("every axis shown");
+            let vp = s.vps[i].expect("3-point: all finite");
+            for p in [Vec2::new(-300.0, 200.0), Vec2::new(640.0, -80.0)] {
+                let u = pencil.through(p).expect("not at the vanishing point");
+                let to_vp = (vp - p).normalize();
+                assert!(
+                    u.perp_dot(to_vp).abs() < 1e-3,
+                    "axis {i} at {p:?}: {u:?} vs {to_vp:?}"
+                );
+            }
+        }
+    }
+
+    /// An axis lying in the picture plane has no vanishing point to aim at, and
+    /// its pencil is the parallel one — from the same expression, with nothing
+    /// special-cased and nothing dividing by a vanishing `d.z`.
+    #[test]
+    fn a_pencil_at_infinity_is_parallel() {
+        // 1-point: X and Y lie in the picture plane, so both vanish at infinity.
+        let g = guide(0.0, 0.0, 0.0);
+        assert!(g.scene().vps[0].is_none());
+        let x = g.pencils()[0].expect("X shown");
+        let far = Vec2::new(-9000.0, 4000.0);
+        let (u, v) = (
+            x.through(g.center).expect("a line at the centre"),
+            x.through(far).expect("a line far away"),
+        );
+        assert!(
+            u.perp_dot(v).abs() < 1e-4,
+            "{u:?} and {v:?} are not parallel"
+        );
+        assert!(u.y.abs() < 1e-4, "X's lines should be level: {u:?}");
+    }
+
+    /// What is not on the screen offers nothing to snap to (§20.6) — one rule
+    /// over the guide's eye, its per-axis fans and its opacity.
+    #[test]
+    fn an_unshown_axis_offers_no_pencil() {
+        let mut g = guide(0.5, 0.35, 0.2);
+        g.axes = [true, false, true];
+        assert!(g.pencils()[1].is_none(), "a hidden fan");
+        assert!(g.pencils()[0].is_some());
+
+        g.axes = [true; 3];
+        g.visible = false;
+        assert!(g.pencils().iter().all(Option::is_none), "a hidden guide");
+
+        g.visible = true;
+        g.opacity = 0.0;
+        assert!(g.pencils().iter().all(Option::is_none), "an invisible one");
     }
 
     // --- the orbit drag (§20.5) --------------------------------------------
