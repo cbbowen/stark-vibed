@@ -60,7 +60,8 @@ out as theorems instead of decorations, and the overlay shows them:
 
 Directions are treated unsigned throughout — an axis and its negation name the
 same pencil of lines, the same vanishing point — so nothing downstream ever
-branches on a sign.
+branches on a sign. (The curvilinear lens is the one deliberate exception: it
+sees the two signs at two places, which is §20.8's whole subject.)
 
 ## 20.2 Vanishing lines and station points
 
@@ -180,9 +181,9 @@ there is no path to a guide's name that avoids it. Selecting a row — or
 adding — enters the **edit mode**: a full-viewport catcher owns the pointer for the
 mode's duration (the transform-mode bargain, §16.6; navigation still works),
 and the **Perspective Guide bar** stands at the bottom with the per-axis
-locks, per-axis visibility, density, opacity, and "Done". Which of 1/2/3-point
-you are in is never stored or displayed as a mode: the canvas shows it, as the
-count of finite vanishing points.
+locks, per-axis visibility, the Fisheye lens toggle (§20.8), density, opacity,
+and "Done". Which of 1/2/3-point you are in is never stored or displayed as a
+mode: the canvas shows it, as the count of finite vanishing points.
 
 The drag *is* the manipulation, classified by what the press lands on:
 
@@ -353,3 +354,70 @@ is not.
 
 Gating is §20.6's, with one addition: a plane needs **both** of its axes shown,
 being the thing the two of them span.
+
+## 20.8 The curvilinear lens
+
+The Fisheye toggle on the perspective bar swaps the guide's **lens** — the one
+map from a canvas point to the eye's ray through it — and nothing else. That is
+the whole design: the camera, the fans, the orbit drag, the axis snap and the
+locks are all stated in *direction space* (§20.3, §20.5), so a guide seen
+through a different lens keeps every behavior and every theorem that lives on
+the view sphere, while everything drawn on the canvas bends to the new
+projection. `PerspectiveGuide::ray` and `::project` are the only functions that
+branch on it.
+
+**Why stereographic.** Of the classical fisheye mappings (equidistant `f·θ`,
+orthographic `f·sin θ`, stereographic `2f·tan(θ/2)`), Stark draws the
+stereographic one, for two reasons that matter to a *drawing* tool. It is
+**conformal** — angles survive, so the grid's local structure reads the same
+everywhere and a brush-size circle stays a circle — and it takes **circles to
+circles**: the image of any world line (a great circle of directions) is an
+exact canvas circle, closed-form, which is what keeps every element of pass D
+an analytic distance field rather than a sampled curve. The scale `2f·tan(θ/2)`
+agrees with the rectilinear `f·tan θ` to first order at the center of view, so
+toggling the lens leaves the drawing's heart at the same size and bows its
+edges.
+
+The forward map is `c + 2f·(d.x, d.y)/(1 + d.z)`; the inverse, with
+`u = (p − c)/2f` and `s = |u|²`, is `(2u, 1 − s)/(1 + s)` — no trigonometry in
+either direction, and `s > 1` reaches past the 90° ring to directions *behind*
+the camera: the fisheye's field of view is the whole sphere except the exact
+backward pole, its projection point.
+
+What the artist sees change:
+
+- **Both poles.** Directions are no longer projective — an axis and its
+  negation image at two different points — so each axis can show two vanishing
+  points. A 1-point pose becomes the classical **5-point curvilinear grid**:
+  the view axis at the center, the four transverse poles on the 90° ring at
+  its compass points (a unit test states exactly this).
+- **Traces bow.** A pair plane's vanishing line becomes the stereographic
+  image of its great circle: center `c + 2f·m.xy/m.z`, radius `2f/|m.z|` —
+  substituting the inverse map into `m·d = 0` and completing the square. A
+  plane containing the view axis (`m.z ≈ 0`) stays a straight line through
+  `c`, as any great circle through the projection axis must; near that pose
+  the circle is drawn *as* its limiting line below `FISHEYE_LINE_EPS`, because
+  a ten-million-pixel radius is where f32's distance-to-ring subtraction
+  starts to wobble, and the swap is sub-pixel where it happens.
+- **Two rings.** The 45° ring moves to its stereographic radius
+  `2(√2 − 1)·f ≈ 0.83f`, and the **90° ring** appears at exactly `2f` — the
+  rim of the forward hemisphere, the circle the classical 5-point grid is
+  drawn inside. Both are the focal length's handles: dragging either ring in
+  the edit mode sets `f` through that ring's own factor, and the drag holds
+  the ring it grabbed rather than handing off to the nearer one.
+- **Station points go.** Rotating the eye into the picture plane is a
+  flat-plane measuring construction; under a curved lens the distances it
+  transfers do not exist on the canvas, so drawing them would be decoration
+  pretending to be geometry.
+
+In the shader the lens is one uniform branch producing the ray — the fan
+arithmetic after it is untouched, and the guide lines emerge as circles simply
+because that is where the pencil's coordinate now falls. The pair traces
+travel as tagged slots (line or circle, one distance test each), the vanishing
+points as six slots instead of three.
+
+**Deliberately withheld:** a fisheye guide puts up no snapping scaffold
+(§20.6, §20.7). Its guide lines are arcs, and the assist's pencils and charts
+describe straight lines and flat planes — offering them would snap a stroke to
+geometry the guide does not draw. Snapping strokes to the fisheye's circles is
+its own future piece of work, on the same `Scaffold` seam.

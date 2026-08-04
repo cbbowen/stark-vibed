@@ -10,9 +10,16 @@
 // stepped by equal *visual angle* (§20.3). A texel's pencil coordinate is
 // θ = atan2(n·b1, n·b0) with n = a × r (r = the eye's ray through the texel)
 // and (b0, b1) the other two axes — which lands every pair plane (every
-// vanishing line) on a quarter turn of the fan. The gradient of θ is taken
+// vanishing trace) on a quarter turn of the fan. The gradient of θ is taken
 // analytically from the atan2 quotient rather than with fwidth(θ), because θ
 // has a branch cut and its true gradient does not.
+//
+// The lens (§20.8) enters exactly once: the map from the texel to its eye ray.
+// Under the stereographic fisheye that map is the inverse stereographic
+// projection, and the same fan arithmetic then draws the guide lines as the
+// circles they truly image to — nothing else in the pass knows the lens
+// changed. The CPU side hands the pair traces (lines or circles), both poles'
+// vanishing points, and the dressed rings already derived.
 
 struct Guide {
     // Screen px → canvas px: `canvas = m * frag + org.xy` (m column-major).
@@ -21,13 +28,18 @@ struct Guide {
     org: vec4<f32>,
     // Center of view .xy (canvas px), fan step (radians), master opacity.
     cov: vec4<f32>,
+    // Lens flag (0 rectilinear, 1 fisheye), 45° ring radius, 90° ring radius
+    // (≤ 0 when the lens has none), unused.
+    proj: vec4<f32>,
     // World axes in camera space .xyz; .w = that axis's fan opacity (0 = off).
     dirs: array<vec4<f32>, 3>,
-    // Vanishing line of pair (k, k+1): unit normal .xy, offset .z (evaluating
-    // gives signed canvas px), .w = valid.
+    // Vanishing trace of pair (k, k+1), by .w: 0 = none; 1 = line (unit normal
+    // .xy, offset .z — evaluating gives signed canvas px); 2 = circle (center
+    // .xy, radius .z).
     lines: array<vec4<f32>, 3>,
-    // Finite vanishing points: .xy canvas px, .z = valid.
-    vps: array<vec4<f32>, 3>,
+    // Vanishing points: .xy canvas px, .z = valid. Slots 0–2 are the axes'
+    // forward poles, 3–5 the backward — which only the fisheye separates.
+    vps: array<vec4<f32>, 6>,
     // Station points of pair (k, k+1): .xy canvas px, .z = valid.
     sps: array<vec4<f32>, 3>,
 }
@@ -77,6 +89,25 @@ fn over(acc: vec4<f32>, rgb: vec3<f32>, a: f32) -> vec4<f32> {
     return vec4<f32>(rgb * aa + acc.rgb * (1.0 - aa), aa + acc.a * (1.0 - aa));
 }
 
+/// One dashed chrome ring about the center of view — the 45° and 90° cones'
+/// images (§20.1, §20.8). A non-positive radius is a ring the lens does not
+/// have, and draws nothing.
+fn ring(acc: vec4<f32>, p: vec2<f32>, cov: vec2<f32>, radius: f32, zoom: f32, master: f32) -> vec4<f32> {
+    if radius <= 0.0 { return acc; }
+    let dp = p - cov;
+    let rad = length(dp);
+    let d_px = abs(rad - radius) * zoom;
+    // Dash by arc length at the ring's own radius, screen px. The dash dims
+    // rather than vanishes, so the ring never falls apart at a
+    // glance-and-back. The `select` keeps atan2's indeterminate 0/0 (the
+    // exact center texel, nowhere near the ring) from minting a NaN that
+    // `0 × NaN` would carry into the accumulator.
+    let arc = select(atan2(dp.y, dp.x), 0.0, rad < 0.5) * radius * zoom;
+    let duty = mix(0.35, 1.0, step(0.5, fract(arc / DASH)));
+    let haloed = over(acc, HALO, stroke_cov(d_px, CIRCLE_HW + 0.8) * duty * 0.4 * master);
+    return over(haloed, CHROME, stroke_cov(d_px, CIRCLE_HW) * duty * 0.8 * master);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     // Fullscreen triangle: (-1,-1), (3,-1), (-1,3).
@@ -94,9 +125,21 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let step_r = guide.cov.z;
     let master = guide.cov.w;
 
-    // The eye's ray through this texel, camera space. Unnormalized: every use
-    // below is projective, so scale cancels.
-    let ray = vec3<f32>((p - cov) / f, 1.0);
+    // The eye's ray through this texel, camera space — the one place the lens
+    // enters (§20.8). Unnormalized both ways: every use below is projective,
+    // so scale cancels (the fisheye ray's true length is 1 + s). The branch is
+    // on a uniform value, so the derivative calls below remain in uniform
+    // control flow.
+    var ray: vec3<f32>;
+    if guide.proj.x > 0.5 {
+        // Inverse stereographic: past the 90° ring (s > 1) the z component
+        // goes negative and the texel sees *behind* the camera.
+        let u = (p - cov) / (2.0 * f);
+        let s = dot(u, u);
+        ray = vec3<f32>(2.0 * u, 1.0 - s);
+    } else {
+        ray = vec3<f32>((p - cov) / f, 1.0);
+    }
 
     var acc = vec4<f32>(0.0);
 
@@ -128,31 +171,27 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         acc = over(acc, axis_color(i), alpha);
     }
 
-    // --- Vanishing lines: the horizon of each axis pair (§20.2). -----------
+    // --- Vanishing traces: each pair's horizon, straight or bowed (§20.2,
+    // §20.8) — a line or a circle by the slot's kind, one distance either way.
     for (var k = 0u; k < 3u; k++) {
-        if guide.lines[k].w <= 0.0 { continue; }
+        let kind = guide.lines[k].w;
+        if kind < 0.5 { continue; }
         let pair_a = min(guide.dirs[k].w, guide.dirs[(k + 1u) % 3u].w);
         if pair_a <= 0.0 { continue; }
-        let d_px = abs(dot(guide.lines[k].xy, p) + guide.lines[k].z) * zoom;
+        var d_px: f32;
+        if kind > 1.5 {
+            d_px = abs(length(p - guide.lines[k].xy) - guide.lines[k].z) * zoom;
+        } else {
+            d_px = abs(dot(guide.lines[k].xy, p) + guide.lines[k].z) * zoom;
+        }
         let rgb = mix(axis_color(k), axis_color((k + 1u) % 3u), 0.5);
         acc = over(acc, rgb, stroke_cov(d_px, PAIR_HW) * 0.9 * pair_a * master);
     }
 
-    // --- The 45° circle: radius = focal length, dashed chrome (§20.1). -----
-    {
-        let dp = p - cov;
-        let rad = length(dp);
-        let d_px = abs(rad - f) * zoom;
-        // Dash by arc length at the circle's own radius, screen px. The dash
-        // dims rather than vanishes, so the circle never falls apart at a
-        // glance-and-back. The `select` keeps atan2's indeterminate 0/0 (the
-        // exact center texel, nowhere near the ring) from minting a NaN that
-        // `0 × NaN` would carry into the accumulator.
-        let arc = select(atan2(dp.y, dp.x), 0.0, rad < 0.5) * f * zoom;
-        let duty = mix(0.35, 1.0, step(0.5, fract(arc / DASH)));
-        acc = over(acc, HALO, stroke_cov(d_px, CIRCLE_HW + 0.8) * duty * 0.4 * master);
-        acc = over(acc, CHROME, stroke_cov(d_px, CIRCLE_HW) * duty * 0.8 * master);
-    }
+    // --- The view-cone rings: 45° always, 90° where the lens has one
+    // (§20.1, §20.8).
+    acc = ring(acc, p, cov, guide.proj.y, zoom, master);
+    acc = ring(acc, p, cov, guide.proj.z, zoom, master);
 
     // --- Station points: rings on the Thales circle (§20.2). ---------------
     for (var k = 0u; k < 3u; k++) {
@@ -166,12 +205,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         acc = over(acc, rgb, disc_cov(d, 0.9) * pair_a * master);
     }
 
-    // --- Vanishing points: filled discs in their axis's color. -------------
-    for (var i = 0u; i < 3u; i++) {
-        if guide.vps[i].z <= 0.0 || guide.dirs[i].w <= 0.0 { continue; }
+    // --- Vanishing points: filled discs in their axis's color — both poles,
+    // where the lens separates them (§20.8).
+    for (var i = 0u; i < 6u; i++) {
+        let axis = i % 3u;
+        if guide.vps[i].z <= 0.0 || guide.dirs[axis].w <= 0.0 { continue; }
         let d = length(p - guide.vps[i].xy) * zoom;
         acc = over(acc, HALO, disc_cov(d, 5.2) * 0.6 * master);
-        acc = over(acc, axis_color(i), disc_cov(d, 4.0) * master);
+        acc = over(acc, axis_color(axis), disc_cov(d, 4.0) * master);
         acc = over(acc, CHROME, stroke_cov(abs(d - 4.0), 0.7) * 0.9 * master);
     }
 

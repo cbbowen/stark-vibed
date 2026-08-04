@@ -246,6 +246,10 @@ icons! {
     // lines instead of of a layer.
     LOCK => "lock-bold",
     DENSITY => "vector-three-bold",
+    // The perspective bar's lens toggle (§20.8): a gridded globe — straight
+    // lines bowed onto a sphere, which is what the stereographic fisheye does
+    // to the guide. Hand-drawn in the Phosphor bold grammar; not from the set.
+    FISHEYE => "fisheye-bold",
     // The nouns the floating panels are about (§11), worn by the title bar and by the
     // entry that opens that panel in the Panels menu — so a panel and the way back to
     // it are one picture rather than two names that happen to match.

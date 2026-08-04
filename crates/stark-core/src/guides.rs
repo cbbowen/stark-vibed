@@ -17,6 +17,12 @@
 //!   about each vanishing line — each sits on the Thales circle over its two
 //!   vanishing points, which is why it sees them at a right angle (§20.2).
 //!
+//! All of it is projection through a [`Lens`], and swapping the rectilinear
+//! lens for the stereographic **fisheye** (§20.8) is one field: the fans, the
+//! orbit drag, the snap and the locks are stated in direction space and carry
+//! over untouched, while the straight guide lines bow into exact circles and
+//! both poles of every axis come into view.
+//!
 //! [`PerspectiveGuide`] is one guide; the session carries a list of them
 //! (§20.5) and the panel edits it whole through
 //! [`ViewCommand::SetGuides`](crate::command::ViewCommand::SetGuides).
@@ -62,6 +68,54 @@ const PLANE_REACH: f32 = 1e3;
 /// fall into deliberately, narrow enough that a diagonal drag stays free.
 const SNAP_COS: f32 = 0.966;
 
+/// Below this much normal component along the view axis, a fisheye pair trace
+/// is drawn as its limiting straight line rather than as a circle (§20.8).
+/// Coarser than [`LINE_EPS`] on purpose: the circle's radius is `2f/|m.z|`,
+/// and at radii near ten million pixels the f32 distance-to-ring subtraction
+/// cancels catastrophically and the "line" wobbles. The line it is replaced
+/// with deviates from the true circle by `f·|m.z|` at most — under a pixel at
+/// this threshold — so the swap is invisible where it happens.
+const FISHEYE_LINE_EPS: f32 = 1e-3;
+
+/// The lens a guide projects through (§20.8): how a world direction becomes a
+/// canvas point, and the *only* thing that differs between a classical and a
+/// curvilinear perspective — the camera, the fans, the drag and the locks are
+/// all stated in direction space and never notice.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Lens {
+    /// The gnomonic picture plane of classical perspective: straight world
+    /// lines image straight. Directions are projective (a direction and its
+    /// negation land together), so each axis has one vanishing point, possibly
+    /// at infinity.
+    #[default]
+    Rectilinear,
+    /// The curvilinear lens: **stereographic** projection of the view sphere,
+    /// scaled to agree with the rectilinear lens at the center of view.
+    /// Chosen over the other fisheye mappings because it is conformal and
+    /// takes circles to circles — every guide line is an exact circle on the
+    /// canvas, closed-form. Directions are *not* projective here: an axis and
+    /// its negation land at two points (both poles are seen), which is why a
+    /// 1-point pose shows the classical **5-point** grid (§20.8).
+    Fisheye,
+}
+
+impl Lens {
+    /// The radii of the dressed view-cone rings, per unit focal length:
+    /// the 45° ring, and the 90° ring where the lens has one.
+    ///
+    /// Rectilinear: `tan 45° = 1`, so the 45° ring *is* the focal length, and
+    /// the 90° cone is at infinity. Fisheye: `2·tan(θ/2)` puts 45° at
+    /// `2(√2 − 1) ≈ 0.83` and the 90° ring — the image of the whole forward
+    /// hemisphere's rim, the circle the classical 5-point grid is drawn in —
+    /// at exactly `2`.
+    pub fn ring_factors(self) -> (f32, Option<f32>) {
+        match self {
+            Lens::Rectilinear => (1.0, None),
+            Lens::Fisheye => (2.0 * (std::f32::consts::SQRT_2 - 1.0), Some(2.0)),
+        }
+    }
+}
+
 /// The perspective-grid guide: a camera, plus how densely to dress it
 /// (§20.1). View state — per-client, never logged, never sent — one entry of
 /// the list the `Session` carries (§20.5).
@@ -93,6 +147,11 @@ pub struct PerspectiveGuide {
     /// and every other case is a turn of this one quaternion; the *count of
     /// finite vanishing points* is the only thing "1/2/3-point" ever names.
     pub rotation: Quat,
+    /// The lens the guide projects through (§20.8): classical straight-line
+    /// perspective, or the curvilinear fisheye. Everything else about the
+    /// camera — orientation, center, focal — means the same thing under both,
+    /// which is what makes this one field a *toggle* rather than a mode.
+    pub lens: Lens,
     /// Fan lines per half-turn of each axis's plane pencil (§20.3). The step
     /// between guide lines is `π / density` of *visual angle* — equal steps as
     /// the eye turns, not equal spacing on the canvas, which is what makes the
@@ -116,6 +175,7 @@ impl Default for PerspectiveGuide {
             center: Vec2::ZERO,
             focal: 900.0,
             rotation: Quat::from_rotation_y(30f32.to_radians()),
+            lens: Lens::Rectilinear,
             density: 12,
             opacity: 0.65,
             axes: [true; 3],
@@ -135,16 +195,52 @@ impl PerspectiveGuide {
         [m.x_axis, m.y_axis, m.z_axis]
     }
 
-    /// The eye's ray through canvas point `p`, unit, in camera space. The
-    /// shared first step of projection and of every canvas gesture: what the
-    /// hand touches on the picture plane *is* a direction in the world.
+    /// The eye's ray through canvas point `p`, unit, in camera space — through
+    /// this guide's [`lens`](Self::lens). The shared first step of projection
+    /// and of every canvas gesture: what the hand touches on the picture plane
+    /// *is* a direction in the world, and because the orbit drag and the snap
+    /// are stated in directions, they work under the fisheye without a line of
+    /// code knowing it exists (§20.8).
     pub fn ray(&self, p: Vec2) -> Vec3 {
-        Vec3::new(
-            (p.x - self.center.x) / self.focal,
-            (p.y - self.center.y) / self.focal,
-            1.0,
-        )
-        .normalize()
+        let q = (p - self.center) / self.focal;
+        match self.lens {
+            Lens::Rectilinear => Vec3::new(q.x, q.y, 1.0).normalize(),
+            // Inverse stereographic. `(2u, 1−s)` has length exactly `1+s`, so
+            // the division lands on the unit sphere with no normalize — and
+            // `s > 1` reaches past the 90° ring onto the *back* hemisphere,
+            // which is the fisheye's whole point.
+            Lens::Fisheye => {
+                let u = q * 0.5;
+                let s = u.length_squared();
+                Vec3::new(2.0 * u.x, 2.0 * u.y, 1.0 - s) / (1.0 + s)
+            }
+        }
+    }
+
+    /// Where the **unit** direction `d` (camera space) images on the canvas —
+    /// the forward half of [`ray`](Self::ray), `None` where the lens cannot
+    /// see it. Rectilinear treats `d` projectively (an axis and its negation
+    /// image together, or at infinity when it lies in the picture plane); the
+    /// fisheye sees every direction except the exact backward pole, its
+    /// projection point.
+    pub fn project(&self, d: Vec3) -> Option<Vec2> {
+        match self.lens {
+            Lens::Rectilinear => (d.z.abs() > VP_FINITE_EPS)
+                .then(|| self.center + Vec2::new(d.x, d.y) * (self.focal / d.z)),
+            Lens::Fisheye => {
+                let w = 1.0 + d.z;
+                (w > VP_FINITE_EPS)
+                    .then(|| self.center + Vec2::new(d.x, d.y) * (2.0 * self.focal / w))
+            }
+        }
+    }
+
+    /// The dressed view-cone rings, canvas px: the 45° ring, and the 90° ring
+    /// where the lens has one ([`Lens::ring_factors`]). What the overlay's
+    /// lens-drag grabs — dragging either ring *is* setting the focal length.
+    pub fn rings(&self) -> (f32, Option<f32>) {
+        let (r45, r90) = self.lens.ring_factors();
+        (r45 * self.focal, r90.map(|r| r * self.focal))
     }
 
     /// The orbit drag (§20.5): the world direction grabbed at `from` follows
@@ -199,8 +295,15 @@ impl PerspectiveGuide {
     /// hidden guide, an axis whose fan is switched off, and an overlay turned
     /// down to nothing all offer nothing — the same rule stated once, over the
     /// same three controls the panel puts on the bar.
+    ///
+    /// A **fisheye** guide offers nothing either (§20.8): its guide lines are
+    /// circles, and the pencil this returns describes straight lines — a snap
+    /// through it would align a stroke to a line the guide does not draw,
+    /// which is exactly the bent-considered-line surprise the visibility gate
+    /// exists to prevent. Snapping strokes to the fisheye's arcs is its own
+    /// future piece of work.
     pub fn pencils(&self) -> [Option<AxisPencil>; 3] {
-        let shown = self.visible && self.opacity > 0.0;
+        let shown = self.visible && self.opacity > 0.0 && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
         std::array::from_fn(|i| {
             (shown && self.axes[i]).then_some(AxisPencil {
@@ -214,13 +317,18 @@ impl PerspectiveGuide {
     /// The planes a circle can be drawn on (§20.7): pair `k` spans axes
     /// `(k, k+1)`, one chart each.
     ///
-    /// Gated like [`pencils`](Self::pencils), but on **both** axes of the pair —
-    /// a plane is the thing two axes span, so it is on the screen exactly when
-    /// they both are. The chart's third column is `a_i × a_j`, which for a
-    /// right-handed frame is the remaining axis, so the three planes are this
-    /// guide's one axis matrix with its columns cyclically shifted.
+    /// Gated like [`pencils`](Self::pencils) — including the fisheye
+    /// exclusion, since the chart is a homography of the *flat* picture plane
+    /// — but on **both** axes of the pair: a plane is the thing two axes span,
+    /// so it is on the screen exactly when they both are. The chart's third
+    /// column is `a_i × a_j`, which for a right-handed frame is the remaining
+    /// axis, so the three planes are this guide's one axis matrix with its
+    /// columns cyclically shifted.
     pub fn planes(&self) -> [Option<AxisPlane>; 3] {
-        let shown = self.visible && self.opacity > 0.0 && self.focal > 0.0;
+        let shown = self.visible
+            && self.opacity > 0.0
+            && self.focal > 0.0
+            && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
         let lens = Mat3::from_cols(
             Vec3::new(self.focal, 0.0, 0.0),
@@ -247,62 +355,104 @@ impl PerspectiveGuide {
         let c = self.center;
         let f = self.focal;
 
-        // Vanishing point of axis `d`: the picture-plane point its lines
-        // converge to, `c + f·(d.x, d.y)/d.z` — projective, so an axis lying
-        // in the picture plane (d.z ≈ 0) vanishes at infinity instead.
-        let vps =
-            dirs.map(|d| (d.z.abs() > VP_FINITE_EPS).then(|| c + Vec2::new(d.x, d.y) * (f / d.z)));
+        // Vanishing points: where each axis's direction images ([`project`]).
+        // Rectilinear directions are projective, so the antipodes add nothing
+        // and stay empty; the fisheye sees both poles of every axis — which is
+        // the whole reason a 1-point pose reads as 5-point under it (§20.8).
+        let vps = dirs.map(|d| self.project(d));
+        let anti_vps = match self.lens {
+            Lens::Rectilinear => [None; 3],
+            Lens::Fisheye => dirs.map(|d| self.project(-d)),
+        };
 
-        // Pair k spans axes (k, k+1): its vanishing line and station point.
+        // Pair k spans axes (k, k+1): its vanishing trace and station point.
         let mut lines = [None; 3];
         let mut stations = [None; 3];
         for k in 0..3 {
             let m = dirs[k].cross(dirs[(k + 1) % 3]);
-            // The vanishing line of the plane with (unit) normal `m` is the
-            // trace of the parallel plane through the eye: with the eye at
-            // distance f over c, that is `m.x·x + m.y·y + (f·m.z − m·c) = 0`,
-            // normalized so its first two coefficients are a unit normal and
-            // evaluating it *is* signed canvas-px distance. A plane facing the
-            // camera square-on (m.xy ≈ 0) has its line at infinity: nothing to
-            // draw, and no station point either.
-            let planar = Vec2::new(m.x, m.y);
-            let len = planar.length();
-            if len < LINE_EPS {
-                continue;
-            }
-            let n = planar / len;
-            let offset = (f * m.z - planar.dot(c)) / len;
-            lines[k] = Some(Vec3::new(n.x, n.y, offset));
+            match self.lens {
+                Lens::Rectilinear => {
+                    // The vanishing line of the plane with (unit) normal `m` is
+                    // the trace of the parallel plane through the eye: with the
+                    // eye at distance f over c, that is
+                    // `m.x·x + m.y·y + (f·m.z − m·c) = 0`, normalized so its
+                    // first two coefficients are a unit normal and evaluating
+                    // it *is* signed canvas-px distance. A plane facing the
+                    // camera square-on (m.xy ≈ 0) has its line at infinity:
+                    // nothing to draw, and no station point either.
+                    let planar = Vec2::new(m.x, m.y);
+                    let len = planar.length();
+                    if len < LINE_EPS {
+                        continue;
+                    }
+                    let n = planar / len;
+                    let offset = (f * m.z - planar.dot(c)) / len;
+                    lines[k] = Some(PairTrace::Line { normal: n, offset });
 
-            // The station point: the eye, rotated into the picture plane about
-            // the vanishing line (§20.2). The eye sits at height f over c, at
-            // distance √(a² + f²) from the line (a = the line's distance from
-            // c); rotating preserves that distance, landing on the ray from
-            // the foot of c's perpendicular through c. With the view axis in
-            // the pair plane (a ≈ 0 — exact 2-point) either side is the same
-            // rotation; the canvas-down side is the drawing-board convention.
-            let s = n.dot(c) + offset;
-            let a = s.abs();
-            let foot = c - n * s;
-            let u = if a > f * 1e-3 {
-                n * s.signum()
-            } else if n.y.abs() > 0.5 {
-                n * n.y.signum()
-            } else {
-                n * n.x.signum()
-            };
-            stations[k] = Some(foot + u * (a * a + f * f).sqrt());
+                    // The station point: the eye, rotated into the picture
+                    // plane about the vanishing line (§20.2). The eye sits at
+                    // height f over c, at distance √(a² + f²) from the line
+                    // (a = the line's distance from c); rotating preserves that
+                    // distance, landing on the ray from the foot of c's
+                    // perpendicular through c. With the view axis in the pair
+                    // plane (a ≈ 0 — exact 2-point) either side is the same
+                    // rotation; the canvas-down side is the drawing-board
+                    // convention.
+                    let s = n.dot(c) + offset;
+                    let a = s.abs();
+                    let foot = c - n * s;
+                    let u = if a > f * 1e-3 {
+                        n * s.signum()
+                    } else if n.y.abs() > 0.5 {
+                        n * n.y.signum()
+                    } else {
+                        n * n.x.signum()
+                    };
+                    stations[k] = Some(foot + u * (a * a + f * f).sqrt());
+                }
+                Lens::Fisheye => {
+                    // The stereographic image of the great circle of directions
+                    // in the pair plane: an exact circle — conformality's gift
+                    // (§20.8) — with center `c + 2f·m.xy/m.z` and radius
+                    // `2f/|m.z|`, from substituting the inverse projection into
+                    // `m·d = 0`. A pair plane containing the view axis
+                    // (m.z ≈ 0) images straight, through the center of view.
+                    //
+                    // No station point: rotating the eye into the picture plane
+                    // is a *flat-plane* measuring construction, and under a
+                    // curved lens the distances it would transfer do not exist
+                    // on the canvas to be measured.
+                    if m.z.abs() > FISHEYE_LINE_EPS {
+                        lines[k] = Some(PairTrace::Circle {
+                            center: c + Vec2::new(m.x, m.y) * (2.0 * f / m.z),
+                            radius: 2.0 * f / m.z.abs(),
+                        });
+                    } else {
+                        let planar = Vec2::new(m.x, m.y);
+                        let Some(n) = planar.try_normalize() else {
+                            continue;
+                        };
+                        lines[k] = Some(PairTrace::Line {
+                            normal: n,
+                            offset: -n.dot(c),
+                        });
+                    }
+                }
+            }
         }
 
         GuideScene {
             center: c,
             focal: f,
+            lens: self.lens,
+            rings: self.rings(),
             step: std::f32::consts::PI / (self.density.clamp(2, 90) as f32),
             opacity: self.opacity.clamp(0.0, 1.0),
             dirs,
             axis_alpha: self.axes.map(|on| if on { 1.0 } else { 0.0 }),
             lines,
             vps,
+            anti_vps,
             stations,
         }
     }
@@ -555,31 +705,50 @@ impl Scaffold {
     }
 }
 
+/// The image of one pair plane's directions — a **vanishing trace**: the
+/// straight vanishing line of the rectilinear lens, or the circle the fisheye
+/// bows it into (§20.8). One curve either way, so the shader carries a kind
+/// beside four numbers rather than two pipelines.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum PairTrace {
+    /// `normal · p + offset = 0`, with `normal` unit — evaluating is signed
+    /// canvas-px distance.
+    Line { normal: Vec2, offset: f32 },
+    /// `|p − center| = radius`, canvas px.
+    Circle { center: Vec2, radius: f32 },
+}
+
 /// The derived, draw-ready guide: what the compositor's guide pass uniform
 /// carries (§20.4). All canvas-space; the pass adds the view mapping.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct GuideScene {
     /// Center of view, canvas px.
     pub center: Vec2,
-    /// Focal length, canvas px — also the 45° circle's radius.
+    /// Focal length, canvas px.
     pub focal: f32,
+    /// The lens the fragment pass must invert (§20.8).
+    pub lens: Lens,
+    /// The dressed view-cone rings about the center, canvas px: the 45° ring,
+    /// and the 90° ring where the lens has one ([`PerspectiveGuide::rings`]).
+    pub rings: (f32, Option<f32>),
     /// Fan step, radians of visual angle (§20.3).
     pub step: f32,
     /// Master opacity, 0..=1.
     pub opacity: f32,
     /// World axes in camera space. The fan for axis `i` measures its pencil
     /// angle against the other two axes, so the pair planes — the vanishing
-    /// lines — are themselves fan lines (§20.3).
+    /// traces — are themselves fan curves (§20.3).
     pub dirs: [Vec3; 3],
     /// Per-axis fan opacity (0 = axis hidden).
     pub axis_alpha: [f32; 3],
-    /// Vanishing line of pair `(k, k+1)` as `(n.x, n.y, offset)` with `n`
-    /// unit: evaluating against a canvas point gives signed distance in px.
-    /// `None` when the pair plane faces the camera square-on.
-    pub lines: [Option<Vec3>; 3],
-    /// Finite vanishing points, canvas px; `None` at infinity.
+    /// Vanishing trace of pair `(k, k+1)`; `None` when it is at infinity.
+    pub lines: [Option<PairTrace>; 3],
+    /// Where each axis's direction images, canvas px; `None` off the lens.
     pub vps: [Option<Vec2>; 3],
-    /// Station point of pair `(k, k+1)`, canvas px; `None` with its line.
+    /// Where each axis's *opposite* direction images — the second pole, which
+    /// only the fisheye separates from the first (§20.8).
+    pub anti_vps: [Option<Vec2>; 3],
+    /// Station point of pair `(k, k+1)`, canvas px; rectilinear only.
     pub stations: [Option<Vec2>; 3],
 }
 
@@ -630,8 +799,10 @@ mod tests {
         assert!((vx.y - g.center.y).abs() < 1e-3);
         assert!((vz.y - g.center.y).abs() < 1e-3);
         // Pair 2 spans (Z, X): the ground. Its line passes through c…
-        let l = s.lines[2].expect("horizon");
-        assert!((l.x * g.center.x + l.y * g.center.y + l.z).abs() < 1e-3);
+        let Some(PairTrace::Line { normal, offset }) = s.lines[2] else {
+            panic!("horizon should be a straight line");
+        };
+        assert!((normal.dot(g.center) + offset).abs() < 1e-3);
         // …and its station point sits one focal length below the horizon.
         let sp = s.stations[2].expect("station point");
         assert!(
@@ -982,5 +1153,142 @@ mod tests {
         assert!(g2.scene().vps[1].is_none(), "still 2-point");
         // And it did actually turn.
         assert!((g2.rotation.dot(g.rotation).abs() - 1.0).abs() > 1e-4);
+    }
+
+    // --- the fisheye lens (§20.8) ------------------------------------------
+
+    fn fisheye(yaw: f32, pitch: f32, roll: f32) -> PerspectiveGuide {
+        PerspectiveGuide {
+            lens: Lens::Fisheye,
+            ..guide(yaw, pitch, roll)
+        }
+    }
+
+    /// The lens pair really is a pair: projecting a direction and casting a
+    /// ray back through the image land on the same direction, for points well
+    /// past the 90° ring where the fisheye sees behind the camera.
+    #[test]
+    fn the_fisheye_ray_inverts_its_projection() {
+        let g = fisheye(0.0, 0.0, 0.0);
+        for p in [
+            g.center + Vec2::new(37.0, -12.5),
+            g.center + Vec2::new(-700.0, 450.0),
+            g.center + Vec2::new(2600.0, 1900.0), // beyond the 90° ring
+        ] {
+            let back = g.project(g.ray(p)).expect("visible");
+            assert!((back - p).length() < 1e-2, "{p:?} -> {back:?}");
+        }
+    }
+
+    /// The classical claim behind the toggle: a 1-point pose seen through the
+    /// fisheye *is* the 5-point curvilinear grid — the view axis vanishes at
+    /// the center, and the four transverse poles land on the 90° ring at its
+    /// compass points.
+    #[test]
+    fn one_point_through_the_fisheye_is_five_point() {
+        let g = fisheye(0.0, 0.0, 0.0);
+        let s = g.scene();
+        let r90 = s.rings.1.expect("the fisheye has a 90° ring");
+        assert!((r90 - 2.0 * g.focal).abs() < 1e-3);
+        let vz = s.vps[2].expect("the view axis vanishes at the center");
+        assert!((vz - g.center).length() < 1e-3);
+        assert!(
+            s.anti_vps[2].is_none(),
+            "the back pole is the one blind spot"
+        );
+        // The transverse axes' poles: ±2f east/west, ±2f north/south.
+        for (vp, at) in [
+            (s.vps[0], Vec2::new(r90, 0.0)),
+            (s.anti_vps[0], Vec2::new(-r90, 0.0)),
+            (s.vps[1], Vec2::new(0.0, r90)),
+            (s.anti_vps[1], Vec2::new(0.0, -r90)),
+        ] {
+            let vp = vp.expect("a transverse pole is seen");
+            assert!((vp - (g.center + at)).length() < 1e-2, "got {vp:?}");
+        }
+    }
+
+    /// Pair traces under the fisheye: a plane square to the view bows into the
+    /// 90° ring itself, while a plane containing the view axis stays straight
+    /// — through the center of view, as every great circle through the eye's
+    /// axis must.
+    #[test]
+    fn fisheye_traces_are_circles_except_through_the_axis() {
+        let s = fisheye(0.0, 0.0, 0.0).scene();
+        // Pair 0 spans (X, Y): the picture plane. Its trace is the equator —
+        // the 90° ring.
+        let Some(PairTrace::Circle { center, radius }) = s.lines[0] else {
+            panic!("the transverse pair should trace a circle");
+        };
+        assert!((center - s.center).length() < 1e-3);
+        assert!((radius - 2.0 * s.focal).abs() < 1e-2);
+        // Pairs containing the view axis trace straight lines through c.
+        for k in [1, 2] {
+            let Some(PairTrace::Line { normal, offset }) = s.lines[k] else {
+                panic!("pair {k} should trace a line");
+            };
+            assert!((normal.dot(s.center) + offset).abs() < 1e-3);
+        }
+        // And no station points: a flat-plane measuring device has nothing to
+        // measure on a curved image.
+        assert!(s.stations.iter().all(Option::is_none));
+    }
+
+    /// The 45° ring is still the image of the 45° cone — the identity that
+    /// makes it the focal length's handle — just at the stereographic radius.
+    #[test]
+    fn the_45_degree_cone_lands_on_the_fisheye_45_ring() {
+        let g = fisheye(0.0, 0.0, 0.0);
+        let d = Vec3::new(0.0, 1.0, 1.0).normalize();
+        let p = g.project(d).expect("well inside the lens");
+        let (r45, _) = g.rings();
+        assert!(((p - g.center).length() - r45).abs() < 1e-2);
+        assert!((r45 - 2.0 * (std::f32::consts::SQRT_2 - 1.0) * g.focal).abs() < 1e-2);
+    }
+
+    /// The drag's contract survives the lens swap: grab a direction through
+    /// the fisheye and it is still under the pointer when the drag ends —
+    /// nothing about the orbit ever mentioned the projection.
+    ///
+    /// The target is *found* rather than fixed: the exact-carry contract
+    /// belongs to the free-arc branch, and which canvas drags fall into the
+    /// snap cone depends on the lens (fisheye rays bend, so a pair of points
+    /// clear of every axis under the rectilinear lens need not be here). The
+    /// fixture asserts its own precondition — the drag's rotation axis stays
+    /// a margin outside [`SNAP_COS`] — so a tuned threshold moves the choice,
+    /// never silently changes what is being tested.
+    #[test]
+    fn a_fisheye_drag_keeps_the_grabbed_direction_under_the_pointer() {
+        let g = fisheye(0.5, 0.35, 0.2);
+        let from = g.center + Vec2::new(320.0, -260.0);
+        let dirs = g.axis_dirs();
+        let to = [
+            Vec2::new(-500.0, 1400.0),
+            Vec2::new(900.0, 700.0),
+            Vec2::new(-150.0, -900.0),
+            Vec2::new(1200.0, -350.0),
+        ]
+        .into_iter()
+        .map(|d| g.center + d)
+        .find(|to| {
+            let w = g.ray(from).cross(g.ray(*to)).normalize();
+            dirs.iter().all(|a| w.dot(*a).abs() < 0.9)
+        })
+        .expect("a candidate drag clear of the snap cone");
+        let g2 = g.dragged(from, to, [false; 3]);
+        let world = g.rotation.inverse() * g.ray(from);
+        let now = g2.rotation * world;
+        assert!((now.normalize() - g2.ray(to)).length() < 1e-4);
+    }
+
+    /// A fisheye guide puts up no scaffold: its lines are arcs, and the assist
+    /// snaps strokes to straight pencils and flat charts — offering those
+    /// would bend a considered line onto geometry the guide does not draw.
+    #[test]
+    fn a_fisheye_guide_offers_no_scaffold() {
+        let g = fisheye(0.5, 0.35, 0.2);
+        let up = Scaffold::of(std::slice::from_ref(&g));
+        assert!(up.axes.is_empty());
+        assert!(up.planes.is_empty());
     }
 }

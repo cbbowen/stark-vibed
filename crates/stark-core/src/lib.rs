@@ -73,7 +73,7 @@ pub use gpu::{
     Compositor, CompositorPipeline, EnvironmentId, GpuContext, MediaParams, Offscreen,
     StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
 };
-pub use guides::{AxisPencil, AxisPlane, GuideScene, PerspectiveGuide, Scaffold};
+pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold};
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};
 pub use peer::{LiveGesture, Peer, PeerFrame, Peers};

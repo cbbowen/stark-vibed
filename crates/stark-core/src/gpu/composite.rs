@@ -107,36 +107,57 @@ struct GuideUniform {
     inv: [f32; 4],        // screen→canvas mat2, column-major
     org: [f32; 4],        // canvas pos of screen (0,0), zoom, focal
     cov: [f32; 4],        // center of view, fan step, master opacity
+    proj: [f32; 4],       // lens flag, 45° ring, 90° ring (≤0 none), unused
     dirs: [[f32; 4]; 3],  // world axes in camera space + per-axis fan alpha
-    lines: [[f32; 4]; 3], // vanishing lines (unit normal, offset) + valid
-    vps: [[f32; 4]; 3],   // finite vanishing points + valid
+    lines: [[f32; 4]; 3], // vanishing traces + kind (0 none, 1 line, 2 circle)
+    vps: [[f32; 4]; 6],   // vanishing points, both poles + valid
     sps: [[f32; 4]; 3],   // station points + valid
 }
 
 impl GuideUniform {
     /// Pack the derived guide scene plus this render's view mapping (§20.4).
-    /// Absent elements become a zeroed slot with `valid = 0`, so the shader
-    /// branches on data rather than on pipeline variants.
+    /// Absent elements become a zeroed slot with `valid = 0` (a trace's kind),
+    /// so the shader branches on data rather than on pipeline variants.
     fn pack(scene: &crate::guides::GuideScene, view: ViewTransform) -> Self {
+        use crate::guides::{Lens, PairTrace};
         let inv = view.inverse_linear();
         let org = view.screen_to_canvas(crate::geom::Vec2::ZERO);
         let point = |v: Option<crate::geom::Vec2>| match v {
             Some(p) => [p.x, p.y, 1.0, 0.0],
             None => [0.0; 4],
         };
+        let (r45, r90) = scene.rings;
         Self {
             inv: inv.to_cols_array(),
             org: [org.x, org.y, view.zoom, scene.focal],
             cov: [scene.center.x, scene.center.y, scene.step, scene.opacity],
+            proj: [
+                match scene.lens {
+                    Lens::Rectilinear => 0.0,
+                    Lens::Fisheye => 1.0,
+                },
+                r45,
+                r90.unwrap_or(0.0),
+                0.0,
+            ],
             dirs: std::array::from_fn(|i| {
                 let d = scene.dirs[i];
                 [d.x, d.y, d.z, scene.axis_alpha[i]]
             }),
             lines: std::array::from_fn(|i| match scene.lines[i] {
-                Some(l) => [l.x, l.y, l.z, 1.0],
+                Some(PairTrace::Line { normal, offset }) => [normal.x, normal.y, offset, 1.0],
+                Some(PairTrace::Circle { center, radius }) => [center.x, center.y, radius, 2.0],
                 None => [0.0; 4],
             }),
-            vps: std::array::from_fn(|i| point(scene.vps[i])),
+            // Forward poles in the first three slots, backward in the last —
+            // the shader colors slot `i` by axis `i % 3`.
+            vps: std::array::from_fn(|i| {
+                point(if i < 3 {
+                    scene.vps[i]
+                } else {
+                    scene.anti_vps[i - 3]
+                })
+            }),
             sps: std::array::from_fn(|i| point(scene.stations[i])),
         }
     }
@@ -341,10 +362,12 @@ fn blend_code(mode: BlendMode) -> u32 {
 /// edge case, so the buffer holds them all and each pass binds its own offset.
 const BLEND_SLOT: u64 = 256;
 
-/// One dynamic-offset slot of the guide uniform (pass D), padded like
-/// [`BLEND_SLOT`] and for the same reason: every visible guide's slot is
-/// written before the single submit, and each draw binds its own offset.
-const GUIDE_SLOT: u64 = 256;
+/// One dynamic-offset slot of the guide uniform (pass D), padded to a multiple
+/// of the alignment like [`BLEND_SLOT`] and for the same reason: every visible
+/// guide's slot is written before the single submit, and each draw binds its
+/// own offset. Two alignment units, because [`GuideUniform`] outgrew one when
+/// the fisheye brought the second set of poles (§20.8).
+const GUIDE_SLOT: u64 = 512;
 
 /// The extra viewport-sized targets **one level** of isolation needs
 /// (§18.0.4).

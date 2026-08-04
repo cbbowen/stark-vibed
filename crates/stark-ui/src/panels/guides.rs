@@ -33,9 +33,9 @@ use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
 use crate::platform::select_all;
 use crate::state::{AppState, GuideEdit, dispatch};
-use stark_core::PerspectiveGuide;
 use stark_core::command::ViewCommand;
 use stark_core::geom::Vec2;
+use stark_core::{Lens, PerspectiveGuide};
 
 /// The axis hues, as CSS — the same values `guides.wesl` draws the fans in,
 /// so a lock chip and the lines it governs read as one thing.
@@ -319,7 +319,7 @@ pub fn PerspectiveGuideBar() -> Element {
     // The bar names the guide the same way its row does, so a renamed guide is
     // called the same thing in both places.
     let name = guide_label(index, g);
-    let (density, opacity, axes) = (g.density, g.opacity, g.axes);
+    let (density, opacity, axes, lens) = (g.density, g.opacity, g.axes, g.lens);
 
     rsx! {
         div { class: chrome_class(state, "guide-bar"),
@@ -382,6 +382,27 @@ pub fn PerspectiveGuideBar() -> Element {
                 }
             }
             span { class: "bar-sep" }
+            // The lens (§20.8): one toggle, because everything else about the
+            // camera means the same thing under both projections. Lit, the
+            // straight guide lines bow into the circles the stereographic
+            // fisheye truly images them to, the second pole of every axis comes
+            // into view, and the 90° ring — the classical 5-point grid's
+            // boundary — appears around the center.
+            button {
+                class: if lens == Lens::Fisheye { "chip active" } else { "chip" },
+                title: "Curvilinear (fisheye): a stereographic lens \u{2014} straight \
+                        world lines bow into circles, and both poles of every axis \
+                        come into view",
+                onclick: move |_| update_guide(state, index, |g| {
+                    g.lens = match g.lens {
+                        Lens::Rectilinear => Lens::Fisheye,
+                        Lens::Fisheye => Lens::Rectilinear,
+                    };
+                }),
+                {icon(icons::FISHEYE)}
+                {label("Fisheye")}
+            }
+            span { class: "bar-sep" }
             // A fan of lines from a point, which is what this number counts: the
             // guide's fans are its parametrization (§20.5), so the mark is a picture
             // of the thing the slider makes more or fewer of.
@@ -430,12 +451,17 @@ pub fn PerspectiveGuideBar() -> Element {
 }
 
 /// What a press at a point would grab, tried nearest-first: the crosshair
-/// moves the construction, the ring is the lens, and everywhere else is the
+/// moves the construction, a ring is the lens, and everywhere else is the
 /// world.
 #[derive(Copy, Clone, PartialEq)]
 enum GuideRegion {
     Center,
-    Focal,
+    /// A view-cone ring was grabbed; the payload is that ring's radius **per
+    /// unit focal length** ([`Lens::ring_factors`]), so the drag divides the
+    /// hand's distance back into a focal length. Carried in the drag because
+    /// the fisheye shows two rings and the one grabbed must stay the one held
+    /// — the 90° ring dragged inward must not hand off to the 45°.
+    Focal(f32),
     Orbit,
 }
 
@@ -475,21 +501,31 @@ pub fn GuideEditOverlay() -> Element {
     };
     let index = edit.index;
     let locked = edit.locked;
-    // The two camera numbers the hit test needs, read out here. Taken as values
+    // The camera numbers the hit test needs, read out here. Taken as values
     // rather than off `guide` so the closures below capture nothing that is not
     // `Copy` — a guide carries a name now, and a handler that captured the whole
     // guide could not be shared between the move and the release.
-    let (center, focal) = (guide.center, guide.focal);
+    let (center, focal, lens) = (guide.center, guide.focal, guide.lens);
 
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
     let classify = move |pc: Vec2| {
         let on_screen = view.canvas_to_screen(center);
         if (on_screen - view.canvas_to_screen(pc)).length() < CENTER_GRAB_PX {
-            GuideRegion::Center
-        } else if ((pc - center).length() - focal).abs() * view.zoom < CIRCLE_BAND_PX {
-            GuideRegion::Focal
-        } else {
-            GuideRegion::Orbit
+            return GuideRegion::Center;
+        }
+        // The lens's rings, nearest first: the fisheye shows two (45° and 90°,
+        // §20.8) and a press between them grabs whichever is closer.
+        let dist = (pc - center).length();
+        let (r45, r90) = lens.ring_factors();
+        let grabbed = [Some(r45), r90]
+            .into_iter()
+            .flatten()
+            .map(|factor| ((dist - focal * factor).abs() * view.zoom, factor))
+            .filter(|(err, _)| *err < CIRCLE_BAND_PX)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        match grabbed {
+            Some((_, factor)) => GuideRegion::Focal(factor),
+            None => GuideRegion::Orbit,
         }
     };
 
@@ -506,10 +542,9 @@ pub fn GuideEditOverlay() -> Element {
             GuideRegion::Center => update_guide(state, index, move |g| {
                 g.center = d.start.center + (pc - d.from);
             }),
-            GuideRegion::Focal => update_guide(state, index, move |g| {
-                g.focal = (pc - d.start.center)
-                    .length()
-                    .clamp(FOCAL_RANGE.0, FOCAL_RANGE.1);
+            GuideRegion::Focal(factor) => update_guide(state, index, move |g| {
+                g.focal =
+                    ((pc - d.start.center).length() / factor).clamp(FOCAL_RANGE.0, FOCAL_RANGE.1);
             }),
             // The turn only, rather than the whole guide the drag was started
             // from: a drag is a statement about the camera's orientation, and
@@ -540,7 +575,7 @@ pub fn GuideEditOverlay() -> Element {
             _ => "cursor: grabbing;",
         },
         (_, None, Some(GuideRegion::Center)) => "cursor: move;",
-        (_, None, Some(GuideRegion::Focal)) => "cursor: grab;",
+        (_, None, Some(GuideRegion::Focal(_))) => "cursor: grab;",
         (_, None, Some(GuideRegion::Orbit)) => "cursor: crosshair;",
         (_, None, None) => "",
     };
