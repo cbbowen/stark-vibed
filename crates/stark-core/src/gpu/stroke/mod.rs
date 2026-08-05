@@ -32,6 +32,7 @@ use crate::geom::TileCoord;
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
+use crate::noise::NOISE_TILE_PX;
 
 mod budget;
 mod dynamics;
@@ -512,6 +513,25 @@ impl StrokeRenderer {
         tip
     }
 
+    /// Resolve the constants both render paths read for one stroke — see
+    /// [`StrokeConstants`] for why they are resolved here rather than at each path.
+    fn stroke_constants(
+        &self,
+        rec: &StrokeRecord,
+        surface: &crate::gpu::surface::Surface,
+    ) -> StrokeConstants {
+        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
+        let ch = self.color_space.rgb_to_channels(rgb);
+        let (nfreq, namp, noff) = noise_uniform(rec);
+        StrokeConstants {
+            channels: [ch[0], ch[1], ch[2], rec.brush.color[3]],
+            grain_uv: surface.relief * crate::gpu::surface::grain_uv_scale(),
+            nfreq,
+            namp,
+            noff,
+        }
+    }
+
     /// The colour-dynamics noise tile for a brush: the baked field for its
     /// kind (built once, cached — the bake is a fixed pure function, so at most
     /// one texture per [`NoiseKind`] ever exists), or the 1×1 zero tile when
@@ -530,6 +550,75 @@ impl StrokeRenderer {
     }
 }
 
+/// The per-stroke quantities **both** render paths read, resolved once from the record
+/// and the scene (§6.2).
+///
+/// Nothing here is path-specific. The swept sweep puts them in a `TileXform` and the
+/// stamp loop in a `Stamp` slot, but they are the same numbers — and they have to be,
+/// because which path a brush takes is decided by `dynamics_setup` from axes that have
+/// nothing to do with any of this: nudge `deposit` off zero and the same colour, the
+/// same flow and the same ground must still lay the same paint.
+///
+/// That is not hypothetical. `tests/dynamics.rs`'s
+/// `a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs` exists because the two
+/// paths once disagreed by 157 levels, and both halves of the disagreement were
+/// quantities of exactly this kind, derived twice and drifted apart. Resolving them in
+/// one place is what makes the agreement structural rather than a matter of two files
+/// happening to contain the same line.
+struct StrokeConstants {
+    /// The brush's own colour in the working space, plus its per-unit opacity.
+    /// **Undrained** — both paths fade it per fragment from the fragment's own arc
+    /// length, never per segment.
+    channels: [f32; 4],
+    /// Canvas px → surface-tile uv (§6.4). Zero on a ground with no relief — a `Flat`
+    /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
+    /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.
+    grain_uv: f32,
+    /// The colour-dynamics lookup (§6.2): per-axis frequency (across the stroke, along
+    /// it) + 1/NOISE_TILE_PX, per-channel amplitude, and the per-stroke translation.
+    /// Inactive jitter zeroes frequency *and* amplitude, so with the zero volume bound
+    /// the shader's early-out keeps the deposit bit-identical.
+    nfreq: [f32; 4],
+    namp: [f32; 4],
+    noff: [f32; 4],
+}
+
+/// The stroke's colour-dynamics uniform triplet — (per-axis frequency
+/// (across the stroke, along it) + 1/NOISE_TILE_PX,
+/// per-channel amplitude, per-stroke lookup translation) — shared by the sweep's
+/// `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter
+/// identically. Inactive jitter zeroes frequency *and* amplitude, so with the
+/// zero volume bound the shader's early-out keeps the deposit bit-identical.
+fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]) {
+    let cd = rec.brush.color_dynamics;
+    let (freq, amp) = if cd.is_active() {
+        (cd.frequency, cd.amplitude)
+    } else {
+        ([0.0; 2], [0.0; 3])
+    };
+    let off = noise_offset(rec.seed);
+    (
+        [freq[0], freq[1], 1.0 / NOISE_TILE_PX, 0.0],
+        [amp[0], amp[1], amp[2], 0.0],
+        [off[0], off[1], 0.0, 0.0],
+    )
+}
+
+/// The per-stroke noise lookup translation in [0, 1)², derived from the stroke
+/// seed via splitmix64 — each stroke samples a fresh part of the tileable field,
+/// deterministically (replay and live == committed hold, §6.2).
+fn noise_offset(seed: u64) -> [f32; 2] {
+    let mut state = seed;
+    [(); 2].map(|_| {
+        state = state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^= z >> 31;
+        // Top 24 bits → [0, 1): exact in f32, uniform.
+        (z >> 40) as f32 / (1u64 << 24) as f32
+    })
+}
 /// The two textures a round tip bakes to (§6.6): the swept-footprint prefix-τ both
 /// render paths integrate against, and the plain coverage mask the stamp loop's
 /// reservoir texels weight by.

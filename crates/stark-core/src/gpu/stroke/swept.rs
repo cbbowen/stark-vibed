@@ -12,7 +12,7 @@ use crate::document::StrokeRecord;
 use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use crate::gpu::tile::{AllocSource, TilePairHandle};
 
-use super::segments::{SegmentInstance, affected_tiles, generate_segments_in, noise_uniform};
+use super::segments::{SegmentInstance, affected_tiles, generate_segments_in};
 use super::{
     ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE,
     flatten_tolerance,
@@ -95,8 +95,8 @@ impl StrokeRenderer {
             selection,
             surface,
         } = scene;
-        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
-        let channels = self.color_space.rgb_to_channels(rgb);
+        // Everything both paths share, resolved once (see [`StrokeConstants`]).
+        let k = self.stroke_constants(rec, surface);
         let (segments, end_dist) = generate_segments_in(rec, flatten_tolerance(&rec.brush), spans);
         if segments.is_empty() {
             return (
@@ -133,7 +133,6 @@ impl StrokeRenderer {
         // tile with zero amplitudes — the deposit is exactly the constant
         // colour.
         let noise_view = self.noise_view(&rec.brush.color_dynamics);
-        let (nfreq, namp, noff) = noise_uniform(rec);
         // The canvas ground beside it (§6.4): the deposition tooth's height map, in
         // the same group because it is the same kind of thing — a field the deposit
         // samples per fragment.
@@ -159,13 +158,6 @@ impl StrokeRenderer {
                 },
             ],
         });
-        // Zero on a ground with no relief — a `Flat` canvas, or one whose bytes have
-        // not arrived — which sends the shader's gate to exactly 1.0 and leaves the
-        // deposit bit-for-bit what it was before the tooth existed. The orthogonality
-        // is the same one `Flat` already gives the media pass, taken from the same
-        // field rather than restated (§6.4).
-        let grain_uv = surface.relief * crate::gpu::surface::grain_uv_scale();
-
         let instances: Vec<SegmentInstance> = segments
             .iter()
             .map(|s| SegmentInstance {
@@ -252,11 +244,11 @@ impl StrokeRenderer {
                     2.0 / TILE_TEX as f32,
                     0.0,
                 ],
-                color: [channels[0], channels[1], channels[2], rec.brush.color[3]],
-                paint: [rec.brush.drain, grain_uv, 0.0, 0.0],
-                noise_freq: nfreq,
-                noise_amp: namp,
-                noise_off: noff,
+                color: k.channels,
+                paint: [rec.brush.drain, k.grain_uv, 0.0, 0.0],
+                noise_freq: k.nfreq,
+                noise_amp: k.namp,
+                noise_off: k.noff,
             };
             let at = i * UNIFORM_STRIDE;
             xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));

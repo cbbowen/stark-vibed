@@ -151,14 +151,27 @@ single-entry is exactly the working set of "adjust the knob and look". `NoiseKin
 is a small enum, so its cache can hold the whole domain and never evict. Two
 policies, two key domains, and each now says which it is and why.
 
-## 7. The two paths derive shared stroke constants independently
+## 7. The two paths derive shared stroke constants independently — **done**
 
-`grain_uv = surface.relief * grain_uv_scale()` appears in both `swept.rs` and
-`dynamics.rs`; so does the `rgb_to_channels` dance. These are exactly the
-quantities that must agree between the paths for `preview == committed`, and they
-agree by the same line being written twice. A shared
-`StrokeConstants::new(rec, surface, color_space)` makes the agreement structural
-— the "rule out a class rather than enumerate its instances" convention.
+`StrokeRenderer::stroke_constants` resolves them once into a `StrokeConstants`:
+the brush's colour in the working space plus its per-unit opacity, the canvas →
+weave scale, and the colour-dynamics lookup triplet. Both paths read that struct
+— the swept path into its `TileXform`, the loop into `SlotCommon`, which
+collapsed to a borrow of it plus the one lane (`grain_bias`) that genuinely
+belongs to the piece.
+
+`noise_uniform` / `noise_offset` moved out of `segments.rs` to sit with it, since
+"the uniform triplet both paths read" was already their whole charter.
+
+**The justification in the original review was wrong.** This is not about
+`preview == committed` — that is about a live tail versus its commit, which take
+the *same* path by construction. It is about
+`tests/dynamics.rs::a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`:
+which path a brush takes is decided from axes that have nothing to do with colour
+or flow, so nudging `deposit` off zero must not change what the same colour and
+the same flow lay down. The two paths have drifted before, by 157 levels, and
+both halves of that were quantities of exactly this kind. That test is the guard;
+this makes it harder to need.
 
 ## 8. `MAX_STAMPS` no longer bounds what its doc claims
 

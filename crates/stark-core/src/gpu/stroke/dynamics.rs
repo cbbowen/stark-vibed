@@ -20,8 +20,8 @@ use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle};
 
 use super::budget::{BLEED_TRAVEL_QUANTUM, TAU_PER_PASS, WICK_TRAVEL_QUANTUM, flatten_tolerance};
 use super::segments::{
-    Segment, affected_tiles, chunk_segments, coverage_bounds, generate_segments_in, noise_uniform,
-    region_rect, segment_fits_region,
+    Segment, affected_tiles, chunk_segments, coverage_bounds, generate_segments_in, region_rect,
+    segment_fits_region,
 };
 use super::swept::{TileInstance, ViewUniform};
 use super::{
@@ -317,8 +317,9 @@ struct DynamicsRun<'a> {
     /// is submitted (see [`Self::flush`]), so a stroke of any length costs one
     /// region's worth of transient memory rather than one per piece.
     piece: ScopedResources,
-    /// The brush's own colour in the working space, plus its per-unit opacity.
-    channels: [f32; 4],
+    /// Everything both render paths read off the record and the scene, resolved once
+    /// (see [`StrokeConstants`](super::StrokeConstants)).
+    consts: super::StrokeConstants,
     /// Functions of the brush alone, so shared by every piece: the swept-footprint
     /// prefix-τ bind group (group 1 of `bake`/`deposit` — the same texture the swept
     /// fast path samples), the plain coverage mask the reservoir texels weight by,
@@ -353,8 +354,7 @@ impl<'a> DynamicsRun<'a> {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark dynamics stroke"),
         });
-        let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
-        let channels = r.color_space.rgb_to_channels(rgb);
+        let consts = r.stroke_constants(rec, scene.surface);
 
         // The brush's swept-footprint prefix-τ (shared with the fast path) and its
         // plain coverage mask (the reservoir texels' own footprint weights).
@@ -417,10 +417,10 @@ impl<'a> DynamicsRun<'a> {
                         depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: channels[0] as f64,
-                                g: channels[1] as f64,
-                                b: channels[2] as f64,
-                                a: rec.brush.color[3] as f64,
+                                r: consts.channels[0] as f64,
+                                g: consts.channels[1] as f64,
+                                b: consts.channels[2] as f64,
+                                a: consts.channels[3] as f64,
                             }),
                             store: wgpu::StoreOp::Store,
                         },
@@ -468,7 +468,7 @@ impl<'a> DynamicsRun<'a> {
             encoder,
             scoped,
             piece: ScopedResources::default(),
-            channels,
+            consts,
             prefix_bg,
             cov,
             noise,
@@ -518,7 +518,7 @@ impl<'a> DynamicsRun<'a> {
             rec: self.rec,
             region_origin,
             dsize: under.size,
-            channels: self.channels,
+            consts: &self.consts,
             surface: self.scene.surface,
         };
         let plan = dynamics_plan(&ctx, segments, &fires, settle);
@@ -1266,21 +1266,20 @@ fn reservoir_desc(
 /// the three slot kinds below list only what actually differs between them, which
 /// is the whole of what makes a bleed slot or a settle slot readable against a
 /// painting segment.
-struct SlotCommon {
-    /// `c` outright: the brush's own channels + per-unit opacity, undrained.
-    c: [f32; 4],
+struct SlotCommon<'a> {
+    /// The stroke's own constants: `c` outright, and the colour-dynamics lookup that
+    /// fills `f`, `g.xyz` and `h.xy`. Borrowed rather than copied out, so a slot and
+    /// the swept path's `TileXform` are demonstrably reading one resolution of them.
+    k: &'a super::StrokeConstants,
     /// `i.yzw`: the region texel → weave map, with the piece's origin already
     /// folded into the bias. Only `i.x` — how deep this slot's tip bites — varies.
+    ///
+    /// The one lane here that is not a stroke constant: the bias is where the *piece*
+    /// sits, which `k` cannot know.
     weave: [f32; 3],
-    /// The colour-dynamics lookup, which fills `f`, `g.xyz` and `h.xy`. The same
-    /// uniform triplet the fast path reads, so both paths sample the identical
-    /// field (§6.2).
-    nfreq: [f32; 4],
-    namp: [f32; 4],
-    noff: [f32; 4],
 }
 
-impl SlotCommon {
+impl SlotCommon<'_> {
     /// `i`: how deep this slot's tip bites into the weave, over the shared map.
     fn weave_at(&self, tooth: f32) -> [f32; 4] {
         [tooth, self.weave[0], self.weave[1], self.weave[2]]
@@ -1294,10 +1293,11 @@ impl SlotCommon {
     /// lateral flux runs only on the dedicated bleed slots, so between firings the
     /// canvas takes the no-bleed path bit-for-bit (§6.2).
     fn jitter(&self, dist: f32, bearing: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
+        let (namp, noff) = (self.k.namp, self.k.noff);
         (
-            self.nfreq,
-            [self.namp[0], self.namp[1], self.namp[2], dist],
-            [self.noff[0], self.noff[1], bearing, 0.0],
+            self.k.nfreq,
+            [namp[0], namp[1], namp[2], dist],
+            [noff[0], noff[1], bearing, 0.0],
         )
     }
 }
@@ -1316,8 +1316,10 @@ struct PlanCtx<'a> {
     /// The snapshot scratch's square ([`Snapshot::size`]), which every dispatch rect
     /// is clamped to.
     dsize: u32,
-    /// The brush's own colour in the working space, plus its per-unit opacity.
-    channels: [f32; 4],
+    /// Everything both render paths read off the record and the scene
+    /// ([`StrokeConstants`](super::StrokeConstants)) — the colour a slot's `c` is, the
+    /// weave map its `i` carries, and the colour-dynamics lookup for `f`–`h`.
+    consts: &'a super::StrokeConstants,
     surface: &'a crate::gpu::surface::Surface,
 }
 
@@ -1387,19 +1389,17 @@ fn dynamics_plan(
     let &PlanCtx {
         rec,
         region_origin,
-        channels,
+        consts,
         surface,
         ..
     } = ctx;
     let b = &rec.brush;
-    // Canvas px → surface-tile uv, folded so the shader can go straight from its
-    // *region* texel to the ground under it: `uv = rt · grain_uv + grain_bias`
-    // (§6.4). The region origin is a piece constant, so this is where it belongs —
-    // the shader never learns where the piece sits, only where the weave does. Zero on
-    // a ground with no relief, which sends the tooth to exactly 1 and leaves every
-    // rate below the float it always was.
-    let grain_uv = surface.relief * crate::gpu::surface::grain_uv_scale();
-    let grain_bias = region_origin * grain_uv;
+    // The canvas → weave map, folded so the shader can go straight from its *region*
+    // texel to the ground under it: `uv = rt · grain_uv + grain_bias` (§6.4). Only the
+    // bias belongs to the piece — the shader never learns where the piece sits, only
+    // where the weave does; the scale is a stroke constant and comes off `consts`,
+    // which is what keeps it the same number the swept path writes.
+    let grain_bias = region_origin * consts.grain_uv;
     // What share of the ground a tip with this tooth stands on, per segment because
     // the tooth is modulated per segment (§6.2). The canvas side of the exchange asks
     // the ground under each texel; the tool has none of its own and books against this
@@ -1414,15 +1414,9 @@ fn dynamics_plan(
     // changes: every dispatch already carried its own λs in its slot, because a
     // segment is where the exchange happens.
     let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
-    // Colour dynamics for the `add` paint — the same uniform triplet as the fast
-    // path, so both paths sample the identical field (§6.2).
-    let (nfreq, namp, noff) = noise_uniform(rec);
     let common = SlotCommon {
-        c: [channels[0], channels[1], channels[2], b.color[3]],
-        weave: [grain_uv, grain_bias.x, grain_bias.y],
-        nfreq,
-        namp,
-        noff,
+        k: consts,
+        weave: [consts.grain_uv, grain_bias.x, grain_bias.y],
     };
 
     let mut plan = Vec::new();
@@ -1469,7 +1463,7 @@ fn dynamics_plan(
                     lambda(s.lift),
                     lambda(s.deposit),
                 ],
-                c: common.c,
+                c: common.k.channels,
                 d: [rect.origin.x, rect.origin.y, s.orient, b.drain],
                 // The `add` source rate is passed through **unscaled**, exactly as
                 // `stamp_oklab.wesl` takes it. It used to carry a gain of 2 ("tuned so
@@ -1510,7 +1504,7 @@ fn dynamics_plan(
                     // λ_lift = 0, so the canvas keeps everything; λ_deposit = 0, so the
                     // (uninvolved) tool lays nothing.
                     b: [fire.radius, fire.length / fire.radius, 0.0, 0.0],
-                    c: common.c,
+                    c: common.k.channels,
                     // No drain: nothing is laid, so nothing runs dry.
                     d: [rect.origin.x, rect.origin.y, fire.orient, 0.0],
                     // No `add` — the slot is not a stretch of painting — and no
@@ -1570,7 +1564,7 @@ fn dynamics_plan(
                 // The settle lays the tool's *carried* paint, which already carries the
                 // opacity it was picked up with, so it reads none of `c`. Filled
                 // consistently with a segment slot rather than left as junk.
-                c: common.c,
+                c: common.k.channels,
                 d: [rect.origin.x, rect.origin.y, s.orient, b.drain],
                 // No `add`: the source is a rate per unit of travel, and there is none.
                 // No curvature, for the same reason — the frame is a standing tip.

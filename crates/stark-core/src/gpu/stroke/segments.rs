@@ -12,7 +12,6 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
-use crate::noise::NOISE_TILE_PX;
 
 use super::StrokeSpans;
 use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
@@ -515,43 +514,6 @@ fn sample_at(pts: &[crate::path::IntermediateSample], arc: f32) -> (Vec2, Vec2, 
     }
     let p = pts.last().expect("a flattened range is never empty here");
     (p.pos, Vec2::new(1.0, 0.0), p.pressure, p.tilt)
-}
-
-/// The stroke's colour-dynamics uniform triplet — (per-axis frequency
-/// (across the stroke, along it) + 1/NOISE_TILE_PX,
-/// per-channel amplitude, per-stroke lookup translation) — shared by the sweep's
-/// `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter
-/// identically. Inactive jitter zeroes frequency *and* amplitude, so with the
-/// zero volume bound the shader's early-out keeps the deposit bit-identical.
-pub(super) fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4], [f32; 4]) {
-    let cd = rec.brush.color_dynamics;
-    let (freq, amp) = if cd.is_active() {
-        (cd.frequency, cd.amplitude)
-    } else {
-        ([0.0; 2], [0.0; 3])
-    };
-    let off = noise_offset(rec.seed);
-    (
-        [freq[0], freq[1], 1.0 / NOISE_TILE_PX, 0.0],
-        [amp[0], amp[1], amp[2], 0.0],
-        [off[0], off[1], 0.0, 0.0],
-    )
-}
-
-/// The per-stroke noise lookup translation in [0, 1)², derived from the stroke
-/// seed via splitmix64 — each stroke samples a fresh part of the tileable field,
-/// deterministically (replay and live == committed hold, §6.2).
-pub(super) fn noise_offset(seed: u64) -> [f32; 2] {
-    let mut state = seed;
-    [(); 2].map(|_| {
-        state = state.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^= z >> 31;
-        // Top 24 bits → [0, 1): exact in f32, uniform.
-        (z >> 40) as f32 / (1u64 << 24) as f32
-    })
 }
 
 /// The shape's orientation for a segment, as a fraction of a full turn ∈ [0, 1): the
