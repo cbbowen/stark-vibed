@@ -76,9 +76,9 @@
 // Determinism: segment/pickup slots are fixed CPU-side per stroke; every dispatch
 // is a pure function of what it reads. Replay and live == committed hold.
 
-import package::stamp_common::{prefix_at, Sweep, sweep_at};
+import package::stamp_common::{prefix_at, Sweep, sweep_at, sweep_tangent};
 import package::noise::{color_jitter};
-import package::paint_common::{blend_latent, ground_at, tooth_gate, EPS};
+import package::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, EPS};
 
 struct Stamp {
     // a: position .xy (region px) + frame x-axis .zw (unit vector). For a segment
@@ -112,7 +112,8 @@ struct Stamp {
     g: vec4<f32>,
     // h: per-stroke noise lookup translation .xy; the tooth's **bearing fraction** in
     //    .z — the share of the ground a tip with this `tooth` stands on, averaged over
-    //    the whole height map (`Surface::bearing`, §6.4). It is what the *tool* books
+    //    the whole ground, along **this segment's own direction of travel**
+    //    (`Surface::bearing`, §6.4). It is what the *tool* books
     //    its half of the transfer against: a canvas texel scales its exposure by the
     //    ground under itself, and a reservoir cell, which has no ground of its own,
     //    scales by this. 1 where there is nothing to bite. λ_bleed — the lateral
@@ -122,8 +123,8 @@ struct Stamp {
     //    vertical rates and source are all zero. Real segments carry 0 here and take
     //    the plain-deposit path bit-for-bit.
     h: vec4<f32>,
-    // i: the deposition tooth (§6.4). How deep this segment's tip bites into the
-    //    canvas weave .x (0 = the ground does not gate anything), and the map from
+    // i: the deposition tooth (§6.4). How little give this segment's tip has .x
+    //    (0 = the ground does not gate anything), and the map from
     //    this dispatch's *region* texel to the weave: `uv = rt·.y + .zw`, with the
     //    piece's own origin already folded into the bias. `.y` is zero on a ground
     //    with no relief, which is what makes a `Flat` canvas render exactly what it
@@ -182,8 +183,9 @@ struct Stamp {
 // is neither taken nor laid and the two sides of the transfer still balance.
 @group(0) @binding(21) var sel_mask: texture_2d<f32>;
 
-// The canvas surface's tileable height map (§6.4) — the ground whose tooth scales
-// the exposure a canvas texel sees. Read nearest (`ground_at`), so no sampler. Named
+// The canvas surface's tileable ground (§6.4) — height in `r` (the media pass's),
+// the rise one reach ahead in `gb` — whose rise along the travel scales the exposure
+// a canvas texel sees. Read nearest (`ground_at`), so no sampler. Named
 // by `deposit` and `settle`, the two entry points that put paint on the canvas.
 @group(0) @binding(22) var surface_tex: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
@@ -323,20 +325,33 @@ fn stroke_drain(arc: f32) -> f32 {
 }
 
 // The share of the tip's contact a canvas texel gets from the ground under it (§6.4)
-// — the same `tooth_gate` the swept fast path applies, from the same height map, so a
-// brush's tooth reads the same whether or not some other axis put it on this path.
+// — the same `rise_ahead`/`tooth_gate` pair the swept fast path applies, from the same
+// map, so a brush's tooth reads the same whether or not some other axis put it on this
+// path.
 //
-// `rt` is in region px; `st.i.zw` folds the piece's own canvas origin into the map,
-// so the value is a pure function of canvas position exactly as the fast path's is.
+// `rt` is in region px; `st.i.zw` folds the piece's own canvas origin into the map, so
+// the value is a pure function of canvas position exactly as the fast path's is.
+// `turn` is how far the tip's heading has swung by this point (`segment_frame(rt)`),
+// which `sweep_tangent` turns into the direction the rise is read along —
+// after the guards, so an ordinary brush never pays for the rotation. A settle slot
+// carries zero travel, so its heading is the direction the pen was going when it left
+// the page, which is the ground the pass it is finishing was laying through.
+//
 // Both guards return exactly 1.0: a brush with no tooth, or a ground with no relief,
-// leaves every rate below the float it always was.
-fn surface_tooth(rt: vec2<i32>) -> f32 {
+// leaves every rate below the float it always was. The first is also what keeps the
+// **bleed slots** clear of all of this — they carry `tooth = 0` (`bleed_fires`), so a
+// lateral flux is never gated by the weave and never reads a direction. That is not
+// bookkeeping: bleed is wet paint spreading sideways on the canvas, not a tip dragged
+// over it, so there is no travel to read the ground's rise along, and gating it would
+// break the flux's antisymmetry (the two threads of a pair sit over different ground).
+fn surface_tooth(rt: vec2<i32>, turn: f32) -> f32 {
     if st.i.y <= 0.0 || st.i.x <= 0.0 {
         return 1.0;
     }
     let uv = vec2<f32>(rt) * st.i.y + st.i.zw;
     let dims = textureDimensions(surface_tex);
-    return tooth_gate(textureLoad(surface_tex, ground_at(uv, dims), 0).r, st.i.x);
+    let g = textureLoad(surface_tex, ground_at(uv, dims), 0);
+    return tooth_gate(rise_ahead(g, sweep_tangent(st.a.zw, turn)), st.i.x);
 }
 
 // The footprint's **optical depth** for a given coverage — the currency every
@@ -977,9 +992,9 @@ fn exchange(
     // Scaled by the **bearing fraction** (§6.4): the tip only trades where it touches,
     // and a reservoir cell has no ground of its own to ask — it is dragged over a
     // fresh stretch of canvas at every sub-step. So it books against the ground's
-    // mean, which the host computed from the height map's own histogram
-    // (`Surface::bearing`, `st.h.z`), while each canvas texel scales by the ground
-    // under itself. The two agree in expectation over any footprint spanning many
+    // mean *for the way this segment is going*, which the host read off the ground's
+    // per-direction table (`Surface::bearing`, `st.h.z`), while each canvas texel scales
+    // by the ground ahead of itself. The two agree in expectation over any footprint spanning many
     // grain features — which is every usable tip — and that is what keeps a toothed
     // smear conserving. Exactly 1 when there is no tooth, so an ordinary brush is
     // untouched.
@@ -1198,7 +1213,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // exact complements of one exposure, so the canvas takes precisely what the tool
     // gives up, and each stays in the form that composes across segment cuts. Scaling
     // the finished shares instead would do neither.
-    let e = dpre * sw.warp * surface_tooth(rt);
+    let e = dpre * sw.warp * surface_tooth(rt, sw.turn);
     // The selection's coverage here (§6.8). Fully deselected texels are exactly the
     // "keeps its value" case, so they cost nothing.
     let mdim = vec2<i32>(textureDimensions(sel_mask));
@@ -1462,11 +1477,12 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     if sel <= 0.0 {
         return;
     }
-    // Gated like every other deposit (§6.4): a tip lifted off a rough ground has not
-    // reached the valleys, so what it would have delivered there stays on it. Nothing
+    // Gated like every other deposit (§6.4): a tip lifted off a rough ground was
+    // bridging the faces that fell away from its travel, so what it would have
+    // delivered there stays on it. Nothing
     // is destroyed — the tool is discarded at pen-up carrying whatever it still holds,
     // which is what a knife lifted off a canvas does.
-    let ex = exchange_at(e * surface_tooth(rt));
+    let ex = exchange_at(e * surface_tooth(rt, sw.turn));
 
     // The parcel is **what the rest of the pass would have delivered**, not the cell
     // overhead. At the end of a long smear the reservoir is radially skewed: the

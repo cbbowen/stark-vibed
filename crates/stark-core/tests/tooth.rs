@@ -1,17 +1,30 @@
 //! The deposition tooth (§6.4): the canvas's own ground gating how much of the
 //! brush's paint lands.
 //!
-//! The interesting claim is not "the mark gets patchy" — dither would do that. It is
-//! that the patches are a **level set of the ground**: turn the tooth up and the
-//! texels that still take paint are the ones that already took it, because both are
-//! reading the same height field through a rising threshold (the bearing-area curve,
-//! `paint_common.wesl`). That is what makes successive strokes register with each
-//! other instead of stacking independent noise, and it is what
-//! [`turning_the_tooth_up_takes_a_level_set_away`] measures.
+//! Two claims, and neither is "the mark gets patchy" — dither would do that.
 //!
-//! Everything here paints on **Gesso**: an irregular ground, whose bearing curve is
-//! a smooth spread rather than the handful of discrete levels a regular weave gives,
-//! so a level-set claim about it says something.
+//! The first is that the patches are a **level set of one field**: turn the tooth up
+//! and the texels that still take paint are the ones that already took it, because
+//! both are reading the ground's rise along the travel through a rising threshold
+//! (the follow limit, `paint_common.wesl`). That is what makes successive strokes in
+//! one direction register with each other instead of stacking independent noise, and
+//! it is what [`turning_the_tooth_up_takes_a_level_set_away`] measures.
+//!
+//! The second is that the field is the **slope of the ground along the stroke**, not
+//! its height: a dragged tip is pressed up by ground that rises to meet it and left
+//! bridging ground that falls away, so it catches the near face of every bump and
+//! skips the lee side. That makes the mark a property of the stroke as well as the
+//! ground — run the same line the other way and the ink lands on the other side of
+//! every feature ([`a_stroke_catches_on_the_faces_it_meets`]), which is precisely
+//! what a height threshold cannot do.
+//!
+//! Everything here paints on **Gesso**: an irregular ground, whose rise distribution
+//! is a smooth spread rather than the handful of discrete slopes a regular weave
+//! gives, so a level-set claim about it says something.
+//!
+//! The model's own arithmetic — the sign of the rise, its null cases, and the knob's
+//! ends — is pinned without a GPU in `gpu::surface`'s unit tests, on a ground of
+//! ramps built for the purpose.
 
 mod common;
 
@@ -187,13 +200,130 @@ fn a_ground_with_tooth_breaks_the_mark_up() {
     );
 }
 
-/// **The bearing-curve claim.** The tooth is a threshold on one height field, so the
-/// texels a deeper threshold keeps are a *subset* of the ones a shallower one kept —
-/// the marks are nested level sets, not independent noise.
+// --- the leading edge (§6.4) ------------------------------------------------------
+
+/// Draw the same line in the given direction and measure how much ink landed on each
+/// texel, leaving the canvas as it was. `+1` runs left to right, `-1` right to left,
+/// over exactly the same texels.
+///
+/// Per-texel ink rather than [`mark`]'s hit set, because what the leading edge moves is
+/// *where within the envelope* the paint sits, and a threshold only registers that
+/// where it happens to straddle the line.
+fn one_run(engine: &mut stark_core::Engine, b: BrushParams, way: f32) -> Vec<f64> {
+    let before = engine.render_to_image();
+    let [a, z] = run();
+    let path = if way > 0.0 { [a, z] } else { [z, a] };
+    stroke_with(engine, b, &path);
+    let after = engine.render_to_image();
+    engine.process(DocCommand::Undo);
+    before
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.pixels.as_chunks::<4>().0)
+        .map(|(p, q)| {
+            p.iter()
+                .zip(q)
+                .map(|(x, y)| (*x as i32 - *y as i32).abs())
+                .max()
+                .unwrap_or(0) as f64
+        })
+        .collect()
+}
+
+/// How far apart two marks are, as a share of the ink in them: `Σ|a−b| / Σ(a+b)/2`.
+/// 0 is the same mark texel for texel, 2 is two marks with no texel in common.
+fn apart(a: &[f64], b: &[f64]) -> f64 {
+    let diff: f64 = a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum();
+    let ink: f64 = a.iter().zip(b).map(|(x, y)| 0.5 * (x + y)).sum();
+    if ink > 0.0 { diff / ink } else { 0.0 }
+}
+
+/// **The headline claim of the leading edge.** A brush stroke is not a stamp: the tip
+/// rides up onto the ground it is about to meet, so it catches on the near face of
+/// every bump and bridges the lee side behind it. Run the same line the other way and
+/// the near faces become the far ones — so the *same* brush on the *same* ground
+/// leaves a materially different mark.
+///
+/// That is the whole of what separates this from a height threshold, which cannot tell
+/// the two runs apart at all, and it is why the mark reads as a brush dragged over
+/// tooth rather than as a screen printed through it.
+///
+/// Measured as disagreement between the two marks rather than as a shift, because a
+/// shift is not what happens: each bump keeps its paint, on the side of itself the tip
+/// arrived from.
+#[test]
+fn a_stroke_catches_on_the_faces_it_meets() {
+    let Some(mut engine) = gesso_engine() else {
+        return;
+    };
+    let there = one_run(&mut engine, toothed(0.55), 1.0);
+    let back = one_run(&mut engine, toothed(0.55), -1.0);
+    let (there_ink, back_ink) = (there.iter().sum::<f64>(), back.iter().sum::<f64>());
+    assert!(
+        there_ink > 0.0 && back_ink > 0.0,
+        "the test drew nothing: {there_ink} and {back_ink}"
+    );
+
+    // Neither run may be a wholesale loss of the mark — the anticipation moves contact
+    // between the faces of the grain, it does not throw it away. The two runs read the
+    // same ground through the same curve, only from opposite sides.
+    let ratio = back_ink / there_ink;
+    assert!(
+        (0.85..1.18).contains(&ratio),
+        "reversing the stroke changed how much paint landed by more than the faces it \
+         moved between can account for: {back_ink} vs {there_ink}"
+    );
+    // The two marks share an envelope; what separates them is which side of each
+    // feature took the paint. An eighth of the ink sitting somewhere else is already
+    // far past anything the renderer varies by on its own — the same stroke drawn
+    // twice is identical to the bit — and the slope gate moves several times that.
+    let moved = apart(&there, &back);
+    assert!(
+        moved > 0.12,
+        "the two directions laid all but {:.1}% of their ink on the same texels — the \
+         tooth is reading the ground under the tip rather than the ground ahead of it",
+        moved * 100.0
+    );
+}
+
+/// …and with no tooth there is no slope to read, so the direction stops mattering.
+/// The guard that makes it so is structural — the shaders return a gate of exactly
+/// 1.0 at `tooth = 0` before the map is read, and the follow limit dives past any
+/// encodable fall well before the knob gets there, so the approach is continuous —
+/// which is what lets every golden in the suite go on painting at `tooth = 0` while
+/// this axis exists.
+///
+/// Measured against the same yardstick as the test above rather than asserted texel for
+/// texel: a reversed stroke is not the bit-identical draw call, because its arc length
+/// runs the other way and its segments start from the other end, so the sweep frame
+/// rounds differently along it. That residual is the renderer's, it predates this axis,
+/// and it is two orders below what the anticipation moves.
+#[test]
+fn with_no_tooth_the_direction_stops_mattering() {
+    let Some(mut engine) = gesso_engine() else {
+        return;
+    };
+    let there = one_run(&mut engine, toothed(0.0), 1.0);
+    let back = one_run(&mut engine, toothed(0.0), -1.0);
+
+    assert!(there.iter().sum::<f64>() > 0.0, "the test drew nothing");
+    let moved = apart(&there, &back);
+    assert!(
+        moved < 0.005,
+        "an un-toothed brush moved {:.2}% of its ink by being drawn the other way",
+        moved * 100.0
+    );
+}
+
+/// **The bearing-curve claim.** For strokes drawn one way, the tooth is a threshold
+/// on one rise field, so the texels a stiffer tip keeps are a *subset* of the ones a
+/// softer one kept — the marks are nested level sets, not independent noise.
 ///
 /// This is the property that separates a ground from a dither, and it is the reason
-/// overpainting registers: two strokes at the same tooth catch on the same peaks, so
-/// the second one lands *on* the first rather than filling its gaps.
+/// overpainting registers: two strokes the same way at the same tooth catch on the
+/// same faces, so the second one lands *on* the first rather than filling its gaps.
 ///
 /// The tolerance is for the soft transition band (`TOOTH_SOFTNESS`) and for the 12-
 /// level threshold `mark` reads coverage at: a texel sitting inside the band at both
@@ -230,6 +360,15 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
 /// from different bindings, and the failure mode is the one §6.2 has been bitten by
 /// before: a brush whose behaviour changes because some unrelated axis moved it onto
 /// the other path. Nudging `lift` off zero must not change what the ground does.
+///
+/// Measured with a **hysteresis pair** rather than one hit threshold, because the
+/// two marks legitimately differ a few percent in *amount* — the loop's lift takes
+/// back a share of the `add` it lays — and the slope gate leaves much of the ground
+/// mid-contact, so any single threshold has a large borderline population that a few
+/// percent flips. A texel one path calls 11 levels and the other 13 is agreement in
+/// substance; what the gate reading *differently* looks like is solid ink on one
+/// path where the other left bare canvas, and a texel dark on one side (> 18) and
+/// blank on the other (< 6) is what counts as that.
 #[test]
 fn the_tooth_reads_the_same_on_both_render_paths() {
     let Some(mut engine) = gesso_engine() else {
@@ -246,16 +385,28 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
         },
         ..swept
     };
-    let (a, ink_a) = one_mark(&mut engine, swept);
-    let (b, ink_b) = one_mark(&mut engine, looped);
+    let a = one_run(&mut engine, swept, 1.0);
+    let b = one_run(&mut engine, looped, 1.0);
 
-    let a_n = a.iter().filter(|h| **h).count();
-    let disagree = a.iter().zip(&b).filter(|(x, y)| x != y).count();
-    assert!(a_n > 200, "too little mark to compare: {a_n}");
+    let material = a
+        .iter()
+        .zip(&b)
+        .filter(|(x, y)| **x > 18.0 || **y > 18.0)
+        .count();
+    let disagree = a
+        .iter()
+        .zip(&b)
+        .filter(|(x, y)| (**x > 18.0 && **y < 6.0) || (**y > 18.0 && **x < 6.0))
+        .count();
+    assert!(material > 200, "too little mark to compare: {material}");
+    // The slack is for the tip's hardness shoulder, where τ falls off a cliff and the
+    // two paths' different prefix machinery can land a rim texel a fraction of a texel
+    // apart. A path whose gate differed would flip a third of the mark, not a rim.
     assert!(
-        (disagree as f64) < 0.1 * a_n as f64,
-        "the two paths disagree about the ground on {disagree} of {a_n} texels"
+        (disagree as f64) < 0.05 * material as f64,
+        "the two paths disagree about the ground on {disagree} of {material} texels"
     );
+    let (ink_a, ink_b) = (a.iter().sum::<f64>(), b.iter().sum::<f64>());
     let ratio = ink_b / ink_a;
     assert!(
         (0.8..1.25).contains(&ratio),
@@ -453,16 +604,58 @@ fn the_bearing_fraction_tracks_the_ground() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let flat = engine.surface_bearing(SurfaceId::Flat, 0.5);
+    let east = Vec2::new(1.0, 0.0);
+    let flat = engine.surface_bearing(SurfaceId::Flat, 0.5, east);
     assert_eq!(flat, 1.0, "a smooth ground is full contact at any tooth");
 
     let ground = gesso(&mut engine);
-    let mut at = |t| engine.surface_bearing(ground, t);
+    let mut at = |t| engine.surface_bearing(ground, t, east);
     assert_eq!(at(0.0), 1.0, "no tooth is full contact, exactly");
     let (a, b, c) = (at(0.25), at(0.5), at(0.75));
     assert!(
         1.0 > a && a > b && b > c && c > 0.0,
         "contact must fall as the tip reaches for higher ground: {a} {b} {c}"
+    );
+}
+
+/// The bearing curve is tabulated per direction, so it has to be **continuous** in
+/// one: the table is sampled at sixteen angles and read between them, and a tool that
+/// stepped as the pen turned would book a different share of a smooth arc from one
+/// segment to the next and print the step.
+///
+/// Also that the direction is *carried* at all — a lookup that ignored it would come
+/// back bit-identical from every angle, which is what this would catch if the
+/// interpolation were ever short-circuited.
+#[test]
+fn the_bearing_curve_is_continuous_in_the_direction() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let ground = gesso(&mut engine);
+    // A full turn in fine steps: no adjacent pair may jump by more than a small
+    // fraction of the curve's own value, and the walk must close on itself.
+    let at = |engine: &mut stark_core::Engine, turns: f32| {
+        let a = turns * std::f32::consts::TAU;
+        engine.surface_bearing(ground, 0.55, Vec2::new(a.cos(), a.sin()))
+    };
+    let samples: Vec<f32> = (0..=128)
+        .map(|i| at(&mut engine, i as f32 / 128.0))
+        .collect();
+    let first = samples[0];
+    assert!(first > 0.0 && first < 1.0, "nothing to say at {first}");
+    assert!(
+        (samples[128] - first).abs() < 1e-6,
+        "the direction table does not close on itself: {first} vs {}",
+        samples[128]
+    );
+    let jump = samples
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        jump < 0.02 * first,
+        "the bearing steps by {jump} between neighbouring directions (of {first}) — \
+         the table is being read without interpolation"
     );
 }
 

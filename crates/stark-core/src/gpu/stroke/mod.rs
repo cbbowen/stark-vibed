@@ -256,8 +256,9 @@ impl StrokeRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                // The canvas surface's height map + its own repeat sampler — the
-                // deposition tooth (§6.4). In this group rather than one of its own
+                // The canvas surface's ground (height + the rise ahead) + its own
+                // repeat sampler — the deposition tooth (§6.4). In this group rather
+                // than one of its own
                 // because it is the same kind of thing as the noise beside it: a
                 // tileable field the deposit samples per fragment, resolved per
                 // stroke.

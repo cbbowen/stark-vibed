@@ -113,9 +113,9 @@ impl StrokeRenderer {
         // tile with zero amplitudes — the deposit is exactly the constant
         // colour.
         let noise_view = self.noise_view(&rec.brush.color_dynamics);
-        // The canvas ground beside it (§6.4): the deposition tooth's height map, in
-        // the same group because it is the same kind of thing — a field the deposit
-        // samples per fragment.
+        // The canvas ground beside it (§6.4): the deposition tooth's height and the
+        // rise ahead of it, in the same group because it is the same kind of thing —
+        // a field the deposit samples per fragment.
         let noise_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep noise bg"),
             layout: &self.noise_bgl,

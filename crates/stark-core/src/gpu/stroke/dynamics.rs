@@ -1446,11 +1446,17 @@ fn dynamics_plan(
     // where the weave does; the scale is a stroke constant and comes off `consts`,
     // which is what keeps it the same number the swept path writes.
     let grain_bias = region_origin * consts.grain_uv;
-    // What share of the ground a tip with this tooth stands on, per segment because
-    // the tooth is modulated per segment (§6.2). The canvas side of the exchange asks
-    // the ground under each texel; the tool has none of its own and books against this
-    // mean, which is what makes a toothed smear conserve (`Surface::bearing`).
-    let bearing = |tooth: f32| surface.bearing(tooth);
+    // What share of the ground a tip with this tooth, going this way, stands on — per
+    // segment because the tooth is modulated per segment (§6.2) and because the
+    // direction is the segment's own. The canvas side of the exchange asks the ground
+    // ahead of each texel; the tool has none of its own and books against this mean,
+    // which is what makes a toothed smear conserve (`Surface::bearing`).
+    //
+    // At the segment's **midpoint** tangent, the same second-order choice `mid` is
+    // sampled at below: a curved segment's canvas side reads a tangent that turns
+    // across the sweep, and the midpoint is the representative of that whose error is
+    // second order where either endpoint's would be first.
+    let bearing = |tooth: f32, dir: Vec2| surface.bearing(tooth, dir.to_array());
     // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
     // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
     // which is what a 0..1 knob should mean, rather than per unit optical depth.
@@ -1484,8 +1490,8 @@ fn dynamics_plan(
         // Where `exchange` samples the canvas: the segment's midpoint, along the arc
         // rather than the chord. The midpoint rule for a lift that is really swept
         // over the segment — second order, where either endpoint would be first.
-        let mid =
-            crate::path::arc_at(s.start, s.dir, s.curvature, s.length * 0.5).0 - region_origin;
+        let (mid_p, mid_dir) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length * 0.5);
+        let mid = mid_p - region_origin;
         // The `wick` passes falling during this segment. Counted off the segment's own
         // **absolute** arc length rather than by accumulating a debt across the loop,
         // and that is the whole reason it is written this way: a live tail re-renders
@@ -1501,7 +1507,7 @@ fn dynamics_plan(
         // matters.
         let quantum = WICK_TRAVEL_QUANTUM * s.radius;
         let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
-        let (f, g, h) = common.jitter(s.dist, bearing(s.tooth));
+        let (f, g, h) = common.jitter(s.dist, bearing(s.tooth, mid_dir));
         plan.push(LoopDispatch {
             groups: rect.groups,
             kind: SlotKind::Segment {

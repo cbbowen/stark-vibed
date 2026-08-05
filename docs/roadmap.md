@@ -25,7 +25,7 @@ Status lives here and nowhere else.
 | 8c | Tile aprons (§6.4) | done — killed the lighting seams the media pass amplified |
 | 9 | Pluggable colour spaces (§6.7) | done — Oklab + Mixbox |
 | 10 | Wet mixing & brush dynamics (§6.2) | done — GPU swept-exchange loop, no CPU readback |
-| — | Surface bump maps (§6.4) | done — relief, and the deposition tooth that gates what the brush lays |
+| — | Surface bump maps (§6.4) | done — relief, and the deposition tooth that gates what the brush lays, on the ground a moving tip is about to meet |
 | 11 | Brush file upload | done — custom shape library, localStorage, mid-session peer replication |
 | 12 | Collaboration (§12) | done |
 | — | Selections (§6.8) | done |

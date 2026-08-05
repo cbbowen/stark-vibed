@@ -79,12 +79,12 @@ fn fs_main(in: VsOut) -> FsOut {
     // the canvas alone. Height is linear in `τ`, and the per-unit opacity is a
     // property of the pigment rather than of how much of it there is, so the mass
     // (their product) is linear in `τ` too.
-    // The ground's share of this texel (§6.4): where the canvas weave stands below
-    // the level this tip presses to, the paint simply does not land. A per-*fragment*
+    // The ground's share of this texel (§6.4): where the weave falls away faster than
+    // this tip can follow, the paint simply does not land. A per-*fragment*
     // factor on `τ`, exactly like `drain` — so the deposit stays linear in `τ` and
     // exactly independent of how the path was cut, which a factor on the finished
     // parcel would not be.
-    let tooth = surface_tooth(in);
+    let tooth = surface_tooth(in, sw);
     // `add` comes off the *instance*: it is the one paint rate the swept path reads,
     // and the pen can drive it (§6.2), so it varies segment to segment exactly as the
     // radius does. Constant within the segment either way, which is all the argument

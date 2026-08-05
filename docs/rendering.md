@@ -238,8 +238,8 @@ than the problem warrants. The translation invariance the apron restores is
 locked by `tests/seam.rs`: a stroke across the 4-tile corner must render
 identically to the same stroke shifted half a tile into one tile's interior.
 
-**The canvas surface.** Paint sits on a physical surface — a tileable height/bump
-map (`gpu/surface.rs`), an `R8Unorm` texture sampled in *canvas* space (so the
+**The canvas surface.** Paint sits on a physical surface — a tileable ground
+(`gpu/surface.rs`), an `Rgba8Unorm` texture sampled in *canvas* space (so the
 weave is fixed to the canvas and pans/zooms with it). It is read twice: the
 deposition tooth gates what a brush lays through it (below), and it feeds the
 normal everywhere (`height_at` = impasto + `surface_strength·(h−½)`), so the weave
@@ -286,38 +286,91 @@ The bundled grounds: linen, a regular woven grid; and gesso, a brushed acrylic
 ground, irregular, whose height histogram is a broad spread rather than a
 periodic peak — which is what makes it the interesting one for the tooth below,
 since a periodic weave prints a periodic mark and reads as a screen. `Flat` is a
-1×1 *full-height* texel — a constant height has zero gradient, so it is *exactly*
+1×1 *zero-height* texel — a constant height has zero gradient, so it is *exactly*
 equivalent to having no surface. That orthogonality is deliberate: most goldens
 run on `Flat` to test other features in isolation, and a dedicated golden
 (`linen_surface`) exercises the weave. One bump tile spans `SURFACE_TILE_PX`
 canvas px.
 
-**The deposition tooth.** Paint lands where the tip touches the ground, and on a
-rough ground the tip touches the peaks before the valleys. `BrushParams::tooth`
-is how deep a tool reaches — 0 = everywhere (the mark is solid, and the default),
-1 = the very tops only, which is what a dry brush leaves.
+**The deposition tooth.** Paint lands where the tip touches the ground — and
+what a *dragged* tip touches is not a level set of the ground's height. A stamp
+pressed straight down contacts the summits; a stroke is dragged, and a dragged
+tip has **give**: it sinks after ground that falls away beneath it and is
+pressed up by ground that rises to meet it, so it bears on the near face of
+every bump and bridges the lee side behind it. That is why a dry brush prints
+the leading edges of the grain rather than a speckle of its high points, and it
+is the difference between a mark that looks brushed and one that looks screened
+— a height threshold reads the same mark whichever way the stroke runs, which no
+brushed mark does. So the field the gate thresholds is the **rise ahead**: the
+height's derivative along the tip's own travel, taken across the contact's reach,
 
-The model is the substrate's **bearing-area curve** (Abbott–Firestone): the
-fraction of a rough surface standing above a given level. The tip presses to a
-level set by the knob, and a texel takes paint where the ground clears it. Per
-texel that is one *sample* of the curve, so the mean over a footprint is the true
-contact fraction — a prediction that can be checked against the height map's own
-histogram rather than a curve tuned until it looked right. The transition is
-softened over a band (`TOOTH_SOFTNESS`) because a hard threshold is a binary
-indicator per texel: correct in the mean, and at canvas resolution it aliases
-into speckle that reads as dither. A cubic smoothstep, for the reason
-`taper_profile` is a polynomial; both ends of the knob map to exact limits, so
-`tooth = 0` puts the whole band below the map's range and the gate is `1.0` to
-the bit.
+```
+d(x, d̂) = ahead(x)·d̂
+```
+
+where `d̂` is the tip's travel *at that texel* and `ahead` is the rise the ground
+makes over one `TOOTH_REACH` (3 canvas px) along each axis.
+
+`BrushParams::tooth` is the give, inverted — the gate thresholds the rise
+against the steepest fall the tip can still follow, and the knob walks that
+limit through three stations (`tooth_level`, a `2 − 1/tooth` map): at 0 the give
+is infinite, the tip tracks any fall and the surface is ignored, exactly — the
+solid default; at ½ there is no give left going down, so the tip holds its level
+— it touches whatever is flat or rising and bridges every fall, which on the
+bundled grounds is almost exactly half the ground (`Surface::bearing` measures
+0.50 on gesso, 0.51 on linen); at 1 the tip *demands* ground rising at the
+contact scale (`TOOTH_RISE`, ~the grounds' own mean |rise|) before it presses,
+and only the leading faces print — 13% of gesso, 25% of linen: the dry mark,
+still a mark. The transition is softened over a band (`TOOTH_SOFTNESS`, sized to
+the grounds' interquartile rise) because a hard threshold is a binary indicator
+per texel: correct in the mean, and at canvas resolution it aliases into speckle
+that reads as dither. A cubic smoothstep, for the reason `taper_profile` is a
+polynomial.
+
+Three things follow from writing `ahead` as a difference across a distance
+rather than as a gain on a pointwise slope:
+
+- **`ahead` is a difference across the reach, not `reach·∇s`.** A gradient at a
+  point knows nothing about the distance it is being multiplied out to: it grows
+  without bound in the reach and reports whatever the map's finest scale is
+  doing, which on a nearest-sampled, ~2:1-minified height map is largely Nyquist
+  noise — a dither that flips with the stroke instead of a face to catch on. A
+  difference over a span is self-limiting (it saturates once the reach clears a
+  feature's width — measured, 0.038 → 0.056 → 0.069 → 0.078 on gesso at 1.5, 2,
+  3, 4 px) and inherently blind to anything repeating faster than the span. The
+  reach is set on the shoulder of that curve — past a feature's own width there
+  is no more face to climb, and a longer reach only translates the mark. Only the
+  sampling grid is left to answer for, and a half-px blur does that.
+- **The reach is a distance in canvas px**, so the same weave reads
+  identically however finely it was stored — the span in texels follows the map's
+  resolution, which is what keeps the integer downsample invisible to the mark.
+- **It is baked into the ground texture**, which is `Rgba8Unorm`: height in `R`
+  (the media pass's relief), the two rise components in `GB`, each byte spanning
+  ±`RISE_LIMIT` — a quarter of the height range, because a filtered difference
+  across a few px *is* small (the grounds' 99th percentile is under 0.26) and
+  spending the byte where the rises live is what keeps the gate's transition
+  tonal rather than stepped. The deposit costs *one* texture tap, so the whole
+  axis adds a dot product and nothing else to either render path — and, more to
+  the point, the byte a texel is gated by is the byte the CPU tabulated, which
+  is what lets the tool book against the map's exact distribution.
+
+`d̂` is the tip's tangent carried round its own arc (`sweep_at`), not the
+segment's start tangent, so a curve's tooth does not depend on where the
+flattener cut it. `tooth = 0` still gates at `1.0` to the bit however steep the
+weave — which is what every golden in the suite paints at — twice over: the
+shaders guard it before the map is read, and the follow limit dives past any
+encodable fall well before the knob reaches zero, so a pen mapping sweeping
+through 0 meets the guard continuously.
 
 Three decisions do most of the work, and each is about *where* it is applied
 rather than what it computes:
 
 - **The grain is the canvas's, not the brush's.** A pencil and a loaded brush on
-  one ground see one tooth; the brush says only how far into it it reaches. That
-  is why `SurfaceId` is where the texture lives and `tooth` is the only thing on
-  `BrushParams`. Painter and Procreate put the grain on the brush, which is why
-  switching brushes there changes the paper under a half-finished painting.
+  one ground see one weave; the brush says only how much give it meets it with.
+  That is why `SurfaceId` is where the texture lives and `tooth` is the only
+  thing on `BrushParams`. Painter and Procreate put the grain on the brush, which
+  is why switching brushes there changes the paper under a half-finished
+  painting.
 - **It scales the exposure, not the transfer**, and that one choice is what makes
   it both compose and conserve. Every rate here is a function of swept optical
   depth τ — additive in it, or `1 − exp(−k·τ)` — so multiplying τ itself by a
@@ -325,9 +378,14 @@ rather than what it computes:
   exp(−k·g·(τ₁+τ₂))`, and `Σᵢ g·τᵢ = g·Στᵢ`, because `g` belongs to the canvas and
   not to the segment. Applied to the finished shares instead, a toothed lift would
   fade at a rate that depended on where the flattener cut. It is read at the
-  fragment's own canvas position, so tile aprons stay bit-consistent with no copy
-  pass, and — the reason the mark reads as paper rather than as noise —
-  successive strokes catch on the same peaks and register with each other.
+  fragment's own canvas position — the travel it is read *along* is recovered from
+  the segment's frame at that same position — so tile aprons stay bit-consistent
+  with no copy pass, the gate still factors out of the sum over a segment's
+  overlapping quads, and — the reason the mark reads as paper rather than as noise
+  — successive strokes the same way over the same ground catch on the same faces
+  and register with each other. A stroke run the *other* way deliberately does not:
+  that is the physics, and `tests/tooth.rs` measures it — the two runs lay their
+  ink on opposite sides of the grain.
 - **It gates height, never the per-unit opacity** (§6.1). The tooth decides how
   much paint arrives, not what the pigment is. Both render paths call the same
   `tooth_gate` in `paint_common.wesl`, so nudging `lift` off zero cannot change
@@ -341,17 +399,42 @@ rather than what it computes:
   reservoir cell has no ground of its own — it is dragged over fresh canvas at
   every sub-step — so where a canvas texel scales by the ground beneath it, the
   cell scales by the **bearing fraction**: the mean of the gate over the whole
-  height map, which `Surface::bearing` computes from the map's own histogram. The
+  map, which `Surface::bearing` computes from the map's own distribution. The
   two agree in expectation over any footprint spanning many grain features, which
   is every usable tip, and the residual is the same order as the mean-field freeze
   either side of the kernel already carries.
+- **…and the mean is a curve in two variables.** The rise is directional, so the
+  distribution the tool books against depends on which way it is going: a tip
+  crossing a weave along the warp meets a different population of faces than one
+  crossing it diagonally, and one running the stroke backwards meets the mirrored
+  field outright. So `bearing_hist` is a table — one 256-bin row per each of 16
+  directions, built by one pass over the map apiece and read with linear
+  interpolation between neighbouring rows, so the tool's booking does not step as
+  the pen turns. A segment books at its **midpoint** tangent, the same
+  second-order choice its lift already samples the canvas at. Booking every
+  direction against a single mean would leak paint at exactly the rate the
+  direction matters.
 
-That last point is why the height map is read with **nearest** rather than
-bilinear. Filtering would average away the peaks the tooth exists to catch on, and
-— worse — it would draw from a narrower distribution than the histogram the CPU
-integrates, so the two halves of the transfer would disagree systematically. It
-also sidesteps the reduced-precision filter weights `prefix_slice` documents, so
-the tap is bit-reproducible.
+That last point is why the ground is read with **nearest** rather than bilinear.
+Filtering would average away the faces the tooth exists to catch on, and — worse —
+it would draw from a narrower distribution than the one the CPU integrates, so the
+two halves of the transfer would disagree systematically. It also sidesteps the
+reduced-precision filter weights `prefix_slice` documents, so the tap is
+bit-reproducible. The histogram's bins are the byte lattice of the encoding
+itself, so a projection that hovers a rounding error either side of flat — every
+texel of a weave crossed at right angles — bins identically from both directions
+instead of straddling an edge. What is *not* exact is the direction: the row grid
+quantizes it and the bins quantize the diagonal projections, both far under the
+mean-field freeze the loop already carries.
+
+The gate stops at deposition, which is where `add` and `deposit` put paint on the
+canvas. **`bleed` is never gated by the weave**, and that is not an omission:
+bleed is wet paint spreading sideways *on* the canvas rather than a tip dragged
+over it, so there is no travel to read the ground's rise along. Structurally,
+bleed slots carry `tooth = 0` (`bleed_fires`), which short-circuits the gate to
+exactly `1.0` before any of this is consulted — which also keeps the lateral flux
+antisymmetric, since the two threads of a pair stand over different ground and
+would otherwise disagree about their shared edge.
 
 Orthogonality is structural rather than checked. `Surface::relief` is 0 on `Flat`
 and on any surface whose bytes have not arrived, which zeroes the uv scale the
@@ -370,15 +453,16 @@ names has to be registered before its log is replayed, or its strokes bake with
 no tooth and stay that way; the frontend fetches and re-replays when it finds it
 has opened a file whose ground had not arrived.
 
-> **Still open: the tooth does not fill.** `g` reads the substrate alone, so
-> overpainting never uses the weave up — the same grain prints through every
-> layer, which is the tell that gives a static grain multiply away. The fix is to
-> read `max(R·s(x), paint_height(x))`, the media pass's own `height_at`, so a
-> valley full of paint stops being a valley. It needs two things this version does
-> not have: a relief scale `R` in paint-height units (today `surface_strength` is
-> a *view* setting, and deposition cannot read one without making stored pixels
-> depend on the viewport), and an answer to associativity — the commit renders a
-> whole stroke in one range against the committed base while the live path renders
+> **Still open: the tooth does not fill.** The gate reads the substrate's rise
+> alone, so overpainting never uses the weave up — the same grain prints through
+> every layer, which is the tell that gives a static grain multiply away. The fix
+> is to read the rise of the *effective* surface, `max(R·s(x), paint_height(x))`
+> — the media pass's own `height_at` — so a face buried in paint stops presenting
+> a face. It needs two things this version does not have: a relief scale `R` in
+> paint-height units (today `surface_strength` is a *view* setting, and
+> deposition cannot read one without making stored pixels depend on the
+> viewport), and an answer to associativity — the commit renders a whole stroke
+> in one range against the committed base while the live path renders
 > head-then-tail, so a gate reading the evolving base breaks `preview ==
 > committed` wherever a stroke crosses itself. The way out is to make the deposit
 > a **flow**, `dh/dτ = add·g(h, x)`, which composes exactly under any subdivision

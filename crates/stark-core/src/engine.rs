@@ -2208,16 +2208,23 @@ impl Engine {
         self.apply.surfaces.bytes(id).map(|b| b.to_vec())
     }
 
-    /// What share of a ground a tip with this `tooth` stands on (§6.4) — the
-    /// bearing fraction the tool books its half of a toothed transfer against.
+    /// What share of a ground a tip with this `tooth`, travelling along `dir`, stands
+    /// on (§6.4) — the bearing fraction the tool books its half of a toothed transfer
+    /// against.
     ///
-    /// Exposed because it is the model's own falsifiable quantity: it is the height
-    /// map's histogram integrated against the contact curve, so it can be checked
-    /// against the map rather than taken on trust (`tests/tooth.rs`). Builds the
-    /// surface if this is the first time it has been asked for.
-    pub fn surface_bearing(&mut self, id: SurfaceId, tooth: f32) -> f32 {
+    /// Exposed because it is the model's own falsifiable quantity: it is the ground's
+    /// own rise-along-the-travel distribution integrated against the contact gate, so
+    /// it can be checked against the map rather than taken on trust
+    /// (`tests/tooth.rs`). `dir` is there because contact reads the ground's slope
+    /// *along the travel*, which makes the curve a property of the weave and the
+    /// direction crossing it together. Builds the surface if this is the first time
+    /// it has been asked for.
+    pub fn surface_bearing(&mut self, id: SurfaceId, tooth: f32, dir: crate::geom::Vec2) -> f32 {
         let gpu = self.gpu.clone();
-        self.apply.surfaces.get(&gpu, id).bearing(tooth)
+        self.apply
+            .surfaces
+            .get(&gpu, id)
+            .bearing(tooth, dir.to_array())
     }
 
     /// Import a canvas ground from a height-map PNG, returning the id that names it

@@ -733,9 +733,12 @@ flatten on the budget they always had.
 
 The one thing the pen cannot reach is the **ground**: `tooth` is on the brush and
 mappable like the rest, but the grain it bites into is the *canvas* (§6.4), so a
-pencil and a loaded brush on one paper break up on the same peaks. Mapping tooth
-to pressure is the charcoal behaviour — bear down and the tip flattens into the
-valleys, so the grain fills in.
+pencil and a loaded brush drawn the same way across one paper break up on the
+same faces. Mapping tooth to pressure is the charcoal behaviour — bear down and
+the tip gains give, pressing after the falls it was bridging, so the grain fills
+in. Which faces they are is the stroke's own business, though: contact reads the
+ground's rise *along the travel*, so the same brush over the same paper the other
+way catches the other sides (§6.4).
 
 **Resolution happens in one place**: `generate_segments_in`, alongside the taper,
 where the pen attributes are already interpolated per segment. Both render paths

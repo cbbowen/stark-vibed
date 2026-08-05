@@ -6,7 +6,7 @@
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::noise::{color_jitter};
-import package::paint_common::{ground_at, tooth_gate};
+import package::paint_common::{ground_at, rise_ahead, tooth_gate};
 
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
@@ -45,11 +45,13 @@ struct TileXform {
 // A 1×1 zero tile is bound when the brush's jitter is off.
 @group(2) @binding(0) var noise_tex: texture_2d<f32>;
 @group(2) @binding(1) var noise_samp: sampler;
-// The canvas surface's tileable height map (§6.4) — the ground whose tooth gates the
-// deposit. Read in *canvas* space, so the grain belongs to the canvas and successive
-// strokes register with each other; that is also what keeps the gate a pure function
-// of canvas position and the tile aprons bit-consistent. A `Flat` canvas binds its
-// 1×1 texel and arrives here with the uv scale zeroed, so the gate is exactly 1.
+// The canvas surface's tileable ground (§6.4) — height in `r` (the media pass's),
+// the rise one reach ahead in `gb` — whose rise along the travel gates the deposit.
+// Read in *canvas* space, so the grain belongs to the canvas and successive strokes
+// in one direction register with each other; that is also what keeps the gate a pure
+// function of canvas position and the tile aprons bit-consistent. A `Flat` canvas
+// binds its 1×1 texel and arrives here with the uv scale zeroed, so the gate is
+// exactly 1.
 //
 // No sampler: the tap is nearest (`ground_at`), for the reasons given there.
 @group(2) @binding(2) var surface_tex: texture_2d<f32>;
@@ -73,9 +75,9 @@ struct VsOut {
     // segment's signed curvature (1/canvas px); and the `add` source rate — height
     // per unit swept optical depth, as the pen asked for it here (§6.2).
     @location(4) @interpolate(flat) extra: vec4<f32>,
-    // How deep this segment's tip bites into the weave (§6.4). Per segment, not per
-    // stroke, because the pen can drive it — bearing down flattens the tip into the
-    // valleys, which is the charcoal behaviour.
+    // How little give this segment's tip has (§6.4) — the tooth. Per segment, not per
+    // stroke, because the pen can drive it — bearing down presses the tip after the
+    // falls it was bridging, so the grain fills in: the charcoal behaviour.
     @location(5) @interpolate(flat) tooth: f32,
 }
 
@@ -97,6 +99,38 @@ struct Sweep {
     // straight sweep. Every depth read out of a prefix difference is in the point's
     // measure and has to be converted back by this before it means anything.
     warp: f32,
+    // How far the tip's heading has turned from the segment's start by the time it
+    // reaches this point, signed the way the arc goes — 0 on a straight sweep. Feed it
+    // to `sweep_tangent` for the direction the tip is actually going here, which is
+    // what the deposition tooth reads the ground ahead along (§6.4).
+    //
+    // The **angle** rather than the tangent, because the rotation is the expensive half
+    // and almost nobody wants it: `outside_sweep` rejects on the frame alone, and the
+    // bleed flux builds a dozen of these per thread to read its neighbours' exposure.
+    // The angle falls out of the arc arithmetic already done, so carrying it is free
+    // and the sines are paid for only where a ground is actually being gated.
+    //
+    // Local rather than the segment's start tangent, for the reason everything else
+    // here is evaluated per fragment: a segment may bend by tens of degrees, and a
+    // gate keyed on the start tangent would make the mark depend on where the
+    // flattener happened to cut a curve. The local tangent is the same field however
+    // finely the curve is chopped, so the tooth stays a property of the path.
+    turn: f32,
+}
+
+// The tip's heading `turn` into the segment, from the tangent it left the start with.
+//
+// A rotation about the centre of curvature turns every point's tangent by the same
+// angle, so this is the point's own travel as much as the tip's. Straight sweeps take
+// the branch and get `dir` back untouched, which is the overwhelmingly common case and
+// bit-exact besides.
+fn sweep_tangent(dir: vec2<f32>, turn: f32) -> vec2<f32> {
+    if turn == 0.0 {
+        return dir;
+    }
+    let c = cos(turn);
+    let s = sin(turn);
+    return vec2<f32>(dir.x * c - dir.y * s, dir.x * s + dir.y * c);
 }
 
 // Where `p` sits in the travel frame of one swept segment (§6.2).
@@ -138,6 +172,7 @@ fn sweep_at(
         out.local = vec2<f32>(along, across) / radius;
         out.lr = len / radius;
         out.warp = 1.0;
+        out.turn = 0.0;
         return out;
     }
     let ak = abs(kappa);
@@ -155,6 +190,9 @@ fn sweep_at(
     out.local = vec2<f32>(g * delta / (ak * radius), lateral / radius);
     out.lr = len * g / radius;
     out.warp = 1.0 / g;
+    // `delta` is already the angle swept from the start, positive the way the tip
+    // travels, so the turn direction is the only thing left to restore.
+    out.turn = sign(kappa) * delta;
     return out;
 }
 
@@ -295,26 +333,27 @@ fn stroke_drain(arc: f32) -> f32 {
 }
 
 // The share of its paint this fragment's texel receives from the ground under it
-// (§6.4) — the deposition tooth, `paint_common.wesl::tooth_gate` fed the canvas
-// surface's height here.
+// (§6.4) — the deposition tooth, `paint_common.wesl::tooth_gate` fed the rise this
+// fragment's tip meets along its travel there (`rise_ahead`).
 //
-// Sampled at the fragment's own canvas position, so it is a pure function of that
-// position and nothing else: a tile's apron is rewritten identically to its
-// neighbour's interior with no copy pass, and — since it does not depend on the
-// segment — it factors straight out of the sum over overlapping segment quads,
-// leaving the deposit exactly as independent of the flattening as it was.
+// Sampled at the fragment's own canvas position, and read ahead along the tip's travel
+// *there* (`sw.tangent`), which the fragment recovers from the segment's frame at that
+// same position. So it is still a pure function of canvas position within a pass: a
+// tile's apron is rewritten identically to its neighbour's interior with no copy pass,
+// and the gate factors out of the sum over one segment's overlapping quads exactly as
+// before, leaving the deposit as independent of the flattening as it was.
 //
-// `xf.paint.y` is zero on a canvas with no relief (`Surface::relief`), which sends
-// `tooth_gate` a level of 0 and returns exactly 1.0: a `Flat` document deposits
-// bit-for-bit what it always did whatever the brush's tooth says.
-fn surface_tooth(in: VsOut) -> f32 {
+// `xf.paint.y` is zero on a canvas with no relief (`Surface::relief`), so the guard
+// returns exactly 1.0 before the map is read: a `Flat` document deposits bit-for-bit
+// what it always did whatever the brush's tooth says.
+fn surface_tooth(in: VsOut, sw: Sweep) -> f32 {
     let uv_scale = xf.paint.y;
     if uv_scale <= 0.0 || in.tooth <= 0.0 {
         return 1.0;
     }
     let dims = textureDimensions(surface_tex);
-    let s = textureLoad(surface_tex, ground_at(in.canvas * uv_scale, dims), 0).r;
-    return tooth_gate(s, in.tooth);
+    let g = textureLoad(surface_tex, ground_at(in.canvas * uv_scale, dims), 0);
+    return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), in.tooth);
 }
 
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0
