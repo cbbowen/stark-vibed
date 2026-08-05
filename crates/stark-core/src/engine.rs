@@ -16,7 +16,7 @@ use crate::document::{
     CanvasBounds, DocState, Layer, LayerContent, LayerId, LinearTimeline, ReplicatedTimeline,
     ShapeAction, StrokeRecord, Timeline, TimelineStats, Tool, effective_actions,
 };
-use crate::geom::{Extent2, TileCoord, ViewTransform};
+use crate::geom::{Extent2, TileCoord, TileRect, ViewTransform};
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, Environment,
     EnvironmentId, FillRenderer, GpuContext, MatteDraw, Offscreen, Registry, SelectionOutline,
@@ -1177,7 +1177,9 @@ impl Engine {
             Rendered::Live => self.presented(),
             Rendered::Committed => self.timeline.current(),
         };
-        let groups = self.composite_groups(doc, None);
+        // Only what this view can show (§6.3). The draw list is otherwise every
+        // populated tile of every visible layer, whatever the viewport.
+        let groups = self.composite_groups(doc, None, visible_tiles(view));
 
         // The substrate is document state now (§15.5), so the ground a
         // piece was painted on travels with it instead of living in whichever
@@ -1425,23 +1427,36 @@ impl Engine {
     /// it, since a sample is of the paint that is there rather than of the part of
     /// it that survives its surroundings. Sharing this with rendering is what makes
     /// a sample come off the same stack the screen draws.
-    fn composite_groups(&self, doc: &DocState, only: Option<LayerId>) -> Vec<CompositeGroup> {
+    /// `visible` is the view-AABB cull (§6.3): only tiles it names are built into
+    /// the draw list. `None` culls nothing — see [`visible_tiles`].
+    ///
+    /// [`visible_tiles`]: fn@visible_tiles
+    fn composite_groups(
+        &self,
+        doc: &DocState,
+        only: Option<LayerId>,
+        visible: Option<TileRect>,
+    ) -> Vec<CompositeGroup> {
         if let Some(id) = only {
             let Some(layer) = doc.layer(id).filter(|l| l.visible && l.opacity > 0.0) else {
                 return Vec::new();
             };
-            let items = self.layer_items(layer);
+            let items = self.layer_items(layer, visible);
             return if items.is_empty() {
                 Vec::new()
             } else {
                 vec![CompositeGroup::run(BlendMode::Normal, false, items)]
             };
         }
-        self.composite_stack(doc.root().iter())
+        self.composite_stack(doc.root().iter(), visible)
     }
 
     /// One stack's worth of groups — the root's, or a layer's carried stack.
-    fn composite_stack<'a>(&self, layers: impl Iterator<Item = &'a Layer>) -> Vec<CompositeGroup> {
+    fn composite_stack<'a>(
+        &self,
+        layers: impl Iterator<Item = &'a Layer>,
+        visible: Option<TileRect>,
+    ) -> Vec<CompositeGroup> {
         let mut groups: Vec<CompositeGroup> = Vec::new();
         for layer in layers {
             // Hiding a layer hides what it carries: the group is the layer
@@ -1449,13 +1464,20 @@ impl Engine {
             if !layer.visible || layer.opacity <= 0.0 {
                 continue;
             }
-            let own = self.layer_items(layer);
-            let carried = self.composite_stack(layer.carries.iter());
+            let own = self.layer_items(layer, visible);
+            let carried = self.composite_stack(layer.carries.iter(), visible);
             // An empty layer is dropped rather than given a group. For `Normal`
             // that only saves a loop; for a blend mode or a clip it saves two
             // render passes that provably compute the identity, which is what
             // keeps a stack of empty glow layers free. A layer that carries
             // something visible is not empty, whatever its own content.
+            //
+            // **The cull can empty a layer that has paint**, so this now fires for
+            // a document scrolled away from as well as for one not yet painted on.
+            // That is sound on the identity above rather than on the two cases
+            // happening to coincide: `blend_common.wesl::merge` with a transparent
+            // source is `cb` exactly — `cs.a` is 0, so both source terms vanish and
+            // the aux sum adds nothing — for every mode and both clip states.
             if own.is_empty() && carried.is_empty() {
                 continue;
             }
@@ -1502,11 +1524,17 @@ impl Engine {
     }
 
     /// What one layer's own content draws, without what it carries.
-    fn layer_items(&self, layer: &Layer) -> Vec<CompositeItem> {
+    ///
+    /// Paint is culled to `visible` (§6.3); a matte is not. A matte's rect can be
+    /// the *hole* in a frame, whose fill covers everything outside it (§15.4.4), so
+    /// there is no box to test it against — and there is at most one per layer, so
+    /// there would be nothing to win.
+    fn layer_items(&self, layer: &Layer, visible: Option<TileRect>) -> Vec<CompositeItem> {
         match &layer.content {
             LayerContent::Paint(tiles) => tiles
                 .map()
                 .iter()
+                .filter(|(coord, _)| visible.is_none_or(|r| r.contains(**coord)))
                 .map(|(coord, handle)| CompositeItem::Tile {
                     coord: *coord,
                     handle: handle.clone(),
@@ -1590,7 +1618,10 @@ impl Engine {
             // has a substrate in it.
             let ground = matches!(options.source, PickSource::CompositeOverSubstrate)
                 .then(|| self.color_space.rgb_to_channels(doc.background));
-            (self.composite_groups(doc, only), ground)
+            (
+                self.composite_groups(doc, only, visible_tiles(view)),
+                ground,
+            )
         };
 
         let (color_format, aux_format) = self.compositor_pipeline.channel_formats();
@@ -2922,6 +2953,30 @@ fn overlay_tiles(
     out.map_layer(layer, |l| l.with_tiles(tiles))
 }
 
+/// The tiles a render of `view` can show — the **view-AABB cull** (§6.3).
+///
+/// Pass A places a tile as the quad `[origin, origin + TILE_SIZE]` and lets the
+/// rasterizer clip it, so a tile outside this rect covers no pixel of a
+/// viewport-sized target and building a draw for it produces nothing. Skipping it
+/// is therefore a pure subtraction: same pixels, less work.
+///
+/// The bound is conservative twice over, which is the direction that cannot crop a
+/// picture. [`ViewTransform::visible_bounds`] is the AABB of the *rotated* viewport,
+/// so it covers more canvas than is really on screen; and [`TileRect::covering`]
+/// then floors to whole tiles. A supersampled render sees the same rect —
+/// [`ViewTransform::supersampled`] scales zoom and viewport together, leaving the
+/// canvas region fixed — so culling against the caller's view is consistent with
+/// the draw's.
+///
+/// `None` when the box cannot be measured (a non-finite view, or one so far out
+/// that whole tiles fall off the `i32` grid). That is the "claim everything" answer
+/// [`TileRect::covering`] leaves to its callers: culling is an optimization, and an
+/// optimization that cannot measure its input must do nothing rather than guess.
+fn visible_tiles(view: ViewTransform) -> Option<TileRect> {
+    let (lo, hi) = view.visible_bounds();
+    TileRect::covering(lo, hi, 0)
+}
+
 /// Build the GPU subsystems whose layout/shaders depend on the color space.
 /// What the colour-space-dependent GPU subsystems are built from.
 ///
@@ -3004,4 +3059,133 @@ pub async fn headless_engine_with(
         viewport,
         color_space,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::{TILE_SIZE, Vec2};
+
+    /// An upright, unmirrored view of `size` at `zoom`, centred on `center`.
+    fn view(center: Vec2, zoom: f32, size: Extent2) -> ViewTransform {
+        ViewTransform {
+            center,
+            zoom,
+            ..ViewTransform::identity(size)
+        }
+    }
+
+    /// The tile a canvas point falls in.
+    fn tile_at(c: Vec2) -> TileCoord {
+        TileCoord::new(
+            (c.x / TILE_SIZE as f32).floor() as i32,
+            (c.y / TILE_SIZE as f32).floor() as i32,
+        )
+    }
+
+    /// **The cull must never crop**, which is the whole risk it carries: it runs on
+    /// the export path as well as the screen, so a bound one tile too tight would
+    /// silently drop the edge of a saved image rather than fail.
+    ///
+    /// Asked the way the renderer asks it — walk the pixels the viewport actually
+    /// shows, map each back to canvas space, and require its tile to be in the draw
+    /// list — rather than by re-deriving the bound, which would only restate the
+    /// implementation. That is also what makes it meaningful under rotation and
+    /// mirroring, where the visible region is not the box `visible_bounds` returns.
+    fn every_pixel_on_screen_keeps_its_tile(v: ViewTransform) {
+        let rect = visible_tiles(v).expect("an ordinary view is measurable");
+        let (w, h) = (v.viewport.width as f32, v.viewport.height as f32);
+        for sy in 0..=32 {
+            for sx in 0..=32 {
+                let screen = Vec2::new(sx as f32 / 32.0 * w, sy as f32 / 32.0 * h);
+                let canvas = v.screen_to_canvas(screen);
+                let tile = tile_at(canvas);
+                assert!(
+                    rect.contains(tile),
+                    "screen {screen:?} shows canvas {canvas:?}, in {tile:?}, which                      the cull dropped",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cull_keeps_every_tile_the_viewport_shows() {
+        let ts = TILE_SIZE as f32;
+        let centre = Vec2::new(ts * 1.5, ts * 0.5);
+        for size in [
+            Extent2::new(64, 64),
+            Extent2::new(3 * ts as u32, ts as u32), // wide: worst case under a turn
+            Extent2::new(1920, 1080),
+        ] {
+            for zoom in [0.05, 0.5, 1.0, 8.0] {
+                let upright = view(centre, zoom, size);
+                every_pixel_on_screen_keeps_its_tile(upright);
+                for rotation in [0.3, std::f32::consts::FRAC_PI_4, 2.1, -1.0] {
+                    every_pixel_on_screen_keeps_its_tile(ViewTransform {
+                        rotation,
+                        ..upright
+                    });
+                }
+                every_pixel_on_screen_keeps_its_tile(ViewTransform {
+                    flip_h: true,
+                    ..upright
+                });
+            }
+        }
+    }
+
+    /// And it does cull — otherwise the test above would pass a `visible_tiles` that
+    /// simply answered [`TileRect::ALL`].
+    #[test]
+    fn the_cull_drops_what_the_viewport_cannot_reach() {
+        let ts = TILE_SIZE as f32;
+        // Strictly inside tile (0, 0): a viewport two px shy of a tile, centred on
+        // it, so no edge lands on a tile boundary.
+        let v = view(
+            Vec2::new(ts * 0.5, ts * 0.5),
+            1.0,
+            Extent2::new(ts as u32 - 2, ts as u32 - 2),
+        );
+        let rect = visible_tiles(v).expect("measurable");
+        assert!(rect.contains(TileCoord::new(0, 0)));
+        for c in [
+            TileCoord::new(-1, 0),
+            TileCoord::new(1, 0),
+            TileCoord::new(0, -1),
+            TileCoord::new(0, 1),
+            TileCoord::new(7, 7),
+        ] {
+            assert!(!rect.contains(c), "{c:?} is nowhere near the viewport");
+        }
+    }
+
+    /// Supersampling scales zoom and viewport together, so it must name the same
+    /// tiles — the draw list is built against the caller's view and drawn against
+    /// the supersampled one, and a disagreement would crop only when zoomed out.
+    #[test]
+    fn supersampling_does_not_move_the_cull() {
+        let ts = TILE_SIZE as f32;
+        let v = view(Vec2::new(ts * 2.0, ts * 2.0), 0.4, Extent2::new(700, 500));
+        let plain = visible_tiles(v).expect("measurable");
+        for n in [2, 3, 4] {
+            assert_eq!(
+                visible_tiles(v.supersampled(n)),
+                Some(plain),
+                "{n}x supersampling changed which tiles are visible",
+            );
+        }
+    }
+
+    /// A view the bound cannot measure culls **nothing** rather than guessing. An
+    /// optimization that cannot see its input has to do no harm, and the harm here
+    /// would be an empty picture.
+    #[test]
+    fn an_unmeasurable_view_culls_nothing() {
+        let size = Extent2::new(800, 600);
+        for bad in [f32::NAN, f32::INFINITY, -f32::INFINITY] {
+            assert_eq!(visible_tiles(view(Vec2::new(bad, 0.0), 1.0, size)), None);
+        }
+        // Far enough out that whole tiles stop fitting an i32 index.
+        assert_eq!(visible_tiles(view(Vec2::splat(1e30), 1.0, size)), None);
+    }
 }

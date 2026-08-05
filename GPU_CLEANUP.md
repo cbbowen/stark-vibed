@@ -234,6 +234,11 @@ entries and `TilePairHandle` clones all become proportional to what is on screen
 Nothing to do here as a cleanup. The cull is a roadmap item and belongs to whoever
 decides the roadmap.
 
+**Since taken, as the roadmap item it is** — `Engine::visible_tiles`, a `TileRect`
+over `ViewTransform::visible_bounds`, threaded through `composite_groups`. Pass A's
+cost now follows the viewport rather than the document. `docs/rendering.md` §6.3
+and the roadmap bullet record what shipped and that damage tracking did not.
+
 ---
 
 ## 3. Mechanical duplication — pass (b) — **done**

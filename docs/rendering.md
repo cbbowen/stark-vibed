@@ -156,11 +156,31 @@ The whole media model is a single shader stage, which is the point: Kubelka–Mu
 pigment mixing, granulation, varnish gloss can be iterated on without touching
 the document or tile machinery.
 
-> **Not yet: damage tracking.** Every populated tile of every visible layer is
-> composited every frame — there is no per-version damage set and no view-AABB
-> cull, so off-screen tiles are drawn and clipped by the rasterizer rather than
-> skipped. Fine at current canvas sizes; the obvious first optimization when it
-> stops being.
+**The draw list is culled to the view.** Pass A is built only from tiles the
+render's view can reach — `Engine::visible_tiles`, a `TileRect` over
+`ViewTransform::visible_bounds` — so its cost follows the viewport rather than the
+document. Without it every populated tile of every visible layer was composited
+every frame, each one an `Arc` clone, an instance, a bind group and a draw, and
+the off-screen ones were merely clipped by the rasterizer after all of that.
+
+The bound is conservative twice: `visible_bounds` is the AABB of the *rotated*
+viewport, so it covers more canvas than is really on screen, and the quantizer
+then floors to whole tiles. That direction is the one that cannot crop a picture,
+which matters because the same path renders an export. A view it cannot measure —
+non-finite, or so far out that tiles leave the `i32` grid — culls nothing.
+
+Skipping a tile is a pure subtraction because a tile outside the view covers no
+pixel of a viewport-sized target. The one thing it changes is that a layer can now
+be *empty* because its paint is off-screen, and an empty layer is dropped rather
+than given a group. That is sound on the blend algebra rather than on coincidence:
+`merge` with a transparent source has `cs.a = 0`, so both source terms vanish and
+the aux sum adds nothing — the result is the backdrop exactly, for every mode and
+both clip states.
+
+> **Not yet: damage tracking.** There is still no per-version damage set: an
+> unchanged frame recomposites everything the view can see, rather than only what
+> a commit actually touched. Fine at current canvas sizes; the next optimization
+> when it stops being.
 
 ## 6.4 Presentation (pan/zoom/rotate to a surface)
 

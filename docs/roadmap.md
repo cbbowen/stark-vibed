@@ -67,7 +67,12 @@ which is exactly the leverage the frontend/backend split was meant to provide.
   stays unscheduled until profiling on a large document says otherwise.
 - **HiDPI** — the web canvas uses a 1× drawing buffer (CSS pixels); multiply by
   `devicePixelRatio` for crisp rendering on retina displays.
-- **Damage tracking / view-AABB cull** (§6.3).
+- **Damage tracking** (§6.3) — the **view-AABB cull half is done**: pass A's draw
+  list is built only from tiles the render's view can reach, so its cost follows
+  the viewport rather than the document. What is left is the *per-version damage
+  set* — knowing which tiles a commit actually changed, so an unchanged frame
+  need not recomposite what it already drew. That one needs the timeline to
+  carry the answer, not just the renderer to ask a cheaper question.
 - **Batching the dynamics loop's independent dispatches** (§6.2) — the current
   per-move bottleneck is dispatch latency, not shader work.
 
