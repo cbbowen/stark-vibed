@@ -108,7 +108,7 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
             name: "Pencil".to_string(),
             brush: BrushParams {
                 radius: 18.0,
-                shape: stamp(builtins::BRISTLES),
+                shape: stamp(builtins::FLAT_TIP),
                 orientation: OrientationSource::Pen,
                 modulation: Modulations {
                     // Upright is a point but not a hairline; flat is the full

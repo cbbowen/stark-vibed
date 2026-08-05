@@ -2426,6 +2426,11 @@ pub mod assets {
         read("shape/Worn_Bristles.png")
     }
 
+    /// The built-in bristle brush shape (§6.6).
+    pub fn flat_tip() -> Vec<u8> {
+        read("shape/Flat.png")
+    }
+
     /// The built-in linen canvas weave (§6.4).
     pub fn linen() -> Vec<u8> {
         read("surface/Linen.png")

@@ -39,11 +39,20 @@ pub struct BuiltinShape {
 /// The worn bristle stamp: a dry, broken-edged tip.
 pub const BRISTLES: &str = "Worn Bristles";
 
+/// The flat stamp.
+pub const FLAT_TIP: &str = "Flat";
+
 /// Every shape that ships with the app, in gallery order.
-pub const SHAPES: &[BuiltinShape] = &[BuiltinShape {
-    name: BRISTLES,
-    asset: asset!("/assets/shape/Worn_Bristles.png"),
-}];
+pub const SHAPES: &[BuiltinShape] = &[
+    BuiltinShape {
+        name: BRISTLES,
+        asset: asset!("/assets/shape/Worn_Bristles.png"),
+    },
+    BuiltinShape {
+        name: FLAT_TIP,
+        asset: asset!("/assets/shape/Flat.png"),
+    },
+];
 
 /// Fetch every bundled shape and import it into `r`, so strokes and presets can
 /// reference one by content id. Run on each engine that has to render them: the
