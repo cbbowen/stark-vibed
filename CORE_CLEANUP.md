@@ -32,6 +32,12 @@ its instances).
 
 ## §2 — `engine.rs` is five modules in one file
 
+**Status: done.** Six files: `mod`, `render`, `live`, `pick`, `collab`, `file`.
+Verified as a pure move — the function inventory is byte-identical before and
+after, and the only body differences are the `mod`/`pub use` lines, the import
+reshuffle, and twelve items widened from private to `pub(super)` because they are
+now called across the seam.
+
 3193 lines, one `impl Engine` block, 57 public methods. The seams are already
 visible in the file's own section comments:
 
