@@ -143,11 +143,17 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
                 }
 
                 div { class: "modal-section-label", "RESOLUTION" }
-                div { class: "tool-row",
+                select {
+                    class: "select",
+                    onchange: move |e| {
+                        if let Some((_, factor)) = SCALES.iter().find(|(l, _)| *l == e.value()) {
+                            scale.set(*factor);
+                        }
+                    },
                     for (label, factor) in SCALES {
-                        button {
-                            class: if (scale() - factor).abs() < 1e-3 { "chip active" } else { "chip" },
-                            onclick: move |_| scale.set(factor),
+                        option {
+                            value: "{label}",
+                            selected: (scale() - factor).abs() < 1e-3,
                             "{label}"
                         }
                     }
