@@ -63,6 +63,7 @@ crates/
     document/      versioned state: actions, timeline, layers, selection, footprints
     gpu/           tile pool, stroke renderer, compositor, readback
   stark-shaders/   WESL sources + the build step that links them
+    shaders/lib/   binding-free leaves — a module here may NOT declare a binding
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
   stark-ui/        Dioxus 0.7 frontend; owns the wgpu::Surface

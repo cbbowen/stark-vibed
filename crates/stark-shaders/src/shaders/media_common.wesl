@@ -5,8 +5,8 @@
 // directional lighting + paint gloss, and the composite-over-background + sRGB
 // encode — lives here so it is written once.
 
-import package::color::{linear_to_srgb};
-import package::noise::{noise_2_to_4};
+import package::lib::color::{linear_to_srgb};
+import package::lib::noise::{noise_2_to_4};
 
 struct Media {
     light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
@@ -35,19 +35,7 @@ struct Media {
 
 const PI: f32 = 3.14159265359;
 
-// Opacity build-up rate (§6.1, normalized representation): the slab law
-// `1 − exp(−OPACITY_K · opacity · thickness)`. Pass A applies it per layer
-// (composite.wesl), so the composited colour's alpha arrives here already as the
-// stack's accumulated coverage; the constant remains only for the weave-sink
-// correction below. Calibrated so a normal opaque stroke reads solid.
-const OPACITY_K: f32 = 1.0;
 const EPS: f32 = 1e-5;
-
-// Fullscreen triangle clip position from a vertex index.
-fn fullscreen_clip(vi: u32) -> vec4<f32> {
-    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
-}
 
 // Absolute canvas surface height at screen pixel `p` (sampled in canvas space, so
 // the weave is fixed to the canvas). `Flat` is height 0, so it adds no relief.

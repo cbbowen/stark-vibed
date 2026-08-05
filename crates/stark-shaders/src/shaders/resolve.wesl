@@ -30,7 +30,8 @@
 // on a cut-out export (§15.6) a fragment that is nine-tenths nothing contributes a
 // tenth of a colour rather than a full one.
 
-import package::color::{linear_to_srgb, srgb_to_linear};
+import package::lib::color::{linear_to_srgb, srgb_to_linear};
+import package::lib::quad::{fullscreen_clip};
 
 struct Resolve {
     // n.x = samples per axis. The rest is the 16-byte stride a uniform member takes
@@ -45,8 +46,7 @@ const EPS: f32 = 1e-5;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+    return fullscreen_clip(vi);
 }
 
 @fragment

@@ -21,6 +21,8 @@
 // changed. The CPU side hands the pair traces (lines or circles), both poles'
 // vanishing points, and the dressed rings already derived.
 
+import package::lib::quad::{fullscreen_clip};
+
 struct Guide {
     // Screen px → canvas px: `canvas = m * frag + org.xy` (m column-major).
     inv: vec4<f32>,
@@ -110,9 +112,7 @@ fn ring(acc: vec4<f32>, p: vec2<f32>, cov: vec2<f32>, radius: f32, zoom: f32, ma
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    // Fullscreen triangle: (-1,-1), (3,-1), (-1,3).
-    let corner = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
+    return fullscreen_clip(vi);
 }
 
 @fragment

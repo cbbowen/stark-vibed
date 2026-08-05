@@ -5,8 +5,9 @@
 // by that coverage (weave-sunk paint discounted, `paint_vis_at`), convert
 // Oklab → linear sRGB, and hand off to the shared lighting tail.
 
-import package::color::{oklab_to_linear_srgb};
-import package::media_common::{comp_color, comp_aux, fullscreen_clip, over_substrate, paint_vis_at, finish};
+import package::lib::color::{oklab_to_linear_srgb};
+import package::lib::quad::{fullscreen_clip};
+import package::media_common::{comp_color, comp_aux, over_substrate, paint_vis_at, finish};
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {

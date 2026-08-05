@@ -22,6 +22,8 @@
 // costs no tiles, and is a pure function of canvas position (the §6.4 seam
 // invariant, for free).
 
+import package::lib::paint_common::{OPACITY_K};
+
 struct View {
     // Canvas px -> NDC, column-major: `st.xy` is the first column, `st.zw` the
     // second. A 2x2 because the view can be turned and mirrored; the matte is a
@@ -38,9 +40,6 @@ struct View {
 // after the weave-sink discount (media_common.wesl), so a matte at full opacity
 // reads solid.
 const MATTE_THICKNESS: f32 = 8.0;
-
-// Opacity build-up rate; must match `composite.wesl` / `media_common.wesl`.
-const OPACITY_K: f32 = 1.0;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,

@@ -5,9 +5,20 @@
 
 const EPS: f32 = 1e-5;
 
-// Matches the media pass's translucent-slab law `1 − exp(−K·opacity·thickness)`
-// (media_common.wesl), so a parcel's covering behaviour agrees with what the
-// viewer sees: its blend weight is its visible alpha.
+// The translucent-slab law's build-up rate: `1 − exp(−K·opacity·thickness)`.
+//
+// **The one definition.** It was written out four times — here, `composite.wesl`,
+// `matte.wesl` and `media_common.wesl` — three of them carrying a "must match"
+// comment at the very constant a shared import was already available for
+// (`stamp_oklab.wesl` imported this one). The `media_common` copy had by then
+// gone dead outright: its own comment said it "remains only for the weave-sink
+// correction", and that correction is a power law with no `K` in it.
+//
+// Every place the slab law is evaluated now reads this: the parcel stacking below,
+// pass A's per-layer coverage (`composite.wesl`), the matte slab (`matte.wesl`),
+// and the stamp's per-segment visible alpha (`stamp_oklab.wesl`). That a parcel's
+// blend weight *is* its visible alpha — that it covers resident paint exactly as
+// much as the viewer sees it cover — is the property those four agreeing is worth.
 const OPACITY_K: f32 = 1.0;
 
 // Blend a parcel of paint (latent `lat1`, optical mass `m1` = opacity·height) onto

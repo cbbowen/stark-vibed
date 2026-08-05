@@ -77,8 +77,9 @@
 // is a pure function of what it reads. Replay and live == committed hold.
 
 import package::stamp_common::{prefix_at, Sweep, sweep_at, sweep_tangent};
-import package::noise::{color_jitter};
-import package::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, EPS};
+import package::lib::noise::{color_jitter};
+import package::lib::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, EPS};
+import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 
 struct Stamp {
     // a: position .xy (region px) + frame x-axis .zw (unit vector). For a segment
@@ -378,28 +379,21 @@ fn coverage_at(local: vec2<f32>) -> f32 {
 // Bilinear lookup of a baked prefix row at travel-frame `(x, y)`, with the same
 // asymmetric edge semantics as `prefix_at`: 0 before the tip's leading edge, and
 // clamped to the row total after its trailing edge. Hand-rolled on `textureLoad`
-// for the same reasons the prefix-τ lookup is (fp32 is not filterable in core
-// WebGPU, and the travel axis is asymmetric).
+// for the same reasons the prefix-τ lookup is, which is why the tap arithmetic is
+// shared with it (`lib::sample::bilerp_taps`); only the leading-edge guard below
+// is this lookup's own.
 fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
     if x <= -1.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
-    let dim = vec2<f32>(textureDimensions(tex));
-    let ux = clamp(x * 0.5 + 0.5, 0.0, 1.0) * dim.x - 0.5;
-    let uy = clamp(y * 0.5 + 0.5, 0.0, 1.0) * dim.y - 0.5;
-    let x0 = floor(ux);
-    let y0 = floor(uy);
-    let fx = ux - x0;
-    let fy = uy - y0;
-    let xi0 = clamp(i32(x0), 0, i32(dim.x) - 1);
-    let xi1 = clamp(i32(x0) + 1, 0, i32(dim.x) - 1);
-    let yi0 = clamp(i32(y0), 0, i32(dim.y) - 1);
-    let yi1 = clamp(i32(y0) + 1, 0, i32(dim.y) - 1);
-    let p00 = textureLoad(tex, vec2<i32>(xi0, yi0), 0);
-    let p10 = textureLoad(tex, vec2<i32>(xi1, yi0), 0);
-    let p01 = textureLoad(tex, vec2<i32>(xi0, yi1), 0);
-    let p11 = textureLoad(tex, vec2<i32>(xi1, yi1), 0);
-    return mix(mix(p00, p10, fx), mix(p01, p11, fx), fy);
+    let b = bilerp_taps(vec2<f32>(textureDimensions(tex)), vec2<f32>(x, y));
+    return bilerp_mix(
+        b,
+        textureLoad(tex, vec2<i32>(b.i0.x, b.i0.y), 0),
+        textureLoad(tex, vec2<i32>(b.i1.x, b.i0.y), 0),
+        textureLoad(tex, vec2<i32>(b.i0.x, b.i1.y), 0),
+        textureLoad(tex, vec2<i32>(b.i1.x, b.i1.y), 0),
+    );
 }
 
 // ---- 0. Wick: paint migrating within the tip. ------------------------------------
@@ -1216,8 +1210,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let e = dpre * sw.warp * surface_tooth(rt, sw.turn);
     // The selection's coverage here (§6.8). Fully deselected texels are exactly the
     // "keeps its value" case, so they cost nothing.
-    let mdim = vec2<i32>(textureDimensions(sel_mask));
-    let sel = textureLoad(sel_mask, min(rt, mdim - vec2<i32>(1, 1)), 0).r;
+    let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
     }
@@ -1305,7 +1298,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                     );
                     w_n = 1.0 - exp(-kb * dpn * swn.warp);
                 }
-                let seln = textureLoad(sel_mask, min(rtn, mdim - vec2<i32>(1, 1)), 0).r;
+                let seln = load1(sel_mask, rtn).r;
                 let c = BLEED_SHARES[k] * min(w_t, w_n) * seln;
                 if c > 0.0 {
                     let ucn = textureLoad(under_color, tn, 0);
@@ -1472,8 +1465,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     if e <= 0.0 {
         return; // the footprint's rim: nothing in flight, nothing to settle
     }
-    let mdim = vec2<i32>(textureDimensions(sel_mask));
-    let sel = textureLoad(sel_mask, min(rt, mdim - vec2<i32>(1, 1)), 0).r;
+    let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
     }

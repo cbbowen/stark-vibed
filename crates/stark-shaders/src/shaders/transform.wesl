@@ -21,7 +21,9 @@
 // Every output is a pure function of canvas position, so a tile's apron is
 // rewritten identically to its neighbour's interior (the §6.4 seam invariant).
 
-import package::paint_common::{blend_latent, EPS};
+import package::lib::paint_common::{blend_latent, EPS};
+import package::lib::quad::{fullscreen_clip};
+import package::lib::sample::{load1};
 
 struct Quad {
     // a: destination tile texture's top-left in canvas px .xy; .z = TILE_TEX.
@@ -272,16 +274,13 @@ fn fs_mask_gated(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 @fragment
 fn fs_mask_base(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = qg.a.xy + frag.xy;
-    let c = vec2<i32>(floor(frag.xy));
-    let dim = vec2<i32>(textureDimensions(src_mask));
-    let m = textureLoad(src_mask, min(c, dim - vec2<i32>(1, 1)), 0).r;
+    let m = load1(src_mask, vec2<i32>(floor(frag.xy))).r;
     return vec4<f32>(m * (1.0 - box_coverage(p, qg.r.xy, qg.r.zw)), 0.0, 0.0, 0.0);
 }
 
 @vertex
 fn vs_fill(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+    return fullscreen_clip(vi);
 }
 
 struct FsOut {
@@ -305,23 +304,18 @@ struct Combine {
 fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     let c = vec2<i32>(floor(frag.xy));
     // Base and mask clamp to their own extent, so a real tile and the 1×1
-    // constants read through the same code (§6.8's pattern).
-    let bdim = vec2<i32>(textureDimensions(base_color));
-    let bc = textureLoad(base_color, min(c, bdim - vec2<i32>(1, 1)), 0);
-    let adim = vec2<i32>(textureDimensions(base_aux));
-    let ba = textureLoad(base_aux, min(c, adim - vec2<i32>(1, 1)), 0);
-    let mdim = vec2<i32>(textureDimensions(base_mask));
-    var m = textureLoad(base_mask, min(c, mdim - vec2<i32>(1, 1)), 0).r;
+    // constants read through the same code (§6.8's pattern, `lib::sample::load1`).
+    let bc = load1(base_color, c);
+    let ba = load1(base_aux, c);
+    var m = load1(base_mask, c).r;
     if qc.a.z > 0.5 {
         // The cut only reaches inside the map's source rect (§16.8): the
         // effective coverage is m·box, the same gate the parcel side applied
         // at the source — so an identity map recombines exactly.
         m = m * box_coverage(qc.a.xy + frag.xy, qc.r.xy, qc.r.zw);
     }
-    let pdim = vec2<i32>(textureDimensions(parcel_color));
-    let pc = textureLoad(parcel_color, min(c, pdim - vec2<i32>(1, 1)), 0);
-    let hdim = vec2<i32>(textureDimensions(parcel_aux));
-    let ph = textureLoad(parcel_aux, min(c, hdim - vec2<i32>(1, 1)), 0).x;
+    let pc = load1(parcel_color, c);
+    let ph = load1(parcel_aux, c).x;
 
     var out: FsOut;
     // The two ends of the coverage ramp take **exact** branches rather than the

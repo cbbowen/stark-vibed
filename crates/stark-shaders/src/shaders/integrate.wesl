@@ -26,7 +26,9 @@
 // pass. It is the same defect §6.3 names in the layer composite — covering by
 // opacity rather than by opacity × thickness — one level further down.
 
-import package::paint_common::{blend_latent, EPS};
+import package::lib::paint_common::{blend_latent, EPS};
+import package::lib::quad::{fullscreen_clip};
+import package::lib::sample::{load1};
 
 // The layer's resident paint under this tile — its own tile, or the 1×1 zero
 // standing in where the layer has none. The clamped load below reads both, which is
@@ -47,18 +49,9 @@ struct FsOut {
     @location(1) aux: vec4<f32>,
 }
 
-// Load clamped to the bound texture's own extent, so a real tile and a 1×1 constant
-// read identically (§6.8's pattern). A no-op for a real tile: this pass is 1:1 with
-// its destination, so `c` is always in range.
-fn load1(t: texture_2d<f32>, c: vec2<i32>) -> vec4<f32> {
-    let dim = vec2<i32>(textureDimensions(t));
-    return textureLoad(t, min(c, dim - vec2<i32>(1, 1)), 0);
-}
-
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+    return fullscreen_clip(vi);
 }
 
 @fragment

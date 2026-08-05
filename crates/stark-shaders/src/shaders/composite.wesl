@@ -23,6 +23,8 @@
 //     opacity — corrupting every smeared texel, differently on each side of a
 //     piece or freeze cut, which is how the preview stops matching the commit.
 
+import package::lib::paint_common::{OPACITY_K};
+
 struct View {
     // The canvas px -> NDC linear map, column-major: `st.xy` is the first column and
     // `st.zw` the second. A full 2x2 because the view can be turned and mirrored
@@ -71,8 +73,6 @@ fn vs_main(
     return out;
 }
 
-// Opacity build-up rate; must match `paint_common.wesl` / `media_common.wesl`.
-const OPACITY_K: f32 = 1.0;
 const EPS: f32 = 1e-5;
 
 @fragment

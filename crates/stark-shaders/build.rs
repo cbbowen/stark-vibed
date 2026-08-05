@@ -70,13 +70,19 @@ fn main() {
     // of two different compositing models, which shows up as tile-shaped artifacts
     // that survive edits and vanish on `cargo clean` — the worst possible failure
     // mode, because it discredits whatever you happened to be changing at the time.
-    for entry in std::fs::read_dir("src/shaders").expect("read src/shaders") {
-        let path = entry.expect("shader dir entry").path();
-        if path.extension().is_some_and(|e| e == "wesl") {
-            println!("cargo::rerun-if-changed={}", path.display());
+    //
+    // `src/shaders/lib` is walked too: the binding-free leaves live there
+    // (`lib/paint_common.wesl` alone reaches five pipelines), so a module missed
+    // here is exactly the stale-half failure above.
+    for dir in ["src/shaders", "src/shaders/lib"] {
+        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {dir}: {e}")) {
+            let path = entry.expect("shader dir entry").path();
+            if path.extension().is_some_and(|e| e == "wesl") {
+                println!("cargo::rerun-if-changed={}", path.display());
+            }
         }
+        println!("cargo::rerun-if-changed={dir}");
     }
-    println!("cargo::rerun-if-changed=src/shaders");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
 }
 

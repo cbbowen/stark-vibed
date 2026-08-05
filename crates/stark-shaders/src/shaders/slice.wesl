@@ -8,6 +8,8 @@
 // bit-identical to its neighbour's interior over their overlap — the seam
 // invariant (§6.4) holds by construction.
 
+import package::lib::quad::{fullscreen_clip};
+
 struct Params {
     // .xy = the tile texture's top-left, in region texels (integral). .zw unused.
     offset: vec4<f32>,
@@ -24,8 +26,7 @@ struct FsOut {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+    return fullscreen_clip(vi);
 }
 
 @fragment

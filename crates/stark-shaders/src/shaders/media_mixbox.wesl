@@ -7,9 +7,10 @@
 // `mixbox_eval_polynomial` is generated at build time from the vendored Mixbox
 // GLSL (vendor/mixbox, CC BY-NC 4.0).
 
-import package::color::{srgb_to_linear};
+import package::lib::color::{srgb_to_linear};
+import package::lib::quad::{fullscreen_clip};
 import package::mixbox_poly::{mixbox_eval_polynomial};
-import package::media_common::{comp_color, comp_aux, fullscreen_clip, over_substrate, paint_vis_at, finish};
+import package::media_common::{comp_color, comp_aux, over_substrate, paint_vis_at, finish};
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {

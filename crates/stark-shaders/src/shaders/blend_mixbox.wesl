@@ -23,11 +23,12 @@
 // attenuate the light passing through them, which is a statement about light, so it
 // is settled in light and the LUT is asked which mixture ended up that colour.
 
-import package::color::{srgb_to_linear, linear_to_srgb};
+import package::lib::color::{srgb_to_linear, linear_to_srgb};
 import package::mixbox_poly::{mixbox_eval_polynomial};
 import package::mixbox_lut::{mixbox_srgb_to_concentrations};
+import package::lib::quad::{fullscreen_clip};
 import package::blend_common::{
-    EPS, FsOut, back_color, src_color, fullscreen_clip, combine, merge,
+    EPS, FsOut, back_color, src_color, combine, merge,
     linear_to_light, light_to_linear,
 };
 

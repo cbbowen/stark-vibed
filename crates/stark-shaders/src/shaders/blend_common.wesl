@@ -117,14 +117,6 @@ struct FsOut {
     @location(1) aux: vec4<f32>,
 }
 
-// Fullscreen triangle clip position from a vertex index. A local copy rather than
-// `media_common`'s: importing that module would drag its whole `@group(0)` in, and
-// this pass binds something else entirely.
-fn fullscreen_clip(vi: u32) -> vec4<f32> {
-    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
-}
-
 // Linear sRGB → XYZ normalized to D65 white. These are the sRGB primaries' rows,
 // each divided by its own sum (= the white's tristimulus value), so `(1,1,1)` maps
 // to `(1,1,1)`.

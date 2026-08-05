@@ -3,7 +3,7 @@
 //! Color enters as straight sRGB (the picker / image space), is stored and
 //! blended in **Oklab** for perceptually uniform mixing, and is converted back
 //! to display only in the media pass. These conversions are fixed constants
-//! shared with the WGSL side (`shaders/color.wesl`), so ingest and present are
+//! shared with the WGSL side (`shaders/lib/color.wesl`), so ingest and present are
 //! reproducible across runs and peers — required by golden tests (§9) and
 //! convergence (§12).
 //!

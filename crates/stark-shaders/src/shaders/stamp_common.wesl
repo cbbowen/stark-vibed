@@ -5,8 +5,9 @@
 // turns that depth into channel deposits (see stamp_oklab.wesl; the Mixbox space
 // reuses it, since its deposit is the same premultiplied-"over").
 
-import package::noise::{color_jitter};
-import package::paint_common::{ground_at, rise_ahead, tooth_gate};
+import package::lib::noise::{color_jitter};
+import package::lib::paint_common::{ground_at, rise_ahead, tooth_gate};
+import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
@@ -359,39 +360,30 @@ fn surface_tooth(in: VsOut, sw: Sweep) -> f32 {
 // Bilinear lookup of one orientation slice `zi` at brush-local (xl, yl) ∈ [-1,1]: 0
 // before the leading edge, clamp-to-row-total past the trailing edge.
 //
-// Why this is hand-rolled instead of a ClampToEdge sampler with linear filtering:
-//   1. Format. prefix_tex is R32Float (we need fp32 because each fragment takes
-//      the *difference* of two prefix sums — see swept_depth — which is sensitive
-//      to catastrophic cancellation, and a row's total κ can be large for opaque
-//      brushes). Hardware linear filtering of a 32-bit-float texture requires the
-//      FLOAT32_FILTERABLE feature, which is optional on WebGPU (our primary
-//      target) and not enabled by this device. A filterable 16-bit format would
-//      band exactly where the differencing is most sensitive.
-//   2. Boundary semantics. The travel (x) axis is asymmetric: 0 before the
-//      leading edge, clamp-to-row-total after the trailing edge. A single sampler
-//      address mode can't express that — ClampToEdge would read the column-0
-//      value across the whole start margin instead of 0 — so the `xl <= -1` guard
-//      in `prefix_at` would be required regardless.
-//   3. Precision. Fixed-function bilinear uses reduced-precision fractional
-//      weights on many GPUs; the fp32 `mix` below keeps full precision for the
-//      cancellation-sensitive difference.
+// Hand-rolled rather than taken from a ClampToEdge sampler with linear filtering,
+// for the three reasons `lib::sample::bilerp_taps` documents — which is where the
+// tap arithmetic now lives, shared with the one other lookup that needs it
+// (`dynamics::bake_at`). Two of those reasons are worth pinning to this caller in
+// particular:
+//
+//   · prefix_tex is R32Float because each fragment takes the *difference* of two
+//     prefix sums (see `swept_depth`), which is sensitive to catastrophic
+//     cancellation, and a row's total κ can be large for opaque brushes. A
+//     filterable 16-bit format would band exactly where the differencing is most
+//     sensitive.
+//   · The travel (x) axis is asymmetric — 0 before the leading edge,
+//     clamp-to-row-total after the trailing one — and ClampToEdge would read the
+//     column-0 value across the whole start margin instead of 0. So the
+//     `xl <= -1` guard in `prefix_at` would be required whatever the sampler did.
 fn prefix_slice(xl: f32, yl: f32, zi: i32) -> f32 {
-    let dim = vec2<f32>(textureDimensions(prefix_tex));
-    let ux = clamp(xl * 0.5 + 0.5, 0.0, 1.0) * dim.x - 0.5;
-    let uy = clamp(yl * 0.5 + 0.5, 0.0, 1.0) * dim.y - 0.5;
-    let x0 = floor(ux);
-    let y0 = floor(uy);
-    let fx = ux - x0;
-    let fy = uy - y0;
-    let xi0 = clamp(i32(x0), 0, i32(dim.x) - 1);
-    let xi1 = clamp(i32(x0) + 1, 0, i32(dim.x) - 1);
-    let yi0 = clamp(i32(y0), 0, i32(dim.y) - 1);
-    let yi1 = clamp(i32(y0) + 1, 0, i32(dim.y) - 1);
-    let p00 = textureLoad(prefix_tex, vec2<i32>(xi0, yi0), zi, 0).r;
-    let p10 = textureLoad(prefix_tex, vec2<i32>(xi1, yi0), zi, 0).r;
-    let p01 = textureLoad(prefix_tex, vec2<i32>(xi0, yi1), zi, 0).r;
-    let p11 = textureLoad(prefix_tex, vec2<i32>(xi1, yi1), zi, 0).r;
-    return mix(mix(p00, p10, fx), mix(p01, p11, fx), fy);
+    let b = bilerp_taps(vec2<f32>(textureDimensions(prefix_tex)), vec2<f32>(xl, yl));
+    return bilerp_mix1(
+        b,
+        textureLoad(prefix_tex, vec2<i32>(b.i0.x, b.i0.y), zi, 0).r,
+        textureLoad(prefix_tex, vec2<i32>(b.i1.x, b.i0.y), zi, 0).r,
+        textureLoad(prefix_tex, vec2<i32>(b.i0.x, b.i1.y), zi, 0).r,
+        textureLoad(prefix_tex, vec2<i32>(b.i1.x, b.i1.y), zi, 0).r,
+    );
 }
 
 // Trilinear lookup of the prefix-τ volume at brush-local (xl, yl) ∈ [-1,1] and shape

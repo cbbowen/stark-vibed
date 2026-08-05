@@ -46,7 +46,7 @@ import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
     surface_tooth, xf,
 };
-import package::paint_common::{OPACITY_K};
+import package::lib::paint_common::{OPACITY_K};
 
 @vertex
 fn vs_main(

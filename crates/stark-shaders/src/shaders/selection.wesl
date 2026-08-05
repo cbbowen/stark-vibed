@@ -17,6 +17,9 @@
 // constant coverage that reigns where the previous selection had no tile at all; the
 // load is clamped to the texture's own extent, so the same code reads both.
 
+import package::lib::quad::{fullscreen_clip};
+import package::lib::sample::{load1};
+
 struct Params {
     // .xy = this tile texture's top-left in canvas px, .z = 2/TILE_TEX (canvas px →
     // NDC), .w = feather width in canvas px.
@@ -47,8 +50,7 @@ const MODE_INVERT: f32 = 4.0;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+    return fullscreen_clip(vi);
 }
 
 // Signed distance to an axis-aligned box, negative inside.
@@ -120,9 +122,7 @@ fn shape_coverage(q: vec2<f32>) -> f32 {
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // The previous coverage here: a real tile 1:1 with this one, or the 1×1 constant
     // standing in for "the previous selection had no tile here".
-    let dim = vec2<i32>(textureDimensions(prev));
-    let c = min(vec2<i32>(floor(frag.xy)), dim - vec2<i32>(1, 1));
-    let old = textureLoad(prev, c, 0).r;
+    let old = load1(prev, vec2<i32>(floor(frag.xy))).r;
 
     let mode = p.c.y;
     if mode == MODE_INVERT {
