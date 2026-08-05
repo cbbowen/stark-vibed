@@ -16,11 +16,11 @@ use std::sync::Arc;
 use rpds::Vector;
 
 use super::action::{Action, ActionKind, ActorId};
-use super::footprint::{Resource, TileRect, footprint};
+use super::footprint::{Resource, footprint};
 use super::layer::{BlendMode, Layer, LayerId, MatteRegion};
 use super::selection::Selection;
 use super::state::{DocState, LayerSite};
-use crate::geom::TileCoord;
+use crate::geom::{TileCoord, TileRect};
 use crate::gpu::SurfaceId;
 use crate::gpu::tile::TilePairHandle;
 

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::selection::Selection;
 use super::warp::{Lattice, WarpMap, cell_point};
-use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TileCoord, Vec2};
+use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TileCoord, TileRect, Vec2};
 use crate::gpu::tile::TilePairHandle;
 
 /// Largest number of paint tiles one transform may rewrite (~650 MB of transient
@@ -720,18 +720,13 @@ pub(crate) fn plan_gated_mask(
     // tile says otherwise), so the region is the rect's tile cover — counted
     // before it is walked, so an absurd rect is refused, not enumerated.
     let mut region: Vec<TileCoord> = if outside {
-        let tile = TILE_SIZE as f32;
-        let x0 = ((rect.0.x - 0.5) / tile).floor() as i64;
-        let x1 = ((rect.1.x + 0.5) / tile).floor() as i64;
-        let y0 = ((rect.0.y - 0.5) / tile).floor() as i64;
-        let y1 = ((rect.1.y + 0.5) / tile).floor() as i64;
-        let count = ((x1 - x0 + 1).max(0) as usize).checked_mul((y1 - y0 + 1).max(0) as usize)?;
-        if count > super::selection::MAX_SELECTION_TILES {
+        // Padded by the half-pixel coverage ramp, like `rect_standing`.
+        let ramp = Vec2::splat(0.5);
+        let box_ = TileRect::covering(rect.0 - ramp, rect.1 + ramp, 0)?;
+        if box_.count() > super::selection::MAX_SELECTION_TILES as u64 {
             return None;
         }
-        let mut cover: Vec<TileCoord> = (y0..=y1)
-            .flat_map(|y| (x0..=x1).map(move |x| TileCoord::new(x as i32, y as i32)))
-            .collect();
+        let mut cover: Vec<TileCoord> = box_.coords().collect();
         // Mask tiles outside the cover but overlapping the ramp still change.
         for (c, _) in selection.tiles() {
             if !cover.contains(c) && rect_standing(*c, rect).0 {
@@ -836,25 +831,18 @@ fn quad_reached_tiles(quad: &[Vec2; 4], candidates: &mut usize) -> Option<Vec<Ti
     // the exact test below prunes the rest.
     let tile = TILE_SIZE as f32;
     let apron = TILE_APRON as f32;
-    let x0 = ((lo.x - apron) / tile).floor() as i64;
-    let x1 = ((hi.x + apron) / tile).floor() as i64;
-    let y0 = ((lo.y - apron) / tile).floor() as i64;
-    let y1 = ((hi.y + apron) / tile).floor() as i64;
-    let count = ((x1 - x0 + 1).max(0) as usize).checked_mul((y1 - y0 + 1).max(0) as usize)?;
-    *candidates = candidates.checked_add(count)?;
+    let box_ = TileRect::covering(lo - Vec2::splat(apron), hi + Vec2::splat(apron), 0)?;
+    *candidates = candidates.checked_add(usize::try_from(box_.count()).ok()?)?;
     if *candidates > CANDIDATE_BUDGET {
         return None;
     }
 
     let mut out = Vec::new();
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let c = TileCoord::new(x as i32, y as i32);
-            let min = c.origin() - Vec2::splat(apron);
-            let max = c.origin() + Vec2::splat(tile + apron);
-            if quad_intersects_rect(quad, min, max) {
-                out.push(c);
-            }
+    for c in box_.coords() {
+        let min = c.origin() - Vec2::splat(apron);
+        let max = c.origin() + Vec2::splat(tile + apron);
+        if quad_intersects_rect(quad, min, max) {
+            out.push(c);
         }
     }
     Some(out)

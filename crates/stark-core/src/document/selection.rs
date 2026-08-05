@@ -29,7 +29,7 @@
 use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
-use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2};
 use crate::gpu::tile::MaskHandle;
 
 /// Largest number of mask tiles one op may rasterize (~64 MB of R8 coverage). An op
@@ -403,35 +403,18 @@ pub(crate) struct SelectionPlan {
     pub hull: Option<(Vec2, Vec2)>,
 }
 
-/// The inclusive tile-index box whose *textures* (interior + apron) overlap the
-/// canvas box `[lo, hi]`, expanded by `ring` tiles on every side — the addressing
-/// half of [`tiles_covering`], split out so the **count** can be taken before
-/// anything is enumerated.
+/// The tiles whose *texture* (interior + apron) overlaps the canvas box
+/// `[lo, hi]`, grown by `ring` tiles — [`TileRect::covering`] with this module's
+/// padding, since a tile's texture starts one apron before its interior and a box
+/// that reaches into the apron band still touches the neighbour.
 ///
-/// `None` on a non-finite bound, and on a box the `i32` tile grid cannot address
-/// (past ~5×10¹¹ canvas px). Both are refusals rather than clamps, for the reason
-/// every other bound in this module refuses: a clamp would rasterize a *different*
-/// region, and these coordinates arrive from files and peers, where the only
-/// acceptable disagreement is none (§6.8).
-pub(crate) fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<(TileCoord, TileCoord)> {
-    if !(lo.is_finite() && hi.is_finite()) {
-        return None;
-    }
-    let tile = TILE_SIZE as f32;
-    // A tile's texture starts one apron before its interior, so a box that reaches
-    // into the apron band still touches the neighbour.
-    let apron = TILE_APRON as f32;
-    let ring = ring as i64;
-    // `i64` throughout, and saturating: a float too large for the type saturates
-    // rather than wrapping, and `try_from` below turns that saturation into a
-    // refusal instead of a wrapped tile index pointing somewhere else entirely.
-    let index = |v: f32| ((v / tile).floor()) as i64;
-    let min = |v: f32| i32::try_from(index(v - apron).saturating_sub(ring)).ok();
-    let max = |v: f32| i32::try_from(index(v + apron).saturating_add(ring)).ok();
-    Some((
-        TileCoord::new(min(lo.x)?, min(lo.y)?),
-        TileCoord::new(max(hi.x)?, max(hi.y)?),
-    ))
+/// `None` — a refusal, not a clamp — for a box that is not finite or not
+/// addressable. That is the only acceptable answer here: a clamp would rasterize
+/// a *different* region, and these coordinates arrive from files and peers, where
+/// the only tolerable disagreement between two clients is none (§6.8).
+pub(crate) fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
+    let apron = Vec2::splat(TILE_APRON as f32);
+    TileRect::covering(lo - apron, hi + apron, ring)
 }
 
 /// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
@@ -450,20 +433,13 @@ pub(crate) fn tiles_covering(
     ring: i32,
     budget: usize,
 ) -> Option<Vec<TileCoord>> {
-    let (min, max) = tile_box(lo, hi, ring)?;
-    // `min > max` on an axis is the empty box (an inverted rect off the wire),
-    // which the inclusive ranges below already yield nothing for.
-    let span = |a: i32, b: i32| (i64::from(b) - i64::from(a) + 1).max(0) as u64;
-    let count = span(min.x, max.x).checked_mul(span(min.y, max.y))?;
+    let rect = tile_box(lo, hi, ring)?;
+    let count = rect.count();
     if count > budget as u64 {
         return None;
     }
     let mut out = Vec::with_capacity(count as usize);
-    for y in min.y..=max.y {
-        for x in min.x..=max.x {
-            out.push(TileCoord::new(x, y));
-        }
-    }
+    out.extend(rect.coords());
     Some(out)
 }
 

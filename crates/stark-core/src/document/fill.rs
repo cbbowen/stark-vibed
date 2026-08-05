@@ -159,10 +159,10 @@ pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
                 // `MAX_SELECTION_TILES`): the box is quadratic in the drag, so a
                 // rectangle swept at far zoom-out over a small selection would cost
                 // millions of coordinates to describe an answer of a dozen.
-                let (min, max) = tile_box(lo, hi, 0)?;
+                let reach = tile_box(lo, hi, 0)?;
                 gate.tiles()
                     .map(|(c, _)| *c)
-                    .filter(|c| (min.x..=max.x).contains(&c.x) && (min.y..=max.y).contains(&c.y))
+                    .filter(|c| reach.contains(*c))
                     .collect()
             } else {
                 // Nothing selected: the shape's own cover is the only bound there

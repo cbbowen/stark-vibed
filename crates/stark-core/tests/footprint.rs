@@ -629,7 +629,7 @@ fn the_check_rejects_a_footprint_that_under_claims() {
         .map(|w| match w {
             Resource::Paint(l, _) => Resource::Paint(
                 *l,
-                stark_core::document::footprint::TileRect {
+                stark_core::geom::TileRect {
                     min: (0, 0),
                     max: (0, 0),
                 },

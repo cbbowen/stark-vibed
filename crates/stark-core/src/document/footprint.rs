@@ -20,76 +20,19 @@
 use super::action::{Action, ActionKind, ActorId, StrokeRecord};
 use super::brush::BrushParams;
 use super::layer::LayerId;
-use crate::geom::{TILE_SIZE, Vec2};
+use crate::geom::{TileRect, Vec2};
 
-/// An inclusive tile-coordinate rectangle. `min > max` on either axis is the
-/// empty rect (overlapping nothing).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct TileRect {
-    pub min: (i32, i32),
-    pub max: (i32, i32),
-}
-
-impl TileRect {
-    /// The whole infinite canvas — what a transform claims of its layer.
-    pub const ALL: TileRect = TileRect {
-        min: (i32::MIN, i32::MIN),
-        max: (i32::MAX, i32::MAX),
-    };
-
-    pub fn intersects(&self, other: &TileRect) -> bool {
-        self.min.0 <= self.max.0
-            && other.min.0 <= other.max.0
-            && self.min.0 <= other.max.0
-            && other.min.0 <= self.max.0
-            && self.min.1 <= other.max.1
-            && other.min.1 <= self.max.1
-    }
-
-    pub fn contains(&self, c: crate::geom::TileCoord) -> bool {
-        self.min.0 <= c.x && c.x <= self.max.0 && self.min.1 <= c.y && c.y <= self.max.1
-    }
-
-    /// The tiles the canvas box `[lo, hi]` reaches, grown by `ring` tiles on every
-    /// side. Callers pad `lo`/`hi` themselves for whatever their pass reads past
-    /// its own geometry (a tip's radius, an apron); `ring` is for the whole tiles a
-    /// pass rewrites around what it draws.
-    ///
-    /// [`ALL`](Self::ALL) when the box is not finite, or when it falls outside the
-    /// grid an `i32` tile index can address. **A footprint may only ever claim too
-    /// much** (§12.6): a false conflict costs the commutation fast path, while a
-    /// missed one silently diverges peers with no pixel able to show which path
-    /// ran. So a box that cannot be quantized claims the whole layer, exactly as an
-    /// unusable warp's unknown image does in [`gated_rect`].
-    ///
-    /// The single quantizer for this file, in `i64` — the three copies it replaces
-    /// each rounded `as i32` after a `clamp`, which reads as a bound but is not one:
-    /// `NaN as i32` is 0, so a stroke with a non-finite radius claimed one tile at
-    /// the origin, and a coordinate past the addressable grid clamped *inward*.
-    /// Both are the unsafe direction.
-    fn covering(lo: Vec2, hi: Vec2, ring: i32) -> TileRect {
-        if !(lo.is_finite() && hi.is_finite()) {
-            return TileRect::ALL;
-        }
-        let ring = ring as i64;
-        let index = |v: f32| ((v / TILE_SIZE as f32).floor()) as i64;
-        let min = |v: f32| i32::try_from(index(v).saturating_sub(ring)).ok();
-        let max = |v: f32| i32::try_from(index(v).saturating_add(ring)).ok();
-        match (min(lo.x), min(lo.y), max(hi.x), max(hi.y)) {
-            (Some(x0), Some(y0), Some(x1), Some(y1)) => TileRect {
-                min: (x0, y0),
-                max: (x1, y1),
-            },
-            _ => TileRect::ALL,
-        }
-    }
-
-    /// The empty rect — what an action with no geometry claims, overlapping
-    /// nothing (`min > max` on both axes).
-    const EMPTY: TileRect = TileRect {
-        min: (1, 1),
-        max: (0, 0),
-    };
+/// The tiles a pass may touch within the canvas box `[lo, hi]`, grown by `ring`
+/// tiles — [`TileRect::covering`] with a footprint's answer to a box it cannot
+/// measure.
+///
+/// That answer is always **everything**. A footprint may only ever claim too
+/// much (§12.6): a false conflict costs the commutation fast path, while a
+/// missed one silently diverges peers with no pixel able to show which
+/// materialization ran. So an unquantizable box claims the whole layer, exactly
+/// as an unusable warp's unknown image does in [`gated_rect`].
+fn claim(lo: Vec2, hi: Vec2, ring: i32) -> TileRect {
+    TileRect::covering(lo, hi, ring).unwrap_or(TileRect::ALL)
 }
 
 /// A per-layer property, at the granularity undo needs to restore it: each
@@ -225,7 +168,7 @@ fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     // `covering` answers with `ALL` — the safe direction, and the one the old
     // `NaN as i32` did not take.
     let pad = Vec2::splat(stroke_pad(&rec.brush));
-    TileRect::covering(min - pad, max + pad, 0)
+    claim(min - pad, max + pad, 0)
 }
 
 /// The conservative footprint of an action, mirroring exactly what its arm of
@@ -381,7 +324,7 @@ fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
     let Some(image) = image else {
         return TileRect::ALL;
     };
-    TileRect::covering(rect.0.min(image.0), rect.1.max(image.1), 1)
+    claim(rect.0.min(image.0), rect.1.max(image.1), 1)
 }
 
 /// The tile-aligned reach of a fill: everything its pass may read or write.
@@ -389,7 +332,7 @@ fn fill_rect(op: &super::fill::FillOp) -> TileRect {
     let Some((lo, hi)) = super::fill::fill_bounds(op) else {
         return TileRect::ALL;
     };
-    TileRect::covering(lo, hi, 0)
+    claim(lo, hi, 0)
 }
 
 fn prop_write(id: LayerId, prop: Prop) -> Footprint {

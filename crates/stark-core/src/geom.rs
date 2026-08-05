@@ -82,6 +82,95 @@ impl TileCoord {
     }
 }
 
+/// An inclusive tile-coordinate rectangle. `min > max` on either axis is the
+/// empty rect ([`EMPTY`](Self::EMPTY)), which overlaps nothing.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TileRect {
+    pub min: (i32, i32),
+    pub max: (i32, i32),
+}
+
+impl TileRect {
+    /// The whole infinite canvas — what an action claims when it cannot say
+    /// anything narrower.
+    pub const ALL: TileRect = TileRect {
+        min: (i32::MIN, i32::MIN),
+        max: (i32::MAX, i32::MAX),
+    };
+
+    /// The rect that reaches nothing.
+    pub const EMPTY: TileRect = TileRect {
+        min: (1, 1),
+        max: (0, 0),
+    };
+
+    pub fn intersects(&self, other: &TileRect) -> bool {
+        self.min.0 <= self.max.0
+            && other.min.0 <= other.max.0
+            && self.min.0 <= other.max.0
+            && other.min.0 <= self.max.0
+            && self.min.1 <= other.max.1
+            && other.min.1 <= self.max.1
+    }
+
+    pub fn contains(&self, c: TileCoord) -> bool {
+        self.min.0 <= c.x && c.x <= self.max.0 && self.min.1 <= c.y && c.y <= self.max.1
+    }
+
+    /// The tiles the canvas box `[lo, hi]` reaches, grown by `ring` tiles on
+    /// every side.
+    ///
+    /// **The one quantizer**, and the reason it is one: this arithmetic was
+    /// written out five times across `document/`, and the copies disagreed in
+    /// exactly the place that matters. `NaN as i32` is 0, so a `clamp`-then-cast
+    /// version answered "one tile at the origin" for a box it could not measure;
+    /// a bare `as i32` on an out-of-range index wrapped it to a tile somewhere
+    /// else entirely. Both are silent, and both point the unsafe way for the two
+    /// things that ask: a footprint that under-claims diverges peers (§12.6), and
+    /// a tile cover that under-counts is enumerated rather than refused.
+    ///
+    /// So the arithmetic is `i64` and saturating throughout, and the answer is
+    /// `None` for a box that is not finite or falls outside the grid an `i32`
+    /// tile index can address (past ~5×10¹¹ canvas px). What to *do* about that
+    /// differs by caller — claim everything, or refuse — which is why this
+    /// returns the question rather than picking one.
+    ///
+    /// Callers pad `lo`/`hi` themselves for whatever their pass reads past its
+    /// own geometry: a tip's radius, the apron band, a coverage ramp. `ring` is
+    /// for whole tiles rewritten around what is drawn.
+    pub fn covering(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
+        if !(lo.is_finite() && hi.is_finite()) {
+            return None;
+        }
+        let ring = i64::from(ring);
+        let index = |v: f32| ((v / TILE_SIZE as f32).floor()) as i64;
+        let min = |v: f32| i32::try_from(index(v).saturating_sub(ring)).ok();
+        let max = |v: f32| i32::try_from(index(v).saturating_add(ring)).ok();
+        Some(TileRect {
+            min: (min(lo.x)?, min(lo.y)?),
+            max: (max(hi.x)?, max(hi.y)?),
+        })
+    }
+
+    /// How many tiles this covers — saturating, so [`ALL`](Self::ALL) reports
+    /// more than any budget will allow rather than wrapping to a small number.
+    ///
+    /// Exists to be asked **before** [`coords`](Self::coords) is walked: the box
+    /// is quadratic in whatever produced it, so a drag at far zoom-out can name
+    /// more tiles than there is memory to list, and finding that out by listing
+    /// them is not an option.
+    pub fn count(self) -> u64 {
+        let span = |a: i32, b: i32| (i64::from(b) - i64::from(a) + 1).max(0) as u64;
+        span(self.min.0, self.max.0).saturating_mul(span(self.min.1, self.max.1))
+    }
+
+    /// Every tile in the rect, row-major. Empty for an empty rect.
+    pub fn coords(self) -> impl Iterator<Item = TileCoord> {
+        (self.min.1..=self.max.1)
+            .flat_map(move |y| (self.min.0..=self.max.0).map(move |x| TileCoord::new(x, y)))
+    }
+}
+
 /// A pixel size (e.g. a render target's dimensions).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Extent2 {
@@ -342,6 +431,64 @@ impl ViewTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `covering` is the one quantizer five call sites across `document/` now
+    /// share, so the box it names has to be exactly the tiles the canvas box
+    /// reaches — no more (a fill would rewrite tiles it never covered) and no
+    /// fewer (a footprint would under-claim, which diverges peers).
+    #[test]
+    fn covering_names_exactly_the_tiles_a_box_reaches() {
+        let side = TILE_SIZE as f32;
+        // Wholly inside tile (0, 0).
+        let one = TileRect::covering(Vec2::splat(4.0), Vec2::splat(9.0), 0).unwrap();
+        assert_eq!((one.min, one.max), ((0, 0), (0, 0)));
+        assert_eq!(one.count(), 1);
+        assert_eq!(one.coords().collect::<Vec<_>>(), vec![TileCoord::new(0, 0)]);
+
+        // Reaching one texel into the next tile on both axes.
+        let two = TileRect::covering(Vec2::splat(4.0), Vec2::splat(side), 0).unwrap();
+        assert_eq!((two.min, two.max), ((0, 0), (1, 1)));
+        assert_eq!(two.count(), 4);
+
+        // The ring grows it a whole tile on every side.
+        let ringed = TileRect::covering(Vec2::splat(4.0), Vec2::splat(9.0), 1).unwrap();
+        assert_eq!((ringed.min, ringed.max), ((-1, -1), (1, 1)));
+        assert_eq!(ringed.count(), 9);
+
+        // Negative coordinates floor rather than truncate toward zero — the tile
+        // left of the origin is -1, and a `as i32` cast would have said 0.
+        let left = TileRect::covering(Vec2::splat(-1.0), Vec2::splat(-1.0), 0).unwrap();
+        assert_eq!((left.min, left.max), ((-1, -1), (-1, -1)));
+    }
+
+    /// The two answers that used to be given silently and wrongly: a box that
+    /// cannot be measured, and one that cannot be addressed.
+    #[test]
+    fn covering_refuses_what_it_cannot_measure_or_address() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(TileRect::covering(Vec2::new(bad, 0.0), Vec2::ZERO, 0), None);
+            assert_eq!(TileRect::covering(Vec2::ZERO, Vec2::new(0.0, bad), 0), None);
+        }
+        // Small box, absurd position: the count would pass and only the tile
+        // index is impossible, which is exactly where a bare cast wrapped.
+        let far = 1.0e30;
+        assert_eq!(
+            TileRect::covering(Vec2::splat(far), Vec2::splat(far + 1.0), 0),
+            None
+        );
+    }
+
+    /// `count` is asked *before* `coords` is walked, so it must not wrap: the
+    /// whole plane has to report more than any budget will allow.
+    #[test]
+    fn the_whole_plane_counts_as_more_than_anyone_will_allow() {
+        assert_eq!(TileRect::ALL.count(), u64::MAX);
+        assert_eq!(TileRect::EMPTY.count(), 0);
+        assert_eq!(TileRect::EMPTY.coords().count(), 0);
+        assert!(TileRect::ALL.contains(TileCoord::new(0, 0)));
+        assert!(!TileRect::EMPTY.contains(TileCoord::new(0, 0)));
+        assert!(!TileRect::EMPTY.intersects(&TileRect::ALL));
+    }
 
     /// An upright, unmirrored view of `size` at `zoom`, centred on `center`.
     fn view(center: Vec2, zoom: f32, size: Extent2) -> ViewTransform {

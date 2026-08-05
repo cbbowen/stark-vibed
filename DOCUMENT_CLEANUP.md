@@ -220,7 +220,7 @@ pre-existing and both outside this review's scope: `Session::publish_due` in
 behind a `root()` accessor makes "bounds tracks layers" structural rather than a
 convention `with_layers` happens to uphold.
 
-### 3.4 Two tile-rectangle types and five copies of the quantizer — partly done
+### 3.4 Two tile-rectangle types and five copies of the quantizer — **done** (one half deliberately not)
 
 `CanvasBounds` (`state.rs:21`) and `TileRect` (`footprint.rs:27`) are the same
 inclusive tile box with different empty encodings. And
@@ -229,13 +229,33 @@ verbatim three times in `footprint.rs` and twice more as an `as i64` variant in
 `transform.rs`/`selection.rs` — the two versions differing in overflow behaviour,
 which is where §1.1 lived.
 
-`selection.rs::tile_box` and `footprint.rs::TileRect::covering` are now two
-finite-checked, range-checked quantizers where there were five ad-hoc copies, and
-each is the only one in its file. They stay separate for now because they answer
-differently by design — a cover that cannot be quantized is a *refusal*, a
-footprint that cannot be quantized is `ALL` — but the arithmetic is the same and
-wants to be shared. Remaining: route `transform.rs`'s two through it, and fold
-`CanvasBounds` onto `TileRect`.
+**The quantizer is now one.** `TileRect` moved to `geom.rs` — it is tile
+geometry, not a footprint concept — and carries `covering(lo, hi, ring)`,
+`count()` and `coords()`. All five sites go through it: `footprint.rs`'s three
+(via a `claim` helper that supplies the "an unmeasurable box claims everything"
+answer), `selection.rs`'s `tile_box`/`tiles_covering`, and `transform.rs`'s two.
+
+That last pair still had the original defect: both quantized in `i64` and then
+built coordinates with a bare `x as i32`, which **truncates**, so a tile index
+past the addressable grid wrapped to a tile somewhere else. Reachable only from
+an absurd transform rect, but silent, and the same class as §1.1.
+
+Callers differ in what they *do* about an unmeasurable box — a footprint claims
+everything, a cover refuses — so `covering` returns `Option` and each caller
+answers for itself at one visible line. The counting is shared too: `count()`
+saturates, so `TileRect::ALL` reports more than any budget allows rather than
+wrapping to something small and being enumerated.
+
+**`CanvasBounds` is deliberately *not* folded onto `TileRect`.** They have the
+same shape and genuinely different meanings: `CanvasBounds` is a *measured*
+extent — what is painted — always finite, empty when nothing is; `TileRect` is a
+*claimed* region and its most important value is `ALL`, the whole plane. Merging
+them would give the document's bounds a representable `ALL`, and bounds is what
+"frame to content" and export's no-frame fallback measure (§15.6) — so the merged
+type could express a wrong thing that the current pair cannot. §2.3 just spent a
+type making that unrepresentable; collapsing it back for a dedup that saves about
+fifteen lines is the wrong trade. The duplication that mattered — the arithmetic
+— is gone.
 
 ### 3.5 Three near-identical tree walks — open
 
