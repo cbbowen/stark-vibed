@@ -88,32 +88,54 @@ struct Stamp {
 const SLOT: usize = std::mem::size_of::<Stamp>();
 const _: () = assert!(SLOT == 144);
 
-/// One segment of the sequential swept-exchange loop (§6.2): its
-/// `wick`, `bake`, `exchange` (which carries the snapshot) and `deposit` dispatches.
+/// One slot of the sequential swept-exchange loop (§6.2), and the dispatches it
+/// stands for.
 struct LoopDispatch {
     slot: Stamp,
-    /// A dedicated **bleed slot** (§6.2): a straight quad whose sweep is one firing
-    /// of the bleed cadence's travel window, with every vertical rate and the
-    /// source zeroed. Dispatched as `snapshot` + `deposit` alone — the tool plays
-    /// no part, so there is nothing to wick, bake or exchange, and the reservoir
-    /// ping-pong is left exactly where the previous segment put it.
-    bleed_only: bool,
-    /// Workgroup counts for the segment's footprint work — the `deposit`, and the
-    /// `snapshot` that rides in `exchange`'s grid. The segment's own coverage box
+    /// Workgroup counts for the slot's footprint work — the `deposit`, and the
+    /// `snapshot` that rides in `exchange`'s grid. The slot's own coverage box
     /// rather than the piece-wide worst-case square, so an axis-aligned sweep pays for
     /// the ~4·r² texels its footprint can reach instead of the ~10·r² a diagonal one
     /// might have needed.
     groups: (u32, u32),
-    /// Workgroup counts for the reservoir passes (`wick`, and `exchange`'s own half).
-    /// `exchange` is dispatched over these *plus* [`Self::groups`] on x, since the
-    /// snapshot shares its grid.
-    exchange_groups: (u32, u32),
-    /// How many `wick` passes fall during this segment
-    /// ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)). Usually 0 or 1 — the wick
-    /// keeps its own cadence, so a segment shorter than the quantum often skips it
-    /// entirely and a long one pays for several.
-    wick_steps: u32,
+    kind: SlotKind,
 }
+
+/// Which of the loop's three dispatch shapes a slot takes (§6.2).
+///
+/// A tag rather than a pair of flags because the three are genuinely different
+/// sequences over the same uniform, and only one of them touches the tool: the
+/// reservoir ping-pong advances on a [`Segment`](SlotKind::Segment) and on nothing
+/// else, which is easier to see as an arm than as an early `continue` plus a tail
+/// block indexed past the end of the loop.
+enum SlotKind {
+    /// A stretch of painting: `wick` → `bake` → `exchange` (+ `snapshot`) →
+    /// `deposit`.
+    ///
+    /// `wick_steps` is how many `wick` firings fall during it
+    /// ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)). Usually 0 or 1 — the
+    /// wick keeps its own cadence, so a segment shorter than the quantum often skips
+    /// it entirely and a long one pays for several.
+    Segment { wick_steps: u32 },
+    /// A dedicated **bleed slot**: a straight quad whose sweep is one firing of the
+    /// bleed cadence's travel window, with every vertical rate and the source zeroed.
+    /// Dispatched as `snapshot` + `deposit` alone — the tool plays no part, so there
+    /// is nothing to wick, bake or exchange, and the reservoir ping-pong is left
+    /// exactly where the previous segment put it.
+    Bleed,
+    /// The pen-up: `snapshot` → `bake` → `settle`. At most one per plan, and always
+    /// its last slot — the transfer the tip was still in the middle of when the
+    /// stroke stopped (`dynamics.wesl::settle`).
+    Settle,
+}
+
+/// Workgroup counts for the reservoir passes (`wick`, and `exchange`'s own half).
+/// `exchange` is dispatched over these *plus* the slot's footprint groups on x, since
+/// the snapshot shares its grid.
+///
+/// A constant, not per-dispatch data: the reservoir is [`BRUSH_RES`]² whatever the
+/// segment does, and the two slot kinds that do not run an exchange never read it.
+const RESERVOIR_GROUPS: (u32, u32) = (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(8));
 
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
@@ -473,20 +495,18 @@ impl<'a> DynamicsRun<'a> {
 
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
-        let plan = dynamics_plan(
-            self.rec,
-            segments,
-            &fires,
+        let ctx = PlanCtx {
+            rec: self.rec,
             region_origin,
-            under.size,
-            self.channels,
-            settle,
-            self.scene.surface,
-        );
+            dsize: under.size,
+            channels: self.channels,
+            surface: self.scene.surface,
+        };
+        let plan = dynamics_plan(&ctx, segments, &fires, settle);
         let stamp_buf = self.upload_plan(&plan);
         let bind = self.bind_piece(&region, &under, &stamp_buf);
 
-        self.record_loop(&plan, &bind, settle);
+        self.record_loop(&plan, &bind);
         self.write_back(base, &coords, lo, &region)
     }
 
@@ -851,33 +871,28 @@ impl<'a> DynamicsRun<'a> {
     /// `self.cur` outlives the pass: it names the reservoir texture holding the
     /// tool's state, so after the last dispatch it names the state this piece ends
     /// in — which is what the next piece, or the next range, resumes from.
-    fn record_loop(&mut self, plan: &[LoopDispatch], bind: &PieceBindings, settle: bool) {
-        // The settle rides as one extra slot at the end of the plan; everything before
-        // it is a segment, and the loop below dispatches the two differently.
-        let segment_slots = plan.len() - usize::from(settle);
+    fn record_loop(&mut self, plan: &[LoopDispatch], bind: &PieceBindings) {
         let kit = &self.r.dynamics;
-        {
-            let mut cur = self.cur;
-            let prefix_bg = &self.prefix_bg;
-            let mut cpass = self
-                .encoder
-                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("stark dynamics stamp loop"),
-                    timestamp_writes: None,
-                });
-            // The prefix-τ rides at group 1 for `bake` and `deposit`. Re-bound after
-            // every pipeline switch: changing to a pipeline whose group-0 layout
-            // differs invalidates the groups above it, and both consumers are
-            // reached only across such a switch.
-            for (i, d) in plan.iter().take(segment_slots).enumerate() {
-                let off = (i * STRIDE) as u32;
-                // A bleed slot (§6.2): `snapshot` + `deposit` and nothing else. The
-                // tool plays no part in the lateral flux, so there is nothing to
-                // wick, bake or exchange, and `cur` — the reservoir ping-pong —
-                // stays exactly where the previous segment left it. The standalone
-                // snapshot pipeline rather than the exchange's tail, because there
-                // is no exchange dispatch to ride in.
-                if d.bleed_only {
+        let mut cur = self.cur;
+        let prefix_bg = &self.prefix_bg;
+        let mut cpass = self
+            .encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("stark dynamics stamp loop"),
+                timestamp_writes: None,
+            });
+        // The prefix-τ rides at group 1 for `bake`, `deposit` and `settle`. Re-bound
+        // after every pipeline switch: changing to a pipeline whose group-0 layout
+        // differs invalidates the groups above it, and every consumer is reached only
+        // across such a switch.
+        for (i, d) in plan.iter().enumerate() {
+            let off = (i * STRIDE) as u32;
+            match d.kind {
+                // The tool plays no part in the lateral flux, so `cur` — the reservoir
+                // ping-pong — stays exactly where the previous segment left it. The
+                // standalone snapshot pipeline rather than the exchange's tail,
+                // because there is no exchange dispatch to ride in.
+                SlotKind::Bleed => {
                     cpass.set_pipeline(&kit.snapshot_pipeline);
                     cpass.set_bind_group(0, &bind.snapshot, &[off]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
@@ -885,81 +900,79 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_bind_group(0, &bind.deposit, &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
-                    continue;
                 }
-                // Let the tool's own paint migrate across the tip before anything reads
-                // it. Ahead of *both* halves of the transfer, so `bake` and `exchange`
-                // still see one another's entry state and their shares still add up
-                // (`dynamics.wesl::wick_axis`). Each pass reads `cur` and writes the
-                // other half, like every reservoir pass, so it cycles the ping-pong once.
-                //
-                // A firing is **two** passes, because the stencil is separable: one along
-                // the tip's travel, one across it. Zero or one firing per segment — the
-                // wick runs on its own travel cadence
-                // ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)), which is now the
-                // same as the longest segment the flattener will cut, so a segment either
-                // crosses one boundary or none.
-                for _ in 0..d.wick_steps {
-                    for pipe in [&kit.wick_pipelines.0, &kit.wick_pipelines.1] {
-                        cpass.set_pipeline(pipe);
-                        cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
-                        cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
-                        cur = 1 - cur;
+                SlotKind::Segment { wick_steps } => {
+                    // Let the tool's own paint migrate across the tip before anything
+                    // reads it. Ahead of *both* halves of the transfer, so `bake` and
+                    // `exchange` still see one another's entry state and their shares
+                    // still add up (`dynamics.wesl::wick_axis`). Each pass reads `cur`
+                    // and writes the other half, like every reservoir pass, so it
+                    // cycles the ping-pong once.
+                    //
+                    // A firing is **two** passes, because the stencil is separable: one
+                    // along the tip's travel, one across it.
+                    for _ in 0..wick_steps {
+                        for pipe in [&kit.wick_pipelines.0, &kit.wick_pipelines.1] {
+                            cpass.set_pipeline(pipe);
+                            cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
+                            cpass.dispatch_workgroups(RESERVOIR_GROUPS.0, RESERVOIR_GROUPS.1, 1);
+                            cur = 1 - cur;
+                        }
                     }
+                    // Bake this segment's swept reservoir prefix next — it folds in the
+                    // tip's current orientation as well as the reservoir state.
+                    cpass.set_pipeline(&kit.bake_pipeline);
+                    cpass.set_bind_group(0, &bind.bake[cur], &[off]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
+                    // One BAKE_RES-wide workgroup per row: the shader's scan width is a
+                    // constant, so the two must agree.
+                    cpass.dispatch_workgroups(1, BAKE_RES, 1);
+                    // Then the tool's own side of this segment's transfer, off the
+                    // region as the segment found it. Reads `cur` and writes the other
+                    // half, so the next segment's bake sees a tool that has actually
+                    // travelled and reloaded.
+                    //
+                    // The footprint `snapshot` rides in the tail of this same grid: it
+                    // depends on nothing the exchange writes and the deposit needs
+                    // both, so the barrier that used to sit between them bought no
+                    // ordering. Hence the widened x — reservoir groups first, footprint
+                    // groups after — and a y tall enough for the taller of the two
+                    // (`dynamics.wesl::exchange`).
+                    cpass.set_pipeline(&kit.exchange_pipeline);
+                    cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
+                    cpass.dispatch_workgroups(
+                        RESERVOIR_GROUPS.0 + d.groups.0,
+                        RESERVOIR_GROUPS.1.max(d.groups.1),
+                        1,
+                    );
+                    cpass.set_pipeline(&kit.deposit_pipeline);
+                    cpass.set_bind_group(0, &bind.deposit, &[off]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                    cur = 1 - cur;
                 }
-                // Bake this segment's swept reservoir prefix next — it folds in the
-                // tip's current orientation as well as the reservoir state.
-                cpass.set_pipeline(&kit.bake_pipeline);
-                cpass.set_bind_group(0, &bind.bake[cur], &[off]);
-                cpass.set_bind_group(1, prefix_bg, &[]);
-                // One BAKE_RES-wide workgroup per row: the shader's scan width is a
-                // constant, so the two must agree.
-                cpass.dispatch_workgroups(1, BAKE_RES, 1);
-                // Then the tool's own side of this segment's transfer, off the region
-                // as the segment found it. Reads `cur` and writes the other half, so
-                // the next segment's bake sees a tool that has actually travelled and
-                // reloaded.
-                //
-                // The footprint `snapshot` rides in the tail of this same grid: it
-                // depends on nothing the exchange writes and the deposit needs both, so
-                // the barrier that used to sit between them bought no ordering. Hence
-                // the widened x — reservoir groups first, footprint groups after — and
-                // a y tall enough for the taller of the two
-                // (`dynamics.wesl::exchange`).
-                cpass.set_pipeline(&kit.exchange_pipeline);
-                cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
-                cpass.dispatch_workgroups(
-                    d.exchange_groups.0 + d.groups.0,
-                    d.exchange_groups.1.max(d.groups.1),
-                    1,
-                );
-                cpass.set_pipeline(&kit.deposit_pipeline);
-                cpass.set_bind_group(0, &bind.deposit, &[off]);
-                cpass.set_bind_group(1, prefix_bg, &[]);
-                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
-                cur = 1 - cur;
+                // The pen-up: snapshot the final footprint, bake the standing tip's
+                // remaining-pass delivery off the reservoir the last segment left
+                // (`cur` still names it — the slot's zero travel switches the bake onto
+                // the settle's weighted integral), then settle the transfer the stroke
+                // stopped in the middle of. The tool is not written back, so `cur` is
+                // left alone here too.
+                SlotKind::Settle => {
+                    cpass.set_pipeline(&kit.snapshot_pipeline);
+                    cpass.set_bind_group(0, &bind.snapshot, &[off]);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                    cpass.set_pipeline(&kit.bake_pipeline);
+                    cpass.set_bind_group(0, &bind.bake[cur], &[off]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
+                    cpass.dispatch_workgroups(1, BAKE_RES, 1);
+                    cpass.set_pipeline(&kit.settle_pipeline);
+                    cpass.set_bind_group(0, &bind.settle, &[off]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                }
             }
-            // The pen-up: snapshot the final footprint, bake the standing tip's
-            // remaining-pass delivery off the reservoir the last segment left (`cur`
-            // still names it — the slot's zero travel switches the bake onto the
-            // settle's weighted integral), then settle the transfer the stroke stopped
-            // in the middle of (`dynamics.wesl::settle`).
-            if let Some(d) = plan.get(segment_slots) {
-                let off = (segment_slots * STRIDE) as u32;
-                cpass.set_pipeline(&kit.snapshot_pipeline);
-                cpass.set_bind_group(0, &bind.snapshot, &[off]);
-                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
-                cpass.set_pipeline(&kit.bake_pipeline);
-                cpass.set_bind_group(0, &bind.bake[cur], &[off]);
-                cpass.set_bind_group(1, prefix_bg, &[]);
-                cpass.dispatch_workgroups(1, BAKE_RES, 1);
-                cpass.set_pipeline(&kit.settle_pipeline);
-                cpass.set_bind_group(0, &bind.settle, &[off]);
-                cpass.set_bind_group(1, prefix_bg, &[]);
-                cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
-            }
-            self.cur = cur;
         }
+        self.cur = cur;
     }
 
     /// Slice each affected tile's full `TILE_TEX` block out of the shared region into
@@ -1247,6 +1260,71 @@ impl SlotCommon {
     }
 }
 
+/// What a plan is built *against*, as opposed to the segments it is built *from*:
+/// where the piece's region sits, how large its snapshot scratch is, and the stroke
+/// constants every slot is filled from.
+///
+/// Bundled because these five travel together through the plan and its rect
+/// arithmetic, and because a slot's geometry is only meaningful relative to them.
+struct PlanCtx<'a> {
+    rec: &'a StrokeRecord,
+    /// The region rectangle's top-left in canvas px — what every slot's coordinates
+    /// are measured from, since the shader never learns where the piece sits.
+    region_origin: Vec2,
+    /// The snapshot scratch's square ([`Snapshot::size`]), which every dispatch rect
+    /// is clamped to.
+    dsize: u32,
+    /// The brush's own colour in the working space, plus its per-unit opacity.
+    channels: [f32; 4],
+    surface: &'a crate::gpu::surface::Surface,
+}
+
+/// The margin, in canvas px, a dispatch rect is grown by each side so a fragment
+/// sampling just outside its own texel still lands inside the rect.
+const RECT_MARGIN: f32 = 1.5;
+
+/// One slot's dispatch rectangle.
+struct Rect {
+    /// The rect's top-left in region texels, integral — the `d.xy` a slot carries.
+    origin: Vec2,
+    /// Workgroup counts covering it, at the shaders' 8×8.
+    groups: (u32, u32),
+}
+
+impl PlanCtx<'_> {
+    /// The dispatch rect for a footprint's canvas-space coverage box.
+    ///
+    /// The slot's own box rather than the piece-wide worst case, so an axis-aligned
+    /// sweep dispatches ~4·r² threads where a square would spend ~10·r². Texels the
+    /// rounding adds beyond the box read zero exposure and fall out of `deposit`
+    /// untouched.
+    ///
+    /// Every rect fits the snapshot scratch by construction, because
+    /// [`DynamicsRun::snapshot_scratch`] sized it from these same boxes with room for
+    /// this margin and this rounding — asserted rather than left implied, since the
+    /// `min` below would otherwise clip a too-large rect into a silently truncated
+    /// footprint.
+    fn rect(&self, lo: Vec2, hi: Vec2) -> Rect {
+        let lo = lo - self.region_origin - Vec2::splat(RECT_MARGIN);
+        let hi = hi - self.region_origin + Vec2::splat(RECT_MARGIN);
+        let origin = Vec2::new(lo.x.floor(), lo.y.floor());
+        let (w, h) = (
+            ((hi.x - origin.x).ceil() as u32) + 1,
+            ((hi.y - origin.y).ceil() as u32) + 1,
+        );
+        debug_assert!(
+            w <= self.dsize && h <= self.dsize,
+            "a {w}x{h} dispatch rect overruns the {} snapshot scratch",
+            self.dsize,
+        );
+        let (w, h) = (w.min(self.dsize), h.min(self.dsize));
+        Rect {
+            origin,
+            groups: (w.div_ceil(8), h.div_ceil(8)),
+        }
+    }
+}
+
 /// Build the swept-exchange dispatch plan (§6.2): one `snapshot` +
 /// `deposit` pair per flattened segment (the canvas-side exchange, swept through
 /// the prefix-τ integral), each followed by the tool's own `exchange`.
@@ -1255,19 +1333,22 @@ impl SlotCommon {
 /// the continuous path integral, independent of any spacing. Pure CPU float math
 /// → replay-deterministic.
 ///
-/// Every dispatch is a segment: the tool exchanges once per segment rather than on a
-/// cadence of its own, so there is no interval state to carry between ranges.
-#[allow(clippy::too_many_arguments)]
+/// Every painting dispatch is a segment: the tool exchanges once per segment rather
+/// than on a cadence of its own, so there is no interval state to carry between
+/// ranges. The bleed cadence and the pen-up ride as their own [`SlotKind`]s.
 fn dynamics_plan(
-    rec: &StrokeRecord,
+    ctx: &PlanCtx<'_>,
     segments: &[Segment],
     fires: &[(usize, Segment)],
-    region_origin: Vec2,
-    dsize: u32,
-    channels: [f32; 4],
     settle: bool,
-    surface: &crate::gpu::surface::Surface,
 ) -> Vec<LoopDispatch> {
+    let &PlanCtx {
+        rec,
+        region_origin,
+        channels,
+        surface,
+        ..
+    } = ctx;
     let b = &rec.brush;
     // Canvas px → surface-tile uv, folded so the shader can go straight from its
     // *region* texel to the ground under it: `uv = rt · grain_uv + grain_bias`
@@ -1308,21 +1389,10 @@ fn dynamics_plan(
     let mut fires = fires.iter().peekable();
     for (si, s) in segments.iter().enumerate() {
         // The segment's swept exchange: the frame is (start, travel tangent at the
-        // start, curvature), and the dispatch rect is the segment's own coverage box
-        // plus a 1.5 px sampling margin — so an axis-aligned sweep dispatches ~4·r²
-        // threads where a piece-wide square would spend ~10·r². Texels the dispatch
-        // rounds in beyond the box read zero exposure and fall out of `deposit`
-        // untouched, and every rect fits the `under` scratch because `dsize` was
-        // measured from these same boxes.
+        // start, curvature), over the segment's own coverage box.
         let p = s.start - region_origin;
         let (clo, chi) = coverage_bounds(s);
-        let lo = clo - region_origin - Vec2::splat(1.5);
-        let hi = chi - region_origin + Vec2::splat(1.5);
-        let (ox, oy) = (lo.x.floor(), lo.y.floor());
-        let (rw, rh) = (
-            (((hi.x - ox).ceil() as u32) + 1).min(dsize),
-            (((hi.y - oy).ceil() as u32) + 1).min(dsize),
-        );
+        let rect = ctx.rect(clo, chi);
         // Where `exchange` samples the canvas: the segment's midpoint, along the arc
         // rather than the chord. The midpoint rule for a lift that is really swept
         // over the segment — second order, where either endpoint would be first.
@@ -1345,10 +1415,10 @@ fn dynamics_plan(
         let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
         let (f, g, h) = common.jitter(s.dist, bearing(s.tooth));
         plan.push(LoopDispatch {
-            bleed_only: false,
-            groups: (rw.div_ceil(8), rh.div_ceil(8)),
-            exchange_groups: (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(8)),
-            wick_steps: wick_steps.max(0.0) as u32,
+            groups: rect.groups,
+            kind: SlotKind::Segment {
+                wick_steps: wick_steps.max(0.0) as u32,
+            },
             slot: Stamp {
                 a: [p.x, p.y, s.dir.x, s.dir.y],
                 b: [
@@ -1358,7 +1428,7 @@ fn dynamics_plan(
                     lambda(s.deposit),
                 ],
                 c: common.c,
-                d: [ox, oy, s.orient, b.drain],
+                d: [rect.origin.x, rect.origin.y, s.orient, b.drain],
                 // The `add` source rate is passed through **unscaled**, exactly as
                 // `stamp_oklab.wesl` takes it. It used to carry a gain of 2 ("tuned so
                 // `add = 1` lays roughly a full-thickness deposit per pass"), which made
@@ -1388,19 +1458,11 @@ fn dynamics_plan(
         while let Some((_, fire)) = fires.next_if(|(after, _)| *after == si) {
             let p = fire.start - region_origin;
             let (clo, chi) = coverage_bounds(fire);
-            let lo = clo - region_origin - Vec2::splat(1.5);
-            let hi = chi - region_origin + Vec2::splat(1.5);
-            let (ox, oy) = (lo.x.floor(), lo.y.floor());
-            let (rw, rh) = (
-                (((hi.x - ox).ceil() as u32) + 1).min(dsize),
-                (((hi.y - oy).ceil() as u32) + 1).min(dsize),
-            );
+            let rect = ctx.rect(clo, chi);
             let mid = fire.start + fire.dir * (fire.length * 0.5) - region_origin;
             plan.push(LoopDispatch {
-                bleed_only: true,
-                groups: (rw.div_ceil(8), rh.div_ceil(8)),
-                exchange_groups: (0, 0), // no exchange: the tool is not involved
-                wick_steps: 0,
+                groups: rect.groups,
+                kind: SlotKind::Bleed,
                 slot: Stamp {
                     a: [p.x, p.y, fire.dir.x, fire.dir.y],
                     // λ_lift = 0, so the canvas keeps everything; λ_deposit = 0, so the
@@ -1408,7 +1470,7 @@ fn dynamics_plan(
                     b: [fire.radius, fire.length / fire.radius, 0.0, 0.0],
                     c: common.c,
                     // No drain: nothing is laid, so nothing runs dry.
-                    d: [ox, oy, fire.orient, 0.0],
+                    d: [rect.origin.x, rect.origin.y, fire.orient, 0.0],
                     // No `add` — the slot is not a stretch of painting — and no
                     // curvature, since the window is a straight chord. `mid` is filled
                     // for form: no exchange ever reads this slot.
@@ -1448,23 +1510,14 @@ fn dynamics_plan(
         let (end, _) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
         let tan = settle_tangent(segments, end);
         let p = end - region_origin;
-        // The tip's own square, with the same 1.5px sampling margin every other rect
-        // gets. It cannot overrun the `under` scratch: that was sized from coverage
-        // boxes, and a segment's box is this square grown by its travel.
-        let lo = p - Vec2::splat(s.radius + 1.5);
-        let hi = p + Vec2::splat(s.radius + 1.5);
-        let (ox, oy) = (lo.x.floor(), lo.y.floor());
-        let (rw, rh) = (
-            (((hi.x - ox).ceil() as u32) + 1).min(dsize),
-            (((hi.y - oy).ceil() as u32) + 1).min(dsize),
-        );
+        // The tip's own square rather than a swept box — a pen-up is a standing tip.
+        // It cannot overrun the snapshot scratch: that was sized from coverage boxes,
+        // and a segment's box is this square grown by its travel.
+        let rect = ctx.rect(end - Vec2::splat(s.radius), end + Vec2::splat(s.radius));
         let (f, g, h) = common.jitter(s.dist + s.length, 1.0);
         plan.push(LoopDispatch {
-            bleed_only: false,
-            groups: (rw.div_ceil(8), rh.div_ceil(8)),
-            exchange_groups: (0, 0), // the tool is not written back; nothing reads it
-            // Nor is there travel to wick over: a pen-up is a break of contact.
-            wick_steps: 0,
+            groups: rect.groups,
+            kind: SlotKind::Settle,
             slot: Stamp {
                 a: [p.x, p.y, tan.x, tan.y],
                 // No travel: a pen-up is a break of contact, not a stretch of it. The
@@ -1476,7 +1529,7 @@ fn dynamics_plan(
                 // opacity it was picked up with, so it reads none of `c`. Filled
                 // consistently with a segment slot rather than left as junk.
                 c: common.c,
-                d: [ox, oy, s.orient, b.drain],
+                d: [rect.origin.x, rect.origin.y, s.orient, b.drain],
                 // No `add`: the source is a rate per unit of travel, and there is none.
                 // No curvature, for the same reason — the frame is a standing tip.
                 e: [0.0, 0.0, p.x, p.y],

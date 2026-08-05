@@ -38,17 +38,25 @@ Still open from this item: `dynamics_plan` keeps its
 `PieceGeom { region_origin, dsize, channels, surface }` bundle, which is easier
 to do alongside item 3.
 
-## 3. `LoopDispatch` should be an enum
+## 3. `LoopDispatch` should be an enum — **done**
 
-Three slot kinds are encoded as `bleed_only: bool` plus a position
-(`segment_slots = plan.len() - usize::from(settle)`, then `plan.get(segment_slots)`).
-`enum Slot { Segment { wick_steps }, Bleed, Settle }` turns the dispatch loop
-into a `match` with no index arithmetic.
+Three slot kinds were encoded as `bleed_only: bool` plus a position
+(`segment_slots = plan.len() - usize::from(settle)`, then
+`plan.get(segment_slots)`). Now `SlotKind { Segment { wick_steps }, Bleed,
+Settle }`, and `record_loop` is a `match` over the whole plan with no index
+arithmetic and no `settle` parameter — the pen-up is simply the last slot.
 
-`exchange_groups` is dead data and goes with it: it is
-`(BRUSH_RES/8, BRUSH_RES/8)` for every segment slot, and `(0, 0)` for the other
-two kinds — where it is never read (the bleed branch `continue`s before the
-exchange dispatch; the settle path uses `groups` only). Replace with a const.
+`exchange_groups` went with it: it was `(BRUSH_RES/8, BRUSH_RES/8)` for every
+segment slot and `(0, 0)` — never read — for the other two, so it is now the
+`RESERVOIR_GROUPS` constant.
+
+Also took the rest of item 2 and two bullets from items 10 and 11:
+`dynamics_plan`'s 8 args became a `PlanCtx`, retiring its
+`#[allow(clippy::too_many_arguments)]`; the thrice-duplicated coverage-box →
+dispatch-rect arithmetic became `PlanCtx::rect`; and that one place now carries
+a `debug_assert!` that the rect fits the snapshot scratch, so the `.min(dsize)`
+can no longer silently clip a footprint. The whole GPU suite runs it without
+firing.
 
 ## 4. Per-tile uniform buffer + bind-group churn
 
@@ -129,9 +137,9 @@ in code, beside the taper tests in `segments.rs` that already do this for
   record, independent of the cut. Comparing the `(dist, length)` list for `whole`
   against `head + tail` is a five-line test, and its failure was a visible
   `preview == committed` break.
-* Every dispatch rect fits `dsize`. Currently guaranteed by an argument spanning
-  two functions about how `+3.0…+2` relates to the `1.5` margins — the kind of
-  arithmetic that survives a refactor by luck.
+* ~~Every dispatch rect fits `dsize`~~ — done with item 3, as a `debug_assert!`
+  in `PlanCtx::rect` rather than a test: it is now checked on every slot of
+  every stroke the suite draws, which is stronger than any case list.
 * `settle_tangent` against a trailing cluster of zero-length segments — the exact
   input its doc says produced 0°/−90°/90°/180° on a stroke running at 90°.
 
@@ -142,9 +150,8 @@ in code, beside the taper tests in `segments.rs` that already do this for
 * `let mut fires = fires.iter().peekable()` shadows the parameter. The consumer
   also relies on `fires` being sorted by segment index — true by construction,
   unstated at the type.
-* The coverage-box → dispatch-rect computation is copy-pasted twice with a
-  near-variant for the settle. One `dispatch_rect(box, region_origin, dsize)`
-  helper is also where item 10's `dsize` fit becomes checkable in one place.
+* ~~The coverage-box → dispatch-rect computation is copy-pasted twice with a
+  near-variant for the settle~~ — done with item 3, as `PlanCtx::rect`.
 * `ScopedResources::is_empty` doubles as "has a piece been recorded yet" in
   `flush`. A `piece_open: bool` says what is meant.
 * `swept.rs` recomputes `flatten_tolerance` that `dynamics_setup` already
