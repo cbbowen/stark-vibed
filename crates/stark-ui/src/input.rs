@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
 use crate::platform::{capture_pointer, on_window_key, sleep_ms};
-use crate::state::{AppState, Dwell, dispatch, update_brush};
+use crate::state::{AppState, Dwell, PickScope, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::SelectionOp;
@@ -534,12 +534,15 @@ pub fn pick_color(state: AppState, pos: Vec2) {
         return;
     }
     // The *choice* is what the panel holds; which layer it means is resolved here,
-    // against whichever layer is selected at the moment of the sample.
-    let all_layers = *state.pick.all_layers.peek();
+    // against whichever layer is selected at the moment of the sample — and a
+    // document with no layer selected falls back to the composite rather than
+    // sampling nothing.
+    let scope = *state.pick.scope.peek();
     let active = state.obs.peek().as_ref().map(|o| o.active_layer);
     let options = PickOptions {
-        source: match active {
-            Some(id) if !all_layers => PickSource::Layer(id),
+        source: match (scope, active) {
+            (PickScope::ThisLayer, Some(id)) => PickSource::Layer(id),
+            (PickScope::AllLayersAndCanvas, _) => PickSource::CompositeOverSubstrate,
             _ => PickSource::Composite,
         },
         radius: *state.pick.radius.peek(),

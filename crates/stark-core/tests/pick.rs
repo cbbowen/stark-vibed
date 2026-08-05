@@ -7,6 +7,11 @@
 //! painted colour survives the round trip in *both* colour spaces, that bare canvas
 //! answers "nothing" instead of the paper colour, and that the layer and radius
 //! options select what they say they do.
+//!
+//! The one source that *does* answer on bare canvas is the composite over the
+//! substrate, and what it has to be held to is the opposite pair: that the ground
+//! shows through where the paint does not cover, and that it stays out of the way
+//! where the paint does.
 
 mod common;
 
@@ -30,6 +35,14 @@ fn pick(engine: &mut Engine, at: Vec2, options: PickOptions) -> Option<[f32; 3]>
 /// Point-sample the composite — the default an Alt+click takes.
 fn pick_point(engine: &mut Engine, at: Vec2) -> Option<[f32; 3]> {
     pick(engine, at, PickOptions::default())
+}
+
+/// The same stack with the canvas colour behind it.
+fn over_substrate(radius: u32) -> PickOptions {
+    PickOptions {
+        source: PickSource::CompositeOverSubstrate,
+        radius,
+    }
 }
 
 fn near(a: [f32; 3], b: [f32; 4], tol: f32) -> bool {
@@ -114,6 +127,85 @@ fn bare_canvas_has_nothing_to_pick() {
         pick_point(&mut engine, Vec2::new(0.0, 120.0)),
         None,
         "well clear of the only stroke"
+    );
+}
+
+/// Except over the substrate, where the ground *is* what was asked for: an empty
+/// patch answers with the canvas colour rather than with nothing. And with the
+/// document's colour, read at the moment of the sample — a remembered default would
+/// pass every test that never repaints the canvas.
+#[test]
+fn over_the_substrate_answers_with_the_canvas_colour() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    const GROUND: [f32; 3] = [0.2, 0.55, 0.35];
+    engine.process(DocCommand::SetBackground(GROUND));
+
+    assert_near(
+        pick(&mut engine, Vec2::ZERO, over_substrate(0)),
+        [GROUND[0], GROUND[1], GROUND[2], 1.0],
+        0.02,
+        "bare canvas is the canvas colour",
+    );
+    assert_eq!(
+        pick_point(&mut engine, Vec2::ZERO),
+        None,
+        "and the other sources still have nothing to pick there"
+    );
+}
+
+/// What the source is *for*. Where the paint does not cover, the canvas fills in, and
+/// the two composited sources disagree exactly there: the plain composite weighs by
+/// opacity, so bare texels count for nothing and it reports the stroke alone, while
+/// over the substrate the same patch answers with the mixture an eye sees.
+///
+/// The ground is blue and the paint red so the disagreement is a channel apart rather
+/// than a shade apart.
+#[test]
+fn thin_coverage_mixes_toward_the_canvas() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, RED, 24.0, BAR);
+
+    // Straddling the bar's edge: the bar reaches y ≈ 24, and a 24-px patch centred at
+    // 30 has rather less than half of itself on paint.
+    let at = Vec2::new(0.0, 30.0);
+    let paint_only = pick(
+        &mut engine,
+        at,
+        PickOptions {
+            radius: 24,
+            ..PickOptions::default()
+        },
+    )
+    .expect("paint in the patch");
+    let with_ground =
+        pick(&mut engine, at, over_substrate(24)).expect("the ground is always there");
+
+    assert!(
+        near(paint_only, RED, 0.06),
+        "an opacity-weighted mean is not diluted by the bare part of the patch, \
+         got {paint_only:?}"
+    );
+    assert!(
+        with_ground[2] > paint_only[2] + 0.1 && with_ground[0] < paint_only[0] - 0.1,
+        "the blue ground should show through where the paint does not cover: \
+         {with_ground:?} against {paint_only:?}"
+    );
+    assert!(
+        with_ground[0] > 0.1,
+        "and it is a mixture, not a jump to the ground: {with_ground:?}"
+    );
+
+    // Where the paint *does* cover, the ground behind it changes nothing — otherwise
+    // the mode would be tinting the paint rather than filling in behind it.
+    assert_near(
+        pick(&mut engine, Vec2::ZERO, over_substrate(0)),
+        RED,
+        0.08,
+        "opaque paint hides the ground",
     );
 }
 

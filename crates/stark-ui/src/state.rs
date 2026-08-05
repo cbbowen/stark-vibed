@@ -200,7 +200,7 @@ impl AppState {
             preset_save_open: root_signal(|| false),
             color_epoch: root_signal(|| 0),
             pick: PickState {
-                all_layers: root_signal(|| true),
+                scope: root_signal(PickScope::default),
                 radius: root_signal(|| 0),
                 busy: root_signal(|| false),
                 alt_down: root_signal(|| false),
@@ -1117,8 +1117,8 @@ pub struct TimelineState {
 /// `observe()` would be state with no owner.
 #[derive(Clone, Copy)]
 pub struct PickState {
-    /// Sample the whole visible stack, rather than the selected layer alone.
-    pub all_layers: Signal<bool>,
+    /// Which layers a sample comes off, and whether the canvas stands behind them.
+    pub scope: Signal<PickScope>,
     /// Half-width of the averaged square, in canvas px (0 = point sample).
     pub radius: Signal<u32>,
     /// Whether a sample is in flight — see [`crate::input::pick_color`].
@@ -1132,6 +1132,25 @@ pub struct PickState {
     /// canvas, unlike `drawing`/`panning`, because the options bar is mounted on
     /// *armed but not yet dragging* and so has to be able to tell the two apart.
     pub dragging: Signal<bool>,
+}
+
+/// Which of the eyedropper's three sources the bar has selected (§18.0.2).
+///
+/// The *choice*, not [`PickSource`](stark_core::PickSource): which layer "this layer"
+/// means is resolved against the selected layer at the moment of the sample
+/// ([`crate::input::pick_color`]), so the bar cannot be left holding a layer id whose
+/// layer has since been deleted — the same reason the radius is a number here and a
+/// clamped one in the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PickScope {
+    /// Every visible layer — the paint the canvas shows.
+    #[default]
+    AllLayers,
+    /// Every visible layer over the substrate colour, so bare canvas and thin paint
+    /// answer with what the eye sees rather than with nothing and with the glaze.
+    AllLayersAndCanvas,
+    /// The selected layer alone, ignoring anything over or under it.
+    ThisLayer,
 }
 
 /// The shared-session signals, grouped because they share one lifecycle: they are

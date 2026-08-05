@@ -118,6 +118,18 @@ mounted only while Alt arms the tool — the same present-or-absent argument the
 selection and frame bars make, and what makes a modifier binding discoverable
 rather than secret.
 
+There are three sources, not two, and the third is the one exception to *bare
+canvas answers nothing*: the composite **over the substrate** (§15.5), which fills
+in the canvas colour wherever the paint does not cover. The other two answer with
+the paint that is stored at a point; this one answers with the colour that is
+*seen* there, which is the question being asked when the paint is a glaze — and
+the only source whose answer can be a colour no layer holds. It runs the same
+`over` the media pass runs, in the same latent channels, so it agrees with the
+screen rather than offering a second opinion about it. It is also the one place a
+sample stops being an opacity-weighted mean: with the ground behind it every texel
+is opaque, so a patch half-covered by a stroke reads as a mixture of paint and
+canvas instead of as the stroke alone.
+
 #### 18.0.3 Transform — built
 
 Engine *and* gesture UI; see §16. Remaining: snapping, and the cut/copy/paste

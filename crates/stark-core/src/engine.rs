@@ -183,6 +183,14 @@ pub enum PickSource {
     /// Every visible layer, composited — the colour the canvas shows.
     #[default]
     Composite,
+    /// Every visible layer *over the substrate* (§15.5): the same stack, with the
+    /// canvas colour standing in wherever the paint does not cover.
+    ///
+    /// The one source that answers on bare canvas, and the only one whose answer can
+    /// be a colour no layer holds — a glaze over the ground is a mixture of the two.
+    /// That is what it is for: matching what the eye sees at a point rather than what
+    /// is stored there, which is the question being asked when the paint is thin.
+    CompositeOverSubstrate,
     /// One layer alone: the colour that layer would have if it were the only one in
     /// the document. What "sample the current layer" has to mean, since a glaze on
     /// top of somebody else's underpainting is not the same paint as the two mixed.
@@ -256,6 +264,44 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
         return None;
     }
     Some([sum[0] / sum[3], sum[1] / sum[3], sum[2] / sum[3], 1.0])
+}
+
+/// The mean channels of a sampled patch **composited over the substrate** `bg` — the
+/// colour the canvas shows there rather than the paint's own (`PickSource::CompositeOverSubstrate`).
+///
+/// The same `over` the media pass runs, in the same latent channels and the same
+/// order (`over_substrate` in `media_common.wesl`): `bg·(1−a) + c`, with the
+/// composite's premultiplied colour standing in for `c·a`. Sharing the operation
+/// rather than restating it is what keeps this mode from becoming a second opinion
+/// about a colour the screen has already decided.
+///
+/// It is a **plain** mean where [`mean_channels`] is an opacity-weighted one, and
+/// that difference *is* the mode: with the ground behind it every texel is opaque, so
+/// a patch half-covered by a stroke reads as the mixture of paint and canvas an eye
+/// sees there instead of reporting the stroke alone. `over` is linear in each texel,
+/// so compositing every texel and then averaging is exactly the arithmetic below.
+fn mean_over_substrate(texels: &[f32], bg: [f32; 4]) -> Option<[f32; 4]> {
+    let patch = texels.as_chunks::<4>().0;
+    let mut sum = [0.0f32; 4];
+    for t in patch {
+        for (s, v) in sum.iter_mut().zip(t) {
+            *s += v;
+        }
+    }
+    if patch.is_empty() || !sum.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let n = patch.len() as f32;
+    // Clamped because it is about to be read as "how much of the patch the ground
+    // shows through": the composite cannot exceed full coverage, and a float that
+    // lands a hair over 1 would subtract substrate rather than none of it.
+    let bare = 1.0 - (sum[3] / n).clamp(0.0, 1.0);
+    Some([
+        sum[0] / n + bg[0] * bare,
+        sum[1] / n + bg[1] * bare,
+        sum[2] / n + bg[2] * bare,
+        1.0,
+    ])
 }
 
 /// A layer's presentation properties, for the UI's layer panel (§11).
@@ -1490,7 +1536,9 @@ impl Engine {
     ///
     /// `None` where the sampled patch holds no paint: the substrate is the ground,
     /// not something a brush picks up, so bare canvas answers "nothing here" rather
-    /// than quietly loading the brush with the paper colour.
+    /// than quietly loading the brush with the paper colour. The one source that
+    /// answers anyway is [`PickSource::CompositeOverSubstrate`], where the ground is
+    /// what was asked for.
     ///
     /// Renders immediately and returns a future for the **readback**, the only
     /// asynchronous part — the same shape as [`Engine::export`], and for the same
@@ -1519,14 +1567,23 @@ impl Engine {
             viewport: size,
         };
         // The *presented* document, so a sample agrees with what is on screen —
-        // including a collaborator's stroke that has not committed yet.
-        let groups = {
+        // including a collaborator's stroke that has not committed yet, and the
+        // substrate colour mid-drag on the picker that sets it (§15.5).
+        let (groups, ground) = {
             let doc = self.presented();
             let only = match options.source {
-                PickSource::Composite => None,
+                PickSource::Composite | PickSource::CompositeOverSubstrate => None,
                 PickSource::Layer(id) => Some(id),
             };
-            self.composite_groups(doc, only)
+            // Read here rather than in the future, because it is document state and
+            // the future deliberately does not borrow the engine. That the other two
+            // sources have no ground is why this is a third *source* rather than a
+            // flag on the other two: asking one layer for its own colour and asking
+            // what the canvas shows are different questions, and only the second one
+            // has a substrate in it.
+            let ground = matches!(options.source, PickSource::CompositeOverSubstrate)
+                .then(|| self.color_space.rgb_to_channels(doc.background));
+            (self.composite_groups(doc, only), ground)
         };
 
         let (color_format, aux_format) = self.compositor_pipeline.channel_formats();
@@ -1564,7 +1621,11 @@ impl Engine {
         let color_space = self.color_space.clone();
         async move {
             let texels = crate::gpu::readback::read_rgba16f(&gpu, &color, size).await;
-            mean_channels(&texels).map(|c| color_space.channels_to_rgb(c))
+            let mean = match ground {
+                Some(bg) => mean_over_substrate(&texels, bg),
+                None => mean_channels(&texels),
+            };
+            mean.map(|c| color_space.channels_to_rgb(c))
         }
     }
 
