@@ -152,11 +152,14 @@ pub(super) struct DynamicsKit {
     pub(super) composite_sampler: wgpu::Sampler,
     // The stamp-loop dispatches (one compute shader, several entry points).
     /// The footprint copy that gives the `deposit`/`settle` something to read while
-    /// they storage-write the region. Dispatched on its own **only for the pen-up**: a
-    /// segment's snapshot rides in the tail of its `exchange` grid instead, since it
-    /// depends on nothing that pass writes (`dynamics.wesl::exchange`). The settle
-    /// cannot do the same, because it reads the snapshot rather than merely sharing a
-    /// consumer with it.
+    /// they storage-write the region.
+    ///
+    /// A painting segment does not dispatch it: its snapshot rides in the tail of its
+    /// own `exchange` grid, since it depends on nothing that pass writes
+    /// (`dynamics.wesl::exchange`). The two slot kinds with no exchange to ride in —
+    /// [`SlotKind::Bleed`] and [`SlotKind::Settle`] — dispatch it standalone. (The
+    /// settle could not have shared a grid in any case: it *reads* the snapshot,
+    /// rather than merely sharing a consumer with it.)
     pub(super) snapshot_pipeline: wgpu::ComputePipeline,
     pub(super) snapshot_bgl: wgpu::BindGroupLayout,
     /// The tool's own side of one segment's transfer — the complement of every share
@@ -1772,7 +1775,7 @@ pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePath {
 }
 
 /// Build the brush-dynamics stamp-loop kit (§6.2): the region
-/// composite, the three loop compute pipelines, and the region→tile slice.
+/// composite, the loop's seven compute pipelines, and the region→tile slice.
 pub(super) fn build_dynamics_kit(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
@@ -1877,9 +1880,11 @@ pub(super) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- The stamp loop: one module, three entry points, one bind group each
-    // (all include the dynamic-offset stamp uniform at binding 0; the binding
-    // numbers partition the module's group(0) — see dynamics.wesl).
+    // ---- The stamp loop: one module, seven entry points — `snapshot`, `exchange`,
+    // `wick_x`, `wick_y`, `bake`, `deposit`, `settle` — over five bind group layouts,
+    // since the two wick axes share `exchange`'s (they need a strict subset of it).
+    // Every layout includes the dynamic-offset stamp uniform at binding 0; the binding
+    // numbers partition the module's group(0) — see dynamics.wesl.
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics().into()),

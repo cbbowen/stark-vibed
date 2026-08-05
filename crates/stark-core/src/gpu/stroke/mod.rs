@@ -12,7 +12,7 @@
 //!
 //! That is the plain **add** fast path: footprint → cleared scratch tile →
 //! integrate over the base into a fresh CoW tile. A brush that also moves paint
-//! already on the canvas (`lift` / `deposit` / `charge`, §6.2) instead runs
+//! already on the canvas (`lift` / `deposit` / `charge` / `bleed`, §6.2) instead runs
 //! the sequential swept-exchange loop in `dynamics.wesl`; `dynamics_setup`
 //! decides which path a record takes.
 //!
@@ -353,7 +353,8 @@ pub struct StrokeRenderer {
     integrate_bgl: wgpu::BindGroupLayout,
 
     // Brush dynamics: the sequential stamp loop (§6.2), used when the
-    // brush manipulates existing paint (`load` / `deposit` / `charge`).
+    // brush manipulates existing paint (`lift` / `deposit` / `charge` / `bleed` —
+    // the four axes `dynamics_setup` gates on).
     dynamics: DynamicsKit,
 
     /// Selection masks (§6.8): the per-tile mask bound into the integrate

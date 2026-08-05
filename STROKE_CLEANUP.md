@@ -131,14 +131,29 @@ reach `2·MAX_STAMPS + 1` slots. Harmless today — the binding window is one sl
 and the buffer is far under `maxBufferSize` — but the stated bound is off by 2×.
 Either chunk on planned slots or fix the sentence.
 
-## 9. Doc drift
+## 9. Doc drift — **done**
 
-* `build_dynamics_kit` says "three" compute pipelines / entry points, twice. The
-  shader has seven: `wick_x`, `wick_y`, `bake`, `snapshot`, `exchange`,
-  `deposit`, `settle`.
-* `mod.rs`'s `dynamics` field still calls the axis `load`; it has been `lift`
-  since the rename. That list and the module header both omit `bleed`, which
-  `dynamics_setup` does gate on.
+* `build_dynamics_kit` said "three" compute pipelines / entry points, twice, and
+  "one bind group each". It is seven entry points — `snapshot`, `exchange`,
+  `wick_x`, `wick_y`, `bake`, `deposit`, `settle` — over five layouts, since the
+  two wick axes share `exchange`'s.
+* `mod.rs`'s `dynamics` field called the axis `load`; it has been `lift` since
+  the rename. That list and the module header both omitted `bleed`, which
+  `dynamics_setup` gates on — both now name the four axes the gate actually
+  tests.
+* Found while sweeping: `snapshot_pipeline` claimed it is dispatched standalone
+  "**only for the pen-up**". Bleed slots dispatch it standalone too, and have
+  since they were added — the `SlotKind::Bleed` doc even says so. Now stated as
+  the two slot kinds with no `exchange` grid to ride in.
+* Also fixed the module's one genuinely broken intra-doc link: `safe_frozen`
+  pointed at `segments::Taper`, which was private and so unnameable. `Taper` is
+  `pub(super)` now, like the `DAB_TRAVEL` and `generate_segments_in` the same
+  doc comment links to.
+
+The remaining rustdoc warnings under `gpu/stroke` are all "public documentation
+links to private item" on `safe_frozen` and `StrokeCarry::dirty` — those links
+resolve, they just point into the module's own internals. Worth a look if item 5
+ever moves `safe_frozen` out of `mod.rs`.
 
 ## 10. CPU tests for the plan builders
 

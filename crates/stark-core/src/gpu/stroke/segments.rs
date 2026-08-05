@@ -190,7 +190,7 @@ const TAPER_MAX_PIECES: usize = 128;
 /// instead of never reaching it, which is what keeps a quick flick a small pointed
 /// mark rather than a sliver, continuously as the stroke grows.
 #[derive(Copy, Clone, Debug)]
-struct Taper {
+pub(super) struct Taper {
     /// Leading taper length (canvas px); 0 = none.
     start: f32,
     /// Trailing taper length (canvas px); 0 = none.
