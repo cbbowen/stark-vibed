@@ -19,7 +19,7 @@ Three passes, separable and in order of value per unit risk:
 - **(c) `composite.rs` split** — structural, no behaviour change. §2.1, §2.6.
   **Done.**
 
-§2.2, §2.4, §2.5, §2.7 and §4 are what is left.
+§2.2, §2.4, §2.5 and §4 are what is left. §2.7 is withdrawn — see there.
 
 Run `cargo test --workspace` once after each pass, not after each edit.
 
@@ -198,15 +198,41 @@ imports `GroupContent` at all. The one assertion left is in `stack`, immediately
 under its own proof, because that path consumes the members while `as_direct_run`
 borrows them.
 
-### 2.7 Bind-group churn is the remaining allocation-rate source
+### 2.7 Bind-group churn — **withdrawn; the premise was wrong**
 
-The module went to real lengths to avoid per-tile *buffers* (dynamic offsets,
-`UNIFORM_STRIDE`, `ScopedResources`), but per-tile *bind groups* are still built
-every frame: one per visible tile in `prepare_composite`, one per tile per pointer
-move in `render_swept`, one per halo tile per piece in `composite_region`. At 4K
-with 128 px tiles that is ~500 bind groups a frame. Either cache them keyed on the
-tile handle — which already has allocation identity via `TilePairHandle::same` —
-or record why they are exempt from the argument the buffers were not.
+What this item said: the module went to real lengths to avoid per-tile *buffers*
+(dynamic offsets, `UNIFORM_STRIDE`, `ScopedResources`) but still builds per-tile
+*bind groups* every frame, ~500 a frame at 4K, so cache them keyed on the tile
+handle's allocation identity.
+
+Three things are wrong with that.
+
+**The arithmetic.** It assumed 128 px tiles. `TILE_SIZE` is 254 (`TILE_TEX` 256
+less two aprons), so a 4K viewport spans ~16×10 tiles per layer, not ~500.
+
+**The cause.** `prepare_composite` does not build one bind group per *visible*
+tile. `Engine::layer_items` maps over **every populated tile of every visible
+layer**, with no viewport cull anywhere — `visible_bounds` exists but is only used
+by the UI's frame panel. So the count scales with the *document*, not the viewport,
+and the churn is a symptom rather than the thing.
+
+**It is already a known, deliberate deferral**, not a seam. `docs/rendering.md`
+§6.3 carries a "Not yet: damage tracking" box saying exactly this — off-screen
+tiles are drawn and clipped by the rasterizer rather than skipped, "fine at current
+canvas sizes; the obvious first optimization when it stops being" — and
+`docs/roadmap.md` schedules it as *Damage tracking / view-AABB cull*. This review
+had no business relisting it as a cleanup.
+
+**So a cache would be the wrong fix at the wrong layer.** It would memoize bind
+groups for tiles that should not be drawn at all, and to be correct it would need
+keep-alive `Arc`s (or it can ABA on a recycled address) — which pins tiles against
+the pool, working directly against §5.1's "history retention drives reclamation".
+It would also miss on exactly the tiles a stroke is changing, which are the ones
+redrawn most often. A view-AABB cull subsumes it: bind groups, draw calls, instance
+entries and `TilePairHandle` clones all become proportional to what is on screen.
+
+Nothing to do here as a cleanup. The cull is a roadmap item and belongs to whoever
+decides the roadmap.
 
 ---
 
