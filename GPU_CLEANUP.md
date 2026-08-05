@@ -19,7 +19,7 @@ Three passes, separable and in order of value per unit risk:
 - **(c) `composite.rs` split** — structural, no behaviour change. §2.1, §2.6.
   **Done.**
 
-§2.4 and the rest of §4 are what is left. §2.7 is withdrawn — see there.
+§4 is what is left. §2.7 is withdrawn — see there.
 
 Run `cargo test --workspace` once after each pass, not after each edit.
 
@@ -196,12 +196,32 @@ zero callers anywhere, tests included, and were the only route to a pooled
 `wgpu::Texture` from outside `tile.rs`. They are gone, so the pool hands out views
 and never textures — §2.3's safety is now structural rather than verified.
 
-### 2.4 `AllocSource` is diagnostic-only plumbing threaded through every signature
+### 2.4 `AllocSource` is diagnostic-only plumbing — **half right; done**
 
-An 11-variant enum on every `acquire_tex`/`acquire_mask`, a `HashMap` mutation
-under the pool lock on the hot path, and a decrement in `Drop` — all to populate
-one `tracing::debug!`. If it is worth keeping, put it behind a cfg; if it earns
-its place, say so on the enum.
+The cost was indefensible and is gone. The census was a
+`HashMap<AllocSource, usize>`, so every acquire hashed to increment it and every
+release hashed to decrement it, both under the pool's lock, on the same path §2.3
+had just cleared a `create_view` off — all to serve one `tracing::debug!`. It is an
+array indexed by discriminant now: an increment.
+
+The **enum stays**, because this item was wrong to lump it in with the cost. At its
+26 call sites `AllocSource::TransformScratch` says what an acquire is *for*, where a
+bare `acquire_tex(format)` says only that one happened; and it answers the question
+a large pool actually raises — not how many textures are out, which `capacity`
+reports, but who is holding them. Deleting the census would have meant deleting the
+enum too, since an unread parameter is dead weight, and that trades something useful
+for nothing.
+
+Indexing by discriminant is silently wrong if the enum and `AllocSource::ALL` ever
+disagree about order — every acquire attributed to the wrong subsystem, and nothing
+else in the system would contradict it. Three guards: `name()` has no wildcard, so a
+new variant is a compile error there; a test asserts `ALL[i] as usize == i`; and the
+slot lookup returns `Option`, so a variant that slipped past both goes uncounted
+rather than out of bounds. Telemetry degrading is the right failure for telemetry.
+
+The `Debug` also improved on the way past: only sources actually holding something,
+by name. The map printed in whatever order hashing gave and kept every source it had
+ever seen, at zero.
 
 ### 2.5 `surface.rs` and `environment.rs` are three concerns each — **done**
 

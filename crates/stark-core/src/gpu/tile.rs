@@ -44,7 +44,20 @@ pub const SCRATCH_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16F
 /// exactly like paint.
 pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// What a texture was taken out of the pool *for*.
+///
+/// It earns its place twice over, which is worth saying because it is otherwise the
+/// shape of plumbing added for a log. At the 26 call sites it is documentation the
+/// compiler keeps honest — `AllocSource::TransformScratch` says what the acquire is,
+/// where a bare `acquire_tex(format)` would say only that one happened. And it is
+/// the only way to answer the question a large pool actually raises: not *how many*
+/// textures are out, which `capacity` already reports, but **who is holding them**.
+///
+/// What it must not be is a cost. The census it feeds is an array indexed by
+/// discriminant ([`Census`]), not a map: incrementing it is an add, on a path that
+/// runs thousands of times a second and that §6.2's whole allocation-rate argument
+/// is about.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AllocSource {
     #[default]
     Unknown,
@@ -61,6 +74,91 @@ pub enum AllocSource {
     TransformMask,
     /// A tile rewritten by a region fill (§18.0.4).
     FillDestination,
+}
+
+impl AllocSource {
+    /// Every variant, in discriminant order — what [`Census`] indexes by.
+    ///
+    /// [`Self::name`] below has no wildcard, so adding a variant is a compile error
+    /// there; this array is what that error exists to remind you to extend, and
+    /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree.
+    /// A variant that slipped past both would go uncounted rather than out of
+    /// bounds — telemetry degrading is the right failure for telemetry.
+    const ALL: [Self; 10] = [
+        Self::Unknown,
+        Self::IntegrateEmptyBase,
+        Self::IntegrateDestination,
+        Self::StrokeScratch,
+        Self::DynamicsWriteback,
+        Self::SelectionMask,
+        Self::TransformScratch,
+        Self::TransformDestination,
+        Self::TransformMask,
+        Self::FillDestination,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::IntegrateEmptyBase => "integrate empty base",
+            Self::IntegrateDestination => "integrate destination",
+            Self::StrokeScratch => "stroke scratch",
+            Self::DynamicsWriteback => "dynamics writeback",
+            Self::SelectionMask => "selection mask",
+            Self::TransformScratch => "transform scratch",
+            Self::TransformDestination => "transform destination",
+            Self::TransformMask => "transform mask",
+            Self::FillDestination => "fill destination",
+        }
+    }
+}
+
+/// How many of the pool's textures each [`AllocSource`] is holding.
+///
+/// An array rather than a `HashMap<AllocSource, usize>`, which is what this was: the
+/// map cost a hash on every acquire *and* every release, both under the pool's lock,
+/// to serve one `tracing::debug!`. Indexing by discriminant makes the same census an
+/// increment.
+#[derive(Default)]
+struct Census([usize; AllocSource::ALL.len()]);
+
+impl Census {
+    /// The slot for `source`, or `None` for a variant missing from
+    /// [`AllocSource::ALL`] — see there for why that degrades rather than panics.
+    fn slot(&mut self, source: AllocSource) -> Option<&mut usize> {
+        self.0.get_mut(source as usize)
+    }
+
+    fn add(&mut self, source: AllocSource) {
+        if let Some(live) = self.slot(source) {
+            *live += 1;
+        }
+    }
+
+    fn remove(&mut self, source: AllocSource) {
+        if let Some(live) = self.slot(source) {
+            // Saturating rather than asserted: this runs from `Drop`, where a panic
+            // during an unwind is an abort, and a miscount is a wrong log line.
+            *live = live.saturating_sub(1);
+        }
+    }
+}
+
+impl std::fmt::Debug for Census {
+    /// Only the sources actually holding something, by name — which is both shorter
+    /// and more useful than the map's output, since that printed in whatever order
+    /// the hashing gave and kept every source it had ever seen, at zero.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(
+                AllocSource::ALL
+                    .iter()
+                    .zip(self.0)
+                    .filter(|(_, live)| *live > 0)
+                    .map(|(source, live)| (source.name(), live)),
+            )
+            .finish()
+    }
 }
 
 /// A recycled texture **and the view onto it**, as the free list holds them.
@@ -121,12 +219,7 @@ impl Drop for GpuTex {
             tex,
             view: self.view.clone(),
         });
-        // Saturating rather than asserted. Every acquire records its source, so a
-        // missing entry is unreachable — and an unreachable branch is not worth the
-        // abort that reaching it from a `Drop` would cost.
-        if let Some(live) = inner.sources.get_mut(&self.source) {
-            *live = live.saturating_sub(1);
-        }
+        inner.sources.remove(self.source);
     }
 }
 
@@ -250,8 +343,8 @@ struct PoolInner {
     peak: usize,
     /// Acquires left before the epoch ends ([`TRIM_INTERVAL`]).
     countdown: u32,
-    /// Current allocation sources.
-    sources: HashMap<AllocSource, usize>,
+    /// Who is holding this pool's textures right now.
+    sources: Census,
 }
 
 impl Default for PoolInner {
@@ -264,7 +357,7 @@ impl Default for PoolInner {
             capacity: 0,
             peak: 0,
             countdown: TRIM_INTERVAL,
-            sources: HashMap::new(),
+            sources: Census::default(),
         }
     }
 }
@@ -405,7 +498,7 @@ impl TilePool {
         let pool = self.format_pools.get(&format).expect("unsupported format");
         let Pooled { tex, view } = {
             let mut pool = pool.lock().expect("tile pool poisoned");
-            *pool.sources.entry(source).or_default() += 1;
+            pool.sources.add(source);
             let slot = match pool.free.pop() {
                 Some(slot) => slot,
                 None => {
@@ -465,6 +558,54 @@ impl TilePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`Census`] indexes by discriminant, so a slot only means anything if
+    /// [`AllocSource::ALL`] lists the variants in that order. Reordering the enum
+    /// without reordering the array would silently attribute every acquire to the
+    /// wrong subsystem — a wrong answer to the one question the census exists for,
+    /// and one nothing else would contradict.
+    #[test]
+    fn a_census_slot_belongs_to_the_source_that_indexes_it() {
+        for (i, source) in AllocSource::ALL.iter().enumerate() {
+            assert_eq!(
+                *source as usize, i,
+                "{source:?} is listed at {i} but indexes {}",
+                *source as usize,
+            );
+        }
+        // And every variant has a slot to land in: a new one missing from `ALL`
+        // would index past the end and go uncounted.
+        let mut census = Census::default();
+        for source in AllocSource::ALL {
+            assert!(
+                census.slot(source).is_some(),
+                "{source:?} has no census slot",
+            );
+        }
+    }
+
+    /// The census reports who is holding textures, and stops reporting a source once
+    /// it has handed everything back — the map it replaced kept every source it had
+    /// ever seen, at zero.
+    #[test]
+    fn the_census_names_only_live_sources() {
+        let mut census = Census::default();
+        census.add(AllocSource::StrokeScratch);
+        census.add(AllocSource::StrokeScratch);
+        census.add(AllocSource::FillDestination);
+        let live = format!("{census:?}");
+        assert!(live.contains("stroke scratch"), "{live}");
+        assert!(live.contains("fill destination"), "{live}");
+        assert!(
+            !live.contains("unknown"),
+            "reported a source holding nothing: {live}"
+        );
+
+        census.remove(AllocSource::FillDestination);
+        let live = format!("{census:?}");
+        assert!(!live.contains("fill destination"), "{live}");
+        assert!(live.contains("stroke scratch"), "{live}");
+    }
 
     /// **A trim may never take a texture the epoch needed**, which is the one way
     /// this policy could hurt: it runs on the acquire path, so getting it wrong
