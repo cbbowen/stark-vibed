@@ -109,7 +109,7 @@ pub enum ExportScale {
     /// It exists so asking that question does not require answering a harder one
     /// first. The navigator used to ask for a 1× plan purely to learn the rect's
     /// size, then scale that itself — which meant a piece wider than
-    /// [`MAX_EXPORT_DIM`] failed the query for a render it was never going to make,
+    /// [`max_export_dim`] failed the query for a render it was never going to make,
     /// and the miniature quietly stopped refreshing at the size where an overview
     /// starts to matter most.
     ///
@@ -155,10 +155,27 @@ impl ExportPlan {
     }
 }
 
-/// Largest exported edge, in px. Guards against a stray zero-ish frame or a huge
-/// scale asking for a texture the device will refuse — reported as an error rather
-/// than surfacing as a wgpu validation panic.
-const MAX_EXPORT_DIM: u32 = 8192;
+/// Largest exported edge, in px: **the device's own texture limit**, so a stray
+/// zero-ish frame or a huge scale is reported as an error rather than surfacing as a
+/// wgpu validation panic.
+///
+/// Asked of the device rather than fixed at a number, because the number was wrong in
+/// the dangerous direction. `wgpu::Limits::default()` caps 2D textures at 8192 and the
+/// frontend requests that, so on the app's device the two agreed by coincidence; the
+/// headless device ([`GpuContext::headless`]) requests only `downlevel_defaults` —
+/// 2048, the web/WebGL2 floor — and there a 4096-px export passed a check written
+/// against 8192 and then asked for a texture the device was never granted. A guard
+/// that has to be kept in step with a limit it does not read is a guard that is
+/// already out of step somewhere.
+///
+/// It also lets the ceiling *rise*: the adapters this runs on report far more than
+/// 8192 (32768 is common), so a frontend that requests more gets more, and this
+/// follows it with nothing to update.
+///
+/// [`GpuContext::headless`]: crate::gpu::GpuContext::headless
+fn max_export_dim(gpu: &GpuContext) -> u32 {
+    gpu.device.limits().max_texture_dimension_2d
+}
 
 /// Which layers an eyedropper sample is taken from (§18.0.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -1259,9 +1276,10 @@ impl Engine {
             (w * zoom).round().max(1.0) as u32,
             (h * zoom).round().max(1.0) as u32,
         );
-        if size.width > MAX_EXPORT_DIM || size.height > MAX_EXPORT_DIM {
+        let limit = max_export_dim(&self.gpu);
+        if size.width > limit || size.height > limit {
             return Err(EngineError::Export(format!(
-                "export is {} × {} px; the limit is {MAX_EXPORT_DIM}",
+                "export is {} × {} px; this device's limit is {limit}",
                 size.width, size.height
             )));
         }

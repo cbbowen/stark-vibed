@@ -398,12 +398,72 @@ fn impossible_exports_are_errors() {
     );
 }
 
+/// The export limit is **the device's own**, and everything inside it really renders.
+///
+/// It used to be the literal 8192. `wgpu::Limits::default()` happens to cap 2D
+/// textures there and the frontend requests that, so on the app's device the two
+/// agreed by coincidence — but the headless device asks for `downlevel_defaults`
+/// (2048, the web/WebGL2 floor), and there every size from 2049 to 8192 passed a
+/// check written against a limit the device did not have, then asked wgpu for a
+/// texture it was never granted. The permissive direction, from the one guard whose
+/// whole job is to report that in words instead.
+///
+/// Both halves matter. Refusing one past the limit is the easy one; *rendering* the
+/// one exactly at it is what says the number is real and not merely arithmetic
+/// agreeing with itself.
+#[test]
+fn the_export_limit_is_the_devices_own() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let limit = engine.gpu().device.limits().max_texture_dimension_2d;
+    let frame = add_frame(&mut engine);
+
+    // A square frame `limit` px on a side: at 1:1 that is the largest export this
+    // device can make, whatever this device happens to be.
+    engine.process(DocCommand::SetMatteRect(
+        frame,
+        Vec2::ZERO,
+        Vec2::splat(limit as f32),
+    ));
+    let plan = engine
+        .export_plan(Some(frame), ExportScale::Factor(1.0))
+        .expect("an export exactly at the device limit is allowed");
+    assert_eq!((plan.size.width, plan.size.height), (limit, limit));
+    let img = pollster::block_on(
+        engine
+            .export(
+                &mut Offscreen::default(),
+                Some(frame),
+                ExportScale::Factor(1.0),
+                Background::Substrate,
+                Rendered::Committed,
+            )
+            .expect("export at the limit"),
+    );
+    assert_eq!((img.width, img.height), (limit, limit));
+
+    // One pixel more is refused in the engine's words, not wgpu's.
+    engine.process(DocCommand::SetMatteRect(
+        frame,
+        Vec2::ZERO,
+        Vec2::splat(limit as f32 + 1.0),
+    ));
+    let err = engine
+        .export_plan(Some(frame), ExportScale::Factor(1.0))
+        .expect_err("one px past the device limit must be refused");
+    assert!(
+        format!("{err}").contains(&limit.to_string()),
+        "the refusal should name the limit it is against, got: {err}"
+    );
+}
+
 /// A piece too large to export at 1:1 can still be *previewed* (§15.6).
 ///
 /// The navigator asks for the largest plan that fits its panel, and that question has
 /// to be answerable for any piece at all — the miniature matters most on the ones too
 /// big to see. It used to be asked as a 1× plan (to learn the rect) followed by a
-/// scaled one, which made a piece past `MAX_EXPORT_DIM` fail the query for a render
+/// scaled one, which made a piece past the device's texture limit fail the query for a render
 /// that was never going to happen: `draw_overview` returned `None` and the panel went
 /// on quietly showing a stale picture.
 #[test]
@@ -413,8 +473,8 @@ fn a_piece_past_the_export_limit_still_has_an_overview() {
         return;
     };
     let frame = add_frame(&mut engine);
-    // Wider and taller than the 8192-px cap, and not square, so the fit has to
-    // respect the binding axis rather than whichever it looked at first.
+    // Past any device's texture limit, and not square, so the fit has to respect the
+    // binding axis rather than whichever it looked at first.
     engine.process(DocCommand::SetMatteRect(
         frame,
         Vec2::ZERO,

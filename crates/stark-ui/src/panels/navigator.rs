@@ -114,8 +114,8 @@ fn overview_frame(o: &ObservableState) -> Option<LayerId> {
 /// first, purely to learn the rect's size, and work the fitting scale out here. That
 /// put a whole extra question in the way of the answer — and one with a stricter
 /// precondition than the render it was standing in for, since a 1× plan of a piece
-/// past `MAX_EXPORT_DIM` is refused as a texture no device would allocate. Past about
-/// 8k of painting or frame the first call therefore failed, `draw_overview` returned
+/// past the device's texture limit is refused as a texture it could not allocate.
+/// Past that much painting or frame the first call therefore failed, `draw_overview` returned
 /// `None`, and the panel silently went on showing a stale miniature at exactly the
 /// size where an overview earns its place. [`ExportScale::Fit`] asks the engine the
 /// question the panel has — "the largest that fits this box" — and nothing about the

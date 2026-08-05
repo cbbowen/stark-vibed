@@ -622,12 +622,26 @@ exact `Width`, and `Fit`ting a box on both axes. The third is the navigator's
 (§11), and it is in the engine rather than in the panel for a reason worth
 recording. The panel used to ask for a **1× plan purely to learn the rect's size**
 and work the fitting scale out itself — which put a question with a *stricter*
-precondition in front of the one it wanted, since a 1× plan of a piece past
-`MAX_EXPORT_DIM` is refused as a texture no device would allocate. Past ~8k of
-painting or frame the query failed, `draw_overview` returned `None`, and the
+precondition in front of the one it wanted, since a 1× plan of a piece past the
+device's `max_texture_dimension_2d` is refused as a texture it could not
+allocate. Past that much painting or frame the query failed (on the app's device
+around 8k), `draw_overview` returned `None`, and the
 miniature silently went on showing a stale picture at exactly the size where an
 overview earns its place. A preview must be answerable for a piece of *any* size,
 so the question it asks may not be routed through one that isn't.
+
+**What "too large" means is asked of the device, not written down.** `export_plan`
+refuses a size past `device.limits().max_texture_dimension_2d` so a huge scale
+comes back as an error rather than a wgpu validation panic. That used to be the
+literal 8192, and the literal was wrong in the *permissive* direction:
+`wgpu::Limits::default()` caps 2D textures there and the frontend requests it, so
+on the app's device the two agreed by coincidence — but the headless device
+(`GpuContext::headless`) asks for `downlevel_defaults`, the 2048-px web/WebGL2
+floor, and every size from 2049 to 8192 passed a check written against a limit
+that device did not have. A guard kept in step with a limit it does not read is a
+guard already out of step somewhere. Reading it also lets the ceiling *rise*: the
+adapters this runs on report far more (32768 is common), so a frontend that
+requests more gets more, with nothing here to update.
 
 **Export is `async`, and had to be.** Reading pixels back off the GPU is the one
 inherently asynchronous GPU operation (§7), and it is the one place native and
