@@ -71,7 +71,7 @@ impl Engine {
         self.actor = actor;
         self.session.adopt_identity(identity);
         self.outbox_enabled = true;
-        self.doc_preview = None;
+        self.preview.set_doc(None);
         self.committed_changed();
         // New actor, new layer-id space: this client's counter restarts, and the
         // pre-share layers keep the `SOLO` ids they were minted with.
@@ -177,7 +177,22 @@ impl Engine {
     /// which is not a wrong picture but a `DocState`'s worth of tile handles the pool
     /// cannot reclaim — invisible until the GPU runs out. Countable here instead.
     pub fn live_head_count(&self) -> usize {
-        self.heads.len()
+        self.preview.head_count()
+    }
+
+    /// The preview's invalidation epoch (§17.6): a counter that advances whenever the
+    /// document the in-flight gestures are composited onto is replaced — by a commit,
+    /// an undo, a remote merge, a load, or an unlogged drag preview being installed or
+    /// dropped. A cached head stamped with an older value is discarded.
+    ///
+    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count).
+    /// Pixels cannot stand in for it: a drag preview that changes no *tiles* — the
+    /// substrate colour, say — leaves a stale head drawing exactly the right paint, so
+    /// the picture is right while the rule that keeps it right has been broken. It only
+    /// becomes visible for a preview that does move tiles, by which point the cause is
+    /// several commands behind.
+    pub fn preview_epoch(&self) -> u64 {
+        self.preview.epoch()
     }
 
     // --- the presence channel (§17.4) -----------------------------------

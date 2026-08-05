@@ -595,6 +595,72 @@ fn a_settled_head_does_not_outlive_its_gesture() {
     assert_eq!(engine.live_head_count(), 0);
 }
 
+/// **Every path that replaces the base a preview is drawn over moves the epoch**
+/// (§17.6) — including dropping the unlogged drag preview when nothing else about
+/// the command took effect.
+///
+/// A cached head is stamped with the epoch of the base it was composited onto, and
+/// while a drag is in flight that base *is* the drag preview. So taking the preview
+/// away has to move the epoch, or the next fold reuses a head built over the
+/// previewed document on top of the committed one.
+///
+/// `Seek` is the arm that used to get this wrong: it cleared the preview slot up
+/// front and bumped the epoch only inside `if self.timeline.seek(..)`, so a seek that
+/// declined dropped one without the other. `Preview::set_doc` is now the only way to
+/// move the slot and it bumps as it goes, which is what makes the whole class
+/// unrepresentable rather than fixed one arm at a time.
+///
+/// Asserted on the epoch rather than on pixels, and deliberately: a preview that
+/// changes no *tiles* leaves a stale head drawing exactly the right paint, so the
+/// picture stays right while the rule that keeps it right is broken. Pixels only
+/// notice for a preview that moves tiles, by which point the cause is several
+/// commands behind — see [`Engine::preview_epoch`].
+#[test]
+fn every_replacement_of_the_preview_base_moves_the_epoch() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let moved = |engine: &mut Engine, was: u64, what: &str| -> u64 {
+        let now = engine.preview_epoch();
+        assert!(now > was, "{what} must invalidate the cached heads");
+        now
+    };
+
+    let e0 = engine.preview_epoch();
+    // Installing a drag preview replaces the base the fold composites onto.
+    engine.process(ViewCommand::PreviewBackground(Some([0.2, 0.4, 0.9])));
+    let e1 = moved(&mut engine, e0, "installing a drag preview");
+
+    // A commit, obviously — and it supersedes the drag, which is the other half.
+    engine.process(ViewCommand::SetBrush(common::brush(RED, 12.0)));
+    paint(&mut engine, RED, 12.0, &CROSSING);
+    let e2 = moved(&mut engine, e1, "a commit");
+
+    // Undo and redo each replace it too.
+    engine.process(DocCommand::Undo);
+    let e3 = moved(&mut engine, e2, "an undo");
+    engine.process(DocCommand::Redo);
+    let e4 = moved(&mut engine, e3, "a redo");
+
+    // The case the epoch used to miss: a drag preview up, and a `Seek` that declines
+    // to move the playhead. The slot is dropped either way, so the epoch must move
+    // either way.
+    engine.process(ViewCommand::PreviewBackground(Some([0.9, 0.3, 0.1])));
+    let e5 = moved(&mut engine, e4, "installing a second drag preview");
+    let at = engine.scrub_range().map_or(0, |(at, _)| at);
+    engine.process(DocCommand::Seek(at));
+    let e6 = moved(
+        &mut engine,
+        e5,
+        "a seek that drops the drag preview but declines",
+    );
+
+    // And loading, which throws the whole cache away.
+    let file = engine.document_file();
+    engine.load_document(&file);
+    moved(&mut engine, e6, "a load");
+}
+
 /// A collaborator's selection outline is off by default and drawn only when this
 /// client asks for it — a view setting, so it changes what you look at and nothing
 /// about the drawing (§17.3). Your own outline is unaffected either way.

@@ -387,9 +387,7 @@ impl Engine {
         self.timeline = Box::new(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface),
         ));
-        self.doc_preview = None;
-        self.live = None;
-        self.heads.clear();
+        self.preview.clear();
         self.peers.clear();
         self.committed_changed();
         self.clock = 0;

@@ -1,23 +1,269 @@
 //! The live preview fold: the committed document with every in-flight gesture drawn
 //! over it (§17.6).
 //!
-//! Two caches make this affordable, and both are stated here rather than spread
-//! across the call sites that would otherwise have to maintain them.
+//! Two caches make this affordable — the folded document itself, and a
+//! [`FrozenHead`] per stroke in flight — and one rule keeps them honest. The fitter
+//! freezes a prefix of control points it will never revise, so the spans they
+//! determine are final: render them once, keep the result, and each pointer move
+//! only draws the short live tail over it.
 //!
-//! [`FrozenHead`] is the per-stroke one: the fitter freezes a prefix of control
-//! points it will never revise, so the spans they determine are final and can be
-//! rendered once instead of on every pointer move. [`Engine::doc_epoch`] is the
-//! invalidation rule that makes keeping one safe — anything that replaces the
-//! document a head was composited onto bumps it, and a head from an earlier epoch is
-//! discarded rather than drawn over a canvas that no longer exists.
+//! The rule is an **epoch**. Anything that replaces the document a head was
+//! composited onto bumps [`Preview::epoch`], and a head stamped with an older one is
+//! discarded rather than drawn over a canvas that no longer exists — which rules out
+//! the whole class of "drawn over a base that has since moved" instead of
+//! enumerating the ways it arises.
+//!
+//! [`Preview`] exists so that stays true. The four pieces of state it holds are one
+//! thing with one invariant, and they used to be four fields of [`Engine`] that any
+//! method could set: three of the epoch's five bumps were spelled out at their call
+//! sites, and the drag-preview slot could be — and in one arm was — cleared without
+//! bumping it at all. Here the slot cannot move without the epoch moving with it,
+//! because [`Preview::set_doc`] is the only way to move it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
-use crate::document::{ActorId, DocState, LayerId, StrokeRecord};
+use crate::document::{ActorId, ApplyCtx, DocState, LayerId, StrokeRecord};
 use crate::geom::TileCoord;
 use crate::gpu::StrokeSpans;
 use crate::peer::{GestureView, LiveGesture, Peer};
+
+/// What is being *shown* over the committed document, and the caches that make
+/// showing it affordable (§17.6).
+///
+/// The fields are private to this module and there is no setter for any of them
+/// individually: the two that can invalidate a cached head — the drag-preview
+/// document and the committed one underneath it — move only through
+/// [`set_doc`](Self::set_doc) and [`invalidate`](Self::invalidate), each of which
+/// bumps the epoch as it goes. That is the whole reason the type exists.
+#[derive(Default)]
+pub(super) struct Preview {
+    /// The unlogged document edit in flight: a whole document that stands in for
+    /// the committed one, because what these edits change — a matte's rect
+    /// (§15.7), the substrate colour (§15.5) — is document state rather than a
+    /// tile edit, so there is nothing to draw *over* the document the way a stroke
+    /// preview does. One slot, not one per kind: only one such drag can be in
+    /// flight at a time (they all belong to a single held pointer), and the
+    /// stand-in is built from the committed state each time, so a second kind
+    /// starting mid-drag supersedes the first rather than compounding with it.
+    /// `None` when nothing is being dragged.
+    doc: Option<DocState>,
+    /// The committed state (or `doc`) with every in-flight gesture — this client's
+    /// and every peer's — drawn over it. `None` when nobody is mid-gesture.
+    live: Option<DocState>,
+    /// The settled head of each in-flight stroke, keyed by its author (see
+    /// [`FrozenHead`]). Every head is rooted at the *committed* document rather than
+    /// at the previous peer's preview: chaining would be marginally more faithful
+    /// for two strokes overlapping in the same instant, and would invalidate peer
+    /// *k*'s cache on every move by peers before it — collapsing the incremental
+    /// repaint exactly when two people are painting at once.
+    heads: BTreeMap<ActorId, FrozenHead>,
+    /// Bumped whenever the document the previews are composited onto changes. A
+    /// [`FrozenHead`] stamped with an older epoch is stale and discarded.
+    epoch: u64,
+}
+
+impl Preview {
+    /// Note that the document the previews are drawn over has been replaced, so
+    /// every cached head is stale. The committed document moving is one cause; the
+    /// drag preview standing in for it is the other, and [`set_doc`](Self::set_doc)
+    /// routes through here rather than restating it.
+    pub(super) fn invalidate(&mut self) {
+        self.epoch += 1;
+    }
+
+    /// Install (or, with `None`, drop) the stand-in document for an unlogged edit in
+    /// flight. **The only way to move that slot**, so the epoch cannot be left behind
+    /// — the gesture previews are composited onto this, and moving it invalidates
+    /// every cached head exactly as a commit would.
+    pub(super) fn set_doc(&mut self, doc: Option<DocState>) {
+        self.doc = doc;
+        self.invalidate();
+    }
+
+    /// Forget everything: no drag in flight, no fold, no heads. For loading a
+    /// different document, where none of it describes anything any more.
+    pub(super) fn clear(&mut self) {
+        self.doc = None;
+        self.live = None;
+        self.heads.clear();
+        self.invalidate();
+    }
+
+    /// The document as it should be *shown*: the fold if there is one, else the
+    /// unlogged edit in flight, else `committed`.
+    pub(super) fn presented<'a>(&'a self, committed: &'a DocState) -> &'a DocState {
+        self.live
+            .as_ref()
+            .or(self.doc.as_ref())
+            .unwrap_or(committed)
+    }
+
+    /// The unlogged edit in flight, for the presentation properties that must track a
+    /// drag rather than lag on the committed value (§15.5, §15.7).
+    pub(super) fn doc(&self) -> Option<&DocState> {
+        self.doc.as_ref()
+    }
+
+    /// How many strokes in flight have a settled head cached — at most one per actor
+    /// currently drawing one.
+    pub(super) fn head_count(&self) -> usize {
+        self.heads.len()
+    }
+
+    /// The invalidation epoch a cached head is stamped against.
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Rebuild the fold: `committed` (or the drag standing in for it) with every
+    /// in-flight gesture composited over it, in ascending [`ActorId`] order (§17.6).
+    ///
+    /// The order is fixed and derivable, so every client folds the same picture. Each
+    /// stroke is rendered against the *committed* base and then overlaid tile-wise,
+    /// rather than chained peer-over-peer: chaining would invalidate one peer's
+    /// cached head on every move of the peers before it, which is precisely when two
+    /// people are painting at once and the cache matters most. Where two live strokes
+    /// touch the same tile in the same instant, the higher `ActorId` wins it — and a
+    /// preview of concurrent strokes is provisional in any case, because the true
+    /// result depends on the total order, which is not known until both commit.
+    ///
+    /// The head cache is rebuilt into a **fresh** map rather than edited in place,
+    /// which is what bounds it: a head is kept by being carried over, so one whose
+    /// gesture is no longer in flight is dropped by construction rather than by a call
+    /// somebody has to remember to make. Edited in place it was kept instead — the
+    /// only cleanup was the wholesale clear on the "nobody is gesturing" path, so a
+    /// peer that lifted while another went on painting left its head behind, and with
+    /// it a whole `DocState`'s worth of `Arc<GpuTile>` handles the pool could not
+    /// reclaim. Exactly while two people are painting, which is when there is least to
+    /// spare.
+    fn rebuild(&mut self, ctx: &ApplyCtx, committed: &DocState, gestures: Vec<GestureView>) {
+        if gestures.is_empty() {
+            self.live = None;
+            self.heads.clear();
+            return;
+        }
+        let base = self.doc.clone().unwrap_or_else(|| committed.clone());
+        let mut out = base.clone();
+        // Last fold's cache to draw from, and this fold's to fill: what is not moved
+        // across is released when `cached` drops at the end of the call.
+        let mut cached = std::mem::take(&mut self.heads);
+        let mut heads = BTreeMap::new();
+        for GestureView {
+            actor,
+            gesture,
+            ordinal,
+            frozen_spans: frozen,
+        } in gestures
+        {
+            match gesture {
+                LiveGesture::Selection(op) => {
+                    // A marquee previews as the mask it will commit — the very same
+                    // call `Select` makes (§6.8), so what is previewed is what lands.
+                    let prev = base.selection_of(actor);
+                    if let Some(selection) = ctx.selection.apply(&ctx.pool, &prev, &op) {
+                        out = out.with_selection(actor, selection);
+                    }
+                }
+                // A fill previews as the paint it will lay, not as an outline of
+                // where it would go — the same `FillRenderer::apply` the commit
+                // makes, over the same base, so what is on screen mid-drag is
+                // literally the result. Losslessly, and thrown away and redone on
+                // each move rather than accumulated, which is what keeps dragging a
+                // rectangle out from stacking a hundred glazes.
+                LiveGesture::Fill { layer, op } => {
+                    if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
+                        let gate = base.selection_of(actor);
+                        if let Some(filled) = ctx.fill.apply(&ctx.pool, &tiles, &gate, &op) {
+                            out = out.map_layer(layer, |l| l.with_tiles(filled));
+                        }
+                    }
+                }
+                LiveGesture::Stroke(rec) => {
+                    let head = cached.remove(&actor).filter(|h| {
+                        h.epoch == self.epoch && h.gesture == ordinal && h.spans <= frozen
+                    });
+                    let (head, tail_state) =
+                        self.render_live_stroke(ctx, actor, &base, &rec, frozen, head, ordinal);
+                    out = overlay_tiles(&out, rec.layer, &tail_state, &head.dirty);
+                    heads.insert(actor, head);
+                }
+            }
+        }
+        self.heads = heads;
+        self.live = Some(out);
+    }
+
+    /// Advance one stroke's frozen head and render its live tail, returning the head
+    /// to keep and the state the tail left behind.
+    ///
+    /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
+    /// the live preview and the `Action::apply` that replaces it draw the same pixels.
+    #[allow(clippy::too_many_arguments)]
+    fn render_live_stroke(
+        &self,
+        ctx: &ApplyCtx,
+        author: ActorId,
+        base: &DocState,
+        rec: &StrokeRecord,
+        frozen: usize,
+        head: Option<FrozenHead>,
+        ordinal: u64,
+    ) -> (FrozenHead, DocState) {
+        // A stroke cannot freeze a span whose pixels are still measured against a
+        // length the stroke has not reached — the taper, from the *ends* of the whole
+        // stroke, and the touch-down dab, which the stroke has not yet outrun. Both
+        // are ends still under the pointer. Held back here rather than in the fitter
+        // because it is a fact about the brush, not about the curve — the same control
+        // points freeze at the same place for every brush of the same size (see
+        // `safe_frozen`). An already-kept head is unaffected: a prefix this admitted
+        // once stays admissible, so the clamp can only slow the head down, never
+        // invalidate it.
+        let frozen = crate::gpu::stroke::safe_frozen(rec, frozen);
+        // Nothing cached, or the fit went backwards (a new stroke): start over from
+        // the committed document, with a fresh (uncharged) brush.
+        let mut head = head.unwrap_or_else(|| FrozenHead {
+            spans: 0,
+            dist: 0.0,
+            tool: None,
+            state: base.clone(),
+            gesture: ordinal,
+            epoch: self.epoch,
+            dirty: BTreeSet::new(),
+        });
+        if frozen > head.spans {
+            head = advance_head(ctx, author, head, rec, frozen);
+        }
+
+        let all = crate::path::span_count(rec.path.len());
+        let tail = StrokeSpans {
+            range: head.spans..all,
+            dist: head.dist,
+        };
+        // The diagnostic recolours only what this move actually redrew, so the seam
+        // between tinted and untinted paint *is* the freezing boundary. Build-time
+        // only (the `debug-unfrozen` feature): a shipping build has no code path that
+        // paints the tail in anything but the stroke's own colour.
+        #[cfg(feature = "debug-unfrozen")]
+        let tinted = {
+            let mut r = rec.clone();
+            r.brush.color = DEBUG_UNFROZEN_COLOR;
+            r
+        };
+        #[cfg(feature = "debug-unfrozen")]
+        let tail_rec = &tinted;
+        #[cfg(not(feature = "debug-unfrozen"))]
+        let tail_rec = rec;
+        // The tail reaches the end of the stroke, so the state it leaves the brush in
+        // is handed to nobody — it is thrown away and rebuilt from the head on the next
+        // move, which is exactly what makes the tail re-renderable. Its dirty tiles,
+        // though, are part of what the fold has to overlay, so they join the head's.
+        let (state, carry) =
+            render_span_range(ctx, author, &head.state, tail_rec, tail, head.tool.as_ref());
+        head.dirty.extend(carry.dirty);
+        (head, state)
+    }
+}
 
 /// Colour the live tail is drawn in under the `debug-unfrozen` feature.
 /// Full-opacity magenta: it has to read against paint of any hue, and against the
@@ -54,18 +300,23 @@ pub(super) struct FrozenHead {
     /// span count alone cannot tell a new stroke from a continued one when the new
     /// one has already grown past where the old was frozen.
     gesture: u64,
-    /// The base this head was composited onto ([`Engine::doc_epoch`]). Anything that
-    /// replaces the base — a commit, an undo, a remote merge, a load — bumps the
-    /// epoch, and a head from an earlier one is discarded rather than drawn over a
-    /// canvas that no longer exists.
+    /// The base this head was composited onto ([`Preview::epoch`]). Anything that
+    /// replaces the base — a commit, an undo, a remote merge, a load, a drag preview
+    /// — bumps the epoch, and a head from an earlier one is discarded rather than
+    /// drawn over a canvas that no longer exists.
     epoch: u64,
     /// Every tile the head has rewritten so far, so the fold knows what to overlay
     /// (§17.6). Accumulated because a head grows across many advances.
     dirty: BTreeSet<TileCoord>,
 }
+
 impl Engine {
-    /// Install (or, with `None`, drop) the stand-in document for an unlogged edit
-    /// in flight — the shared tail of every `Preview*` command.
+    /// The document as it should be *shown*: the fold if there is one, else the
+    /// unlogged edit in flight, else the committed state.
+    pub(super) fn presented(&self) -> &DocState {
+        self.preview.presented(self.timeline.current())
+    }
+
     /// The document as a `Transform` commit of `map` would leave it, built
     /// through the **same renderer** the commit uses — which is what makes
     /// the preview lossless and exact: what is shown is what "Done" will produce
@@ -90,108 +341,21 @@ impl Engine {
         )
     }
 
+    /// Install (or, with `None`, drop) the unlogged edit in flight and refold — the
+    /// shared tail of every `Preview*` command.
     pub(super) fn set_doc_preview(&mut self, preview: Option<DocState>) {
-        self.doc_preview = preview;
-        // The gesture previews are composited onto this, so moving it invalidates
-        // every cached head exactly as a commit would.
-        self.doc_epoch += 1;
+        self.preview.set_doc(preview);
         self.refresh_live();
     }
 
-    /// The document as it should be *shown*: the committed state, or the unlogged
-    /// edit in flight standing in for it, with every in-flight gesture drawn over
-    /// the top.
-    pub(super) fn presented(&self) -> &DocState {
-        self.live
-            .as_ref()
-            .or(self.doc_preview.as_ref())
-            .unwrap_or_else(|| self.timeline.current())
-    }
-
-    /// Rebuild [`Self::live`]: the committed document (or the frame drag standing in
-    /// for it) with every in-flight gesture composited over it, this client's and
-    /// every peer's, in ascending [`ActorId`] order (§17.6).
-    ///
-    /// The order is fixed and derivable, so every client folds the same picture. Each
-    /// stroke is rendered against the *committed* base and then overlaid tile-wise,
-    /// rather than chained peer-over-peer: chaining would invalidate one peer's
-    /// cached head on every move of the peers before it, which is precisely when two
-    /// people are painting at once and the cache matters most. Where two live strokes
-    /// touch the same tile in the same instant, the higher `ActorId` wins it — and a
-    /// preview of concurrent strokes is provisional in any case, because the true
-    /// result depends on the total order, which is not known until both commit.
-    ///
-    /// The cache is rebuilt into a **fresh** map rather than edited in place, which is
-    /// what bounds it: a head is kept by being carried over, so one whose gesture is no
-    /// longer in flight is dropped by construction rather than by a call somebody has
-    /// to remember to make. Edited in place it was kept instead — the only cleanup was
-    /// the wholesale `clear()` on the "nobody is gesturing" path above, so a peer that
-    /// lifted while another went on painting left its head behind, and with it a whole
-    /// `DocState`'s worth of `Arc<GpuTile>` handles that the pool could not reclaim.
-    /// Exactly while two people are painting, which is when there is least to spare.
+    /// Rebuild the fold and refresh the caches — the one call every mutation that can
+    /// change what is on screen ends with.
     pub(super) fn refresh_live(&mut self) {
         let gestures = self.live_gestures();
-        if gestures.is_empty() {
-            self.live = None;
-            self.heads.clear();
-            return;
-        }
-        let base = self
-            .doc_preview
-            .clone()
-            .unwrap_or_else(|| self.timeline.current().clone());
-        let mut out = base.clone();
-        // Last fold's cache to draw from, and this fold's to fill: what is not moved
-        // across is released when `cached` drops at the end of the call.
-        let mut cached = std::mem::take(&mut self.heads);
-        let mut heads = BTreeMap::new();
-        for GestureView {
-            actor,
-            gesture,
-            ordinal,
-            frozen_spans: frozen,
-        } in gestures
-        {
-            match gesture {
-                LiveGesture::Selection(op) => {
-                    // A marquee previews as the mask it will commit — the very same
-                    // call `Select` makes (§6.8), so what is previewed is what lands.
-                    let prev = base.selection_of(actor);
-                    if let Some(selection) =
-                        self.apply.selection.apply(&self.apply.pool, &prev, &op)
-                    {
-                        out = out.with_selection(actor, selection);
-                    }
-                }
-                // A fill previews as the paint it will lay, not as an outline of
-                // where it would go — the same `FillRenderer::apply` the commit
-                // makes, over the same base, so what is on screen mid-drag is
-                // literally the result. Losslessly, and thrown away and redone on
-                // each move rather than accumulated, which is what keeps dragging a
-                // rectangle out from stacking a hundred glazes.
-                LiveGesture::Fill { layer, op } => {
-                    if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
-                        let gate = base.selection_of(actor);
-                        if let Some(filled) =
-                            self.apply.fill.apply(&self.apply.pool, &tiles, &gate, &op)
-                        {
-                            out = out.map_layer(layer, |l| l.with_tiles(filled));
-                        }
-                    }
-                }
-                LiveGesture::Stroke(rec) => {
-                    let head = cached.remove(&actor).filter(|h| {
-                        h.epoch == self.doc_epoch && h.gesture == ordinal && h.spans <= frozen
-                    });
-                    let (head, tail_state) =
-                        self.render_live_stroke(actor, &base, &rec, frozen, head, ordinal);
-                    out = overlay_tiles(&out, rec.layer, &tail_state, &head.dirty);
-                    heads.insert(actor, head);
-                }
-            }
-        }
-        self.heads = heads;
-        self.live = Some(out);
+        // Disjoint fields, so the fold reads the context and the committed document
+        // while holding the preview mutably.
+        self.preview
+            .rebuild(&self.apply, self.timeline.current(), gestures);
     }
 
     /// Every gesture in flight, in ascending [`ActorId`] order.
@@ -206,74 +370,6 @@ impl Engine {
         out.extend(self.peers.iter().filter_map(Peer::gesture_view));
         out.sort_by_key(|g| g.actor);
         out
-    }
-
-    /// Advance one stroke's frozen head and render its live tail, returning the head
-    /// to keep and the state the tail left behind.
-    ///
-    /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
-    /// the live preview and the `Action::apply` that replaces it draw the same pixels.
-    fn render_live_stroke(
-        &self,
-        author: ActorId,
-        base: &DocState,
-        rec: &StrokeRecord,
-        frozen: usize,
-        head: Option<FrozenHead>,
-        ordinal: u64,
-    ) -> (FrozenHead, DocState) {
-        // A stroke cannot freeze a span whose pixels are still measured against a
-        // length the stroke has not reached — the taper, from the *ends* of the whole
-        // stroke, and the touch-down dab, which the stroke has not yet outrun. Both
-        // are ends still under the pointer. Held back here rather than in the fitter
-        // because it is a fact about the brush, not about the curve — the same control
-        // points freeze at the same place for every brush of the same size (see
-        // `safe_frozen`). An already-kept head is unaffected: a prefix this admitted
-        // once stays admissible, so the clamp can only slow the head down, never
-        // invalidate it.
-        let frozen = crate::gpu::stroke::safe_frozen(rec, frozen);
-        // Nothing cached, or the fit went backwards (a new stroke): start over from
-        // the committed document, with a fresh (uncharged) brush.
-        let mut head = head.unwrap_or_else(|| FrozenHead {
-            spans: 0,
-            dist: 0.0,
-            tool: None,
-            state: base.clone(),
-            gesture: ordinal,
-            epoch: self.doc_epoch,
-            dirty: BTreeSet::new(),
-        });
-        if frozen > head.spans {
-            head = self.advance_head(author, head, rec, frozen);
-        }
-
-        let all = crate::path::span_count(rec.path.len());
-        let tail = StrokeSpans {
-            range: head.spans..all,
-            dist: head.dist,
-        };
-        // The diagnostic recolours only what this move actually redrew, so the seam
-        // between tinted and untinted paint *is* the freezing boundary. Build-time
-        // only (the `debug-unfrozen` feature): a shipping build has no code path that
-        // paints the tail in anything but the stroke's own colour.
-        #[cfg(feature = "debug-unfrozen")]
-        let tinted = {
-            let mut r = rec.clone();
-            r.brush.color = DEBUG_UNFROZEN_COLOR;
-            r
-        };
-        #[cfg(feature = "debug-unfrozen")]
-        let tail_rec = &tinted;
-        #[cfg(not(feature = "debug-unfrozen"))]
-        let tail_rec = rec;
-        // The tail reaches the end of the stroke, so the state it leaves the brush in
-        // is handed to nobody — it is thrown away and rebuilt from the head on the next
-        // move, which is exactly what makes the tail re-renderable. Its dirty tiles,
-        // though, are part of what the fold has to overlay, so they join the head's.
-        let (state, carry) =
-            self.render_span_range(author, &head.state, tail_rec, tail, head.tool.as_ref());
-        head.dirty.extend(carry.dirty);
-        (head, state)
     }
 
     /// Dump the finished stroke's raw input as a pasteable Rust literal.
@@ -306,16 +402,18 @@ impl Engine {
         );
         self.debug_samples.clear();
     }
+}
 
-    /// Draw spans `head.spans..frozen` onto the frozen head, so the next move need
-    /// not draw them again.
-    fn advance_head(
-        &self,
-        author: ActorId,
-        head: FrozenHead,
-        rec: &StrokeRecord,
-        frozen: usize,
-    ) -> FrozenHead {
+/// Draw spans `head.spans..frozen` onto the frozen head, so the next move need
+/// not draw them again.
+fn advance_head(
+    ctx: &ApplyCtx,
+    author: ActorId,
+    head: FrozenHead,
+    rec: &StrokeRecord,
+    frozen: usize,
+) -> FrozenHead {
+    {
         let spans = StrokeSpans {
             range: head.spans..frozen,
             dist: head.dist,
@@ -326,7 +424,7 @@ impl Engine {
         // a second measurement here could hand the tail a distance the head never
         // reached — which `drain` and the colour-dynamics noise would both show.
         let (state, carry) =
-            self.render_span_range(author, &head.state, rec, spans, head.tool.as_ref());
+            render_span_range(ctx, author, &head.state, rec, spans, head.tool.as_ref());
         let mut dirty = head.dirty;
         dirty.extend(carry.dirty);
         FrozenHead {
@@ -341,66 +439,66 @@ impl Engine {
             dirty,
         }
     }
+}
 
-    /// Render one span range of the in-flight stroke over an arbitrary base, resuming
-    /// the brush from `tool` and reporting what the next range must resume from.
-    ///
-    /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
-    /// the live preview and the `Action::apply` that replaces it draw the same pixels.
-    fn render_span_range(
-        &self,
-        author: ActorId,
-        base: &DocState,
-        rec: &StrokeRecord,
-        spans: StrokeSpans,
-        tool: Option<&crate::gpu::stroke::ToolState>,
-    ) -> (DocState, crate::gpu::stroke::StrokeCarry) {
-        let carry_only = |dist| crate::gpu::stroke::StrokeCarry {
-            dist,
-            tool: None,
-            dirty: Vec::new(),
-        };
-        // A matte has no tile map, so it previews as nothing — matching the commit,
-        // which refuses the stroke outright (§15.7). Preview and
-        // commit agreeing is the §1.3 invariant, so the two refusals must line up.
-        let Some(tiles_base) = base.layer(rec.layer).and_then(|l| l.tiles()) else {
-            return (base.clone(), carry_only(spans.dist));
-        };
-        // The **author's** mask, exactly as the commit will read it — which is what
-        // lets one client's live stroke be reproduced faithfully on another's screen
-        // while their selections differ (§17.3).
-        let selection = base.selection_of(author);
-        // The ground this stroke is being laid on (§6.4) — the same texture
-        // `CommitStroke`'s apply will resolve, which is what `preview == committed`
-        // needs of the tooth.
-        //
-        // The registry's *in-use* surface, not a lookup by `base.surface`, and the two
-        // are the same thing here rather than nearly so: `apply_document_surface`
-        // holds `current()` equal to `document().surface` after every commit, undo,
-        // load and merge, and a live gesture cannot straddle a `SetSurface` because a
-        // gesture is not a logged action — any merge that switched the surface bumped
-        // `doc_epoch` and threw every frozen head away with it. Asserted rather than
-        // only argued, since it is a `&self` path that cannot build one on demand.
-        debug_assert_eq!(
-            base.surface,
-            self.apply.surfaces.id(),
-            "a live stroke is being drawn against a surface the document is not on",
-        );
-        let surface = self.apply.surfaces.current();
-        let (tiles, carry) = self.apply.stroke.render_range(
-            crate::gpu::stroke::StrokeScene {
-                pool: &self.apply.pool,
-                assets: &self.apply.assets,
-                base: tiles_base,
-                selection: &selection,
-                surface,
-            },
-            rec,
-            spans,
-            tool,
-        );
-        (base.map_layer(rec.layer, |l| l.with_tiles(tiles)), carry)
-    }
+/// Render one span range of the in-flight stroke over an arbitrary base, resuming
+/// the brush from `tool` and reporting what the next range must resume from.
+///
+/// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
+/// the live preview and the `Action::apply` that replaces it draw the same pixels.
+fn render_span_range(
+    ctx: &ApplyCtx,
+    author: ActorId,
+    base: &DocState,
+    rec: &StrokeRecord,
+    spans: StrokeSpans,
+    tool: Option<&crate::gpu::stroke::ToolState>,
+) -> (DocState, crate::gpu::stroke::StrokeCarry) {
+    let carry_only = |dist| crate::gpu::stroke::StrokeCarry {
+        dist,
+        tool: None,
+        dirty: Vec::new(),
+    };
+    // A matte has no tile map, so it previews as nothing — matching the commit,
+    // which refuses the stroke outright (§15.7). Preview and
+    // commit agreeing is the §1.3 invariant, so the two refusals must line up.
+    let Some(tiles_base) = base.layer(rec.layer).and_then(|l| l.tiles()) else {
+        return (base.clone(), carry_only(spans.dist));
+    };
+    // The **author's** mask, exactly as the commit will read it — which is what
+    // lets one client's live stroke be reproduced faithfully on another's screen
+    // while their selections differ (§17.3).
+    let selection = base.selection_of(author);
+    // The ground this stroke is being laid on (§6.4) — the same texture
+    // `CommitStroke`'s apply will resolve, which is what `preview == committed`
+    // needs of the tooth.
+    //
+    // The registry's *in-use* surface, not a lookup by `base.surface`, and the two
+    // are the same thing here rather than nearly so: `apply_document_surface`
+    // holds `current()` equal to `document().surface` after every commit, undo,
+    // load and merge, and a live gesture cannot straddle a `SetSurface` because a
+    // gesture is not a logged action — any merge that switched the surface bumped
+    // the preview's epoch and threw every frozen head away with it. Asserted rather
+    // than only argued, since it is a `&self` path that cannot build one on demand.
+    debug_assert_eq!(
+        base.surface,
+        ctx.surfaces.id(),
+        "a live stroke is being drawn against a surface the document is not on",
+    );
+    let surface = ctx.surfaces.current();
+    let (tiles, carry) = ctx.stroke.render_range(
+        crate::gpu::stroke::StrokeScene {
+            pool: &ctx.pool,
+            assets: &ctx.assets,
+            base: tiles_base,
+            selection: &selection,
+            surface,
+        },
+        rec,
+        spans,
+        tool,
+    );
+    (base.map_layer(rec.layer, |l| l.with_tiles(tiles)), carry)
 }
 
 /// Copy `dirty`'s tiles from `src`'s `layer` into `out` — the overlay step of the

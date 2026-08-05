@@ -493,13 +493,26 @@ Two related consequences:
   faithfully at all is that the mask it is being drawn through is replicated
   durably, in the log, where replay can find it.
 
-**Head invalidation is an epoch, not a blanket drop.** `Engine::doc_epoch` is
-bumped by everything that replaces the base a preview is drawn over (a commit, an
-undo, a remote merge, a load, a frame drag), and a `FrozenHead` stamped with an
-older epoch is discarded. That keeps §6.2's "rule out the whole class" guarantee
+**Head invalidation is an epoch, not a blanket drop.** The epoch is bumped by
+everything that replaces the base a preview is drawn over (a commit, an undo, a
+remote merge, a load, a frame drag), and a `FrozenHead` stamped with an older
+epoch is discarded. That keeps §6.2's "rule out the whole class" guarantee
 without the previous code's side effect of dropping the cache on *every*
 non-gesture command — which with peers painting would have thrown away their
 heads whenever this client so much as panned.
+
+The epoch, the fold, the head cache and the unlogged drag preview live together
+in one `Preview` type, and that is what makes the rule hold rather than merely
+state it. As four fields of `Engine` any method could move one without the
+others, and the epoch's bumps were written out at the call sites: `Seek` cleared
+the drag-preview slot up front and bumped only inside `if timeline.seek(..)`, so
+a seek that declined dropped the base a head was stamped against while leaving
+the stamp valid. Moving the slot now goes through one method that bumps as it
+goes, so the whole class is unrepresentable instead of fixed one arm at a time.
+It is also why the epoch is *observable* (`Engine::preview_epoch`) despite being
+a cache detail: a drag preview that changes no tiles leaves a stale head drawing
+exactly the right paint, so nothing on screen can tell you the rule has been
+broken until a later preview moves tiles and the cause is long gone.
 
 **A head's lifetime is its gesture's.** The epoch above says when a head is
 *wrong*; this says when it stops being anyone's. The fold rebuilds the cache into

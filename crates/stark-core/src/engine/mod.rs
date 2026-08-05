@@ -29,10 +29,7 @@ mod live;
 mod pick;
 mod render;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
-
-use live::FrozenHead;
 
 pub use collab::PresenceTick;
 pub use pick::{PickOptions, PickSource};
@@ -288,42 +285,27 @@ pub struct Engine {
     /// to hand in its own. `max` because a clock that steps backwards must not
     /// un-expire a peer, whatever the frontend hands in.
     now: f64,
-    /// The unlogged document edit in flight: a whole document that stands in for
-    /// the committed one, because what these edits change — a matte's rect
-    /// (§15.7), the substrate colour (§15.5) — is document state rather
-    /// than a tile edit, so there is nothing to draw *over* the document the way a
-    /// stroke preview does. One slot, not one per kind: only one such drag can be
-    /// in flight at a time (they all belong to a single held pointer), and the
-    /// stand-in is built from the committed state each time, so a second kind
-    /// starting mid-drag supersedes the first rather than compounding with it.
-    /// `None` when nothing is being dragged.
-    doc_preview: Option<DocState>,
-    /// The **presented** document: the committed state (or `doc_preview`) with
-    /// every in-flight gesture — this client's and every peer's — drawn over it
-    /// (§17.6). `None` when nobody is mid-gesture.
-    live: Option<DocState>,
-    /// The settled head of each in-flight stroke, keyed by its author (see
-    /// [`FrozenHead`]). Every head is rooted at the *committed* document rather than
-    /// at the previous peer's preview: chaining would be marginally more faithful
-    /// for two strokes overlapping in the same instant, and would invalidate peer
-    /// *k*'s cache on every move by peers before it — collapsing the incremental
-    /// repaint exactly when two people are painting at once.
-    heads: BTreeMap<ActorId, FrozenHead>,
-    /// Bumped whenever the document the previews are composited onto changes. A
-    /// [`FrozenHead`] stamped with an older epoch is stale and discarded — which
-    /// rules out the whole class of "drawn over a canvas that has since moved"
-    /// rather than enumerating the ways it arises.
-    doc_epoch: u64,
+    /// What is being *shown* over the committed document, and the caches that make
+    /// showing it affordable: the unlogged drag in flight, the fold of every
+    /// in-flight gesture, the settled head of each live stroke, and the epoch that
+    /// says when a head has gone stale (§17.6).
+    ///
+    /// One field rather than four, because they are one thing with one invariant.
+    /// As four they could be — and were — moved independently: three of the epoch's
+    /// five bumps were written out at their call sites, and `DocCommand::Seek`
+    /// dropped the drag preview without bumping it at all when the seek turned out
+    /// to be a no-op. Now the slot cannot move without the epoch moving with it.
+    preview: live::Preview,
     /// Bumped whenever the **committed** document changes — a commit, an undo, a
     /// merged remote action, a load. Projected as
     /// [`ObservableState::doc_revision`], where it is what a frontend showing a
     /// rendered stand-in for the document (the navigator's miniature) watches to
     /// know when that render is out of date.
     ///
-    /// Strictly narrower than `doc_epoch`, which an unlogged drag preview also
-    /// bumps: a preview moves at pointer rate and is *not* a change to the
-    /// document, so a watcher keyed on the epoch would re-render for every sample
-    /// of a drag. The two advance together through [`Engine::committed_changed`].
+    /// Strictly narrower than the preview's epoch, which an unlogged drag also
+    /// bumps: a drag moves at pointer rate and is *not* a change to the document,
+    /// so a watcher keyed on the epoch would re-render for every sample of one. The
+    /// two advance together through [`Engine::committed_changed`].
     doc_revision: u64,
     /// Raw pointer reports of the in-flight stroke, dumped on release under the
     /// `debug-unfrozen` feature so a misfit stroke can be replayed as a test.
@@ -405,10 +387,7 @@ impl Engine {
             session,
             peers: Peers::new(),
             now: 0.0,
-            doc_preview: None,
-            live: None,
-            heads: BTreeMap::new(),
-            doc_epoch: 0,
+            preview: Default::default(),
             doc_revision: 0,
             debug_samples: Vec::new(),
             actor: ActorId::SOLO,
@@ -556,7 +535,7 @@ impl Engine {
                 self.navigate(|t| t.redo_as_action(), |t, ctx| t.redo(ctx));
             }
             DocCommand::Seek(to) => {
-                self.doc_preview = None;
+                self.preview.set_doc(None);
                 if self.timeline.seek(to, &mut self.apply) {
                     self.committed_changed();
                     self.apply_document_surface();
@@ -575,7 +554,7 @@ impl Engine {
             DocCommand::Transform { layer, map } => {
                 // The commit supersedes whatever the gesture was previewing, for
                 // the same reason `SetMatteRect` drops its preview.
-                self.doc_preview = None;
+                self.preview.set_doc(None);
                 // A degenerate or non-finite map would be rejected by `apply`
                 // anyway (deterministically — §16.1); refusing it
                 // here as well keeps a knowably-dead action out of the log.
@@ -632,7 +611,7 @@ impl Engine {
                 // The committed rect supersedes whatever the drag was previewing;
                 // leaving the preview up would pin the canvas to the last dragged
                 // value and shadow every later edit.
-                self.doc_preview = None;
+                self.preview.set_doc(None);
                 self.commit(ActionKind::SetMatteRect(id, min, max));
             }
             DocCommand::SetMatteColor(id, color) => {
@@ -641,7 +620,7 @@ impl Engine {
             DocCommand::SetBackground(rgb) => {
                 // The committed colour supersedes whatever the drag was previewing,
                 // for the same reason `SetMatteRect` drops it above.
-                self.doc_preview = None;
+                self.preview.set_doc(None);
                 self.commit(ActionKind::SetBackground(rgb));
             }
             DocCommand::DuplicateLayer(source) => {
@@ -828,7 +807,7 @@ impl Engine {
         // anything is selected — and that is asserted by
         // `a_selection_gesture_commits_the_same_op_it_previewed`. A stroke preview
         // changes no presentation property, so it is not consulted here at all.
-        let shown = self.doc_preview.as_ref().unwrap_or(doc);
+        let shown = self.preview.doc().unwrap_or(doc);
         // Flattened in **composite order** — each stack bottom-to-top, a group's
         // base before what it carries — with the tree carried alongside as `depth`
         // and `carrier` (§14.6). Flat rather than nested because that
@@ -951,7 +930,7 @@ impl Engine {
     /// drawn without changing the document (see
     /// [`ObservableState::doc_revision`]).
     fn committed_changed(&mut self) {
-        self.doc_epoch += 1;
+        self.preview.invalidate();
         self.doc_revision += 1;
     }
 
@@ -970,7 +949,7 @@ impl Engine {
         as_action: impl Fn(&dyn Timeline) -> Option<ActionId>,
         step: impl Fn(&mut dyn Timeline, &mut ApplyCtx) -> bool,
     ) {
-        self.doc_preview = None;
+        self.preview.set_doc(None);
         if let Some(target) = as_action(self.timeline.as_ref()) {
             self.commit(ActionKind::Undo(target));
         } else {
