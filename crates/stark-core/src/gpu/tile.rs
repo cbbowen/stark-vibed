@@ -158,6 +158,13 @@ impl MaskHandle {
     pub fn texture(&self) -> &wgpu::Texture {
         self.0.texture()
     }
+
+    /// Whether two handles are the same allocation — [`TilePairHandle::same`]
+    /// for masks, and true for the same reason: a mask tile is rasterized
+    /// afresh rather than rewritten, so identity doubles as "unchanged".
+    pub fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0.0, &other.0.0)
+    }
 }
 
 #[derive(Default)]

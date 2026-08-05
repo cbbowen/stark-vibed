@@ -151,7 +151,7 @@ Called from `scrub_range`, which the timeline panel reads per render.
 
 ## 3. Architecture
 
-### 3.1 One action variant, four exhaustive matches, three files — open
+### 3.1 One action variant, four exhaustive matches, three files — **test done**
 
 Adding an `ActionKind` means editing `apply` (`action.rs:945`), `footprint`
 (`footprint.rs:190`), `StatePatch::capture` (`patch.rs:87`) and `label`.
@@ -160,14 +160,34 @@ Exhaustiveness gets you the *presence* of an arm; nothing checks
 precisely that an `apply` must touch only what its footprint declares.
 `tests/commute.rs` covers five hand-written scenarios; there is no generic check.
 
-**The cheap, high-value version is a property test, not a refactor**: for a
-corpus of actions, apply to a state, diff the result structurally, and assert
-every difference lies inside `footprint(action).writes`. `DocState` is cheap to
-clone and the resources are enumerable, so this is mechanical — and it converts a
-class of silent divergence into a test failure, which is what "rule out a class
-rather than enumerate its instances" asks for here. The full version (colocating
-apply/footprint/patch per action so the compiler forces all three) is a large
-change; do the test first and let it say whether the refactor earns itself.
+**The test is done** (`tests/footprint.rs`); the refactor is still open, and is
+now a much smaller question than it was.
+
+`every_action_touches_only_what_it_declares` drives a shared session through
+every action kind the engine can commit — all 21 of them, `Undo` excepted —
+diffing the document across each commit and insisting every difference lands
+inside a resource the action declared. Differences are named in the footprint's
+own vocabulary (`Resource`), so coverage is containment rather than
+interpretation: a tile by a rect that contains it, a property by its own `Prop`,
+existence by `Existence` or by the `StackOrder` that `footprint.rs` deliberately
+coarsens a subtree removal into.
+
+Two things keep it from passing by being blind. A second test feeds a
+deliberately dishonest footprint — every claimed rect shrunk to one tile at the
+origin, which is what the pre-`TileRect::covering` quantizer produced for a
+non-finite radius — and asserts the check rejects it. And the run collects the
+action kinds it actually reached and asserts the expected set at the end, because
+a step that stops committing would otherwise *silence* its coverage instead of
+failing.
+
+Out of scope, and stated in the test: `reads` are not checked (a read leaves no
+trace in a state diff and needs a different instrument), and `Undo` is excluded
+by construction, since it is resolved by the timeline rather than applied — which
+is exactly why its footprint is empty.
+
+With the invariant now under test, the remaining refactor question — colocating
+apply/footprint/patch per action so the compiler forces all three — is worth
+weighing on its own merits rather than as a safety measure.
 
 ### 3.2 `action.rs` is two files — open
 
