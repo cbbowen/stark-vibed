@@ -13,6 +13,7 @@ use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
 use crate::document::{BrushShape, StrokeRecord};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, Vec2};
@@ -454,12 +455,6 @@ impl<'a> DynamicsRun<'a> {
         settle: bool,
     ) -> HashTrieMap<TileCoord, TilePairHandle> {
         self.flush();
-        let r = self.r;
-        let rec = self.rec;
-        let kit = &r.dynamics;
-        let device = &r.ctx.device;
-        let channels = self.channels;
-
         let coords = affected_tiles(segments);
         // A piece holds at least one segment, and a segment covers at least one tile,
         // so the empty case cannot arise here — but it costs nothing to leave the
@@ -467,17 +462,53 @@ impl<'a> DynamicsRun<'a> {
         let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
             return base.clone();
         };
+        let region = self.composite_region(base, &halo, region_origin, w, h);
 
-        let clear = wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-            store: wgpu::StoreOp::Store,
-        };
+        // ---- The bleed cadence's fire slots for this piece (§6.2), built before
+        // the snapshot scratch is sized: a firing's window sweeps up to
+        // [`BLEED_TRAVEL_QUANTUM`] radii where the piece's own segments may be
+        // sub-pixel, so its coverage box can be the largest in the piece.
+        let fires = bleed_fires(self.rec.brush.dynamics.bleed, segments);
+        let under = self.snapshot_scratch(segments, &fires);
 
-        // ---- The piece's canvas region (colour + wide aux), composited from the
-        // base tiles of the affected set plus a one-tile ring, so rewritten tiles'
-        // aprons read real neighbour content (§6.4). Rgba16Float throughout: it is
-        // both filterable and a core storage format, and matches the tile colour
-        // format of both color spaces (asserted in `build_dynamics_kit`).
+        // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
+        // loop reads through dynamic offsets.
+        let plan = dynamics_plan(
+            self.rec,
+            segments,
+            &fires,
+            region_origin,
+            under.size,
+            self.channels,
+            settle,
+            self.scene.surface,
+        );
+        let stamp_buf = self.upload_plan(&plan);
+        let bind = self.bind_piece(&region, &under, &stamp_buf);
+
+        self.record_loop(&plan, &bind, settle);
+        self.write_back(base, &coords, lo, &region)
+    }
+
+    /// The piece's canvas region — a 1:1 copy of what lies under its segments — and
+    /// the selection over it.
+    ///
+    /// Composited from the base tiles of the affected set plus a one-tile ring, so
+    /// rewritten tiles' aprons read real neighbour content (§6.4). Rgba16Float
+    /// throughout: it is both filterable and a core storage format, and matches the
+    /// tile colour format of both colour spaces (asserted in `build_dynamics_kit`).
+    fn composite_region(
+        &mut self,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        halo: &[TileCoord],
+        region_origin: Vec2,
+        w: u32,
+        h: u32,
+    ) -> Region {
+        let r = self.r;
+        let kit = &r.dynamics;
+        let device = &r.ctx.device;
+
         let region_usage = wgpu::TextureUsages::RENDER_ATTACHMENT | LOOP_USAGE;
         let mut region_tex = |label: &'static str| {
             scoped_view(
@@ -489,8 +520,8 @@ impl<'a> DynamicsRun<'a> {
                 label,
             )
         };
-        let region_color = region_tex("stark dynamics region color");
-        let region_aux = region_tex("stark dynamics region aux");
+        let color = region_tex("stark dynamics region color");
+        let aux = region_tex("stark dynamics region aux");
 
         // Composite pass: base tiles → region, 1:1 with canvas px.
         let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
@@ -527,7 +558,7 @@ impl<'a> DynamicsRun<'a> {
         });
         let mut tile_origins: Vec<TileInstance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
-        for coord in &halo {
+        for coord in halo {
             if let Some(tile) = base.get(coord) {
                 tile_origins.push(TileInstance {
                     origin: coord.origin().to_array(),
@@ -561,16 +592,16 @@ impl<'a> DynamicsRun<'a> {
                 label: Some("stark dynamics region composite"),
                 color_attachments: &[
                     Some(wgpu::RenderPassColorAttachment {
-                        view: &region_color,
+                        view: &color,
                         resolve_target: None,
                         depth_slice: None,
-                        ops: clear,
+                        ops: CLEAR,
                     }),
                     Some(wgpu::RenderPassColorAttachment {
-                        view: &region_aux,
+                        view: &aux,
                         resolve_target: None,
                         depth_slice: None,
-                        ops: clear,
+                        ops: CLEAR,
                     }),
                 ],
                 depth_stencil_attachment: None,
@@ -591,17 +622,17 @@ impl<'a> DynamicsRun<'a> {
             }
         }
 
-        // ---- The selection over this region (§6.8), gathered from the same
-        // halo tiles the paint came from, so it is 1:1 with the colour/aux regions.
-        // An unrestricted selection binds the 1×1 constant instead — the loop's masked
-        // reads then return 1 everywhere and the stroke behaves exactly as before.
+        // The selection over this region (§6.8), gathered from the same halo tiles the
+        // paint came from, so it is 1:1 with the colour/aux regions. An unrestricted
+        // selection binds the 1×1 constant instead — the loop's masked reads then
+        // return 1 everywhere and the stroke behaves exactly as before.
         let sel_mask = if self.scene.selection.is_universal() {
             r.selection.constant(1.0).clone()
         } else {
             let (tex, view) = r.selection.region_mask(
                 &mut self.encoder,
                 self.scene.selection,
-                &halo,
+                halo,
                 region_origin,
                 w,
                 h,
@@ -610,21 +641,26 @@ impl<'a> DynamicsRun<'a> {
             view
         };
 
-        // ---- The bleed cadence's fire slots for this piece (§6.2), built before
-        // the snapshot scratch is sized: a firing's window sweeps up to
-        // [`BLEED_TRAVEL_QUANTUM`] radii where the piece's own segments may be
-        // sub-pixel, so its coverage box can be the largest in the piece.
-        let fires = bleed_fires(rec.brush.dynamics.bleed, segments);
+        Region {
+            color,
+            aux,
+            sel_mask,
+        }
+    }
 
-        // ---- Footprint snapshot textures. The snapshot rect must cover any one
-        // segment's coverage box — its swept arc plus the tip riding along it —
-        // which is measured rather than bounded analytically, since `coverage_bounds`
-        // is already the exact box and a curved sweep has no closed-form "worst
-        // rotation" to fall back on. Sized from *this* piece's segments, so a piece
-        // drawn with a fine tip pays for a fine tip.
-        //
-        // +3 for the sampling margin `dynamics_plan` adds each side, +2 because a
-        // per-segment rect then rounds outward by a texel each side.
+    /// The footprint snapshot scratch: the copy that gives `deposit` and `settle`
+    /// something to read while they storage-write the region.
+    ///
+    /// The rect must cover any one segment's coverage box — its swept arc plus the tip
+    /// riding along it — which is measured rather than bounded analytically, since
+    /// `coverage_bounds` is already the exact box and a curved sweep has no
+    /// closed-form "worst rotation" to fall back on. Sized from *this* piece's
+    /// segments, so a piece drawn with a fine tip pays for a fine tip.
+    ///
+    /// +3 for the sampling margin `dynamics_plan` adds each side, +2 because a
+    /// per-segment rect then rounds outward by a texel each side.
+    fn snapshot_scratch(&mut self, segments: &[Segment], fires: &[(usize, Segment)]) -> Snapshot {
+        let device = &self.r.ctx.device;
         let dmax = segments
             .iter()
             .chain(fires.iter().map(|(_, f)| f))
@@ -632,58 +668,68 @@ impl<'a> DynamicsRun<'a> {
                 let (lo, hi) = coverage_bounds(s);
                 m.max(hi.x - lo.x).max(hi.y - lo.y)
             });
-        let dsize = (dmax + 3.0).ceil() as u32 + 2;
+        let size = (dmax + 3.0).ceil() as u32 + 2;
         let mut under_tex = |label: &'static str| {
             scoped_view(
                 device,
                 &mut self.piece,
-                (dsize, dsize),
+                (size, size),
                 wgpu::TextureFormat::Rgba16Float,
                 LOOP_USAGE,
                 label,
             )
         };
-        let under_color = under_tex("stark dynamics under color");
-        let under_aux = under_tex("stark dynamics under aux");
+        Snapshot {
+            size,
+            color: under_tex("stark dynamics under color"),
+            aux: under_tex("stark dynamics under aux"),
+        }
+    }
 
-        // ---- The dispatch plan, one segment each, one 256-byte
-        // slot each (dynamic uniform offsets — the standard way to vary a uniform
-        // across dispatches within one pass).
-        let plan = dynamics_plan(
-            rec,
-            segments,
-            &fires,
-            region_origin,
-            dsize,
-            channels,
-            settle,
-            self.scene.surface,
-        );
-        // The settle rides as one extra slot at the end of the plan; everything before
-        // it is a segment, and the loop below dispatches the two differently.
-        let segment_slots = plan.len() - usize::from(settle);
-        const STRIDE: usize = 256;
+    /// The plan's uniform slots, one [`STRIDE`]-aligned window each — dynamic uniform
+    /// offsets being the standard way to vary a uniform across dispatches within one
+    /// pass.
+    ///
+    /// Registered on the *run* rather than the piece: the buffer is read by dispatches
+    /// this piece records, and `flush` destroys the piece's resources as soon as it
+    /// submits, so a buffer scoped to the piece would be freed while its own
+    /// submission was still referencing it.
+    fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
+        let r = self.r;
         let mut data = vec![0u8; plan.len() * STRIDE];
         for (i, d) in plan.iter().enumerate() {
             data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
         }
-        let stamp_buf = self
+        let buf = self
             .scoped
-            .buffer(device.create_buffer(&wgpu::BufferDescriptor {
+            .buffer(r.ctx.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("stark dynamics stamps"),
                 size: data.len() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
-        r.ctx.queue.write_buffer(&stamp_buf, 0, &data);
+        r.ctx.queue.write_buffer(&buf, 0, &data);
+        buf
+    }
 
-        // ---- Bind groups. `params` binds a single slot-sized window whose dynamic
-        // offset selects the dispatch; `exchange` comes in two flavours for the
-        // reservoir ping-pong.
+    /// Every bind group the loop switches between while recording one piece.
+    ///
+    /// `params` binds a single slot-sized window of `stamp_buf` whose dynamic offset
+    /// selects the dispatch, so all of these are built once per piece and the loop
+    /// varies only the offset.
+    fn bind_piece(
+        &self,
+        region: &Region,
+        under: &Snapshot,
+        stamp_buf: &wgpu::Buffer,
+    ) -> PieceBindings {
+        let r = self.r;
+        let kit = &r.dynamics;
+        let device = &r.ctx.device;
         let params = || wgpu::BindGroupEntry {
             binding: 0,
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &stamp_buf,
+                buffer: stamp_buf,
                 offset: 0,
                 size: wgpu::BufferSize::new(SLOT as u64),
             }),
@@ -692,117 +738,124 @@ impl<'a> DynamicsRun<'a> {
             binding: 5,
             resource: wgpu::BindingResource::Sampler(&kit.exchange_sampler),
         };
-        let snapshot_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let snapshot = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics snapshot bg"),
             layout: &kit.snapshot_bgl,
             entries: &[
                 params(),
-                tex(1, &region_color),
-                tex(2, &region_aux),
-                tex(3, &under_color),
-                tex(4, &under_aux),
+                tex(1, &region.color),
+                tex(2, &region.aux),
+                tex(3, &under.color),
+                tex(4, &under.aux),
             ],
         });
-        let exchange_bgs: Vec<wgpu::BindGroup> = (0..2)
-            .map(|i| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark dynamics exchange bg"),
-                    layout: &kit.exchange_bgl,
-                    entries: &[
-                        params(),
-                        tex(1, &region_color),
-                        tex(2, &region_aux),
-                        tex(3, &under_color),
-                        tex(4, &under_aux),
-                        samp(),
-                        tex(6, &self.cov),
-                        tex(7, &self.brush_color[i]),
-                        tex(8, &self.brush_aux[i]),
-                        tex(9, &self.brush_color[1 - i]),
-                        tex(10, &self.brush_aux[1 - i]),
-                        tex(21, &sel_mask),
-                    ],
-                })
+        // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
+        // half and writes the other.
+        let exchange = std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark dynamics exchange bg"),
+                layout: &kit.exchange_bgl,
+                entries: &[
+                    params(),
+                    tex(1, &region.color),
+                    tex(2, &region.aux),
+                    tex(3, &under.color),
+                    tex(4, &under.aux),
+                    samp(),
+                    tex(6, &self.cov),
+                    tex(7, &self.brush_color[i]),
+                    tex(8, &self.brush_aux[i]),
+                    tex(9, &self.brush_color[1 - i]),
+                    tex(10, &self.brush_aux[1 - i]),
+                    tex(21, &region.sel_mask),
+                ],
             })
-            .collect();
+        });
         // One bake bind group per reservoir phase; the deposit reads only the baked
         // result, so it no longer needs the ping-pong at all.
-        let bake_bgs: Vec<wgpu::BindGroup> = (0..2)
-            .map(|i| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark dynamics bake bg"),
-                    layout: &kit.bake_bgl,
-                    entries: &[
-                        params(),
-                        samp(),
-                        tex(7, &self.brush_color[i]),
-                        tex(8, &self.brush_aux[i]),
-                        tex(17, &self.bake_load),
-                        tex(18, &self.bake_latm),
-                    ],
-                })
+        let bake = std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark dynamics bake bg"),
+                layout: &kit.bake_bgl,
+                entries: &[
+                    params(),
+                    samp(),
+                    tex(7, &self.brush_color[i]),
+                    tex(8, &self.brush_aux[i]),
+                    tex(17, &self.bake_load),
+                    tex(18, &self.bake_latm),
+                ],
             })
-            .collect();
-        let deposit_bgs: Vec<wgpu::BindGroup> = (0..1)
-            .map(|_| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("stark dynamics deposit bg"),
-                    layout: &kit.deposit_bgl,
-                    entries: &[
-                        params(),
-                        samp(),
-                        tex(19, &self.bake_load),
-                        tex(20, &self.bake_latm),
-                        tex(11, &under_color),
-                        tex(12, &under_aux),
-                        tex(13, &region_color),
-                        tex(14, &region_aux),
-                        tex(15, &self.noise),
-                        wgpu::BindGroupEntry {
-                            binding: 16,
-                            resource: wgpu::BindingResource::Sampler(&r.noise_sampler),
-                        },
-                        tex(21, &sel_mask),
-                        wgpu::BindGroupEntry {
-                            binding: 22,
-                            resource: wgpu::BindingResource::TextureView(&self.scene.surface.view),
-                        },
-                    ],
-                })
-            })
-            .collect();
+        });
+        let deposit = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark dynamics deposit bg"),
+            layout: &kit.deposit_bgl,
+            entries: &[
+                params(),
+                samp(),
+                tex(19, &self.bake_load),
+                tex(20, &self.bake_latm),
+                tex(11, &under.color),
+                tex(12, &under.aux),
+                tex(13, &region.color),
+                tex(14, &region.aux),
+                tex(15, &self.noise),
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: wgpu::BindingResource::Sampler(&r.noise_sampler),
+                },
+                tex(21, &region.sel_mask),
+                wgpu::BindGroupEntry {
+                    binding: 22,
+                    resource: wgpu::BindingResource::TextureView(&self.scene.surface.view),
+                },
+            ],
+        });
         // The pen-up, which reads the reservoir only through its own `bake` — so unlike
         // `exchange` it needs no bind group per ping-pong half; the bake's does that.
-        let settle_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let settle = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics settle bg"),
             layout: &kit.settle_bgl,
             entries: &[
                 params(),
                 tex(19, &self.bake_load),
                 tex(20, &self.bake_latm),
-                tex(11, &under_color),
-                tex(12, &under_aux),
-                tex(13, &region_color),
-                tex(14, &region_aux),
-                tex(21, &sel_mask),
+                tex(11, &under.color),
+                tex(12, &under.aux),
+                tex(13, &region.color),
+                tex(14, &region.aux),
+                tex(21, &region.sel_mask),
                 // The ground: the pen-up delivery is a deposit like any other, and is
                 // gated by the same tooth (§6.4).
                 tex(22, &self.scene.surface.view),
             ],
         });
+        PieceBindings {
+            snapshot,
+            exchange,
+            bake,
+            deposit,
+            settle,
+        }
+    }
 
-        // ---- The loop: wick → bake → exchange (+ snapshot) → deposit per segment, in
-        // stroke order. One compute pass; the implicit barriers between dispatches give
-        // the sequential semantics, and usage scopes are per-dispatch, so the region
-        // may be sampled by one dispatch and storage-written by the next.
-        //
-        // `exchange` comes *before* `deposit` and not after: the two are the two halves
-        // of one transfer, and they only add up if both read the canvas and the
-        // reservoir as this segment found them (`dynamics.wesl::exchange_at`).
-        //
-        // `self.cur` outlives the pass: it names the reservoir texture holding the
-        // tool's state, so after the last dispatch it names the state this piece ends
-        // in — which is what the next piece, or the next range, resumes from.
+    /// Record the loop: wick → bake → exchange (+ snapshot) → deposit per segment, in
+    /// stroke order. One compute pass; the implicit barriers between dispatches give
+    /// the sequential semantics, and usage scopes are per-dispatch, so the region may
+    /// be sampled by one dispatch and storage-written by the next.
+    ///
+    /// `exchange` comes *before* `deposit` and not after: the two are the two halves
+    /// of one transfer, and they only add up if both read the canvas and the
+    /// reservoir as this segment found them (`dynamics.wesl::exchange_at`).
+    ///
+    /// `self.cur` outlives the pass: it names the reservoir texture holding the
+    /// tool's state, so after the last dispatch it names the state this piece ends
+    /// in — which is what the next piece, or the next range, resumes from.
+    fn record_loop(&mut self, plan: &[LoopDispatch], bind: &PieceBindings, settle: bool) {
+        // The settle rides as one extra slot at the end of the plan; everything before
+        // it is a segment, and the loop below dispatches the two differently.
+        let segment_slots = plan.len() - usize::from(settle);
+        let kit = &self.r.dynamics;
         {
             let mut cur = self.cur;
             let prefix_bg = &self.prefix_bg;
@@ -826,10 +879,10 @@ impl<'a> DynamicsRun<'a> {
                 // is no exchange dispatch to ride in.
                 if d.bleed_only {
                     cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, &snapshot_bg, &[off]);
+                    cpass.set_bind_group(0, &bind.snapshot, &[off]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                     cpass.set_pipeline(&kit.deposit_pipeline);
-                    cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
+                    cpass.set_bind_group(0, &bind.deposit, &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                     continue;
@@ -849,7 +902,7 @@ impl<'a> DynamicsRun<'a> {
                 for _ in 0..d.wick_steps {
                     for pipe in [&kit.wick_pipelines.0, &kit.wick_pipelines.1] {
                         cpass.set_pipeline(pipe);
-                        cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
+                        cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
                         cpass.dispatch_workgroups(d.exchange_groups.0, d.exchange_groups.1, 1);
                         cur = 1 - cur;
                     }
@@ -857,7 +910,7 @@ impl<'a> DynamicsRun<'a> {
                 // Bake this segment's swept reservoir prefix next — it folds in the
                 // tip's current orientation as well as the reservoir state.
                 cpass.set_pipeline(&kit.bake_pipeline);
-                cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
+                cpass.set_bind_group(0, &bind.bake[cur], &[off]);
                 cpass.set_bind_group(1, prefix_bg, &[]);
                 // One BAKE_RES-wide workgroup per row: the shader's scan width is a
                 // constant, so the two must agree.
@@ -874,14 +927,14 @@ impl<'a> DynamicsRun<'a> {
                 // a y tall enough for the taller of the two
                 // (`dynamics.wesl::exchange`).
                 cpass.set_pipeline(&kit.exchange_pipeline);
-                cpass.set_bind_group(0, &exchange_bgs[cur], &[off]);
+                cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
                 cpass.dispatch_workgroups(
                     d.exchange_groups.0 + d.groups.0,
                     d.exchange_groups.1.max(d.groups.1),
                     1,
                 );
                 cpass.set_pipeline(&kit.deposit_pipeline);
-                cpass.set_bind_group(0, &deposit_bgs[0], &[off]);
+                cpass.set_bind_group(0, &bind.deposit, &[off]);
                 cpass.set_bind_group(1, prefix_bg, &[]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 cur = 1 - cur;
@@ -894,25 +947,40 @@ impl<'a> DynamicsRun<'a> {
             if let Some(d) = plan.get(segment_slots) {
                 let off = (segment_slots * STRIDE) as u32;
                 cpass.set_pipeline(&kit.snapshot_pipeline);
-                cpass.set_bind_group(0, &snapshot_bg, &[off]);
+                cpass.set_bind_group(0, &bind.snapshot, &[off]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 cpass.set_pipeline(&kit.bake_pipeline);
-                cpass.set_bind_group(0, &bake_bgs[cur], &[off]);
+                cpass.set_bind_group(0, &bind.bake[cur], &[off]);
                 cpass.set_bind_group(1, prefix_bg, &[]);
                 cpass.dispatch_workgroups(1, BAKE_RES, 1);
                 cpass.set_pipeline(&kit.settle_pipeline);
-                cpass.set_bind_group(0, &settle_bg, &[off]);
+                cpass.set_bind_group(0, &bind.settle, &[off]);
                 cpass.set_bind_group(1, prefix_bg, &[]);
                 cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
             }
             self.cur = cur;
         }
+    }
 
-        // ---- Write-back: slice each affected tile's full TILE_TEX block out of
-        // the shared region → aprons stay bit-identical to neighbour interiors
-        // (§6.4), and the wide region aux narrows to the persistent (height).
+    /// Slice each affected tile's full `TILE_TEX` block out of the shared region into
+    /// a fresh CoW tile → aprons stay bit-identical to neighbour interiors (§6.4), and
+    /// the wide region aux narrows to the persistent one (height).
+    ///
+    /// `lo` is the region's *interior* origin — the top-left tile origin, an apron in
+    /// from the region rectangle — so a tile's offset into the region is measured
+    /// against it.
+    fn write_back(
+        &mut self,
+        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        coords: &BTreeSet<TileCoord>,
+        lo: Vec2,
+        region: &Region,
+    ) -> HashTrieMap<TileCoord, TilePairHandle> {
+        let r = self.r;
+        let kit = &r.dynamics;
+        let device = &r.ctx.device;
         let mut new_map = base.clone();
-        for coord in &coords {
+        for coord in coords {
             let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
             let off = coord.origin() - lo;
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -930,8 +998,8 @@ impl<'a> DynamicsRun<'a> {
                         binding: 0,
                         resource: ubuf.as_entire_binding(),
                     },
-                    tex(1, &region_color),
-                    tex(2, &region_aux),
+                    tex(1, &region.color),
+                    tex(2, &region.aux),
                 ],
             });
             {
@@ -942,13 +1010,13 @@ impl<'a> DynamicsRun<'a> {
                             view: dst.color_view(),
                             resolve_target: None,
                             depth_slice: None,
-                            ops: clear,
+                            ops: CLEAR,
                         }),
                         Some(wgpu::RenderPassColorAttachment {
                             view: dst.aux_view(),
                             resolve_target: None,
                             depth_slice: None,
-                            ops: clear,
+                            ops: CLEAR,
                         }),
                     ],
                     depth_stencil_attachment: None,
@@ -1032,6 +1100,47 @@ impl<'a> DynamicsRun<'a> {
         drop(self.scoped);
     }
 }
+
+/// One piece's canvas region: a 1:1 copy of the canvas under its segments, which the
+/// loop evolves in place before [`DynamicsRun::write_back`] slices it into tiles.
+struct Region {
+    color: wgpu::TextureView,
+    aux: wgpu::TextureView,
+    /// The selection over the region (§6.8) — its own gathered mask, or the 1×1
+    /// constant that stands in for an unrestricted selection.
+    sel_mask: wgpu::TextureView,
+}
+
+/// The footprint snapshot scratch, and the square it was sized to. Every dispatch
+/// rect in the piece's plan is clamped to `size`, so the two travel together.
+struct Snapshot {
+    size: u32,
+    color: wgpu::TextureView,
+    aux: wgpu::TextureView,
+}
+
+/// The bind groups one piece's dispatches switch between. Built once per piece
+/// because every dispatch varies only the stamp uniform's dynamic offset; the
+/// reservoir ping-pong is the one thing that needs a pair.
+struct PieceBindings {
+    snapshot: wgpu::BindGroup,
+    exchange: [wgpu::BindGroup; 2],
+    bake: [wgpu::BindGroup; 2],
+    deposit: wgpu::BindGroup,
+    settle: wgpu::BindGroup,
+}
+
+/// Stride between the plan's uniform slots. A dynamic offset has to be a multiple of
+/// the device's `min_uniform_buffer_offset_alignment`, whose spec maximum is 256, so
+/// this clears it on every adapter — at the cost of the padding past [`SLOT`].
+const STRIDE: usize = 256;
+
+/// Every target this path renders to is fully rewritten by its own pass, so each is
+/// cleared on load rather than read back.
+const CLEAR: wgpu::Operations<wgpu::Color> = wgpu::Operations {
+    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+    store: wgpu::StoreOp::Store,
+};
 
 /// Shorthand for a texture-view bind-group entry.
 fn tex(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {

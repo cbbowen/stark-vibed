@@ -21,14 +21,22 @@ Replaced with a `#[repr(C)] Pod` `Stamp` mirroring the shader's nine lanes, a
 `min_binding_size`), and a `SlotCommon` holding the lanes every slot fills the
 same way — so each of the three sites now lists only what differs.
 
-## 2. Split `DynamicsRun::draw`
+## 2. Split `DynamicsRun::draw` — **done**
 
-520 lines doing six jobs: region composite, selection gather, snapshot sizing,
-plan upload, bind-group construction, the dispatch loop, write-back. The `// ----`
-banner comments already mark the extraction points.
+520 lines doing six jobs. Now `draw` is 40 lines naming the six steps, over
+`composite_region` / `snapshot_scratch` / `upload_plan` / `bind_piece` /
+`record_loop` / `write_back`, with `Region`, `Snapshot` and `PieceBindings`
+carrying what passes between them. `STRIDE` and the `clear` operations became
+module constants rather than locals re-declared per call.
 
-Retires the `#[allow(clippy::too_many_arguments)]` on `dynamics_plan` — its 8
-args want a `PieceGeom { region_origin, dsize, channels, surface }` bundle.
+Took item 11's `deposit_bgs` with it: the `(0..1).map(…).collect()` Vec-of-one is
+now `PieceBindings.deposit`, and the two genuine ping-pong pairs are `[_; 2]`
+arrays instead of `Vec`s.
+
+Still open from this item: `dynamics_plan` keeps its
+`#[allow(clippy::too_many_arguments)]` — its 8 args want a
+`PieceGeom { region_origin, dsize, channels, surface }` bundle, which is easier
+to do alongside item 3.
 
 ## 3. `LoopDispatch` should be an enum
 
@@ -129,8 +137,8 @@ in code, beside the taper tests in `segments.rs` that already do this for
 
 ## 11. Small
 
-* `let deposit_bgs: Vec<_> = (0..1).map(…).collect()`, then always
-  `deposit_bgs[0]`. Leftover ping-pong generality.
+* ~~`let deposit_bgs: Vec<_> = (0..1).map(…).collect()`, then always
+  `deposit_bgs[0]`~~ — done with item 2.
 * `let mut fires = fires.iter().peekable()` shadows the parameter. The consumer
   also relies on `fires` being sorted by segment index — true by construction,
   unstated at the type.
