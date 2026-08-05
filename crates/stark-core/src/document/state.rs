@@ -211,6 +211,18 @@ impl DocState {
     ///
     /// The single traversal every reader shares: the UI projection, the draw
     /// list, the bounds. Compare `Layer::visit`, which is this for one subtree.
+    ///
+    /// The order is what answers **"does anything composite beneath this
+    /// layer?"** — the one predicate behind both relational properties, since a
+    /// layer's blend mode and its clip are live exactly when it holds and go
+    /// inert together where it fails (§14.4.3). It fails in exactly one place:
+    /// the first layer visited, the bottom of the root stack, where a mode is the
+    /// identity and a clip would erase the layer. Every other layer has either a
+    /// lower sibling or the content of the layer carrying it — a carrier's own
+    /// content is the bottom of its group, beneath everything it carries, which
+    /// is why a group's base can never be the layer without a backdrop however
+    /// the group itself sits. `Engine::observe` reads it off this walk for free;
+    /// a standalone predicate searched the tree per layer to say the same thing.
     pub fn visit(&self, f: &mut impl FnMut(&Layer, usize)) {
         for l in self.layers.iter() {
             l.visit(0, f);
@@ -253,30 +265,6 @@ impl DocState {
             layers.iter().find_map(|l| walk(&l.carries, id, Some(l.id)))
         }
         walk(&self.layers, id, None)
-    }
-
-    /// Whether anything composites **beneath** `id` — a sibling lower in its
-    /// stack, or, recursively, beneath the layer carrying it
-    /// (§14.4.3).
-    ///
-    /// The one predicate behind both relational properties: a layer's blend mode
-    /// and its clip are live exactly when this holds, and inert together at the
-    /// single place it fails — the bottom of the root stack, where a mode is the
-    /// identity and a clip would erase the layer. A frontend asks this to decide
-    /// whether to offer either control.
-    pub fn has_backdrop(&self, id: LayerId) -> bool {
-        // `under` is "something composites beneath this whole stack". Descending
-        // into a layer's carried stack always sets it: the carrier's *own content*
-        // is the bottom of the group, beneath everything it carries — which is why
-        // a group's base can never be a layer with no backdrop, however the group
-        // itself sits.
-        fn walk(layers: &Vector<Layer>, id: LayerId, under: bool) -> Option<bool> {
-            if let Some(i) = layers.iter().position(|l| l.id == id) {
-                return Some(i > 0 || under);
-            }
-            layers.iter().find_map(|l| walk(&l.carries, id, true))
-        }
-        walk(&self.layers, id, false).unwrap_or(false)
     }
 
     /// Insert a new empty paint layer into the stack carried by `carrier` (the

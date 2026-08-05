@@ -1850,7 +1850,13 @@ impl Engine {
                 carrier: carriers.last().copied(),
                 depth,
                 is_group: l.is_group(),
-                has_backdrop: shown.has_backdrop(l.id),
+                // Read straight off the traversal: composite order visits the
+                // bottom of the root stack first, and that is the *only* layer
+                // with nothing beneath it (§14.4.3) — every other one has either
+                // a lower sibling or the content of the layer carrying it. So
+                // "has a backdrop" is "is not the first row", and asking the tree
+                // per layer was a search for an answer the walk already gave.
+                has_backdrop: !layers.is_empty(),
                 name: l.name.clone(),
                 matte: match &l.content {
                     LayerContent::Matte { region, color } => {

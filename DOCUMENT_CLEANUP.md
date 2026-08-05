@@ -95,12 +95,23 @@ insert, so a session is O(n² log n) in total. That is per *commit* rather than
 per pen sample, so it is a different order of problem — but it is the next one in
 this file.
 
-### 2.2 `has_backdrop` is O(layers²) inside `observe()` — open
+### 2.2 `has_backdrop` was O(layers²) inside `observe()` — **done**
 
-`engine.rs:1855` calls `shown.has_backdrop(l.id)` *inside* `shown.visit(…)` — a
-full tree walk per layer. `has_backdrop` is exactly `i > 0 || under`, which the
-enclosing visit already has in hand; computing it inline makes it free and
-deletes `state.rs:267-280`.
+`engine.rs` called `shown.has_backdrop(l.id)` *inside* `shown.visit(…)` — a full
+recursive tree walk per layer, on the same per-pointer-sample path as §2.1.
+
+The predicate turned out to be answerable without any search. `has_backdrop` is
+`index_in_own_stack > 0 || depth > 0`, and composite order visits the bottom of
+the root stack **first**, so the only layer it is false for is the first one
+visited: every other has either a lower sibling or the content of the layer
+carrying it. The projection's own field doc and the test guarding it
+(`only_the_bottom_of_the_document_has_no_backdrop`) already said exactly that —
+the search was computing a known answer the long way.
+
+So `observe` now reads `!layers.is_empty()` off the traversal, and
+`DocState::has_backdrop` is gone; it had one caller, and the "what about an id
+that is not in the tree" question it had to answer disappears with it. The design
+prose moved to `DocState::visit`, which is where the fact is now derived.
 
 ### 2.3 `with_layers` recomputes canvas bounds on every layer mutation — open
 
