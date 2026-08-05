@@ -115,15 +115,15 @@ the passes, and is now one concern rather than seven. 538 tests pass, 25 goldens
 against real pixels, and the test-name set is unchanged apart from the three
 `supersample` tests moving to `composite::resolve::tests`.
 
-`CompositorPipeline::new` is ~540 lines of straight-line construction covering
-composite, matte, blend, overlay, media, resolve and guides. Each is a
-self-contained unit: shader → BGL → layout → pipeline → buffers. `GuideUniform::pack`
-in particular is pure §20 perspective-grid math with nothing to do with
-compositing tiles.
+What it was: `CompositorPipeline::new` running to ~540 lines of straight-line
+construction across composite, matte, blend, overlay, media, resolve and guides,
+each a self-contained unit (shader → BGL → layout → pipeline → buffers) with
+nothing separating it from the next. `GuideUniform::pack` in particular was pure
+§20 perspective-grid math sitting in the middle of a file about compositing tiles;
+it is in `guides.rs` now, and `group.rs` came out with no GPU in it at all.
 
-Suggest `composite/{mod,view,blend,media,overlay,guides,resolve}.rs`, each pass
-owning its own `new()`. The `Compositor`/`CompositorPipeline` split (does it
-depend on the target?) is a good line — it just isn't the only line the file needs.
+The `Compositor`/`CompositorPipeline` split (does it depend on the target?) was
+already a good line. It just wasn't the only line the file needed.
 
 ### 2.2 The pool never returns memory, and the largest allocations bypass it
 
