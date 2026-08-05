@@ -267,13 +267,31 @@ type making that unrepresentable; collapsing it back for a dedup that saves abou
 fifteen lines is the wrong trade. The duplication that mattered — the arithmetic
 — is gone.
 
-### 3.5 Three near-identical tree walks — open
+### 3.5 Three near-identical tree walks — **done**
 
-`carrier_of`, `site_of` and `has_backdrop` (`state.rs:228-280`) are the same
-recursion returning three projections of one answer. A single
-`locate(id) -> Option<{carrier, index, has_backdrop}>` collapses them;
-`move_layer` currently walks the tree three times (`layer`, `remove_in`,
-`map_in`) for one move.
+`carrier_of`, `site_of` and `layer` were three recursions returning three
+projections of one answer. (`has_backdrop` was the fourth when this was written;
+§2.2 removed it, since composite order already answers it.)
+
+`DocState::locate(id) -> Option<(&Layer, LayerSite)>` is now the only search this
+module does, and the other three are one-liners over it. The two halves are worth
+returning together rather than being separate queries: a duplicate needs the
+record to copy *and* the place to put the copy beside, which was two walks of one
+tree to one layer.
+
+Two call sites also walked more than they had to:
+
+- **`move_layer`** searched for the subtree, then searched again to remove it,
+  then searched a third time to splice it in. It now removes first and runs the
+  cycle check against the subtree the removal already found — safe because the
+  removal builds a new stack rather than mutating the old one, so declining
+  afterwards still leaves `self` untouched. Three walks to two.
+- **`duplicate_layer`** asked `layer` and then `carrier_of` — the same search
+  twice. One `locate`, two walks to one.
+
+The behaviour that could have broken is the cycle decline, and
+`a_layer_cannot_carry_its_own_ancestor` asserts exactly it: the tree is left
+exactly as it was.
 
 ### 3.6 `StrokeRecord::tool` is write-only — open
 

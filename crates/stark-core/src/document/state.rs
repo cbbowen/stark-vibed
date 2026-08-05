@@ -258,9 +258,32 @@ impl DocState {
         }
     }
 
+    /// Find `id` anywhere in the tree: the layer record, and where it sits
+    /// (§14.8).
+    ///
+    /// **The one search this module does.** [`layer`](Self::layer),
+    /// [`site_of`](Self::site_of) and [`carrier_of`](Self::carrier_of) are
+    /// projections of it, and the two halves genuinely travel together — a
+    /// duplicate needs the record to copy *and* the place to put the copy beside,
+    /// and asking separately is two walks of one tree to one layer.
+    fn locate(&self, id: LayerId) -> Option<(&Layer, LayerSite)> {
+        fn walk(
+            layers: &Vector<Layer>,
+            id: LayerId,
+            carrier: Option<LayerId>,
+        ) -> Option<(&Layer, LayerSite)> {
+            if let Some(index) = layers.iter().position(|l| l.id == id) {
+                let layer = layers.get(index).expect(IN_RANGE);
+                return Some((layer, LayerSite { carrier, index }));
+            }
+            layers.iter().find_map(|l| walk(&l.carries, id, Some(l.id)))
+        }
+        walk(&self.layers, id, None)
+    }
+
     /// The layer with this id, wherever in the tree it sits.
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {
-        self.layers.iter().find_map(|l| l.find(id))
+        self.locate(id).map(|(layer, _)| layer)
     }
 
     /// Whether a layer with this id exists at all.
@@ -298,35 +321,15 @@ impl DocState {
     }
 
     /// Which layer carries `id`, or `None` when it sits in the root stack (or
-    /// does not exist).
+    /// does not exist). The two read the same way here: neither is inside
+    /// anything.
     pub fn carrier_of(&self, id: LayerId) -> Option<LayerId> {
-        fn walk(layers: &Vector<Layer>, id: LayerId, carrier: Option<LayerId>) -> Option<LayerId> {
-            for l in layers.iter() {
-                if l.id == id {
-                    return carrier;
-                }
-                if let Some(found) = walk(&l.carries, id, Some(l.id)) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        walk(&self.layers, id, None)
+        self.locate(id).and_then(|(_, site)| site.carrier)
     }
 
     /// Where `id` sits, for a restore to put it back (§14.8).
     pub fn site_of(&self, id: LayerId) -> Option<LayerSite> {
-        fn walk(
-            layers: &Vector<Layer>,
-            id: LayerId,
-            carrier: Option<LayerId>,
-        ) -> Option<LayerSite> {
-            if let Some(index) = layers.iter().position(|l| l.id == id) {
-                return Some(LayerSite { carrier, index });
-            }
-            layers.iter().find_map(|l| walk(&l.carries, id, Some(l.id)))
-        }
-        walk(&self.layers, id, None)
+        self.locate(id).map(|(_, site)| site)
     }
 
     /// Insert a new empty paint layer into the stack carried by `carrier` (the
@@ -391,13 +394,14 @@ impl DocState {
         let Some((source, _)) = ids.first() else {
             return self.clone();
         };
-        let Some(layer) = self.layer(*source) else {
+        // The record to copy and the stack to copy it into, from one search.
+        let Some((layer, site)) = self.locate(*source) else {
             return self.clone();
         };
         let Some(copy) = copy_subtree(layer, ids) else {
             return self.clone();
         };
-        self.insert(copy, self.carrier_of(*source), Some(*source))
+        self.insert(copy, site.carrier, Some(*source))
     }
 
     /// Put `layer` back at `site` — the inverse of removing it
@@ -532,17 +536,18 @@ impl DocState {
         carrier: Option<LayerId>,
         above: Option<LayerId>,
     ) -> Self {
-        let Some(subtree) = self.layer(id) else {
-            return self.clone();
-        };
-        // Nothing inside the moved subtree may become its carrier — including
-        // the layer itself.
-        if carrier.is_some_and(|c| subtree.find(c).is_some()) {
-            return self.clone();
-        }
+        // Taken out first, so the cycle check below reads the subtree the
+        // removal already had to find — rather than searching for it again, and
+        // then searching for it again to remove it.
         let Some((remaining, moved)) = remove_in(&self.layers, id) else {
             return self.clone();
         };
+        // Nothing inside the moved subtree may become its carrier — including
+        // the layer itself. Declining here leaves `self` untouched: the removal
+        // above built a new stack rather than mutating this one.
+        if carrier.is_some_and(|c| moved.find(c).is_some()) {
+            return self.clone();
+        }
         let layers = match carrier {
             None => Some(splice(&remaining, above, &moved)),
             Some(c) => map_in(&remaining, c, &mut |l: &Layer| {
