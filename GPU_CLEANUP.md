@@ -19,7 +19,7 @@ Three passes, separable and in order of value per unit risk:
 - **(c) `composite.rs` split** — structural, no behaviour change. §2.1, §2.6.
   **Done.**
 
-§2.2–§2.5, §2.7 and §4 are what is left.
+§2.2, §2.4, §2.5, §2.7 and §4 are what is left.
 
 Run `cargo test --workspace` once after each pass, not after each edit.
 
@@ -137,13 +137,31 @@ opposite policies in one subsystem, neither stated as a decision. Either a
 high-water decay on the free lists, or an explicit note on why unbounded
 retention is right for tiles specifically.
 
-### 2.3 A `TextureView` is created on every acquire, including recycled ones
+### 2.3 A `TextureView` is created on every acquire, including recycled ones — **done**
 
-`acquire_tex` pops a texture off the free list and then calls `create_view`. That
-is a fresh wgpu object per tile acquire of every stroke render — on web, a JS
-object per acquire, which is precisely the allocation-rate problem
-`ScopedResources` and `UNIFORM_STRIDE` were built to fight. Storing
-`(Texture, TextureView)` pairs in the free list removes it.
+The free list holds `Pooled { tex, view }` now, so a recycled slot brings its view
+with it and the common acquire creates no wgpu object at all — a `Vec::pop` and an
+`Arc::new`. `Drop` clones the view back (an `Arc` bump) rather than the handle
+holding an `Option`, which keeps the read path — once per bind group, per tile, per
+frame — a plain borrow.
+
+The rate is what made it worth doing: the swept path acquires `2 + 4·tiles`
+textures **per pointer move** (a cleared empty base, then a scratch pair and a
+destination pair per affected tile), so a stroke over twenty tiles at pen rate was
+creating ~10k views a second.
+
+Two things checked rather than assumed. A recycled view stays valid because it was
+built from that exact texture with the default descriptor and recycling hands the
+same texture back; the only thing that could invalidate it is `destroy()`, and all
+four `destroy()` sites in the crate are on non-pooled textures. And `Drop` clones
+into the free list while the handle's own copy dies with it, so a slot holds
+exactly one view whether checked out or free.
+
+That check turned up the accessors that made it a *grep* rather than a guarantee:
+`TilePairHandle::color`/`aux`, `MaskHandle::texture` and `TexHandle::texture` had
+zero callers anywhere, tests included, and were the only route to a pooled
+`wgpu::Texture` from outside `tile.rs`. They are gone, so the pool hands out views
+and never textures — §2.3's safety is now structural rather than verified.
 
 ### 2.4 `AllocSource` is diagnostic-only plumbing threaded through every signature
 

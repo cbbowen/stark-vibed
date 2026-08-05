@@ -63,8 +63,31 @@ pub enum AllocSource {
     FillDestination,
 }
 
-/// One pooled GPU texture (`TILE_TEX` square). `Option` only so [`Drop`] can move it
-/// back to the pool's free list for its format.
+/// A recycled texture **and the view onto it**, as the free list holds them.
+///
+/// The view is pooled with the texture rather than made afresh at each acquire, and
+/// that is worth a word because it is the one thing a reader might expect to be
+/// per-consumer. It is not: every acquire built the same view — the whole texture,
+/// through the default descriptor — so making a new one bought nothing but an object.
+///
+/// The rate is what makes it matter. A stroke acquires ~4 of these per affected tile
+/// (a scratch pair, a destination pair) on every pointer move, so a stroke crossing
+/// twenty tiles at pen rate was creating thousands of views a second. Natively that
+/// is a small allocation and some validation; on the web it is a JS object per
+/// acquire, which is precisely the allocation *rate* `ScopedResources` and
+/// `UNIFORM_STRIDE` exist to keep down (§6.2) — the pool was quietly the largest
+/// remaining source of it.
+struct Pooled {
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// One pooled GPU texture (`TILE_TEX` square) checked out of the pool.
+///
+/// `tex` is an `Option` only so [`Drop`] can move it back to the free list. `view`
+/// is not: it is `Clone` (an `Arc` handle), so the return path clones it and the
+/// read path — which runs once per bind group, per tile, per frame — stays a plain
+/// borrow with nothing to unwrap.
 struct GpuTex {
     tex: Option<wgpu::Texture>,
     view: wgpu::TextureView,
@@ -92,7 +115,12 @@ impl Drop for GpuTex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(tex) = self.tex.take() else { return };
-        inner.free.push(tex);
+        // The view rides back with its texture, so the next acquire of this slot
+        // needs no `create_view` (see [`Pooled`]). Cloning it is an `Arc` bump.
+        inner.free.push(Pooled {
+            tex,
+            view: self.view.clone(),
+        });
         // Saturating rather than asserted. Every acquire records its source, so a
         // missing entry is unreachable — and an unreachable branch is not worth the
         // abort that reaching it from a `Drop` would cost.
@@ -108,13 +136,19 @@ impl Drop for GpuTex {
 /// This is the unit the pool deals in. Pairing two of them into a tile is the
 /// *caller's* job, because which two formats make a tile is the colour space's
 /// business (§6.7) and the pool has no view of that.
+///
+/// **A handle hands out a view and never the texture**, and that is what keeps a
+/// recycled [`Pooled`] slot's view valid. The view outlives any one checkout, so a
+/// consumer that could reach the `wgpu::Texture` could `destroy()` it and leave the
+/// free list holding a view onto nothing — which the next acquire would hand to a
+/// bind group, and which no test would catch until a driver complained. Nothing
+/// needs the texture today (the accessors that offered one had no callers at all),
+/// so the way to rule that out is not to offer it. Re-adding one means reading this
+/// paragraph first, which is the point.
 #[derive(Clone)]
 pub struct TexHandle(Arc<GpuTex>);
 
 impl TexHandle {
-    pub fn texture(&self) -> &wgpu::Texture {
-        self.0.tex.as_ref().expect("texture present until drop")
-    }
     pub fn view(&self) -> &wgpu::TextureView {
         &self.0.view
     }
@@ -147,12 +181,6 @@ impl TilePairHandle {
     pub fn new(color: TexHandle, aux: TexHandle) -> Self {
         TilePairHandle(Arc::new(TilePair { color, aux }))
     }
-    pub fn color(&self) -> &wgpu::Texture {
-        self.0.color.texture()
-    }
-    pub fn aux(&self) -> &wgpu::Texture {
-        self.0.aux.texture()
-    }
     pub fn color_view(&self) -> &wgpu::TextureView {
         self.0.color.view()
     }
@@ -179,9 +207,6 @@ impl MaskHandle {
     pub fn view(&self) -> &wgpu::TextureView {
         self.0.view()
     }
-    pub fn texture(&self) -> &wgpu::Texture {
-        self.0.texture()
-    }
 
     /// Whether two handles are the same allocation — [`TilePairHandle::same`]
     /// for masks, and true for the same reason: a mask tile is rasterized
@@ -193,22 +218,19 @@ impl MaskHandle {
 
 #[derive(Default)]
 struct PoolInner {
-    /// Recycled textures, one free list per format.
-    free: Vec<wgpu::Texture>,
-    /// The total number of textures available to this pool.
+    /// Recycled textures and their views, one free list per format ([`Pooled`]).
+    free: Vec<Pooled>,
+    /// How many textures this pool has ever created — its high-water mark, since
+    /// nothing here is ever handed back to the driver.
     capacity: usize,
     /// Current allocation sources.
     sources: HashMap<AllocSource, usize>,
 }
 
 impl PoolInner {
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     fn increase_capacity(&mut self, format: wgpu::TextureFormat) {
         self.capacity += 1;
-        tracing::debug!(format = ?format, capacity = self.capacity(), sources = ?self.sources, "increased texture pool capacity");
+        tracing::debug!(format = ?format, capacity = self.capacity, sources = ?self.sources, "increased texture pool capacity");
     }
 }
 
@@ -254,22 +276,25 @@ impl TilePool {
     /// Acquire one pooled texture of `format`, reusing a recycled one when available.
     /// Contents are undefined until painted or cleared.
     ///
+    /// A recycled slot brings its **view** with it ([`Pooled`]), so the common path
+    /// creates no wgpu objects at all — it is a `Vec::pop` and an `Arc::new`.
+    ///
     /// # Panics
     ///
     /// Panics if `format` was not among those the pool was built with.
     pub fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
         let pool = self.format_pools.get(&format).expect("unsupported format");
-        let tex = {
+        let Pooled { tex, view } = {
             let mut pool = pool.lock().expect("tile pool poisoned");
             *pool.sources.entry(source).or_default() += 1;
-            if let Some(tex) = pool.free.pop() {
-                tex
-            } else {
-                pool.increase_capacity(format);
-                self.create_texture(format)
+            match pool.free.pop() {
+                Some(slot) => slot,
+                None => {
+                    pool.increase_capacity(format);
+                    self.create_pooled(format)
+                }
             }
         };
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         TexHandle(Arc::new(GpuTex {
             tex: Some(tex),
             view,
@@ -290,8 +315,11 @@ impl TilePool {
             .len()
     }
 
-    fn create_texture(&self, format: wgpu::TextureFormat) -> wgpu::Texture {
-        self.ctx.device.create_texture(&wgpu::TextureDescriptor {
+    /// A fresh texture and the view onto it — the only path that talks to the
+    /// device, reached once per texture the pool ever owns rather than once per
+    /// acquire.
+    fn create_pooled(&self, format: wgpu::TextureFormat) -> Pooled {
+        let tex = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("stark tile channel"),
             // Interior + apron on every side (§6.4).
             size: wgpu::Extent3d {
@@ -305,6 +333,8 @@ impl TilePool {
             format,
             usage: CHANNEL_USAGE,
             view_formats: &[],
-        })
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        Pooled { tex, view }
     }
 }
