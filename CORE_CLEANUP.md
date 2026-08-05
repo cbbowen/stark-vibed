@@ -123,6 +123,8 @@ are test-only but reached from `tests/`, so they stay `pub`.)
 
 ## §8 — Small, cheap wins
 
+**Status: done.**
+
 - `PerspectiveGuide::name` is `Option<String>`, and `observe()` clones the whole
   guide list on every command — including `GestureCommand::To`, at pointer rate.
   `LayerInfo::name` is `Arc<str>` for exactly this reason and says so in its doc

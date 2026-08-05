@@ -238,11 +238,34 @@ const MAX_NAME: usize = 64;
 /// `normalize_layer_name` any more: the two are named through different commands —
 /// one logged, one view state — and the rule for what a name *is* should not be a
 /// property of which command carried it.
-fn normalize_name(name: Option<String>) -> Option<String> {
-    let name = name?;
-    let trimmed = name.trim();
-    let capped: String = trimmed.chars().take(MAX_NAME).collect();
-    (!capped.is_empty()).then_some(capped)
+///
+/// Generic at both ends for that reason too, and only for that reason: the two
+/// callers hold their names differently — a logged action carries a `String`,
+/// because that is what goes on the wire, while a guide holds an `Arc<str>`, because
+/// its list is re-projected at pointer rate — and neither difference is about what a
+/// name is. `String: From<String>` is the identity, so the logged path still moves
+/// its bytes rather than copying them.
+fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
+    let trimmed = name?;
+    let capped: String = trimmed.as_ref().trim().chars().take(MAX_NAME).collect();
+    (!capped.is_empty()).then(|| T::from(capped))
+}
+
+/// A sampled patch summed channel-wise, with the texel count the two means below
+/// divide by.
+///
+/// Both of them start here and differ only in what they divide by — the summed
+/// opacity or the count — which is the whole of what separates the two pick modes.
+/// Stating the shared half once is what keeps that the *only* difference.
+fn sum_texels(texels: &[f32]) -> ([f32; 4], usize) {
+    let patch = texels.as_chunks::<4>().0;
+    let mut sum = [0.0f32; 4];
+    for t in patch {
+        for (s, v) in sum.iter_mut().zip(t) {
+            *s += v;
+        }
+    }
+    (sum, patch.len())
 }
 
 /// The mean **unpremultiplied** channels of a sampled patch, or `None` where there
@@ -254,12 +277,7 @@ fn normalize_name(name: Option<String>) -> Option<String> {
 /// radius wider than the stroke still report the stroke's colour rather than a wash
 /// of it fading into empty canvas.
 fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
-    let mut sum = [0.0f32; 4];
-    for t in texels.as_chunks::<4>().0 {
-        for (s, v) in sum.iter_mut().zip(t) {
-            *s += v;
-        }
-    }
+    let (sum, _) = sum_texels(texels);
     if !sum[3].is_finite() || sum[3] <= PICK_MIN_OPACITY {
         return None;
     }
@@ -281,17 +299,11 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
 /// sees there instead of reporting the stroke alone. `over` is linear in each texel,
 /// so compositing every texel and then averaging is exactly the arithmetic below.
 fn mean_over_substrate(texels: &[f32], bg: [f32; 4]) -> Option<[f32; 4]> {
-    let patch = texels.as_chunks::<4>().0;
-    let mut sum = [0.0f32; 4];
-    for t in patch {
-        for (s, v) in sum.iter_mut().zip(t) {
-            *s += v;
-        }
-    }
-    if patch.is_empty() || !sum.iter().all(|v| v.is_finite()) {
+    let (sum, count) = sum_texels(texels);
+    if count == 0 || !sum.iter().all(|v| v.is_finite()) {
         return None;
     }
-    let n = patch.len() as f32;
+    let n = count as f32;
     // Clamped because it is about to be read as "how much of the patch the ground
     // shows through": the composite cannot exceed full coverage, and a float that
     // lands a hair over 1 would subtract substrate rather than none of it.
@@ -820,28 +832,15 @@ impl Engine {
 
     fn process_doc_inner(&mut self, command: DocCommand) {
         match command {
+            // Shared sessions log undo as an action peers can order (§5.4, §12.3);
+            // solo falls back to navigation. Redo is an `Undo` of an `Undo`, which
+            // is why the two differ only in which pair of timeline methods they
+            // name — see [`Self::navigate`].
             DocCommand::Undo => {
-                self.doc_preview = None;
-                // Shared sessions log undo as an action peers can order
-                // (§5.4, §12.3); solo falls back to navigation.
-                if let Some(target) = self.timeline.undo_as_action() {
-                    self.commit(ActionKind::Undo(target));
-                } else {
-                    self.timeline.undo(&mut self.apply);
-                    self.committed_changed();
-                }
-                self.apply_document_surface();
+                self.navigate(|t| t.undo_as_action(), |t, ctx| t.undo(ctx));
             }
             DocCommand::Redo => {
-                self.doc_preview = None;
-                // Redo is an `Undo` of an `Undo` in a shared session.
-                if let Some(target) = self.timeline.redo_as_action() {
-                    self.commit(ActionKind::Undo(target));
-                } else {
-                    self.timeline.redo(&mut self.apply);
-                    self.committed_changed();
-                }
-                self.apply_document_surface();
+                self.navigate(|t| t.redo_as_action(), |t, ctx| t.redo(ctx));
             }
             DocCommand::Seek(to) => {
                 self.doc_preview = None;
@@ -1273,20 +1272,12 @@ impl Engine {
         content: Rendered,
     ) -> (wgpu::Texture, Extent2) {
         let size = view.viewport;
-        let target = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark export target"),
-            size: wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: self.target_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let target = self.offscreen_target(
+            "stark export target",
+            self.target_format,
+            size,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
         // The caller's attachments, not the surface's — see [`Attachments`].
         self.render_view(
@@ -1634,7 +1625,7 @@ impl Engine {
         // colour channels that way (§6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
         debug_assert_eq!(color_format, wgpu::TextureFormat::Rgba16Float);
-        let color = self.pick_target(
+        let color = self.offscreen_target(
             "stark pick color",
             color_format,
             size,
@@ -1643,7 +1634,7 @@ impl Engine {
         // Written by pass A and never read: the composite pipeline has two targets,
         // and the height it accumulates says how *much* paint is there, not what
         // colour it is.
-        let aux = self.pick_target(
+        let aux = self.offscreen_target(
             "stark pick aux",
             aux_format,
             size,
@@ -1672,8 +1663,11 @@ impl Engine {
         }
     }
 
-    /// A small offscreen target for one eyedropper sample.
-    fn pick_target(
+    /// A flat 2-D texture to render into off-screen: an export's target, or one of the
+    /// eyedropper's two sample attachments. Everything but the label, the format, the
+    /// size and the usage is the same for all of them — a single mip, a single sample,
+    /// no view formats — and was written out once per call site until it wasn't.
+    fn offscreen_target(
         &self,
         label: &str,
         format: wgpu::TextureFormat,
@@ -2282,6 +2276,32 @@ impl Engine {
     fn committed_changed(&mut self) {
         self.doc_epoch += 1;
         self.doc_revision += 1;
+    }
+
+    /// Move the history playhead one step, the way [`DocCommand::Undo`] and
+    /// [`DocCommand::Redo`] each do it.
+    ///
+    /// The two are one operation named twice: a shared session logs the step as an
+    /// `Undo` action peers can order (§5.4, §12.3) and a solo one navigates, and redo
+    /// is an `Undo` of an `Undo` — so the *only* thing that differs is which pair of
+    /// timeline methods is asked. Passing the pair rather than writing the body out
+    /// twice is what stops the two drifting: dropping the preview, bumping the
+    /// revision on the navigating branch and re-reading the document's ground
+    /// afterwards are all things one arm could have grown and the other not.
+    fn navigate(
+        &mut self,
+        as_action: impl Fn(&dyn Timeline) -> Option<ActionId>,
+        step: impl Fn(&mut dyn Timeline, &mut ApplyCtx) -> bool,
+    ) {
+        self.doc_preview = None;
+        if let Some(target) = as_action(self.timeline.as_ref()) {
+            self.commit(ActionKind::Undo(target));
+        } else {
+            step(self.timeline.as_mut(), &mut self.apply);
+            self.committed_changed();
+        }
+        // A step across a `SetSurface` moves the document's ground (§6.4).
+        self.apply_document_surface();
     }
 
     fn commit(&mut self, kind: ActionKind) {

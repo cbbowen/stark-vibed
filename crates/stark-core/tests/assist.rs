@@ -16,7 +16,7 @@
 use glam::Quat;
 use stark_core::command::InputSample;
 use stark_core::document::{LayerId, Tool};
-use stark_core::geom::{Extent2, Vec2, ViewTransform};
+use stark_core::geom::{Ellipse, Extent2, Vec2, ViewTransform};
 use stark_core::guides::PerspectiveGuide;
 use stark_core::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten};
 use stark_core::session::Session;
@@ -321,8 +321,12 @@ fn a_held_loop_becomes_a_circle_on_a_visible_plane() {
     let plane = guide.planes()[2].expect("the ground plane");
     let at = Vec2::new(0.05, -0.04);
     let probe = plane.circle_seen(at, 0.02).expect("a bounded image");
-    let radius = 0.02 * 180.0 / (0.5 * (probe.1.x + probe.1.y));
-    let (center, radii, angle) = plane.circle_seen(at, radius).expect("a bounded image");
+    let radius = 0.02 * 180.0 / probe.scale();
+    let Ellipse {
+        center,
+        radii,
+        angle,
+    } = plane.circle_seen(at, radius).expect("a bounded image");
     session.guides.push(guide);
 
     // Drawn a tenth too round and leaning 3° off — the two things a hand gets wrong.

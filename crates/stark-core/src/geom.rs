@@ -35,6 +35,43 @@ pub(crate) fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<
     (major, minor, v.try_normalize().or(Some(Vec2::X)))
 }
 
+/// An axis-aligned-in-its-own-frame ellipse: where it is, how big, and how it is
+/// turned.
+///
+/// Here beside [`principal_axis`] and for the same reason. Two modules arrive at an
+/// ellipse from opposite directions — [`assist`](crate::assist) reads one off the
+/// second moments of a hand-drawn loop, [`guides`](crate::guides) off the quadratic
+/// part of a conic (§20.7) — and both were passing it around as a bare
+/// `(Vec2, Vec2, f32)`, which says nothing about which `Vec2` is which and left the
+/// convergence test in `assist` comparing `a.0` against `b.1`.
+///
+/// `radii` is **major first**, which the triple could not state and every producer
+/// had to promise in prose.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Ellipse {
+    pub center: Vec2,
+    /// Semi-axes, major first, in the frame `angle` turns to.
+    pub radii: Vec2,
+    /// How far the major axis is turned from +x, in radians.
+    pub angle: f32,
+}
+
+impl Ellipse {
+    pub fn new(center: Vec2, radii: Vec2, angle: f32) -> Self {
+        Self {
+            center,
+            radii,
+            angle,
+        }
+    }
+
+    /// The mean semi-axis — the ellipse's own scale, which is what a tolerance on one
+    /// has to be measured against if it is to mean the same thing at any size.
+    pub fn scale(&self) -> f32 {
+        0.5 * (self.radii.x + self.radii.y)
+    }
+}
+
 /// Apron (halo) width in pixels carried around each tile's interior, replicated
 /// from the neighboring canvas content (§6.4). The compositor samples a
 /// tile's interior with bilinear filtering; without an apron the filter clamps at

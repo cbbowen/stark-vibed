@@ -41,7 +41,7 @@ use std::f32::consts::TAU;
 
 use nalgebra::{Const, Dyn, OMatrix};
 
-use crate::geom::{Vec2, principal_axis};
+use crate::geom::{Ellipse, Vec2, principal_axis};
 use crate::guides::{AxisPencil, AxisPlane, Scaffold};
 use crate::path::{ControlPoint, FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
 use crate::spline::CubicBSpline;
@@ -326,10 +326,10 @@ fn snap_to_plane(trace: &[Vec2], planes: &[AxisPlane], bar: f32) -> Option<Assis
             continue;
         };
         let radius = (flat.radii.x * flat.radii.y).sqrt();
-        let Some((center, radii, angle)) = plane.circle_seen(flat.center, radius) else {
+        let Some(seen) = plane.circle_seen(flat.center, radius) else {
             continue;
         };
-        let frame = Frame::new(center, radii, angle);
+        let frame = Frame::of(seen);
         let worst = trace.iter().map(|p| frame.distance(*p)).fold(0.0, f32::max);
         if worst > bar || best.as_ref().is_some_and(|(seen, _)| *seen <= worst) {
             continue;
@@ -338,9 +338,9 @@ fn snap_to_plane(trace: &[Vec2], planes: &[AxisPlane], bar: f32) -> Option<Assis
         best = Some((
             worst,
             AssistShape::Ellipse {
-                center,
-                radii,
-                angle,
+                center: seen.center,
+                radii: seen.radii,
+                angle: seen.angle,
                 phase,
                 winding,
                 plane: Some(*plane),
@@ -406,7 +406,7 @@ impl AssistShape {
                 // centre, so scaling the drawn shape about it would leave the plane at
                 // once.
                 let sized = plane
-                    .circle_behind(center, radii, angle)
+                    .circle_behind(Ellipse::new(center, radii, angle))
                     .zip(plane.to_plane(grip).zip(plane.to_plane(pointer)))
                     .and_then(|((flat, radius), (from, to))| {
                         let l0 = (from - flat).length();
@@ -415,10 +415,10 @@ impl AssistShape {
                             .flatten()
                     });
                 match sized {
-                    Some((center, radii, angle)) => Self::Ellipse {
-                        center,
-                        radii,
-                        angle,
+                    Some(seen) => Self::Ellipse {
+                        center: seen.center,
+                        radii: seen.radii,
+                        angle: seen.angle,
                         phase,
                         winding,
                         plane: Some(plane),
@@ -836,6 +836,10 @@ impl Frame {
         }
     }
 
+    fn of(e: Ellipse) -> Self {
+        Self::new(e.center, e.radii, e.angle)
+    }
+
     /// The point of this ellipse at parameter `t`.
     fn point(&self, t: f32) -> Vec2 {
         self.center
@@ -898,7 +902,7 @@ fn fit_ellipse(trace: &[Vec2]) -> Option<EllipseFit> {
     // The first pass has no estimate to weigh against, so it takes the resampled points
     // as they come — arc length, which is biased, and only a seed.
     let mut weighted: Vec<(Vec2, f32)> = pts.iter().map(|p| (*p, 1.0)).collect();
-    let mut fit: Option<(Vec2, Vec2, f32)> = None;
+    let mut fit: Option<Ellipse> = None;
 
     for _ in 0..ELLIPSE_PASSES {
         let next = moments(&weighted)?;
@@ -907,27 +911,28 @@ fn fit_ellipse(trace: &[Vec2]) -> Option<EllipseFit> {
         if settled {
             break;
         }
-        let (center, radii, angle) = next;
-        weighted = weigh(&Frame::new(center, radii, angle), &pts);
+        weighted = weigh(&Frame::of(next), &pts);
     }
 
-    let (center, radii, angle) = fit?;
-    let frame = Frame::new(center, radii, angle);
+    let fit = fit?;
+    let frame = Frame::of(fit);
     // Scored against what was actually drawn, not against the resampled loop: the
     // closing chord is a licence taken to fit with, never evidence that the fit is good.
     Some(EllipseFit {
-        center,
-        radii,
-        angle,
+        center: fit.center,
+        radii: fit.radii,
+        angle: fit.angle,
         worst: trace.iter().map(|p| frame.distance(*p)).fold(0.0, f32::max),
     })
 }
 
 /// Whether two successive estimates agree closely enough to stop, measured against the
 /// ellipse's own scale so the test means the same thing at any size.
-fn settled(a: (Vec2, Vec2, f32), b: (Vec2, Vec2, f32)) -> bool {
-    let scale = 0.5 * (b.1.x + b.1.y);
-    let moved = a.0.distance(b.0) + a.1.distance(b.1) + wrap_pi(b.2 - a.2).abs() * scale;
+fn settled(a: Ellipse, b: Ellipse) -> bool {
+    let scale = b.scale();
+    let moved = a.center.distance(b.center)
+        + a.radii.distance(b.radii)
+        + wrap_pi(b.angle - a.angle).abs() * scale;
     moved <= ELLIPSE_SETTLED * scale
 }
 
@@ -938,7 +943,7 @@ fn settled(a: (Vec2, Vec2, f32), b: (Vec2, Vec2, f32)) -> bool {
 /// principal axes of the scatter *are* the axes and its eigenvalues *are* the squared
 /// semi-axes. Everything difficult about the fit is in earning that measure, which is
 /// [`weigh`]'s job.
-fn moments(weighted: &[(Vec2, f32)]) -> Option<(Vec2, Vec2, f32)> {
+fn moments(weighted: &[(Vec2, f32)]) -> Option<Ellipse> {
     let total: f32 = weighted.iter().map(|(_, w)| *w).sum();
     if !(total.is_finite() && total > 0.0) {
         return None;
@@ -958,7 +963,7 @@ fn moments(weighted: &[(Vec2, f32)]) -> Option<(Vec2, Vec2, f32)> {
     if !(radii.is_finite() && radii.min_element() > 0.0) {
         return None;
     }
-    Some((center, radii, dir.y.atan2(dir.x)))
+    Some(Ellipse::new(center, radii, dir.y.atan2(dir.x)))
 }
 
 /// How much of the ellipse's own parameter each sample stands for: the circle is cut
@@ -1565,10 +1570,10 @@ mod tests {
 
     /// The circle at [`ON_PLANE`] on plane `k` whose image is [`DRAWN_SIZE`] across the
     /// mean: the plane, its radius there, and the ellipse it is seen as.
-    fn perspective_circle(g: &PerspectiveGuide, k: usize) -> (AxisPlane, f32, (Vec2, Vec2, f32)) {
+    fn perspective_circle(g: &PerspectiveGuide, k: usize) -> (AxisPlane, f32, Ellipse) {
         let plane = g.planes()[k].expect("plane shown");
         let probe = plane.circle_seen(ON_PLANE, 0.02).expect("a bounded image");
-        let radius = 0.02 * DRAWN_SIZE / (0.5 * (probe.1.x + probe.1.y));
+        let radius = 0.02 * DRAWN_SIZE / probe.scale();
         let seen = plane
             .circle_seen(ON_PLANE, radius)
             .expect("a bounded image");
@@ -1579,7 +1584,15 @@ mod tests {
     /// `wrong` and its tilt turned by `tilt` — exactly the pair of things a hand gets
     /// wrong about a circle in perspective, and the two the snap exists to fix.
     fn perspective_loop(g: &PerspectiveGuide, k: usize, wrong: f32, tilt: f32) -> Vec<Vec2> {
-        let (_, _, (center, radii, angle)) = perspective_circle(g, k);
+        let (
+            _,
+            _,
+            Ellipse {
+                center,
+                radii,
+                angle,
+            },
+        ) = perspective_circle(g, k);
         loop_trace(
             center,
             Vec2::new(radii.x, radii.y * wrong),
@@ -1606,7 +1619,7 @@ mod tests {
 
             // ...and it is a circle *there*: at the place and the size it was drawn at.
             let (flat, r) = on
-                .circle_behind(center, radii, angle)
+                .circle_behind(Ellipse::new(center, radii, angle))
                 .expect("a circle behind it");
             assert!(
                 flat.distance(ON_PLANE) < 0.15 * radius,
@@ -1630,7 +1643,9 @@ mod tests {
             recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("an ellipse"),
         );
         let plane = plane.expect("a perspective circle");
-        let (flat, r) = plane.circle_behind(center, radii, angle).expect("a circle");
+        let (flat, r) = plane
+            .circle_behind(Ellipse::new(center, radii, angle))
+            .expect("a circle");
 
         let frame = Frame::new(center, radii, angle);
         let worst = (0..64)
@@ -1696,16 +1711,16 @@ mod tests {
         let (center, radii, angle, plane) = as_ellipse(shape);
         let plane = plane.expect("a perspective circle");
         let (flat, r) = plane
-            .circle_behind(center, radii, angle)
+            .circle_behind(Ellipse::new(center, radii, angle))
             .expect("a circle behind it");
 
-        let (bc, br, ba) = plane.circle_seen(flat, r * 1.5).expect("a wider circle");
-        let target = Frame::new(bc, br, ba).point(1.0);
+        let wider = plane.circle_seen(flat, r * 1.5).expect("a wider circle");
+        let target = Frame::of(wider).point(1.0);
         let (center, radii, angle, kept) = as_ellipse(shape.adjust(shape.grip(), target));
         assert_eq!(kept, Some(plane), "the circle left its plane");
 
         let (moved, wider) = plane
-            .circle_behind(center, radii, angle)
+            .circle_behind(Ellipse::new(center, radii, angle))
             .expect("still a circle");
         assert!(
             moved.distance(flat) < 1e-3 * r,

@@ -30,9 +30,7 @@ impl RgbaImage {
             self.pixels[i + 3],
         ]
     }
-}
 
-impl RgbaImage {
     /// Build from bytes read back off a render target of `format`, normalizing the
     /// channel order.
     ///

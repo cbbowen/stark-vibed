@@ -36,9 +36,11 @@
 //! Everything here is plain CPU math, computed once per render and unit-tested
 //! against the classical theorems.
 
+use std::sync::Arc;
+
 use glam::{Mat3, Quat, Vec2, Vec3};
 
-use crate::geom::principal_axis;
+use crate::geom::{Ellipse, principal_axis};
 
 /// A world-axis direction whose camera-space `z` is smaller than this is taken
 /// to vanish *at infinity* — its lines are drawn parallel. At any plausible
@@ -130,8 +132,17 @@ pub struct PerspectiveGuide {
     /// "either absent or something you can read" is a property of the model
     /// rather than a habit of whichever frontend collected it.
     ///
+    /// An `Arc<str>` for the reason [`LayerInfo::name`] is one: the whole guide
+    /// list is cloned into [`ObservableState`] after *every* command, including
+    /// the pointer moves of a stroke, so a name that reallocated there would put
+    /// an allocation per guide on the drawing path to say what it said last
+    /// frame. A refcount bump costs a handful of instructions and `observe()`
+    /// stays cheap.
+    ///
     /// [`SetGuides`]: crate::command::ViewCommand::SetGuides
-    pub name: Option<String>,
+    /// [`LayerInfo::name`]: crate::LayerInfo::name
+    /// [`ObservableState`]: crate::ObservableState
+    pub name: Option<Arc<str>>,
     /// Whether this guide is drawn — the list row's eye (§20.5).
     pub visible: bool,
     /// The **center of view** (principal point): where the view axis meets the
@@ -571,8 +582,8 @@ impl AxisPlane {
     /// that conic is not a bounded curve: a circle crossing its plane's
     /// vanishing line images to a hyperbola, which is not something a stroke can
     /// be, and falls out of the classification instead of being a case.
-    pub fn circle_seen(&self, center: Vec2, radius: f32) -> Option<(Vec2, Vec2, f32)> {
-        let circle = conic_of(center, Vec2::splat(radius), 0.0)?;
+    pub fn circle_seen(&self, center: Vec2, radius: f32) -> Option<Ellipse> {
+        let circle = conic_of(Ellipse::new(center, Vec2::splat(radius), 0.0))?;
         ellipse_of(congruent(circle, self.plane_from_canvas))
     }
 
@@ -584,10 +595,10 @@ impl AxisPlane {
     /// the radius is read as the one of equal area; nothing here has to trust
     /// that, since a shape which is not a perspective circle never carries a
     /// plane in the first place (§20.7).
-    pub fn circle_behind(&self, center: Vec2, radii: Vec2, angle: f32) -> Option<(Vec2, f32)> {
-        let seen = conic_of(center, radii, angle)?;
-        let (c, r, _) = ellipse_of(congruent(seen, self.canvas_from_plane))?;
-        Some((c, (r.x * r.y).sqrt()))
+    pub fn circle_behind(&self, seen: Ellipse) -> Option<(Vec2, f32)> {
+        let seen = conic_of(seen)?;
+        let back = ellipse_of(congruent(seen, self.canvas_from_plane))?;
+        Some((back.center, (back.radii.x * back.radii.y).sqrt()))
     }
 
     /// `p` in plane coordinates, with the signed homogeneous weight that says
@@ -599,10 +610,14 @@ impl AxisPlane {
     }
 }
 
-/// The conic `[[axx, axy, bx], [axy, ayy, by], [bx, by, c]]` of the ellipse with
-/// this centre, semi-axes (major first) and frame rotation. `None` for radii that
-/// are not positive, which describe no curve.
-fn conic_of(center: Vec2, radii: Vec2, angle: f32) -> Option<Mat3> {
+/// The conic `[[axx, axy, bx], [axy, ayy, by], [bx, by, c]]` of an ellipse. `None`
+/// for radii that are not positive, which describe no curve.
+fn conic_of(e: Ellipse) -> Option<Mat3> {
+    let Ellipse {
+        center,
+        radii,
+        angle,
+    } = e;
     if !(radii.x > 0.0 && radii.y > 0.0 && center.is_finite()) {
         return None;
     }
@@ -632,7 +647,7 @@ fn conic_of(center: Vec2, radii: Vec2, angle: f32) -> Option<Mat3> {
 /// and every test after it is a plain inequality: a positive-definite quadratic
 /// part is exactly "an ellipse rather than a hyperbola", and a positive constant
 /// at the centre is exactly "a real one rather than an imaginary one".
-fn ellipse_of(c: Mat3) -> Option<(Vec2, Vec2, f32)> {
+fn ellipse_of(c: Mat3) -> Option<Ellipse> {
     let flip = if c.x_axis.x + c.y_axis.y < 0.0 {
         -1.0
     } else {
@@ -662,7 +677,7 @@ fn ellipse_of(c: Mat3) -> Option<(Vec2, Vec2, f32)> {
     let radii = Vec2::new((s / minor).sqrt(), (s / major).sqrt());
     radii
         .is_finite()
-        .then(|| (center, radii, along.y.atan2(along.x)))
+        .then(|| Ellipse::new(center, radii, along.y.atan2(along.x)))
 }
 
 /// `Mᵀ C M` — a conic carried through the map `M` takes points by.
@@ -993,7 +1008,11 @@ mod tests {
         let (at, radius) = (Vec2::new(0.06, -0.05), 0.09);
         for k in 0..3 {
             let plane = g.planes()[k].expect("plane shown");
-            let (center, radii, angle) = plane.circle_seen(at, radius).expect("a bounded image");
+            let Ellipse {
+                center,
+                radii,
+                angle,
+            } = plane.circle_seen(at, radius).expect("a bounded image");
             let (u, v) = (Vec2::from_angle(angle), Vec2::from_angle(angle).perp());
             let worst = (0..48)
                 .map(|i| {
@@ -1014,7 +1033,7 @@ mod tests {
     fn a_plane_facing_the_camera_sees_circles_as_circles() {
         let g = guide(0.0, 0.0, 0.0);
         let plane = g.planes()[0].expect("plane shown");
-        let (center, radii, _) = plane
+        let Ellipse { center, radii, .. } = plane
             .circle_seen(Vec2::new(0.2, -0.1), 0.05)
             .expect("an image");
         assert!((radii.x / radii.y - 1.0).abs() < 1e-4, "radii {radii}");
@@ -1030,7 +1049,7 @@ mod tests {
         let g = guide(0.5, 0.35, 0.2);
         let (at, radius) = (Vec2::new(0.06, -0.05), 0.12);
         let plane = g.planes()[2].expect("plane shown");
-        let (center, radii, _) = plane.circle_seen(at, radius).expect("an image");
+        let Ellipse { center, radii, .. } = plane.circle_seen(at, radius).expect("an image");
         let drift = center.distance(projected(&g, 2, at));
         assert!(
             drift > 0.02 * radii.x,
@@ -1045,8 +1064,8 @@ mod tests {
         let g = guide(0.5, 0.35, 0.2);
         let plane = g.planes()[2].expect("plane shown");
         let (at, radius) = (Vec2::new(0.06, -0.05), 0.09);
-        let (center, radii, angle) = plane.circle_seen(at, radius).expect("an image");
-        let (back, r) = plane.circle_behind(center, radii, angle).expect("a circle");
+        let seen = plane.circle_seen(at, radius).expect("an image");
+        let (back, r) = plane.circle_behind(seen).expect("a circle");
         assert!(back.distance(at) < 1e-4 * radius, "centre {back}, was {at}");
         assert!(
             (r - radius).abs() < 1e-4 * radius,

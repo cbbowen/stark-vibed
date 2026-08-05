@@ -157,7 +157,7 @@ fn remove_guide(state: AppState, index: usize) {
 /// [`LayerId::ordinal`]: stark_core::LayerId::ordinal
 fn guide_label(index: usize, guide: &PerspectiveGuide) -> String {
     match &guide.name {
-        Some(name) => name.clone(),
+        Some(name) => name.to_string(),
         None => format!("Perspective {}", index + 1),
     }
 }
@@ -210,7 +210,7 @@ fn GuideRow(index: usize, guide: PerspectiveGuide, active: bool) -> Element {
     let mut commit = move || {
         let text = draft.write().take();
         if let Some(text) = text {
-            update_guide(state, index, move |g| g.name = Some(text));
+            update_guide(state, index, move |g| g.name = Some(text.into()));
         }
     };
     let label = guide_label(index, &guide);
@@ -219,7 +219,7 @@ fn GuideRow(index: usize, guide: PerspectiveGuide, active: bool) -> Element {
     // would turn opening the field and pressing Enter into a rename to "Perspective
     // 2", quietly making a description into a name, and this panel's descriptions
     // move when a guide is removed. The placeholder carries the label instead.
-    let seed = guide.name.clone().unwrap_or_default();
+    let seed = guide.name.as_deref().unwrap_or_default().to_string();
     let visible = guide.visible;
 
     rsx! {
