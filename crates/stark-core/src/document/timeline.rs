@@ -135,12 +135,17 @@ impl LinearTimeline {
 
     /// How many actions are currently applied — the playhead's position.
     ///
-    /// A count rather than a stored counter: `history` reports its length only as
-    /// an opaque [`Version`], and a second copy of a number the history already
-    /// knows is a number that can disagree with it. The walk is over a `Vec` and
-    /// happens when a scrubber asks, not per commit.
+    /// Asked of the history rather than tracked beside it: a second copy of a
+    /// number the history already knows is a number that can disagree with it,
+    /// and `Version` is opaque, so there was nothing else to ask.
+    ///
+    /// That principle used to cost a walk per call, which
+    /// [`scrub_range`](Timeline::scrub_range) makes a walk per render. It costs
+    /// nothing now — `actions()` reports its own length — so the answer that
+    /// cannot go stale is also the cheap one, and neither has to be traded for
+    /// the other.
     fn applied(&self) -> usize {
-        self.history.actions().count()
+        self.history.actions().len()
     }
 }
 

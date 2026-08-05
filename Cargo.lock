@@ -2840,11 +2840,8 @@ dependencies = [
 
 [[package]]
 name = "history"
-version = "0.3.0"
-source = "git+https://github.com/cbbowen/history#54d781a05819784355633839af5b0f3f66f87bda"
-dependencies = [
- "thiserror 2.0.19",
-]
+version = "0.4.0"
+source = "git+https://github.com/cbbowen/history#f618ea0dfdca96ea5d1e5199181c672b90b44a09"
 
 [[package]]
 name = "hkdf"
