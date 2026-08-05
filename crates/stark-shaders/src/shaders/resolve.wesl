@@ -42,7 +42,13 @@ struct Resolve {
 @group(0) @binding(0) var<uniform> r: Resolve;
 @group(0) @binding(1) var src: texture_2d<f32>;
 
-const EPS: f32 = 1e-5;
+// The weighted mean's denominator guard: a target block that is entirely
+// transparent has no colour to average, and returns black rather than a quotient of
+// two zeros. Local and named for its own job — it is neither of
+// `paint_common`'s two guards (this alpha is neither a tile's per-unit opacity nor a
+// composited coverage, but the box filter's own accumulated weight), and it was one
+// of the five modules that used to call its guard `EPS`.
+const WEIGHT_EPS: f32 = 1e-5;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -64,5 +70,5 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
             a += t.a;
         }
     }
-    return vec4<f32>(linear_to_srgb(rgb / max(a, EPS)), a / f32(n * n));
+    return vec4<f32>(linear_to_srgb(rgb / max(a, WEIGHT_EPS)), a / f32(n * n));
 }

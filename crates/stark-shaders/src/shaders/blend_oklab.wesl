@@ -5,8 +5,9 @@
 
 import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab};
 import package::lib::quad::{fullscreen_clip};
+import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
-    EPS, FsOut, back_color, src_color, combine, merge,
+    FsOut, back_color, src_color, combine, merge,
     linear_to_light, light_to_linear,
 };
 
@@ -21,8 +22,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     let cb = textureLoad(back_color, p, 0); // (Oklab · coverage, coverage)
     let cs = textureLoad(src_color, p, 0);
-    let chan_b = cb.rgb / max(cb.a, EPS);
-    let chan_s = cs.rgb / max(cs.a, EPS);
+    let chan_b = cb.rgb / max(cb.a, COVERAGE_EPS);
+    let chan_s = cs.rgb / max(cs.a, COVERAGE_EPS);
 
     let blended = linear_srgb_to_oklab(light_to_linear(combine(
         linear_to_light(oklab_to_linear_srgb(chan_b)),

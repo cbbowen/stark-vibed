@@ -7,6 +7,7 @@
 
 import package::lib::color::{oklab_to_linear_srgb};
 import package::lib::quad::{fullscreen_clip};
+import package::lib::paint_common::{COVERAGE_EPS};
 import package::media_common::{comp_color, comp_aux, over_substrate, paint_vis_at, finish};
 
 @vertex
@@ -21,7 +22,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     let cc = textureLoad(comp_color, p, 0);    // (Oklab · coverage, coverage)
     let vis = paint_vis_at(p, dim);            // accumulated coverage, weave-corrected
-    let lab = cc.rgb / max(cc.a, 1e-4);        // un-premultiply coverage → latent Oklab
+    let lab = cc.rgb / max(cc.a, COVERAGE_EPS); // un-premultiply coverage → latent Oklab
     let over = over_substrate(lab, vis);       // substrate, or a transparent cut-out
 
     // `vis` doubles as the gloss ramp: the paint film is uniformly specular, so how

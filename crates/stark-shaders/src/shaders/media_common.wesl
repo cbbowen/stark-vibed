@@ -6,7 +6,7 @@
 // encode — lives here so it is written once.
 
 import package::lib::color::{linear_to_srgb};
-import package::lib::noise::{noise_2_to_4};
+import package::lib::paint_common::{PAINT_EPS};
 
 struct Media {
     light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
@@ -34,8 +34,6 @@ struct Media {
 @group(0) @binding(6) var env_samp: sampler;
 
 const PI: f32 = 3.14159265359;
-
-const EPS: f32 = 1e-5;
 
 // Absolute canvas surface height at screen pixel `p` (sampled in canvas space, so
 // the weave is fixed to the canvas). `Flat` is height 0, so it adds no relief.
@@ -75,7 +73,7 @@ fn paint_vis_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
     // Both guards return the limit the power law approaches; the second also
     // dodges `pow(0, 0)` (opaque paint entirely below the surface), which WGSL
     // leaves undefined.
-    if h <= EPS {
+    if h <= PAINT_EPS {
         return 0.0;
     }
     if t <= 0.0 {
@@ -118,7 +116,7 @@ fn over_substrate(paint: vec3<f32>, vis: f32) -> vec4<f32> {
 // over screen pixels but divided by the canvas px they span (`surf_a.z`), so the
 // slope is per *canvas* px — the relief (and its gloss) is zoom-invariant rather
 // than steepening as you zoom out.
-fn surface_normal(p: vec2f, dim: vec2<i32>) -> vec3<f32> {
+fn surface_normal(p: vec2<f32>, dim: vec2<i32>) -> vec3<f32> {
     let i = vec2<i32>(floor(p));
     let strength = m.light.w / m.surf_a.z;
     let hl = height_at(i + vec2<i32>(-1, 0), dim);
@@ -206,7 +204,7 @@ fn commerce_tonemap(color: vec3<f32>, black_point: f32) -> vec3<f32> {
 // `paint` is the visible alpha that composite used — the paint film's own share of
 // the fragment. Specularity is a **uniform property of the paint**, not of a stored
 // channel: paint is glossy everywhere it is, and the substrate behind it never is.
-fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2f, dim: vec2<i32>) -> vec4<f32> {
+fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>) -> vec4<f32> {
     let n = surface_normal(p, dim);
     let exposure = m.shade.x;
     let diffuse_lod = m.shade.y;

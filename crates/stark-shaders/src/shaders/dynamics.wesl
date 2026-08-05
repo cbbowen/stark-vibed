@@ -42,14 +42,15 @@
 // with no per-stamp dabbing regardless of spacing.
 //
 // The reservoir is a real 2-D texture in brush-local coordinates, so each part of
-// the tip carries what *it* rolled through; because pickup reads the region as
+// the tip carries what *it* rolled through; because `exchange` reads the region as
 // already modified by earlier segments, smearing is genuinely order-dependent —
 // including across the stroke's own trail.
 //
 // **The tool exchanges once per segment, at the same cadence as everything else.**
 // The canvas side of the transfer is swept per segment (above), so the tool side has
 // to be too, or the tool gains what the canvas gave up only some segments later. That
-// lag used to be real: `pickup` ran on its own coarse cadence, every `spacing·radius`
+// lag used to be real: a separate `pickup` pass — retired, and the only mention of
+// that name left in the tree — ran on its own coarse cadence, every `spacing·radius`
 // of travel, and a stroke that stopped mid-interval left its last footprint stripped
 // by a `deposit` whose paint the tool had not yet been credited with — a tip-shaped
 // patch of missing paint, worst exactly where `lift` is high.
@@ -73,21 +74,26 @@
 // each transfer integrate the same rate over the same footprint, so with
 // `add = 0` total height (canvas + tool) is conserved up to resampling error.
 //
-// Determinism: segment/pickup slots are fixed CPU-side per stroke; every dispatch
-// is a pure function of what it reads. Replay and live == committed hold.
+// Determinism: the slot sequence — segment, bleed and settle alike (`SlotKind`) —
+// is fixed CPU-side per stroke; every dispatch is a pure function of what it reads.
+// Replay and live == committed hold.
 
 import package::stamp_common::{prefix_at, Sweep, sweep_at, sweep_tangent};
 import package::lib::noise::{color_jitter};
-import package::lib::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, EPS};
+import package::lib::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, PAINT_EPS};
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 
 struct Stamp {
-    // a: position .xy (region px) + frame x-axis .zw (unit vector). For a segment
-    //    slot: the segment start and its travel tangent (the prefix-τ frame). For
-    //    a pickup slot: the stamp centre and the *shape* frame (travel rotated by
-    //    the orientation, §6.6) — the reservoir's own frame.
+    // a: the sweep's start .xy (region px) + its travel tangent .zw (unit vector) —
+    //    the prefix-τ frame, and the same two fields for all three slot kinds
+    //    (`SlotKind`). A **bleed** slot's sweep is the firing's travel window rather
+    //    than a stretch of painting; a **settle** slot's is the tip's own footprint,
+    //    so its tangent is the direction the pen was going when it left the page.
+    //    (The tool's *shape* frame — this turned by the orientation, §6.6 — is
+    //    derived where it is needed, in `bake` and `exchange`, not carried here.)
     a: vec4<f32>,
-    // b: radius (px), segment length / radius (0 for pickup), λ_lift, λ_deposit —
+    // b: radius (px), segment length / radius (0 on a settle slot, which is a break
+    //    of contact rather than a stretch of travel), λ_lift, λ_deposit —
     //    λ = ln(1 − axis) ≤ 0, clamped away from −∞.
     b: vec4<f32>,
     // c: the brush's own colour channels .xyz + per-unit opacity .w. **Undrained** —
@@ -136,7 +142,7 @@ struct Stamp {
 @group(0) @binding(0) var<uniform> st: Stamp;
 
 // The stroke's canvas region: premultiplied colour (latent·op, op) + wide aux
-// (height, _, _, _). Read by snapshot (textureLoad) and pickup (bilinear).
+// (height, _, _, _). Read by `snapshot` (textureLoad) and `exchange` (bilinear).
 @group(0) @binding(1) var region_color: texture_2d<f32>;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
 // Footprint snapshot targets (written by `snapshot`).
@@ -145,12 +151,14 @@ struct Stamp {
 // Bilinear clamp sampler for the region / reservoir / coverage lookups.
 @group(0) @binding(5) var samp: sampler;
 // The brush tip's coverage mask over brush-local [-1,1]² (R8; §6.6) — the
-// reservoir texel's own footprint weight (pickup only; the canvas side uses the
-// prefix-τ exposure instead).
+// reservoir texel's own footprint weight. Read by the **tool** side only (`wick`
+// and `exchange`); the canvas side uses the prefix-τ exposure instead.
 @group(0) @binding(6) var cov_tex: texture_2d<f32>;
 // The tool reservoir ping-pong: colour = (latent .xyz, per-unit opacity .w),
-// aux = (carried height, _, _, _). `src` is read this dispatch, `dst`
-// written; the host swaps the bind group at each pickup.
+// aux = (carried height, _, _, _). `src` is read this dispatch, `dst` written;
+// the host swaps the bind group after each pass that writes it — `wick` and
+// `exchange`, so a painting segment cycles it twice. A bleed or settle slot
+// writes it not at all and leaves it where the previous segment put it.
 @group(0) @binding(7) var brush_src_color: texture_2d<f32>;
 @group(0) @binding(8) var brush_src_aux: texture_2d<f32>;
 @group(0) @binding(9) var brush_dst_color_w: texture_storage_2d<rgba16float, write>;
@@ -656,10 +664,10 @@ fn wick_axis(gid: vec3<u32>, axis: vec2<i32>) {
     // no colour to recover, so the cell keeps the latent it had rather than a quotient
     // of two vanishing numbers (§6.1).
     var lat = textureLoad(brush_src_color, t, 0).rgb;
-    if m > EPS {
+    if m > PAINT_EPS {
         lat = lm / m;
     }
-    textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
+    textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, PAINT_EPS)));
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
 }
 
@@ -1052,7 +1060,7 @@ fn exchange(
         // thin bright streaks. The single mid-segment tap this replaced could hit that
         // too, but once per segment and at the midpoint; walking the track samples the
         // ends as well, where the canvas is emptiest, and eight times as often.
-        if take_m > EPS {
+        if take_m > PAINT_EPS {
             lat = blend_latent(lat, m, rc.rgb / rc.a, take_m);
         }
         m = m + take_m;
@@ -1076,7 +1084,7 @@ fn exchange(
         m = m + src_m;
     }
 
-    textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, EPS)));
+    textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, PAINT_EPS)));
     textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
 }
 
@@ -1241,8 +1249,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tool_h = max(d_load.x, 0.0) * inv_pre;
     let tool_m = max(d_load.y, 0.0) * inv_pre;
     let latm = d_latm.xyz;
-    let tool_op = tool_m / max(tool_h, EPS);
-    let tool_lat = latm * inv_pre / max(tool_m, EPS);
+    let tool_op = tool_m / max(tool_h, PAINT_EPS);
+    let tool_lat = latm * inv_pre / max(tool_m, PAINT_EPS);
 
     // The canvas as this segment found it — or, when the brush bleeds, that state
     // relaxed towards its neighbours first (see `BLEED_REACH` above). Ahead of the
@@ -1253,7 +1261,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // same class as the mean-field freeze the loop already carries (`exchange_at`).
     var h0 = ua.x;
     var op0 = uc.a;
-    var lat0 = uc.rgb / max(uc.a, EPS);
+    var lat0 = uc.rgb / max(uc.a, PAINT_EPS);
     var bled = false;
     let kb = -st.h.w; // the bleed rate; nonzero only on a dedicated bleed slot
     if kb > 0.0 {
@@ -1312,8 +1320,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         bled = dh != 0.0 || dm != 0.0 || any(dlm != vec3<f32>(0.0, 0.0, 0.0));
         h0 = ua.x + dh;
         let m1 = m0 + dm;
-        op0 = m1 / max(h0, EPS);
-        lat0 = (lm0 + dlm) / max(m1, EPS);
+        op0 = m1 / max(h0, PAINT_EPS);
+        lat0 = (lm0 + dlm) / max(m1, PAINT_EPS);
     }
 
     // The lift's removal: height leaves; the remaining paint's latent and per-unit
@@ -1374,19 +1382,19 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     var par_lat = own_lat;
-    if par_m > EPS {
+    if par_m > PAINT_EPS {
         par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
     }
 
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
     h += par_h;
     m += par_m;
-    let op = m / max(h, EPS);
+    let op = m / max(h, PAINT_EPS);
 
     // Lerp the whole exchange back towards the snapshot by the selection coverage: at
     // the mask's feathered edge the texel receives that fraction of everything this
     // segment did — the lift as well as the deposit — which is exactly the fraction
-    // `pickup` scaled its own side of the transfer by.
+    // `exchange` scaled its own side of the transfer by.
     textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
     textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));
 }
@@ -1601,15 +1609,15 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // proportion to what it would have delivered (§6.1).
     var h = ua.x * ex.keep;
     var m = uc.a * h;
-    let canvas_lat = uc.rgb / max(uc.a, EPS);
+    let canvas_lat = uc.rgb / max(uc.a, PAINT_EPS);
     var par_lat = canvas_lat;
-    if par_m > EPS {
+    if par_m > PAINT_EPS {
         par_lat = par_lm / par_m;
     }
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
     h += par_h;
     m += par_m;
-    let op = m / max(h, EPS);
+    let op = m / max(h, PAINT_EPS);
 
     textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
     textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));

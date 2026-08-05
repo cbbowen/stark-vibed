@@ -9,6 +9,7 @@
 
 import package::lib::color::{srgb_to_linear};
 import package::lib::quad::{fullscreen_clip};
+import package::lib::paint_common::{COVERAGE_EPS};
 import package::mixbox_poly::{mixbox_eval_polynomial};
 import package::media_common::{comp_color, comp_aux, over_substrate, paint_vis_at, finish};
 
@@ -24,7 +25,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     let cc = textureLoad(comp_color, p, 0);    // (concentrations · coverage, coverage)
     let vis = paint_vis_at(p, dim);            // accumulated coverage, weave-corrected
-    let conc = cc.rgb / max(cc.a, 1e-4);       // un-premultiply coverage → concentrations
+    let conc = cc.rgb / max(cc.a, COVERAGE_EPS); // un-premultiply coverage → concentrations
     // Mixbox latent mixes linearly, so composite paint-over-substrate in latent space.
     let over = over_substrate(conc, vis);      // substrate, or a transparent cut-out
 

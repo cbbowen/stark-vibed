@@ -292,3 +292,32 @@ impl StrokeRenderer {
         (new_map, carry)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::wesl::wesl_const;
+
+    /// The draw call and the strip it draws agree on how many vertices there are.
+    ///
+    /// Asking for fewer clips the sweep short; asking for more folds the strip back
+    /// over itself. Neither is a validation error — both just render, wrongly, and
+    /// only at the segment lengths that happen to expose the missing or doubled
+    /// slice.
+    ///
+    /// Checked through `SWEEP_SLICES` rather than the shader's own `SWEEP_VERTS`,
+    /// because that constant is exactly the case [`wesl_const`] warns about: the
+    /// shader states it for the host's benefit and never computes with it, so the
+    /// linker strips it. `SWEEP_SLICES` is what `sweep_vertex` actually indexes by,
+    /// and the strip's vertex count is two rims across `slices + 1` cross-sections.
+    #[test]
+    fn the_draw_call_and_the_strip_agree_on_the_vertex_count() {
+        let slices = wesl_const(stark_shaders::stamp_oklab(), "SWEEP_SLICES");
+        assert_eq!(
+            f64::from(SWEEP_VERTS),
+            2.0 * (slices + 1.0),
+            "the sweep strip is now {slices} slices, so the draw call asks for the \
+             wrong number of vertices",
+        );
+    }
+}

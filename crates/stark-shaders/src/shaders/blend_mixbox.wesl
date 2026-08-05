@@ -27,8 +27,9 @@ import package::lib::color::{srgb_to_linear, linear_to_srgb};
 import package::mixbox_poly::{mixbox_eval_polynomial};
 import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
+import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
-    EPS, FsOut, back_color, src_color, combine, merge,
+    FsOut, back_color, src_color, combine, merge,
     linear_to_light, light_to_linear,
 };
 
@@ -49,8 +50,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     let cb = textureLoad(back_color, p, 0); // (concentrations · coverage, coverage)
     let cs = textureLoad(src_color, p, 0);
-    let chan_b = cb.rgb / max(cb.a, EPS);
-    let chan_s = cs.rgb / max(cs.a, EPS);
+    let chan_b = cb.rgb / max(cb.a, COVERAGE_EPS);
+    let chan_s = cs.rgb / max(cs.a, COVERAGE_EPS);
 
     let light = combine(conc_to_light(chan_b), conc_to_light(chan_s));
     // `max(…, 0)` before the sRGB encode: the combination is componentwise in XYZ,

@@ -21,7 +21,7 @@
 // Every output is a pure function of canvas position, so a tile's apron is
 // rewritten identically to its neighbour's interior (the §6.4 seam invariant).
 
-import package::lib::paint_common::{blend_latent, EPS};
+import package::lib::paint_common::{blend_latent, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
@@ -344,15 +344,15 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     // opacity are untouched (the lift law, §6.1).
     let h0 = ba.x * (1.0 - m);
     let m0 = bc.a * h0;
-    let lat0 = bc.rgb / max(bc.a, EPS);
+    let lat0 = bc.rgb / max(bc.a, PAINT_EPS);
     // The parcel: (latent, op, height) as fs_parcel wrote it.
     let h1 = ph;
     let m1 = pc.a * h1;
-    let lat1 = pc.rgb / max(pc.a, EPS);
+    let lat1 = pc.rgb / max(pc.a, PAINT_EPS);
 
     let h = h0 + h1;
     let mm = m0 + m1;
-    let op = mm / max(h, EPS);
+    let op = mm / max(h, PAINT_EPS);
     let lat = blend_latent(lat0, m0, lat1, m1);
     out.color = vec4<f32>(lat * op, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);

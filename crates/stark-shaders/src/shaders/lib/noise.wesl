@@ -1,93 +1,24 @@
-// Core integer hashes — Jarzynski & Olano, "Hash Functions for GPU Rendering" (JCGT 2020).
-// Square NxN: take the first M output lanes for M outputs.
+// The colour-dynamics noise lookup (§6.2).
+//
+// **The GPU does not generate noise, it reads it.** Every field is baked once on
+// the CPU into a small tileable `Rgba8Snorm` texture (`stark-core`'s `noise.rs`),
+// because that is what keeps it bit-identical across GPUs, runs and peers — the
+// same determinism contract as the sRGB↔Oklab constants (§6.5). So the whole of
+// this module is one texture sample and a scale.
+//
+// It used to carry a hash library alongside: `_pcg2d`/`_pcg3d`/`_pcg4d` (Jarzynski
+// & Olano, JCGT 2020), a `_unit` bit-twiddle, and seven `noise_N_to_M` wrappers
+// over them — 85 of the file's 111 lines, with **no caller anywhere in the tree**.
+// `media_common` imported one of them and never used it, which was the only
+// reference the family had. A hash the GPU never evaluates cannot change a pixel,
+// which makes it exactly the scaffolding this project declines to carry: it went
+// the way of `tooth`, `drag` and `wetness`, and comes back with the pass that
+// needs it. The live CPU `pcg4d` in `noise.rs` is untouched — it bakes the
+// textures this samples, and never had a GPU counterpart to agree with.
 
-fn _pcg2d(v_in: vec2u) -> vec2u {
-    var v = v_in * 1664525u + 1013904223u;
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
-    v ^= v >> vec2u(16u);
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
-    v ^= v >> vec2u(16u);
-    return v;
-}
-
-fn _pcg3d(v_in: vec3u) -> vec3u {
-    var v = v_in * 1664525u + 1013904223u;
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v ^= v >> vec3u(16u);
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    return v;
-}
-
-fn _pcg4d(v_in: vec4u) -> vec4u {
-    var v = v_in * 1664525u + 1013904223u;
-    v.x += v.y * v.w;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v.w += v.y * v.z;
-    v ^= v >> vec4u(16u);
-    v.x += v.y * v.w;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v.w += v.y * v.z;
-    return v;
-}
-
-// u32 -> uniform f32 in [0, 1). 
-fn _unit(h: u32) -> f32 {
-    // Builds a float in [1, 2) from the top 23 bits, then shifts down. Guaranteed half-open, exactly 2^23 levels, no f32 rounding bias.
-    // return bitcast<f32>((h >> 9u) | 0x3f800000u) - 1.0;
-
-    // Can produce denormalized values and exactly 1.0.
-    return f32(h) * 2.3283064365386963e-10;  // h / 2^32
-}
-
-// --- the family, each parameterized by a u32 seed ---
-
-fn noise_1_to_1(p: f32, seed: u32) -> f32 {
-    let h = _pcg2d(vec2u(bitcast<u32>(p), seed));
-    return _unit(h.x);
-}
-
-fn noise_2_to_1(p: vec2f, seed: u32) -> f32 {
-    let h = _pcg3d(vec3u(bitcast<u32>(p.x), bitcast<u32>(p.y), seed));
-    return _unit(h.x);
-}
-
-fn noise_2_to_2(p: vec2f, seed: u32) -> vec2f {
-    let h = _pcg3d(vec3u(bitcast<u32>(p.x), bitcast<u32>(p.y), seed));
-    return vec2f(_unit(h.x), _unit(h.y));
-}
-
-fn noise_2_to_3(p: vec2f, seed: u32) -> vec3f {
-    let h = _pcg3d(vec3u(bitcast<u32>(p.x), bitcast<u32>(p.y), seed));
-    return vec3f(_unit(h.x), _unit(h.y), _unit(h.z));
-}
-
-fn noise_2_to_4(p: vec2f, seed: u32) -> vec4f {
-    let h = _pcg4d(vec4u(bitcast<u32>(p.x), bitcast<u32>(p.y), seed, 0x9e3779b9u));
-    return vec4f(_unit(h.x), _unit(h.y), _unit(h.z), _unit(h.w));
-}
-
-fn noise_3_to_3(p: vec3f, seed: u32) -> vec3f {
-    let h = _pcg4d(vec4u(bitcast<u32>(p.x), bitcast<u32>(p.y), bitcast<u32>(p.z), seed));
-    return vec3f(_unit(h.x), _unit(h.y), _unit(h.z));
-}
-
-fn noise_3_to_4(p: vec3f, seed: u32) -> vec4f {
-    let h = _pcg4d(vec4u(bitcast<u32>(p.x), bitcast<u32>(p.y), bitcast<u32>(p.z), seed));
-    return vec4f(_unit(h.x), _unit(h.y), _unit(h.z), _unit(h.w));
-}
-
-// --- colour dynamics (§6.2) ---------------------------------------------
 // Per-channel colour offset at a **stroke-local** position: sample the baked
-// tileable 2-D noise field (signed, ≈[-1,1] per channel; built on the CPU in
-// stark-core's noise.rs) and scale each channel by its amplitude.
+// tileable 2-D noise field (signed, ≈[-1,1] per channel) and scale each channel by
+// its amplitude.
 //   local: (lateral offset from the stroke centreline, arc length along the
 //          stroke), both in canvas px — the brush's own frame, so the pattern
 //          rides the stroke instead of the canvas underneath it. Both are
@@ -101,11 +32,11 @@ fn noise_3_to_4(p: vec3f, seed: u32) -> vec4f {
 fn color_jitter(
     tex: texture_2d<f32>,
     s: sampler,
-    local: vec2f,
-    freq: vec4f,
-    amp: vec3f,
-    off: vec2f,
-) -> vec3f {
+    local: vec2<f32>,
+    freq: vec4<f32>,
+    amp: vec3<f32>,
+    off: vec2<f32>,
+) -> vec3<f32> {
     let q = local * freq.xy * freq.z + off;
     return amp * textureSampleLevel(tex, s, q, 0.0).xyz;
 }

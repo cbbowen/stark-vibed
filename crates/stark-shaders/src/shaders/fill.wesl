@@ -17,7 +17,7 @@
 // Unlike the transform's combine there is no cut: a fill *adds* paint, so resident
 // height is untouched and the parcel stacks over it.
 
-import package::lib::paint_common::{blend_latent, EPS};
+import package::lib::paint_common::{blend_latent, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
@@ -69,7 +69,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // Resident paint, unchanged: a fill adds, it does not lift.
     let h0 = ba;
     let m0 = bc.a * h0;
-    let lat0 = bc.rgb / max(bc.a, EPS);
+    let lat0 = bc.rgb / max(bc.a, PAINT_EPS);
     // The parcel. Coverage scales the *height* — the amount of paint — never the
     // per-unit opacity, which is a property of the pigment and not of how much of
     // it there is (§6.1).
@@ -78,7 +78,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     let h = h0 + h1;
     let mm = m0 + m1;
-    let op = mm / max(h, EPS);
+    let op = mm / max(h, PAINT_EPS);
     let lat = blend_latent(lat0, m0, f.c.rgb, m1);
     out.color = vec4<f32>(lat * op, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);

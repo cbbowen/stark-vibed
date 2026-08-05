@@ -39,34 +39,64 @@ module makes the question moot either way, which is the point.
 
 ## 2. Constants that will drift
 
-**Status: `OPACITY_K` done; `EPS` and the tooth trio outstanding.**
+**Status: done.**
 
 - `OPACITY_K = 1.0` was declared **four times** — `paint_common`, `composite`,
   `matte`, `media_common` — three of them carrying a "must match" comment, while
   `paint_common` already exported it and `stamp_oklab` already imported it.
   Now one definition in `lib/paint_common.wesl`.
-- `EPS` is worse: same name, **different values**. 1e-5 in
+- `EPS` was worse: same name, **different values**. 1e-5 in
   paint_common/media_common/composite/resolve, 1e-4 in blend_common, and a bare
-  `1e-4` literal in both media shaders. `blend_oklab` imports `EPS` from
-  `blend_common` while `fill` imports `EPS` from `paint_common` — same
-  identifier, different number, no way to notice at the call site. Name them for
-  their role (`ALPHA_EPS` for the un-premultiply guard, `MASS_EPS` for the
-  vanishing-mass guard) and define each once.
-- **The tooth trio is the highest-risk instance.** `gpu/surface/tooth.rs`
-  mirrors `TOOTH_SOFTNESS` and `TOOTH_RISE` by comment only, and the failure is
-  silent by construction: the two halves of a toothed transfer stop balancing
-  and nothing crashes. `RISE_LIMIT` is worse still — `paint_common::rise_ahead`
-  folds it into the magic literals `255.0/512.0` and `0.25`, so even a parser
-  could not check it. Give it a name.
+  `1e-4` literal in both media shaders. `blend_oklab` imported `EPS` from
+  `blend_common` while `fill` imported `EPS` from `paint_common` — same
+  identifier, different number, nothing at either call site to say so.
+
+  The split is now by **which representation is being guarded**, because that is
+  what the two values were tracking all along. A *tile* carries per-unit opacity
+  in alpha; a *composited target* carries the stack's coverage. Un-premultiplying
+  the two divides by different quantities on different scales:
+  `PAINT_EPS = 1e-5` and `COVERAGE_EPS = 1e-4`, both in `lib/paint_common.wesl`.
+  `resolve` keeps a local `WEIGHT_EPS` — its alpha is the box filter's own
+  accumulated weight, which is neither. No value changed.
+- **The tooth trio was the highest-risk instance.** `gpu/surface/tooth.rs`
+  mirrored `TOOTH_SOFTNESS` and `TOOTH_RISE` by comment only, and the failure is
+  silent by construction: the two halves of a toothed transfer stop balancing and
+  nothing crashes. `RISE_LIMIT` was worse still — `paint_common::rise_ahead`
+  folded it into the literals `255.0/512.0` and `0.25`, so even a parser could not
+  check it. It is now named, and the decode reads `255.0·L/128.0 − L`, which is
+  the same number to the bit (both operands exact, and the divisor a power of
+  two). All three are asserted — see §3.
 
 ## 3. Assert the constants instead of asking for them in a comment
 
-`wesl_const` (`gpu/stroke/dynamics.rs`) already reads a scalar `const` out of
-linked WESL source and asserts the host agrees. It is applied to exactly two
-constants in one shader. Extending it to `TOOTH_SOFTNESS`, `TOOTH_RISE`,
-`RISE_LIMIT` (once §2 names it), `OPACITY_K`, `MATTE_THICKNESS` and
-`SWEEP_VERTS` costs a dozen lines, needs no adapter, and runs in CI — which is
-the project's own "rule out a class rather than enumerate its instances".
+**Status: done.**
+
+`wesl_const` already read a scalar `const` out of linked WESL and asserted the
+host agreed — but it was a private helper in `dynamics.rs`'s test module, applied
+to two constants in one shader. It now lives in `gpu/wesl.rs` next to
+`mirrors_wesl!`, which is the module whose whole stated job this is: *"whatever
+can be checked here should be, because the failure is quiet."* `mirrors_wesl!`
+pins a struct's size; `wesl_const` pins a scalar both sides compute with.
+
+Asserted now: the tooth trio (`TOOTH_SOFTNESS`, `TOOTH_RISE`, `RISE_LIMIT`) in
+`gpu/surface/tooth.rs`, and `SWEEP_VERTS` in `gpu/stroke/swept.rs`, alongside the
+two that already were.
+
+Three things learned in the doing, all now in `wesl_const`'s own docs:
+
+- **`OPACITY_K` and `MATTE_THICKNESS` have no CPU counterpart at all** — they are
+  shader-only, so there was never a pair to assert. This list over-reached.
+- **Imported constants arrive mangled.** `TOOTH_RISE` links as
+  `package_lib__1paint_common__1TOOTH_RISE`, while a root-module constant keeps
+  its name. The helper had to learn to match the suffix.
+- **Compare as `f32`, not `f64`.** Both sides hold `f32`; widening the host's
+  `0.06f32` gives 0.059999998…, which is not the source's `0.06`. The first run
+  of the tooth assertion failed on exactly this, which at least proved it was
+  reading the shader.
+
+`SWEEP_VERTS` is checked through `SWEEP_SLICES`, because the shader states
+`SWEEP_VERTS` for the host's benefit and never computes with it — so the linker
+strips it, the same trap `WICK_RATE` falls into.
 
 ## 4. The duplicated helpers the split enables
 
@@ -83,21 +113,28 @@ the project's own "rule out a class rather than enumerate its instances".
 
 ## 5. Dead code in `noise.wesl`
 
-**Status: outstanding.**
+**Status: done.**
 
-85 of its 111 lines are unreachable: `_pcg2d`, `_pcg3d`, `_pcg4d`, `_unit` and
+85 of its 111 lines were unreachable: `_pcg2d`, `_pcg3d`, `_pcg4d`, `_unit` and
 all seven `noise_N_to_M` wrappers have zero callers across the whole tree. The
 only live function is `color_jitter`, which samples a CPU-baked texture and
 touches none of the hashes. `media_common` imports `noise_2_to_4` and never uses
 it — the sole reference to the entire family.
 
-Per the project's own rule, this is scaffolding that cannot yet change a pixel.
-Delete it; reintroduce the one variant needed when something needs it, with the
-model its placeholder never had.
+Per the project's own rule, this was scaffolding that cannot change a pixel, and
+it went the way of `tooth`, `drag` and `wetness`.
+
+One thing it turned up: `noise.rs`'s live CPU `pcg4d` was documented as mirroring
+`noise.wesl` "so CPU and GPU noise stay in the same family". There is no GPU side
+to that family — the fields are CPU-baked *precisely* so they are bit-identical
+across adapters, and the shader only ever samples the texture. That comment
+described a contract neither side exercised, and has been corrected.
 
 ## 6. Prose describing a pass that no longer exists
 
-**Status: outstanding.**
+**Status: done.** Six live references rewritten; the one surviving mention is
+explicitly flagged as history, so a reader grepping the name learns immediately
+that there is nothing to find.
 
 `pickup` was retired — `dynamics.wesl`'s header says so at length — but it is
 still named in ten places as if live: the `Stamp.a` and `Stamp.b` field docs
@@ -174,14 +211,17 @@ reading as the surviving half of a `stamp_mixbox` pair that never existed.
 
 ## 12. Smaller items
 
-**Status: outstanding.**
+**Status: three done, one outstanding.**
 
-- `selection.wesl` uses `f32` enum tags compared with `==`, while `blend_common`
-  uses `u32` codes properly. Same ABI concept, two conventions, and float
-  equality on a tag is a hazard the u32 form does not have.
-- `noise.wesl` and `media_common` use `vec2f`/`vec2u`/`vec3f`; everything else
-  uses `vec2<f32>`. Pick one.
+- ~~`selection.wesl` uses `f32` enum tags compared with `==`.~~ Now `u32` codes
+  read out of the float lane, matching `blend_common`'s `BlendMode`. The equality
+  was in fact safe — every code is a small integer, exact in f32 — but a tag is an
+  enumerand, not a measurement, and the next code to be added might not be.
+- ~~`noise.wesl` and `media_common` use `vec2f`/`vec2u`/`vec3f`.~~ All long-form
+  now.
+- ~~`noise.wesl::_unit` carries a commented-out alternative implementation.~~ Gone
+  with §5.
 - `blend_common::merge` takes `cb`/`cs` as parameters but reads `back_aux` /
   `src_aux` from globals — hence its otherwise-unused `p` argument. Asymmetric
-  enough to slow a reader down.
-- `noise.wesl::_unit` carries a commented-out alternative implementation.
+  enough to slow a reader down. **Outstanding**, and a genuine design call rather
+  than a tidy-up: `merge` either takes everything or reads everything.

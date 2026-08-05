@@ -2393,22 +2393,7 @@ mod tests {
 
     // --- the host and the shader agree -------------------------------------
 
-    /// The value of a `const NAME` in some WESL source, as an `f64`. Enough of a parser
-    /// for the handful of scalar constants below; anything it cannot find is a failed
-    /// test rather than a silently skipped one.
-    fn wesl_const(src: &str, name: &str) -> f64 {
-        let at = src
-            .find(&format!("const {name}:"))
-            .unwrap_or_else(|| panic!("the shader has no `const {name}`"));
-        let rest = &src[at..];
-        let eq = rest.find('=').expect("a const has a value");
-        let end = rest.find(';').expect("a const ends");
-        rest[eq + 1..end]
-            .trim()
-            .trim_end_matches(['u', 'i', 'f'])
-            .parse()
-            .unwrap_or_else(|e| panic!("`const {name}` is not a scalar: {e}"))
-    }
+    use crate::gpu::wesl::wesl_const;
 
     /// Two numbers the host and `dynamics.wesl` **must** agree on, asserted rather than
     /// asked for in a comment.

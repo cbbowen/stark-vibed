@@ -365,6 +365,47 @@ impl Bearing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::wesl::wesl_const;
+
+    /// The three constants this module and `lib/paint_common.wesl` **both** compute
+    /// with, asserted rather than asked for in a comment.
+    ///
+    /// These are the worst kind of pair to leave to prose, because the failure has no
+    /// symptom of its own. The CPU averages `tooth_gate` over the ground's rise
+    /// distribution to get the bearing fraction the *tool* books its half of a
+    /// transfer against, while the shader evaluates the same gate per texel for the
+    /// *canvas* half (§6.4). Move either constant on one side and the two halves go on
+    /// rendering perfectly plausible paint that no longer adds up — a conservation
+    /// leak proportional to how far they drifted, which `tests/dynamics.rs` would
+    /// eventually notice and no golden would localize.
+    ///
+    /// `RISE_LIMIT` is here at all because it stopped being folded into the literals
+    /// `255.0 / 512.0` and `0.25`, which is what put it beyond reach of this check
+    /// while its comment still claimed the folded constants had to match.
+    ///
+    /// Read through `stamp_oklab()`: the tooth gates its deposit, so all three
+    /// survive stripping there. No adapter needed, so this holds in CI.
+    #[test]
+    fn the_host_and_the_shader_agree_on_the_tooths_constants() {
+        let src = stark_shaders::stamp_oklab();
+        for (name, ours) in [
+            ("TOOTH_SOFTNESS", TOOTH_SOFTNESS),
+            ("TOOTH_RISE", TOOTH_RISE),
+            ("RISE_LIMIT", RISE_LIMIT),
+        ] {
+            // Narrowed to `f32`, which is what both sides actually hold. Widening
+            // instead compares the host's rounded `0.06f32` against the shader
+            // source's exact decimal and fails on every constant that is not a
+            // power of two.
+            assert_eq!(
+                ours,
+                wesl_const(src, name) as f32,
+                "{name} has drifted between `gpu::surface::tooth` and \
+                 `lib/paint_common.wesl`; the two halves of a toothed transfer no \
+                 longer book against the same gate",
+            );
+        }
+    }
 
     /// A ground of **ramps**: height climbing steadily to a peak, then dropping back
     /// over a few texels. Every feature has a long near face and a short far one, and —

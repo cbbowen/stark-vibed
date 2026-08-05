@@ -26,7 +26,7 @@
 // pass. It is the same defect §6.3 names in the layer composite — covering by
 // opacity rather than by opacity × thickness — one level further down.
 
-import package::lib::paint_common::{blend_latent, EPS};
+import package::lib::paint_common::{blend_latent, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
@@ -82,7 +82,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // Resident paint: height, optical mass (per-unit opacity × height), latent.
     let h0 = base_a.x;
     let m0 = base_c.a * h0;
-    let lat0 = base_c.rgb / max(base_c.a, EPS);
+    let lat0 = base_c.rgb / max(base_c.a, PAINT_EPS);
     // The stroke's parcel, accumulated across the overlapping segment quads. `.a` is
     // already its visible alpha (the segments' `1 − exp(−K·m)` over-blend multiplies
     // out to `1 − exp(−K·Σm)`), which is what recovers the latent; the mass itself
@@ -90,14 +90,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // a saturated total cannot answer that.
     let h1 = s_a.x;
     let m1 = s_a.y;
-    let lat1 = s_c.rgb / max(s_c.a, EPS);
+    let lat1 = s_c.rgb / max(s_c.a, PAINT_EPS);
 
     // Stack the parcel on the resident paint (§6.1): height and mass are conserved
     // sums, the per-unit opacity is what the two together imply, and the latent
     // blends by the shared law — thick deposits cover, thin glazes tint.
     let h = h0 + h1;
     let mm = m0 + m1;
-    let op = mm / max(h, EPS);
+    let op = mm / max(h, PAINT_EPS);
     let merged_c = vec4<f32>(blend_latent(lat0, m0, lat1, m1) * op, op);
     let merged_a = vec4<f32>(h, 0.0, 0.0, 0.0);
 

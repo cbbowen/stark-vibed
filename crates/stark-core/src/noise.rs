@@ -192,8 +192,14 @@ fn white_at(x: u32, y: u32) -> [f32; 3] {
     [unit(h[0]), unit(h[1]), unit(h[2])].map(|u| u * 2.0 - 1.0)
 }
 
-/// The pcg4d hash (Jarzynski & Olano) — mirrors `noise.wesl` so CPU and GPU
-/// noise stay in the same family.
+/// The pcg4d hash (Jarzynski & Olano, JCGT 2020).
+///
+/// It has no GPU counterpart to agree with, and deliberately so: the shader
+/// samples the texture this bakes rather than re-deriving it, which is the whole
+/// reason the field is bit-identical across adapters (see the module header).
+/// `lib/noise.wesl` did once carry a mirror of this hash — uncalled by any pass,
+/// so nothing ever compared the two — and it was deleted rather than kept as a
+/// contract neither side exercised.
 fn pcg4d(mut v: [u32; 4]) -> [u32; 4] {
     for x in v.iter_mut() {
         *x = x.wrapping_mul(1664525).wrapping_add(1013904223);

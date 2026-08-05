@@ -3,7 +3,32 @@
 // combine (transform.wesl). One definition so the two cannot drift — a parcel must
 // land the same way whether a brush carried it or a transform did.
 
-const EPS: f32 = 1e-5;
+// The two guards, named for **which representation** they guard, because they used
+// not to be.
+//
+// Both were spelled `EPS`, in five modules, at two different values: 1e-5 in
+// `paint_common`, `media_common`, `composite` and `resolve`, and 1e-4 in
+// `blend_common` — so `fill.wesl` importing `EPS` from one and `blend_oklab.wesl`
+// importing `EPS` from the other got different numbers under one name, with nothing
+// at either call site to say so. The values below are unchanged; only the names are
+// new, and they are chosen so the call site says what it is protecting.
+//
+// The distinction is real and not a tolerance to be split. A **tile** carries
+// per-unit opacity in alpha and height in aux (§6.1); a **composited target**
+// carries the stack's coverage in alpha (pass A, `composite.wesl`). Un-premultiplying
+// the two divides by different quantities on different scales, which is why they
+// were always two numbers even while they shared a name.
+
+// The tile/paint representation: the mass or height below which there is no paint
+// to speak of, and the per-unit opacity below which a latent cannot be recovered.
+// One constant because all three are the same representation at the same scale.
+const PAINT_EPS: f32 = 1e-5;
+
+// Un-premultiplying a **composited** target by its coverage (`blend_*.wesl`,
+// `media_*.wesl`). Coarser than `PAINT_EPS` deliberately: coverage saturates towards
+// 1 and the interesting failure is a fragment with almost none of it, where the
+// quotient explodes.
+const COVERAGE_EPS: f32 = 1e-4;
 
 // The translucent-slab law's build-up rate: `1 − exp(−K·opacity·thickness)`.
 //
@@ -30,7 +55,7 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
     let w1 = 1.0 - exp(-OPACITY_K * m1);
     let w0 = (1.0 - w1) * (1.0 - exp(-OPACITY_K * m0));
     let w = w0 + w1;
-    if w <= EPS {
+    if w <= PAINT_EPS {
         return lat0;
     }
     return (lat0 * w0 + lat1 * w1) / w;
@@ -110,6 +135,20 @@ const TOOTH_SOFTNESS: f32 = 0.06;
 // picked; see `gpu::surface::TOOTH_RISE`, which it **must match**.
 const TOOTH_RISE: f32 = 0.05;
 
+// The half-range the rise bytes span, as a fraction of the height range — the scale
+// `gpu::surface::encode_rise` quantized against, and which `rise_ahead` below has to
+// decode with. **Must match `gpu::surface::RISE_LIMIT`**, and now *can*: it used to
+// be folded into the literals `255.0 / 512.0` and `0.25` in `rise_ahead`, which put
+// it beyond the reach of `wesl_const` — the one mechanism this codebase has for
+// checking a constant across the boundary — while its comment still said "the folded
+// constants here must match". Naming it costs nothing (both spellings fold to exactly
+// 0.498046875 and 0.25, and 0.25 is a power of two, so the arithmetic is unchanged to
+// the bit) and buys the assertion.
+//
+// Real rises are small, so spending the byte on a narrow range is what keeps the
+// tooth's transition tonal rather than stepped.
+const RISE_LIMIT: f32 = 0.25;
+
 // The ground texel at a canvas position, sampled **nearest** rather than bilinear.
 //
 // Not a shortcut — bilinear would be wrong twice over. The map is minified (about two
@@ -153,7 +192,9 @@ fn ground_at(uv: vec2<f32>, dims: vec2<u32>) -> vec2<i32> {
 // because the tool's half of the transfer is booked against this quantity's
 // distribution.
 fn rise_ahead(g: vec4<f32>, travel: vec2<f32>) -> f32 {
-    let ahead = g.gb * (255.0 / 512.0) - vec2<f32>(0.25, 0.25);
+    // `byte·(L/128) − L`, with the `byte/255` the sampler already applied folded back
+    // out — the exact inverse of `gpu::surface::encode_rise`'s `128 + 128·rise/L`.
+    let ahead = g.gb * (255.0 * RISE_LIMIT / 128.0) - vec2<f32>(RISE_LIMIT, RISE_LIMIT);
     return dot(ahead, travel);
 }
 

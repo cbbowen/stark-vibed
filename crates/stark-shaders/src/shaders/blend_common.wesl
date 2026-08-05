@@ -70,7 +70,9 @@
 //     display's primaries. Two apps with different working primaries would disagree
 //     about what "glow" means; XYZ does not have an opinion.
 
-const EPS: f32 = 1e-4;
+// (The un-premultiply guard this pass needs is `COVERAGE_EPS`, in
+// `lib/paint_common.wesl` — it used to be a local `EPS` here at 1e-4 while four
+// other modules had an `EPS` at 1e-5. The importers take it directly.)
 
 // Blend-mode codes. Mirrored by `blend_code` in `gpu/composite.rs` — this is the
 // shader ABI for `BlendMode`, so it lives next to the shader rather than in the

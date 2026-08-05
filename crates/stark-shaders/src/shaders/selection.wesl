@@ -37,16 +37,27 @@ struct Params {
 // analytic shapes, which never read it.
 @group(0) @binding(2) var edges: texture_2d<f32>;
 
-const KIND_ALL: f32 = 0.0;
-const KIND_RECT: f32 = 1.0;
-const KIND_ELLIPSE: f32 = 2.0;
-const KIND_LASSO: f32 = 3.0;
+// Shape and combine codes — the shader ABI for `SelectionShape` and the combine
+// mode, mirrored by `gpu/selection.rs`, which packs them into `c.x` and `c.y`.
+//
+// **`u32`, read out of the float lane with `u32(...)`, rather than `f32` compared
+// with `==`.** The lane really is an `f32` — `MaskUniform` is three `[f32; 4]`s and
+// the tags ride in two of its slots — and every code here is a small integer, which
+// f32 represents exactly, so the equality was in fact safe. It is the *kind* that is
+// wrong: a tag is an enumerand, not a measurement, and writing it as one invites the
+// next code to be a 0.5 or a scale factor, at which point the comparison silently
+// stops being exact. `blend_common.wesl` already spells its `BlendMode` codes this
+// way; there is no reason for two conventions.
+const KIND_ALL: u32 = 0u;
+const KIND_RECT: u32 = 1u;
+const KIND_ELLIPSE: u32 = 2u;
+const KIND_LASSO: u32 = 3u;
 
-const MODE_REPLACE: f32 = 0.0;
-const MODE_UNION: f32 = 1.0;
-const MODE_SUBTRACT: f32 = 2.0;
-const MODE_INTERSECT: f32 = 3.0;
-const MODE_INVERT: f32 = 4.0;
+const MODE_REPLACE: u32 = 0u;
+const MODE_UNION: u32 = 1u;
+const MODE_SUBTRACT: u32 = 2u;
+const MODE_INTERSECT: u32 = 3u;
+const MODE_INVERT: u32 = 4u;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -100,7 +111,7 @@ fn sd_lasso(q: vec2<f32>, count: u32) -> f32 {
 
 // The op's own coverage at canvas position `q`, in [0, 1].
 fn shape_coverage(q: vec2<f32>) -> f32 {
-    let kind = p.c.x;
+    let kind = u32(p.c.x);
     if kind == KIND_ALL {
         return 1.0;
     }
@@ -124,7 +135,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // standing in for "the previous selection had no tile here".
     let old = load1(prev, vec2<i32>(floor(frag.xy))).r;
 
-    let mode = p.c.y;
+    let mode = u32(p.c.y);
     if mode == MODE_INVERT {
         return vec4<f32>(1.0 - old, 0.0, 0.0, 0.0);
     }

@@ -18,12 +18,12 @@
 //   · `fs_raw` — the passthrough. The dynamics loop composites base tiles into
 //     its working region with this same module, and that region must keep the
 //     tile representation itself (per-unit opacity in alpha, §6.1):
-//     the exchange loop's pickup reads it and the slice writes it back to
+//     the loop's `exchange` reads it and the slice writes it back to
 //     persistent tiles. Running the slab law here would store *coverage* as
 //     opacity — corrupting every smeared texel, differently on each side of a
 //     piece or freeze cut, which is how the preview stops matching the commit.
 
-import package::lib::paint_common::{OPACITY_K};
+import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
 
 struct View {
     // The canvas px -> NDC linear map, column-major: `st.xy` is the first column and
@@ -73,8 +73,6 @@ fn vs_main(
     return out;
 }
 
-const EPS: f32 = 1e-5;
-
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
     let c = textureSample(tile_color, samp, in.uv);
@@ -85,7 +83,7 @@ fn fs_main(in: VsOut) -> FsOut {
     var out: FsOut;
     // Re-premultiplied by coverage, so the fixed-function "over" both weighs the
     // colour and accumulates the stack's total coverage in alpha.
-    out.color = vec4<f32>(c.rgb / max(c.a, EPS) * w, w);
+    out.color = vec4<f32>(c.rgb / max(c.a, PAINT_EPS) * w, w);
     out.aux = h * in.opacity;
     return out;
 }
