@@ -59,9 +59,12 @@ which is exactly the leverage the frontend/backend split was meant to provide.
 ### Nice-to-have (not scheduled)
 
 - **Tile LOD / mipmaps** — sample minified tiles when zoomed far out, for
-  responsiveness and to avoid aliasing on huge canvases. Pan/zoom feel smooth
-  without it at current scales, so it stays unscheduled until profiling on a
-  large document says otherwise.
+  *responsiveness* on huge canvases. The **aliasing** half of this is answered
+  and no longer wants mips: presentation supersamples and resolves (§6.4),
+  which also covers the weave and the relief shading, neither of which a
+  prefiltered tile could have. What is left is the cost — supersampling pays
+  more work to draw less picture, where a mip chain would pay less — so this
+  stays unscheduled until profiling on a large document says otherwise.
 - **HiDPI** — the web canvas uses a 1× drawing buffer (CSS pixels); multiply by
   `devicePixelRatio` for crisp rendering on retina displays.
 - **Damage tracking / view-AABB cull** (§6.3).

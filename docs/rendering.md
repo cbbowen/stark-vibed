@@ -201,9 +201,50 @@ would be measured against a canvas the hand never saw and the paint would slide
 out from under the fingers. `zoom_about` is that same call with the fingers
 standing still (§18.1.7).
 
-For zoomed-out views, tile **mip/LOD** sampling is a future optimization (§13).
 The frontend owns the `wgpu::Surface`, acquires the frame texture, calls
 `render`, and presents.
+
+**Minification: the whole pipeline is supersampled, not the tiles mip-filtered.**
+Presentation undersamples in three places, and only the first of them is a
+texture-filtering problem:
+
+- **The paint.** `composite.wesl` takes one bilinear tap per fragment from a tile
+  texture with no mip chain, so at zoom *z* it reads one texel in every 1/*z*².
+- **The weave.** `media_common.wesl::surface_at` samples a periodic height field
+  in canvas space at LOD 0, which moirés as soon as a screen pixel spans more
+  than one period.
+- **The relief shading.** The normal is a finite difference of the height field
+  over *screen* pixels, fed through a specular lobe and a tonemap. Shading is a
+  nonlinear function of height, so the correct minified pixel is the average of
+  the shading, not the shading of the average — an impasto ridge thinner than a
+  screen pixel sparkles under a pan however well the height that made it was
+  filtered. **No prefiltered texture can fix this one.**
+
+So a zoomed-out render runs passes A–D at `ss` samples per axis and a box filter
+resolves it into the target (`resolve.wesl`, pass E). `ss` is the minification
+ratio `⌈1/zoom⌉`, capped by `MAX_SUPERSAMPLE` (4), by a total-pixel budget
+(`MAX_SUPERSAMPLED_PX`, since *every* offscreen attachment scales with it), and by
+the device's texture limit. It is **1 at 1:1 and closer**, so magnifying costs
+nothing and every golden — all blessed at zoom 1 — is bit-identical.
+
+`ViewTransform::supersampled(n)` scales the viewport and the zoom *together*,
+which is what makes this one substitution at the top of `Compositor::render` and
+one pass at the bottom rather than a parameter every pass carries: the
+canvas→NDC map is unchanged, and anything measured in target px (an outline's
+width, a matte's edge fade, a guide's line) comes out `n` times wider in a picture
+about to be `n` times smaller — the same width, drawn with `n²` samples of
+coverage. Chrome therefore antialiases for free. The average is taken **in light**:
+the target carries display-encoded sRGB in a non-sRGB format (§6.5), so the
+resolve decodes, averages alpha-weighted, and re-encodes.
+
+Mip-chaining the tiles was the alternative, and it is the more invasive of the two
+for less of the problem. A `TILE_TEX`-square texture with a 1-px apron around a
+254-px interior has no mip level at which the interior sub-rect still lands on
+texel centres, so every level past 0 needs its own apron refresh or the seam
+invariant below breaks; the chain has to be regenerated on every tile write; and
+it would still leave the relief sparkling. `tests/minify.rs` pins what was bought
+instead: a 1:4 render is the 1:1 render boxed down by four, and is *not* one texel
+in sixteen of it.
 
 **Tile aprons (seamless boundaries).** Tiles are *separate* GPU textures, so the
 compositor samples each independently. The moment sampling is not pixel-exact —

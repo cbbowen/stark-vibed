@@ -141,6 +141,24 @@ impl ViewTransform {
         }
     }
 
+    /// The same view rendered at `n` samples per axis: the viewport and the zoom
+    /// scaled together, everything else left alone (§6.4).
+    ///
+    /// Scaling *both* is what makes supersampling invisible to every pass. The
+    /// canvas→NDC map comes out identical (the zoom and the viewport divide out), so
+    /// the same canvas pixel lands at the same place in the picture; and anything a
+    /// shader measures in target px — an outline's width, a matte's edge fade, a
+    /// guide's line — is measured against the scaled zoom, so it comes out `n` times
+    /// wider in a picture that is about to be `n` times smaller. Which is the same
+    /// width, drawn with `n²` samples of coverage instead of one.
+    pub fn supersampled(self, n: u32) -> Self {
+        Self {
+            zoom: self.zoom * n as f32,
+            viewport: Extent2::new(self.viewport.width * n, self.viewport.height * n),
+            ..self
+        }
+    }
+
     /// The canvas→screen linear map with the zoom divided out: the mirror, then the
     /// rotation. Orthogonal (`|det| = 1`), so its transpose is its inverse — which is
     /// the whole reason the view keeps an angle and a flag rather than a free matrix

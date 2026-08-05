@@ -25,6 +25,9 @@ fn main() {
     // Matte layers, drawn inside pass A at their place in the stack (§15.4).
     compiler.build_artifact(&"package::matte".parse().unwrap(), "matte");
     compiler.build_artifact(&"package::media_oklab".parse().unwrap(), "media_oklab");
+    // The presentation resolve: the supersampled render boxed down to the target
+    // (§6.4).
+    compiler.build_artifact(&"package::resolve".parse().unwrap(), "resolve");
 
     // Mixbox color space: latent→RGB polynomial in the media pass (§6.7).
     compiler.build_artifact(&"package::media_mixbox".parse().unwrap(), "media_mixbox");

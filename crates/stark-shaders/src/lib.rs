@@ -26,6 +26,12 @@ pub fn media_oklab() -> &'static str {
     include_wesl!("media_oklab")
 }
 
+/// WGSL presentation resolve: the supersampled render box-averaged down to the
+/// target, the last pass of a zoomed-out render — §6.4.
+pub fn resolve() -> &'static str {
+    include_wesl!("resolve")
+}
+
 /// WGSL media pass for the Mixbox color space (pigment polynomial) — §6.7.
 pub fn media_mixbox() -> &'static str {
     include_wesl!("media_mixbox")

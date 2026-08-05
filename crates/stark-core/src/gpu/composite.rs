@@ -60,6 +60,13 @@ struct ViewUniform {
     misc: [f32; 4], // tile_size, interior uv scale, interior uv bias, zoom
 }
 
+/// Mirrors `Resolve` in `resolve.wesl` (16 bytes).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct ResolveUniform {
+    n: [f32; 4], // samples per axis, then padding
+}
+
 /// Per-tile instance: canvas-space origin + the layer's opacity.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -447,6 +454,58 @@ fn scratch_levels(members: &[CompositeGroup]) -> usize {
     1 + members.iter().map(CompositeGroup::depth).max().unwrap_or(0)
 }
 
+/// Most samples per axis presentation will take (§6.4). A 4×4 box is 16
+/// taps per output pixel; past that the box filter's remaining error is dominated by
+/// its own shape rather than by the sample count, and a view zoomed further out than
+/// 1:4 is a thumbnail whose next improvement is a better filter, not more of this one.
+const MAX_SUPERSAMPLE: u32 = 4;
+
+/// Most supersampled pixels a render may cover, whatever the zoom asks for.
+///
+/// The ceiling exists because *every* offscreen attachment scales with it: pass A's
+/// `Rgba16Float` colour and `R16Float` aux, the blend scratch if the document has a
+/// mode in it, and the target the resolve reads. At 16 Mpx that is ~210 MB in the
+/// worst case, which is the most a painting canvas may quietly take to stop
+/// sparkling — and it is only taken while the view is actually zoomed out, since
+/// [`supersample`] returns 1 at 1:1 and the attachments shrink back. Crossing a
+/// threshold reallocates all of them, so the ceiling is also a bound on the hitch a
+/// wheel-zoom can cost.
+///
+/// It binds on the window and not on a miniature, which is the right way round: the
+/// navigator renders a whole piece into ~250 px, is the worst-aliased view in the
+/// application, and reaches [`MAX_SUPERSAMPLE`] for a few megapixels. What it costs
+/// is the common zoom-outs on a large window — 2× rather than 4× past 1:2 — where
+/// the picture is already most of the way back and the fourth sample buys least.
+const MAX_SUPERSAMPLED_PX: u32 = 16 << 20;
+
+/// How many samples per axis a render of `size` at `zoom` takes (§6.4).
+///
+/// `1` at 1:1 and closer — a view that magnifies is already oversampling, so
+/// painting at 100% costs exactly what it always did and every golden blessed at
+/// `zoom = 1.0` is bit-identical. Below that it is the minification ratio, so each
+/// output pixel gets back roughly one sample per canvas pixel it covers, capped by
+/// [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_PX`] and by what the device will
+/// allocate.
+fn supersample(size: Extent2, zoom: f32, limits: &wgpu::Limits) -> u32 {
+    if !(zoom.is_finite() && zoom > 0.0) {
+        return 1;
+    }
+    let (w, h) = (size.width.max(1), size.height.max(1));
+    let want = (1.0 / zoom).ceil();
+    // `as` saturates, so a zoom small enough to overflow lands on the cap rather
+    // than wrapping to something tiny.
+    let want = (want as u32).clamp(1, MAX_SUPERSAMPLE);
+    (1..=want)
+        .rev()
+        .find(|n| {
+            let (sw, sh) = (w.saturating_mul(*n), h.saturating_mul(*n));
+            sw <= limits.max_texture_dimension_2d
+                && sh <= limits.max_texture_dimension_2d
+                && sw.saturating_mul(sh) <= MAX_SUPERSAMPLED_PX
+        })
+        .unwrap_or(1)
+}
+
 /// A color + aux target pair, as pass A hands one around.
 type Targets<'a> = (&'a wgpu::TextureView, &'a wgpu::TextureView);
 
@@ -591,9 +650,18 @@ pub struct CompositorPipeline {
     media_bgl: wgpu::BindGroupLayout,
     media: MediaParams,
 
+    // Pass E: the presentation resolve, the supersampled render box-averaged down to
+    // the target (§6.4). Encoded only when the view is zoomed out; at 1:1 the
+    // passes above write the target directly and this is never bound.
+    resolve_pipeline: wgpu::RenderPipeline,
+    resolve_bgl: wgpu::BindGroupLayout,
+    resolve_buf: wgpu::Buffer,
+
     // Offscreen channel formats (from the color space).
     color_format: wgpu::TextureFormat,
     aux_format: wgpu::TextureFormat,
+    /// What passes B–D write, and therefore what the supersampled target carries.
+    target_format: wgpu::TextureFormat,
 
     // The canvas surface (bump) sampled by the media pass for relief.
     surface: Surface,
@@ -639,13 +707,23 @@ fn next_generation() -> u64 {
 /// targets of different sizes means each render resizes the attachments the other
 /// just built, so the cost is paid twice per alternation rather than once ever.
 pub struct Compositor {
-    // Target-sized offscreen attachments, and the media bind group over them.
+    /// The size **every** offscreen attachment here is at: the target's, times
+    /// [`Self::ss`]. Not the target's own, which is only known where the target is.
     size: Extent2,
     comp_color_view: wgpu::TextureView,
     comp_aux_view: wgpu::TextureView,
     media_bg: wgpu::BindGroup,
     /// The [`CompositorPipeline::generation`] `media_bg` was built against.
     generation: u64,
+
+    /// Samples per axis the attachments are built for (§6.4). `1` — the
+    /// zoomed-in and 1:1 case — means passes B–D write the caller's target directly
+    /// and `ss_target` is `None`, so a view that never zooms out never allocates it.
+    ss: u32,
+    /// Where passes B–D write when `ss > 1`, and the bind group the resolve reads it
+    /// through. One thing rather than two because they are built and dropped together
+    /// and the bind group is meaningless without the view it names.
+    ss_target: Option<(wgpu::TextureView, wgpu::BindGroup)>,
 
     // Allocated on first use and kept: only a document with a non-`Normal` layer
     // ever pays for them.
@@ -1118,6 +1196,69 @@ impl CompositorPipeline {
             mapped_at_creation: false,
         });
 
+        // ---- Pass E: the presentation resolve (§6.4) ----
+        //
+        // A fullscreen pass reading the supersampled target with `textureLoad` at an
+        // integer block of its own choosing, so nothing here needs a sampler.
+        let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stark resolve"),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::resolve().into()),
+        });
+        let resolve_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stark resolve bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                load_tex_entry(1), // the supersampled render
+            ],
+        });
+        let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("stark resolve layout"),
+            bind_group_layouts: &[Some(&resolve_bgl)],
+            immediate_size: 0,
+        });
+        let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stark resolve pipeline"),
+            layout: Some(&resolve_layout),
+            vertex: wgpu::VertexState {
+                module: &resolve_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &resolve_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    // The pass covers every texel and carries the alpha it averaged,
+                    // so there is nothing for a fixed-function blend to do.
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark resolve uniform"),
+            size: std::mem::size_of::<ResolveUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // ---- Pass D: the drawing guides (§20.4). ----
         let guide_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark guides"),
@@ -1190,8 +1331,12 @@ impl CompositorPipeline {
             media_buf,
             media_bgl,
             media: MediaParams::default(),
+            resolve_pipeline,
+            resolve_bgl,
+            resolve_buf,
             color_format,
             aux_format,
+            target_format,
             surface,
             environment,
             generation: next_generation(),
@@ -1254,6 +1399,10 @@ impl Compositor {
             comp_aux_view,
             media_bg,
             generation: pipeline.generation,
+            // 1:1 until a render says otherwise — `ensure_targets` is what decides,
+            // because only a render knows the zoom.
+            ss: 1,
+            ss_target: None,
             scratch: None,
             instances: alloc_instances(device, 1),
             instance_cap: 1,
@@ -1273,13 +1422,15 @@ impl Compositor {
         }
     }
 
-    /// Bring the attachments in line with what is about to be drawn: `size`, and the
-    /// pipeline's current surface/environment.
+    /// Bring the attachments in line with what is about to be drawn: a target of
+    /// `target_size` rendered at `ss` samples per axis, against the pipeline's current
+    /// surface/environment.
     ///
-    /// Called at the top of every render, so a resized target, a swapped canvas
-    /// weave, a swapped light and a whole rebuilt pipeline (a colour-space change,
-    /// which changes the channel *formats*) all land without anyone having to be
-    /// notified — see [`CompositorPipeline::generation`].
+    /// Called at the top of every render, so a resized target, a zoom that crossed a
+    /// supersampling threshold, a swapped canvas weave, a swapped light and a whole
+    /// rebuilt pipeline (a colour-space change, which changes the channel *formats*)
+    /// all land without anyone having to be notified — see
+    /// [`CompositorPipeline::generation`].
     ///
     /// The blend scratch is dropped rather than kept through any of it: it is sized
     /// like the attachments and carries their formats, so "everything that depends on
@@ -1287,11 +1438,13 @@ impl Compositor {
     /// of by a second condition that could disagree with this one. It costs one
     /// reallocation on the next blended render, and only a document with a
     /// non-`Normal` layer has one at all.
-    fn ensure_targets(&mut self, p: &CompositorPipeline, size: Extent2) {
-        if size == self.size && self.generation == p.generation {
+    fn ensure_targets(&mut self, p: &CompositorPipeline, target_size: Extent2, ss: u32) {
+        let size = Extent2::new(target_size.width * ss, target_size.height * ss);
+        if size == self.size && ss == self.ss && self.generation == p.generation {
             return;
         }
         self.size = size;
+        self.ss = ss;
         self.generation = p.generation;
         self.scratch = None;
         let (c, a, bg) = make_offscreen(OffscreenDesc {
@@ -1307,6 +1460,23 @@ impl Compositor {
         self.comp_color_view = c;
         self.comp_aux_view = a;
         self.media_bg = bg;
+        // Allocated only where it is written into. A 1:1 view drops it here, which is
+        // what returns the memory the moment the artist zooms back in to paint.
+        self.ss_target = (ss > 1).then(|| {
+            let view = offscreen_view(&p.ctx.device, size, p.target_format, "stark supersampled");
+            let bg = p.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark resolve bg"),
+                layout: &p.resolve_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: p.resolve_buf.as_entire_binding(),
+                    },
+                    view_entry(1, &view),
+                ],
+            });
+            (view, bg)
+        });
     }
 
     /// Write the view uniform and upload pass A's instance streams for `groups`,
@@ -1775,6 +1945,11 @@ impl Compositor {
     /// Composite `scene`'s layers, light the result into `target` under `view`, and
     /// outline each of its selections over it (§6.8 — a universal selection
     /// draws nothing, so an unmasked document costs one skipped iteration).
+    ///
+    /// A zoomed-out view runs the whole of that at `ss` samples per axis and boxes the
+    /// result down at the end (§6.4). Everything between here and the resolve
+    /// is written against `view` alone, so supersampling is one substitution at the
+    /// top and one pass at the bottom rather than a parameter every pass has to carry.
     pub fn render(
         &mut self,
         p: &CompositorPipeline,
@@ -1789,12 +1964,20 @@ impl Compositor {
             transparent,
             guides,
         } = scene;
+        // How hard this view is minifying, and therefore how many samples per output
+        // pixel it takes to stop the paint, the weave and the impasto relief aliasing
+        // (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
+        let ss = supersample(view.viewport, view.zoom, &p.ctx.device.limits());
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
         // export, the navigator's miniature — goes through a `Compositor` of its own,
         // so the surface's attachments (and the frame already presented from them)
         // are never resized out from under it and rebuilt on the next frame.
-        self.ensure_targets(p, view.viewport);
+        self.ensure_targets(p, view.viewport, ss);
+        // From here down, `view` is the supersampled one and `target` is the only
+        // thing that still knows the real size — which is exactly the split the
+        // resolve at the bottom closes.
+        let view = view.supersampled(ss);
         let tile_bgs = self.prepare_composite(p, view, groups);
         let want_scratch = self.ensure_scratch(p, self.size, groups);
         // Bound after everything that needs `&mut self`.
@@ -1806,6 +1989,12 @@ impl Compositor {
         };
         let (comp_color_view, comp_aux_view, media_bg) =
             (&self.comp_color_view, &self.comp_aux_view, &self.media_bg);
+        // What the lit image, the outlines and the guides are drawn into: the
+        // supersampled target when there is one, else the caller's directly. Chrome
+        // goes through the same resolve as the paint, so the marching ants and the
+        // perspective grid come out antialiased rather than as the stairs a
+        // one-sample-per-pixel line draws at any angle but the axes.
+        let draw_target = self.ss_target.as_ref().map_or(target, |(view, _)| view);
 
         // Screen→canvas mapping for sampling the surface bump in canvas space, so the
         // weave stays attached to the canvas as it pans, zooms, turns and mirrors
@@ -1873,7 +2062,7 @@ impl Compositor {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark media pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
+                    view: draw_target,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -1941,7 +2130,7 @@ impl Compositor {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection overlay pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
+                    view: draw_target,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -1999,7 +2188,7 @@ impl Compositor {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark guides pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
+                    view: draw_target,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -2017,6 +2206,40 @@ impl Compositor {
                 pass.set_bind_group(0, &guide_bg, &[(i as u64 * GUIDE_SLOT) as u32]);
                 pass.draw(0..3, 0..1);
             }
+        }
+
+        // Pass E: the resolve — everything above, box-averaged in light down to the
+        // caller's target (§6.4). Absent at 1:1, where `draw_target` *is* the
+        // caller's target and the picture is already the size it was asked for.
+        if let Some((_, resolve_bg)) = &self.ss_target {
+            p.ctx.queue.write_buffer(
+                &p.resolve_buf,
+                0,
+                bytemuck::bytes_of(&ResolveUniform {
+                    n: [ss as f32, 0.0, 0.0, 0.0],
+                }),
+            );
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark resolve pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        // Covers every texel and reads nothing back, so the load is a
+                        // don't-care; clearing says so rather than implying otherwise.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&p.resolve_pipeline);
+            pass.set_bind_group(0, resolve_bg, &[]);
+            pass.draw(0..3, 0..1);
         }
 
         p.ctx.queue.submit([encoder.finish()]);
@@ -2238,4 +2461,55 @@ fn make_offscreen(d: OffscreenDesc<'_>) -> (wgpu::TextureView, wgpu::TextureView
         ],
     });
     (comp_color_view, comp_aux_view, media_bg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The device this policy is written against: the `downlevel_webgl2` floor's
+    /// 8192-px limit, which is what the wasm build can count on.
+    fn limits() -> wgpu::Limits {
+        wgpu::Limits {
+            max_texture_dimension_2d: 8192,
+            ..wgpu::Limits::default()
+        }
+    }
+
+    #[test]
+    fn magnification_costs_nothing() {
+        let window = Extent2::new(1280, 720);
+        for zoom in [1.0, 1.5, 4.0, 64.0] {
+            assert_eq!(supersample(window, zoom, &limits()), 1, "at {zoom}×");
+        }
+        // A degenerate zoom asks for nothing rather than for a division by it.
+        for zoom in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(supersample(window, zoom, &limits()), 1, "at {zoom}×");
+        }
+    }
+
+    #[test]
+    fn minification_is_matched_sample_for_canvas_pixel() {
+        // Small enough that neither cap binds, so this is the rule itself.
+        let thumb = Extent2::new(252, 176);
+        assert_eq!(supersample(thumb, 0.5, &limits()), 2);
+        assert_eq!(supersample(thumb, 0.25, &limits()), 4);
+        // Past the cap the ratio keeps growing and the answer does not.
+        assert_eq!(supersample(thumb, 0.01, &limits()), MAX_SUPERSAMPLE);
+    }
+
+    #[test]
+    fn a_large_target_gives_up_samples_rather_than_the_render() {
+        // The pixel budget binds first at window sizes: 4× of this is 176 Mpx.
+        let window = Extent2::new(2560, 1440);
+        let n = supersample(window, 0.1, &limits());
+        assert!(n > 1, "a zoomed-out window should still supersample");
+        assert!(
+            (window.width * n) * (window.height * n) <= MAX_SUPERSAMPLED_PX,
+            "{n}× of {window:?} is over the pixel budget"
+        );
+        // And the device limit binds before either of the others on a wide one.
+        let wide = Extent2::new(7000, 400);
+        assert_eq!(supersample(wide, 0.1, &limits()), 1);
+    }
 }
