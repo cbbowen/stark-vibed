@@ -15,7 +15,6 @@ use crate::gpu::tile::{AllocSource, TilePairHandle};
 use super::segments::{SegmentInstance, affected_tiles, generate_segments_in};
 use super::{
     ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE,
-    flatten_tolerance,
 };
 
 /// Vertices in one segment's swept geometry: a triangle strip of two rims across
@@ -58,11 +57,16 @@ pub(super) const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
 impl StrokeRenderer {
     /// [`Self::render_range`] through the plain swept fast path: no carried brush
     /// state at all, so a range needs nothing from its predecessor but the arc length.
+    /// `tol` comes from [`dynamics_setup`](super::dynamics::dynamics_setup), which has
+    /// already decided — from the brush — that this stroke takes the fast path, or
+    /// that the loop cannot draw it. Handed over rather than recomputed, so one place
+    /// answers what a stroke's segments are.
     pub(super) fn render_swept(
         &self,
         scene: StrokeScene<'_>,
         rec: &StrokeRecord,
         spans: StrokeSpans,
+        tol: crate::path::FlattenTolerance,
     ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
         let StrokeScene {
             pool,
@@ -73,7 +77,7 @@ impl StrokeRenderer {
         } = scene;
         // Everything both paths share, resolved once (see [`StrokeConstants`]).
         let k = self.stroke_constants(rec, surface);
-        let (segments, end_dist) = generate_segments_in(rec, flatten_tolerance(&rec.brush), spans);
+        let (segments, end_dist) = generate_segments_in(rec, tol, spans);
         if segments.is_empty() {
             return (
                 base.clone(),

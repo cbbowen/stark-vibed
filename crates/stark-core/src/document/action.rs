@@ -290,9 +290,8 @@ pub struct PenState {
 /// held to `[0, 1]` by construction: a modulation can only ever scale a parameter
 /// *down* from the value its slider shows. **That bound is the whole design.** Every
 /// guarantee the rest of the engine derives from `BrushParams` — the frozen-span
-/// rule's radius bound ([`safe_frozen`](crate::gpu::stroke::safe_frozen)), the
-/// region fit, the choice of render path
-/// ([`dynamics_setup`](crate::gpu::stroke)), the flattener's exchange step — is
+/// rule's radius bound (`gpu::stroke::safe_frozen`), the region fit, the choice of
+/// render path (`gpu::stroke::dynamics_setup`), the flattener's exchange step — is
 /// stated against the brush's own numbers, and stays sound with no part of it
 /// learning that modulation exists. A remap that could also scale *up* would put a
 /// correction into every one of those places, and a missed one is a stroke that
@@ -320,12 +319,10 @@ pub struct Modulation {
 /// `k/(1 − k)` at the other, which at 0.1 is **9**.
 ///
 /// A bound rather than taste. A segment sweeps at *one* value of every parameter, so
-/// a steep response is paid for in segments — [`flatten_tolerance`] divides the
-/// attribute budget by [`Modulations::max_slope`] to keep a modulated ramp from
-/// drawing as a staircase, exactly as the taper's own slope buys pieces
+/// a steep response is paid for in segments — `gpu::stroke::budget::flatten_tolerance`
+/// divides the attribute budget by [`Modulations::max_slope`] to keep a modulated ramp
+/// from drawing as a staircase, exactly as the taper's own slope buys pieces
 /// (`gpu::stroke::segments::Taper`). Unbounded steepness would be an unbounded bill.
-///
-/// [`flatten_tolerance`]: crate::gpu::stroke::flatten_tolerance
 const MIN_BIAS: f32 = 0.1;
 
 impl Modulation {
@@ -497,7 +494,7 @@ impl Modulations {
 
     /// The steepest response across every active target — how much finer the path has
     /// to be flattened for a modulated ramp to stay smooth (see [`MIN_BIAS`] and
-    /// [`flatten_tolerance`](crate::gpu::stroke::flatten_tolerance)).
+    /// `gpu::stroke::budget::flatten_tolerance`).
     ///
     /// 1 for the unmodulated brush *and* for the plain linear mappings, so the
     /// everyday brush flattens on exactly the budget it always did.

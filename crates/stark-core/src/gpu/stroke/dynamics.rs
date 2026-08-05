@@ -340,6 +340,10 @@ struct DynamicsRun<'a> {
     /// is submitted (see [`Self::flush`]), so a stroke of any length costs one
     /// region's worth of transient memory rather than one per piece.
     piece: ScopedResources,
+    /// Whether [`Self::draw`] has recorded a piece that [`Self::flush`] still owes a
+    /// submit. Said outright rather than inferred from `piece` being non-empty, which
+    /// is a coincidence of the two rather than the question being asked.
+    piece_open: bool,
     /// Everything both render paths read off the record and the scene, resolved once
     /// (see [`StrokeConstants`](super::StrokeConstants)).
     consts: super::StrokeConstants,
@@ -491,6 +495,7 @@ impl<'a> DynamicsRun<'a> {
             encoder,
             scoped,
             piece: ScopedResources::default(),
+            piece_open: false,
             consts,
             prefix_bg,
             cov,
@@ -526,6 +531,7 @@ impl<'a> DynamicsRun<'a> {
         let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
             return base.clone();
         };
+        self.piece_open = true;
         let region = self.composite_region(base, &halo, region_origin, w, h);
 
         // ---- The bleed cadence's fire slots for this piece (§6.2), built before
@@ -1119,9 +1125,10 @@ impl<'a> DynamicsRun<'a> {
     /// A stroke that fits one region never reaches the second call, so the everyday
     /// case still records and submits exactly once.
     fn flush(&mut self) {
-        if self.piece.is_empty() {
+        if !self.piece_open {
             return;
         }
+        self.piece_open = false;
         let fresh = self
             .r
             .ctx
@@ -1459,9 +1466,15 @@ fn dynamics_plan(
     };
 
     let mut plan = Vec::new();
-    // Sorted by segment index, as `bleed_fires` builds it — which is what lets the
-    // loop below drain it in step with its own walk.
-    let mut fires = fires.iter().peekable();
+    // Drained in step with the walk below, which is only correct because `bleed_fires`
+    // emits them in segment order. Cheap to state, and the alternative — a firing
+    // silently landing in the wrong piece of the plan — is not something a pixel would
+    // show.
+    debug_assert!(
+        fires.is_sorted_by_key(|(after, _)| *after),
+        "bleed firings must arrive in segment order",
+    );
+    let mut pending = fires.iter().peekable();
     for (si, s) in segments.iter().enumerate() {
         // The segment's swept exchange: the frame is (start, travel tangent at the
         // start, curvature), over the segment's own coverage box.
@@ -1530,7 +1543,7 @@ fn dynamics_plan(
         // everywhere except the lateral flux. The noise lanes are zeroed too, so
         // the deposit skips its colour-jitter taps; `mid` is filled for form, since
         // no exchange ever reads this slot.
-        while let Some((_, fire)) = fires.next_if(|(after, _)| *after == si) {
+        while let Some((_, fire)) = pending.next_if(|(after, _)| *after == si) {
             let p = fire.start - region_origin;
             let (clo, chi) = coverage_bounds(fire);
             let rect = ctx.rect(clo, chi);
@@ -1772,8 +1785,8 @@ fn settle_tangent(segments: &[Segment], end: Vec2) -> Vec2 {
 /// it was given. Only the caller knows how loudly to say so, so the distinction is
 /// carried out rather than resolved here.
 pub(super) enum StrokePath {
-    /// Run the sequential stamp loop, flattening at this budget.
-    Loop(crate::path::FlattenTolerance),
+    /// Run the sequential stamp loop.
+    Loop,
     /// The brush manipulates no paint already on the canvas, so the swept deposit
     /// *is* the whole stroke — one pass, no region, nothing given up.
     Swept,
@@ -1781,6 +1794,13 @@ pub(super) enum StrokePath {
     /// the region is the one thing pieces cannot subdivide. The swept deposit draws
     /// what it can, which is the brush's own `add` paint and none of the manipulation.
     TipTooLarge,
+}
+
+/// Which path a stroke takes and the budget it flattens at — both decided together,
+/// because both are answers about the brush alone and every path needs the second.
+pub(super) struct StrokePlan {
+    pub(super) path: StrokePath,
+    pub(super) tol: crate::path::FlattenTolerance,
 }
 
 /// Which path `rec` takes, and the flattening budget if it is the stamp loop.
@@ -1797,7 +1817,7 @@ pub(super) enum StrokePath {
 /// oversized stroke is drawn one region-sized piece at a time ([`chunk_segments`])
 /// rather than degraded. All that is left is the floor no subdivision gets under —
 /// one segment's own footprint — which is [`segment_fits_region`]'s question.
-pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePath {
+pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePlan {
     let d = rec.brush.dynamics;
     // The brush's **own** rates, not the modulated ones — and that is sound rather
     // than an oversight the pen could catch out. A modulation is a factor in [0, 1]
@@ -1806,17 +1826,18 @@ pub(super) fn dynamics_setup(rec: &StrokeRecord) -> StrokePath {
     // positive *somewhere*. There is no segment this test could be asked about that
     // would answer differently — which is exactly the property the function's
     // contract above needs, and the reason a modulation was built as a multiplier.
-    if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 && d.bleed <= 0.0 {
-        return StrokePath::Swept;
-    }
-    // The same flattened segments as the fast path, at the same budget: a long stroke
-    // costs more pieces, not coarser geometry.
+    // The same flattened segments whichever path runs, at the same budget: a long
+    // stroke costs more pieces, not coarser geometry — and the swept fallback below
+    // draws the very segments the loop would have.
     let tol = flatten_tolerance(&rec.brush);
-    if segment_fits_region(&rec.brush, tol) {
-        StrokePath::Loop(tol)
+    let path = if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 && d.bleed <= 0.0 {
+        StrokePath::Swept
+    } else if segment_fits_region(&rec.brush, tol) {
+        StrokePath::Loop
     } else {
         StrokePath::TipTooLarge
-    }
+    };
+    StrokePlan { path, tol }
 }
 
 /// Build the brush-dynamics stamp-loop kit (§6.2): the region

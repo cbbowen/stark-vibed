@@ -49,7 +49,6 @@ use segments::{SegmentInstance, round_coverage};
 // The module's surface, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not
 // about what the engine depends on.
-pub(crate) use budget::flatten_tolerance;
 pub use incremental::{StrokeCarry, StrokeSpans, ToolState};
 // Not part of the module's public surface: the engine calls it, nothing outside the
 // crate does, and keeping it crate-visible is what lets its doc comment point at the
@@ -169,12 +168,6 @@ impl ScopedResources {
     fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
         self.buffers.push(buf.clone());
         buf
-    }
-
-    /// Whether anything is registered — how the stamp loop tells a first piece of a
-    /// stroke from a later one (see `dynamics::DynamicsRun::flush`).
-    fn is_empty(&self) -> bool {
-        self.textures.is_empty() && self.buffers.is_empty()
     }
 }
 
@@ -413,9 +406,10 @@ impl StrokeRenderer {
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer
         // would visibly redraw the stroke. See `dynamics_setup`.
-        match dynamics_setup(rec) {
-            StrokePath::Loop(tol) => self.render_dynamic(scene, rec, spans, tool, tol),
-            StrokePath::Swept => self.render_swept(scene, rec, spans),
+        let plan = dynamics_setup(rec);
+        match plan.path {
+            StrokePath::Loop => self.render_dynamic(scene, rec, spans, tool, plan.tol),
+            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol),
             StrokePath::TipTooLarge => {
                 // An error, not a warning: what lands is not a rougher version of the
                 // stroke that was asked for but a different brush — the swept deposit
@@ -431,7 +425,7 @@ impl StrokeRenderer {
                     "brush tip too large for one dynamics region: falling back to the \
                      swept deposit, so this stroke's lift/deposit/charge do nothing",
                 );
-                self.render_swept(scene, rec, spans)
+                self.render_swept(scene, rec, spans, plan.tol)
             }
         }
     }
