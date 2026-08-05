@@ -559,9 +559,19 @@ impl DocState {
 // a half-applied edit. Free functions rather than methods because they recurse
 // into stacks that are not a `DocState`'s root.
 //
+// `None` therefore means **exactly** "no such layer", and nothing else, which is
+// why `Vector::set`'s own `None` is `expect`ed rather than propagated: it reports
+// an out-of-range index, and every index here came from `position`/`enumerate`
+// over the very stack being written. Passing it through would spell an impossible
+// failure as the one case the callers act on — a removal or a rename that
+// silently did not happen, on a document that says it did.
+//
 // `&mut dyn FnMut` rather than a generic closure: the recursion would otherwise
 // instantiate a fresh copy of the function per level and never terminate at
 // compile time.
+
+/// What `Vector::set` failing would mean here — see the section note above.
+const IN_RANGE: &str = "index came from this stack";
 
 /// `layers` with the layer `id` replaced by `f` applied to it, wherever it sits.
 fn map_in(
@@ -570,12 +580,12 @@ fn map_in(
     f: &mut dyn FnMut(&Layer) -> Layer,
 ) -> Option<Vector<Layer>> {
     if let Some(i) = layers.iter().position(|l| l.id == id) {
-        let replaced = f(layers.get(i).expect("position is in range"));
-        return layers.set(i, replaced);
+        let replaced = f(layers.get(i).expect(IN_RANGE));
+        return Some(layers.set(i, replaced).expect(IN_RANGE));
     }
     for (i, l) in layers.iter().enumerate() {
         if let Some(carries) = map_in(&l.carries, id, f) {
-            return layers.set(i, l.with_carries(carries));
+            return Some(layers.set(i, l.with_carries(carries)).expect(IN_RANGE));
         }
     }
     None
@@ -606,7 +616,7 @@ fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)]) -> Option<Layer> {
 /// `layers` without the layer `id`, plus the subtree that came out of it.
 fn remove_in(layers: &Vector<Layer>, id: LayerId) -> Option<(Vector<Layer>, Layer)> {
     if let Some(i) = layers.iter().position(|l| l.id == id) {
-        let taken = layers.get(i).expect("position is in range").clone();
+        let taken = layers.get(i).expect(IN_RANGE).clone();
         let mut out = Vector::new();
         for (j, l) in layers.iter().enumerate() {
             if j != i {
@@ -617,7 +627,8 @@ fn remove_in(layers: &Vector<Layer>, id: LayerId) -> Option<(Vector<Layer>, Laye
     }
     for (i, l) in layers.iter().enumerate() {
         if let Some((carries, taken)) = remove_in(&l.carries, id) {
-            return Some((layers.set(i, l.with_carries(carries))?, taken));
+            let layers = layers.set(i, l.with_carries(carries)).expect(IN_RANGE);
+            return Some((layers, taken));
         }
     }
     None

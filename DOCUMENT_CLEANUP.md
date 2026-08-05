@@ -46,13 +46,24 @@ Fixed by `TileRect::covering(lo, hi, ring)`, which quantizes in `i64` and answer
 non-finite test per path point. All three of this file's quantizer copies now go
 through it; semantics are unchanged for every finite, in-range input.
 
-### 1.3 `remove_in` conflates two meanings of `None` — open
+### 1.3 The tree surgery conflated two meanings of `None` — **done**
 
-`state.rs:620`: `layers.set(i, …)?` propagates a `Vector::set` out-of-range
-failure as "layer not found", which callers turn into a silent no-op. It cannot
-happen today (the index came from `position`), but the `?` spells an impossible
-case as the one case that matters. `.expect("position is in range")` matches the
-two lines above it.
+`remove_in` propagated a `Vector::set` out-of-range failure as "layer not
+found", which callers turn into a silent no-op; `map_in` did the same twice, by
+returning `set`'s `Option` directly. The section's own header already states the
+contract these broke — `None` means "no such layer", which is what lets callers
+turn it into a clean no-op. Spelling an impossible failure as the one case they
+act on would have made a removal or a rename that silently did not happen, on a
+document reporting that it did.
+
+Unreachable today (every index comes from `position`/`enumerate` over the stack
+being written), so this is a contract repair rather than a behaviour change, and
+there is nothing new to test. Now `expect`ed against one shared reason string.
+
+Worth noting while in here: `state.rs` has no unit tests at all, and the four
+recursive tree-surgery functions are the part of this module most worth having
+them. Covered only behaviourally, through the engine, by `tests/groups.rs` and
+`tests/layers.rs`.
 
 ---
 
