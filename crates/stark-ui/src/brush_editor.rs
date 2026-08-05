@@ -1,5 +1,13 @@
 //! The brush editor pop-up (§11): a Procreate-style dialog with a live
-//! test-stroke preview over grouped settings.
+//! test-stroke preview beside grouped settings.
+//!
+//! The preview is the dialog's **right column**, full height, with the stroke
+//! running down it. A stroke is long and thin, so the tall column is the shape
+//! that fits it — it buys a longer run of paint than a letterbox strip of the
+//! same area would, and it leaves the settings a full-width column of their own
+//! rather than one shared with nothing. Being full height, it is resized by
+//! anything that changes the dialog's height (a section folding, a window
+//! resize), which [`resize_preview`] follows.
 //!
 //! The preview is a second `Engine` on its **own document** but the **shared GPU
 //! device** ([`render::init_shared`]), mirroring the main canvas's surface,
@@ -176,6 +184,9 @@ struct Preview {
     renderer: Signal<Option<Renderer>>,
     /// The test stroke (canvas-space samples), replayed on every setting change.
     samples: Signal<Vec<InputSample>>,
+    /// Whether `samples` is the user's own stroke rather than the seeded default
+    /// — the one thing [`resize_preview`] must not re-seed over.
+    drawn: Signal<bool>,
     /// Samples of an in-progress user stroke on the preview canvas.
     rec: Signal<Vec<InputSample>>,
     /// Whether the user is mid-stroke on the preview canvas.
@@ -196,6 +207,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     let preview = Preview {
         renderer: use_signal(|| None),
         samples: use_signal(Vec::new),
+        drawn: use_signal(|| false),
         rec: use_signal(Vec::new),
         drawing: use_signal(|| false),
         committed: use_signal(|| false),
@@ -282,13 +294,21 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     }
                 }
 
-                // Live test canvas: draw on it to replace the test stroke; ↺ restores
-                // the default. The stroke re-renders as every setting changes.
+                // Live test canvas. First in the markup — it is what the dialog is
+                // about — but the grid puts it in the right-hand column, full
+                // height (the header spans both, the sections take the left).
+                // Draw on it to replace the test stroke; ↺ restores the default.
+                // The stroke re-renders as every setting changes.
                 div { class: "be-preview-wrap",
                     canvas {
                         id: PREVIEW_CANVAS_ID,
                         class: "brush-preview",
                         onmounted: move |_| { spawn(init_preview(state, preview)); },
+                        onresize: move |e| {
+                            if let Ok(size) = e.get_content_box_size() {
+                                resize_preview(state, preview, size.width as u32, size.height as u32);
+                            }
+                        },
                         onpointerdown: move |e| {
                             if e.trigger_button() == Some(MouseButton::Primary) {
                                 capture_pointer(&e);
@@ -842,9 +862,13 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     restroke(state, preview);
 }
 
-/// The seeded test stroke: an S-curve across the preview with a pressure bell
-/// (light → full → light) and a forward tilt that ramps in — so pressure- and
+/// The seeded test stroke: an S-curve **down** the preview column with a pressure
+/// bell (light → full → light) and a forward tilt that ramps in — so pressure- and
 /// tilt-modulated settings visibly shape the stroke even for mouse users.
+///
+/// Downward because the preview is a tall column, and because it is the direction
+/// a hand draws a test stroke in: the run is along the long axis, and the S's swing
+/// is across the short one.
 fn default_stroke(r: &Renderer) -> Vec<InputSample> {
     let (w, h) = r.size();
     let (w, h) = (w as f32, h as f32);
@@ -853,14 +877,14 @@ fn default_stroke(r: &Renderer) -> Vec<InputSample> {
     (0..N)
         .map(|i| {
             let t = i as f32 / (N - 1) as f32;
-            let x = w * 0.06 + t * w * 0.88;
-            let y = h * 0.5 - (t * std::f32::consts::TAU).sin() * h * 0.26;
+            let x = w * 0.5 + (t * std::f32::consts::TAU).sin() * w * 0.26;
+            let y = h * 0.06 + t * h * 0.88;
             InputSample {
                 pos: view.screen_to_canvas(Vec2::new(x, y)),
                 pressure: (t * std::f32::consts::PI).sin().clamp(0.08, 1.0),
-                // Lean along the (mostly +x) travel direction, growing over the
+                // Lean along the (mostly +y) travel direction, growing over the
                 // stroke, so tilt→deposit reads as a knife laying down more and more.
-                tilt: Vec2::new(0.65 * t, 0.0),
+                tilt: Vec2::new(0.0, 0.65 * t),
                 time: (t * 0.7) as f64,
             }
         })
@@ -868,20 +892,24 @@ fn default_stroke(r: &Renderer) -> Vec<InputSample> {
 }
 
 /// The fixed reference stroke laid on the preview canvas before any test
-/// stroke: a simple, hard-edged, opaque **red vertical** line down the middle,
-/// committed once at init so the user can see how the brush being edited
-/// interacts with paint already on the canvas (smudge, drag, bleed, …). Plain
-/// `add` paint, no dynamics, no drain — a clean, unchanging target.
+/// stroke: a simple, hard-edged, opaque **red horizontal** band across the
+/// middle, committed once at init so the user can see how the brush being
+/// edited interacts with paint already on the canvas (smudge, drag, bleed, …).
+/// Plain `add` paint, no dynamics, no drain — a clean, unchanging target.
+///
+/// Across, because the test stroke runs down: the two have to *cross*, or the
+/// brush never meets the paint it is meant to be shown moving. It runs off both
+/// edges so the crossing is never near an end of it.
 fn paint_reference_stroke(r: &mut Renderer) {
     let (w, h) = r.size();
     let (w, h) = (w as f32, h as f32);
     let view = r.view();
-    let x = w * 0.5;
+    let y = h * 0.5;
     const N: usize = 8;
     let samples: Vec<InputSample> = (0..N)
         .map(|i| {
             let t = i as f32 / (N - 1) as f32;
-            let y = h * -0.5 + t * h * 1.5;
+            let x = w * -0.25 + t * w * 1.5;
             InputSample {
                 pos: view.screen_to_canvas(Vec2::new(x, y)),
                 pressure: 1.0,
@@ -992,6 +1020,30 @@ fn edit(state: AppState, mut preview: Preview, f: impl FnOnce(&mut BrushParams) 
     });
 }
 
+/// Match the preview surface to a new canvas size. The column runs the dialog's
+/// full height, so folding a section or resizing the window changes it, and the
+/// drawing buffer — sized once in `finish_init` — would otherwise stretch.
+///
+/// The **seeded** stroke is then re-laid to the new extent, so the default keeps
+/// running the length of the column instead of ending short of it. A stroke the
+/// user drew is left exactly where they drew it: it is theirs, and it is in
+/// canvas space, so it survives the resize untouched.
+fn resize_preview(state: AppState, mut preview: Preview, width: u32, height: u32) {
+    let mut renderer = preview.renderer;
+    let mut guard = renderer.write();
+    let Some(r) = guard.as_mut() else { return };
+    if r.size() == (width, height) {
+        return;
+    }
+    r.resize(width, height);
+    let reseeded = (!*preview.drawn.peek()).then(|| default_stroke(r));
+    drop(guard);
+    if let Some(samples) = reseeded {
+        preview.samples.set(samples);
+    }
+    restroke(state, preview);
+}
+
 /// Restore the default test stroke and re-render it.
 fn reset_stroke(state: AppState, mut preview: Preview) {
     let samples = match preview.renderer.peek().as_ref() {
@@ -999,6 +1051,7 @@ fn reset_stroke(state: AppState, mut preview: Preview) {
         None => return,
     };
     preview.samples.set(samples);
+    preview.drawn.set(false);
     restroke(state, preview);
 }
 
@@ -1066,6 +1119,7 @@ fn end_preview_stroke(mut preview: Preview) {
     let rec = preview.rec.peek().clone();
     if !rec.is_empty() {
         preview.samples.set(rec);
+        preview.drawn.set(true);
     }
 }
 
