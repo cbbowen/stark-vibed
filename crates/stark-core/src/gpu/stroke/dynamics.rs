@@ -26,8 +26,8 @@ use super::segments::{
 use super::swept::{TileInstance, ViewUniform};
 use super::{
     BAKE_FORMAT, BAKE_RES, BLEED_TRAVEL_QUANTUM, BRUSH_RES, ScopedResources, StrokeCarry,
-    StrokeRenderer, StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, WICK_TRAVEL_QUANTUM,
-    flatten_tolerance,
+    StrokeRenderer, StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, UNIFORM_STRIDE,
+    WICK_TRAVEL_QUANTUM, flatten_tolerance,
 };
 
 /// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
@@ -36,6 +36,10 @@ use super::{
 struct SliceUniform {
     offset: [f32; 4],
 }
+
+/// One tile's window into the write-back's offset buffer — the `min_binding_size` the
+/// slice layout declares, taken from the struct rather than written down.
+const SLICE_SLOT: u64 = std::mem::size_of::<SliceUniform>() as u64;
 
 /// Mirrors `Stamp` in `dynamics.wesl` — **exactly**, lane for lane. The shader
 /// names its nine vec4s `a`–`i` and this names its fields the same, so the two can
@@ -557,11 +561,13 @@ impl<'a> DynamicsRun<'a> {
             ],
             misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
         };
-        let view_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark dynamics region view"),
-            contents: bytemuck::bytes_of(&view),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let view_buf = self.piece.buffer(device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("stark dynamics region view"),
+                contents: bytemuck::bytes_of(&view),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        ));
         let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics region view bg"),
             layout: &kit.composite_view_bgl,
@@ -601,11 +607,13 @@ impl<'a> DynamicsRun<'a> {
             }
         }
         let tile_inst = (!tile_origins.is_empty()).then(|| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("stark dynamics region tile instances"),
-                contents: bytemuck::cast_slice(&tile_origins),
-                usage: wgpu::BufferUsages::VERTEX,
-            })
+            self.piece.buffer(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("stark dynamics region tile instances"),
+                    contents: bytemuck::cast_slice(&tile_origins),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+            )
         });
         {
             let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -706,22 +714,26 @@ impl<'a> DynamicsRun<'a> {
         }
     }
 
-    /// The plan's uniform slots, one [`STRIDE`]-aligned window each — dynamic uniform
-    /// offsets being the standard way to vary a uniform across dispatches within one
-    /// pass.
+    /// The plan's uniform slots, one [`UNIFORM_STRIDE`]-aligned window each — dynamic
+    /// uniform offsets being the standard way to vary a uniform across dispatches
+    /// within one pass.
     ///
-    /// Registered on the *run* rather than the piece: the buffer is read by dispatches
-    /// this piece records, and `flush` destroys the piece's resources as soon as it
-    /// submits, so a buffer scoped to the piece would be freed while its own
-    /// submission was still referencing it.
+    /// Registered on the *piece*, like the region it works on and for the same reason:
+    /// nothing past this piece's own submission reads it, so holding it for the whole
+    /// run would make a long stroke's peak cost scale with the number of pieces —
+    /// which is what [`MAX_REGION_DIM`](super::MAX_REGION_DIM) exists to prevent.
+    /// Destroying it at the next [`Self::flush`] is safe on exactly the argument the
+    /// region already rests on: `flush` submits before it destroys, and WebGPU defers
+    /// the real free until that submission retires.
     fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
         let r = self.r;
-        let mut data = vec![0u8; plan.len() * STRIDE];
+        let mut data = vec![0u8; plan.len() * UNIFORM_STRIDE];
         for (i, d) in plan.iter().enumerate() {
-            data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
+            let at = i * UNIFORM_STRIDE;
+            data[at..at + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
         }
         let buf = self
-            .scoped
+            .piece
             .buffer(r.ctx.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("stark dynamics stamps"),
                 size: data.len() as u64,
@@ -886,7 +898,7 @@ impl<'a> DynamicsRun<'a> {
         // differs invalidates the groups above it, and every consumer is reached only
         // across such a switch.
         for (i, d) in plan.iter().enumerate() {
-            let off = (i * STRIDE) as u32;
+            let off = (i * UNIFORM_STRIDE) as u32;
             match d.kind {
                 // The tool plays no part in the lateral flux, so `cur` — the reservoir
                 // ping-pong — stays exactly where the previous segment left it. The
@@ -992,29 +1004,49 @@ impl<'a> DynamicsRun<'a> {
         let r = self.r;
         let kit = &r.dynamics;
         let device = &r.ctx.device;
-        let mut new_map = base.clone();
-        for coord in coords {
-            let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
+
+        // Every tile slices out of the *same* region, so the only thing that varies
+        // across these draws is the offset uniform — one [`UNIFORM_STRIDE`] slot each
+        // in one buffer, under one bind group, rather than a buffer and a bind group
+        // per tile on every pointer move ([`UNIFORM_STRIDE`]).
+        let mut data = vec![0u8; coords.len() * UNIFORM_STRIDE];
+        for (i, coord) in coords.iter().enumerate() {
             let off = coord.origin() - lo;
-            let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let slice = SliceUniform {
+                offset: [off.x, off.y, 0.0, 0.0],
+            };
+            let at = i * UNIFORM_STRIDE;
+            data[at..at + SLICE_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&slice));
+        }
+        let ubuf = self
+            .piece
+            .buffer(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("stark dynamics slice params"),
-                contents: bytemuck::bytes_of(&SliceUniform {
-                    offset: [off.x, off.y, 0.0, 0.0],
-                }),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark dynamics slice bg"),
-                layout: &kit.slice_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: ubuf.as_entire_binding(),
-                    },
-                    tex(1, &region.color),
-                    tex(2, &region.aux),
-                ],
-            });
+                size: data.len() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        r.ctx.queue.write_buffer(&ubuf, 0, &data);
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark dynamics slice bg"),
+            layout: &kit.slice_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &ubuf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(SLICE_SLOT),
+                    }),
+                },
+                tex(1, &region.color),
+                tex(2, &region.aux),
+            ],
+        });
+
+        let mut new_map = base.clone();
+        for (i, coord) in coords.iter().enumerate() {
+            let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
             {
                 let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark dynamics slice"),
@@ -1038,7 +1070,7 @@ impl<'a> DynamicsRun<'a> {
                     multiview_mask: None,
                 });
                 pass.set_pipeline(&kit.slice_pipeline);
-                pass.set_bind_group(0, &bg, &[]);
+                pass.set_bind_group(0, &bg, &[(i * UNIFORM_STRIDE) as u32]);
                 pass.draw(0..3, 0..1);
             }
             new_map = new_map.insert(*coord, dst);
@@ -1142,11 +1174,6 @@ struct PieceBindings {
     deposit: wgpu::BindGroup,
     settle: wgpu::BindGroup,
 }
-
-/// Stride between the plan's uniform slots. A dynamic offset has to be a multiple of
-/// the device's `min_uniform_buffer_offset_alignment`, whose spec maximum is 256, so
-/// this clears it on every adapter — at the cost of the padding past [`SLOT`].
-const STRIDE: usize = 256;
 
 /// Every target this path renders to is fully rewritten by its own pass, so each is
 /// cleared on load rather than read back.
@@ -2101,6 +2128,9 @@ pub(super) fn build_dynamics_kit(
         },
         count: None,
     };
+    // One slot per tile the piece writes back, selected by a dynamic offset: the
+    // region bindings beside it are the same for every tile, so the whole group is
+    // built once per piece ([`UNIFORM_STRIDE`]).
     let slice_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("stark dynamics slice bgl"),
         entries: &[
@@ -2109,8 +2139,8 @@ pub(super) fn build_dynamics_kit(
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(SLICE_SLOT),
                 },
                 count: None,
             },

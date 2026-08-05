@@ -81,6 +81,19 @@ const MAX_REGION_DIM: u32 = 2048;
 /// Reached only by a stroke fine enough to fill a whole region with segments, and it
 /// cuts a new piece rather than coarsening anything.
 const MAX_STAMPS: usize = 4096;
+/// Stride between the slots of a uniform buffer read through **dynamic offsets**,
+/// which is how both render paths vary a uniform across the draws or dispatches of
+/// one pass. A dynamic offset must be a multiple of the device's
+/// `min_uniform_buffer_offset_alignment`, whose spec maximum is 256, so this clears it
+/// on every adapter — at the cost of the padding past each slot's real size.
+///
+/// **One buffer per stroke or per piece, not one per tile.** Every uniform here is
+/// tens of bytes and a live stroke re-renders on every pointer move, so a buffer and
+/// a bind group per affected tile is a rate of small WebGPU allocations rather than an
+/// amount of memory — and the rate is the thing JS GC cannot keep up with
+/// ([`ScopedResources`]). Laid out this way, a stroke's per-tile uniforms cost one
+/// registered buffer and one bind group however many tiles it crosses.
+const UNIFORM_STRIDE: usize = 256;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
 /// (§6.2) — which, since the tool now exchanges once per *segment*, is
 /// simply a cap on the flattened segment length for a dynamics brush
@@ -495,6 +508,9 @@ impl StrokeRenderer {
             source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
         });
 
+        // One slot per affected tile, selected by a dynamic offset ([`UNIFORM_STRIDE`])
+        // — so a stroke crossing many tiles binds one buffer rather than building one
+        // per tile on every pointer move.
         let uniform_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stark sweep uniform bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -502,8 +518,8 @@ impl StrokeRenderer {
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(swept::XFORM_SLOT),
                 },
                 count: None,
             }],

@@ -58,21 +58,36 @@ a `debug_assert!` that the rect fits the snapshot scratch, so the `.min(dsize)`
 can no longer silently clip a footprint. The whole GPU suite runs it without
 firing.
 
-## 4. Per-tile uniform buffer + bind-group churn
+## 4. Per-tile uniform buffer + bind-group churn — **done**
 
-`swept.rs` creates a buffer *and* a bind group per affected tile, per render — on
-the path that re-renders every pointer move. `dynamics.rs` does the same for the
-slice write-back, plus one bind group per halo tile for the region composite.
+`swept.rs` created a buffer *and* a bind group per affected tile, per render — on
+the path that re-renders every pointer move — and `dynamics.rs` did the same for
+the slice write-back. Both now lay their per-tile uniforms out as
+`UNIFORM_STRIDE` slots in one buffer read through dynamic offsets, exactly as
+the stamp buffer already did, so a K-tile stroke builds one buffer and one bind
+group instead of 2K objects.
 
-The module already knows the answer: `stamp_buf` is one buffer read through
-dynamic offsets. Apply it to `TileXform` and `SliceUniform`.
+The slice case collapsed particularly well: every tile slices out of the *same*
+region, so the two texture bindings beside the uniform never varied — the whole
+bind group is now built once per piece.
 
-This also resolves an inconsistency: `ScopedResources` exists because dropping a
-WebGPU handle only releases it to JS GC, which can't keep up — but the per-tile
-`ubuf`s in both paths, plus `view_buf` and `tile_inst` in `draw`, are not
-registered with it. Either the rule applies or small per-frame uniforms are
-genuinely exempt; folding them into dynamic-offset buffers makes the question
-disappear.
+`UNIFORM_STRIDE` lives in `mod.rs` as the one place the 256-byte alignment and
+the reason for it are written down; `XFORM_SLOT` and `SLICE_SLOT` are taken from
+their structs' sizes, like `SLOT`.
+
+With `view_buf` and `tile_inst` registered on the piece and the stamp buffer
+moved from the run to the piece, **every buffer and texture in the module is now
+either registered with `ScopedResources` or owned by a type with its own
+`destroy`-on-drop** — the inconsistency this item existed for is gone rather than
+argued about. (The stamp buffer's move is safe on the same argument the region
+textures already rest on: `flush` submits before it destroys, and WebGPU defers
+the free until that submission retires. It also bounds a long stroke's peak
+transient cost at one piece, which is what `MAX_REGION_DIM` is for.)
+
+What deliberately stays: one bind group per halo tile in the region composite,
+and per-tile `integrate` bind groups in `swept.rs`. Those bind *different
+textures* per tile, so there is nothing to fold — and a bind group holds no
+allocation of its own.
 
 ## 5. Module boundaries
 

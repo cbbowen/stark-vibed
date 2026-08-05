@@ -7,7 +7,6 @@
 
 use bytemuck::{Pod, Zeroable};
 use rpds::HashTrieMap;
-use wgpu::util::DeviceExt;
 
 use crate::document::StrokeRecord;
 use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
@@ -15,7 +14,8 @@ use crate::gpu::tile::{AllocSource, TilePairHandle};
 
 use super::segments::{SegmentInstance, affected_tiles, generate_segments_in, noise_uniform};
 use super::{
-    ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, flatten_tolerance,
+    ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE,
+    flatten_tolerance,
 };
 
 /// Vertices in one segment's swept geometry: a triangle strip of two rims across
@@ -50,6 +50,10 @@ struct TileXform {
     noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
     noise_off: [f32; 4],  // per-stroke noise lookup translation (2), _, _
 }
+
+/// One tile's window into the stroke's transform buffer — the `min_binding_size` the
+/// sweep's layout declares, taken from the struct rather than written down.
+pub(super) const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
 
 /// Mirrors `View` in `composite.wesl` — **exactly**, including the members this
 /// path has no use for: it binds its own buffer to the same shader, so a mismatch is
@@ -228,11 +232,18 @@ impl StrokeRenderer {
             multiview_mask: None,
         });
 
-        let mut new_map = base.clone();
-        for coord in &coords {
-            // Per-tile sweep transform: texture top-left = interior origin shifted
-            // out by the apron, so the full TILE_TEX target maps to NDC [-1, 1].
-            let apron = TILE_APRON as f32;
+        // Per-tile sweep transforms, one [`UNIFORM_STRIDE`] slot each in a single
+        // buffer the draws below select with a dynamic offset. The texture top-left is
+        // the interior origin shifted out by the apron, so the full TILE_TEX target
+        // maps to NDC [-1, 1]; everything else is a stroke constant, repeated per slot
+        // because the slot is what the shader reads.
+        //
+        // One buffer and one bind group for the stroke, not one of each per tile: this
+        // path redraws on every pointer move, and the allocation *rate* is what OOMs
+        // the tab (see [`ScopedResources`] and [`UNIFORM_STRIDE`]).
+        let apron = TILE_APRON as f32;
+        let mut xform_data = vec![0u8; coords.len() * UNIFORM_STRIDE];
+        for (i, coord) in coords.iter().enumerate() {
             let origin = coord.origin();
             let xform = TileXform {
                 params: [
@@ -247,19 +258,32 @@ impl StrokeRenderer {
                 noise_amp: namp,
                 noise_off: noff,
             };
-            let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("stark sweep xform"),
-                contents: bytemuck::bytes_of(&xform),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark sweep bg"),
-                layout: &self.uniform_bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: ubuf.as_entire_binding(),
-                }],
-            });
+            let at = i * UNIFORM_STRIDE;
+            xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
+        }
+        let xform_buf = scoped.buffer(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark sweep xforms"),
+            size: xform_data.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.ctx.queue.write_buffer(&xform_buf, 0, &xform_data);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark sweep bg"),
+            layout: &self.uniform_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &xform_buf,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(XFORM_SLOT),
+                }),
+            }],
+        });
+
+        let mut new_map = base.clone();
+        for (i, coord) in coords.iter().enumerate() {
+            let xform_off = (i * UNIFORM_STRIDE) as u32;
 
             // Footprint → cleared scratch tile: within-stroke accumulation of the
             // parcel this stroke lays (the color target over-blends the parcel's
@@ -290,7 +314,7 @@ impl StrokeRenderer {
                     multiview_mask: None,
                 });
                 pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &bind_group, &[]);
+                pass.set_bind_group(0, &bind_group, &[xform_off]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &noise_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
