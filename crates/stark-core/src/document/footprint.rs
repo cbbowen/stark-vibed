@@ -17,7 +17,8 @@
 //! its kind's footprint declares and write only what it declares — that
 //! locality is what makes the splice sound (see `timeline.rs`).
 
-use super::action::{Action, ActionKind, ActorId, BrushParams, StrokeRecord};
+use super::action::{Action, ActionKind, ActorId, StrokeRecord};
+use super::brush::BrushParams;
 use super::layer::LayerId;
 use crate::geom::{TILE_SIZE, Vec2};
 
@@ -401,7 +402,8 @@ fn prop_write(id: LayerId, prop: Prop) -> Footprint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::action::{ActionId, BrushParams, Tool};
+    use crate::document::action::{ActionId, Tool};
+    use crate::document::brush::BrushParams;
     use crate::geom::Vec2;
     use crate::path::ControlPoint;
 

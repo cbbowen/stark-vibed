@@ -189,14 +189,29 @@ With the invariant now under test, the remaining refactor question — colocatin
 apply/footprint/patch per action so the compiler forces all three — is worth
 weighing on its own merits rather than as a safety measure.
 
-### 3.2 `action.rs` is two files — open
+### 3.2 `action.rs` was two files — **done**
 
-Lines 67–622 are the brush model — `BrushShape`, `OrientationSource`,
-`BrushDynamics`, `ColorDynamics`, `ModSource`/`PenState`/`Modulation`/
-`Modulations`, `BrushParams` — 550 lines with nothing to do with the action log,
-documented against §6.2/§6.6 rather than §4. Splitting `document/brush.rs` out
-leaves `action.rs` at ~700 lines actually about actions, and matches the doc
-split the crate already organizes by.
+The brush model — `BrushShape`, `OrientationSource`, `BrushDynamics`,
+`NoiseKind`, `ColorDynamics`, `ModSource`/`PenState`/`Modulation`/`Modulations`,
+`BrushParams` — was 550 lines with nothing to do with the action log, documented
+against §6.2/§6.6 rather than §4, and it carried `action.rs`'s entire test module
+with it (all seven tests were about `Modulation`).
+
+Now `document/brush.rs`: 739 lines about what a stroke is *made with*, leaving
+`action.rs` at 573 about what an action *is*. `Tool` and `StrokeRecord` stayed —
+a tool is a gesture's, not a brush's (the selection tools are in that enum), and
+a `StrokeRecord` is the action payload that happens to hold a `BrushParams`.
+
+Pure move: no item changed, and the public paths are unchanged because `mod.rs`
+re-exported these already. Only `footprint.rs` reached for `BrushParams` by
+module path.
+
+One pre-existing broken intra-doc link surfaced and was fixed on the way past
+(`SelectionShape::All` in `ActionKind::Fill`'s docs — `SelectionShape` was never
+in scope in `action.rs`). `document/` is now clean under
+`-D rustdoc::broken_intra_doc_links`. **Two more remain outside it**, both
+pre-existing and both outside this review's scope: `Session::publish_due` in
+`engine.rs:2112` and `Self::adopt_default_name` in `session.rs:299`.
 
 ### 3.3 `DocState`'s derived field is public — open
 

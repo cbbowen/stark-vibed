@@ -1,6 +1,7 @@
 //! The document: versioned state and the actions that produce it (§4, §5).
 
 pub mod action;
+pub mod brush;
 pub mod fill;
 pub mod footprint;
 pub mod layer;
@@ -11,10 +12,10 @@ pub mod timeline;
 pub mod transform;
 pub mod warp;
 
-pub use action::{
-    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushDynamics, BrushParams, BrushShape,
-    ColorDynamics, ModSource, Modulation, Modulations, NoiseKind, OrientationSource, PenState,
-    StrokeRecord, Tool,
+pub use action::{Action, ActionId, ActionKind, ActorId, ApplyCtx, StrokeRecord, Tool};
+pub use brush::{
+    BrushDynamics, BrushParams, BrushShape, ColorDynamics, ModSource, Modulation, Modulations,
+    NoiseKind, OrientationSource, PenState,
 };
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
 pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion, PaintTiles};
