@@ -16,7 +16,10 @@ Three passes, separable and in order of value per unit risk:
 - **(a) Latent breaks** — small, high value, no pixels move. §1. **Done.**
 - **(b) Helper extraction** — large, purely mechanical, goldens bit-identical. §3.
   **Done.**
-- **(c) `composite.rs` split** — structural, no behaviour change. §2.
+- **(c) `composite.rs` split** — structural, no behaviour change. §2.1, §2.6.
+  **Done.**
+
+§2.2–§2.5, §2.7 and §4 are what is left.
 
 Run `cargo test --workspace` once after each pass, not after each edit.
 
@@ -102,7 +105,15 @@ return would violate), and saturate the decrement rather than asserting it.
 
 ## 2. Architecture — pass (c) and beyond
 
-### 2.1 `composite.rs` is seven unrelated passes in one 2515-line file
+### 2.1 `composite.rs` is seven unrelated passes in one 2515-line file — **done**
+
+Split into `composite/{mod,view,group,tiles,blend,media,overlay,guides,resolve}.rs`,
+each pass owning its uniform, its pipeline and the constants only it reads. 2211
+lines (after pass (b)) became 2435 across nine files, the growth being module
+headers and `use` blocks; `mod.rs` keeps the two structs and the walk that orders
+the passes, and is now one concern rather than seven. 538 tests pass, 25 goldens
+against real pixels, and the test-name set is unchanged apart from the three
+`supersample` tests moving to `composite::resolve::tests`.
 
 `CompositorPipeline::new` is ~540 lines of straight-line construction covering
 composite, matte, blend, overlay, media, resolve and guides. Each is a
@@ -154,12 +165,20 @@ as the physics it is.
 Relatedly, `downsample_to_limit` is a generic image utility living in
 `gpu::surface` and imported by `assets.rs` for *brush shapes*.
 
-### 2.6 `is_direct() ⇒ Run` is enforced by two runtime `unreachable!`s
+### 2.6 `is_direct() ⇒ Run` is enforced by runtime re-matches — **done**
 
-In `CompositeGroup::stack` and in `encode_stack`. Per the crate's own convention —
-*rule out a class rather than enumerate its instances* — this wants to be
-`fn as_direct_run(&self) -> Option<&[CompositeItem]>`, which makes both call sites
-total and deletes the invariant rather than checking it twice.
+There were **three** sites, not the two this review found. `CompositeGroup::stack`
+and `encode_stack` each asked the `bool` and then re-matched `GroupContent` behind
+an `unreachable!` — and `Engine`'s stack builder did the same behind an `if let`
+with no `else`, returning `true` either way, so a group that answered "direct"
+while holding a `Stack` would have been counted as merged and then silently
+dropped.
+
+`as_direct_run` / `as_direct_run_mut` return the run itself, so the test and the
+extraction are one step and all three sites are total. `engine.rs` no longer
+imports `GroupContent` at all. The one assertion left is in `stack`, immediately
+under its own proof, because that path consumes the members while `as_direct_run`
+borrows them.
 
 ### 2.7 Bind-group churn is the remaining allocation-rate source
 

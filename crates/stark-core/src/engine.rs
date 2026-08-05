@@ -19,8 +19,8 @@ use crate::document::{
 use crate::geom::{Extent2, TileCoord, ViewTransform};
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, Environment,
-    EnvironmentId, FillRenderer, GpuContext, GroupContent, MatteDraw, Offscreen, Registry,
-    SelectionOutline, SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
+    EnvironmentId, FillRenderer, GpuContext, MatteDraw, Offscreen, Registry, SelectionOutline,
+    SelectionRenderer, StrokeRenderer, StrokeSpans, Surface, SurfaceId, TilePool,
     TransformRenderer,
 };
 use crate::image::RgbaImage;
@@ -1476,13 +1476,20 @@ impl Engine {
             };
             // Merge into the run below when neither side needs isolating — the
             // fast path, and the reason an ordinary document is one group.
-            let merged = match groups.last_mut() {
-                Some(last) if last.is_direct() && group.is_direct() => {
-                    if let (GroupContent::Run(items), GroupContent::Run(more)) =
-                        (&mut last.content, &mut group.content)
-                    {
-                        items.append(more);
-                    }
+            //
+            // `as_direct_run_mut` is the test and the run in one, which is what makes
+            // this total. It used to ask `is_direct` of both sides and then re-match
+            // the two `GroupContent`s behind an `if let` with no else — so a group
+            // that answered "direct" while holding something other than a `Run` would
+            // have been counted as merged and then silently dropped.
+            let merged = match (
+                groups
+                    .last_mut()
+                    .and_then(CompositeGroup::as_direct_run_mut),
+                group.as_direct_run_mut(),
+            ) {
+                (Some(items), Some(more)) => {
+                    items.append(more);
                     true
                 }
                 _ => false,
