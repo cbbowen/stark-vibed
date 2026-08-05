@@ -727,7 +727,6 @@ mod tests {
             .collect();
         StrokeRecord {
             layer: crate::document::LayerId(0),
-            tool: crate::document::Tool::Brush,
             brush: BrushParams {
                 radius,
                 drain: 0.0,
@@ -1054,7 +1053,6 @@ mod tests {
             .collect();
         StrokeRecord {
             layer: crate::document::LayerId(0),
-            tool: crate::document::Tool::Brush,
             brush: BrushParams {
                 radius,
                 drain: 0.0,
@@ -1339,7 +1337,6 @@ mod tests {
     fn record(brush: BrushParams, pts: &[Vec2]) -> StrokeRecord {
         StrokeRecord {
             layer: crate::document::LayerId(0),
-            tool: crate::document::Tool::Brush,
             brush,
             path: pts
                 .iter()

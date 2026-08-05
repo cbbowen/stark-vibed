@@ -61,7 +61,21 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// on a build whose `Gesso.png` had been re-authored and the strokes came back
 /// different, silently, with nothing in the file able to notice. A file that bundles
 /// the ground it was painted on is a file that means one thing.
-const WIRE_VERSION: u32 = 4;
+///
+/// **5** — `StrokeRecord` dropped its `tool` field. Removing one is the same
+/// break as inserting one, and worse placed: it sat second, so a version-4 file's
+/// `Tool` byte would be read as the first byte of the brush colour and every
+/// number after it would be off by one. The version is what refuses that, and it
+/// is the whole reason a removal is allowed to be this cheap.
+///
+/// The field could only ever hold `Brush` — the selection tools produce a
+/// [`SelectionOp`](crate::document::SelectionOp), never a stroke — and nothing
+/// read it back. So it was a constant written into every stroke of every
+/// document, and §1's rule about inert scaffolding applies to a field that has
+/// stopped meaning something just as much as to one that never did. If a tool
+/// ever needs recording, it comes back with whatever distinguishes the tools,
+/// which is not this enum.
+const WIRE_VERSION: u32 = 5;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes
@@ -219,6 +233,26 @@ mod tests {
         assert!(matches!(
             DocumentFile::from_bytes(b"not a stark file"),
             Err(EngineError::BadMagic)
+        ));
+    }
+
+    /// The version check is what makes a layout change safe to make at all: a
+    /// file written to an older schema has to be **refused**, not decoded into
+    /// whatever its bytes happen to mean now.
+    ///
+    /// Postcard writes no field names and no lengths, so nothing downstream can
+    /// notice. Wire 5 is the sharpest case so far — it dropped a field from the
+    /// middle of every stroke, so a version-4 file read as a version-5 one would
+    /// take the old `Tool` byte for the first byte of the brush colour and slide
+    /// every number after it along. That decodes; it just is not the painting.
+    #[test]
+    fn rejects_an_older_schema_rather_than_misreading_it() {
+        let mut bytes = sample_doc().to_bytes().unwrap();
+        let at = MAGIC.len();
+        bytes[at..at + 4].copy_from_slice(&(WIRE_VERSION - 1).to_le_bytes());
+        assert!(matches!(
+            DocumentFile::from_bytes(&bytes),
+            Err(EngineError::UnsupportedVersion(v)) if v == WIRE_VERSION - 1
         ));
     }
 }

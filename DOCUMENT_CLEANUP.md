@@ -293,14 +293,34 @@ The behaviour that could have broken is the cycle decline, and
 `a_layer_cannot_carry_its_own_ancestor` asserts exactly it: the tree is left
 exactly as it was.
 
-### 3.6 `StrokeRecord::tool` is write-only — open
+### 3.6 `StrokeRecord::tool` was write-only — **done**
 
-Every construction site sets it; nothing reads it. Per the type's own doc only
-`Brush` can reach a `StrokeRecord`, so the field can only ever hold one value —
-and it is serialized into every stroke in every save. This is the
-inert-scaffolding rule (§1) pointing at existing code. Removing it is a postcard
-wire break (§8), so it is a decision rather than a cleanup, but it should be a
-conscious one.
+Every construction site set it; nothing read it. Per the type's own doc only
+`Brush` can reach a `StrokeRecord`, so it held one value for every stroke of
+every document — and was serialized into all of them.
+
+Removed, with `WIRE_VERSION` bumped 4 → 5 (§8). That bump is the whole safety
+argument: a removal is the same break as an insertion and worse placed, since the
+field sat *second*, so a version-4 file read as a version-5 one would take the
+old `Tool` byte for the first byte of the brush colour and slide every number
+after it along. It would decode; it just would not be the painting. The exact
+version match refuses it instead — and that guard turned out to have no test, so
+`rejects_an_older_schema_rather_than_misreading_it` now covers it.
+
+**It cascaded twice**, which is the interesting part. Removing the document field
+orphaned `peer::StrokeHead::tool` (read only where the `StrokeRecord` was built),
+and removing *that* orphaned `session::StrokeBuilder::tool`. All three held the
+same constant for the same reason: `Engine` routes `tool.is_selection()` to
+`start_selection`, so nothing but a brush ever reaches a stroke. Stopping after
+the first would have left two write-only fields where there was one — this item's
+own defect, freshly created. `StrokeHead` rides the presence wire
+(`stark/collab/0`, ephemeral, never persisted), so that half costs a live-session
+incompatibility and nothing on disk.
+
+`Tool` itself stays: it is session state, and the gesture plumbing, the tool
+chips and the shape drags all read it. What it is *not* is part of what a
+document is — the stroke or the op a tool produced is, and that is what the log
+carries.
 
 ---
 

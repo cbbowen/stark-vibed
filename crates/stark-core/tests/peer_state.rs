@@ -474,7 +474,6 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
             id: 0,
             head: Some(StrokeHead {
                 layer: LayerId(0),
-                tool: Tool::Brush,
                 brush: common::brush(RED, 12.0),
                 seed: 1,
             }),

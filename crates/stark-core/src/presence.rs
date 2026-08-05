@@ -334,7 +334,6 @@ impl GestureRx {
                 assembly.frozen = assembly.frozen.max(from).min(assembly.path.len());
                 self.drawn = Some(LiveGesture::Stroke(StrokeRecord {
                     layer: assembly.head.layer,
-                    tool: assembly.head.tool,
                     brush: assembly.head.brush,
                     path: assembly.path.clone(),
                     seed: assembly.head.seed,

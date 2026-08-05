@@ -33,7 +33,6 @@ const LASSO_MIN_STEP: f32 = 2.0;
 /// the fitter's short working window, and each new sample costs work proportional
 /// to that window instead of to the stroke so far.
 struct StrokeBuilder {
-    tool: Tool,
     brush: BrushParams,
     layer: LayerId,
     seed: u64,
@@ -435,7 +434,6 @@ impl Session {
             Some(b) => Some(GestureSource::Stroke {
                 head: StrokeHead {
                     layer: b.layer,
-                    tool: b.tool,
                     brush: b.brush,
                     seed: b.seed,
                 },
@@ -548,7 +546,6 @@ impl Session {
         let mut fitter = PathFitter::with_tolerance(tolerance);
         fitter.push(sample);
         self.in_flight = Some(StrokeBuilder {
-            tool,
             brush: self.brush,
             layer: self.active_layer,
             seed,
@@ -712,7 +709,6 @@ impl StrokeBuilder {
     fn to_record(&self) -> StrokeRecord {
         StrokeRecord {
             layer: self.layer,
-            tool: self.tool,
             brush: self.brush,
             path: self.path(),
             seed: self.seed,

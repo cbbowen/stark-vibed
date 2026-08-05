@@ -1212,7 +1212,6 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
         },
         kind: stark_core::document::ActionKind::CommitStroke(stark_core::document::StrokeRecord {
             layer: engine.observe().active_layer,
-            tool: Tool::Brush,
             brush,
             path,
             seed: 7,

@@ -274,7 +274,6 @@ async fn custom_shapes_replicate_mid_session() {
                 id: 1,
                 head: Some(StrokeHead {
                     layer,
-                    tool: Tool::Brush,
                     brush,
                     seed: 7,
                 }),

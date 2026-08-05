@@ -39,10 +39,12 @@ pub struct ActionId {
 
 /// The tool a gesture drives. Tools become an open registry later (§10).
 ///
-/// Only [`Brush`](Self::Brush) ever reaches a [`StrokeRecord`]: the selection tools
-/// produce a [`SelectionOp`] instead of a stroke (§6.8). They share the
-/// enum — and so the pointer-gesture plumbing — because from the frontend's point of
-/// view they are the same interaction: press, drag, release.
+/// **Session state, not document state.** Only [`Brush`](Self::Brush) ever reaches
+/// a [`StrokeRecord`]: the selection tools produce a [`SelectionOp`] instead of a
+/// stroke (§6.8). They share the enum — and so the pointer-gesture plumbing —
+/// because from the frontend's point of view they are the same interaction: press,
+/// drag, release. But which of them was in hand is not part of what a document
+/// *is*; the stroke or the op it produced is, and that is what the log carries.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tool {
     #[default]
@@ -66,10 +68,15 @@ impl Tool {
 }
 
 /// A fully-recorded stroke: enough to replay it bit-for-bit (§4).
+///
+/// Deliberately does **not** carry the [`Tool`]. Only `Tool::Brush` can reach a
+/// stroke — the selection tools produce a [`SelectionOp`] instead — so the field
+/// held one value for every stroke of every document and no reader ever asked it
+/// (§8, wire version 5). A tool worth recording would be recorded by whatever
+/// distinguishes it, which this enum does not.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StrokeRecord {
     pub layer: LayerId,
-    pub tool: Tool,
     pub brush: BrushParams,
     /// The fitted stroke curve: the control points the raw pointer samples were
     /// smoothed and simplified down to (§6.2), an order of magnitude

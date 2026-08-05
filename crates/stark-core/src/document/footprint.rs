@@ -345,7 +345,7 @@ fn prop_write(id: LayerId, prop: Prop) -> Footprint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::action::{ActionId, Tool};
+    use crate::document::action::ActionId;
     use crate::document::brush::BrushParams;
     use crate::geom::Vec2;
     use crate::path::ControlPoint;
@@ -371,7 +371,6 @@ mod tests {
             actor,
             ActionKind::CommitStroke(StrokeRecord {
                 layer,
-                tool: Tool::Brush,
                 brush: BrushParams {
                     radius,
                     ..BrushParams::default()

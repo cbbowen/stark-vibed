@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{ActorId, BrushParams, FillOp, LayerId, SelectionOp, StrokeRecord, Tool};
+use crate::document::{ActorId, BrushParams, FillOp, LayerId, SelectionOp, StrokeRecord};
 use crate::geom::Vec2;
 use crate::path::ControlPoint;
 use crate::presence::GestureRx;
@@ -138,7 +138,6 @@ pub struct GestureView {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StrokeHead {
     pub layer: LayerId,
-    pub tool: Tool,
     pub brush: BrushParams,
     pub seed: u64,
 }
@@ -594,7 +593,6 @@ mod tests {
     fn head() -> StrokeHead {
         StrokeHead {
             layer: LayerId(0),
-            tool: Tool::Brush,
             brush: BrushParams::default(),
             seed: 7,
         }
