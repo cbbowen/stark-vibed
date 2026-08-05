@@ -48,6 +48,47 @@ impl TileRect {
     pub fn contains(&self, c: crate::geom::TileCoord) -> bool {
         self.min.0 <= c.x && c.x <= self.max.0 && self.min.1 <= c.y && c.y <= self.max.1
     }
+
+    /// The tiles the canvas box `[lo, hi]` reaches, grown by `ring` tiles on every
+    /// side. Callers pad `lo`/`hi` themselves for whatever their pass reads past
+    /// its own geometry (a tip's radius, an apron); `ring` is for the whole tiles a
+    /// pass rewrites around what it draws.
+    ///
+    /// [`ALL`](Self::ALL) when the box is not finite, or when it falls outside the
+    /// grid an `i32` tile index can address. **A footprint may only ever claim too
+    /// much** (§12.6): a false conflict costs the commutation fast path, while a
+    /// missed one silently diverges peers with no pixel able to show which path
+    /// ran. So a box that cannot be quantized claims the whole layer, exactly as an
+    /// unusable warp's unknown image does in [`gated_rect`].
+    ///
+    /// The single quantizer for this file, in `i64` — the three copies it replaces
+    /// each rounded `as i32` after a `clamp`, which reads as a bound but is not one:
+    /// `NaN as i32` is 0, so a stroke with a non-finite radius claimed one tile at
+    /// the origin, and a coordinate past the addressable grid clamped *inward*.
+    /// Both are the unsafe direction.
+    fn covering(lo: Vec2, hi: Vec2, ring: i32) -> TileRect {
+        if !(lo.is_finite() && hi.is_finite()) {
+            return TileRect::ALL;
+        }
+        let ring = ring as i64;
+        let index = |v: f32| ((v / TILE_SIZE as f32).floor()) as i64;
+        let min = |v: f32| i32::try_from(index(v).saturating_sub(ring)).ok();
+        let max = |v: f32| i32::try_from(index(v).saturating_add(ring)).ok();
+        match (min(lo.x), min(lo.y), max(hi.x), max(hi.y)) {
+            (Some(x0), Some(y0), Some(x1), Some(y1)) => TileRect {
+                min: (x0, y0),
+                max: (x1, y1),
+            },
+            _ => TileRect::ALL,
+        }
+    }
+
+    /// The empty rect — what an action with no geometry claims, overlapping
+    /// nothing (`min > max` on both axes).
+    const EMPTY: TileRect = TileRect {
+        min: (1, 1),
+        max: (0, 0),
+    };
 }
 
 /// A per-layer property, at the granularity undo needs to restore it: each
@@ -162,25 +203,28 @@ fn stroke_pad(brush: &BrushParams) -> f32 {
 
 /// The tile-aligned reach of a stroke: everything its render may read or write.
 fn stroke_rect(rec: &StrokeRecord) -> TileRect {
-    let mut min = (f32::INFINITY, f32::INFINITY);
-    let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
     for p in &rec.path {
-        min = (min.0.min(p.pos.x), min.1.min(p.pos.y));
-        max = (max.0.max(p.pos.x), max.1.max(p.pos.y));
+        // Tested rather than folded in: `f32::min`/`max` return the *non*-NaN
+        // operand, so a non-finite point would step straight over the bbox and
+        // leave it looking tight. Records arrive from files and peers, and a
+        // stroke that cannot be bounded has to claim the layer.
+        if !p.pos.is_finite() {
+            return TileRect::ALL;
+        }
+        min = min.min(p.pos);
+        max = max.max(p.pos);
     }
-    if min.0 > max.0 {
+    if min.x > max.x {
         // An empty path touches nothing.
-        return TileRect {
-            min: (1, 1),
-            max: (0, 0),
-        };
+        return TileRect::EMPTY;
     }
-    let pad = stroke_pad(&rec.brush);
-    let tile = |v: f32| ((v / TILE_SIZE as f32).floor().clamp(-1e9, 1e9)) as i32;
-    TileRect {
-        min: (tile(min.0 - pad), tile(min.1 - pad)),
-        max: (tile(max.0 + pad), tile(max.1 + pad)),
-    }
+    // A non-finite radius makes `pad` non-finite and the box unquantizable, which
+    // `covering` answers with `ALL` — the safe direction, and the one the old
+    // `NaN as i32` did not take.
+    let pad = Vec2::splat(stroke_pad(&rec.brush));
+    TileRect::covering(min - pad, max + pad, 0)
 }
 
 /// The conservative footprint of an action, mirroring exactly what its arm of
@@ -336,13 +380,7 @@ fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
     let Some(image) = image else {
         return TileRect::ALL;
     };
-    let lo = rect.0.min(image.0);
-    let hi = rect.1.max(image.1);
-    let tile = |v: f32| ((v / TILE_SIZE as f32).floor().clamp(-1e9, 1e9)) as i32;
-    TileRect {
-        min: (tile(lo.x) - 1, tile(lo.y) - 1),
-        max: (tile(hi.x) + 1, tile(hi.y) + 1),
-    }
+    TileRect::covering(rect.0.min(image.0), rect.1.max(image.1), 1)
 }
 
 /// The tile-aligned reach of a fill: everything its pass may read or write.
@@ -350,11 +388,7 @@ fn fill_rect(op: &super::fill::FillOp) -> TileRect {
     let Some((lo, hi)) = super::fill::fill_bounds(op) else {
         return TileRect::ALL;
     };
-    let tile = |v: f32| ((v / TILE_SIZE as f32).floor().clamp(-1e9, 1e9)) as i32;
-    TileRect {
-        min: (tile(lo.x), tile(lo.y)),
-        max: (tile(hi.x), tile(hi.y)),
-    }
+    TileRect::covering(lo, hi, 0)
 }
 
 fn prop_write(id: LayerId, prop: Prop) -> Footprint {
@@ -485,6 +519,42 @@ mod tests {
         assert!(commutes(&clip, &blend));
         assert!(commutes(&clip, &elsewhere));
         assert!(!commutes(&clip, &unclip));
+    }
+
+    /// A stroke whose box cannot be quantized claims the **whole layer**, never a
+    /// tile at the origin. The old `NaN as i32` did the latter: a non-finite radius
+    /// or path point produced a tight-looking footprint that a distant stroke then
+    /// commuted past, which is the one direction §12.6 cannot survive — the fast
+    /// path would splice on a lie, and no pixel could show it.
+    #[test]
+    fn an_unboundable_stroke_claims_the_layer_rather_than_the_origin() {
+        let elsewhere = stroke(2, LayerId(0), Vec2::splat(9000.0), Vec2::splat(9100.0), 8.0);
+        let claims_all = |a: &Action| match &footprint(a).writes[..] {
+            [Resource::Paint(_, rect)] => *rect == TileRect::ALL,
+            _ => false,
+        };
+
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            // A radius that cannot be padded with.
+            let mut a = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), bad);
+            assert!(claims_all(&a), "radius {bad} must claim the layer");
+            assert!(!commutes(&a, &elsewhere));
+
+            // A path point that cannot be bounded. `f32::min` would have stepped
+            // over it and left the other point's box looking exact.
+            a = stroke(1, LayerId(0), Vec2::new(bad, 0.0), Vec2::splat(50.0), 8.0);
+            assert!(claims_all(&a), "path point {bad} must claim the layer");
+            assert!(!commutes(&a, &elsewhere));
+        }
+
+        // Finite, but past what an `i32` tile index can address: clamping inward
+        // (what the old `clamp(-1e9, 1e9)` did) would shrink the claim.
+        let far = stroke(1, LayerId(0), Vec2::splat(1.0e30), Vec2::splat(1.1e30), 8.0);
+        assert!(claims_all(&far));
+        // …and an ordinary stroke still claims an ordinary box.
+        let ordinary = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), 16.0);
+        assert!(!claims_all(&ordinary));
+        assert!(commutes(&ordinary, &elsewhere));
     }
 
     /// Carrying a layer is a `MoveLayer`, so it conflicts with every other

@@ -31,14 +31,20 @@ index arithmetic into `tile_box` (finite-checked, `i64`, refusing anything the
 to walk the **gate** — already capped at `MAX_SELECTION_TILES` — filtering by the
 shape's box, instead of walking the shape's box filtering by the gate.
 
-### 1.2 `stroke_rect` under-claims on a non-finite radius — open
+### 1.2 `stroke_rect` under-claims on a non-finite radius — **done**
 
-`footprint.rs:159-184`: a NaN `radius` gives a NaN pad, `f32::clamp` propagates
-NaN, and `NaN as i32` is 0 — so the footprint collapses to a single tile at the
-origin. Under-claiming is the direction that silently diverges peers (§12.6).
-`BrushParams::taper_px` already normalizes NaN for exactly this reason; either
-`radius` gets the same treatment or `stroke_pad` falls back to `TileRect::ALL`
-when non-finite.
+A NaN `radius` gave a NaN pad, `f32::clamp` propagated it, and `NaN as i32` is 0
+— so the footprint collapsed to a single tile at the origin, which a distant
+stroke would then commute past. Under-claiming is the one direction §12.6 cannot
+survive: the fast path splices on the lie and no pixel can show it. Two more of
+the same shape sat beside it — `f32::min`/`max` return the *non*-NaN operand, so
+a non-finite path point was stepped over and left the bbox looking tight; and
+`clamp(-1e9, 1e9)` on a coordinate past the addressable grid clamped *inward*.
+
+Fixed by `TileRect::covering(lo, hi, ring)`, which quantizes in `i64` and answers
+`ALL` for any box that is not finite or not addressable, plus an explicit
+non-finite test per path point. All three of this file's quantizer copies now go
+through it; semantics are unchanged for every finite, in-range input.
 
 ### 1.3 `remove_in` conflates two meanings of `None` — open
 
@@ -131,10 +137,13 @@ verbatim three times in `footprint.rs` and twice more as an `as i64` variant in
 `transform.rs`/`selection.rs` — the two versions differing in overflow behaviour,
 which is where §1.1 lived.
 
-`selection.rs::tile_box` is now the single finite-checked, range-checked
-quantizer; the remaining step is to route `footprint.rs`'s three copies and
-`transform.rs`'s two through it (as `TileRect::covering(lo, hi, ring)`), and to
-fold `CanvasBounds` onto `TileRect`.
+`selection.rs::tile_box` and `footprint.rs::TileRect::covering` are now two
+finite-checked, range-checked quantizers where there were five ad-hoc copies, and
+each is the only one in its file. They stay separate for now because they answer
+differently by design — a cover that cannot be quantized is a *refusal*, a
+footprint that cannot be quantized is `ALL` — but the arithmetic is the same and
+wants to be shared. Remaining: route `transform.rs`'s two through it, and fold
+`CanvasBounds` onto `TileRect`.
 
 ### 3.5 Three near-identical tree walks — open
 
