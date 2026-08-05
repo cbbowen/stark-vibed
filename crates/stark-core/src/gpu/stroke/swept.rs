@@ -55,30 +55,6 @@ struct TileXform {
 /// sweep's layout declares, taken from the struct rather than written down.
 pub(super) const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
 
-/// Mirrors `View` in `composite.wesl` — **exactly**, including the members this
-/// path has no use for: it binds its own buffer to the same shader, so a mismatch is
-/// a wgpu validation error rather than anything the type system would catch.
-///
-/// Used to composite the base into a 1:1 region texture for the stamp loop.
-/// `st` is the canvas→region-NDC linear map, column-major; the screen view can be
-/// turned and mirrored (§18.1.2), but this region never is — it is a
-/// working buffer aligned to the canvas, so the map stays diagonal.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct ViewUniform {
-    pub(super) st: [f32; 4],    // column-major 2x2: (m00, m01), (m10, m11)
-    pub(super) xlate: [f32; 4], // translate.xy, unused zw
-    pub(super) misc: [f32; 4],  // tile_size, uv_scale, uv_bias, _
-}
-
-/// Per-tile instance for the region composite: canvas origin + layer opacity.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct TileInstance {
-    pub(super) origin: [f32; 2],
-    pub(super) opacity: f32,
-}
-
 impl StrokeRenderer {
     /// [`Self::render_range`] through the plain swept fast path: no carried brush
     /// state at all, so a range needs nothing from its predecessor but the arc length.

@@ -121,9 +121,12 @@ Two things fell out:
   (`StrokeCarry` and `ToolState` have to stay `pub` — they are in `render_range`'s
   signature — so the one link `dirty` made into `segments` became a code span.)
 
-Still open: `ViewUniform` and `TileInstance` are declared in `swept.rs` and used
-only by `dynamics.rs`. `swept.rs` touches neither. Left for a follow-up so this
-change stays a pure move of `mod.rs`'s contents.
+`ViewUniform` and `TileInstance` have since moved to `dynamics.rs`, their only
+user — done as a follow-up so the change above stayed a pure move of `mod.rs`'s
+contents. Both are private there rather than `pub(super)`, and the four
+GPU-uniform mirrors (`ViewUniform`, `TileInstance`, `SliceUniform`, `Stamp`) now
+sit together at the top of the file. `swept.rs` exports only `XFORM_SLOT` and
+`render_swept`.
 
 ## 6. Three caches, three policies, one in the wrong place — **done**
 
