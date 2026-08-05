@@ -315,9 +315,12 @@ fn revival_keys(log: &[Action], undone: &HashSet<ActionId>) -> HashMap<ActionId,
 /// order: every ordinary action no effective `Undo` suppresses, ordered by its
 /// own id — or, once a redo has revived it, by the reviving redo's id
 /// ([`revival_keys`]).
-fn effective_indices(log: &[Action]) -> Vec<usize> {
-    let undone = undone_ids(log);
-    let keys = revival_keys(log, &undone);
+///
+/// Takes `undone` rather than deriving it, because every caller wants it for
+/// something else too — the target resolution below, or its own filtering — and
+/// the set is a whole pass over the log.
+fn effective_indices(log: &[Action], undone: &HashSet<ActionId>) -> Vec<usize> {
+    let keys = revival_keys(log, undone);
     let mut indices: Vec<usize> = log
         .iter()
         .enumerate()
@@ -345,10 +348,76 @@ fn effective_indices(log: &[Action]) -> Vec<usize> {
 pub fn effective_actions(log: &[Action]) -> Vec<Action> {
     let mut sorted: Vec<Action> = log.to_vec();
     sorted.sort_by_key(|a| a.id);
-    effective_indices(&sorted)
+    let undone = undone_ids(&sorted);
+    effective_indices(&sorted, &undone)
         .into_iter()
         .map(|i| sorted[i].clone())
         .collect()
+}
+
+/// What a local undo and redo would target — the pair
+/// [`ReplicatedTimeline`] caches, so see its field for *why* it is cached.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+struct Targets {
+    undo: Option<ActionId>,
+    redo: Option<ActionId>,
+}
+
+/// Resolve both targets against a **sorted** log and its `undone` set. A pure
+/// function of the three, which is what makes caching it sound.
+fn targets(log: &[Action], actor: ActorId, undone: &HashSet<ActionId>) -> Targets {
+    let undo = undo_target(log, actor, undone);
+    Targets {
+        undo,
+        redo: redo_target(log, actor, undone, undo),
+    }
+}
+
+/// The most recent still-effective action *by* `actor` — what a local undo
+/// should target. `Undo` actions themselves aren't candidates (they're redone
+/// via [`redo_target`], not undone).
+fn undo_target(log: &[Action], actor: ActorId, undone: &HashSet<ActionId>) -> Option<ActionId> {
+    log.iter()
+        .rev()
+        .find(|a| a.id.actor == actor && undo_target_of(a).is_none() && !undone.contains(&a.id))
+        .map(|a| a.id)
+}
+
+/// The `Undo` a local redo should suppress: `actor`'s most recent effective
+/// `Undo` whose (non-`Undo`) target is currently undone — but only if it is more
+/// recent than `latest_ordinary`, so a fresh edit "clears" the redo stack,
+/// matching single-user expectations.
+///
+/// `latest_ordinary` is [`undo_target`]'s own answer, passed in rather than
+/// recomputed: the action a local undo would take is exactly the one an edit has
+/// to be newer than to count as clearing the stack, and the two spelling that
+/// predicate separately is two places for it to drift.
+fn redo_target(
+    log: &[Action],
+    actor: ActorId,
+    undone: &HashSet<ActionId>,
+    latest_ordinary: Option<ActionId>,
+) -> Option<ActionId> {
+    log.iter()
+        .rev()
+        .filter(|a| a.id.actor == actor && !undone.contains(&a.id))
+        .take_while(|a| latest_ordinary.is_none_or(|m| a.id > m))
+        .find(|a| {
+            // An effective Undo whose target is an ordinary action that is
+            // (still) undone. Undos-of-Undos are skipped: their effect is
+            // already reflected in the effectiveness of what they target.
+            undo_target_of(a).is_some_and(|t| {
+                undone.contains(&t)
+                    && action_by_id(log, t).is_some_and(|target| undo_target_of(target).is_none())
+            })
+        })
+        .map(|a| a.id)
+}
+
+/// The action with this id in a **sorted** log.
+fn action_by_id(log: &[Action], id: ActionId) -> Option<&Action> {
+    let pos = log.partition_point(|a| a.id < id);
+    log.get(pos).filter(|a| a.id == id)
 }
 
 /// Multi-peer timeline (§12): a grow-only set of actions with the
@@ -371,6 +440,26 @@ pub struct ReplicatedTimeline {
     /// document is `History`'s version 0, which pops never remove).
     history: History<Action>,
     stats: TimelineStats,
+    /// What a local undo and redo would target as the log now stands — a pure
+    /// function of [`log`](Self::log) and [`actor`](Self::actor), resolved once
+    /// per log change in [`resync`](Self::resync).
+    ///
+    /// Cached because the *questions* are asked far more often than the log
+    /// changes. `can_undo`/`can_redo` reach `Engine::observe`, which the frontend
+    /// refreshes after every command — including the pointer samples of a stroke
+    /// in flight, which arrive at digitizer rate and commit nothing at all.
+    /// Answering from scratch there meant two backwards passes over the whole log
+    /// per pen event, each building a fresh [`undone_ids`] set, and each getting
+    /// slower as the session grew. The log itself is untouched for the whole
+    /// gesture, so every one of those passes recomputed the same two answers.
+    ///
+    /// A derived copy is a thing that can disagree with what it was derived from,
+    /// so this is not kept in step by remembering to: the log is written in
+    /// exactly one place ([`insert`](Self::insert), which
+    /// [`from_log`](Self::from_log) also funnels through), that place calls
+    /// `resync`, and `resync` writes this from the same `undone` set it
+    /// materializes against — before any of its own early returns.
+    targets: Targets,
 }
 
 impl ReplicatedTimeline {
@@ -388,6 +477,7 @@ impl ReplicatedTimeline {
             ids: HashSet::new(),
             history: History::new(initial),
             stats: TimelineStats::default(),
+            targets: Targets::default(),
         };
         let mut log = log;
         log.sort_by_key(|a| a.id);
@@ -442,9 +532,14 @@ impl ReplicatedTimeline {
     ///
     /// [`Footprint`]: super::footprint::Footprint
     fn resync(&mut self, ctx: &mut ApplyCtx) {
+        let undone = undone_ids(&self.log);
+        // Before the arms below, every one of which can return: this is the one
+        // point a log change passes through, which is what keeps the cache from
+        // being something a future path could forget (see [`Self::targets`]).
+        self.targets = targets(&self.log, self.actor, &undone);
         // Indices into `log`, not borrows, so the arms below can take `&mut
         // self` and clone only what they materialize.
-        let eff = effective_indices(&self.log);
+        let eff = effective_indices(&self.log, &undone);
         let mat: Vec<ActionId> = self.history.actions().map(|a| a.id).collect();
         let diverge = (0..mat.len().min(eff.len()))
             .take_while(|&i| mat[i] == self.log[eff[i]].id)
@@ -496,59 +591,6 @@ impl ReplicatedTimeline {
             self.history.push_action_with(action, ctx);
         }
     }
-
-    /// The most recent still-effective action *by this actor* — what a local
-    /// undo should target. `Undo` actions themselves aren't candidates (they're
-    /// redone via [`Self::redo_target`], not undone).
-    fn undo_target(&self) -> Option<ActionId> {
-        let undone = undone_ids(&self.log);
-        self.log
-            .iter()
-            .rev()
-            .find(|a| {
-                a.id.actor == self.actor && undo_target_of(a).is_none() && !undone.contains(&a.id)
-            })
-            .map(|a| a.id)
-    }
-
-    /// The `Undo` a local redo should suppress: this actor's most recent
-    /// effective `Undo` whose (non-`Undo`) target is currently undone —
-    /// but only if it is more recent than this actor's latest effective
-    /// ordinary action, so a fresh edit "clears" the redo stack, matching
-    /// single-user expectations.
-    fn redo_target(&self) -> Option<ActionId> {
-        let undone = undone_ids(&self.log);
-        let latest_ordinary = self
-            .log
-            .iter()
-            .rev()
-            .find(|a| {
-                a.id.actor == self.actor && undo_target_of(a).is_none() && !undone.contains(&a.id)
-            })
-            .map(|a| a.id);
-        self.log
-            .iter()
-            .rev()
-            .filter(|a| a.id.actor == self.actor && !undone.contains(&a.id))
-            .take_while(|a| latest_ordinary.is_none_or(|m| a.id > m))
-            .find(|a| {
-                // An effective Undo whose target is an ordinary action that is
-                // (still) undone. Undos-of-Undos are skipped: their effect is
-                // already reflected in the effectiveness of what they target.
-                undo_target_of(a).is_some_and(|t| {
-                    undone.contains(&t)
-                        && self
-                            .action_by_id(t)
-                            .is_some_and(|target| undo_target_of(target).is_none())
-                })
-            })
-            .map(|a| a.id)
-    }
-
-    fn action_by_id(&self, id: ActionId) -> Option<&Action> {
-        let pos = self.log.partition_point(|a| a.id < id);
-        self.log.get(pos).filter(|a| a.id == id)
-    }
 }
 
 impl Timeline for ReplicatedTimeline {
@@ -573,11 +615,11 @@ impl Timeline for ReplicatedTimeline {
     }
 
     fn can_undo(&self) -> bool {
-        self.undo_target().is_some()
+        self.targets.undo.is_some()
     }
 
     fn can_redo(&self) -> bool {
-        self.redo_target().is_some()
+        self.targets.redo.is_some()
     }
 
     fn clone_actions(&self) -> Vec<Action> {
@@ -585,11 +627,11 @@ impl Timeline for ReplicatedTimeline {
     }
 
     fn undo_as_action(&self) -> Option<ActionId> {
-        self.undo_target()
+        self.targets.undo
     }
 
     fn redo_as_action(&self) -> Option<ActionId> {
-        self.redo_target()
+        self.targets.redo
     }
 
     fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
@@ -598,5 +640,115 @@ impl Timeline for ReplicatedTimeline {
 
     fn stats(&self) -> TimelineStats {
         self.stats
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(lamport: u64, actor: u64) -> ActionId {
+        ActionId {
+            lamport,
+            actor: ActorId(actor),
+        }
+    }
+
+    /// An ordinary action — which kind is immaterial here; only `Undo` is read.
+    fn edit(lamport: u64, actor: u64) -> Action {
+        Action {
+            id: id(lamport, actor),
+            kind: ActionKind::SetBackground([0.0; 3]),
+        }
+    }
+
+    fn undo_of(lamport: u64, actor: u64, target: ActionId) -> Action {
+        Action {
+            id: id(lamport, actor),
+            kind: ActionKind::Undo(target),
+        }
+    }
+
+    /// Logs here are built in increasing id order, which is the state
+    /// [`ReplicatedTimeline`] keeps its own in — and what `action_by_id`'s binary
+    /// search and `undone_ids`' single descending pass both rest on.
+    fn resolve(log: &[Action], actor: u64) -> Targets {
+        targets(log, ActorId(actor), &undone_ids(log))
+    }
+
+    #[test]
+    fn undo_takes_this_actors_latest_and_never_anyone_elses() {
+        let log = [edit(1, 1), edit(2, 2), edit(3, 1)];
+        assert_eq!(
+            resolve(&log, 1),
+            Targets {
+                undo: Some(id(3, 1)),
+                redo: None
+            }
+        );
+        assert_eq!(
+            resolve(&log, 2),
+            Targets {
+                undo: Some(id(2, 2)),
+                redo: None
+            }
+        );
+        // An actor who has done nothing has nothing to undo, however full the log.
+        assert_eq!(resolve(&log, 3), Targets::default());
+    }
+
+    #[test]
+    fn an_undo_steps_the_target_back_and_offers_itself_as_the_redo() {
+        let log = [edit(1, 1), edit(2, 1), undo_of(3, 1, id(2, 1))];
+        assert_eq!(
+            resolve(&log, 1),
+            Targets {
+                undo: Some(id(1, 1)),
+                redo: Some(id(3, 1)),
+            }
+        );
+    }
+
+    /// Redo is an `Undo` of an `Undo` (§12.3): the revived action becomes
+    /// undoable again, and there is nothing further to redo.
+    #[test]
+    fn a_redo_revives_its_target_and_empties_the_redo_stack() {
+        let log = [
+            edit(1, 1),
+            edit(2, 1),
+            undo_of(3, 1, id(2, 1)),
+            undo_of(4, 1, id(3, 1)),
+        ];
+        assert_eq!(
+            resolve(&log, 1),
+            Targets {
+                undo: Some(id(2, 1)),
+                redo: None,
+            }
+        );
+    }
+
+    /// A fresh edit clears the redo stack, matching what a single-user timeline
+    /// does when a commit truncates the future.
+    #[test]
+    fn an_edit_after_an_undo_clears_the_redo() {
+        let log = [edit(1, 1), edit(2, 1), undo_of(3, 1, id(2, 1)), edit(5, 1)];
+        assert_eq!(
+            resolve(&log, 1),
+            Targets {
+                undo: Some(id(5, 1)),
+                redo: None,
+            }
+        );
+    }
+
+    /// Undo is owned per actor (§12.3): a peer undoing your action leaves you
+    /// with nothing to redo — it was not your undo to reverse.
+    #[test]
+    fn a_peers_undo_is_not_this_actors_redo() {
+        let log = [edit(1, 1), undo_of(2, 2, id(1, 1))];
+        assert_eq!(resolve(&log, 1), Targets::default());
+        // …while its author may reverse it, which is what makes redo theirs.
+        assert_eq!(resolve(&log, 2).redo, Some(id(2, 2)));
     }
 }

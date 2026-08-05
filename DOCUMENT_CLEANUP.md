@@ -69,16 +69,31 @@ them. Covered only behaviourally, through the engine, by `tests/groups.rs` and
 
 ## 2. Performance
 
-### 2.1 `observe()` costs two full log scans per pointer sample — open
+### 2.1 `observe()` cost two full log scans per pointer sample — **done**
 
 `stark-ui/src/state.rs::dispatch` calls `observe()` on every command, and
 `GestureCommand::To` goes through `dispatch` — i.e. at digitizer rate.
-`observe()` reads `can_undo`/`can_redo`, and on `ReplicatedTimeline` each of
-those calls `undone_ids(&self.log)`: an O(n) pass building a fresh `HashSet`.
-Two of them, per pen sample, growing with session length.
+`observe()` reads `can_undo`/`can_redo`, and on `ReplicatedTimeline` each called
+`undone_ids(&self.log)`: an O(n) pass building a fresh `HashSet`, then an O(n)
+backwards scan over the log. Two of those per pen sample, growing with session
+length — and the log does not change once during a stroke, so every one of them
+recomputed the same two answers.
 
-`undone_ids` should be maintained incrementally in `resync` (which already
-recomputes `effective_indices`), or cached against a log-length/revision stamp.
+`ReplicatedTimeline` now caches the pair in a `targets` field, making the four
+query methods O(1) field reads. `undo_target`/`redo_target` became pure functions
+of `(log, actor, undone)`, which is what makes caching them sound, and `resync` —
+the single point every log write funnels through — refreshes the pair from the
+same `undone` set it materializes against, before any of its own early returns.
+
+Two things fell out. `redo_target` had inlined `undo_target`'s body verbatim as
+`latest_ordinary` (§4's bullet); it now calls it, so the predicate has one home.
+And `timeline.rs` gained its first unit tests — five over the target resolution,
+which had been covered only end-to-end through the engine.
+
+**Not** done here: `resync` still recomputes `effective_indices` (O(n log n)) per
+insert, so a session is O(n² log n) in total. That is per *commit* rather than
+per pen sample, so it is a different order of problem — but it is the next one in
+this file.
 
 ### 2.2 `has_backdrop` is O(layers²) inside `observe()` — open
 
@@ -186,8 +201,8 @@ conscious one.
   `state.layer(x).and_then(|l| l.tiles()).cloned()` → match → `warn` → no-op. One
   `fn on_paint_layer(state, layer, f) -> DocState` puts the matte-refusal rule in
   a single place and removes ~40 lines.
-- `ReplicatedTimeline::redo_target` (`timeline.rs:521-528`) inlines
-  `undo_target`'s body verbatim as `latest_ordinary`; call it.
+- ~~`ReplicatedTimeline::redo_target` inlines `undo_target`'s body verbatim as
+  `latest_ordinary`; call it.~~ **done** with §2.1.
 - `patch::paint_rect` (`patch.rs:287-296`) rebuilds the entire `Footprint` (two
   `Vec` allocations) to search for one rect, and silently falls back to
   `TileRect::ALL` if it does not find one — an over-restore if the two ever
