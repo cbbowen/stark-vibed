@@ -19,7 +19,7 @@ Three passes, separable and in order of value per unit risk:
 - **(c) `composite.rs` split** — structural, no behaviour change. §2.1, §2.6.
   **Done.**
 
-§2.4, §2.5 and §4 are what is left. §2.7 is withdrawn — see there.
+§2.4 and the rest of §4 are what is left. §2.7 is withdrawn — see there.
 
 Run `cargo test --workspace` once after each pass, not after each edit.
 
@@ -203,18 +203,37 @@ under the pool lock on the hot path, and a decrement in `Drop` — all to popula
 one `tracing::debug!`. If it is worth keeping, put it behind a cfg; if it earns
 its place, say so on the enum.
 
-### 2.5 `surface.rs` and `environment.rs` are three concerns each
+### 2.5 `surface.rs` and `environment.rs` are three concerns each — **done**
 
-`surface.rs` (778 lines) holds the `SurfaceId` document type + serde, PNG
-canonicalization + BLAKE3 hashing, a CPU mirror of `paint_common.wesl`'s tooth
-model (`tooth_gate` / `decode_rise` / `rise_ahead` / `tabulate_bearing` — which is
-what all four of its tests exercise), and the GPU upload. `environment.rs` embeds
-a complete Radiance RGBE decoder. Neither the decoder nor the tooth model touches
-the GPU. `surface/{mod,tooth,import}.rs` would let the shader-mirror half be read
-as the physics it is.
+`surface.rs` (778 lines) became three. `mod.rs` (197) keeps the `SurfaceId` document
+type and the `Surface` GPU object; `tooth.rs` (497) holds the CPU mirror of
+`paint_common.wesl` — the contact gate, the rise encoding, the bake and the bearing
+table — with all four of its tests, none of which needs an adapter; `import.rs` (89)
+is decode → cap → hash.
 
-Relatedly, `downsample_to_limit` is a generic image utility living in
-`gpu::surface` and imported by `assets.rs` for *brush shapes*.
+The bearing histogram became a `Bearing` type in `tooth.rs` rather than a bare field
+on `Surface`, so the whole directional model sits in one place. `Surface::bearing` is
+now a wrapper over the one thing that is the *surface's* business rather than the
+model's: a ground with no relief has nothing to bite, whatever the tooth.
+
+`environment.rs` (561) became two plus a shared codec: `hdr.rs` (171) is the Radiance
+decoder and nothing else, `mod.rs` (368) the prefilter, the procedural neutral light
+and the upload.
+
+Two §4 items fell out of it, because both were the *third* concern in a file:
+
+- `downsample_to_limit` moved to `assets.rs`, beside `encode_gray_png`. It lived in
+  `gpu::surface`, so brush-shape import reached into the ground's module for an image
+  utility with no GPU in it — and it sat next to the one caller it was not written
+  for. Both callers cap an imported single-channel image *before* hashing it, so the
+  id names the canonical form.
+- `gpu/half.rs` now holds both half-float conversions, which had drifted into
+  different files doing inverse halves of one job. Together the asymmetry is visible
+  rather than accidental: the encoder is deliberately not general, because what it
+  encodes is radiance.
+
+548 tests pass, 25 goldens against real pixels, and the test set is unchanged but for
+six tests moving to the modules they now live in.
 
 ### 2.6 `is_direct() ⇒ Run` is enforced by runtime re-matches — **done**
 

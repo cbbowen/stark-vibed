@@ -91,8 +91,7 @@ impl AssetStore {
         // Cap user imports at MAX_SHAPE_DIM before hashing, so the id names the
         // canonical (stored) coverage and a reload of the downsampled PNG maps
         // to the same id. Integer box filter — deterministic across peers.
-        let (coverage, w, h) =
-            crate::gpu::surface::downsample_to_limit(coverage, w, h, MAX_SHAPE_DIM);
+        let (coverage, w, h) = downsample_to_limit(coverage, w, h, MAX_SHAPE_DIM);
         let id = coverage_id(w, h, &coverage);
         let mut inner = self.inner.lock().expect("asset store poisoned");
         if let Entry::Vacant(slot) = inner.masks.entry(id) {
@@ -436,4 +435,38 @@ fn decode_coverage(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
         }
     }
     Ok((info.width, info.height, coverage))
+}
+
+/// Box-downsample a single-channel image by the smallest integer factor that
+/// brings both edges within `limit`. An integer factor keeps a tileable texture
+/// tileable; `factor == 1` returns the input unchanged.
+///
+/// Here rather than beside either caller because both do the same thing for the
+/// same reason: a brush shape and a canvas ground are each capped **before** they
+/// are hashed, so the id names the canonical form and reloading the stored PNG
+/// lands on the same id (§6.6, §6.4). It lived in `gpu::surface`, which made the
+/// brush-shape import reach into the ground's module for an image utility with no
+/// GPU in it — and left it next to the one caller it was *not* written for.
+pub(crate) fn downsample_to_limit(src: Vec<u8>, w: u32, h: u32, limit: u32) -> (Vec<u8>, u32, u32) {
+    let factor = w.div_ceil(limit).max(h.div_ceil(limit)).max(1);
+    if factor == 1 {
+        return (src, w, h);
+    }
+    let (nw, nh) = (w / factor, h / factor);
+    let area = factor * factor;
+    let mut out = vec![0u8; (nw * nh) as usize];
+    for y in 0..nh {
+        for x in 0..nw {
+            let mut sum = 0u32;
+            for dy in 0..factor {
+                for dx in 0..factor {
+                    let sx = x * factor + dx;
+                    let sy = y * factor + dy;
+                    sum += src[(sy * w + sx) as usize] as u32;
+                }
+            }
+            out[(y * nw + x) as usize] = (sum / area) as u8;
+        }
+    }
+    (out, nw, nh)
 }

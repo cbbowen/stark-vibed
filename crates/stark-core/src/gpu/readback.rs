@@ -17,6 +17,7 @@
 
 use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
+use crate::gpu::half::f16_to_f32;
 
 /// Copy a texture into a mappable buffer, and return it with the row padding the
 /// copy required. Shared by the async and blocking paths, which differ only in
@@ -153,23 +154,4 @@ pub async fn read_rgba16f(ctx: &GpuContext, texture: &wgpu::Texture, size: Exten
         .iter()
         .map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]])))
         .collect()
-}
-
-/// Decode an IEEE-754 half-precision float to `f32`.
-fn f16_to_f32(h: u16) -> f32 {
-    let sign = (h >> 15) & 1;
-    let exp = (h >> 10) & 0x1f;
-    let mant = h & 0x3ff;
-    let val = match exp {
-        0 => (mant as f32) * 2f32.powi(-24), // subnormal (and zero)
-        0x1f => {
-            if mant == 0 {
-                f32::INFINITY
-            } else {
-                f32::NAN
-            }
-        }
-        _ => (1.0 + mant as f32 / 1024.0) * 2f32.powi(exp as i32 - 15),
-    };
-    if sign == 1 { -val } else { val }
 }

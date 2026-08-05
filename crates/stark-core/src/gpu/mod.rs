@@ -6,6 +6,7 @@ pub mod context;
 pub(crate) mod desc;
 pub mod environment;
 pub mod fill;
+pub(crate) mod half;
 pub mod pigment;
 pub mod readback;
 pub mod registry;
