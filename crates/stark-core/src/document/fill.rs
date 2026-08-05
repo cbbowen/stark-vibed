@@ -28,7 +28,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::selection::{Selection, SelectionMode, SelectionShape, tiles_covering};
+use super::selection::{Selection, SelectionMode, SelectionShape, tile_box, tiles_covering};
 use crate::geom::{TILE_APRON, TileCoord, Vec2};
 
 /// Largest number of paint tiles one fill may write. The same stance and roughly
@@ -147,15 +147,28 @@ pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
     let bounded = gate.outside() <= 0.5;
     let mut coords: Vec<TileCoord> = match op.shape.bounds() {
         // A bounded shape: the tiles its coverage can reach, minus any the gate
-        // masks out entirely. Filtering here rather than letting the shader write
-        // zeros is what keeps a fill inside a small selection from rewriting the
-        // whole rectangle it was dragged over.
+        // masks out entirely. Filtering rather than letting the shader write zeros
+        // is what keeps a fill inside a small selection from rewriting the whole
+        // rectangle it was dragged over.
         Some((lo, hi)) => {
             let pad = Vec2::splat(op.reach());
-            tiles_covering(lo - pad, hi + pad, 0)
-                .into_iter()
-                .filter(|c| !bounded || gate.tile(*c).is_some())
-                .collect()
+            let (lo, hi) = (lo - pad, hi + pad);
+            if bounded {
+                // Walk the **gate**, not the shape's box. The two intersect to the
+                // same set either way, but only the gate is bounded in advance (by
+                // `MAX_SELECTION_TILES`): the box is quadratic in the drag, so a
+                // rectangle swept at far zoom-out over a small selection would cost
+                // millions of coordinates to describe an answer of a dozen.
+                let (min, max) = tile_box(lo, hi, 0)?;
+                gate.tiles()
+                    .map(|(c, _)| *c)
+                    .filter(|c| (min.x..=max.x).contains(&c.x) && (min.y..=max.y).contains(&c.y))
+                    .collect()
+            } else {
+                // Nothing selected: the shape's own cover is the only bound there
+                // is, so the cap has to ride inside it (see `tiles_covering`).
+                tiles_covering(lo, hi, 0, MAX_FILL_TILES)?
+            }
         }
         // `All`, or a lasso with no vertices. Only the gate can bound these.
         None => {

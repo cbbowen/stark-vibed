@@ -328,8 +328,18 @@ impl Selection {
         // constant coverage, which is what lets the outline pass find the boundary by
         // differencing and keeps a feathered edge from being clipped at the tile the
         // shape happens to end in.
+        //
+        // The cap rides *inside* the cover, not on its length: an op naming more
+        // tiles than MAX_SELECTION_TILES is refused without the list ever being
+        // built, which is the difference between refusing a shape the size of the
+        // explored canvas and dying trying to describe it.
         let pad = op.feather.max(1.0) + TILE_APRON as f32 + 1.0;
-        let rasterize = tiles_covering(lo - Vec2::splat(pad), hi + Vec2::splat(pad), 1);
+        let rasterize = tiles_covering(
+            lo - Vec2::splat(pad),
+            hi + Vec2::splat(pad),
+            1,
+            MAX_SELECTION_TILES,
+        )?;
 
         // Whether the previous mask survives outside the rasterized set. Under Union
         // and Subtract it does — the result there is `max(p, 0) = p` and `p·(1−0) = p`
@@ -341,9 +351,6 @@ impl Selection {
             SelectionMode::Replace | SelectionMode::Intersect => false,
             SelectionMode::Union | SelectionMode::Subtract => true,
         };
-        if rasterize.len() > MAX_SELECTION_TILES {
-            return None;
-        }
         Some(SelectionPlan {
             keep_prev,
             rasterize,
@@ -396,24 +403,68 @@ pub(crate) struct SelectionPlan {
     pub hull: Option<(Vec2, Vec2)>,
 }
 
-/// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
-/// expanded by `ring` tiles on every side.
-pub(crate) fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32) -> Vec<TileCoord> {
+/// The inclusive tile-index box whose *textures* (interior + apron) overlap the
+/// canvas box `[lo, hi]`, expanded by `ring` tiles on every side — the addressing
+/// half of [`tiles_covering`], split out so the **count** can be taken before
+/// anything is enumerated.
+///
+/// `None` on a non-finite bound, and on a box the `i32` tile grid cannot address
+/// (past ~5×10¹¹ canvas px). Both are refusals rather than clamps, for the reason
+/// every other bound in this module refuses: a clamp would rasterize a *different*
+/// region, and these coordinates arrive from files and peers, where the only
+/// acceptable disagreement is none (§6.8).
+pub(crate) fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<(TileCoord, TileCoord)> {
+    if !(lo.is_finite() && hi.is_finite()) {
+        return None;
+    }
     let tile = TILE_SIZE as f32;
     // A tile's texture starts one apron before its interior, so a box that reaches
     // into the apron band still touches the neighbour.
     let apron = TILE_APRON as f32;
-    let x0 = ((lo.x - apron) / tile).floor() as i32 - ring;
-    let x1 = ((hi.x + apron) / tile).floor() as i32 + ring;
-    let y0 = ((lo.y - apron) / tile).floor() as i32 - ring;
-    let y1 = ((hi.y + apron) / tile).floor() as i32 + ring;
-    let mut out = Vec::new();
-    for y in y0..=y1 {
-        for x in x0..=x1 {
+    let ring = ring as i64;
+    // `i64` throughout, and saturating: a float too large for the type saturates
+    // rather than wrapping, and `try_from` below turns that saturation into a
+    // refusal instead of a wrapped tile index pointing somewhere else entirely.
+    let index = |v: f32| ((v / tile).floor()) as i64;
+    let min = |v: f32| i32::try_from(index(v - apron).saturating_sub(ring)).ok();
+    let max = |v: f32| i32::try_from(index(v + apron).saturating_add(ring)).ok();
+    Some((
+        TileCoord::new(min(lo.x)?, min(lo.y)?),
+        TileCoord::new(max(hi.x)?, max(hi.y)?),
+    ))
+}
+
+/// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
+/// expanded by `ring` tiles on every side — `None` when there would be more than
+/// `budget` of them.
+///
+/// **Counted before it is walked**, which is what makes an absurd box a clean
+/// refusal instead of a hang: the box is quadratic in the drag, so a marquee at far
+/// zoom-out (or an op arriving from a file or a peer) can name more tiles than
+/// there is memory to list, and finding that out by listing them is not an option.
+/// Same stance and same shape as `transform::quad_reached_tiles`, which counts its
+/// candidates against its own budget before enumerating, for the same reason.
+pub(crate) fn tiles_covering(
+    lo: Vec2,
+    hi: Vec2,
+    ring: i32,
+    budget: usize,
+) -> Option<Vec<TileCoord>> {
+    let (min, max) = tile_box(lo, hi, ring)?;
+    // `min > max` on an axis is the empty box (an inverted rect off the wire),
+    // which the inclusive ranges below already yield nothing for.
+    let span = |a: i32, b: i32| (i64::from(b) - i64::from(a) + 1).max(0) as u64;
+    let count = span(min.x, max.x).checked_mul(span(min.y, max.y))?;
+    if count > budget as u64 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    for y in min.y..=max.y {
+        for x in min.x..=max.x {
             out.push(TileCoord::new(x, y));
         }
     }
-    out
+    Some(out)
 }
 
 /// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
@@ -496,6 +547,49 @@ mod tests {
         assert_eq!(plan.rasterize.len(), 9);
         assert!(plan.rasterize.contains(&TileCoord::new(0, 0)));
         assert!(!plan.outside, "replace leaves everything else deselected");
+    }
+
+    /// The cover is *counted* before it is walked, so a box far too large to list
+    /// is a refusal rather than a hang. 10⁷ canvas px is ~1.5×10⁹ tiles: the old
+    /// enumerate-then-check would have pushed every one of them before finding out.
+    #[test]
+    fn an_astronomical_cover_is_refused_without_being_enumerated() {
+        let huge = 1.0e7;
+        assert_eq!(
+            tiles_covering(
+                Vec2::splat(-huge),
+                Vec2::splat(huge),
+                1,
+                MAX_SELECTION_TILES
+            ),
+            None
+        );
+        // And the budget is the real bound, not a rounding of it: a cover of
+        // exactly `budget` tiles is served, one past it is refused.
+        let side = TILE_SIZE as f32;
+        let span = |n: f32| Vec2::new(n * side - 2.0, n * side - 2.0);
+        let n = |v: Vec2, b: usize| tiles_covering(Vec2::splat(2.0), v, 0, b).map(|t| t.len());
+        assert_eq!(n(span(32.0), 32 * 32), Some(32 * 32));
+        assert_eq!(n(span(32.0), 32 * 32 - 1), None);
+    }
+
+    /// Coordinates arrive from files and peers. A non-finite bound, or one past
+    /// what the `i32` tile grid can address, is refused — never wrapped into a tile
+    /// index pointing somewhere else, which is what the old `as i32` cast did.
+    #[test]
+    fn unrepresentable_boxes_are_refused_rather_than_wrapped() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(tile_box(Vec2::new(bad, 0.0), Vec2::splat(10.0), 0), None);
+            assert_eq!(tile_box(Vec2::ZERO, Vec2::new(0.0, bad), 0), None);
+        }
+        // Well past `i32::MAX` tiles from the origin, but a *small* box — so the
+        // count would happily pass and only the addressing is impossible.
+        let far = 1.0e30;
+        assert_eq!(tile_box(Vec2::splat(far), Vec2::splat(far + 1.0), 0), None);
+        assert_eq!(
+            tile_box(Vec2::splat(-far), Vec2::splat(-far + 1.0), 0),
+            None
+        );
     }
 
     #[test]
