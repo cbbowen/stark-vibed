@@ -774,27 +774,28 @@ hr {
    The radius lives on the *group*, and `overflow: hidden` is what rounds the two end
    chips: their own corners stay square, so an end chip's lit fill is clipped to the
    group's silhouette instead of pulling away from it. */
-.tool-row.segmented {
+.segmented {
+  display: flex;
   gap: 0;
   border-radius: 7px;
   overflow: hidden;
 }
 
-.tool-row.segmented .chip {
+.segmented .chip {
   border-radius: 0;
 }
 
 /* One hairline per seam, drawn as an inset shadow on the right-hand chip so it takes
    no width and cannot shift the chips off their even split. */
-.tool-row.segmented .chip + .chip {
+.segmented .chip + .chip {
   box-shadow: inset 1px 0 0 #00000038;
 }
 
 /* A lit chip owns both of its edges: the seams either side of it are already drawn by
    the colour change, and a groove crossing into the fill would read as a crack in the
    thing that is supposed to look like one lit region. */
-.tool-row.segmented .chip.active,
-.tool-row.segmented .chip.active + .chip {
+.segmented .chip.active,
+.segmented .chip.active + .chip {
   box-shadow: none;
 }
 

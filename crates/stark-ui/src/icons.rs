@@ -207,6 +207,9 @@ icons! {
     // with the tool it arms — which is the whole discoverability argument that bar is
     // built on, made in a picture as well as a word.
     EYEDROPPER => "eyedropper-bold",
+    ONE_LAYER => "stack-single-bold",
+    ALL_LAYERS => "stack-simple-bold",
+    ALL_LAYERS_AND_CANVAS => "stack-bold",
     // The brush editor, off the Brush panel. A wrench rather than a brush: the panel
     // that hosts the button already wears the brush ([`BRUSH`]), and what this opens
     // is the place where the brush is *adjusted*, not another brush.

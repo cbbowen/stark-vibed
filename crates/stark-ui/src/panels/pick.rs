@@ -58,27 +58,36 @@ pub fn PickBar() -> Element {
                 {icon(icons::EYEDROPPER)}
                 {label("Eyedropper")}
             }
-            button {
-                class: chip(all),
-                title: "Sample the colour the canvas shows, through every visible layer",
-                onclick: move |_| all_layers.set(true),
-                "All layers"
-            }
-            button {
-                class: chip(!all),
-                title: "Sample the selected layer alone, ignoring anything over or under it",
-                onclick: move |_| all_layers.set(false),
-                "This layer"
+
+            div {
+                class: "segmented",
+                button {
+                    class: chip(all),
+                    title: "Sample the colour the canvas shows, through every visible layer",
+                    onclick: move |_| all_layers.set(true),
+                    {icon(icons::ALL_LAYERS)}
+                    {label("All layers")}
+                }
+                button {
+                    class: chip(!all),
+                    title: "Sample the selected layer alone, ignoring anything over or under it",
+                    onclick: move |_| all_layers.set(false),
+                    {icon(icons::ONE_LAYER)}
+                    {label("This layer")}
+                }
             }
 
             span { class: "bar-sep" }
 
-            for (label, want) in PATCHES {
-                button {
-                    class: chip(r == want),
-                    title: "How much canvas one sample averages",
-                    onclick: move |_| radius.set(want),
-                    "{label}"
+            div {
+                class: "segmented",
+                for (label, want) in PATCHES {
+                    button {
+                        class: chip(r == want),
+                        title: "How much canvas one sample averages",
+                        onclick: move |_| radius.set(want),
+                        "{label}"
+                    }
                 }
             }
         }
