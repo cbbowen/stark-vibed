@@ -461,10 +461,19 @@ pub struct ReplicatedTimeline {
     /// A derived copy is a thing that can disagree with what it was derived from,
     /// so this is not kept in step by remembering to: the log is written in
     /// exactly one place ([`insert`](Self::insert), which
-    /// [`from_log`](Self::from_log) also funnels through), that place calls
-    /// `resync`, and `resync` writes this from the same `undone` set it
-    /// materializes against — before any of its own early returns.
+    /// [`from_log`](Self::from_log) also funnels through), and that place either
+    /// resolves both directly or hands off to `resync`, which writes them from
+    /// the same `undone` set it materializes against.
     targets: Targets,
+    /// Ids suppressed by effective `Undo`s ([`undone_ids`]) — the set every
+    /// question about effectiveness starts from.
+    ///
+    /// Held rather than rederived per insert, because the insert that dominates
+    /// a session cannot change it: an ordinary action suppresses nothing, and
+    /// nothing already in the log can be suppressing an action newer than all of
+    /// it. Deriving it anyway built a `HashSet` over the whole log per commit to
+    /// rediscover the same answer.
+    undone: HashSet<ActionId>,
 }
 
 impl ReplicatedTimeline {
@@ -483,6 +492,7 @@ impl ReplicatedTimeline {
             history: History::new(initial),
             stats: TimelineStats::default(),
             targets: Targets::default(),
+            undone: HashSet::new(),
         };
         let mut log = log;
         log.sort_by_key(|a| a.id);
@@ -501,19 +511,69 @@ impl ReplicatedTimeline {
         if !self.ids.insert(action.id) {
             return false;
         }
+        // Both read before the move, and both decide the fast path below.
+        let id = action.id;
+        let ordinary = undo_target_of(&action).is_none();
+        let appended = self.log.last().is_none_or(|last| last.id < id);
         // Sorted insert; the common case (a fresh local or causally-newest
         // remote action) lands at the end.
-        let pos = self.log.partition_point(|a| a.id < action.id);
+        let pos = self.log.partition_point(|a| a.id < id);
         self.log.insert(pos, action);
-        self.resync(ctx);
+
+        // The insert that dominates a session — an ordinary action newer than
+        // everything already in the log — puts itself at the end of the effective
+        // sequence and changes nothing else about it:
+        //
+        // - **nothing suppresses it.** An `Undo` carries a larger id than its
+        //   target, its author having seen the target to undo it, so no action
+        //   already here can be undoing one newer than all of them. `undone` is
+        //   consulted regardless, since a log arrives from files and peers and a
+        //   malformed one need not respect that;
+        // - **it suppresses and revives nothing**, being ordinary, so no other
+        //   action's effectiveness moves and no other action's slot moves;
+        // - **its own key is its id**, the largest, so it sorts last.
+        //
+        // Which leaves the whole of `resync` a push. Deriving the sequence again
+        // instead is a pass over the log, a `HashSet` and a sort *per commit* —
+        // so a session paid for its own length squared to learn, each time, that
+        // the newest action goes last.
+        if ordinary && appended && !self.undone.contains(&id) {
+            let action = self.log[pos].clone();
+            self.history.push_action_with(action, ctx);
+            self.retarget_appended(id);
+        } else {
+            self.resync(ctx);
+        }
         true
     }
 
-    /// Make `history` match the current effective sequence.
+    /// Move the undo/redo targets over an action the fast path appended.
     ///
-    /// The change is almost always a single action entering or leaving the
-    /// sequence (one call per log insert), so this classifies it
-    /// (§12.6):
+    /// Both questions are asked only about **this actor's** actions, so a peer's
+    /// commit moves neither and there is nothing to do. Ours moves both, to
+    /// answers already in hand: a fresh ordinary edit is the newest thing we
+    /// could undo, and it clears our redo stack — which is `redo_target`'s
+    /// "newer than the latest ordinary action" bound, reached directly instead of
+    /// by scanning the log for it.
+    fn retarget_appended(&mut self, id: ActionId) {
+        if id.actor == self.actor {
+            self.targets = Targets {
+                undo: Some(id),
+                redo: None,
+            };
+        }
+    }
+
+    /// Make `history` match the current effective sequence, rederiving that
+    /// sequence from the log.
+    ///
+    /// Reached when [`insert`](Self::insert) cannot say for itself what changed —
+    /// an `Undo`, whose whole job is to change other actions' effectiveness, or
+    /// an arrival that lands mid-log. Everything else appends, and appending is
+    /// the one case whose effect on the sequence is known without deriving it.
+    ///
+    /// The change is still almost always a single action entering or leaving,
+    /// so this classifies it (§12.6):
     ///
     /// - an action **removed** (an undo landed) is handed to the history's
     ///   `remove_action_with`, which shifts it past everything it commutes with
@@ -537,14 +597,15 @@ impl ReplicatedTimeline {
     ///
     /// [`Footprint`]: super::footprint::Footprint
     fn resync(&mut self, ctx: &mut ApplyCtx) {
-        let undone = undone_ids(&self.log);
-        // Before the arms below, every one of which can return: this is the one
-        // point a log change passes through, which is what keeps the cache from
-        // being something a future path could forget (see [`Self::targets`]).
-        self.targets = targets(&self.log, self.actor, &undone);
+        self.undone = undone_ids(&self.log);
+        // Before the arms below, every one of which can return: together with
+        // `insert`'s fast path this is where every log change resolves the
+        // derived state, which is what keeps it from being something a future
+        // path could forget (see [`Self::targets`]).
+        self.targets = targets(&self.log, self.actor, &self.undone);
         // Indices into `log`, not borrows, so the arms below can take `&mut
         // self` and clone only what they materialize.
-        let eff = effective_indices(&self.log, &undone);
+        let eff = effective_indices(&self.log, &self.undone);
         let mat: Vec<ActionId> = self.history.actions().map(|a| a.id).collect();
         let diverge = (0..mat.len().min(eff.len()))
             .take_while(|&i| mat[i] == self.log[eff[i]].id)
@@ -755,5 +816,76 @@ mod tests {
         assert_eq!(resolve(&log, 1), Targets::default());
         // …while its author may reverse it, which is what makes redo theirs.
         assert_eq!(resolve(&log, 2).redo, Some(id(2, 2)));
+    }
+
+    /// `insert`'s fast path skips deriving the effective sequence, on the claim
+    /// that an ordinary action newer than the whole log lands at the end of that
+    /// sequence and moves nothing else. Here is the claim, checked against the
+    /// derivation it skips: same effective order, same undone set.
+    #[test]
+    fn appending_an_ordinary_action_only_extends_the_effective_sequence() {
+        // A log with an undo and a redo in it, so the sequence being extended is
+        // one whose effectiveness and slots were genuinely rearranged.
+        let before = [
+            edit(1, 1),
+            edit(2, 2),
+            edit(3, 1),
+            undo_of(4, 1, id(3, 1)),
+            edit(5, 2),
+            undo_of(6, 1, id(4, 1)),
+        ];
+        let mut after = before.to_vec();
+        after.push(edit(7, 2));
+
+        let (u0, u1) = (undone_ids(&before), undone_ids(&after));
+        assert_eq!(u0, u1, "an ordinary action suppresses nothing");
+
+        let eff0 = effective_indices(&before, &u0);
+        let eff1 = effective_indices(&after, &u1);
+        assert_eq!(
+            eff1.split_last().map(|(_, rest)| rest.to_vec()),
+            Some(eff0),
+            "the sequence it had is untouched…"
+        );
+        assert_eq!(
+            eff1.last().map(|&i| after[i].id),
+            Some(id(7, 2)),
+            "…and the new action is what went on the end"
+        );
+    }
+
+    /// The other half of the fast path: it resolves the targets itself rather
+    /// than scanning, so its shortcut has to agree with the scan. A peer's commit
+    /// moves neither target; ours becomes the undo target and clears the redo.
+    #[test]
+    fn appending_moves_only_its_own_actors_targets() {
+        let before = [edit(1, 1), edit(2, 1), undo_of(3, 1, id(2, 1))];
+        let ours = resolve(&before, 1);
+        assert_eq!(
+            ours.redo,
+            Some(id(3, 1)),
+            "a redo is on offer to start with"
+        );
+
+        // A peer's action: `retarget_appended` does nothing, so the scan must
+        // agree that nothing moved.
+        let mut peer = before.to_vec();
+        peer.push(edit(4, 2));
+        assert_eq!(
+            resolve(&peer, 1),
+            ours,
+            "a peer's commit is not ours to undo"
+        );
+
+        // Ours: the shortcut says (undo = it, redo = none).
+        let mut mine = before.to_vec();
+        mine.push(edit(5, 1));
+        assert_eq!(
+            resolve(&mine, 1),
+            Targets {
+                undo: Some(id(5, 1)),
+                redo: None,
+            },
+        );
     }
 }
