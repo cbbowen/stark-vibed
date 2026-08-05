@@ -7,6 +7,7 @@
 mod common;
 
 use common::*;
+use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushShape, Tool};
 use stark_core::geom::Vec2;
@@ -86,6 +87,42 @@ fn timelapse_yields_one_frame_per_action() {
     assert!(
         images_match(frames.last().unwrap(), &final_image, 0),
         "last timelapse frame must equal the fully-replayed image"
+    );
+}
+
+/// A timelapse replays through the **document's** colour space, not through whichever
+/// one the engine running it happened to be in.
+///
+/// The channel layouts differ between spaces (§6.7), so replaying a Mixbox document
+/// on an Oklab engine is not a slightly-off picture but a stroke deposited through
+/// the wrong shaders and lit by the wrong media pass. Loading has always matched the
+/// space first; the timelapse had the preamble written out separately and did not, so
+/// the two are driven from the same fresh Oklab engine here — a timelapse that agrees
+/// with the load is one that adopted the file rather than approximated it.
+#[test]
+fn a_timelapse_replays_in_the_documents_color_space() {
+    let Some(mut original) = engine_or_skip_with(ColorSpaceId::Mixbox).map(on_blue) else {
+        return;
+    };
+    paint_two(&mut original);
+    let file = original.document_file();
+    let expected = original.render_to_image();
+
+    // Two fresh Oklab engines: one loads, one timelapses. Both must land on the
+    // Mixbox picture.
+    let mut loaded = engine_or_skip_blue().expect("adapter available");
+    loaded.load_document(&file);
+    assert!(
+        images_match(&loaded.render_to_image(), &expected, 0),
+        "loading already matches the document's colour space"
+    );
+
+    let mut lapsing = engine_or_skip_blue().expect("adapter available");
+    let mut frames = Vec::new();
+    lapsing.replay_timelapse(&file, |frame| frames.push(frame));
+    assert!(
+        images_match(frames.last().expect("frames"), &expected, 0),
+        "and so must a timelapse — same file, same preamble, same pixels"
     );
 }
 

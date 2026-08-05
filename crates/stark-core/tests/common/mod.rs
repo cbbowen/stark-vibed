@@ -110,7 +110,7 @@ pub fn engine_or_skip_sized_blue(size: Extent2) -> Option<Engine> {
     engine_or_skip_sized(size).map(on_blue)
 }
 
-fn on_blue(mut engine: Engine) -> Engine {
+pub fn on_blue(mut engine: Engine) -> Engine {
     engine.process(stark_core::command::DocCommand::SetBackground([
         BG.r as f32,
         BG.g as f32,

@@ -63,6 +63,13 @@ unrepresentable rather than fixed.
 
 ## §4 — Three near-copies of "adopt a file"
 
+**Status: done.** The dedup turned up two further drifts beyond the one already
+recorded below: the timelapse never matched the document's *colour space* either,
+so a Mixbox document replayed through Oklab's shaders; and it bound the ground
+once before the loop rather than per action, so a timelapse across a mid-document
+`SetSurface` went on lighting every later frame through the weave the piece
+started on.
+
 `load_document`, `join_collaboration` and `replay_timelapse` each run the same
 preamble: set `initial_surface`, `reset_document`, maybe `rebuild_gpu_for`,
 install assets, `load_surfaces`, replay, `resync_counters`,

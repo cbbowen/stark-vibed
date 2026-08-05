@@ -1769,24 +1769,61 @@ impl Engine {
         self.document_file().to_bytes()
     }
 
-    /// Replace the document by replaying a loaded file's action log. The full
-    /// undo timeline is available afterwards — undo-after-load (§8).
-    pub fn load_document(&mut self, file: &DocumentFile) {
-        // The surface the log starts from, before `reset_document` seeds with it.
-        // Replayed `SetSurface` actions move it from there (§6.4).
+    /// Empty this engine's document and install everything `file` needs **before**
+    /// its log can be replayed onto it — the shared preamble of opening a document,
+    /// joining a shared session, and running a timelapse.
+    ///
+    /// The order is the whole content, and every step of it is a replay *input*
+    /// rather than a preference:
+    ///
+    /// - the ground the log starts from, recorded before `reset_document` seeds the
+    ///   empty document with it; replayed `SetSurface` actions move it from there
+    ///   (§6.4);
+    /// - the document's colour space, since the channel layouts differ between
+    ///   spaces and a stroke replayed through the wrong shaders is a different
+    ///   painting (§6.7);
+    /// - the brush shapes strokes reference, and the grounds the log names, both
+    ///   before any stroke that needs them. A deposit is *stored*: unlike the media
+    ///   pass, which re-reads the ground every frame and rights itself the moment an
+    ///   image lands, no later arrival un-bakes a stroke laid against the flat
+    ///   stand-in (§6.6, §6.4).
+    ///
+    /// The three callers had this written out three times and it had already drifted
+    /// three ways — the timelapse was missing the initial ground, so every frame
+    /// before the log's first `SetSurface` deposited against the wrong weave; it was
+    /// missing the colour space too, so a Mixbox document replayed through Oklab's
+    /// shaders; and it swallowed a broken brush asset silently where the other two
+    /// said so. A sequence whose *order* is the correctness argument is a sequence to
+    /// write once.
+    ///
+    /// A ground or a shape that fails to install is logged and skipped rather than
+    /// fatal: the document still opens, degraded, which is the same bargain either
+    /// asset gets.
+    fn adopt(&mut self, file: &DocumentFile) {
         self.initial_surface = file.canvas.surface;
         self.reset_document();
-        // Match the document's color space before replaying (§6.7).
         if file.canvas.color_space != self.color_space.id() {
             self.rebuild_gpu_for(file.canvas.color_space);
         }
-        // Brush assets must be available before replaying strokes that use them.
         for (_, bytes) in &file.assets {
             if let Err(e) = self.apply.assets.insert_bytes(bytes) {
-                eprintln!("skipping unreadable brush asset: {e}");
+                tracing::warn!("skipping unreadable brush asset: {e}");
             }
         }
-        self.load_surfaces(file);
+        for (id, bytes) in &file.surfaces {
+            if let Err(e) = self.accept_surface(*id, bytes) {
+                tracing::warn!("skipping a canvas ground this document names: {e}");
+            }
+        }
+        // The empty document is on the log's initial ground, so bind it — a timelapse
+        // renders its first frame before any action has moved it.
+        self.apply_document_surface();
+    }
+
+    /// Replace the document by replaying a loaded file's action log. The full
+    /// undo timeline is available afterwards — undo-after-load (§8).
+    pub fn load_document(&mut self, file: &DocumentFile) {
+        self.adopt(file);
         // Replay only the *effective* sequence: a file saved from a shared
         // session is the full log, including `Undo` actions and the actions
         // they suppress (§12.3). A solo load flattens those away.
@@ -1796,27 +1833,6 @@ impl Engine {
         self.resync_counters(&file.actions);
         // Whatever the replayed log left the document on.
         self.apply_document_surface();
-    }
-
-    /// Install a file's bundled canvas grounds, **before** its log is replayed
-    /// (§6.4, §8).
-    ///
-    /// The ordering is the whole point, and it is the same one the brush assets
-    /// above are subject to: the tooth gates a stroke's deposit by the ground under
-    /// it, so a ground that arrives after the stroke that needed it arrives too late.
-    /// Unlike the media pass — which re-reads the ground every frame and rights
-    /// itself the moment an image lands — a deposit is *stored*, and no later arrival
-    /// un-bakes it.
-    ///
-    /// A ground that fails to install is logged and skipped rather than fatal: the
-    /// document still opens, on the flat stand-in, which is the same degradation a
-    /// missing brush image gets.
-    fn load_surfaces(&mut self, file: &DocumentFile) {
-        for (id, bytes) in &file.surfaces {
-            if let Err(e) = self.accept_surface(*id, bytes) {
-                tracing::warn!("skipping a canvas ground this document names: {e}");
-            }
-        }
     }
 
     /// Decode and load a container produced by [`Engine::save_bytes`].
@@ -1834,20 +1850,14 @@ impl Engine {
     /// signature, not to the replay.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn replay_timelapse(&mut self, file: &DocumentFile, mut on_frame: impl FnMut(RgbaImage)) {
-        // The ground the log starts from, before `reset_document` seeds with it —
-        // the same first step `load_document` takes, and it was missing here: a
-        // timelapse replayed onto whatever ground this engine happened to be on
-        // rather than the one the file names, so every frame before the log's first
-        // `SetSurface` was deposited against the wrong weave (§6.4).
-        self.initial_surface = file.canvas.surface;
-        self.reset_document();
-        for (_, bytes) in &file.assets {
-            let _ = self.apply.assets.insert_bytes(bytes);
-        }
-        self.load_surfaces(file);
-        self.apply_document_surface();
+        self.adopt(file);
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
+            // Per action, not once before the loop: a replayed `SetSurface` moves the
+            // ground the *media pass* samples as well as the one the deposit reads, so
+            // a timelapse across a mid-document switch would otherwise go on lighting
+            // every later frame through the weave the piece started on.
+            self.apply_document_surface();
             on_frame(self.render_to_image());
         }
         self.resync_counters(&file.actions);
@@ -2034,22 +2044,11 @@ impl Engine {
     pub fn join_collaboration(&mut self, file: &DocumentFile, identity: impl Into<Identity>) {
         let identity = identity.into();
         let actor = identity.actor;
-        // The surface the shared log starts from; replayed `SetSurface` actions
-        // move it from there, exactly as in `load_document` (§6.4).
-        self.initial_surface = file.canvas.surface;
-        self.reset_document();
-        if file.canvas.color_space != self.color_space.id() {
-            self.rebuild_gpu_for(file.canvas.color_space);
-        }
-        for (_, bytes) in &file.assets {
-            if let Err(e) = self.apply.assets.insert_bytes(bytes) {
-                tracing::warn!("skipping unreadable brush asset: {e}");
-            }
-        }
-        // The grounds the shared log names, before it is replayed — see
-        // [`Self::load_surfaces`]. A joiner replays the whole painting, so this is
-        // where getting it wrong costs the most.
-        self.load_surfaces(file);
+        // Everything the shared log needs before it can be replayed, in the order
+        // that makes it a replay rather than an approximation ([`Self::adopt`]). A
+        // joiner replays the whole painting, so this is where getting it wrong costs
+        // the most.
+        self.adopt(file);
         let ctx = &mut self.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
         self.timeline = Box::new(ReplicatedTimeline::from_log(
