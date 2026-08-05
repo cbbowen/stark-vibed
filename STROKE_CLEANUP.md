@@ -217,7 +217,34 @@ links to private item" on `safe_frozen` and `StrokeCarry::dirty` — those links
 resolve, they just point into the module's own internals. Worth a look if item 5
 ever moves `safe_frozen` out of `mod.rs`.
 
-## 10. CPU tests for the plan builders
+## 10. CPU tests for the plan builders — **done**
+
+Nine unit tests in `dynamics.rs`, none needing an adapter, so they run in CI
+whether or not there is a GPU. Two extractions made the arithmetic reachable:
+`snapshot_size` and `dispatch_rect` are now free functions, with `PlanCtx::rect`
+delegating.
+
+Both load-bearing tests were **mutation-checked** rather than merely observed to
+pass:
+
+* Reintroducing the historical bug — clamping a bleed window's start to the
+  segments in hand instead of walking back along the crossing segment's arc —
+  fails `bleed_firings_do_not_depend_on_where_the_stroke_was_cut`.
+* Shaving `snapshot_size`'s `+2` fires `dispatch_rect`'s assert through
+  `every_dispatch_rect_fits_the_scratch_its_piece_sized` ("a 5x5 dispatch rect
+  overruns the 4 snapshot scratch").
+
+The two cross-file invariants are now asserted by reading
+`stark_shaders::dynamics()`, plus a third that guards item 1's contract: the
+shader's `struct Stamp` must have nine `vec4` lanes and `SLOT` must be those nine.
+
+One thing that could not be checked: `WICK_RATE` is absent from the linked WGSL,
+because the WESL linker drops constants that survive only in prose and the shader
+computes with `WICK_KERNEL` instead. So the quantum's derivation is asserted
+against `WICK_HALF` with the rate written on the host side — which still catches
+the realistic change, widening the stencil, and is recorded on the test.
+
+### Original notes
 
 `bleed_fires`, `settle_tangent` and `dynamics_plan`'s rect math are pure,
 float-deterministic, and covered only through full GPU renders in

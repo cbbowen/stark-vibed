@@ -704,14 +704,7 @@ impl<'a> DynamicsRun<'a> {
     /// per-segment rect then rounds outward by a texel each side.
     fn snapshot_scratch(&mut self, segments: &[Segment], fires: &[(usize, Segment)]) -> Snapshot {
         let device = &self.r.ctx.device;
-        let dmax = segments
-            .iter()
-            .chain(fires.iter().map(|(_, f)| f))
-            .fold(1.0f32, |m, s| {
-                let (lo, hi) = coverage_bounds(s);
-                m.max(hi.x - lo.x).max(hi.y - lo.y)
-            });
-        let size = (dmax + 3.0).ceil() as u32 + 2;
+        let size = snapshot_size(segments, fires);
         let mut under_tex = |label: &'static str| {
             scoped_view(
                 device,
@@ -1327,6 +1320,56 @@ struct PlanCtx<'a> {
 /// sampling just outside its own texel still lands inside the rect.
 const RECT_MARGIN: f32 = 1.5;
 
+/// The snapshot scratch's square for a piece: large enough for any one slot's
+/// [`dispatch_rect`], measured from the coverage boxes rather than bounded
+/// analytically, since `coverage_bounds` is already the exact box and a curved sweep
+/// has no closed-form "worst rotation" to fall back on.
+///
+/// `+3` for the [`RECT_MARGIN`] a rect adds each side, `+2` because a rect then floors
+/// its origin and rounds its far edge outward, a texel each way. Split out from
+/// [`DynamicsRun::snapshot_scratch`] so the fit against `dispatch_rect` — the argument
+/// those two numbers *are* — can be checked without a GPU (`tests`).
+fn snapshot_size(segments: &[Segment], fires: &[(usize, Segment)]) -> u32 {
+    let dmax = segments
+        .iter()
+        .chain(fires.iter().map(|(_, f)| f))
+        .fold(1.0f32, |m, s| {
+            let (lo, hi) = coverage_bounds(s);
+            m.max(hi.x - lo.x).max(hi.y - lo.y)
+        });
+    (dmax + 3.0).ceil() as u32 + 2
+}
+
+/// One slot's dispatch rectangle over a canvas-space coverage box: its integral origin
+/// in region texels, and the workgroup counts covering it.
+///
+/// The slot's own box rather than the piece-wide worst case, so an axis-aligned sweep
+/// dispatches ~4·r² threads where a square would spend ~10·r². Texels the rounding adds
+/// beyond the box read zero exposure and fall out of `deposit` untouched.
+///
+/// Every rect fits `dsize` by construction, because [`snapshot_size`] was measured from
+/// these same boxes with room for this margin and this rounding — asserted rather than
+/// left implied, since the `min` below would otherwise clip a too-large rect into a
+/// silently truncated footprint.
+fn dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2, dsize: u32) -> Rect {
+    let lo = lo - region_origin - Vec2::splat(RECT_MARGIN);
+    let hi = hi - region_origin + Vec2::splat(RECT_MARGIN);
+    let origin = Vec2::new(lo.x.floor(), lo.y.floor());
+    let (w, h) = (
+        ((hi.x - origin.x).ceil() as u32) + 1,
+        ((hi.y - origin.y).ceil() as u32) + 1,
+    );
+    debug_assert!(
+        w <= dsize && h <= dsize,
+        "a {w}x{h} dispatch rect overruns the {dsize} snapshot scratch",
+    );
+    let (w, h) = (w.min(dsize), h.min(dsize));
+    Rect {
+        origin,
+        groups: (w.div_ceil(8), h.div_ceil(8)),
+    }
+}
+
 /// One slot's dispatch rectangle.
 struct Rect {
     /// The rect's top-left in region texels, integral — the `d.xy` a slot carries.
@@ -1336,36 +1379,9 @@ struct Rect {
 }
 
 impl PlanCtx<'_> {
-    /// The dispatch rect for a footprint's canvas-space coverage box.
-    ///
-    /// The slot's own box rather than the piece-wide worst case, so an axis-aligned
-    /// sweep dispatches ~4·r² threads where a square would spend ~10·r². Texels the
-    /// rounding adds beyond the box read zero exposure and fall out of `deposit`
-    /// untouched.
-    ///
-    /// Every rect fits the snapshot scratch by construction, because
-    /// [`DynamicsRun::snapshot_scratch`] sized it from these same boxes with room for
-    /// this margin and this rounding — asserted rather than left implied, since the
-    /// `min` below would otherwise clip a too-large rect into a silently truncated
-    /// footprint.
+    /// [`dispatch_rect`] against this piece's origin and snapshot square.
     fn rect(&self, lo: Vec2, hi: Vec2) -> Rect {
-        let lo = lo - self.region_origin - Vec2::splat(RECT_MARGIN);
-        let hi = hi - self.region_origin + Vec2::splat(RECT_MARGIN);
-        let origin = Vec2::new(lo.x.floor(), lo.y.floor());
-        let (w, h) = (
-            ((hi.x - origin.x).ceil() as u32) + 1,
-            ((hi.y - origin.y).ceil() as u32) + 1,
-        );
-        debug_assert!(
-            w <= self.dsize && h <= self.dsize,
-            "a {w}x{h} dispatch rect overruns the {} snapshot scratch",
-            self.dsize,
-        );
-        let (w, h) = (w.min(self.dsize), h.min(self.dsize));
-        Rect {
-            origin,
-            groups: (w.div_ceil(8), h.div_ceil(8)),
-        }
+        dispatch_rect(lo, hi, self.region_origin, self.dsize)
     }
 }
 
@@ -2290,4 +2306,317 @@ pub(super) fn build_integrate_pipeline(
         cache: None,
     });
     (pipeline, bgl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::Vec2;
+
+    /// A straight segment of `length` from `start` along `dir`, at arc length `dist`.
+    /// The plan builders read the frame, the radius and the arc clock; the paint rates
+    /// are left at zero except where a test sets one, so a value that mattered would
+    /// have to be given deliberately.
+    fn seg(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Segment {
+        Segment {
+            start,
+            dir,
+            curvature: 0.0,
+            radius,
+            length,
+            orient: 0.0,
+            dist,
+            add: 0.0,
+            lift: 0.0,
+            deposit: 0.0,
+            bleed: 0.0,
+            tooth: 0.0,
+        }
+    }
+
+    /// `n` straight segments of `len` each, running +x from the origin — a stroke cut
+    /// the way the flattener would cut a steady drag.
+    fn run(n: usize, len: f32, radius: f32) -> Vec<Segment> {
+        (0..n)
+            .map(|i| {
+                let d = i as f32 * len;
+                seg(Vec2::new(d, 0.0), Vec2::new(1.0, 0.0), len, radius, d)
+            })
+            .collect()
+    }
+
+    // --- the bleed cadence -------------------------------------------------
+
+    /// **The claim `bleed_fires` is built on**: which windows fire, and what each one
+    /// sweeps, is a pure function of the record — not of where the renderer happened to
+    /// cut the stroke into pieces or ranges.
+    ///
+    /// This is a `preview == committed` property (§1.3) in the one place it cannot be
+    /// repainted. A live tail always starts at a span boundary while the commit renders
+    /// the whole stroke from zero, so if a window came out shorter for one than the
+    /// other, a bleeding stroke would visibly lighten the moment the pointer came up —
+    /// which it did, before the window learned to walk back along the crossing
+    /// segment's own arc instead of looking its start up among the segments in hand.
+    ///
+    /// Checked at every cut point rather than one, since the interesting cuts are
+    /// exactly the ones that land mid-window.
+    #[test]
+    fn bleed_firings_do_not_depend_on_where_the_stroke_was_cut() {
+        // Segments well under the quantum (0.5 · radius = 5px), so windows routinely
+        // reach back over several of them and a cut can land inside one.
+        let all = run(40, 1.5, 10.0);
+        let whole: Vec<_> = bleed_fires(0.4, &all)
+            .into_iter()
+            .map(|(i, f)| (i, f.start, f.length, f.dist))
+            .collect();
+        assert!(
+            whole.len() > 3,
+            "the case does not fire often enough to be interesting: {}",
+            whole.len()
+        );
+
+        for cut in 1..all.len() {
+            let mut split: Vec<_> = bleed_fires(0.4, &all[..cut])
+                .into_iter()
+                .map(|(i, f)| (i, f.start, f.length, f.dist))
+                .collect();
+            split.extend(
+                bleed_fires(0.4, &all[cut..])
+                    .into_iter()
+                    .map(|(i, f)| (i + cut, f.start, f.length, f.dist)),
+            );
+            assert_eq!(
+                split, whole,
+                "cutting after segment {cut} changed the firings"
+            );
+        }
+    }
+
+    /// A brush that does not bleed fires nothing at all — the early-out is exact, and
+    /// is what lets every non-bleeding stroke keep the no-bleed path bit-for-bit.
+    #[test]
+    fn a_brush_that_does_not_bleed_fires_nothing() {
+        assert!(bleed_fires(0.0, &run(40, 1.5, 10.0)).is_empty());
+    }
+
+    /// **Why the cadence exists at all**: a firing's window is a half-radius of travel
+    /// however finely the path was cut, so its exposure is a well-conditioned prefix
+    /// difference rather than the f16 noise a per-segment flux would be.
+    ///
+    /// A hand that draws slowly is fitted at a control point per pointer sample — the
+    /// repro that prompted this carried 177 knots over 68 px — and at that cut a texel's
+    /// per-segment flux lands under the f16 ULP of the height it is editing, so every
+    /// store either snaps it away or ratchets a whole ULP. One firing moves what those
+    /// micro-segments would each have tried to move, in a step far above the floor.
+    #[test]
+    fn a_firing_sweeps_its_own_quantum_however_finely_the_path_was_cut() {
+        let radius = 20.0;
+        let quantum = BLEED_TRAVEL_QUANTUM * radius;
+        // 0.39 px a segment — the repro's mean span.
+        let fine = run(400, 0.39, radius);
+        let fires = bleed_fires(0.4, &fine);
+        assert!(fires.len() > 5, "only {} firings", fires.len());
+        for (_, f) in &fires {
+            assert!(
+                (f.length - quantum).abs() < 0.5,
+                "a firing swept {} of the {quantum} its cadence carries",
+                f.length,
+            );
+            assert!(
+                f.length > 25.0 * 0.39,
+                "the window is segment-sized, which is the regime the cadence exists \
+                 to leave",
+            );
+        }
+    }
+
+    // --- the pen-up frame --------------------------------------------------
+
+    /// [`settle_tangent`] must survive the way a real pen-up arrives: a hand pauses
+    /// before it lifts, so the last samples cluster at one point and the flattener
+    /// turns them into edges whose chord is a rounding error and whose direction is
+    /// therefore arbitrary.
+    ///
+    /// Nothing else in the loop notices — a segment of no length deposits nothing, so
+    /// its direction never reaches a pixel. The settle is the exception: it takes a
+    /// whole tip's worth of exchange from that one frame, and its `min(owed, received)`
+    /// lens is elongated *along* it, so a wrong direction lays a tip-shaped disc across
+    /// the stroke instead of along it. That is what a wandering fade-out cap was.
+    #[test]
+    fn the_settle_frame_ignores_a_paused_hands_arbitrary_last_edges() {
+        let radius = 12.0;
+        // A straight drag along +y…
+        let mut segs: Vec<Segment> = (0..20)
+            .map(|i| {
+                let d = i as f32 * 2.0;
+                seg(Vec2::new(0.0, d), Vec2::new(0.0, 1.0), 2.0, radius, d)
+            })
+            .collect();
+        let end = Vec2::new(0.0, 40.0);
+        // …then the pause: four degenerate edges at the stop, pointing the four ways
+        // the fitter actually produced (0°, −90°, 90°, 180°).
+        for dir in [
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, -1.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(-1.0, 0.0),
+        ] {
+            segs.push(seg(end, dir, 1e-6, radius, 40.0));
+        }
+
+        let tan = settle_tangent(&segs, end);
+        assert!(
+            (tan - Vec2::new(0.0, 1.0)).length() < 1e-3,
+            "the settle frame followed a degenerate last edge: {tan:?}"
+        );
+        // And the last segment's own direction — what this replaced — really is wrong
+        // here, so the assertion above is not passing by luck.
+        assert_eq!(segs.last().unwrap().dir, Vec2::new(-1.0, 0.0));
+    }
+
+    /// A click has no travel to measure a direction over, and still gets a real frame:
+    /// the dab's own, which `generate_segments_in` gave it deliberately.
+    #[test]
+    fn a_click_settles_along_its_dab() {
+        let dab = seg(Vec2::ZERO, Vec2::new(1.0, 0.0), 6.0, 10.0, 0.0);
+        assert_eq!(settle_tangent(&[dab], Vec2::ZERO), Vec2::new(1.0, 0.0));
+    }
+
+    // --- the dispatch rects fit the scratch --------------------------------
+
+    /// Every dispatch rect a piece builds fits the snapshot scratch that piece sized.
+    ///
+    /// The two are related by an argument spread over four numbers — [`snapshot_size`]'s
+    /// `+3` and `+2` against [`dispatch_rect`]'s margin and its rounding — and the
+    /// `min` in `dispatch_rect` means getting it wrong clips a footprint rather than
+    /// failing. `dispatch_rect` asserts the fit; this is what runs the assert over
+    /// shapes chosen to stress it, on the CPU, with no adapter needed.
+    #[test]
+    fn every_dispatch_rect_fits_the_scratch_its_piece_sized() {
+        // Sub-pixel origins are the point: the rect floors its origin and rounds its
+        // far edge out, so the worst case is a box straddling texel boundaries at both
+        // ends. Curvature is swept too, since a bent sweep bows a sagitta out of its box.
+        for &radius in &[0.5f32, 1.0, 7.3, 40.0, 120.0] {
+            for &length in &[0.0f32, 0.37, 4.0, 60.0] {
+                for &kappa in &[0.0f32, 0.004, -0.02] {
+                    for &frac in &[0.0f32, 0.499, 0.5, 0.999] {
+                        let start = Vec2::new(frac, -frac);
+                        let mut s = seg(start, Vec2::new(1.0, 0.0), length, radius, 0.0);
+                        s.curvature = kappa;
+                        let segments = [s];
+                        let dsize = snapshot_size(&segments, &[]);
+
+                        let (lo, hi) = coverage_bounds(&s);
+                        // Region origins that put the box at both ends of the region.
+                        for &origin in &[Vec2::ZERO, lo.floor(), Vec2::new(-13.7, 91.2)] {
+                            dispatch_rect(lo, hi, origin, dsize);
+                            // The pen-up's square, which is sized from the same scratch
+                            // but built from the tip alone rather than the swept box.
+                            let end = crate::path::arc_at(s.start, s.dir, s.curvature, s.length).0;
+                            dispatch_rect(
+                                end - Vec2::splat(radius),
+                                end + Vec2::splat(radius),
+                                origin,
+                                dsize,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A bleed window can be the largest footprint in its piece — it sweeps up to a
+    /// half-radius where the piece's own segments may be sub-pixel — so the scratch has
+    /// to be sized with the firings in it, not just the segments.
+    #[test]
+    fn the_scratch_is_sized_with_the_bleed_windows_in_it() {
+        // Long enough to cross the 0.5 · 30 = 15 px cadence, cut far finer than it.
+        let segments = run(200, 0.2, 30.0);
+        let fires = bleed_fires(0.5, &segments);
+        assert!(!fires.is_empty(), "no firing to size against");
+        let with = snapshot_size(&segments, &fires);
+        let without = snapshot_size(&segments, &[]);
+        assert!(
+            with > without,
+            "a firing's window did not widen the scratch ({without} -> {with})"
+        );
+        for (_, f) in &fires {
+            let (lo, hi) = coverage_bounds(f);
+            dispatch_rect(lo, hi, Vec2::ZERO, with);
+        }
+    }
+
+    // --- the host and the shader agree -------------------------------------
+
+    /// The value of a `const NAME` in some WESL source, as an `f64`. Enough of a parser
+    /// for the handful of scalar constants below; anything it cannot find is a failed
+    /// test rather than a silently skipped one.
+    fn wesl_const(src: &str, name: &str) -> f64 {
+        let at = src
+            .find(&format!("const {name}:"))
+            .unwrap_or_else(|| panic!("the shader has no `const {name}`"));
+        let rest = &src[at..];
+        let eq = rest.find('=').expect("a const has a value");
+        let end = rest.find(';').expect("a const ends");
+        rest[eq + 1..end]
+            .trim()
+            .trim_end_matches(['u', 'i', 'f'])
+            .parse()
+            .unwrap_or_else(|e| panic!("`const {name}` is not a scalar: {e}"))
+    }
+
+    /// Two numbers the host and `dynamics.wesl` **must** agree on, asserted rather than
+    /// asked for in a comment.
+    ///
+    /// Both fail silently if broken: a mismatched `BAKE_RES` scans the wrong width, and
+    /// a stencil widened without moving the host's cadence smooths by the wrong amount
+    /// per unit travel. Neither crashes; both just render subtly wrong. Reading them
+    /// out of the shader costs nothing and needs no adapter, so this holds in CI
+    /// whether or not there is a GPU.
+    ///
+    /// `WICK_RATE` — the other half of the quantum's derivation — cannot be read: the
+    /// WESL linker drops constants that survive only in prose, and the shader computes
+    /// with `WICK_KERNEL` rather than with the rate. So the 4 below is the one number
+    /// still trusted across the boundary, and it is written on both sides
+    /// (`WICK_TRAVEL_QUANTUM`, and `dynamics.wesl`'s `WICK_RATE`). What the assertion
+    /// does catch is the realistic change: widening the stencil.
+    #[test]
+    fn the_host_and_the_shader_agree_on_the_loops_constants() {
+        let src = stark_shaders::dynamics();
+
+        assert_eq!(
+            f64::from(BAKE_RES),
+            wesl_const(src, "BAKE_RES"),
+            "the bake's scan width and the bake textures' side have diverged",
+        );
+
+        const WICK_RATE: f64 = 4.0;
+        let half = wesl_const(src, "WICK_HALF");
+        assert_eq!(
+            f64::from(WICK_TRAVEL_QUANTUM) * WICK_RATE,
+            half,
+            "the wick fires every {WICK_TRAVEL_QUANTUM} radii but its stencil is now \
+             {half} wide — the smoothing per unit travel moved with it",
+        );
+    }
+
+    /// The `Stamp` uniform is nine `vec4`s on both sides of the boundary.
+    ///
+    /// [`SLOT`] pins the Rust struct's size, and the layout's `min_binding_size` is
+    /// taken from it — but nothing on this side can see the WESL declaration, which is
+    /// the half that decides how the lanes are *read*. Appending a tenth lane to one
+    /// side is a wire-format break of exactly the kind §8 warns about for postcard,
+    /// and it would show up as every slot after the first reading its neighbour's tail.
+    #[test]
+    fn the_stamp_struct_has_the_same_nine_lanes_on_both_sides() {
+        let src = stark_shaders::dynamics();
+        let at = src
+            .find("struct Stamp {")
+            .expect("the shader declares Stamp");
+        let body = &src[at..at + src[at..].find('}').expect("Stamp is closed")];
+        let lanes = body.matches("vec4<f32>").count();
+        assert_eq!(lanes, 9, "the shader's Stamp has {lanes} vec4 lanes");
+        assert_eq!(SLOT, lanes * 16, "the Rust Stamp is not those nine lanes");
+    }
 }
