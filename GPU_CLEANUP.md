@@ -13,7 +13,7 @@ the module's own stated conventions applied to code that predates them.
 
 Three passes, separable and in order of value per unit risk:
 
-- **(a) Latent breaks** — small, high value, no pixels move. §1.
+- **(a) Latent breaks** — small, high value, no pixels move. §1. **Done.**
 - **(b) Helper extraction** — large, purely mechanical, goldens bit-identical. §3.
 - **(c) `composite.rs` split** — structural, no behaviour change. §2.
 
@@ -21,7 +21,18 @@ Run `cargo test --workspace` once after each pass, not after each edit.
 
 ---
 
-## 1. Latent breaks — pass (a)
+## 1. Latent breaks — pass (a) — **done**
+
+537 passed, 0 failed, including 25 goldens compared against real pixels (no
+`STARK_SKIP_GOLDEN`, no adapter skip) — so the pass moved nothing visible, which
+is what it claimed.
+
+Two findings were confirmed by the fix rather than by inspection: the three
+drifted byte counts in §1.2 only compiled once corrected, and the scratch-aux
+omission in §1.1 was real — and slightly worse than described below. The pool had
+no free list for that format *at all*; scratch aux was being served out of the
+colour format's, because the two are the same enum variant and therefore the same
+`HashMap` key. Correct today, and correct for the wrong reason.
 
 ### 1.1 The tile pool's format contract is one coincidence from panicking
 

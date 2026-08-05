@@ -17,7 +17,6 @@ use crate::document::{
     ShapeAction, StrokeRecord, Timeline, TimelineStats, Tool, effective_actions,
 };
 use crate::geom::{Extent2, TileCoord, ViewTransform};
-use crate::gpu::tile::MASK_FORMAT;
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, Environment,
     EnvironmentId, FillRenderer, GpuContext, GroupContent, MatteDraw, Offscreen, Registry,
@@ -2952,12 +2951,10 @@ fn build_gpu(
         environment,
         selection,
     } = b;
-    // Selection masks are pooled and recycled like paint (§6.8), so their
-    // format joins the pool's free lists.
-    let pool = TilePool::new(
-        gpu.clone(),
-        [cs.color_format(), cs.aux_format(), MASK_FORMAT],
-    );
+    // The colour space's two formats — the only ones this call site knows. The
+    // pool unions in its own (the selection mask, the wide scratch aux), so
+    // neither can be forgotten here (`TilePool::new`).
+    let pool = TilePool::new(gpu.clone(), [cs.color_format(), cs.aux_format()]);
     let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone());
     let compositor_pipeline = CompositorPipeline::new(
         gpu,

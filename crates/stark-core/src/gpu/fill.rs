@@ -26,14 +26,16 @@ use crate::document::selection::{Selection, SelectionMode, SelectionOp, Selectio
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
+use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `Fill` in `fill.wesl` (32 bytes).
+/// Mirrors `Fill` in `fill.wesl`.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct FillUniform {
     c: [f32; 4], // latent .xyz, per-unit opacity .w
     p: [f32; 4], // height at full coverage, _, _, _
 }
+mirrors_wesl!(FillUniform, 32);
 
 #[derive(Clone)]
 pub struct FillRenderer {

@@ -26,8 +26,9 @@ use crate::document::selection::{
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
+use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `Params` in `selection.wesl` (48 bytes).
+/// Mirrors `Params` in `selection.wesl`.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MaskUniform {
@@ -35,6 +36,7 @@ struct MaskUniform {
     b: [f32; 4], // shape parameters
     c: [f32; 4], // kind, mode, edge count, _
 }
+mirrors_wesl!(MaskUniform, 48);
 
 /// Mirrors `Region` in `mask_region.wesl`.
 #[repr(C)]
@@ -42,6 +44,7 @@ struct MaskUniform {
 struct RegionUniform {
     a: [f32; 4], // region size .xy (px), TILE_TEX, _
 }
+mirrors_wesl!(RegionUniform, 16);
 
 /// Per-tile instance for the region gather: the tile texture's top-left in region px.
 #[repr(C)]

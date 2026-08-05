@@ -14,8 +14,10 @@ use crate::colorspace::ColorSpace;
 use crate::document::StrokeRecord;
 use std::collections::BTreeSet;
 
-use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, Vec2};
+use crate::geom::{TileCoord, Vec2};
+use crate::gpu::composite::ViewUniform;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
+use crate::gpu::wesl::mirrors_wesl;
 
 use super::budget::{BLEED_TRAVEL_QUANTUM, TAU_PER_PASS, WICK_TRAVEL_QUANTUM, flatten_tolerance};
 use super::segments::{
@@ -42,22 +44,6 @@ const BAKE_RES: u32 = 128;
 /// *difference* of two prefix sums (§6.2).
 const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
-/// Mirrors `View` in `composite.wesl` — **exactly**, including the members this
-/// path has no use for: it binds its own buffer to the same shader, so a mismatch is
-/// a wgpu validation error rather than anything the type system would catch.
-///
-/// Used to composite the base into a 1:1 region texture for the stamp loop.
-/// `st` is the canvas→region-NDC linear map, column-major; the screen view can be
-/// turned and mirrored (§18.1.2), but this region never is — it is a
-/// working buffer aligned to the canvas, so the map stays diagonal.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct ViewUniform {
-    st: [f32; 4],    // column-major 2x2: (m00, m01), (m10, m11)
-    xlate: [f32; 4], // translate.xy, unused zw
-    misc: [f32; 4],  // tile_size, uv_scale, uv_bias, _
-}
-
 /// Per-tile instance for the region composite: canvas origin + layer opacity.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -72,6 +58,7 @@ struct TileInstance {
 struct SliceUniform {
     offset: [f32; 4],
 }
+mirrors_wesl!(SliceUniform, 16);
 
 /// One tile's window into the write-back's offset buffer — the `min_binding_size` the
 /// slice layout declares, taken from the struct rather than written down.
@@ -126,7 +113,7 @@ struct Stamp {
 /// declares — both of which have to be `Stamp`'s own size, so they are taken from
 /// it rather than written down. The assert is what pins the shader-side `9 × vec4`.
 const SLOT: usize = std::mem::size_of::<Stamp>();
-const _: () = assert!(SLOT == 144);
+mirrors_wesl!(Stamp, 144);
 
 /// One slot of the sequential swept-exchange loop (§6.2), and the dispatches it
 /// stands for.
@@ -585,20 +572,20 @@ impl<'a> DynamicsRun<'a> {
         let color = region_tex("stark dynamics region color");
         let aux = region_tex("stark dynamics region aux");
 
-        // Composite pass: base tiles → region, 1:1 with canvas px.
+        // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
+        // own `ViewUniform` — this path binds its own buffer to the very same
+        // `composite.wesl`, so it wants that struct rather than a second declaration
+        // of it that a comment asks to be kept in step (§6.2).
         let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
-        let view = ViewUniform {
+        let view = ViewUniform::new(
             // Diagonal: the region is axis-aligned with the canvas whatever angle the
             // *screen* view happens to be at.
-            st: [sx, 0.0, 0.0, sy],
-            xlate: [
-                -region_origin.x * sx - 1.0,
-                -region_origin.y * sy + 1.0,
-                0.0,
-                0.0,
-            ],
-            misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, 0.0],
-        };
+            [sx, 0.0, 0.0, sy],
+            Vec2::new(-region_origin.x * sx - 1.0, -region_origin.y * sy + 1.0),
+            // Zoom reaches only the selection outline, and no chrome is drawn into a
+            // working region — this is a buffer the loop evolves, not a picture.
+            0.0,
+        );
         let view_buf = self.piece.buffer(device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: Some("stark dynamics region view"),

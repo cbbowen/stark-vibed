@@ -73,16 +73,31 @@ struct GpuTex {
 }
 
 impl Drop for GpuTex {
+    /// Return the texture to its format's free list. **Nothing in here may panic.**
+    /// A tile handle is as likely to be dropped by an unwind as by an ordinary
+    /// scope exit — a stroke's handles unwind with it — and a panic that starts in
+    /// a `Drop` during an unwind is an abort, not a caught failure.
     fn drop(&mut self) {
-        if let Some(pool) = self.pool.upgrade()
-            && let Ok(mut inner) = pool.lock()
-            && let Some(t) = self.tex.take()
-        {
-            inner.free.push(t);
-            *inner
-                .sources
-                .get_mut(&self.source)
-                .expect("source not recorded") -= 1;
+        let Some(pool) = self.pool.upgrade() else {
+            return; // the pool is gone; the texture goes with it
+        };
+        // Recovered from rather than propagated, because the alternative is a leak.
+        // A poisoned lock means some other thread panicked holding it; the state it
+        // guards is a free list and a counter, and neither can be left saying
+        // something a return would violate. Taking `Err`'s inner guard hands the
+        // texture back; the `if let Ok(..)` this replaced dropped it on the floor —
+        // never recycled, and `capacity` never told, so the pool quietly grew a
+        // replacement for a texture it still owned.
+        let mut inner = pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(tex) = self.tex.take() else { return };
+        inner.free.push(tex);
+        // Saturating rather than asserted. Every acquire records its source, so a
+        // missing entry is unreachable — and an unreachable branch is not worth the
+        // abort that reaching it from a `Drop` would cost.
+        if let Some(live) = inner.sources.get_mut(&self.source) {
+            *live = live.saturating_sub(1);
         }
     }
 }
@@ -207,8 +222,25 @@ pub struct TilePool {
 }
 
 impl TilePool {
+    /// A pool serving `formats` — the colour space's `color` and `aux` (§6.7), which
+    /// are the only formats a caller knows — **plus the two the pool defines itself**.
+    ///
+    /// [`MASK_FORMAT`] and [`SCRATCH_AUX_FORMAT`] are unioned in here rather than
+    /// asked of the caller, because they are this module's constants and a call site
+    /// that had to remember them could forget one. That is not hypothetical: the
+    /// scratch aux was omitted, and the omission was invisible only because
+    /// `SCRATCH_AUX_FORMAT` happens to equal both colour spaces' `color_format` —
+    /// the very coincidence [`StrokeRenderer::acquire_tile`] warns about one level
+    /// down. The first space to choose otherwise would have met `acquire_tex`'s
+    /// "unsupported format" panic on its first stroke.
+    ///
+    /// [`StrokeRenderer::acquire_tile`]: crate::gpu::StrokeRenderer
     pub fn new(ctx: GpuContext, formats: impl IntoIterator<Item = wgpu::TextureFormat>) -> Self {
-        let format_pools = formats.into_iter().map(|f| (f, Arc::default())).collect();
+        let format_pools = formats
+            .into_iter()
+            .chain([MASK_FORMAT, SCRATCH_AUX_FORMAT])
+            .map(|f| (f, Arc::default()))
+            .collect();
         Self { ctx, format_pools }
     }
 

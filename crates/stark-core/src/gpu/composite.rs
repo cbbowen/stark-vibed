@@ -44,11 +44,19 @@ use crate::gpu::environment::Environment;
 use crate::gpu::pigment::PigmentLut;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 use crate::gpu::tile::TilePairHandle;
+use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `View` in `composite.wesl` and `overlay.wesl` (32 bytes).
+/// Mirrors `View` in `composite.wesl` and `overlay.wesl`.
+///
+/// **The one definition of that struct on this side of the boundary.** The
+/// brush-dynamics loop composites its 1:1 canvas region through the very same
+/// `composite.wesl`, and used to declare a second, identical `ViewUniform` of its
+/// own with a doc comment asking that the two match exactly — which is a job for
+/// the compiler, not for a sentence. It builds one of these through
+/// [`ViewUniform::new`] instead.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct ViewUniform {
+pub(crate) struct ViewUniform {
     // The canvas px -> NDC linear map, column-major (`mat2x2` in the shaders). A
     // full 2x2 rather than a scale pair because the view can be turned and mirrored
     // (§18.1.2); upright and unmirrored it is diagonal, and every
@@ -59,13 +67,37 @@ struct ViewUniform {
     xlate: [f32; 4],
     misc: [f32; 4], // tile_size, interior uv scale, interior uv bias, zoom
 }
+mirrors_wesl!(ViewUniform, 48);
 
-/// Mirrors `Resolve` in `resolve.wesl` (16 bytes).
+impl ViewUniform {
+    /// The canvas px → NDC map `st` (column-major) with translation `xlate`, at
+    /// `zoom`.
+    ///
+    /// The three tile constants in `misc` are filled here rather than at the call
+    /// sites, because they are facts about the tile layout (§6.4) that no caller
+    /// should be choosing: a consumer that quoted a different `INTERIOR_UV_BIAS`
+    /// would sample its neighbours' aprons and the seam would show only on that
+    /// one path.
+    ///
+    /// `zoom` reaches only the overlay pass, which measures its outline width in
+    /// screen px from a canvas-space distance (§6.8). Anything drawing into a frame
+    /// with no outline over it passes 0.
+    pub(crate) fn new(st: [f32; 4], xlate: crate::geom::Vec2, zoom: f32) -> Self {
+        Self {
+            st,
+            xlate: [xlate.x, xlate.y, 0.0, 0.0],
+            misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, zoom],
+        }
+    }
+}
+
+/// Mirrors `Resolve` in `resolve.wesl`.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct ResolveUniform {
     n: [f32; 4], // samples per axis, then padding
 }
+mirrors_wesl!(ResolveUniform, 16);
 
 /// Per-tile instance: canvas-space origin + the layer's opacity.
 #[repr(C)]
@@ -106,8 +138,7 @@ struct MatteInstance {
     _pad: [f32; 3],
 }
 
-/// Mirrors `Guide` in `guides.wesl` (240 bytes) — pass D, the drawing guides
-/// (§20.4).
+/// Mirrors `Guide` in `guides.wesl` — pass D, the drawing guides (§20.4).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct GuideUniform {
@@ -120,6 +151,7 @@ struct GuideUniform {
     vps: [[f32; 4]; 6],   // vanishing points, both poles + valid
     sps: [[f32; 4]; 3],   // station points + valid
 }
+mirrors_wesl!(GuideUniform, 304);
 
 impl GuideUniform {
     /// Pack the derived guide scene plus this render's view mapping (§20.4).
@@ -331,7 +363,7 @@ impl CompositeGroup {
     }
 }
 
-/// Mirrors `Blend` in `blend_common.wesl` (16 bytes).
+/// Mirrors `Blend` in `blend_common.wesl`.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct BlendUniform {
@@ -344,6 +376,7 @@ struct BlendUniform {
     /// rides on its tiles instead.
     opacity: f32,
 }
+mirrors_wesl!(BlendUniform, 16);
 
 /// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
 /// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
@@ -548,7 +581,7 @@ pub struct CompositeScene<'a> {
     pub guides: &'a [crate::guides::GuideScene],
 }
 
-/// Mirrors `Media` in `media_common.wesl` (80 bytes).
+/// Mirrors `Media` in `media_common.wesl`.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MediaUniform {
@@ -564,6 +597,7 @@ struct MediaUniform {
     // and mirroring leave alone, and which the relief slope still wants as a scalar.
     surf_m: [f32; 4],
 }
+mirrors_wesl!(MediaUniform, 96);
 
 /// Lighting parameters for the media pass (§6.3). The painting is lit by
 /// image-based lighting from an [`Environment`]; this is a single place to tune the
@@ -1494,23 +1528,14 @@ impl Compositor {
     ) -> Vec<wgpu::BindGroup> {
         let device = &p.ctx.device;
 
-        // View uniform (canvas px -> NDC).
+        // View uniform (canvas px -> NDC). `zoom` rides in `misc.w` for the outline
+        // pass, which measures its width in screen px from a canvas-space distance
+        // (§6.8).
         let (m, translate) = view.canvas_to_ndc();
         p.ctx.queue.write_buffer(
             &p.view_buf,
             0,
-            bytemuck::bytes_of(&ViewUniform {
-                st: m.to_cols_array(),
-                xlate: [translate.x, translate.y, 0.0, 0.0],
-                // `zoom` rides in `.w` for the outline pass, which measures its width
-                // in screen px from a canvas-space distance (§6.8).
-                misc: [
-                    TILE_SIZE as f32,
-                    INTERIOR_UV_SCALE,
-                    INTERIOR_UV_BIAS,
-                    view.zoom,
-                ],
-            }),
+            bytemuck::bytes_of(&ViewUniform::new(m.to_cols_array(), translate, view.zoom)),
         );
 
         // Split the ordered item list into the two instance streams, remembering

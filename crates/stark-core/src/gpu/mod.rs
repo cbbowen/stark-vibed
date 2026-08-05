@@ -13,6 +13,7 @@ pub mod stroke;
 pub mod surface;
 pub mod tile;
 pub mod transform;
+mod wesl;
 
 pub use composite::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, GroupContent,
