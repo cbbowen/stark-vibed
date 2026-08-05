@@ -28,6 +28,10 @@
 
 import package::paint_common::{blend_latent, EPS};
 
+// The layer's resident paint under this tile — its own tile, or the 1×1 zero
+// standing in where the layer has none. The clamped load below reads both, which is
+// what lets a stroke onto bare canvas run this same shader with nothing bound for it
+// (§6.8's pattern, as `fill.wesl` and `transform.wesl` use it).
 @group(0) @binding(0) var base_color: texture_2d<f32>;
 @group(0) @binding(1) var base_aux: texture_2d<f32>;
 @group(0) @binding(2) var scratch_color: texture_2d<f32>;
@@ -43,6 +47,14 @@ struct FsOut {
     @location(1) aux: vec4<f32>,
 }
 
+// Load clamped to the bound texture's own extent, so a real tile and a 1×1 constant
+// read identically (§6.8's pattern). A no-op for a real tile: this pass is 1:1 with
+// its destination, so `c` is always in range.
+fn load1(t: texture_2d<f32>, c: vec2<i32>) -> vec4<f32> {
+    let dim = vec2<i32>(textureDimensions(t));
+    return textureLoad(t, min(c, dim - vec2<i32>(1, 1)), 0);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
@@ -52,8 +64,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let c = vec2<i32>(floor(frag.xy));
-    let base_c = textureLoad(base_color, c, 0);
-    let base_a = textureLoad(base_aux, c, 0);
+    let base_c = load1(base_color, c);
+    let base_a = load1(base_aux, c);
     // The stroke's parcel: latent premultiplied by its visible alpha, that alpha in
     // `.a`. Wide scratch aux: (laid height, optical mass, unused, unused) — see
     // stamp_oklab.wesl's fs_main for the channel-by-channel story.
@@ -101,8 +113,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // the stroke's coverage — a half-covered mask texel must read as half of the
     // finished paint, which for an opaque brush is nothing like half its optical
     // depth. That makes the mask's own antialiasing/feather the stroke's edge.
-    let sdim = vec2<i32>(textureDimensions(selection));
-    let sel = textureLoad(selection, min(c, sdim - vec2<i32>(1, 1)), 0).r;
+    let sel = load1(selection, c).r;
 
     out.color = mix(base_c, merged_c, sel);
     out.aux = mix(vec4<f32>(base_a.x, 0.0, 0.0, 0.0), merged_a, sel);

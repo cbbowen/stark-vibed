@@ -17,6 +17,7 @@ use crate::document::{
     ShapeAction, StrokeRecord, Timeline, TimelineStats, Tool, effective_actions,
 };
 use crate::geom::{Extent2, TileCoord, TileRect, ViewTransform};
+use crate::gpu::desc::Zeroes;
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, Environment,
     EnvironmentId, FillRenderer, GpuContext, MatteDraw, Offscreen, Registry, SelectionOutline,
@@ -3017,7 +3018,8 @@ fn build_gpu(
     // pool unions in its own (the selection mask, the wide scratch aux), so
     // neither can be forgotten here (`TilePool::new`).
     let pool = TilePool::new(gpu.clone(), [cs.color_format(), cs.aux_format()]);
-    let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone());
+    let zeroes = Zeroes::new(gpu, cs.color_format(), cs.aux_format());
+    let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
     let compositor_pipeline = CompositorPipeline::new(
         gpu,
         target_format,
@@ -3026,8 +3028,8 @@ fn build_gpu(
         environment.clone(),
     );
     let compositor = Compositor::new(&compositor_pipeline, viewport);
-    let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone());
-    let fill = FillRenderer::new(gpu, cs.clone(), selection.clone());
+    let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone(), zeroes.clone());
+    let fill = FillRenderer::new(gpu, cs.clone(), selection.clone(), zeroes);
     (
         pool,
         stroke,

@@ -377,6 +377,38 @@ pub(crate) fn zero_texture(
     constant_texture(ctx, format, &vec![0u8; bytes], label)
 }
 
+/// The 1×1 stand-ins a pass binds where a tile does not exist — one per persistent
+/// tile channel.
+///
+/// **"There is no tile here" is one question, and this is its one answer.** The fill,
+/// the transform's combine and the stroke's integrate all bind these and read them
+/// through clamped loads, so the same shader code reads a real tile and a hole
+/// (§6.8's pattern). Built once and cloned into each renderer — a `TextureView` is an
+/// `Arc` handle, so a clone is a bump.
+///
+/// They were built twice before this, once inside `FillRenderer` and once inside
+/// `TransformRenderer`, for the same two formats at the same moment in `build_gpu`;
+/// and the stroke integrate answered the question a third way, by acquiring a whole
+/// pooled tile and clearing it on every pointer move.
+#[derive(Clone)]
+pub(crate) struct Zeroes {
+    pub(crate) color: wgpu::TextureView,
+    pub(crate) aux: wgpu::TextureView,
+}
+
+impl Zeroes {
+    pub(crate) fn new(
+        ctx: &GpuContext,
+        color_format: wgpu::TextureFormat,
+        aux_format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            color: zero_texture(ctx, color_format, "stark zero color"),
+            aux: zero_texture(ctx, aux_format, "stark zero aux"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,7 +24,7 @@ use crate::colorspace::ColorSpace;
 use crate::document::fill::{FillOp, plan};
 use crate::document::selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::gpu::wesl::mirrors_wesl;
@@ -46,20 +46,20 @@ pub struct FillRenderer {
     aux_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
-    /// 1×1 zero color/aux — the base of a tile the layer does not have yet, so a
-    /// fill onto virgin canvas runs the same shader as a fill onto paint.
-    zero_color: wgpu::TextureView,
-    zero_aux: wgpu::TextureView,
+    /// The base of a tile the layer does not have yet, so a fill onto virgin canvas
+    /// runs the same shader as a fill onto paint.
+    zeroes: Zeroes,
     /// Borrowed for the coverage rasterize and for the 0/1 constants bound where a
     /// mask has no tile.
     selection: SelectionRenderer,
 }
 
 impl FillRenderer {
-    pub fn new(
+    pub(crate) fn new(
         ctx: &GpuContext,
         color_space: Arc<dyn ColorSpace>,
         selection: SelectionRenderer,
+        zeroes: Zeroes,
     ) -> Self {
         let device = &ctx.device;
         let color_format = color_space.color_format();
@@ -98,8 +98,7 @@ impl FillRenderer {
             aux_format,
             pipeline,
             bgl,
-            zero_color: desc::zero_texture(ctx, color_format, "stark fill zero"),
-            zero_aux: desc::zero_texture(ctx, aux_format, "stark fill zero"),
+            zeroes,
             selection,
         }
     }
@@ -156,7 +155,7 @@ impl FillRenderer {
         for coord in &coords {
             let (base_color, base_aux) = match base.get(coord) {
                 Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
-                None => (self.zero_color.clone(), self.zero_aux.clone()),
+                None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
             };
             let region_mask = self.selection.mask_for(&region, *coord);
             let gate_mask = self.selection.mask_for(gate, *coord);

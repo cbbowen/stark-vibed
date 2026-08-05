@@ -27,7 +27,7 @@ use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
 use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind, StrokeRecord};
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
@@ -107,6 +107,13 @@ pub struct StrokeRenderer {
     // brush manipulates existing paint (`lift` / `deposit` / `charge` / `bleed` —
     // the four axes `dynamics_setup` gates on).
     dynamics: DynamicsKit,
+
+    /// The base bound where a stroke reaches a tile the layer does not have yet
+    /// (§6.8's pattern). The integrate reads it through clamped loads, so bare
+    /// canvas needs no tile of its own — where this path used to acquire a whole
+    /// pooled tile and clear it, on every pointer move, whether or not the stroke
+    /// touched anything unpainted.
+    zeroes: Zeroes,
 
     /// Selection masks (§6.8): the per-tile mask bound into the integrate
     /// pass, and the region gather the stamp loop reads. Colour-space independent, so
@@ -188,10 +195,11 @@ impl Drop for ScopedResources {
 }
 
 impl StrokeRenderer {
-    pub fn new(
+    pub(crate) fn new(
         ctx: &GpuContext,
         color_space: Arc<dyn ColorSpace>,
         selection: SelectionRenderer,
+        zeroes: Zeroes,
     ) -> Self {
         let device = &ctx.device;
 
@@ -302,6 +310,7 @@ impl StrokeRenderer {
             integrate_pipeline,
             integrate_bgl,
             dynamics,
+            zeroes,
             selection,
         }
     }

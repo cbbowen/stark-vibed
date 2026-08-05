@@ -158,23 +158,6 @@ impl StrokeRenderer {
             label: Some("stark stroke commit"),
         });
 
-        // Every brush rasterizes its footprint into a *cleared scratch* tile, then the
-        // integrate pass merges it over the base into a fresh CoW tile
-        // (§6.2/§6.1). `empty` (cleared) stands in as the base wherever the stroke
-        // touches bare canvas — acquired tiles are undefined, so clear it once here.
-        let empty = self.acquire_tile(pool, AllocSource::IntegrateEmptyBase);
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark integrate empty clear"),
-            color_attachments: &[
-                Some(desc::attach(empty.color_view(), desc::CLEAR)),
-                Some(desc::attach(empty.aux_view(), desc::CLEAR)),
-            ],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-
         // Per-tile sweep transforms, one [`UNIFORM_STRIDE`] slot each in a single
         // buffer the draws below select with a dynamic offset. The texture top-left is
         // the interior origin shifted out by the apron, so the full TILE_TEX target
@@ -258,14 +241,22 @@ impl StrokeRenderer {
             // by this tile's selection coverage — its own mask if it has one, or the
             // 1×1 constant standing in for the rest of the canvas (§6.8).
             let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
-            let base_tile = base.get(coord).unwrap_or(&empty);
+            // The layer's resident paint here, or the 1×1 zero where it has none —
+            // the integrate clamps its loads, so bare canvas costs no tile at all
+            // (§6.8's pattern). This used to acquire a whole pooled pair and clear
+            // it on every pointer move, whether or not the stroke reached anything
+            // unpainted.
+            let (base_color, base_aux) = match base.get(coord) {
+                Some(tile) => (tile.color_view(), tile.aux_view()),
+                None => (&self.zeroes.color, &self.zeroes.aux),
+            };
             let mask_view = self.selection.mask_for(selection, *coord);
             let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark integrate bg"),
                 layout: &self.integrate_bgl,
                 entries: &[
-                    desc::tex(0, base_tile.color_view()),
-                    desc::tex(1, base_tile.aux_view()),
+                    desc::tex(0, base_color),
+                    desc::tex(1, base_aux),
                     desc::tex(2, scratch.color_view()),
                     desc::tex(3, scratch.aux_view()),
                     desc::tex(4, &mask_view),

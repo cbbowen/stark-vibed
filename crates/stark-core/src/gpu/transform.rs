@@ -41,7 +41,7 @@ use crate::document::transform::{
 };
 use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TileMap, TilePairHandle, TilePool};
 
@@ -285,19 +285,19 @@ pub struct TransformRenderer {
     mask_src_bgl: wgpu::BindGroupLayout,
     combine_bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// 1×1 zero color/aux — the base of a virgin destination and the parcel of a
-    /// cut-only tile, so the combine is one shader whatever exists.
-    zero_color: wgpu::TextureView,
-    zero_aux: wgpu::TextureView,
+    /// The base of a virgin destination and the parcel of a cut-only tile, so the
+    /// combine is one shader whatever exists.
+    zeroes: Zeroes,
     /// For the selection constants (0/1 coverage) bound where a mask has no tile.
     selection: SelectionRenderer,
 }
 
 impl TransformRenderer {
-    pub fn new(
+    pub(crate) fn new(
         ctx: &GpuContext,
         color_space: &dyn ColorSpace,
         selection: SelectionRenderer,
+        zeroes: Zeroes,
     ) -> Self {
         let device = &ctx.device;
         let color_format = color_space.color_format();
@@ -460,9 +460,6 @@ impl TransformRenderer {
             ..Default::default()
         });
 
-        let zero_color = desc::zero_texture(ctx, color_format, "stark transform zero");
-        let zero_aux = desc::zero_texture(ctx, aux_format, "stark transform zero");
-
         Self {
             ctx: ctx.clone(),
             color_format,
@@ -478,8 +475,7 @@ impl TransformRenderer {
             mask_src_bgl,
             combine_bgl,
             sampler,
-            zero_color,
-            zero_aux,
+            zeroes,
             selection,
         }
     }
@@ -889,12 +885,12 @@ impl TransformRenderer {
         });
         let (base_color, base_aux) = match from.base.get(&dest) {
             Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
-            None => (self.zero_color.clone(), self.zero_aux.clone()),
+            None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
         };
         let base_mask = self.selection.mask_for(from.selection, dest);
         let (parcel_color, parcel_aux) = match parcel {
             Some((c, a)) => (c.view().clone(), a.view().clone()),
-            None => (self.zero_color.clone(), self.zero_aux.clone()),
+            None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
         };
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark transform combine bg"),

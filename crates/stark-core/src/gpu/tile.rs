@@ -61,7 +61,6 @@ pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 pub enum AllocSource {
     #[default]
     Unknown,
-    IntegrateEmptyBase,
     IntegrateDestination,
     StrokeScratch,
     DynamicsWriteback,
@@ -84,9 +83,8 @@ impl AllocSource {
     /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree.
     /// A variant that slipped past both would go uncounted rather than out of
     /// bounds — telemetry degrading is the right failure for telemetry.
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 9] = [
         Self::Unknown,
-        Self::IntegrateEmptyBase,
         Self::IntegrateDestination,
         Self::StrokeScratch,
         Self::DynamicsWriteback,
@@ -100,7 +98,6 @@ impl AllocSource {
     const fn name(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
-            Self::IntegrateEmptyBase => "integrate empty base",
             Self::IntegrateDestination => "integrate destination",
             Self::StrokeScratch => "stroke scratch",
             Self::DynamicsWriteback => "dynamics writeback",
