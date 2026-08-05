@@ -1,81 +1,71 @@
 //! Compiles WESL shader modules to WGSL at build time (§2).
 //!
-//! Each `build_artifact` call links a module and its imports into a single WGSL
+//! Each entry point in [`ENTRY_POINTS`] is linked with its imports into a single WGSL
 //! string deposited in `OUT_DIR`, retrievable in the crate via `include_wesl!`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+// The one list, shared with `lib.rs` (see there).
+include!("src/entry_points.rs");
 
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
 const MIXBOX_GLSL: &str = "../../vendor/mixbox/shaders/mixbox.glsl";
 
+/// Where the shader tree lives, relative to this crate.
+const SHADER_DIR: &str = "src/shaders";
+
+/// The module prefix generated code is mounted under. Importers say
+/// `package::gen::mixbox_poly`, so the import site itself says "build-time
+/// generated" — which is half the benefit of it no longer being a file in the tree.
+const GEN_PREFIX: &str = "package::gen";
+
 fn main() {
     // Transpile Mixbox's `mixbox_eval_polynomial` from the vendored GLSL into a
     // WESL module so the trained coefficients stay sourced from the licensed
     // submodule rather than copied into this repo (§6.7).
-    generate_mixbox_poly();
+    let gen_dir = generate_mixbox_poly();
 
-    let compiler = wesl::Wesl::new("src/shaders");
-
-    // The brush stamp rasterization shader (§6.2).
-    compiler.build_artifact(&"package::stamp_oklab".parse().unwrap(), "stamp_oklab");
-
-    // Compositing (pass A) and media/lighting (pass B) shaders (§6.3).
-    compiler.build_artifact(&"package::composite".parse().unwrap(), "composite");
-    // Matte layers, drawn inside pass A at their place in the stack (§15.4).
-    compiler.build_artifact(&"package::matte".parse().unwrap(), "matte");
-    compiler.build_artifact(&"package::media_oklab".parse().unwrap(), "media_oklab");
-    // The presentation resolve: the supersampled render boxed down to the target
-    // (§6.4).
-    compiler.build_artifact(&"package::resolve".parse().unwrap(), "resolve");
-
-    // Mixbox color space: latent→RGB polynomial in the media pass (§6.7).
-    compiler.build_artifact(&"package::media_mixbox".parse().unwrap(), "media_mixbox");
-
-    // Per-layer blend modes: the isolated layer merged into the accumulator through
-    // a light-combining mode, one variant per color space (§18.0.4).
-    compiler.build_artifact(&"package::blend_oklab".parse().unwrap(), "blend_oklab");
-    compiler.build_artifact(&"package::blend_mixbox".parse().unwrap(), "blend_mixbox");
-
-    // Stroke integrate pass: merge a stroke's scratch slab into the layer (§6.2/§6.1).
-    compiler.build_artifact(&"package::integrate".parse().unwrap(), "integrate");
-
-    // Brush dynamics: the sequential stamp loop (compute) + the region→tile
-    // write-back — §6.2.
-    compiler.build_artifact(&"package::dynamics".parse().unwrap(), "dynamics");
-    compiler.build_artifact(&"package::slice".parse().unwrap(), "slice");
-
-    // Affine transform of the selected paint: parcel + combine + mask passes
-    // (§16).
-    compiler.build_artifact(&"package::transform".parse().unwrap(), "transform");
-
-    // Region fill: one parcel of paint laid through the coverage `selection` just
-    // rasterized (§18.0.4).
-    compiler.build_artifact(&"package::fill".parse().unwrap(), "fill");
-
-    // Selections: mask rasterization, the stamp loop's region gather, and the
-    // on-screen outline — §6.8.
-    compiler.build_artifact(&"package::selection".parse().unwrap(), "selection");
-    compiler.build_artifact(&"package::mask_region".parse().unwrap(), "mask_region");
-    compiler.build_artifact(&"package::overlay".parse().unwrap(), "overlay");
-
-    // Drawing guides: the perspective-grid overlay, pass D (§20.4).
-    compiler.build_artifact(&"package::guides".parse().unwrap(), "guides");
-
-    // Every module by name, not just the directory. A directory dependency is a
-    // trap here: `generate_mixbox_poly` *writes into* `src/shaders`, so the
-    // directory's own fingerprint is entangled with this script's output, and cargo
-    // would sometimes consider the artifacts fresh after a shader edit. A stale
-    // `composite.wgsl` paired with a freshly built `media_oklab.wgsl` is two halves
-    // of two different compositing models, which shows up as tile-shaped artifacts
-    // that survive edits and vanish on `cargo clean` — the worst possible failure
-    // mode, because it discredits whatever you happened to be changing at the time.
+    // Generated modules resolve out of `OUT_DIR`; everything else out of the tree.
     //
+    // The generated file **used to be written into `src/shaders`**, and that one fact
+    // is what the whole of this script's freshness apparatus existed to survive: the
+    // directory this script *reads* was also one it *wrote*, so the directory's
+    // fingerprint was entangled with the script's own output and cargo would
+    // sometimes call the artifacts fresh after a shader edit. A stale
+    // `composite.wgsl` paired with a freshly built `media_oklab.wgsl` is two halves
+    // of two different compositing models — tile-shaped artifacts that survive edits
+    // and vanish on `cargo clean`, the worst failure mode there is, because it
+    // discredits whatever you happened to be changing at the time.
+    //
+    // Writing to `OUT_DIR` instead retires the entanglement, the write-only-on-change
+    // mtime guard that mitigated it, and the `.gitignore` entry for a generated file
+    // sitting in the source tree.
+    let mut router = wesl::Router::new();
+    router.mount_resolver(
+        GEN_PREFIX.parse().expect("the gen prefix is a module path"),
+        wesl::FileResolver::new(&gen_dir),
+    );
+    router.mount_fallback_resolver(wesl::FileResolver::new(SHADER_DIR));
+    let compiler = wesl::Wesl::new(SHADER_DIR).set_custom_resolver(router);
+
+    for name in ENTRY_POINTS {
+        let module = format!("package::{name}");
+        compiler.build_artifact(
+            &module
+                .parse()
+                .unwrap_or_else(|e| panic!("`{module}` is not a module path: {e}")),
+            name,
+        );
+    }
+
+    // Every module by name, not just the directory — a directory's mtime does not
+    // move when a file inside it is edited in place, which is every shader edit.
     // `src/shaders/lib` is walked too: the binding-free leaves live there
-    // (`lib/paint_common.wesl` alone reaches five pipelines), so a module missed
-    // here is exactly the stale-half failure above.
-    for dir in ["src/shaders", "src/shaders/lib"] {
-        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {dir}: {e}")) {
+    // (`lib/paint_common.wesl` alone reaches six pipelines), so a module missed here
+    // is exactly the stale-half failure above.
+    for dir in [SHADER_DIR.to_string(), format!("{SHADER_DIR}/lib")] {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir}: {e}")) {
             let path = entry.expect("shader dir entry").path();
             if path.extension().is_some_and(|e| e == "wesl") {
                 println!("cargo::rerun-if-changed={}", path.display());
@@ -83,13 +73,14 @@ fn main() {
         }
         println!("cargo::rerun-if-changed={dir}");
     }
+    println!("cargo::rerun-if-changed=src/entry_points.rs");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
 }
 
 /// Read `mixbox_eval_polynomial` out of the vendored Mixbox GLSL and emit an
-/// equivalent WESL function at `src/shaders/mixbox_poly.wesl` (gitignored). Only
-/// written when the output changes, so it doesn't retrigger builds.
-fn generate_mixbox_poly() {
+/// equivalent WESL function under `OUT_DIR`, returning the directory to mount it
+/// from.
+fn generate_mixbox_poly() -> PathBuf {
     let glsl = std::fs::read_to_string(MIXBOX_GLSL).unwrap_or_else(|e| {
         panic!(
             "cannot read {MIXBOX_GLSL}: {e}. Check out the git submodule: \
@@ -125,15 +116,13 @@ fn generate_mixbox_poly() {
          // Jamriska. Licensed CC BY-NC 4.0; see vendor/mixbox/LICENSE.\n\n{wgsl}\n"
     );
 
-    // Write only on change so the file's mtime stays stable (the directory is a
-    // `rerun-if-changed` input).
-    let path = Path::new("src/shaders/mixbox_poly.wesl");
-    let unchanged = std::fs::read_to_string(path)
-        .map(|c| c == out)
-        .unwrap_or(false);
-    if !unchanged {
-        std::fs::write(path, out).expect("write generated mixbox_poly.wesl");
-    }
+    // Under `OUT_DIR`, which nothing else reads and which cargo already treats as
+    // this script's output — so the write can be unconditional, where writing into
+    // the source tree needed a read-compare-skip dance to keep its own mtime stable.
+    let dir = Path::new(&std::env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("gen");
+    std::fs::create_dir_all(&dir).expect("create the generated-shader dir");
+    std::fs::write(dir.join("mixbox_poly.wesl"), out).expect("write generated mixbox_poly.wesl");
+    dir
 }
 
 /// Drop GLSL unary `+` before numeric literals; WGSL has no unary-plus operator.

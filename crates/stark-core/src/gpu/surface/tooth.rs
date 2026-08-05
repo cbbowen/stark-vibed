@@ -126,11 +126,16 @@ fn tooth_gate(d: f32, tooth: f32) -> f32 {
 /// (`paint_common.wesl::rise_ahead`).
 ///
 /// Written as the shader writes it, constant for constant: `e/255` is what a texture
-/// unit hands back for a `Rgba8Unorm` channel, and the constants that follow are the
-/// shader's own folded literals (`255/512` is dyadic, so the fold is exact), so the
-/// CPU's rows bin the numbers the GPU will actually project.
+/// unit hands back for a `Rgba8Unorm` channel, and what follows is the same
+/// `255·L/128 − L` the shader spells, so the CPU's rows bin the numbers the GPU will
+/// actually project.
+///
+/// Both sides used to fold [`RISE_LIMIT`] away into the literals `255/512` and `0.25`
+/// — exact, since the constants are dyadic, but it put the shared number beyond the
+/// reach of any check. Spelling it out on both sides is what lets
+/// `the_host_and_the_shader_agree_on_the_tooths_constants` cover this decode.
 fn decode_rise(e: u8) -> f32 {
-    (e as f32 / 255.0) * (255.0 / 512.0) - 0.25
+    (e as f32 / 255.0) * (255.0 * RISE_LIMIT / 128.0) - RISE_LIMIT
 }
 
 /// The **rise ahead** at a texel under a tip travelling along `d̂`: how much higher
@@ -383,11 +388,11 @@ mod tests {
     /// `255.0 / 512.0` and `0.25`, which is what put it beyond reach of this check
     /// while its comment still claimed the folded constants had to match.
     ///
-    /// Read through `stamp_oklab()`: the tooth gates its deposit, so all three
+    /// Read through `stamp()`: the tooth gates its deposit, so all three
     /// survive stripping there. No adapter needed, so this holds in CI.
     #[test]
     fn the_host_and_the_shader_agree_on_the_tooths_constants() {
-        let src = stark_shaders::stamp_oklab();
+        let src = stark_shaders::stamp();
         for (name, ours) in [
             ("TOOTH_SOFTNESS", TOOTH_SOFTNESS),
             ("TOOTH_RISE", TOOTH_RISE),

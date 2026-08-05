@@ -1443,7 +1443,7 @@ fn dynamics_plan(
                 c: common.k.channels,
                 d: [rect.origin.x, rect.origin.y, s.orient, b.drain],
                 // The `add` source rate is passed through **unscaled**, exactly as
-                // `stamp_oklab.wesl` takes it. It used to carry a gain of 2 ("tuned so
+                // `stamp.wesl` takes it. It used to carry a gain of 2 ("tuned so
                 // `add = 1` lays roughly a full-thickness deposit per pass"), which made
                 // the same slider mean two different amounts of paint depending on
                 // whether some *other* axis happened to be non-zero — nudging `deposit`

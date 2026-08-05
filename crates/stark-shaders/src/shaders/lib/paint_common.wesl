@@ -35,13 +35,13 @@ const COVERAGE_EPS: f32 = 1e-4;
 // **The one definition.** It was written out four times — here, `composite.wesl`,
 // `matte.wesl` and `media_common.wesl` — three of them carrying a "must match"
 // comment at the very constant a shared import was already available for
-// (`stamp_oklab.wesl` imported this one). The `media_common` copy had by then
+// (`stamp.wesl` imported this one). The `media_common` copy had by then
 // gone dead outright: its own comment said it "remains only for the weave-sink
 // correction", and that correction is a power law with no `K` in it.
 //
 // Every place the slab law is evaluated now reads this: the parcel stacking below,
 // pass A's per-layer coverage (`composite.wesl`), the matte slab (`matte.wesl`),
-// and the stamp's per-segment visible alpha (`stamp_oklab.wesl`). That a parcel's
+// and the stamp's per-segment visible alpha (`stamp.wesl`). That a parcel's
 // blend weight *is* its visible alpha — that it covers resident paint exactly as
 // much as the viewer sees it cover — is the property those four agreeing is worth.
 const OPACITY_K: f32 = 1.0;

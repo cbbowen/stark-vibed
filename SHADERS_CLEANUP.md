@@ -176,38 +176,67 @@ Related: `mixbox_lut.wesl` hardcodes `@group(0) @binding(5)` and `(6)`, correct
 only because `blend_common` happens to stop at 4. Neither file mentions the
 other's binding budget.
 
-## 9. The generated `mixbox_poly.wesl` is written into the source tree
+## 9. The generated `mixbox_poly.wesl` was written into the source tree
 
-**Status: outstanding.**
+**Status: done.**
 
-Which is what forces the whole freshness apparatus in `build.rs`: a hand-rolled
-directory walk, a write-only-on-change guard, a `.gitignore` entry, and a
-nine-line comment about the tile-shaped-artifact failure mode that a stale
-artifact produces.
+Which is what forced the freshness apparatus in `build.rs`: the directory the
+script *read* was also one it *wrote*, so the directory's fingerprint was
+entangled with the script's own output. A write-only-on-change mtime guard
+mitigated it, and a `.gitignore` entry hid the result.
 
-wesl 0.4 has `Router::mount_resolver` + `VirtualResolver::add_module`: serve
-`package::mixbox_poly` from memory and the file, the gitignore entry, the mtime
-guard and the entire class of staleness bug disappear together. There is also
-`wesl::emit_rerun_if_changed(&modules, &resolver)`, which emits the dependency
-set from the actual import graph rather than a directory glob.
+It now generates into `OUT_DIR/gen/` and is mounted at the module prefix
+`package::gen` via `Router::mount_resolver` + a second `FileResolver`. Three
+things fall out: the entanglement is gone (so the write is unconditional), the
+`.gitignore` entry is gone, and the import site now reads
+`package::gen::mixbox_poly` — which says "build-time generated" where it matters,
+at the point someone is trying to find the file.
 
-## 10. The entry-point list is maintained twice
+Verified with `cargo clean -p stark-shaders` followed by a cold build: 17
+artifacts, the polynomial linked into both mixbox passes.
 
-**Status: outstanding.**
+Not taken: `VirtualResolver` (serving from memory). It would work, but mounting a
+`FileResolver` on `OUT_DIR` keeps the generated source on disk where it can be
+read when the transliteration is what's suspect — and that transliteration is a
+pile of string replacements, so it will be suspect eventually.
 
-`build.rs` and `lib.rs` each carry all seventeen entry points, with no check that
-they agree; adding a shader and forgetting one side fails at the wrong layer.
-One `const ENTRY_POINTS: &[&str]` in a file `include!`d by both removes it.
-`lib.rs`'s seventeen `pub fn x() -> &'static str { include_wesl!("x") }` can also
-just be `pub const X: &str = include_wesl!("x")`.
+Still available if wanted: `wesl::emit_rerun_if_changed(&modules, &resolver)`
+emits the dependency set from the actual import graph rather than the directory
+walk the script still does.
 
-## 11. `stamp_oklab` is a misnomer
+## 10. The entry-point list was maintained twice
 
-**Status: outstanding.**
+**Status: done.**
 
-Its own header says the Mixbox space reuses it verbatim, and `colorspace.rs`
-confirms both spaces call it. `stamp` is the honest name, and would stop it
-reading as the surviving half of a `stamp_mixbox` pair that never existed.
+`build.rs` and `lib.rs` each carried all seventeen entry points with no check that
+they agreed; adding a shader and forgetting one side failed at the wrong layer.
+
+`src/entry_points.rs` is now the one list, `include!`d by `build.rs` (which loops
+over it) and declared as a module by `lib.rs`. The accessors stay hand-written,
+because each carries a doc comment and a `§` citation worth keeping — but
+`the_entry_point_list_and_the_accessors_are_the_same_set` pins the two together
+and additionally asserts every accessor links to a non-empty artifact, so the
+list is provably the *build's* list and not a matching transcription of it.
+
+Not taken: collapsing the accessors to `pub const X: &str`. `include_wesl!` wants
+a literal, so a macro over the list cannot generate them without a
+`stringify!`-into-macro trick that would cost more legibility than the seventeen
+`fn`s do.
+
+## 11. `stamp_oklab` was a misnomer
+
+**Status: done.** Now `stamp.wesl` / `stark_shaders::stamp()`.
+
+Its own header said the Mixbox space reuses it verbatim, and `colorspace.rs`
+confirms both spaces call it. It read as the surviving half of a `stamp_mixbox`
+pair that never existed. (`blend_oklab`/`blend_mixbox` and
+`media_oklab`/`media_mixbox` are genuine pairs and keep their suffixes.)
+
+The rename also pulled `gpu/surface/tooth.rs`'s `decode_rise` into line: it had
+been folding `RISE_LIMIT` away into `255/512` and `0.25` exactly as the shader
+did, so now that §2 has named the constant on the shader side, the CPU decode
+spells it too — which is what puts this decode under the §3 assertion rather than
+merely near it.
 
 ## 12. Smaller items
 

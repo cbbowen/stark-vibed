@@ -312,7 +312,7 @@ mod tests {
     /// and the strip's vertex count is two rims across `slices + 1` cross-sections.
     #[test]
     fn the_draw_call_and_the_strip_agree_on_the_vertex_count() {
-        let slices = wesl_const(stark_shaders::stamp_oklab(), "SWEEP_SLICES");
+        let slices = wesl_const(stark_shaders::stamp(), "SWEEP_SLICES");
         assert_eq!(
             f64::from(SWEEP_VERTS),
             2.0 * (slices + 1.0),

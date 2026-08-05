@@ -2,7 +2,7 @@
 // by the per-color-space stamp shaders. Everything here is color-space-agnostic:
 // the tile transform + prefix-τ bindings, the oriented-quad vertex, and the
 // swept optical-depth lookup. Each variant differs only in how the fragment
-// turns that depth into channel deposits (see stamp_oklab.wesl; the Mixbox space
+// turns that depth into channel deposits (see stamp.wesl; the Mixbox space
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::lib::noise::{color_jitter};

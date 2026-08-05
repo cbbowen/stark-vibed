@@ -5,9 +5,13 @@
 
 use wesl::include_wesl;
 
-/// WGSL stamp pass for the Oklab color space (§6.2).
-pub fn stamp_oklab() -> &'static str {
-    include_wesl!("stamp_oklab")
+mod entry_points;
+pub use entry_points::ENTRY_POINTS;
+
+/// WGSL swept-segment stamp pass (§6.2). Colour-space agnostic — both spaces use
+/// it, since the deposit is the same premultiplied "over" whatever the channels mean.
+pub fn stamp() -> &'static str {
+    include_wesl!("stamp")
 }
 
 /// WGSL source for the tile compositing pass (§6.3, pass A).
@@ -101,4 +105,67 @@ pub fn overlay() -> &'static str {
 /// §20.4.
 pub fn guides() -> &'static str {
     include_wesl!("guides")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every name in [`ENTRY_POINTS`] has an accessor here, and every accessor has a
+    /// name in [`ENTRY_POINTS`].
+    ///
+    /// The list drives `build.rs`; the accessors are what callers reach for. They used
+    /// to be two independent transcriptions of the same seventeen names, so adding a
+    /// shader to one and not the other failed at the wrong layer — a missing
+    /// `include_wesl!` artifact reports as a build-script problem several frames from
+    /// the shader you just wrote, and an accessor with no `build_artifact` behind it
+    /// does not fail until link time.
+    ///
+    /// Now one of them is generated from the other's evidence: an accessor that is not
+    /// in the list, or a list entry with no accessor, is a failed assertion naming the
+    /// offender.
+    /// One accessor, paired with the [`ENTRY_POINTS`] name it must correspond to.
+    type Accessor = (&'static str, fn() -> &'static str);
+
+    #[test]
+    fn the_entry_point_list_and_the_accessors_are_the_same_set() {
+        let accessors: &[Accessor] = &[
+            ("blend_mixbox", blend_mixbox),
+            ("blend_oklab", blend_oklab),
+            ("composite", composite),
+            ("dynamics", dynamics),
+            ("fill", fill),
+            ("guides", guides),
+            ("integrate", integrate),
+            ("mask_region", mask_region),
+            ("matte", matte),
+            ("media_mixbox", media_mixbox),
+            ("media_oklab", media_oklab),
+            ("overlay", overlay),
+            ("resolve", resolve),
+            ("selection", selection),
+            ("slice", slice),
+            ("stamp", stamp),
+            ("transform", transform),
+        ];
+
+        let mut names: Vec<&str> = accessors.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        let mut listed = ENTRY_POINTS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(
+            names, listed,
+            "`ENTRY_POINTS` (which `build.rs` compiles) and the accessors in this \
+             module have diverged",
+        );
+
+        // And each one actually links to something, which is what proves the list is
+        // the *build's* list and not just a matching pair of transcriptions.
+        for (name, accessor) in accessors {
+            assert!(
+                !accessor().is_empty(),
+                "`{name}` linked to an empty artifact",
+            );
+        }
+    }
 }

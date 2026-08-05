@@ -10,8 +10,8 @@
 // crate, the GPU only ever evaluates the polynomial forward — so this is the first
 // time the LUT has had to be on the GPU at all.
 //
-// Hand-written rather than transpiled by `build.rs` like `mixbox_poly.wesl`: that
-// generator works because the polynomial is pure arithmetic with no bindings, and
+// Hand-written rather than transpiled by `build.rs` like `package::gen::mixbox_poly`:
+// that generator works because the polynomial is pure arithmetic with no bindings, and
 // this function is nothing but a texture lookup, whose bindings are ours.
 //
 // The concentrations are the whole answer here. Mixbox's full latent also carries a

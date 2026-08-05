@@ -5,7 +5,7 @@
 //! layer's "over" by its per-unit **opacity** alone, so a film with opacity 1 and no
 //! thickness — which the media pass draws as nothing over bare canvas — replaced the
 //! colour outright over another layer's paint. Every soft brush deposits exactly that
-//! state across its fringe (`stamp_oklab.wesl` saturates opacity as `1 − exp(−op·τ)`
+//! state across its fringe (`stamp.wesl` saturates opacity as `1 − exp(−op·τ)`
 //! while height stays linear in `τ`), so the symptom was a ghost of the brush's whole
 //! footprint painted over the layer below.
 //!

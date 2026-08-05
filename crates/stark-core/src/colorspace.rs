@@ -131,7 +131,7 @@ impl ColorSpace for OkLabColorSpace {
     }
 
     fn stamp_shader(&self) -> &'static str {
-        stark_shaders::stamp_oklab()
+        stark_shaders::stamp()
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_oklab()
@@ -185,7 +185,7 @@ impl ColorSpace for MixboxColorSpace {
 
     fn stamp_shader(&self) -> &'static str {
         // Deposit is premultiplied-over of the channels — identical to Oklab.
-        stark_shaders::stamp_oklab()
+        stark_shaders::stamp()
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_mixbox()

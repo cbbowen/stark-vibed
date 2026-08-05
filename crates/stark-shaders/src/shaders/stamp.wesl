@@ -1,7 +1,14 @@
-// Swept-segment brush rasterization for the OKLAB color space (§6.2).
+// Swept-segment brush rasterization (§6.2).
 //
-// Shares all geometry/sweep math with the other color spaces via
-// `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile, which
+// **Colour-space agnostic, and named accordingly.** This was `stamp_oklab.wesl`,
+// which was never true: `colorspace.rs` hands it to the Mixbox space as well, since
+// the deposit is the same premultiplied "over" whatever the three channels mean —
+// the shader never interprets them. The name read as the surviving half of a
+// `stamp_mixbox.wesl` pair that has never existed, which is a worse thing for a name
+// to do than merely be long. (`blend_oklab`/`blend_mixbox` and
+// `media_oklab`/`media_mixbox` are genuine pairs; those keep their suffixes.)
+//
+// Shares all geometry/sweep math with both spaces via `stamp_common.wesl`. The footprint deposits into a *cleared scratch* tile, which
 // holds the **parcel this stroke is laying** rather than a tile of paint: colour
 // premultiplied by the parcel's visible alpha, and the amounts that alpha was built
 // from (height, optical mass) in the aux. `integrate.wesl` is what turns the one

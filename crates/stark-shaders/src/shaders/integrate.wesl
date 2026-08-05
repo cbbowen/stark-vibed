@@ -61,7 +61,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let base_a = load1(base_aux, c);
     // The stroke's parcel: latent premultiplied by its visible alpha, that alpha in
     // `.a`. Wide scratch aux: (laid height, optical mass, unused, unused) — see
-    // stamp_oklab.wesl's fs_main for the channel-by-channel story.
+    // stamp.wesl's fs_main for the channel-by-channel story.
     let s_c = textureLoad(scratch_color, c, 0);
     let s_a = textureLoad(scratch_aux, c, 0);
 

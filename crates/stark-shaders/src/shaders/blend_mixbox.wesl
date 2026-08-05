@@ -24,7 +24,7 @@
 // is settled in light and the LUT is asked which mixture ended up that colour.
 
 import package::lib::color::{srgb_to_linear, linear_to_srgb};
-import package::mixbox_poly::{mixbox_eval_polynomial};
+import package::gen::mixbox_poly::{mixbox_eval_polynomial};
 import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};

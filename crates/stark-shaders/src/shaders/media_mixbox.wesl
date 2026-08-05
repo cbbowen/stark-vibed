@@ -10,7 +10,7 @@
 import package::lib::color::{srgb_to_linear};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
-import package::mixbox_poly::{mixbox_eval_polynomial};
+import package::gen::mixbox_poly::{mixbox_eval_polynomial};
 import package::media_common::{comp_color, comp_aux, over_substrate, paint_vis_at, finish};
 
 @vertex

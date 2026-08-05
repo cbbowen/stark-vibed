@@ -52,7 +52,7 @@ pub(crate) use mirrors_wesl;
 ///     `WICK_HALF`, and `stamp_common.wesl`'s `SWEEP_VERTS` through `SWEEP_SLICES`.
 ///   · **Reachability.** It reads the *linked* artifact, so the constant must be
 ///     reachable from the entry points of whichever module you pass.
-///     `lib/paint_common.wesl`'s tooth constants are read through `stamp_oklab()`,
+///     `lib/paint_common.wesl`'s tooth constants are read through `stamp()`,
 ///     whose fragment stage gates its deposit on them.
 ///   · **Comparison.** It returns `f64` because that is what a decimal literal parses
 ///     to, but both sides hold `f32`. Narrow before asserting (`… as f32`), or a
