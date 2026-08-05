@@ -100,18 +100,31 @@ eleven times. A `budget.rs` would leave `mod.rs` as the renderer it claims to be
 Smaller: `ViewUniform` and `TileInstance` are declared in `swept.rs` and used
 only by `dynamics.rs`. `swept.rs` touches neither.
 
-## 6. Three caches, three policies, one in the wrong place
+## 6. Three caches, three policies, one in the wrong place — **done**
 
-`round_prefix` (single-entry, on the renderer), `noise_cache` (unbounded `Vec`,
-on the renderer), and `round_cov` — single-entry but living in `DynamicsKit`, a
-struct documented as immutable GPU objects built once.
+The two round-tip caches are one now: `StrokeRenderer::round_tip`, holding a
+`RoundTip { prefix, coverage }` built from a **single** `round_coverage`
+evaluation. That was 256² texels of `powf` run twice for the same hardness, once
+per texture — and, held apart in two independently-evicting single-entry slots,
+the stamp loop could find its prefix hot and its coverage cold and pay for the
+field again regardless.
 
-Both round caches key on `hardness.to_bits()` and both call
-`round_coverage(hardness, ROUND_RES)` — 65,536 texels with a `powf` each — so a
-dynamics round brush computes the identical coverage field twice. One
-`BrushTextures` cache keyed on the shape, returning `{ prefix, coverage }`, fixes
-the layering, the duplicate work, and the single-entry thrash when a user
-alternates two hardnesses.
+`round_cov` is out of `DynamicsKit`, which was the layering complaint: a mutable
+cache inside a struct documented as immutable GPU objects built once. The kit now
+holds no `Arc<Mutex<_>>` at all — `dynamics.rs` no longer imports `Arc` or
+`Mutex` — so "built once" is a property of the type rather than an intention.
+
+`prefix_view` gained a `coverage_view` sibling, so both "resolve a brush's
+texture, asset or generated" helpers sit together and the stamp loop's setup
+stopped open-coding the match.
+
+**The original claim about policy was wrong, and the difference is now
+documented instead of removed.** Unifying eviction would have been a regression:
+hardness is a *continuous slider*, so a grow-forever round-tip cache banks
+~320 KB of GPU texture per position a user drags through and never returns it —
+single-entry is exactly the working set of "adjust the knob and look". `NoiseKind`
+is a small enum, so its cache can hold the whole domain and never evict. Two
+policies, two key domains, and each now says which it is and why.
 
 ## 7. The two paths derive shared stroke constants independently
 

@@ -12,9 +12,8 @@ use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
-use crate::document::{BrushShape, StrokeRecord};
+use crate::document::StrokeRecord;
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
 
 use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, Vec2};
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle};
@@ -143,6 +142,12 @@ const RESERVOIR_GROUPS: (u32, u32) = (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(
 
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
+///
+/// Immutable throughout, which the type now says rather than merely intends: it
+/// used to carry the round tip's coverage cache, the one mutable thing in a struct
+/// documented as built-once. That lives with its sibling on the renderer
+/// ([`StrokeRenderer::round_tip`](super::StrokeRenderer)), where the rest of the
+/// lazily-baked brush textures already were.
 #[derive(Clone)]
 pub(super) struct DynamicsKit {
     // Region composite: base tiles → one 1:1 canvas region (colour + wide aux).
@@ -197,8 +202,6 @@ pub(super) struct DynamicsKit {
     // Region → CoW tile write-back.
     pub(super) slice_pipeline: wgpu::RenderPipeline,
     pub(super) slice_bgl: wgpu::BindGroupLayout,
-    /// Cached round-tip coverage texture, keyed by `hardness.to_bits()`.
-    pub(super) round_cov: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
 }
 
 impl StrokeRenderer {
@@ -346,13 +349,7 @@ impl<'a> DynamicsRun<'a> {
             layout: &r.dynamics.prefix_bgl,
             entries: &[tex(0, &prefix_view)],
         });
-        let cov = match rec.brush.shape {
-            BrushShape::Stamp(id) => scene
-                .assets
-                .coverage_view(id)
-                .unwrap_or_else(|| r.round_coverage_view(BrushShape::DEFAULT_HARDNESS)),
-            BrushShape::Round { hardness } => r.round_coverage_view(hardness),
-        };
+        let cov = r.coverage_view(scene.assets, &rec.brush);
         // Colour dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
         let noise = r.noise_view(&rec.brush.color_dynamics);
@@ -2211,7 +2208,6 @@ pub(super) fn build_dynamics_kit(
         slice_pipeline,
         slice_bgl,
         prefix_bgl,
-        round_cov: Arc::new(Mutex::new(None)),
     }
 }
 

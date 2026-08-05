@@ -334,8 +334,16 @@ pub struct StrokeRenderer {
     pipeline: wgpu::RenderPipeline,
     uniform_bgl: wgpu::BindGroupLayout,
     prefix_bgl: wgpu::BindGroupLayout,
-    /// Cached round-tip prefix-τ, keyed by `hardness.to_bits()`.
-    round_prefix: Arc<Mutex<Option<(u32, wgpu::TextureView)>>>,
+    /// The round tip's baked textures, keyed by `hardness.to_bits()` (§6.6).
+    ///
+    /// **One entry, replaced rather than accumulated** — and that is a fact about the
+    /// key, not caution. Hardness is a continuous slider, so a live preview walks it
+    /// through a fresh value per frame while the user drags one: keeping every
+    /// position would bank ~320 KB of GPU texture apiece and never hand it back, while
+    /// keeping the last is exactly the working set of *adjust the knob and look*.
+    /// [`noise_cache`](Self::noise_cache) below grows without bound for the opposite
+    /// reason — its key is a small enum, so the whole domain fits and nothing evicts.
+    round_tip: Arc<Mutex<Option<(u32, RoundTip)>>>,
     /// Colour dynamics (§6.2): the sweep's noise bind group layout
     /// (group 2), the shared wrap/linear sampler, the 1×1×1 zero volume bound
     /// when a brush's jitter is off, and the lazily-baked per-kind fields.
@@ -659,7 +667,7 @@ impl StrokeRenderer {
             pipeline,
             uniform_bgl,
             prefix_bgl,
-            round_prefix: Arc::new(Mutex::new(None)),
+            round_tip: Arc::new(Mutex::new(None)),
             noise_bgl,
             noise_sampler,
             dummy_noise,
@@ -769,27 +777,48 @@ impl StrokeRenderer {
         match brush.shape {
             BrushShape::Stamp(id) => assets
                 .prefix_view(id)
-                .unwrap_or_else(|| self.round_prefix(BrushShape::DEFAULT_HARDNESS)),
-            BrushShape::Round { hardness } => self.round_prefix(hardness),
+                .unwrap_or_else(|| self.round_tip(BrushShape::DEFAULT_HARDNESS).prefix),
+            BrushShape::Round { hardness } => self.round_tip(hardness).prefix,
         }
     }
 
-    /// The round tip's prefix-τ texture for a given `hardness`, cached so live
-    /// preview (which re-renders per pointer move) doesn't rebuild it each frame.
-    fn round_prefix(&self, hardness: f32) -> wgpu::TextureView {
+    /// The brush's plain coverage mask — the weights a reservoir texel carries
+    /// (§6.2). Resolved exactly as [`Self::prefix_view`] is, from the same two
+    /// sources; only the stamp loop asks for it.
+    fn coverage_view(&self, assets: &AssetStore, brush: &BrushParams) -> wgpu::TextureView {
+        match brush.shape {
+            BrushShape::Stamp(id) => assets
+                .coverage_view(id)
+                .unwrap_or_else(|| self.round_tip(BrushShape::DEFAULT_HARDNESS).coverage),
+            BrushShape::Round { hardness } => self.round_tip(hardness).coverage,
+        }
+    }
+
+    /// The round tip's baked textures for a given `hardness`, cached so live preview
+    /// — which re-renders per pointer move — doesn't rebuild them each frame.
+    ///
+    /// The pair is built and cached **together**, off a single [`round_coverage`]
+    /// evaluation, because they are two readings of one field: 256² texels of `powf`
+    /// that used to be run twice for the same hardness, once per texture. Cached as
+    /// one entry for a second reason — held apart, the stamp loop could find its
+    /// prefix hot and its coverage cold, and pay the field again anyway.
+    fn round_tip(&self, hardness: f32) -> RoundTip {
         let key = hardness.to_bits();
-        let mut cache = self.round_prefix.lock().expect("round prefix poisoned");
-        if let Some((k, view)) = cache.as_ref()
+        let mut cache = self.round_tip.lock().expect("round tip cache poisoned");
+        if let Some((k, tip)) = cache.as_ref()
             && *k == key
         {
-            return view.clone();
+            return tip.clone();
         }
+        let cov = round_coverage(hardness, ROUND_RES);
         // The round tip is rotation-invariant, so a single orientation layer suffices —
         // the shader's wrapping lookup reads it for every orientation (§6.6).
-        let coverage = round_coverage(hardness, ROUND_RES);
-        let (_tex, view) = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &coverage);
-        *cache = Some((key, view.clone()));
-        view
+        let (_tex, prefix) = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
+        let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
+        let (_tex, coverage) = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
+        let tip = RoundTip { prefix, coverage };
+        *cache = Some((key, tip.clone()));
+        tip
     }
 
     /// The colour-dynamics noise tile for a brush: the baked field for its
@@ -808,26 +837,19 @@ impl StrokeRenderer {
         cache.push((cd.noise, view.clone()));
         view
     }
+}
 
-    /// The round tip's coverage texture for `hardness`, cached like the prefix.
-    fn round_coverage_view(&self, hardness: f32) -> wgpu::TextureView {
-        let key = hardness.to_bits();
-        let mut cache = self
-            .dynamics
-            .round_cov
-            .lock()
-            .expect("round coverage poisoned");
-        if let Some((k, view)) = cache.as_ref()
-            && *k == key
-        {
-            return view.clone();
-        }
-        let cov = round_coverage(hardness, ROUND_RES);
-        let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
-        let (_tex, view) = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
-        *cache = Some((key, view.clone()));
-        view
-    }
+/// The two textures a round tip bakes to (§6.6): the swept-footprint prefix-τ both
+/// render paths integrate against, and the plain coverage mask the stamp loop's
+/// reservoir texels weight by.
+///
+/// One type because they are one thing — the same coverage field, read two ways —
+/// and keeping them so is what makes a cache entry able to say it holds *the tip*
+/// rather than a texture that happens to be a tip's.
+#[derive(Clone)]
+struct RoundTip {
+    prefix: wgpu::TextureView,
+    coverage: wgpu::TextureView,
 }
 
 /// The flattening budget for a brush (§6.2). The error bounds are
