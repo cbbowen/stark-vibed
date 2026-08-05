@@ -22,16 +22,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use rpds::HashTrieMap;
-
 use crate::assets::{AssetStore, build_coverage_r8, build_prefix_tau};
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
 use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind, StrokeRecord};
-use crate::geom::TileCoord;
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
 
 mod budget;
@@ -128,7 +125,7 @@ pub struct StrokeScene<'a> {
     pub pool: &'a TilePool,
     pub assets: &'a AssetStore,
     /// The layer's committed tiles: what the stroke composites over.
-    pub base: &'a HashTrieMap<TileCoord, TilePairHandle>,
+    pub base: &'a TileMap,
     /// The selection in force, which gates the deposit (§6.8).
     pub selection: &'a Selection,
     /// The canvas surface the document was on when this stroke was made (§6.4) —
@@ -374,11 +371,7 @@ impl StrokeRenderer {
     /// receives the mask's fraction of whatever the stroke did there) and is what
     /// makes a feathered selection fade a stroke out instead of scaling its optical
     /// depth, which for an opaque brush would barely fade at all (§6.8).
-    pub fn render(
-        &self,
-        scene: StrokeScene<'_>,
-        rec: &StrokeRecord,
-    ) -> HashTrieMap<TileCoord, TilePairHandle> {
+    pub fn render(&self, scene: StrokeScene<'_>, rec: &StrokeRecord) -> TileMap {
         self.render_range(scene, rec, StrokeSpans::whole(rec), None)
             .0
     }
@@ -402,7 +395,7 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         spans: StrokeSpans,
         tool: Option<&ToolState>,
-    ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
+    ) -> (TileMap, StrokeCarry) {
         // Which path the stroke takes — and how finely it flattens — is decided from
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer

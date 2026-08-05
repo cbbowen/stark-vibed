@@ -30,7 +30,7 @@ use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2};
-use crate::gpu::tile::MaskHandle;
+use crate::gpu::tile::{MaskHandle, MaskMap};
 
 /// Largest number of mask tiles one op may rasterize (~64 MB of R8 coverage). An op
 /// that would exceed it is rejected rather than truncated — a silently clipped
@@ -182,7 +182,7 @@ impl SelectionOp {
 /// everywhere it has no tile (§6.8).
 #[derive(Clone)]
 pub struct Selection {
-    tiles: HashTrieMap<TileCoord, MaskHandle>,
+    tiles: MaskMap,
     /// Whether canvas outside [`Self::tiles`] is selected. Only ever fully in or
     /// fully out: every combine rule maps `{0,1}²` into `{0,1}`, and the only shape
     /// with non-zero coverage at infinity is `All`.
@@ -254,15 +254,11 @@ impl Selection {
 
     /// The mask map itself — cloning it is a handful of `Arc` bumps, which is how the
     /// renderer builds the next selection on top of this one.
-    pub(crate) fn tile_map(&self) -> &HashTrieMap<TileCoord, MaskHandle> {
+    pub(crate) fn tile_map(&self) -> &MaskMap {
         &self.tiles
     }
 
-    pub(crate) fn from_parts(
-        tiles: HashTrieMap<TileCoord, MaskHandle>,
-        outside: bool,
-        hull: Option<(Vec2, Vec2)>,
-    ) -> Self {
+    pub(crate) fn from_parts(tiles: MaskMap, outside: bool, hull: Option<(Vec2, Vec2)>) -> Self {
         // The hull's meaning is "coverage ⊆ hull"; an unbounded selection has no
         // such box, whatever a caller computed.
         let hull = if outside { None } else { hull };
@@ -458,25 +454,6 @@ pub(crate) fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// Drop points closer than `min_step` canvas px to the last kept one — the lasso's
-/// per-texel cost is linear in vertex count, and raw pointer samples are far denser
-/// than a mask boundary needs. The first and last samples are always kept, so the
-/// gesture's extent survives decimation.
-pub fn decimate(points: &[Vec2], min_step: f32) -> Vec<Vec2> {
-    let mut out: Vec<Vec2> = Vec::with_capacity(points.len());
-    for p in points {
-        if out.last().is_none_or(|q| q.distance(*p) >= min_step) {
-            out.push(*p);
-        }
-    }
-    if let (Some(last), Some(end)) = (out.last().copied(), points.last().copied())
-        && last != end
-    {
-        out.push(end);
-    }
-    out
-}
-
 /// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
 /// px (the interior origin, shifted out by the apron — §6.4).
 pub(crate) fn mask_tex_origin(coord: TileCoord) -> Vec2 {
@@ -578,15 +555,6 @@ mod tests {
             0.0,
         );
         assert!(sel.plan(&op).is_none());
-    }
-
-    #[test]
-    fn decimate_keeps_ends_and_thins_the_middle() {
-        let pts: Vec<Vec2> = (0..100).map(|i| Vec2::new(i as f32 * 0.5, 0.0)).collect();
-        let thinned = decimate(&pts, 3.0);
-        assert_eq!(thinned.first(), pts.first());
-        assert_eq!(thinned.last(), pts.last());
-        assert!(thinned.len() < pts.len() / 4, "got {}", thinned.len());
     }
 
     #[test]

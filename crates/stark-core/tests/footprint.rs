@@ -31,11 +31,10 @@ use common::{engine_or_skip, paint};
 use stark_core::Engine;
 use stark_core::assets::AssetId;
 use stark_core::command::{DocCommand, InputCommand};
-use stark_core::document::footprint::{Prop, Resource, footprint};
 use stark_core::document::{
     ActionKind, ActorId, BlendMode, DocState, FillOp, Layer, LayerContent, LayerId, MatteRegion,
-    PerspectiveMap, Selection, SelectionMode, SelectionOp, SelectionShape, TransformMap, WarpMap,
-    rect_corners,
+    PerspectiveMap, Prop, Resource, Selection, SelectionMode, SelectionOp, SelectionShape,
+    TransformMap, WarpMap, footprint, rect_corners,
 };
 use stark_core::geom::{Affine2, TileCoord, Vec2};
 use stark_core::gpu::SurfaceId;

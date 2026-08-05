@@ -8,7 +8,6 @@
 //! reservoir texture standing in for the tip's load.
 
 use bytemuck::{Pod, Zeroable};
-use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
@@ -16,7 +15,7 @@ use crate::document::StrokeRecord;
 use std::collections::BTreeSet;
 
 use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, Vec2};
-use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle};
+use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
 use super::budget::{BLEED_TRAVEL_QUANTUM, TAU_PER_PASS, WICK_TRAVEL_QUANTUM, flatten_tolerance};
 use super::segments::{
@@ -271,7 +270,7 @@ impl StrokeRenderer {
         spans: StrokeSpans,
         tool: Option<&ToolState>,
         tol: crate::path::FlattenTolerance,
-    ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
+    ) -> (TileMap, StrokeCarry) {
         // Nothing follows the range that reaches the end of the stroke, so there is no
         // reason to snapshot a reservoir for it — which is the common case, since the
         // live tail is exactly that range and it re-renders every pointer move.
@@ -517,12 +516,7 @@ impl<'a> DynamicsRun<'a> {
     /// for a later piece is what the earlier ones wrote back.
     /// `settle` is set only for the piece that ends the stroke: see
     /// [`StrokeRenderer::render_dynamic`] and `dynamics.wesl::settle`.
-    fn draw(
-        &mut self,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
-        segments: &[Segment],
-        settle: bool,
-    ) -> HashTrieMap<TileCoord, TilePairHandle> {
+    fn draw(&mut self, base: &TileMap, segments: &[Segment], settle: bool) -> TileMap {
         self.flush();
         let coords = affected_tiles(segments);
         // A piece holds at least one segment, and a segment covers at least one tile,
@@ -567,7 +561,7 @@ impl<'a> DynamicsRun<'a> {
     /// tile colour format of both colour spaces (asserted in `build_dynamics_kit`).
     fn composite_region(
         &mut self,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         halo: &[TileCoord],
         region_origin: Vec2,
         w: u32,
@@ -1033,11 +1027,11 @@ impl<'a> DynamicsRun<'a> {
     /// against it.
     fn write_back(
         &mut self,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         coords: &BTreeSet<TileCoord>,
         lo: Vec2,
         region: &Region,
-    ) -> HashTrieMap<TileCoord, TilePairHandle> {
+    ) -> TileMap {
         let r = self.r;
         let kit = &r.dynamics;
         let device = &r.ctx.device;

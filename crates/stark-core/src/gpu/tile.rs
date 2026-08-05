@@ -111,6 +111,15 @@ struct TilePair {
     aux: TexHandle,
 }
 
+/// A layer's painted tiles: sparse, so only populated ones exist, and persistent,
+/// so a `DocState` snapshot of one costs a handful of `Arc` bumps (§5.1, §6.1).
+/// The sparsity *is* the infinite canvas.
+pub type TileMap = rpds::HashTrieMap<crate::geom::TileCoord, TilePairHandle>;
+
+/// A selection's coverage tiles, in the very same sparse map the paint lives in —
+/// which is what lets a mask be feathered, unbounded, and free to snapshot (§6.8).
+pub type MaskMap = rpds::HashTrieMap<crate::geom::TileCoord, MaskHandle>;
+
 /// A handle to a tile. Cloning is cheap (Arc bumps), which is what makes persistent
 /// `DocState` snapshots cheap (§5.1).
 ///

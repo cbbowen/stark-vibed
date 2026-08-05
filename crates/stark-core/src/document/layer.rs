@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use super::action::ActorId;
 use super::state::CanvasBounds;
-use crate::geom::{TileCoord, Vec2};
-use crate::gpu::tile::TilePairHandle;
+use crate::geom::Vec2;
+use crate::gpu::tile::TileMap;
 
 /// Stable identifier for a layer within a document.
 ///
@@ -293,13 +293,13 @@ impl MatteRegion {
 /// is the kind of rule this codebase spends structure to avoid (§1).
 #[derive(Clone)]
 pub struct PaintTiles {
-    map: HashTrieMap<TileCoord, TilePairHandle>,
+    map: TileMap,
     bounds: CanvasBounds,
 }
 
 impl PaintTiles {
     /// The tiles, with their extent derived once.
-    fn new(map: HashTrieMap<TileCoord, TilePairHandle>) -> Self {
+    fn new(map: TileMap) -> Self {
         Self {
             bounds: CanvasBounds::of_tiles(map.keys()),
             map,
@@ -307,7 +307,7 @@ impl PaintTiles {
     }
 
     /// The sparse tile map itself.
-    pub fn map(&self) -> &HashTrieMap<TileCoord, TilePairHandle> {
+    pub fn map(&self) -> &TileMap {
         &self.map
     }
 }
@@ -440,7 +440,7 @@ impl Layer {
     /// `Option` rather than an empty map: "this layer has no tiles" is a real
     /// fact about it, and making callers say what they do about it is what keeps
     /// a matte from silently reading as an empty paint layer.
-    pub fn tiles(&self) -> Option<&HashTrieMap<TileCoord, TilePairHandle>> {
+    pub fn tiles(&self) -> Option<&TileMap> {
         match &self.content {
             LayerContent::Paint(tiles) => Some(tiles.map()),
             LayerContent::Matte { .. } => None,
@@ -478,7 +478,7 @@ impl Layer {
     }
 
     /// The same layer with its painted tiles replaced. A no-op on a matte.
-    pub fn with_tiles(&self, tiles: HashTrieMap<TileCoord, TilePairHandle>) -> Self {
+    pub fn with_tiles(&self, tiles: TileMap) -> Self {
         match &self.content {
             LayerContent::Paint(_) => Self {
                 content: LayerContent::Paint(PaintTiles::new(tiles)),

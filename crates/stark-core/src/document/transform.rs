@@ -10,13 +10,12 @@
 
 use std::collections::BTreeMap;
 
-use rpds::HashTrieMap;
 use serde::{Deserialize, Serialize};
 
 use super::selection::Selection;
 use super::warp::{Lattice, WarpMap, cell_point};
 use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TileCoord, TileRect, Vec2};
-use crate::gpu::tile::TilePairHandle;
+use crate::gpu::tile::TileMap;
 
 /// Largest number of paint tiles one transform may rewrite (~650 MB of transient
 /// tile allocation at the worst). A transform that would exceed it is rejected
@@ -361,7 +360,7 @@ pub(crate) struct TransformPlan {
 /// unusable affine, or more work than the caps allow — leaving the document
 /// untouched, deterministically.
 pub(crate) fn plan_paint(
-    tiles: &HashTrieMap<TileCoord, TilePairHandle>,
+    tiles: &TileMap,
     selection: &Selection,
     affine: Affine2,
 ) -> Option<TransformPlan> {
@@ -627,7 +626,7 @@ fn units_for_tile(
 /// Plan a rect-scoped transform of `tiles` under `selection`. `None` rejects
 /// the action, deterministically — the same stance as [`plan_paint`].
 pub(crate) fn plan_gated_paint(
-    tiles: &HashTrieMap<TileCoord, TilePairHandle>,
+    tiles: &TileMap,
     selection: &Selection,
     rect: (Vec2, Vec2),
     geo: &GatedMap,
@@ -1077,7 +1076,7 @@ mod tests {
         let rect = (Vec2::new(10.0, 10.0), Vec2::new(200.0, 200.0));
         let map = TransformMap::Warp(WarpMap::identity(rect.0, rect.1, 4, 4));
         let (r, geo) = gated_geometry(&map).unwrap();
-        let tiles: HashTrieMap<TileCoord, TilePairHandle> = HashTrieMap::new();
+        let tiles = TileMap::new();
         let sel = Selection::everything();
         let plan = plan_gated_paint(&tiles, &sel, r, &geo).unwrap();
         assert!(plan.rewrites.is_empty() && plan.drops.is_empty());
@@ -1122,7 +1121,7 @@ mod tests {
         // No paint and no mask tiles: both plans succeed and do nothing — the
         // classification and GPU paths are exercised by tests/transform.rs,
         // which has a device to mint real tile handles with.
-        let tiles: HashTrieMap<TileCoord, TilePairHandle> = HashTrieMap::new();
+        let tiles = TileMap::new();
         let sel = Selection::everything();
         let plan = plan_paint(&tiles, &sel, translation(10_000.0, 0.0)).unwrap();
         assert!(plan.rewrites.is_empty() && plan.drops.is_empty());

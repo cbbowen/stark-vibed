@@ -18,16 +18,14 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
 use crate::document::fill::{FillOp, plan};
 use crate::document::selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
-use crate::geom::TileCoord;
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::tile::{AllocSource, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 
 /// Mirrors `Fill` in `fill.wesl` (32 bytes).
 #[repr(C)]
@@ -155,10 +153,10 @@ impl FillRenderer {
     pub fn apply(
         &self,
         pool: &TilePool,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         gate: &Selection,
         op: &FillOp,
-    ) -> Option<HashTrieMap<TileCoord, TilePairHandle>> {
+    ) -> Option<TileMap> {
         let coords = plan(op, gate)?;
         if coords.is_empty() {
             return Some(base.clone());

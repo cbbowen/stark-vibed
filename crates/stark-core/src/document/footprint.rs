@@ -184,16 +184,11 @@ pub fn footprint(action: &Action) -> Footprint {
         },
         // Both anchors are read — the sibling to insert above and the layer whose
         // stack to insert into — because either being absent changes where the
-        // layer lands (§14.8).
-        ActionKind::AddLayer { id, carrier, above } => Footprint {
-            reads: [*carrier, *above]
-                .into_iter()
-                .flatten()
-                .map(Resource::Existence)
-                .collect(),
-            writes: vec![Resource::Existence(*id), Resource::StackOrder],
-        },
-        ActionKind::AddMatte {
+        // layer lands (§14.8). A matte arrives the same way and claims the same
+        // things, so the two share an arm: what a new layer *is* differs, where it
+        // lands does not.
+        ActionKind::AddLayer { id, carrier, above }
+        | ActionKind::AddMatte {
             id, carrier, above, ..
         } => Footprint {
             reads: [*carrier, *above]

@@ -42,7 +42,7 @@ use crate::document::transform::{
 use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TileMap, TilePairHandle, TilePool};
 
 /// Mirrors `Quad` in `transform.wesl`.
 #[repr(C)]
@@ -523,10 +523,10 @@ impl TransformRenderer {
     pub fn apply(
         &self,
         pool: &TilePool,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         selection: &Selection,
         map: &TransformMap,
-    ) -> Option<(HashTrieMap<TileCoord, TilePairHandle>, Selection)> {
+    ) -> Option<(TileMap, Selection)> {
         match map {
             TransformMap::Affine(affine) => self.apply_affine(pool, base, selection, *affine),
             TransformMap::Perspective(_) | TransformMap::Warp(_) => {
@@ -540,10 +540,10 @@ impl TransformRenderer {
     fn apply_affine(
         &self,
         pool: &TilePool,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         selection: &Selection,
         affine: Affine2,
-    ) -> Option<(HashTrieMap<TileCoord, TilePairHandle>, Selection)> {
+    ) -> Option<(TileMap, Selection)> {
         let plan = plan_paint(base, selection, affine)?;
         let mask_plan = plan_mask(selection, affine)?;
 
@@ -627,10 +627,10 @@ impl TransformRenderer {
     fn apply_gated(
         &self,
         pool: &TilePool,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         selection: &Selection,
         map: &TransformMap,
-    ) -> Option<(HashTrieMap<TileCoord, TilePairHandle>, Selection)> {
+    ) -> Option<(TileMap, Selection)> {
         let (rect, geo) = gated_geometry(map)?;
         let plan = plan_gated_paint(base, selection, rect, &geo)?;
         let mask_plan = plan_gated_mask(selection, rect, &geo)?;
@@ -729,7 +729,7 @@ impl TransformRenderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         pool: &TilePool,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         selection: &Selection,
         units: &[SourceUnit],
         unit_idxs: &[usize],
@@ -903,7 +903,7 @@ impl TransformRenderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         pool: &TilePool,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         selection: &Selection,
         affine: Affine2,
         dest: TileCoord,
@@ -976,7 +976,7 @@ impl TransformRenderer {
     fn combine(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        base: &HashTrieMap<TileCoord, TilePairHandle>,
+        base: &TileMap,
         selection: &Selection,
         dest: TileCoord,
         parcel: Option<&(TexHandle, TexHandle)>,

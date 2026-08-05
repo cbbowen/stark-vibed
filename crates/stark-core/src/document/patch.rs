@@ -284,6 +284,16 @@ fn restore_structure(state: &DocState, shape: &[(LayerId, Option<LayerId>)]) -> 
 
 /// The tile rect an action's footprint claims on `layer` — the region the
 /// commutation gate guarantees nothing in between has touched.
+///
+/// Asked of the footprint itself rather than re-derived, so the region a restore
+/// rewrites is the very region the action declared; the two cannot drift.
+///
+/// **Empty** when the footprint claims no paint on this layer, and that is the
+/// safe answer rather than a fallback: an action that did not declare paint here
+/// did not write paint here, so there is nothing of its to put back. Claiming
+/// everything instead would restore tiles *outside* the action's footprint —
+/// exactly the tiles a commuting action in the gap may own — which is the one
+/// thing [`tile_diff`]'s rect bound exists to prevent.
 fn paint_rect(action: &Action, layer: LayerId) -> TileRect {
     footprint(action)
         .writes
@@ -292,7 +302,7 @@ fn paint_rect(action: &Action, layer: LayerId) -> TileRect {
             Resource::Paint(l, rect) if *l == layer => Some(*rect),
             _ => None,
         })
-        .unwrap_or(TileRect::ALL)
+        .unwrap_or(TileRect::EMPTY)
 }
 
 /// Record `to`'s value for every tile entry of `layer` **within `rect`** that

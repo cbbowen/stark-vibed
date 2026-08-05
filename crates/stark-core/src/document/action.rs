@@ -396,47 +396,31 @@ impl history::Action for Action {
 
     fn apply(&self, state: DocState, ctx: &mut ApplyCtx) -> Result<DocState, Self::Error> {
         Ok(match &self.kind {
-            // A matte has no tile map, so a stroke targeting one is refused
-            // rather than swallowed or magically rasterized (§15.7).
-            // Refusing here (not only in the frontend) is what keeps replay and
-            // peers agreeing about a log that contains such a stroke.
             ActionKind::CommitStroke(rec) => {
-                // Cloned out of the tree before anything is rebuilt: the tile map
-                // is persistent, so this is a handful of `Arc` bumps, and it is
-                // what keeps the borrow of `state` from outliving the rewrite.
-                match state.layer(rec.layer).and_then(|l| l.tiles()).cloned() {
-                    Some(base) => {
-                        // The **author's** selection, as it stood at this point in
-                        // the log, gates the stroke (§6.8,
-                        // §17.3). Read from the state being folded over,
-                        // so replay reproduces it exactly; keyed by the author, so a
-                        // collaborator's lasso never clips this stroke.
-                        let selection = state.selection_of(self.id.actor);
-                        // The ground this stroke was painted on, as the log stood
-                        // here — not as it stands now (§6.4). The tooth gates the
-                        // deposit by it, so a mid-document `SetSurface` changes what
-                        // comes *after* it and nothing before, on replay exactly as
-                        // it did live.
-                        let surface = ctx.surface(state.surface);
-                        let tiles = ctx.stroke.render(
-                            crate::gpu::stroke::StrokeScene {
-                                pool: &ctx.pool,
-                                assets: &ctx.assets,
-                                base: &base,
-                                selection: &selection,
-                                surface: &surface,
-                            },
-                            rec,
-                        );
-                        state.map_layer(rec.layer, |l| l.with_tiles(tiles))
-                    }
-                    // Absent layer, or a matte — a matte has no tile map, so a
-                    // stroke targeting one is refused rather than swallowed
-                    // (§15.7). Refusing here and not only in the
-                    // frontend is what keeps replay and peers agreeing about a
-                    // log that happens to contain such a stroke.
-                    None => state,
-                }
+                let Some(base) = paint_base(&state, rec.layer) else {
+                    return Ok(state);
+                };
+                // The **author's** selection, as it stood at this point in the
+                // log, gates the stroke (§6.8, §17.3). Read from the state being
+                // folded over, so replay reproduces it exactly; keyed by the
+                // author, so a collaborator's lasso never clips this stroke.
+                let selection = state.selection_of(self.id.actor);
+                // The ground this stroke was painted on, as the log stood here —
+                // not as it stands now (§6.4). The tooth gates the deposit by it,
+                // so a mid-document `SetSurface` changes what comes *after* it and
+                // nothing before, on replay exactly as it did live.
+                let surface = ctx.surface(state.surface);
+                let tiles = ctx.stroke.render(
+                    crate::gpu::stroke::StrokeScene {
+                        pool: &ctx.pool,
+                        assets: &ctx.assets,
+                        base: &base,
+                        selection: &selection,
+                        surface: &surface,
+                    },
+                    rec,
+                );
+                state.map_layer(rec.layer, |l| l.with_tiles(tiles))
             }
             ActionKind::AddLayer { id, carrier, above } => {
                 state.insert_layer(*id, *carrier, *above)
@@ -529,20 +513,18 @@ impl history::Action for Action {
             // deterministically when unbounded or oversized, so peers and replays
             // agree about a log that contains one.
             ActionKind::Fill { layer, op } => {
-                match state.layer(*layer).and_then(|l| l.tiles()).cloned() {
-                    Some(base) => {
-                        let selection = state.selection_of(self.id.actor);
-                        match ctx.fill.apply(&ctx.pool, &base, &selection, op) {
-                            Some(tiles) => state.map_layer(*layer, |l| l.with_tiles(tiles)),
-                            None => {
-                                tracing::warn!(
-                                    "fill rejected (unbounded region or too many tiles); ignored"
-                                );
-                                state
-                            }
-                        }
+                let Some(base) = paint_base(&state, *layer) else {
+                    return Ok(state);
+                };
+                let selection = state.selection_of(self.id.actor);
+                match ctx.fill.apply(&ctx.pool, &base, &selection, op) {
+                    Some(tiles) => state.map_layer(*layer, |l| l.with_tiles(tiles)),
+                    None => {
+                        tracing::warn!(
+                            "fill rejected (unbounded region or too many tiles); ignored"
+                        );
+                        state
                     }
-                    None => state,
                 }
             }
         })
@@ -562,19 +544,34 @@ fn transform_apply(
     layer: LayerId,
     map: &crate::document::transform::TransformMap,
 ) -> DocState {
-    match state.layer(layer).and_then(|l| l.tiles()).cloned() {
-        Some(base) => {
-            let selection = state.selection_of(actor);
-            match ctx.transform.apply(&ctx.pool, &base, &selection, map) {
-                Some((tiles, moved_selection)) => state
-                    .map_layer(layer, |l| l.with_tiles(tiles))
-                    .with_selection(actor, moved_selection),
-                None => {
-                    tracing::warn!("transform rejected (unusable map or too many tiles); ignored");
-                    state
-                }
-            }
+    let Some(base) = paint_base(&state, layer) else {
+        return state;
+    };
+    let selection = state.selection_of(actor);
+    match ctx.transform.apply(&ctx.pool, &base, &selection, map) {
+        Some((tiles, moved_selection)) => state
+            .map_layer(layer, |l| l.with_tiles(tiles))
+            .with_selection(actor, moved_selection),
+        None => {
+            tracing::warn!("transform rejected (unusable map or too many tiles); ignored");
+            state
         }
-        None => state,
     }
+}
+
+/// The tiles `layer` paints into, or `None` if it has none — the gate every
+/// action that lays or moves paint passes through first.
+///
+/// **The refusal is the point.** A matte has no tile map, so a stroke, a fill or
+/// a transform aimed at one is turned away rather than swallowed or magically
+/// rasterized (§15.7) — and turned away *here*, in the engine, not only in the
+/// frontend, which is what keeps replay and peers agreeing about a log that
+/// happens to contain such an action. An absent layer reads the same way: there
+/// is nothing there to paint on.
+///
+/// Cloned out of the tree before anything is rebuilt: the map is persistent, so
+/// this is a handful of `Arc` bumps, and it is what keeps the borrow of the state
+/// from outliving the rewrite that follows.
+fn paint_base(state: &DocState, layer: LayerId) -> Option<crate::gpu::tile::TileMap> {
+    state.layer(layer).and_then(|l| l.tiles()).cloned()
 }

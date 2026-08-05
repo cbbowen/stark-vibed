@@ -324,29 +324,47 @@ carries.
 
 ---
 
-## 4. Small cleanups
+## 4. Small cleanups — **all done**
 
-- `footprint.rs:200-217`: the `AddLayer` and `AddMatte` arms are byte-identical;
-  an or-pattern `AddLayer { id, carrier, above } | AddMatte { id, carrier, above, .. }`
-  merges them (`patch.rs` already does exactly this).
-- `action.rs:947-950` and `:981-986`: the same "a matte has no tile map, so a
-  stroke targeting one is refused" paragraph appears twice inside one match arm.
-- Five arms of `apply` repeat
-  `state.layer(x).and_then(|l| l.tiles()).cloned()` → match → `warn` → no-op. One
-  `fn on_paint_layer(state, layer, f) -> DocState` puts the matte-refusal rule in
-  a single place and removes ~40 lines.
-- ~~`ReplicatedTimeline::redo_target` inlines `undo_target`'s body verbatim as
-  `latest_ordinary`; call it.~~ **done** with §2.1.
-- `patch::paint_rect` (`patch.rs:287-296`) rebuilds the entire `Footprint` (two
-  `Vec` allocations) to search for one rect, and silently falls back to
-  `TileRect::ALL` if it does not find one — an over-restore if the two ever
-  drift. A shared `footprint::paint_rect_of(kind, layer)` used by both would make
-  them one derivation.
-- Type aliases for `HashTrieMap<TileCoord, TilePairHandle>` and
-  `HashTrieMap<TileCoord, MaskHandle>`; they appear in a dozen signatures.
-- `mod.rs` both `pub mod`s every submodule and re-exports the curated set, giving
-  two public paths to everything. Nothing outside `document/` uses the submodule
-  paths — `pub(crate) mod` would make the re-export list the actual API.
-- `Modulations` needs four edits per new target (field, accessor, `all()`, the
-  `PRESSURE_SIZE` literal). Not urgent at six targets, but `all()` going stale is
-  a wrong `max_slope`, which is a staircased ramp rather than a compile error.
+- `footprint.rs`: the `AddLayer` and `AddMatte` arms were byte-identical; merged
+  into one or-pattern. What a new layer *is* differs; where it lands does not.
+- `action.rs`: the "a matte has no tile map, so a stroke targeting one is
+  refused" paragraph appeared twice inside a single match arm, and again in two
+  other arms.
+- Three arms of `apply` repeated `layer → tiles → match → warn → no-op` (the
+  three transforms share one function, so three sites rather than five). They now
+  open with `let Some(base) = paint_base(&state, layer) else { return … }`, which
+  drops a nesting level from each and puts §15.7's refusal — and *why* it is
+  refused in the engine rather than only in the frontend — in one place.
+- ~~`ReplicatedTimeline::redo_target` inlines `undo_target`'s body verbatim.~~
+  **done** with §2.1.
+- `patch::paint_rect` fell back to `TileRect::ALL` when the footprint declared no
+  paint on a layer. That is the **unsafe** direction, and the review had it
+  backwards: a too-large rect restores tiles *outside* the action's footprint,
+  which is exactly what a commuting action in the gap may own — the one thing
+  `tile_diff`'s rect bound exists to prevent. It is `EMPTY` now, which is also the
+  correct answer: an action that declared no paint here wrote none, so there is
+  nothing of its to put back. (Unreachable today; every paint action declares
+  its layer.) Deriving the rect from the footprint is *kept* — asking the
+  declaration itself is what stops the two drifting.
+- `TileMap` and `MaskMap` aliases in `gpu::tile`, replacing 33 spelled-out
+  `HashTrieMap<TileCoord, …>` signatures.
+- `mod.rs`'s submodules are `pub(crate)` and the re-export list is the API.
+  Measured before committing: this adds **zero** rustdoc warnings (24 before, 24
+  after — all pre-existing links to private items, which is this codebase's
+  deliberate style). `footprint`'s vocabulary joined the re-exports, since
+  `tests/footprint.rs` legitimately needs it from outside.
+- `Modulations::all` destructures `Self` instead of reading fields. A pattern
+  with no `..` is exhaustive, so adding a target now **fails to compile** until it
+  is listed — where before it would simply be missing from `max_slope`, and an
+  under-estimated slope is not an error anywhere, just a modulated ramp quietly
+  drawn as a staircase.
+
+### Found on the way
+
+Privatising the submodules surfaced **`selection::decimate` as dead code** — no
+caller anywhere in the workspace. It was superseded when `ShapeDrag::push` began
+enforcing `LASSO_MIN_STEP` as samples arrive; the comment recording that change
+notes the second decimation pass "could not change a thing", and the function was
+left behind. Deleted, with its test (§1: deleted rather than carried). `pub` in a
+`pub mod` had been hiding it from the dead-code lint.

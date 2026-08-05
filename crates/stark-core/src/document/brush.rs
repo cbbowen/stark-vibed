@@ -435,15 +435,23 @@ impl Modulations {
     }
 
     /// Every target at once, in the order they are declared above.
+    ///
+    /// Destructured rather than read field by field, and that is the whole reason
+    /// it is written this way: a pattern with no `..` is exhaustive, so adding a
+    /// target to the struct stops this compiling until it is listed here. Left as
+    /// field accesses, a new target would simply be missing from
+    /// [`max_slope`](Self::max_slope) — and an under-estimated slope is not an
+    /// error anywhere, it is a modulated ramp quietly drawn as a staircase.
     fn all(&self) -> [Option<Modulation>; 6] {
-        [
-            self.size,
-            self.flow,
-            self.lift,
-            self.deposit,
-            self.bleed,
-            self.tooth,
-        ]
+        let Self {
+            size,
+            flow,
+            lift,
+            deposit,
+            bleed,
+            tooth,
+        } = *self;
+        [size, flow, lift, deposit, bleed, tooth]
     }
 
     /// Whether any target is mapped.

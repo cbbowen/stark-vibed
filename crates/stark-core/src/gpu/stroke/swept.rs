@@ -6,11 +6,10 @@
 //! a range needs nothing from its predecessor but the arc length.
 
 use bytemuck::{Pod, Zeroable};
-use rpds::HashTrieMap;
 
 use crate::document::StrokeRecord;
-use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
-use crate::gpu::tile::{AllocSource, TilePairHandle};
+use crate::geom::{TILE_APRON, TILE_TEX};
+use crate::gpu::tile::{AllocSource, TileMap};
 
 use super::segments::{SegmentInstance, affected_tiles, generate_segments_in};
 use super::{
@@ -67,7 +66,7 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         spans: StrokeSpans,
         tol: crate::path::FlattenTolerance,
-    ) -> (HashTrieMap<TileCoord, TilePairHandle>, StrokeCarry) {
+    ) -> (TileMap, StrokeCarry) {
         let StrokeScene {
             pool,
             assets,
