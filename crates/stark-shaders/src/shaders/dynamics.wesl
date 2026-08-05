@@ -64,7 +64,7 @@
 // visibly different tools — which took a separate **gain parcel**, a linear ramp
 // serving it in across the interval, and two extra baked prefixes to evaluate that
 // ramp per fragment. A per-segment exchange has no step to hide: the segment length
-// *is* the reload step, and `stroke::flatten_tolerance` already caps it at a fraction
+// *is* the reload step, and `stroke::budget::flatten_tolerance` already caps it at a fraction
 // of the tip. All of it is gone.
 //
 // Conservation (§6.1): paint moves by transferring **height** — the one
@@ -317,7 +317,7 @@ fn exchange_at(e: f32) -> Exchange {
 // the exposure integral has, and for the same reason it matters. The falloff is linear
 // in arc length, so sampling it where the paint actually lands is exact, not merely
 // closer; it used to be baked in at the segment midpoint and bought back with a
-// `0.02 / drain` cap on segment length (`gpu::stroke::flatten_tolerance`).
+// `0.02 / drain` cap on segment length (`gpu::stroke::budget::flatten_tolerance`).
 fn stroke_drain(arc: f32) -> f32 {
     return max(1.0 - st.d.w * arc, 0.0);
 }
@@ -1090,7 +1090,7 @@ fn exchange(
 // prefix difference over 3e-4 radii — cancellation noise, whose arbitrary sign
 // draws crescents of misclassified texels through the footprint. So the host emits
 // one **bleed slot** per crossing of `BLEED_TRAVEL_QUANTUM` of absolute arc
-// (`stroke::dynamics_plan`): a straight quad whose sweep IS the firing's travel
+// (`stroke::dynamics::dynamics_plan`): a straight quad whose sweep IS the firing's travel
 // window — the chord over the last quantum of path — with every vertical rate and
 // the source zeroed, and λ_bleed alone nonzero. This dispatch then needs nothing
 // special: the slot's own `dpre`, over half a radius of travel, is the window's

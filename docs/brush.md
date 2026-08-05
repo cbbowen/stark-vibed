@@ -130,7 +130,7 @@ Adaptive sampling has one hard prerequisite, easy to violate silently: **the
 deposit must not depend on how the path was cut into segments.** Anything a
 segment applies *per segment* rather than per fragment also caps segment length,
 which the renderer supplies as a bound rather than the fitter assuming one
-(`gpu::stroke::flatten_tolerance`).
+(`gpu::stroke::budget::flatten_tolerance`).
 
 **Tapered ends.** `start_taper_length` / `end_taper_length` scale the tip down to
 a point over a run at each end, which is what turns an even-width digital line
@@ -158,7 +158,7 @@ Two places the obvious implementation is wrong:
   held back until it is a dab's travel past the start, which proves the stroke
   has outrun the dab for good. All three tests use chords, which under-estimate
   arc length, so what they admit is genuinely final; and an admitted prefix stays
-  admitted however the stroke continues (`gpu::stroke::safe_frozen`).
+  admitted however the stroke continues (`gpu::stroke::incremental::safe_frozen`).
 
 **Incremental repaint.** Freezing is what keeps a long stroke responsive. Drawing
 a live stroke costs (segments × tiles covered), both growing with length, so
@@ -189,7 +189,7 @@ The renderer cuts the path for its own purposes too, on the same argument. A
 region is a 1:1 copy of the canvas under the stroke, so a stroke crossing the
 document would want a region the size of the document; instead it is drawn in as
 many region-sized **pieces** as it takes, each compositing what the last wrote
-back (`gpu::stroke::chunk_segments`). Length therefore costs a dynamics stroke
+back (`gpu::stroke::segments::chunk_segments`). Length therefore costs a dynamics stroke
 pieces, not correctness — where it used to degrade past `MAX_REGION_DIM` to the
 plain swept deposit, which is not a coarser version of the same brush but a
 different one: the swept path only ever *adds* paint, so a brush whose purpose
@@ -203,7 +203,7 @@ the strongest form of that guarantee, since there is nothing about the piece, or
 about how long the stroke has grown, for it to disagree over — and what it asks
 is the floor no subdivision gets under: whether one segment's own footprint fits
 a region, since the reservoir pickup reduces over the whole tip at once. See
-`gpu::stroke::dynamics_setup`.
+`gpu::stroke::dynamics::dynamics_setup`.
 
 **Continuous stamping (swept segments).** Discrete dabs are visible with hard
 tips. The fix: stamp each short *segment* of the flattened curve as one quad
@@ -226,6 +226,13 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
   stacks the one parcel that comes out on the base through the shared law in
   `paint_common.wesl` — the very one a fill lands through and the one the stamp
   loop's `deposit` uses, so the two paths cannot drift.
+
+  The same argument is made once more on the host side. Which path a brush takes is
+  decided from axes that have nothing to do with colour or flow, so everything the
+  two share — the brush's channels in the working space, the canvas → weave scale,
+  the colour-dynamics lookup — is resolved once into a `StrokeConstants` and read by
+  both, rather than derived twice from the same record. Two derivations agreeing is
+  a coincidence to maintain; one derivation is a fact.
 
   Weighting by the brush's per-unit **opacity** instead — which the fast path did
   — is the same defect §6.3 names in the layer composite, one level down. `add`
@@ -292,7 +299,16 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
    compute pass** — the implicit barriers between dispatches give the sequential
    semantics, and usage scopes are per-dispatch, so the region can be sampled by
    one dispatch and storage-written by the next with no copies and no pass churn.
-   Per-dispatch parameters ride one dynamic-offset uniform buffer.
+   Per-dispatch parameters ride one dynamic-offset uniform buffer — as do the
+   write-back's per-tile offsets below, and the swept path's per-tile transforms.
+   That is a constraint rather than tidiness: a live stroke re-renders on every
+   pointer move, and on the web a buffer and a bind group *per tile per move* is a
+   rate of small allocations that JS GC cannot keep up with — the same pressure that
+   makes every transient here `destroy()`d on drop rather than left to collect.
+   A plan slot is one of exactly **three** shapes, and only the first touches the
+   tool: a painting **segment**, a **bleed** firing (see `bleed` below), and the
+   single **settle** that ends a stroke. The reservoir ping-pong therefore advances
+   on segments and on nothing else.
    - Per segment: **wick** (paint migrating within the tip, on its own travel
      cadence — often zero passes, see below), **bake** (integrate the reservoir
      along the travel axis), **exchange** (the tool's half of the transfer, one
@@ -464,7 +480,7 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
    - **What the step costs is scaled by the transfer rate**, not charged flat. The
      error is first order in the transfer a segment *completes*, `(k_lift + k_deposit)·τ·lr`,
      so holding that fixed is what makes one constant mean the same thing to every
-     brush; `stroke::exchange_travel` does it in closed form, since the rates enter as
+     brush; `stroke::budget::exchange_travel` does it in closed form, since the rates enter as
      `λ = ln(1 − axis)/TAU_PER_PASS` and the `τ` cancels. Measured across
      `lift = deposit` from 0.4 to 0.95, the length-dependence stays in a 1.1–2.2 level
      band while the segment length varies 6×. It only ever relaxes — a brush trading
