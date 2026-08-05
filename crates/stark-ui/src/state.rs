@@ -8,6 +8,7 @@ use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::prelude::*;
 
 use crate::collab;
+use crate::prefs::Prefs;
 use crate::render::Renderer;
 use stark_core::command::ViewCommand;
 use stark_core::document::{
@@ -80,8 +81,9 @@ pub struct AppState {
     /// (§11).
     ///
     /// A client preference like [`AssistState::enabled`], not document state — it is a
-    /// way of *looking* at the application, so it is never saved, never replicated, and
-    /// a collaborator's copy is theirs to set.
+    /// way of *looking* at the application, so it never enters the document and is never
+    /// replicated, and a collaborator's copy is theirs to set. It does follow *this*
+    /// browser between visits (`crate::prefs`).
     ///
     /// Nothing reads this but the app root, which turns it into a class on `.app-root`;
     /// what the class hides is decided in the stylesheet against the `.label` spans the
@@ -205,13 +207,14 @@ impl AppState {
                 dragging: root_signal(|| false),
             },
             assist: AssistState {
-                enabled: root_signal(|| true),
+                enabled: root_signal(|| Prefs::default().assist),
                 dwell: root_signal(|| None),
                 task: root_signal(|| None),
             },
-            // Off by default: the words are how the chrome is *learned*, and minimal
-            // mode is what you turn on once you no longer need them.
-            minimal: root_signal(|| false),
+            // Seeded from the preference defaults rather than written out again here:
+            // `prefs::load` overwrites both of these at app start, so a default stated
+            // in this file would be the one that never applies (`crate::prefs`).
+            minimal: root_signal(|| Prefs::default().minimal),
             transform: root_signal(|| None),
             guide_edit: root_signal(|| None),
             paint_queued: root_signal(|| false),

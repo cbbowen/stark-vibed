@@ -122,6 +122,7 @@ stark/
 │           ├── layout.rs       # floating panel chrome + drag/reorder
 │           ├── panels/         # one module per tool panel
 │           ├── settings.rs     # the unified settings dialog
+│           ├── prefs.rs        # what that dialog sets (localStorage)
 │           ├── widgets.rs      # shared small controls
 │           ├── platform.rs     # the two browser-only helpers
 │           ├── shapes.rs       # the per-browser brush shape library

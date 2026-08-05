@@ -14,9 +14,11 @@ dioxus = { version = "0.7.9", features = ["web", "asset"] }
 wgpu = { workspace = true }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 tracing = { workspace = true, features = ["max_level_debug"] }
-# Brush presets persist to localStorage as JSON (presets.rs): self-describing,
-# so stored presets survive `BrushParams` gaining fields — unlike the save
-# file's positional postcard. Already in the tree via dioxus.
+# Brush presets and the ⚙ dialog's settings persist to localStorage as JSON
+# (presets.rs, prefs.rs): self-describing, so stored values survive their struct
+# gaining fields — unlike the save file's positional postcard. Both already in
+# the tree via dioxus.
+serde = { workspace = true }
 serde_json = "1"
 
 # Web platform glue (the crate targets wasm32 via `dx serve --platform web`).

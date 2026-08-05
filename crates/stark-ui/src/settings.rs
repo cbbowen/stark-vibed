@@ -16,6 +16,11 @@
 //! - Settings **apply on the click**, so the dialog has a Done button and no
 //!   Cancel — there is nothing staged to discard, and a preference you can see
 //!   taking effect behind the dialog is one you can judge.
+//! - They are **saved on the click too**, per browser rather than into the
+//!   document (`crate::prefs`). A row does not opt in: [`SettingToggle`] persists
+//!   after calling its handler, so a row added here is durable by construction
+//!   and only its *value* has to be named, in `Prefs`. A future row that is not a
+//!   toggle is the one case that has to call [`prefs::save`] itself.
 //! - Every row is **always mounted**, including ones that only bite in some
 //!   contexts. A tool panel earns the opposite rule (a control that is present or
 //!   absent says whether the thing it governs exists — §6.8), but a
@@ -27,6 +32,7 @@ use dioxus::prelude::*;
 
 use crate::collab::CollabPhase;
 use crate::icons::{self, icon};
+use crate::prefs;
 use crate::state::{AppState, dispatch};
 use stark_core::command::ViewCommand;
 
@@ -130,6 +136,11 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
 /// settings dialog is where a control meets someone who has never seen it, and a
 /// bare label leaves them to guess. The whole row is the `<label>`, so the text is
 /// as clickable as the box.
+///
+/// Persisting is done **here** rather than in each row's handler, so that a row
+/// added to the dialog is durable without its author thinking about storage — the
+/// same "rule out the class" move the rest of the app makes. It runs after the
+/// handler, so what it captures is the state the click produced.
 #[component]
 fn SettingToggle(
     id: String,
@@ -139,6 +150,8 @@ fn SettingToggle(
     checked: bool,
     onchange: EventHandler<bool>,
 ) -> Element {
+    let state = use_context::<AppState>();
+
     rsx! {
         div { class: "setting-row",
             input {
@@ -146,7 +159,10 @@ fn SettingToggle(
                 class: "setting-check",
                 r#type: "checkbox",
                 checked,
-                onchange: move |e| onchange.call(e.checked()),
+                onchange: move |e| {
+                    onchange.call(e.checked());
+                    prefs::save(state);
+                },
             }
             label { r#for: "{id}", class: "setting-text",
                 div { class: "setting-label", "{label}" }

@@ -6596,6 +6596,7 @@ dependencies = [
  "dioxus",
  "dioxus-primitives",
  "js-sys",
+ "serde",
  "serde_json",
  "stark-core",
  "stark-net",

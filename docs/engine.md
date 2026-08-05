@@ -285,6 +285,21 @@ which the engine draws into directly. DOM chrome surrounds it.
   (Done, no Cancel: nothing is staged) and stay mounted even when inert, saying
   so in their own text — deliberately the opposite of the §6.8 rule for tool
   bars, because a settings dialog is read as the map of what is configurable.
+  - **They are saved on the click too** — per browser, in `localStorage`, never
+    into the document and never to peers (`prefs.rs`). "Set once and left alone"
+    is a promise a reload would otherwise break, so the settings follow the
+    browser the way the shape and preset libraries do, and degrade to a
+    per-session choice where storage is unavailable. One serde struct holds the
+    lot: `#[serde(default)]` per field is what lets a preference added later read
+    as its default out of values stored before it existed, instead of a parse
+    failure resetting everything the user had set. The dialog's rows do not opt
+    in — the toggle component persists after calling its handler, so a new row is
+    durable by construction and only its *value* has to be named. Loading
+    happens in two passes for the one preference that is engine session state
+    rather than a frontend signal (peer selection outlines, §17.3): the frontend
+    half applies in the root's body so the first render is already in the right
+    mode, and the engine half waits for the renderer, exactly as
+    `presets::load`/`apply_first` split.
 
 Because the engine is frontend-agnostic, this layer stays thin. (An earlier
 interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame

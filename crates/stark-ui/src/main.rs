@@ -27,6 +27,7 @@ mod input;
 mod layout;
 mod panels;
 mod platform;
+mod prefs;
 mod presets;
 mod render;
 mod settings;
@@ -112,6 +113,12 @@ fn app() -> Element {
     use_hook(|| shapes::load(state));
     use_hook(|| presets::load(state));
 
+    // The ⚙ dialog's settings follow the browser the same way. Applied here, in the
+    // root's own body, so the very first render is already in the mode the user left
+    // the app in — the engine-owned half of them waits for the renderer below
+    // (`crate::prefs`).
+    use_hook(|| prefs::load(state));
+
     use_hook(|| {
         let mut renderer = renderer;
         let mut obs = obs;
@@ -167,6 +174,11 @@ fn app() -> Element {
             update_brush(state, |b| {
                 b.color[..3].copy_from_slice(&panels::color::INITIAL_COLOR)
             });
+
+            // The settings that live in the engine rather than in a signal — there is
+            // one, and it is read by the session this block may be about to join, so it
+            // goes in before the join rather than after (`crate::prefs`).
+            prefs::load_engine(state);
 
             // A `#stark…` fragment in the page URL is a session invitation:
             // join it now that the engine is up (§12.4).
