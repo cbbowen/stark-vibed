@@ -173,14 +173,25 @@ the same flow lay down. The two paths have drifted before, by 157 levels, and
 both halves of that were quantities of exactly this kind. That test is the guard;
 this makes it harder to need.
 
-## 8. `MAX_STAMPS` no longer bounds what its doc claims
+## 8. `MAX_STAMPS` no longer bounds what its doc claims — **done**
 
-It says "cap on the segments one piece dispatches, which bounds its stamp uniform
-buffer". `chunk_segments` enforces it on segments, but `dynamics_plan` then
-appends up to one bleed slot per segment plus a settle slot, so the buffer can
-reach `2·MAX_STAMPS + 1` slots. Harmless today — the binding window is one slot
-and the buffer is far under `maxBufferSize` — but the stated bound is off by 2×.
-Either chunk on planned slots or fix the sentence.
+Fixed the sentence, not the chunker. `chunk_segments` caps **segments**, which is
+what the constant should say; `dynamics_plan` then adds up to one bleed slot per
+segment plus the settle, so a piece plans at most `2 · MAX_STAMPS + 1` slots —
+~2.1 MB of uniform buffer. Making the cut count planned slots would couple
+`chunk_segments` to the bleed cadence to save a megabyte nothing is short of, so
+the factor is now stated and the reason for leaving it alone with it.
+
+Its neighbour had the same class of error: `MAX_REGION_DIM` said a 2048² piece
+costs "~34 MB together" for colour and aux. Both are `Rgba16Float` at 8 B/texel,
+so each is 32 MiB and the pair is ~67 MB — the figure counted one texture. Now
+stated with the arithmetic so it can be checked, plus the note that it is per
+*piece*, since `flush` destroys a region as soon as it submits.
+
+Two cross-file invariants asserted in prose nearby both check out:
+`WICK_TRAVEL_QUANTUM` = `WICK_HALF / WICK_RATE` = 2/4 = 0.5, and the host's
+`BAKE_RES` = the shader's `128u` = its `@workgroup_size(128)`. See item 10 for
+making those structural rather than trusted.
 
 ## 9. Doc drift — **done**
 
@@ -223,6 +234,13 @@ in code, beside the taper tests in `segments.rs` that already do this for
   every stroke the suite draws, which is stronger than any case list.
 * `settle_tangent` against a trailing cluster of zero-length segments — the exact
   input its doc says produced 0°/−90°/90°/180° on a stroke running at 90°.
+
+Also worth doing here: the module states two cross-file invariants in prose only —
+`WICK_TRAVEL_QUANTUM` must equal the shader's `WICK_HALF / WICK_RATE`, and the
+host's `BAKE_RES` must equal the shader's. Both hold today (checked while doing
+item 8). `stark_shaders::dynamics()` hands back the shader source as a `&str`, so
+a test can read the constants straight out of it and assert the pair — CPU-only,
+so it runs in CI whether or not there is an adapter.
 
 ## 11. Small
 

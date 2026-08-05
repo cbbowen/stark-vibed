@@ -26,13 +26,25 @@ use crate::document::{BrushDynamics, BrushParams};
 pub(super) const TAU_PER_PASS: f32 = 6.9;
 /// Largest region edge (canvas px) the stamp loop composites at once. A stroke that
 /// wants more is drawn in as many region-sized *pieces* as it takes
-/// ([`chunk_segments`](super::segments::chunk_segments)), so this bounds the loop's transient GPU memory —
-/// at 2048² the colour and aux regions are ~34 MB together — rather than deciding
-/// which strokes the loop can draw at all (§6.2).
+/// ([`chunk_segments`](super::segments::chunk_segments)), so this bounds the loop's
+/// transient GPU memory rather than deciding which strokes the loop can draw at all
+/// (§6.2).
+///
+/// At 2048² that is ~67 MB for a piece: colour and aux are both `Rgba16Float`, so
+/// each is 2048² × 8 B = 32 MiB. And it really is *per piece* rather than per stroke,
+/// because `DynamicsRun::flush` destroys a piece's region as soon as it submits it.
 pub(super) const MAX_REGION_DIM: u32 = 2048;
-/// Cap on the segments one piece dispatches, which bounds its stamp uniform buffer.
-/// Reached only by a stroke fine enough to fill a whole region with segments, and it
-/// cuts a new piece rather than coarsening anything.
+/// Cap on the **segments** one piece dispatches. Reached only by a stroke fine enough
+/// to fill a whole region with them, and it cuts a new piece rather than coarsening
+/// anything.
+///
+/// It bounds the stamp uniform buffer, but not one slot per segment: `dynamics_plan`
+/// also emits a bleed slot per crossing of the bleed cadence — at most one per segment
+/// — and the pen-up settle, so a piece plans at most `2 · MAX_STAMPS + 1` slots. At
+/// [`UNIFORM_STRIDE`](super::UNIFORM_STRIDE) apiece that is ~2.1 MB, which is why the
+/// factor is worth stating and not worth chunking around: making the cut count planned
+/// slots would couple `chunk_segments` to the bleed cadence to save a megabyte it does
+/// not need.
 pub(super) const MAX_STAMPS: usize = 4096;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
 /// (§6.2) — which, since the tool now exchanges once per *segment*, is
