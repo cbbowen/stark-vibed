@@ -2130,6 +2130,18 @@ impl Engine {
         self.timeline.stats()
     }
 
+    /// How many in-flight strokes the preview fold is caching a settled head for
+    /// (§17.6) — at most one per actor who is *currently* drawing one.
+    ///
+    /// For tests and diagnostics, beside [`timeline_stats`](Self::timeline_stats) and
+    /// for the same reason: a head is a cache, so pixels cannot show whether one is
+    /// held. What they also cannot show is a head held for a gesture that has *ended*,
+    /// which is not a wrong picture but a `DocState`'s worth of tile handles the pool
+    /// cannot reclaim — invisible until the GPU runs out. Countable here instead.
+    pub fn live_head_count(&self) -> usize {
+        self.heads.len()
+    }
+
     // --- presence (§17.4) -------------------------------------
     //
     // Symmetric with the action hooks above, and deliberately a separate channel:
@@ -2650,6 +2662,15 @@ impl Engine {
     /// touch the same tile in the same instant, the higher `ActorId` wins it — and a
     /// preview of concurrent strokes is provisional in any case, because the true
     /// result depends on the total order, which is not known until both commit.
+    ///
+    /// The cache is rebuilt into a **fresh** map rather than edited in place, which is
+    /// what bounds it: a head is kept by being carried over, so one whose gesture is no
+    /// longer in flight is dropped by construction rather than by a call somebody has
+    /// to remember to make. Edited in place it was kept instead — the only cleanup was
+    /// the wholesale `clear()` on the "nobody is gesturing" path above, so a peer that
+    /// lifted while another went on painting left its head behind, and with it a whole
+    /// `DocState`'s worth of `Arc<GpuTile>` handles that the pool could not reclaim.
+    /// Exactly while two people are painting, which is when there is least to spare.
     fn refresh_live(&mut self) {
         let gestures = self.live_gestures();
         if gestures.is_empty() {
@@ -2662,7 +2683,10 @@ impl Engine {
             .clone()
             .unwrap_or_else(|| self.timeline.current().clone());
         let mut out = base.clone();
-        let mut heads = std::mem::take(&mut self.heads);
+        // Last fold's cache to draw from, and this fold's to fill: what is not moved
+        // across is released when `cached` drops at the end of the call.
+        let mut cached = std::mem::take(&mut self.heads);
+        let mut heads = BTreeMap::new();
         for GestureView {
             actor,
             gesture,
@@ -2680,7 +2704,6 @@ impl Engine {
                     {
                         out = out.with_selection(actor, selection);
                     }
-                    heads.remove(&actor);
                 }
                 // A fill previews as the paint it will lay, not as an outline of
                 // where it would go — the same `FillRenderer::apply` the commit
@@ -2697,10 +2720,9 @@ impl Engine {
                             out = out.map_layer(layer, |l| l.with_tiles(filled));
                         }
                     }
-                    heads.remove(&actor);
                 }
                 LiveGesture::Stroke(rec) => {
-                    let head = heads.remove(&actor).filter(|h| {
+                    let head = cached.remove(&actor).filter(|h| {
                         h.epoch == self.doc_epoch && h.gesture == ordinal && h.spans <= frozen
                     });
                     let (head, tail_state) =

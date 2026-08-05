@@ -501,6 +501,18 @@ without the previous code's side effect of dropping the cache on *every*
 non-gesture command — which with peers painting would have thrown away their
 heads whenever this client so much as panned.
 
+**A head's lifetime is its gesture's.** The epoch above says when a head is
+*wrong*; this says when it stops being anyone's. The fold rebuilds the cache into
+a fresh map each time and carries a head across only for an actor still drawing,
+so a gesture that ends releases its head by construction rather than by a call
+somebody has to remember to make. That the two rules are separate matters,
+because their failures look nothing alike: a stale head draws the wrong picture
+and is caught by a golden, while a head that outlives its gesture draws the
+*right* picture and quietly holds a `DocState`'s worth of tile handles the pool
+cannot reclaim. Only a second painter can reach it — with nobody drawing the fold
+clears the cache wholesale — so the leak was one peer lifting while another
+painted on, which is exactly when there is least GPU memory to spare.
+
 ### 17.7 Commands and transport
 
 §4's own principle — *the class is in the type, not in a comment* — is why

@@ -506,6 +506,95 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
     assert_eq!(engine.peers().count(), 0, "the peer left");
 }
 
+/// One frame of a peer's presence: a stroke in flight, or (with `points` empty) the
+/// frame that takes it down.
+fn stroking(seq: u64, points: &[Vec2]) -> PeerFrame {
+    PeerFrame {
+        boot: 0,
+        seq,
+        name: None,
+        active_layer: LayerId(0),
+        cursor: None,
+        gesture: (!points.is_empty()).then(|| GestureFrame::Stroke {
+            id: 0,
+            head: Some(StrokeHead {
+                layer: LayerId(0),
+                brush: common::brush(GREEN, 12.0),
+                seed: 1,
+            }),
+            from: 0,
+            points: points
+                .iter()
+                .map(|p| stark_core::path::ControlPoint::at(*p))
+                .collect(),
+        }),
+        leaving: false,
+    }
+}
+
+/// **A settled head must not outlive the gesture it is the head of** (§17.6).
+///
+/// The preview fold caches one per actor mid-stroke, and a head owns a whole
+/// `DocState` — tile handles the pool cannot reclaim while it is held. Nothing on
+/// screen can show one being kept too long: the picture is right either way, and the
+/// cost is GPU memory, invisible until there is none.
+///
+/// The case is *one actor lifting while another paints on*. A fold that finds no
+/// gesture at all clears the cache wholesale, so a single-actor test passes however
+/// the retention is written; it takes a second actor to reach the path where a head
+/// has to be dropped one at a time. Both directions are checked because they are the
+/// same bug — the cache is rebuilt into a fresh map, so *neither* a peer nor this
+/// client can leave one behind.
+#[test]
+fn a_settled_head_does_not_outlive_its_gesture() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.start_collaboration(ActorId(1));
+    engine.process(ViewCommand::SetBrush(common::brush(RED, 12.0)));
+    assert_eq!(engine.live_head_count(), 0, "nobody is drawing yet");
+
+    // This client starts a stroke...
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(CROSSING[0]),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(Vec2::new(0.0, 40.0)),
+    });
+    assert_eq!(engine.live_head_count(), 1);
+
+    // ...and a peer starts one too.
+    assert!(engine.merge_presence(ActorId(2), stroking(1, &CROSSING), 0.0));
+    assert_eq!(engine.live_head_count(), 2, "one head per stroke in flight");
+
+    // The peer lifts while this client paints on. Its head must go with it, and the
+    // fold cannot fall back on clearing everything — this client is still drawing.
+    assert!(engine.merge_presence(ActorId(2), stroking(2, &[]), 0.1));
+    assert_eq!(
+        engine.live_head_count(),
+        1,
+        "the peer stopped drawing, so its cached head is owed back to the pool"
+    );
+
+    // Now the other way round: the peer starts again, and this client is the one
+    // that lifts. Committing rebuilds the fold over a document the peer's head no
+    // longer matches, which is what makes this the same fold with both roles swapped.
+    assert!(engine.merge_presence(ActorId(2), stroking(3, &CROSSING), 0.2));
+    assert_eq!(engine.live_head_count(), 2);
+    engine.process(GestureCommand::End);
+    assert_eq!(
+        engine.live_head_count(),
+        1,
+        "this client's stroke committed, so its head is stale by definition"
+    );
+
+    // And with nobody drawing, nothing is cached at all.
+    assert!(engine.merge_presence(ActorId(2), stroking(4, &[]), 0.3));
+    assert_eq!(engine.live_head_count(), 0);
+}
+
 /// A collaborator's selection outline is off by default and drawn only when this
 /// client asks for it — a view setting, so it changes what you look at and nothing
 /// about the drawing (§17.3). Your own outline is unaffected either way.
