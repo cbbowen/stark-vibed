@@ -911,7 +911,7 @@ fn stroke_spans_multiple_tiles_via_cow() {
     // around (0,0); copy-on-write should have populated more than one.
     let populated: usize = engine
         .document()
-        .layers
+        .root()
         .iter()
         .map(|l| l.tiles().map_or(0, |t| t.size()))
         .sum();

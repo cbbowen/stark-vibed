@@ -87,8 +87,23 @@ pub struct LayerSite {
 pub struct DocState {
     /// The root stack, bottom-to-top. The tree lives *inside* it: a layer's
     /// [`carries`](Layer::carries) is the group it is the base of.
-    pub layers: Vector<Layer>,
-    pub bounds: CanvasBounds,
+    ///
+    /// Private, with [`root`](Self::root) to read it, because [`bounds`] is
+    /// derived from it: the two are one fact in two forms, and a struct literal
+    /// that set the first without the second would be a document whose extent
+    /// disagrees with its paint. Only this module can write either, and only
+    /// [`with_layers`](Self::with_layers) writes them together.
+    ///
+    /// [`bounds`]: Self::bounds
+    layers: Vector<Layer>,
+    /// The explored extent of the infinite canvas — the union of every layer's
+    /// own (§6), **derived** from `layers` and never set beside it.
+    ///
+    /// Worth the privacy rather than trusted to convention: this is what "frame
+    /// to content" and export's no-frame fallback measure (§15.6), so a value out
+    /// of step with the paint is a wrongly-cropped export, and nothing about the
+    /// pixels would say so.
+    bounds: CanvasBounds,
     /// The active selection **of each actor** (§6.8, §17.3).
     ///
     /// Document state, not session state: a stroke's pixels depend on the mask it
@@ -151,14 +166,37 @@ pub const DEFAULT_SURFACE: SurfaceId = SurfaceId::Flat;
 
 impl DocState {
     /// An empty document with a single starting layer and nothing masked.
+    ///
+    /// Built by *inserting* that layer rather than by naming the pair directly,
+    /// so [`with_layers`](Self::with_layers) stays the one place `bounds` is ever
+    /// written. The literal below is the only `DocState` with no layers at all,
+    /// and its empty extent is the one that needs no deriving.
     pub fn with_layer(id: LayerId) -> Self {
         Self {
-            layers: Vector::new().push_back(Layer::new(id)),
+            layers: Vector::new(),
             bounds: CanvasBounds::default(),
             selections: HashTrieMap::new(),
             surface: DEFAULT_SURFACE,
             background: DEFAULT_BACKGROUND,
         }
+        .insert_layer(id, None, None)
+    }
+
+    /// The root stack, bottom-to-top — the tree's top level, each layer carrying
+    /// its own subtree. The compositor walks it to build the draw list.
+    ///
+    /// Compare [`visit`](Self::visit), which flattens the whole tree in composite
+    /// order and is what most readers want.
+    pub fn root(&self) -> &Vector<Layer> {
+        &self.layers
+    }
+
+    /// The explored extent of the canvas: the union of every layer's painted
+    /// tiles, at every depth (§6). Empty for a document with no paint — and for
+    /// one holding nothing but mattes, which cover the infinite plane and so
+    /// contribute no extent at all (§15.6).
+    pub fn bounds(&self) -> CanvasBounds {
+        self.bounds
     }
 
     /// The same document on a different canvas surface (§6.4).

@@ -1438,7 +1438,7 @@ impl Engine {
                 vec![CompositeGroup::run(BlendMode::Normal, false, items)]
             };
         }
-        self.composite_stack(doc.layers.iter())
+        self.composite_stack(doc.root().iter())
     }
 
     /// One stack's worth of groups — the root's, or a layer's carried stack.
@@ -1663,7 +1663,7 @@ impl Engine {
         {
             return region.rect();
         }
-        if let Some((min, max)) = doc.bounds.tile_range() {
+        if let Some((min, max)) = doc.bounds().tile_range() {
             let t = crate::geom::TILE_SIZE as f32;
             return (
                 crate::geom::Vec2::new(min.x as f32 * t, min.y as f32 * t),
@@ -1880,7 +1880,7 @@ impl Engine {
             tool: self.session.tool,
             brush: self.session.brush,
             view: self.session.view,
-            bounds: doc.bounds,
+            bounds: doc.bounds(),
             doc_revision: self.doc_revision,
             active_layer: self.session.active_layer,
             layers,

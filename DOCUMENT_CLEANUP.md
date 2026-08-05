@@ -213,12 +213,22 @@ in scope in `action.rs`). `document/` is now clean under
 pre-existing and both outside this review's scope: `Session::publish_due` in
 `engine.rs:2112` and `Self::adopt_default_name` in `session.rs:299`.
 
-### 3.3 `DocState`'s derived field is public — open
+### 3.3 `DocState`'s derived field was public — **done**
 
-`bounds` is a pure function of `layers`, but both are `pub` (`state.rs:63-103`).
-`layers` has exactly one external reader (`engine.rs:1441`); making both private
-behind a `root()` accessor makes "bounds tracks layers" structural rather than a
-convention `with_layers` happens to uphold.
+`bounds` is a pure function of `layers`, and both were `pub` — so the invariant
+that the two agree was a convention `with_layers` happened to uphold rather than
+something the type enforced. It matters because `bounds` is what "frame to
+content" and export's no-frame fallback measure (§15.6): a value out of step with
+the paint is a wrongly-cropped export, and nothing about the pixels would say so.
+
+Both are private now, behind `root()` and `bounds()`. The three external readers
+(one of `layers`, two of `bounds`, all in `engine.rs`) plus one test moved over.
+
+The part that makes it structural rather than cosmetic: `with_layer` now builds
+the empty document and *inserts* its first layer, instead of naming the
+layers/bounds pair directly. So `with_layers` — which derives the extent — is the
+only place `bounds` is ever written, and the one remaining literal describes a
+`DocState` with no layers at all, whose empty extent needs no deriving.
 
 ### 3.4 Two tile-rectangle types and five copies of the quantizer — **done** (one half deliberately not)
 
