@@ -15,6 +15,7 @@ Three passes, separable and in order of value per unit risk:
 
 - **(a) Latent breaks** — small, high value, no pixels move. §1. **Done.**
 - **(b) Helper extraction** — large, purely mechanical, goldens bit-identical. §3.
+  **Done.**
 - **(c) `composite.rs` split** — structural, no behaviour change. §2.
 
 Run `cargo test --workspace` once after each pass, not after each edit.
@@ -172,7 +173,19 @@ or record why they are exempt from the argument the buffers were not.
 
 ---
 
-## 3. Mechanical duplication — pass (b)
+## 3. Mechanical duplication — pass (b) — **done**
+
+All of it now lives in `gpu/desc.rs`. Net **−1073 lines** across the eight files
+touched, against 367 added, and the same 538 tests pass with the same names —
+25 goldens compared against real pixels, not skipped.
+
+One risk was worth naming rather than assuming away. `QUAD_STRIP` had to be
+spelled out field by field, because a `const` cannot call `Default::default()`,
+and it replaced ten pipelines that had spelled their primitive state inline. A
+field that disagreed would change what those rasterize with nothing failing to
+say so — so `quad_strip_is_the_default_with_a_strip_topology` pins it against
+both forms it replaced. Every other field these helpers fill in is one wgpu
+validates or one the shader ignores.
 
 All the same shape: a helper that exists once, correctly, and is then re-typed
 everywhere else. Roughly 800–1000 lines recoverable, none of it behavioural.

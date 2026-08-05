@@ -41,7 +41,8 @@ use crate::document::transform::{
 };
 use crate::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
-use crate::gpu::selection::SelectionRenderer;
+use crate::gpu::desc;
+use crate::gpu::selection::{SelectionRenderer, outside_clear};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TileMap, TilePairHandle, TilePool};
 
 /// Mirrors `Quad` in `transform.wesl`.
@@ -227,261 +228,148 @@ impl TransformRenderer {
             source: wgpu::ShaderSource::Wgsl(stark_shaders::transform().into()),
         });
 
-        let sample_tex = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let load_tex = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                // Read with `textureLoad` only, clamped to the bound extent.
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-
-        let quad_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark transform quad bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    // The vertex stage places the quad through the forward affine;
-                    // the fragment stage taps the source through the inverse.
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+        let frag = wgpu::ShaderStages::FRAGMENT;
+        let quad_bgl = desc::bind_group_layout(
+            device,
+            "stark transform quad bgl",
+            &[
+                // The vertex stage places the quad through the forward affine; the
+                // fragment stage taps the source through the inverse.
+                desc::uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                desc::sampler(1, frag),
             ],
-        });
-        let src_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark transform src bgl"),
-            entries: &[sample_tex(0), sample_tex(1), sample_tex(2)],
-        });
+        );
+        let src_bgl = desc::bind_group_layout(
+            device,
+            "stark transform src bgl",
+            &[
+                desc::sample_tex(0, frag),
+                desc::sample_tex(1, frag),
+                desc::sample_tex(2, frag),
+            ],
+        );
         // The mask pass reads only the source mask (binding 2).
-        let mask_src_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark transform mask src bgl"),
-            entries: &[sample_tex(2)],
-        });
-        let combine_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark transform combine bgl"),
-            entries: &[
-                load_tex(2),
-                load_tex(3),
-                load_tex(4),
-                load_tex(5),
-                load_tex(6),
-                // The gate rect (binding 7): zeroed for the affine's
-                // whole-plane cut, the source rect for perspective/warp.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+        let mask_src_bgl = desc::bind_group_layout(
+            device,
+            "stark transform mask src bgl",
+            &[desc::sample_tex(2, frag)],
+        );
+        let combine_bgl = desc::bind_group_layout(
+            device,
+            "stark transform combine bgl",
+            &[
+                desc::load_tex(2, frag),
+                desc::load_tex(3, frag),
+                desc::load_tex(4, frag),
+                desc::load_tex(5, frag),
+                desc::load_tex(6, frag),
+                // The gate rect (binding 7): zeroed for the affine's whole-plane cut,
+                // the source rect for perspective/warp.
+                desc::uniform(7, frag),
             ],
-        });
+        );
 
-        let quad_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark transform quad layout"),
-            bind_group_layouts: &[Some(&quad_bgl), Some(&src_bgl)],
-            immediate_size: 0,
-        });
-        let mask_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark transform mask layout"),
-            bind_group_layouts: &[Some(&quad_bgl), Some(&mask_src_bgl)],
-            immediate_size: 0,
-        });
-        let combine_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark transform combine layout"),
-            bind_group_layouts: &[Some(&combine_bgl)],
-            immediate_size: 0,
-        });
+        let quad_layout = desc::pipeline_layout(
+            device,
+            "stark transform quad layout",
+            &[Some(&quad_bgl), Some(&src_bgl)],
+        );
+        let mask_layout = desc::pipeline_layout(
+            device,
+            "stark transform mask layout",
+            &[Some(&quad_bgl), Some(&mask_src_bgl)],
+        );
+        let combine_layout = desc::pipeline_layout(
+            device,
+            "stark transform combine layout",
+            &[Some(&combine_bgl)],
+        );
 
-        let strip = wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            // A negative-determinant affine (a flip) reverses winding; both faces
-            // must draw.
-            cull_mode: None,
-            ..Default::default()
+        // A negative-determinant affine (a flip) reverses winding, so both faces must
+        // draw — which `QUAD_STRIP` already leaves unculled.
+        let strip = desc::QUAD_STRIP;
+        // Parcels are disjoint; the combine computes rather than blends.
+        let target = desc::target;
+
+        // The paint pair, and the mask alone.
+        let paint = [target(color_format), target(aux_format)];
+        let mask = [target(MASK_FORMAT)];
+        // Moved mask coverage lands with **max** blending over the residue: the soft
+        // union of what stayed and what arrived (§16.8), and — unlike the paint
+        // parcels — safe under any draw order.
+        let max_blend = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Max,
         };
-        let target = |format| {
-            Some(wgpu::ColorTargetState {
-                format,
-                blend: None, // parcels are disjoint; the combine computes, not blends
-                write_mask: wgpu::ColorWrites::ALL,
-            })
-        };
-
-        let parcel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark transform parcel"),
-            layout: Some(&quad_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_quad"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: strip,
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_parcel"),
-                compilation_options: Default::default(),
-                targets: &[target(color_format), target(aux_format)],
+        let mask_union = [desc::blended_target(
+            MASK_FORMAT,
+            Some(wgpu::BlendState {
+                color: max_blend,
+                alpha: max_blend,
             }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark transform mask"),
-            layout: Some(&mask_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_quad"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: strip,
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_mask"),
-                compilation_options: Default::default(),
-                targets: &[target(MASK_FORMAT)],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let combine_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark transform combine"),
-            layout: Some(&combine_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_fill"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_combine"),
-                compilation_options: Default::default(),
-                targets: &[target(color_format), target(aux_format)],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let parcel_gated_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("stark transform parcel gated"),
-                layout: Some(&quad_layout),
-                vertex: wgpu::VertexState {
+        )];
+        // One quad per source unit, forward-rasterized; and the two fullscreen passes
+        // that read a whole destination tile back (`vs_fill`).
+        let quad = |label, layout, fs, targets: &[Option<wgpu::ColorTargetState>], vs| {
+            desc::render_pipeline(
+                device,
+                desc::RenderPipe {
+                    label,
+                    layout,
                     module: &shader,
-                    entry_point: Some("vs_gated"),
-                    compilation_options: Default::default(),
+                    vs,
+                    fs,
+                    primitive: strip,
                     buffers: &[],
+                    targets,
                 },
-                primitive: strip,
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_parcel_gated"),
-                    compilation_options: Default::default(),
-                    targets: &[target(color_format), target(aux_format)],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-        // Moved mask coverage lands with **max** blending over the residue:
-        // the soft union of what stayed and what arrived (§16.8), and — unlike
-        // the paint parcels — safe under any draw order.
-        let mask_union = Some(wgpu::ColorTargetState {
-            format: MASK_FORMAT,
-            blend: Some(wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Max,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Max,
-                },
-            }),
-            write_mask: wgpu::ColorWrites::ALL,
-        });
-        let mask_gated_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark transform mask gated"),
-            layout: Some(&mask_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_gated"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: strip,
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_mask_gated"),
-                compilation_options: Default::default(),
-                targets: std::slice::from_ref(&mask_union),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let mask_base_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark transform mask base"),
-            layout: Some(&mask_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_fill"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_mask_base"),
-                compilation_options: Default::default(),
-                targets: &[target(MASK_FORMAT)],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+            )
+        };
+        let parcel_pipeline = quad(
+            "stark transform parcel",
+            &quad_layout,
+            "fs_parcel",
+            &paint,
+            "vs_quad",
+        );
+        let mask_pipeline = quad(
+            "stark transform mask",
+            &mask_layout,
+            "fs_mask",
+            &mask,
+            "vs_quad",
+        );
+        let parcel_gated_pipeline = quad(
+            "stark transform parcel gated",
+            &quad_layout,
+            "fs_parcel_gated",
+            &paint,
+            "vs_gated",
+        );
+        let mask_gated_pipeline = quad(
+            "stark transform mask gated",
+            &mask_layout,
+            "fs_mask_gated",
+            &mask_union,
+            "vs_gated",
+        );
+        let combine_pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark transform combine",
+            &combine_layout,
+            &shader,
+            ("vs_fill", "fs_combine"),
+            &paint,
+        );
+        let mask_base_pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark transform mask base",
+            &mask_layout,
+            &shader,
+            ("vs_fill", "fs_mask_base"),
+            &mask,
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("stark transform sampler"),
@@ -492,8 +380,8 @@ impl TransformRenderer {
             ..Default::default()
         });
 
-        let zero_color = zero_texture(ctx, color_format);
-        let zero_aux = zero_texture(ctx, aux_format);
+        let zero_color = desc::zero_texture(ctx, color_format, "stark transform zero");
+        let zero_aux = desc::zero_texture(ctx, aux_format, "stark transform zero");
 
         Self {
             ctx: ctx.clone(),
@@ -759,18 +647,9 @@ impl TransformRenderer {
                         label: Some("stark transform src bg"),
                         layout: &self.src_bgl,
                         entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(tile.color_view()),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(tile.aux_view()),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::TextureView(&mask),
-                            },
+                            desc::tex(0, tile.color_view()),
+                            desc::tex(1, tile.aux_view()),
+                            desc::tex(2, &mask),
                         ],
                     })
                 })
@@ -781,8 +660,8 @@ impl TransformRenderer {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform parcel gated"),
             color_attachments: &[
-                Some(clear_attachment(color.view())),
-                Some(clear_attachment(aux.view())),
+                Some(desc::attach(color.view(), desc::CLEAR)),
+                Some(desc::attach(aux.view(), desc::CLEAR)),
             ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -819,10 +698,7 @@ impl TransformRenderer {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark transform mask src bg"),
                 layout: &self.mask_src_bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(view),
-                }],
+                entries: &[desc::tex(2, view)],
             })
         };
         // The residue reads the destination's *old* coverage — a real tile or
@@ -838,7 +714,7 @@ impl TransformRenderer {
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform mask gated"),
-            color_attachments: &[Some(clear_attachment(dst.view()))],
+            color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -887,10 +763,7 @@ impl TransformRenderer {
                     binding: 0,
                     resource: ubuf.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
+                desc::samp(1, &self.sampler),
             ],
         })
     }
@@ -928,18 +801,9 @@ impl TransformRenderer {
                         label: Some("stark transform src bg"),
                         layout: &self.src_bgl,
                         entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(tile.color_view()),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(tile.aux_view()),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::TextureView(&mask),
-                            },
+                            desc::tex(0, tile.color_view()),
+                            desc::tex(1, tile.aux_view()),
+                            desc::tex(2, &mask),
                         ],
                     })
                 })
@@ -950,8 +814,8 @@ impl TransformRenderer {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform parcel"),
             color_attachments: &[
-                Some(clear_attachment(color.view())),
-                Some(clear_attachment(aux.view())),
+                Some(desc::attach(color.view(), desc::CLEAR)),
+                Some(desc::attach(aux.view(), desc::CLEAR)),
             ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -1002,26 +866,11 @@ impl TransformRenderer {
             label: Some("stark transform combine bg"),
             layout: &self.combine_bgl,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&base_color),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&base_aux),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&base_mask),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&parcel_color),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&parcel_aux),
-                },
+                desc::tex(2, &base_color),
+                desc::tex(3, &base_aux),
+                desc::tex(4, &base_mask),
+                desc::tex(5, &parcel_color),
+                desc::tex(6, &parcel_aux),
                 wgpu::BindGroupEntry {
                     binding: 7,
                     resource: ubuf.as_entire_binding(),
@@ -1031,8 +880,8 @@ impl TransformRenderer {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform combine"),
             color_attachments: &[
-                Some(clear_attachment(dst.0.view())),
-                Some(clear_attachment(dst.1.view())),
+                Some(desc::attach(dst.0.view(), desc::CLEAR)),
+                Some(desc::attach(dst.1.view(), desc::CLEAR)),
             ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -1064,31 +913,14 @@ impl TransformRenderer {
             let src_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark transform mask src bg"),
                 layout: &self.mask_src_bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(handle.view()),
-                }],
+                entries: &[desc::tex(2, handle.view())],
             });
             draws.push((self.quad_bg(affine, *src, dest), src_bg));
         }
 
-        let outside = f64::from(selection.outside());
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform mask"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: dst.view(),
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: outside,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 0.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[Some(desc::attach(dst.view(), outside_clear(selection)))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -1118,57 +950,8 @@ impl TransformRenderer {
                     binding: 0,
                     resource: ubuf.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
+                desc::samp(1, &self.sampler),
             ],
         })
     }
-}
-
-fn clear_attachment(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> {
-    wgpu::RenderPassColorAttachment {
-        view,
-        resolve_target: None,
-        depth_slice: None,
-        ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-            store: wgpu::StoreOp::Store,
-        },
-    }
-}
-
-/// A 1×1 texture of `format` holding zeros — "no paint here", readable through
-/// the clamped loads and samples every pass here uses.
-fn zero_texture(ctx: &GpuContext, format: wgpu::TextureFormat) -> wgpu::TextureView {
-    let extent = wgpu::Extent3d {
-        width: 1,
-        height: 1,
-        depth_or_array_layers: 1,
-    };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("stark transform zero"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    let bytes = format
-        .block_copy_size(None)
-        .expect("uncompressed tile format") as usize;
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
-        &vec![0u8; bytes],
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(bytes as u32),
-            rows_per_image: Some(1),
-        },
-        extent,
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }

@@ -3,6 +3,7 @@
 
 pub mod composite;
 pub mod context;
+pub(crate) mod desc;
 pub mod environment;
 pub mod fill;
 pub mod pigment;

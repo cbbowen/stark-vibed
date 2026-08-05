@@ -40,6 +40,7 @@ use crate::geom::{
     Extent2, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, ViewTransform,
 };
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc::{self, RenderPipe};
 use crate::gpu::environment::Environment;
 use crate::gpu::pigment::PigmentLut;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
@@ -814,6 +815,7 @@ impl CompositorPipeline {
         let device = &ctx.device;
         let color_format = color_space.color_format();
         let aux_format = color_space.aux_format();
+        let frag = wgpu::ShaderStages::FRAGMENT;
 
         // ---- Pass A: composite (generic passthrough; blends from color space) ----
         let comp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -821,78 +823,48 @@ impl CompositorPipeline {
             source: wgpu::ShaderSource::Wgsl(stark_shaders::composite().into()),
         });
 
-        let view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark composite view bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+        let view_bgl = desc::bind_group_layout(
+            device,
+            "stark composite view bgl",
+            &[
+                desc::uniform(0, wgpu::ShaderStages::VERTEX),
+                desc::sampler(1, frag),
             ],
-        });
+        );
+        let tile_bgl = desc::bind_group_layout(
+            device,
+            "stark composite tile bgl",
+            &[desc::sample_tex(0, frag), desc::sample_tex(1, frag)],
+        );
+        let comp_layout = desc::pipeline_layout(
+            device,
+            "stark composite layout",
+            &[Some(&view_bgl), Some(&tile_bgl)],
+        );
 
-        let tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark composite tile bgl"),
-            entries: &[tex_entry(0), tex_entry(1)],
-        });
-
-        let comp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark composite layout"),
-            bind_group_layouts: &[Some(&view_bgl), Some(&tile_bgl)],
-            immediate_size: 0,
-        });
-
-        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark composite pipeline"),
-            layout: Some(&comp_layout),
-            vertex: wgpu::VertexState {
+        // Pass A's blends come from the colour space (§6.7): premultiplied `over` on
+        // colour, additive on the height aux.
+        let space_targets = [
+            desc::blended_target(color_format, Some(color_space.color_blend())),
+            desc::blended_target(aux_format, Some(color_space.aux_blend())),
+        ];
+        let composite_pipeline = desc::render_pipeline(
+            device,
+            RenderPipe {
+                label: "stark composite pipeline",
+                layout: &comp_layout,
                 module: &comp_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
+                vs: "vs_main",
+                fs: "fs_main",
+                primitive: desc::QUAD_STRIP,
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Instance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32],
                 })],
+                targets: &space_targets,
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &comp_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: color_format,
-                        blend: Some(color_space.color_blend()),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: aux_format,
-                        blend: Some(color_space.aux_blend()),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
 
         let view_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark composite view"),
@@ -914,10 +886,7 @@ impl CompositorPipeline {
                     binding: 0,
                     resource: view_buf.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
+                desc::samp(1, &sampler),
             ],
         });
 
@@ -930,57 +899,35 @@ impl CompositorPipeline {
             label: Some("stark matte"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::matte().into()),
         });
-        let matte_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark matte layout"),
-            bind_group_layouts: &[Some(&view_bgl)],
-            immediate_size: 0,
-        });
-        let matte_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark matte pipeline"),
-            layout: Some(&matte_layout),
-            vertex: wgpu::VertexState {
+        let matte_layout = desc::pipeline_layout(device, "stark matte layout", &[Some(&view_bgl)]);
+        // Premultiplied `over` on BOTH targets. The aux one is the load-bearing
+        // difference from pass A's additive aux: additive would keep the height of
+        // paint *underneath* the matte, and the media pass would emboss that paint's
+        // impasto as ghost ridges through an opaque mat board (§15.4.2).
+        // `OneMinusSrcAlpha` is valid on the alpha-less R16Float aux: the factor
+        // reads the *source* alpha from the shader's output vec4.
+        let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let matte_targets = [
+            desc::blended_target(color_format, over),
+            desc::blended_target(aux_format, over),
+        ];
+        let matte_pipeline = desc::render_pipeline(
+            device,
+            RenderPipe {
+                label: "stark matte pipeline",
+                layout: &matte_layout,
                 module: &matte_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
+                vs: "vs_main",
+                fs: "fs_main",
+                primitive: desc::QUAD_STRIP,
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<MatteInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32],
                 })],
+                targets: &matte_targets,
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &matte_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                // Premultiplied `over` on BOTH targets. The aux one is the load-
-                // bearing difference from pass A's additive aux: additive would
-                // keep the height of paint *underneath* the matte, and the media
-                // pass would emboss that paint's impasto as ghost ridges through
-                // an opaque mat board (§15.4.2). `OneMinusSrcAlpha`
-                // is valid on the alpha-less R16Float aux: the factor reads the
-                // *source* alpha from the shader's output vec4.
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: color_format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: aux_format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         // ---- Per-layer blend, inside pass A (§18.0.4) ----
         //
         // A fullscreen pass reading the accumulator and one isolated layer, writing
@@ -992,75 +939,33 @@ impl CompositorPipeline {
             label: Some("stark blend"),
             source: wgpu::ShaderSource::Wgsl(color_space.blend_shader().into()),
         });
-        let blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark blend bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        // One slot per blend group in the frame; see `BLEND_SLOT`.
-                        has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<BlendUniform>() as u64,
-                        ),
-                    },
-                    count: None,
-                },
-                load_tex_entry(1), // accumulator color
-                load_tex_entry(2), // accumulator aux
-                load_tex_entry(3), // isolated layer color
-                load_tex_entry(4), // isolated layer aux
-                tex_entry(5),      // pigment LUT (filtered)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+        let blend_bgl = desc::bind_group_layout(
+            device,
+            "stark blend bgl",
+            &[
+                // One slot per blend group in the frame; see `BLEND_SLOT`.
+                desc::uniform_slot(0, frag, std::mem::size_of::<BlendUniform>() as u64),
+                desc::load_tex(1, frag),   // accumulator color
+                desc::load_tex(2, frag),   // accumulator aux
+                desc::load_tex(3, frag),   // isolated layer color
+                desc::load_tex(4, frag),   // isolated layer aux
+                desc::sample_tex(5, frag), // pigment LUT (filtered)
+                desc::sampler(6, frag),
             ],
-        });
-        let blend_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark blend layout"),
-            bind_group_layouts: &[Some(&blend_bgl)],
-            immediate_size: 0,
-        });
-        let blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark blend pipeline"),
-            layout: Some(&blend_layout),
-            vertex: wgpu::VertexState {
-                module: &blend_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &blend_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                // No fixed-function blend on either target: the pass computes the
-                // whole merge — backdrop included — and *replaces* what it writes.
-                // That is the point of the ping-pong.
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: color_format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: aux_format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let blend_layout = desc::pipeline_layout(device, "stark blend layout", &[Some(&blend_bgl)]);
+        // No fixed-function blend on either target: the pass computes the whole
+        // merge — backdrop included — and *replaces* what it writes. That is the
+        // point of the ping-pong.
+        let channel_targets = [desc::target(color_format), desc::target(aux_format)];
+        let blend_pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark blend pipeline",
+            &blend_layout,
+            &blend_shader,
+            ("vs_main", "fs_main"),
+            &channel_targets,
+        );
         // Decoded only where it is read from: an Oklab document gets a 1×1 stand-in
         // so the one bind group layout still has something to bind.
         let pigment = if color_space.needs_pigment_lut() {
@@ -1078,70 +983,46 @@ impl CompositorPipeline {
             label: Some("stark selection overlay"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::overlay().into()),
         });
-        let overlay_view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark overlay view bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+        let overlay_view_bgl = desc::bind_group_layout(
+            device,
+            "stark overlay view bgl",
+            &[
+                desc::uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                desc::sampler(1, frag),
             ],
-        });
-        let overlay_tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark overlay tile bgl"),
-            entries: &[tex_entry(0)],
-        });
-        let overlay_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark overlay layout"),
-            bind_group_layouts: &[Some(&overlay_view_bgl), Some(&overlay_tile_bgl)],
-            immediate_size: 0,
-        });
-        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark overlay pipeline"),
-            layout: Some(&overlay_layout),
-            vertex: wgpu::VertexState {
+        );
+        let overlay_tile_bgl = desc::bind_group_layout(
+            device,
+            "stark overlay tile bgl",
+            &[desc::sample_tex(0, frag)],
+        );
+        let overlay_layout = desc::pipeline_layout(
+            device,
+            "stark overlay layout",
+            &[Some(&overlay_view_bgl), Some(&overlay_tile_bgl)],
+        );
+        let overlay_pipeline = desc::render_pipeline(
+            device,
+            RenderPipe {
+                label: "stark overlay pipeline",
+                layout: &overlay_layout,
                 module: &overlay_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
+                vs: "vs_main",
+                fs: "fs_main",
+                primitive: desc::QUAD_STRIP,
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<OverlayInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
                 })],
+                // The outline is drawn *over* the finished image, so it is the one
+                // pass that blends in straight (non-premultiplied) alpha.
+                targets: &[desc::blended_target(
+                    target_format,
+                    Some(wgpu::BlendState::ALPHA_BLENDING),
+                )],
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &overlay_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    // The outline is drawn *over* the finished image, so it is the one
-                    // pass that blends in straight (non-premultiplied) alpha.
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         let overlay_view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark overlay view bg"),
             layout: &overlay_view_bgl,
@@ -1150,10 +1031,7 @@ impl CompositorPipeline {
                     binding: 0,
                     resource: view_buf.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
+                desc::samp(1, &sampler),
             ],
         });
 
@@ -1162,67 +1040,30 @@ impl CompositorPipeline {
             label: Some("stark media"),
             source: wgpu::ShaderSource::Wgsl(color_space.media_shader().into()),
         });
-        let media_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark media bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                load_tex_entry(1), // comp_color (textureLoad)
-                load_tex_entry(2), // comp_aux   (textureLoad)
-                tex_entry(3),      // surface bump (filtered)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                tex_entry(5), // environment (filtered, mipped)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+        let media_bgl = desc::bind_group_layout(
+            device,
+            "stark media bgl",
+            &[
+                desc::uniform(0, frag),
+                desc::load_tex(1, frag),   // comp_color (textureLoad)
+                desc::load_tex(2, frag),   // comp_aux   (textureLoad)
+                desc::sample_tex(3, frag), // surface bump (filtered)
+                desc::sampler(4, frag),
+                desc::sample_tex(5, frag), // environment (filtered, mipped)
+                desc::sampler(6, frag),
             ],
-        });
-        let media_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark media layout"),
-            bind_group_layouts: &[Some(&media_bgl)],
-            immediate_size: 0,
-        });
-        let media_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark media pipeline"),
-            layout: Some(&media_layout),
-            vertex: wgpu::VertexState {
-                module: &media_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &media_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let media_layout = desc::pipeline_layout(device, "stark media layout", &[Some(&media_bgl)]);
+        // Passes B–E all write the one target the frame is presented from.
+        let screen_target = [desc::target(target_format)];
+        let media_pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark media pipeline",
+            &media_layout,
+            &media_shader,
+            ("vs_main", "fs_main"),
+            &screen_target,
+        );
         let media_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark media uniform"),
             size: std::mem::size_of::<MediaUniform>() as u64,
@@ -1238,54 +1079,26 @@ impl CompositorPipeline {
             label: Some("stark resolve"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::resolve().into()),
         });
-        let resolve_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark resolve bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                load_tex_entry(1), // the supersampled render
+        let resolve_bgl = desc::bind_group_layout(
+            device,
+            "stark resolve bgl",
+            &[
+                desc::uniform(0, frag),
+                desc::load_tex(1, frag), // the supersampled render
             ],
-        });
-        let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark resolve layout"),
-            bind_group_layouts: &[Some(&resolve_bgl)],
-            immediate_size: 0,
-        });
-        let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark resolve pipeline"),
-            layout: Some(&resolve_layout),
-            vertex: wgpu::VertexState {
-                module: &resolve_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &resolve_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    // The pass covers every texel and carries the alpha it averaged,
-                    // so there is nothing for a fixed-function blend to do.
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let resolve_layout =
+            desc::pipeline_layout(device, "stark resolve layout", &[Some(&resolve_bgl)]);
+        // The pass covers every texel and carries the alpha it averaged, so there is
+        // nothing for a fixed-function blend to do.
+        let resolve_pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark resolve pipeline",
+            &resolve_layout,
+            &resolve_shader,
+            ("vs_main", "fs_main"),
+            &screen_target,
+        );
         let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark resolve uniform"),
             size: std::mem::size_of::<ResolveUniform>() as u64,
@@ -1298,54 +1111,31 @@ impl CompositorPipeline {
             label: Some("stark guides"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::guides().into()),
         });
-        let guide_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark guides bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    // One slot per visible guide in the frame; see `GUIDE_SLOT`.
-                    has_dynamic_offset: true,
-                    min_binding_size: wgpu::BufferSize::new(
-                        std::mem::size_of::<GuideUniform>() as u64
-                    ),
-                },
-                count: None,
-            }],
-        });
-        let guide_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark guides layout"),
-            bind_group_layouts: &[Some(&guide_bgl)],
-            immediate_size: 0,
-        });
-        let guide_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark guides pipeline"),
-            layout: Some(&guide_layout),
-            vertex: wgpu::VertexState {
-                module: &guide_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &guide_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    // The shader accumulates its elements premultiplied, so
-                    // the pass composites `src + dst·(1 − src.a)`.
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let guide_bgl = desc::bind_group_layout(
+            device,
+            "stark guides bgl",
+            // One slot per visible guide in the frame; see `GUIDE_SLOT`.
+            &[desc::uniform_slot(
+                0,
+                frag,
+                std::mem::size_of::<GuideUniform>() as u64,
+            )],
+        );
+        let guide_layout =
+            desc::pipeline_layout(device, "stark guides layout", &[Some(&guide_bgl)]);
+        let guide_pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark guides pipeline",
+            &guide_layout,
+            &guide_shader,
+            ("vs_main", "fs_main"),
+            // The shader accumulates its elements premultiplied, so the pass
+            // composites `src + dst·(1 − src.a)`.
+            &[desc::blended_target(
+                target_format,
+                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            )],
+        );
         Self {
             ctx: ctx.clone(),
             composite_pipeline,
@@ -1506,7 +1296,7 @@ impl Compositor {
                         binding: 0,
                         resource: p.resolve_buf.as_entire_binding(),
                     },
-                    view_entry(1, &view),
+                    desc::tex(1, &view),
                 ],
             });
             (view, bg)
@@ -1562,14 +1352,8 @@ impl Compositor {
                         label: Some("stark composite tile bg"),
                         layout: &p.tile_bgl,
                         entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(handle.color_view()),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(handle.aux_view()),
-                            },
+                            desc::tex(0, handle.color_view()),
+                            desc::tex(1, handle.aux_view()),
                         ],
                     }));
                 }
@@ -1774,16 +1558,12 @@ impl Compositor {
             matte: matte_i,
             ..
         } = cursors;
-        let load = if clear {
-            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-        } else {
-            wgpu::LoadOp::Load
-        };
+        let ops = if clear { desc::CLEAR } else { desc::LOAD };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark composite pass"),
             color_attachments: &[
-                Some(load_attachment(into.0, load)),
-                Some(load_attachment(into.1, load)),
+                Some(desc::attach(into.0, ops)),
+                Some(desc::attach(into.1, ops)),
             ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -1840,15 +1620,12 @@ impl Compositor {
                         size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
                     }),
                 },
-                view_entry(1, back.0),
-                view_entry(2, back.1),
-                view_entry(3, src.0),
-                view_entry(4, src.1),
-                view_entry(5, &p.pigment.view),
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&p.pigment.sampler),
-                },
+                desc::tex(1, back.0),
+                desc::tex(2, back.1),
+                desc::tex(3, src.0),
+                desc::tex(4, src.1),
+                desc::tex(5, &p.pigment.view),
+                desc::samp(6, &p.pigment.sampler),
             ],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1857,8 +1634,8 @@ impl Compositor {
             // is a don't-care; clearing states that rather than implying the previous
             // contents matter.
             color_attachments: &[
-                Some(clear_attachment(out.0, wgpu::Color::TRANSPARENT)),
-                Some(clear_attachment(out.1, wgpu::Color::TRANSPARENT)),
+                Some(desc::attach(out.0, desc::CLEAR)),
+                Some(desc::attach(out.1, desc::CLEAR)),
             ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -2086,22 +1863,17 @@ impl Compositor {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark media pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: draw_target,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        // The media pass covers every texel, so the clear only
-                        // matters for what alpha an untouched texel would keep —
-                        // transparent, on an export that wants a cut-out.
-                        load: wgpu::LoadOp::Clear(if transparent {
-                            wgpu::Color::TRANSPARENT
-                        } else {
-                            wgpu::Color::BLACK
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                // The media pass covers every texel, so the clear only matters for
+                // what alpha an untouched texel would keep — transparent, on an
+                // export that wants a cut-out.
+                color_attachments: &[Some(desc::attach(
+                    draw_target,
+                    desc::clear_to(if transparent {
+                        wgpu::Color::TRANSPARENT
+                    } else {
+                        wgpu::Color::BLACK
+                    }),
+                ))],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -2134,10 +1906,7 @@ impl Compositor {
                 mask_tiles.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark overlay tile bg"),
                     layout: &p.overlay_tile_bgl,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(handle.view()),
-                    }],
+                    entries: &[desc::tex(0, handle.view())],
                 }));
             }
         }
@@ -2154,15 +1923,7 @@ impl Compositor {
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection overlay pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: draw_target,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[Some(desc::attach(draw_target, desc::LOAD))],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -2212,15 +1973,7 @@ impl Compositor {
             });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark guides pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: draw_target,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[Some(desc::attach(draw_target, desc::LOAD))],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -2246,17 +1999,9 @@ impl Compositor {
             );
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark resolve pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        // Covers every texel and reads nothing back, so the load is a
-                        // don't-care; clearing says so rather than implying otherwise.
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                // Covers every texel and reads nothing back, so the load is a
+                // don't-care; clearing says so rather than implying otherwise.
+                color_attachments: &[Some(desc::attach(target, desc::CLEAR))],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -2271,55 +2016,6 @@ impl Compositor {
     }
 }
 
-fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    }
-}
-
-fn load_tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            // Sampled only via textureLoad, so no filtering required.
-            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    }
-}
-
-fn clear_attachment(
-    view: &wgpu::TextureView,
-    color: wgpu::Color,
-) -> wgpu::RenderPassColorAttachment<'_> {
-    load_attachment(view, wgpu::LoadOp::Clear(color))
-}
-
-fn load_attachment(
-    view: &wgpu::TextureView,
-    load: wgpu::LoadOp<wgpu::Color>,
-) -> wgpu::RenderPassColorAttachment<'_> {
-    wgpu::RenderPassColorAttachment {
-        view,
-        resolve_target: None,
-        depth_slice: None,
-        ops: wgpu::Operations {
-            load,
-            store: wgpu::StoreOp::Store,
-        },
-    }
-}
-
 /// A render pass that only clears. Encoded when the bottom of the stack is a blend
 /// group: that pass *reads* the accumulator, so unlike a run of tiles it cannot
 /// fold the clear into its own load op.
@@ -2327,21 +2023,14 @@ fn clear_targets(encoder: &mut wgpu::CommandEncoder, into: Targets<'_>) {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("stark composite clear"),
         color_attachments: &[
-            Some(clear_attachment(into.0, wgpu::Color::TRANSPARENT)),
-            Some(clear_attachment(into.1, wgpu::Color::TRANSPARENT)),
+            Some(desc::attach(into.0, desc::CLEAR)),
+            Some(desc::attach(into.1, desc::CLEAR)),
         ],
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,
         multiview_mask: None,
     });
-}
-
-fn view_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: wgpu::BindingResource::TextureView(view),
-    }
 }
 
 /// A viewport-sized offscreen render target, as pass A and the blend pass use.
@@ -2459,30 +2148,12 @@ fn make_offscreen(d: OffscreenDesc<'_>) -> (wgpu::TextureView, wgpu::TextureView
                 binding: 0,
                 resource: media_buf.as_entire_binding(),
             },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&comp_color_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(&comp_aux_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&surface.view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Sampler(&surface.sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(&environment.view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::Sampler(&environment.sampler),
-            },
+            desc::tex(1, &comp_color_view),
+            desc::tex(2, &comp_aux_view),
+            desc::tex(3, &surface.view),
+            desc::samp(4, &surface.sampler),
+            desc::tex(5, &environment.view),
+            desc::samp(6, &environment.sampler),
         ],
     });
     (comp_color_view, comp_aux_view, media_bg)

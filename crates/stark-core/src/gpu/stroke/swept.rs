@@ -9,6 +9,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::document::StrokeRecord;
 use crate::geom::{TILE_APRON, TILE_TEX};
+use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
 
 use super::segments::{SegmentInstance, affected_tiles, generate_segments_in};
@@ -101,10 +102,7 @@ impl StrokeRenderer {
         let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep prefix bg"),
             layout: &self.prefix_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&prefix_view),
-            }],
+            entries: &[desc::tex(0, &prefix_view)],
         });
 
         // Colour dynamics (§6.2): the noise tile for this brush and
@@ -119,22 +117,10 @@ impl StrokeRenderer {
             label: Some("stark sweep noise bg"),
             layout: &self.noise_bgl,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&noise_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.noise_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&surface.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&surface.sampler),
-                },
+                desc::tex(0, &noise_view),
+                desc::samp(1, &self.noise_sampler),
+                desc::tex(2, &surface.view),
+                desc::samp(3, &surface.sampler),
             ],
         });
         let instances: Vec<SegmentInstance> = segments
@@ -176,26 +162,12 @@ impl StrokeRenderer {
         // integrate pass merges it over the base into a fresh CoW tile
         // (§6.2/§6.1). `empty` (cleared) stands in as the base wherever the stroke
         // touches bare canvas — acquired tiles are undefined, so clear it once here.
-        let clear = wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-            store: wgpu::StoreOp::Store,
-        };
         let empty = self.acquire_tile(pool, AllocSource::IntegrateEmptyBase);
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark integrate empty clear"),
             color_attachments: &[
-                Some(wgpu::RenderPassColorAttachment {
-                    view: empty.color_view(),
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: clear,
-                }),
-                Some(wgpu::RenderPassColorAttachment {
-                    view: empty.aux_view(),
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: clear,
-                }),
+                Some(desc::attach(empty.color_view(), desc::CLEAR)),
+                Some(desc::attach(empty.aux_view(), desc::CLEAR)),
             ],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -266,18 +238,8 @@ impl StrokeRenderer {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
                     color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: scratch.color_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: clear,
-                        }),
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: scratch.aux_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: clear,
-                        }),
+                        Some(desc::attach(scratch.color_view(), desc::CLEAR)),
+                        Some(desc::attach(scratch.aux_view(), desc::CLEAR)),
                     ],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -302,44 +264,19 @@ impl StrokeRenderer {
                 label: Some("stark integrate bg"),
                 layout: &self.integrate_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(base_tile.color_view()),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(base_tile.aux_view()),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(scratch.color_view()),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(scratch.aux_view()),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&mask_view),
-                    },
+                    desc::tex(0, base_tile.color_view()),
+                    desc::tex(1, base_tile.aux_view()),
+                    desc::tex(2, scratch.color_view()),
+                    desc::tex(3, scratch.aux_view()),
+                    desc::tex(4, &mask_view),
                 ],
             });
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark integrate"),
                     color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: dst.color_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: clear,
-                        }),
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: dst.aux_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: clear,
-                        }),
+                        Some(desc::attach(dst.color_view(), desc::CLEAR)),
+                        Some(desc::attach(dst.aux_view(), desc::CLEAR)),
                     ],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,

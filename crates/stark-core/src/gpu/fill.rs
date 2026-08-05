@@ -24,6 +24,7 @@ use crate::colorspace::ColorSpace;
 use crate::document::fill::{FillOp, plan};
 use crate::document::selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::gpu::wesl::mirrors_wesl;
@@ -68,72 +69,27 @@ impl FillRenderer {
             label: Some("stark fill"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::fill().into()),
         });
-        let load_tex = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                // Read with `textureLoad` only, clamped to the bound extent — which
-                // is what lets a 1×1 constant stand in for a missing tile.
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark fill bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                load_tex(1), // base color
-                load_tex(2), // base aux (height)
-                load_tex(3), // the shape's coverage
-                load_tex(4), // the author's selection
+        let frag = wgpu::ShaderStages::FRAGMENT;
+        let bgl = desc::bind_group_layout(
+            device,
+            "stark fill bgl",
+            &[
+                desc::uniform(0, frag),
+                desc::load_tex(1, frag), // base color
+                desc::load_tex(2, frag), // base aux (height)
+                desc::load_tex(3, frag), // the shape's coverage
+                desc::load_tex(4, frag), // the author's selection
             ],
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark fill layout"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-        let target = |format| {
-            Some(wgpu::ColorTargetState {
-                format,
-                // The pass computes the finished texel from the base it reads, so
-                // there is nothing for fixed-function blending to do.
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })
-        };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark fill pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[target(color_format), target(aux_format)],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(&bgl)]);
+        let pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark fill pipeline",
+            &layout,
+            &shader,
+            ("vs_main", "fs_main"),
+            &[desc::target(color_format), desc::target(aux_format)],
+        );
 
         Self {
             ctx: ctx.clone(),
@@ -142,8 +98,8 @@ impl FillRenderer {
             aux_format,
             pipeline,
             bgl,
-            zero_color: zero_texture(ctx, color_format),
-            zero_aux: zero_texture(ctx, aux_format),
+            zero_color: desc::zero_texture(ctx, color_format, "stark fill zero"),
+            zero_aux: desc::zero_texture(ctx, aux_format, "stark fill zero"),
             selection,
         }
     }
@@ -216,29 +172,17 @@ impl FillRenderer {
                         binding: 0,
                         resource: ubuf.as_entire_binding(),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&base_color),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&base_aux),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&region_mask),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&gate_mask),
-                    },
+                    desc::tex(1, &base_color),
+                    desc::tex(2, &base_aux),
+                    desc::tex(3, &region_mask),
+                    desc::tex(4, &gate_mask),
                 ],
             });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark fill tile"),
                 color_attachments: &[
-                    Some(clear_attachment(dst.0.view())),
-                    Some(clear_attachment(dst.1.view())),
+                    Some(desc::attach(dst.0.view(), desc::CLEAR)),
+                    Some(desc::attach(dst.1.view(), desc::CLEAR)),
                 ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -255,50 +199,4 @@ impl FillRenderer {
         self.ctx.queue.submit([encoder.finish()]);
         Some(tiles)
     }
-}
-
-fn clear_attachment(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> {
-    wgpu::RenderPassColorAttachment {
-        view,
-        resolve_target: None,
-        depth_slice: None,
-        ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-            store: wgpu::StoreOp::Store,
-        },
-    }
-}
-
-/// A 1×1 texture of `format` holding zeros — "no paint here", readable through the
-/// clamped loads the pass uses.
-fn zero_texture(ctx: &GpuContext, format: wgpu::TextureFormat) -> wgpu::TextureView {
-    let extent = wgpu::Extent3d {
-        width: 1,
-        height: 1,
-        depth_or_array_layers: 1,
-    };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("stark fill zero"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    let bytes = format
-        .block_copy_size(None)
-        .expect("uncompressed tile format") as usize;
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
-        &vec![0u8; bytes],
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(bytes as u32),
-            rows_per_image: Some(1),
-        },
-        extent,
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }

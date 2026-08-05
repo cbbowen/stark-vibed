@@ -27,6 +27,7 @@ use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
 use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind, StrokeRecord};
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
@@ -199,84 +200,44 @@ impl StrokeRenderer {
             source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
         });
 
+        let frag = wgpu::ShaderStages::FRAGMENT;
         // One slot per affected tile, selected by a dynamic offset ([`UNIFORM_STRIDE`])
         // — so a stroke crossing many tiles binds one buffer rather than building one
         // per tile on every pointer move.
-        let uniform_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark sweep uniform bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: wgpu::BufferSize::new(swept::XFORM_SLOT),
-                },
-                count: None,
-            }],
-        });
+        let uniform_bgl = desc::bind_group_layout(
+            device,
+            "stark sweep uniform bgl",
+            &[desc::uniform_slot(
+                0,
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+                swept::XFORM_SLOT,
+            )],
+        );
 
         // The prefix-τ texture is a R32Float 2D-array (x, y, + orientation layers), sampled
         // via textureLoad (not filterable), so the shader does its own trilinear lookup.
-        let prefix_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark sweep prefix bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2Array,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
+        let prefix_bgl = desc::bind_group_layout(
+            device,
+            "stark sweep prefix bgl",
+            &[desc::load_tex_array(0, frag)],
+        );
 
         // Group 2: the colour-dynamics noise field (a tileable 3-D volume) + its
-        // repeat sampler (§6.2).
-        let noise_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark sweep noise bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                // The canvas surface's ground (height + the rise ahead) + its own
-                // repeat sampler — the deposition tooth (§6.4). In this group rather
-                // than one of its own
-                // because it is the same kind of thing as the noise beside it: a
-                // tileable field the deposit samples per fragment, resolved per
-                // stroke.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+        // repeat sampler (§6.2), and beside it the canvas surface's ground (height +
+        // the rise ahead) + its own repeat sampler — the deposition tooth (§6.4). In
+        // this group rather than one of its own because it is the same kind of thing
+        // as the noise: a tileable field the deposit samples per fragment, resolved
+        // per stroke.
+        let noise_bgl = desc::bind_group_layout(
+            device,
+            "stark sweep noise bgl",
+            &[
+                desc::sample_tex(0, frag),
+                desc::sampler(1, frag),
+                desc::sample_tex(2, frag),
+                desc::sampler(3, frag),
             ],
-        });
+        );
         // Wrapping on both axes — the noise tile tiles (that's the whole point).
         let noise_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("stark noise sampler"),
@@ -288,19 +249,20 @@ impl StrokeRenderer {
         });
         let (_dummy_tex, dummy_noise) = crate::noise::dummy_noise_texture(ctx);
 
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark sweep layout"),
-            bind_group_layouts: &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&noise_bgl)],
-            immediate_size: 0,
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark sweep pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
+        let layout = desc::pipeline_layout(
+            device,
+            "stark sweep layout",
+            &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&noise_bgl)],
+        );
+        let pipeline = desc::render_pipeline(
+            device,
+            desc::RenderPipe {
+                label: "stark sweep pipeline",
+                layout: &layout,
                 module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
+                vs: "vs_main",
+                fs: "fs_main",
+                primitive: desc::QUAD_STRIP,
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<SegmentInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
@@ -309,36 +271,18 @@ impl StrokeRenderer {
                         4 => Float32
                     ],
                 })],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
                 targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: color_space.color_format(),
-                        blend: Some(color_space.color_blend()),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
+                    desc::blended_target(
+                        color_space.color_format(),
+                        Some(color_space.color_blend()),
+                    ),
                     // The stamp renders into a *scratch* tile, whose aux is the wide
                     // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
                     // blend across overlapping segments.
-                    Some(wgpu::ColorTargetState {
-                        format: SCRATCH_AUX_FORMAT,
-                        blend: Some(color_space.aux_blend()),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
+                    desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
                 ],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+            },
+        );
 
         let (integrate_pipeline, integrate_bgl) =
             build_integrate_pipeline(device, color_space.as_ref());

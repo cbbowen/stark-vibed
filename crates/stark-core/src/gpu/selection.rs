@@ -25,6 +25,7 @@ use crate::document::selection::{
 };
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::wesl::mirrors_wesl;
 
@@ -95,127 +96,80 @@ impl SelectionRenderer {
             label: Some("stark selection"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::selection().into()),
         });
-        let load_tex = |binding: u32, visibility| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: wgpu::BindingType::Texture {
-                // Read with `textureLoad` only, 1:1 with the destination.
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let rasterize_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark selection bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                load_tex(1, wgpu::ShaderStages::FRAGMENT), // previous mask
-                load_tex(2, wgpu::ShaderStages::FRAGMENT), // lasso edges
+        let frag = wgpu::ShaderStages::FRAGMENT;
+        // The mask targets take no blend: the shader does the combine and writes
+        // straight through.
+        let mask_target = [desc::target(MASK_FORMAT)];
+        let rasterize_bgl = desc::bind_group_layout(
+            device,
+            "stark selection bgl",
+            &[
+                desc::uniform(0, frag),
+                desc::load_tex(1, frag), // previous mask
+                desc::load_tex(2, frag), // lasso edges
             ],
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark selection layout"),
-            bind_group_layouts: &[Some(&rasterize_bgl)],
-            immediate_size: 0,
-        });
-        let rasterize_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark selection pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: MASK_FORMAT,
-                    blend: None, // the shader does the combine; write straight through
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let layout =
+            desc::pipeline_layout(device, "stark selection layout", &[Some(&rasterize_bgl)]);
+        let rasterize_pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark selection pipeline",
+            &layout,
+            &shader,
+            ("vs_main", "fs_main"),
+            &mask_target,
+        );
 
         // ---- Region gather (for the brush-dynamics stamp loop, §6.2).
         let region_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection region"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::mask_region().into()),
         });
-        let region_view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark selection region view bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let region_tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stark selection region tile bgl"),
-            entries: &[load_tex(0, wgpu::ShaderStages::FRAGMENT)],
-        });
-        let region_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stark selection region layout"),
-            bind_group_layouts: &[Some(&region_view_bgl), Some(&region_tile_bgl)],
-            immediate_size: 0,
-        });
-        let region_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stark selection region pipeline"),
-            layout: Some(&region_layout),
-            vertex: wgpu::VertexState {
+        let region_view_bgl = desc::bind_group_layout(
+            device,
+            "stark selection region view bgl",
+            &[desc::uniform(0, wgpu::ShaderStages::VERTEX)],
+        );
+        let region_tile_bgl = desc::bind_group_layout(
+            device,
+            "stark selection region tile bgl",
+            &[desc::load_tex(0, frag)],
+        );
+        let region_layout = desc::pipeline_layout(
+            device,
+            "stark selection region layout",
+            &[Some(&region_view_bgl), Some(&region_tile_bgl)],
+        );
+        let region_pipeline = desc::render_pipeline(
+            device,
+            desc::RenderPipe {
+                label: "stark selection region pipeline",
+                layout: &region_layout,
                 module: &region_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
+                vs: "vs_main",
+                fs: "fs_main",
+                primitive: desc::QUAD_STRIP,
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<MaskInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2],
                 })],
+                targets: &mask_target,
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &region_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: MASK_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
 
-        let constants = [constant_mask(ctx, 0), constant_mask(ctx, 255)];
-        let dummy_edges = dummy_edge_texture(ctx);
+        // The 1×1 stand-ins: the coverage that reigns where the selection has no
+        // tile, and the edge list every analytic shape binds but never reads.
+        let constants = [
+            desc::constant_texture(ctx, MASK_FORMAT, &[0], "stark selection constant mask"),
+            desc::constant_texture(ctx, MASK_FORMAT, &[255], "stark selection constant mask"),
+        ];
+        let dummy_edges = desc::constant_texture(
+            ctx,
+            wgpu::TextureFormat::Rgba32Float,
+            bytemuck::cast_slice(&[0.0f32; 4]),
+            "stark selection dummy edges",
+        );
 
         Self {
             ctx: ctx.clone(),
@@ -372,10 +326,7 @@ impl SelectionRenderer {
             tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark selection region tile bg"),
                 layout: &self.region_tile_bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(handle.view()),
-                }],
+                entries: &[desc::tex(0, handle.view())],
             }));
         }
         let instances = (!origins.is_empty()).then(|| {
@@ -387,25 +338,12 @@ impl SelectionRenderer {
         });
 
         {
-            let outside = selection.outside() as f64;
+            // Everything the selection has no tile for takes the constant coverage
+            // that reigns there.
+            let outside = outside_clear(selection);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection region gather"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        // Everything the selection has no tile for takes the constant
-                        // coverage that reigns there.
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: outside,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[Some(desc::attach(&view, outside))],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -474,28 +412,14 @@ impl SelectionRenderer {
                         binding: 0,
                         resource: ubuf.as_entire_binding(),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&prev_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(edges),
-                    },
+                    desc::tex(1, &prev_view),
+                    desc::tex(2, edges),
                 ],
             });
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark selection rasterize"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: dst.view(),
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
+                    color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -543,62 +467,18 @@ impl SelectionRenderer {
     }
 }
 
-/// A 1×1 `R8Unorm` mask holding a single byte of coverage.
-fn constant_mask(ctx: &GpuContext, value: u8) -> wgpu::TextureView {
-    let extent = wgpu::Extent3d {
-        width: 1,
-        height: 1,
-        depth_or_array_layers: 1,
-    };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("stark selection constant mask"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: MASK_FORMAT,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
-        &[value],
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(1),
-            rows_per_image: Some(1),
-        },
-        extent,
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-/// A 1×1 stand-in for the lasso edge list — bound, never read, by every other shape.
-fn dummy_edge_texture(ctx: &GpuContext) -> wgpu::TextureView {
-    let extent = wgpu::Extent3d {
-        width: 1,
-        height: 1,
-        depth_or_array_layers: 1,
-    };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("stark selection dummy edges"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba32Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
-        bytemuck::cast_slice(&[0.0f32; 4]),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(16),
-            rows_per_image: Some(1),
-        },
-        extent,
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
+/// What a fresh mask target is cleared to: the constant coverage that reigns
+/// wherever `selection` has no tile of its own (§6.8).
+///
+/// In `r`, the only channel [`MASK_FORMAT`] has. Shared with the transform, which
+/// carries masks under its maps and has to leave the untouched plane saying the
+/// same thing this does — an inverted selection whose two paths disagreed about
+/// the outside would gain or lose the whole canvas.
+pub(crate) fn outside_clear(selection: &Selection) -> wgpu::Operations<wgpu::Color> {
+    desc::clear_to(wgpu::Color {
+        r: f64::from(selection.outside()),
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    })
 }

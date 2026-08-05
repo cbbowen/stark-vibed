@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::composite::ViewUniform;
+use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 use crate::gpu::wesl::mirrors_wesl;
 
@@ -375,7 +376,7 @@ impl<'a> DynamicsRun<'a> {
         let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics prefix bg"),
             layout: &r.dynamics.prefix_bgl,
-            entries: &[tex(0, &prefix_view)],
+            entries: &[desc::tex(0, &prefix_view)],
         });
         let cov = r.coverage_view(scene.assets, &rec.brush);
         // Colour dynamics for the brush's own `add` paint — the same field and
@@ -424,37 +425,27 @@ impl<'a> DynamicsRun<'a> {
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark dynamics brush init"),
                 color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &brush_color[0],
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: consts.channels[0] as f64,
-                                g: consts.channels[1] as f64,
-                                b: consts.channels[2] as f64,
-                                a: consts.channels[3] as f64,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &brush_aux[0],
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                // Carried height = the pre-`charge` glob; the rest of
-                                // the reservoir aux is unused (height is the only
-                                // thing the tool carries, §6.1).
-                                r: d.charge as f64,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.0,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
+                    Some(desc::attach(
+                        &brush_color[0],
+                        desc::clear_to(wgpu::Color {
+                            r: consts.channels[0] as f64,
+                            g: consts.channels[1] as f64,
+                            b: consts.channels[2] as f64,
+                            a: consts.channels[3] as f64,
+                        }),
+                    )),
+                    Some(desc::attach(
+                        &brush_aux[0],
+                        desc::clear_to(wgpu::Color {
+                            // Carried height = the pre-`charge` glob; the rest of
+                            // the reservoir aux is unused (height is the only
+                            // thing the tool carries, §6.1).
+                            r: d.charge as f64,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
+                    )),
                 ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -601,10 +592,7 @@ impl<'a> DynamicsRun<'a> {
                     binding: 0,
                     resource: view_buf.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&kit.composite_sampler),
-                },
+                desc::samp(1, &kit.composite_sampler),
             ],
         });
         let mut tile_origins: Vec<TileInstance> = Vec::new();
@@ -619,14 +607,8 @@ impl<'a> DynamicsRun<'a> {
                     label: Some("stark dynamics region tile bg"),
                     layout: &kit.composite_tile_bgl,
                     entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(tile.color_view()),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(tile.aux_view()),
-                        },
+                        desc::tex(0, tile.color_view()),
+                        desc::tex(1, tile.aux_view()),
                     ],
                 }));
             }
@@ -644,18 +626,8 @@ impl<'a> DynamicsRun<'a> {
             let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark dynamics region composite"),
                 color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &color,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: CLEAR,
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &aux,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: CLEAR,
-                    }),
+                    Some(desc::attach(&color, desc::CLEAR)),
+                    Some(desc::attach(&aux, desc::CLEAR)),
                 ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -784,19 +756,16 @@ impl<'a> DynamicsRun<'a> {
                 size: wgpu::BufferSize::new(SLOT as u64),
             }),
         };
-        let samp = || wgpu::BindGroupEntry {
-            binding: 5,
-            resource: wgpu::BindingResource::Sampler(&kit.exchange_sampler),
-        };
+        let samp = || desc::samp(5, &kit.exchange_sampler);
         let snapshot = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics snapshot bg"),
             layout: &kit.snapshot_bgl,
             entries: &[
                 params(),
-                tex(1, &region.color),
-                tex(2, &region.aux),
-                tex(3, &under.color),
-                tex(4, &under.aux),
+                desc::tex(1, &region.color),
+                desc::tex(2, &region.aux),
+                desc::tex(3, &under.color),
+                desc::tex(4, &under.aux),
             ],
         });
         // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
@@ -807,17 +776,17 @@ impl<'a> DynamicsRun<'a> {
                 layout: &kit.exchange_bgl,
                 entries: &[
                     params(),
-                    tex(1, &region.color),
-                    tex(2, &region.aux),
-                    tex(3, &under.color),
-                    tex(4, &under.aux),
+                    desc::tex(1, &region.color),
+                    desc::tex(2, &region.aux),
+                    desc::tex(3, &under.color),
+                    desc::tex(4, &under.aux),
                     samp(),
-                    tex(6, &self.cov),
-                    tex(7, &self.brush_color[i]),
-                    tex(8, &self.brush_aux[i]),
-                    tex(9, &self.brush_color[1 - i]),
-                    tex(10, &self.brush_aux[1 - i]),
-                    tex(21, &region.sel_mask),
+                    desc::tex(6, &self.cov),
+                    desc::tex(7, &self.brush_color[i]),
+                    desc::tex(8, &self.brush_aux[i]),
+                    desc::tex(9, &self.brush_color[1 - i]),
+                    desc::tex(10, &self.brush_aux[1 - i]),
+                    desc::tex(21, &region.sel_mask),
                 ],
             })
         });
@@ -830,10 +799,10 @@ impl<'a> DynamicsRun<'a> {
                 entries: &[
                     params(),
                     samp(),
-                    tex(7, &self.brush_color[i]),
-                    tex(8, &self.brush_aux[i]),
-                    tex(17, &self.bake_load),
-                    tex(18, &self.bake_latm),
+                    desc::tex(7, &self.brush_color[i]),
+                    desc::tex(8, &self.brush_aux[i]),
+                    desc::tex(17, &self.bake_load),
+                    desc::tex(18, &self.bake_latm),
                 ],
             })
         });
@@ -843,22 +812,16 @@ impl<'a> DynamicsRun<'a> {
             entries: &[
                 params(),
                 samp(),
-                tex(19, &self.bake_load),
-                tex(20, &self.bake_latm),
-                tex(11, &under.color),
-                tex(12, &under.aux),
-                tex(13, &region.color),
-                tex(14, &region.aux),
-                tex(15, &self.noise),
-                wgpu::BindGroupEntry {
-                    binding: 16,
-                    resource: wgpu::BindingResource::Sampler(&r.noise_sampler),
-                },
-                tex(21, &region.sel_mask),
-                wgpu::BindGroupEntry {
-                    binding: 22,
-                    resource: wgpu::BindingResource::TextureView(&self.scene.surface.view),
-                },
+                desc::tex(19, &self.bake_load),
+                desc::tex(20, &self.bake_latm),
+                desc::tex(11, &under.color),
+                desc::tex(12, &under.aux),
+                desc::tex(13, &region.color),
+                desc::tex(14, &region.aux),
+                desc::tex(15, &self.noise),
+                desc::samp(16, &r.noise_sampler),
+                desc::tex(21, &region.sel_mask),
+                desc::tex(22, &self.scene.surface.view),
             ],
         });
         // The pen-up, which reads the reservoir only through its own `bake` — so unlike
@@ -868,16 +831,16 @@ impl<'a> DynamicsRun<'a> {
             layout: &kit.settle_bgl,
             entries: &[
                 params(),
-                tex(19, &self.bake_load),
-                tex(20, &self.bake_latm),
-                tex(11, &under.color),
-                tex(12, &under.aux),
-                tex(13, &region.color),
-                tex(14, &region.aux),
-                tex(21, &region.sel_mask),
+                desc::tex(19, &self.bake_load),
+                desc::tex(20, &self.bake_latm),
+                desc::tex(11, &under.color),
+                desc::tex(12, &under.aux),
+                desc::tex(13, &region.color),
+                desc::tex(14, &region.aux),
+                desc::tex(21, &region.sel_mask),
                 // The ground: the pen-up delivery is a deposit like any other, and is
                 // gated by the same tooth (§6.4).
-                tex(22, &self.scene.surface.view),
+                desc::tex(22, &self.scene.surface.view),
             ],
         });
         PieceBindings {
@@ -1057,8 +1020,8 @@ impl<'a> DynamicsRun<'a> {
                         size: wgpu::BufferSize::new(SLICE_SLOT),
                     }),
                 },
-                tex(1, &region.color),
-                tex(2, &region.aux),
+                desc::tex(1, &region.color),
+                desc::tex(2, &region.aux),
             ],
         });
 
@@ -1069,18 +1032,8 @@ impl<'a> DynamicsRun<'a> {
                 let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark dynamics slice"),
                     color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: dst.color_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: CLEAR,
-                        }),
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: dst.aux_view(),
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: CLEAR,
-                        }),
+                        Some(desc::attach(dst.color_view(), desc::CLEAR)),
+                        Some(desc::attach(dst.aux_view(), desc::CLEAR)),
                     ],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -1192,21 +1145,6 @@ struct PieceBindings {
     bake: [wgpu::BindGroup; 2],
     deposit: wgpu::BindGroup,
     settle: wgpu::BindGroup,
-}
-
-/// Every target this path renders to is fully rewritten by its own pass, so each is
-/// cleared on load rather than read back.
-const CLEAR: wgpu::Operations<wgpu::Color> = wgpu::Operations {
-    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-    store: wgpu::StoreOp::Store,
-};
-
-/// Shorthand for a texture-view bind-group entry.
-fn tex(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: wgpu::BindingResource::TextureView(view),
-    }
 }
 
 /// What every texture the loop reads and writes needs to be: sampled by one
@@ -1836,6 +1774,7 @@ pub(super) fn build_dynamics_kit(
     // The loop's storage-texture declarations are `rgba16float`; both color
     // spaces use that tile colour format (§6.7), so the region can hold either.
     debug_assert_eq!(color_space.color_format(), wgpu::TextureFormat::Rgba16Float);
+    let frag = wgpu::ShaderStages::FRAGMENT;
 
     // ---- Region composite: the `composite` shader over region-sized targets
     // (colour + the wide aux, so nothing is narrowed until the write-back).
@@ -1843,9 +1782,10 @@ pub(super) fn build_dynamics_kit(
         label: Some("stark dynamics composite"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::composite().into()),
     });
-    let composite_view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics composite view bgl"),
-        entries: &[
+    let composite_view_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics composite view bgl",
+        &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -1863,69 +1803,41 @@ pub(super) fn build_dynamics_kit(
                 count: None,
             },
         ],
-    });
-    let filter_tex = |binding: u32| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    };
-    let composite_tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics composite tile bgl"),
-        entries: &[filter_tex(0), filter_tex(1)],
-    });
-    let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("stark dynamics composite layout"),
-        bind_group_layouts: &[Some(&composite_view_bgl), Some(&composite_tile_bgl)],
-        immediate_size: 0,
-    });
-    let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("stark dynamics composite pipeline"),
-        layout: Some(&composite_layout),
-        vertex: wgpu::VertexState {
+    );
+    let composite_tile_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics composite tile bgl",
+        &[desc::sample_tex(0, frag), desc::sample_tex(1, frag)],
+    );
+    let composite_layout = desc::pipeline_layout(
+        device,
+        "stark dynamics composite layout",
+        &[Some(&composite_view_bgl), Some(&composite_tile_bgl)],
+    );
+    let composite_pipeline = desc::render_pipeline(
+        device,
+        desc::RenderPipe {
+            label: "stark dynamics composite pipeline",
+            layout: &composite_layout,
             module: &composite_shader,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
+            vs: "vs_main",
+            // `fs_raw`, NOT the screen path's `fs_main`: the loop's region must hold
+            // the tile representation itself (opacity in alpha), not the
+            // coverage-weighted channels pass A shows — the exchange reads this
+            // region and the slice writes it back to persistent tiles.
+            fs: "fs_raw",
+            primitive: desc::QUAD_STRIP,
             buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<TileInstance>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32],
             })],
-        },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &composite_shader,
-            // `fs_raw`, NOT the screen path's `fs_main`: the loop's region must
-            // hold the tile representation itself (opacity in alpha), not the
-            // coverage-weighted channels pass A shows — the exchange reads this
-            // region and the slice writes it back to persistent tiles.
-            entry_point: Some("fs_raw"),
-            compilation_options: Default::default(),
             targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: color_space.color_format(),
-                    blend: Some(color_space.color_blend()),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: SCRATCH_AUX_FORMAT,
-                    blend: Some(color_space.aux_blend()),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
+                desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
+                desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
             ],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
+        },
+    );
     let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("stark dynamics composite sampler"),
         mag_filter: wgpu::FilterMode::Linear,
@@ -1942,67 +1854,38 @@ pub(super) fn build_dynamics_kit(
         label: Some("stark dynamics loop"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics().into()),
     });
-    let params_entry = wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: true,
-            min_binding_size: wgpu::BufferSize::new(SLOT as u64),
-        },
-        count: None,
+    // Every layout below is compute-visible and opens with the dynamic-offset stamp
+    // slot; the binding numbers partition the module's group(0), so a layout lists
+    // only the bindings its own entry point reads.
+    let comp = wgpu::ShaderStages::COMPUTE;
+    let params_entry = desc::uniform_slot(0, comp, SLOT as u64);
+    let ctex = |binding: u32, filterable: bool| {
+        if filterable {
+            desc::sample_tex(binding, comp)
+        } else {
+            desc::load_tex(binding, comp)
+        }
     };
-    let ctex = |binding: u32, filterable: bool| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    };
-    let stor = |binding: u32| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::StorageTexture {
-            access: wgpu::StorageTextureAccess::WriteOnly,
-            format: wgpu::TextureFormat::Rgba16Float,
-            view_dimension: wgpu::TextureViewDimension::D2,
-        },
-        count: None,
-    };
+    let stor = |binding: u32| desc::storage_tex(binding, comp, wgpu::TextureFormat::Rgba16Float);
     // The baked swept prefix is fp32 — it is differenced per fragment, like the
     // prefix-τ volume, so f16 would band exactly where the difference is smallest.
-    let stor32 = |binding: u32| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::StorageTexture {
-            access: wgpu::StorageTextureAccess::WriteOnly,
-            format: BAKE_FORMAT,
-            view_dimension: wgpu::TextureViewDimension::D2,
-        },
-        count: None,
-    };
-    let csamp = wgpu::BindGroupLayoutEntry {
-        binding: 5,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        count: None,
-    };
-    let snapshot_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics snapshot bgl"),
-        entries: &[
+    let stor32 = |binding: u32| desc::storage_tex(binding, comp, BAKE_FORMAT);
+    let csamp = desc::sampler(5, comp);
+    let snapshot_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics snapshot bgl",
+        &[
             params_entry,
             ctex(1, false),
             ctex(2, false),
             stor(3),
             stor(4),
         ],
-    });
-    let exchange_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics exchange bgl"),
-        entries: &[
+    );
+    let exchange_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics exchange bgl",
+        &[
             params_entry,
             ctex(1, true),
             ctex(2, true),
@@ -2022,12 +1905,13 @@ pub(super) fn build_dynamics_kit(
             // since a reservoir texel sits over an arbitrary sub-pixel spot.
             ctex(21, true),
         ],
-    });
+    );
     // `bake` integrates the reservoir along the travel axis for one segment; the
     // deposit then reads the result instead of point-sampling the reservoir.
-    let bake_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics bake bgl"),
-        entries: &[
+    let bake_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics bake bgl",
+        &[
             params_entry,
             csamp,
             ctex(7, true),
@@ -2035,14 +1919,15 @@ pub(super) fn build_dynamics_kit(
             stor32(17),
             stor32(18),
         ],
-    });
+    );
     // The pen-up settle: the deposit's targets and snapshot, and the deposit's *baked*
     // reservoir reads too — its parcel is the delivery integral of the remaining pass,
     // which the settle slot's own `bake` dispatch stores (`dynamics.wesl::settle`),
     // not the cell that happens to sit overhead.
-    let settle_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics settle bgl"),
-        entries: &[
+    let settle_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics settle bgl",
+        &[
             params_entry,
             ctex(19, false),
             ctex(20, false),
@@ -2054,10 +1939,11 @@ pub(super) fn build_dynamics_kit(
             // The ground (§6.4): the settle lays paint, so it reads the tooth too.
             ctex(22, false),
         ],
-    });
-    let deposit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics deposit bgl"),
-        entries: &[
+    );
+    let deposit_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics deposit bgl",
+        &[
             params_entry,
             csamp,
             ctex(19, false),
@@ -2090,12 +1976,13 @@ pub(super) fn build_dynamics_kit(
             // nearest, so it needs no sampler and is not filterable.
             ctex(22, false),
         ],
-    });
+    );
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
     // prefix binding, but compute-visible.
-    let prefix_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics prefix bgl"),
-        entries: &[wgpu::BindGroupLayoutEntry {
+    let prefix_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics prefix bgl",
+        &[wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Texture {
@@ -2105,7 +1992,7 @@ pub(super) fn build_dynamics_kit(
             },
             count: None,
         }],
-    });
+    );
     let cpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(label),
@@ -2176,73 +2063,31 @@ pub(super) fn build_dynamics_kit(
         label: Some("stark dynamics slice"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::slice().into()),
     });
-    let load_tex = |binding: u32| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    };
     // One slot per tile the piece writes back, selected by a dynamic offset: the
     // region bindings beside it are the same for every tile, so the whole group is
     // built once per piece ([`UNIFORM_STRIDE`]).
-    let slice_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark dynamics slice bgl"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: wgpu::BufferSize::new(SLICE_SLOT),
-                },
-                count: None,
-            },
-            load_tex(1),
-            load_tex(2),
+    let slice_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics slice bgl",
+        &[
+            desc::uniform_slot(0, frag, SLICE_SLOT),
+            desc::load_tex(1, frag),
+            desc::load_tex(2, frag),
         ],
-    });
-    let slice_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("stark dynamics slice layout"),
-        bind_group_layouts: &[Some(&slice_bgl)],
-        immediate_size: 0,
-    });
-    let slice_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("stark dynamics slice pipeline"),
-        layout: Some(&slice_layout),
-        vertex: wgpu::VertexState {
-            module: &slice_shader,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &slice_shader,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: color_space.color_format(),
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: color_space.aux_format(),
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
+    );
+    let slice_layout =
+        desc::pipeline_layout(device, "stark dynamics slice layout", &[Some(&slice_bgl)]);
+    let slice_pipeline = desc::fullscreen_pipeline(
+        device,
+        "stark dynamics slice pipeline",
+        &slice_layout,
+        &slice_shader,
+        ("vs_main", "fs_main"),
+        &[
+            desc::target(color_space.color_format()),
+            desc::target(color_space.aux_format()),
+        ],
+    );
 
     DynamicsKit {
         composite_pipeline,
@@ -2278,64 +2123,32 @@ pub(super) fn build_integrate_pipeline(
         label: Some("stark integrate"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate().into()),
     });
-    let load_tex = |binding| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            // Sampled via textureLoad only (1:1 with the destination).
-            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    };
-    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark integrate bgl"),
-        entries: &[
-            load_tex(0), // base color
-            load_tex(1), // base aux
-            load_tex(2), // scratch color
-            load_tex(3), // scratch aux
-            load_tex(4), // selection mask (§6.8) — this tile's, or a 1×1 constant
+    let frag = wgpu::ShaderStages::FRAGMENT;
+    let bgl = desc::bind_group_layout(
+        device,
+        "stark integrate bgl",
+        &[
+            desc::load_tex(0, frag), // base color
+            desc::load_tex(1, frag), // base aux
+            desc::load_tex(2, frag), // scratch color
+            desc::load_tex(3, frag), // scratch aux
+            desc::load_tex(4, frag), // selection mask (§6.8) — this tile's, or a 1×1 constant
         ],
-    });
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("stark integrate layout"),
-        bind_group_layouts: &[Some(&bgl)],
-        immediate_size: 0,
-    });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("stark integrate pipeline"),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: color_space.color_format(),
-                    blend: None, // the shader does the combine; write straight through
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: color_space.aux_format(),
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
+    );
+    let layout = desc::pipeline_layout(device, "stark integrate layout", &[Some(&bgl)]);
+    // No blend on either target: the shader does the combine and writes straight
+    // through.
+    let pipeline = desc::fullscreen_pipeline(
+        device,
+        "stark integrate pipeline",
+        &layout,
+        &shader,
+        ("vs_main", "fs_main"),
+        &[
+            desc::target(color_space.color_format()),
+            desc::target(color_space.aux_format()),
+        ],
+    );
     (pipeline, bgl)
 }
 
