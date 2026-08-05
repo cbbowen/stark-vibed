@@ -28,6 +28,30 @@ impl CanvasBounds {
         self.range
     }
 
+    /// The extent spanning every tile in `coords` — empty for none.
+    pub(crate) fn of_tiles<'a>(coords: impl Iterator<Item = &'a TileCoord>) -> Self {
+        let mut out = Self::default();
+        for c in coords {
+            out.include(*c);
+        }
+        out
+    }
+
+    /// Grow to contain `other` as well.
+    ///
+    /// The **join** that makes a document's extent the union of its layers' own,
+    /// which is what lets a layer whose tiles did not change contribute the box
+    /// it already knows instead of being walked again ([`PaintTiles`]). A box is
+    /// a rectangle, so containing another's two corners contains all of it.
+    ///
+    /// [`PaintTiles`]: super::layer::PaintTiles
+    pub(crate) fn union(&mut self, other: Self) {
+        if let Some((min, max)) = other.range {
+            self.include(min);
+            self.include(max);
+        }
+    }
+
     fn include(&mut self, c: TileCoord) {
         self.range = Some(match self.range {
             None => (c, c),
@@ -506,25 +530,34 @@ impl DocState {
         }
     }
 
-    /// Rebuild from a new layer tree: bounds are recomputed from every populated
-    /// tile **at every depth**, and the selections carry over — they are
+    /// Rebuild from a new layer tree: bounds are the **union of every layer's
+    /// own extent at every depth**, and the selections carry over — they are
     /// orthogonal to the layer stack (a mask applies to whatever is painted
     /// through it, §6.8).
     ///
+    /// A union of boxes each layer already knows ([`PaintTiles`]), not a walk of
+    /// every populated tile in the document. That is what keeps this off the
+    /// per-action cost curve: this runs on *every* layer mutation, including the
+    /// property setters and structural moves that cannot change a tile set at
+    /// all, and re-deriving the whole extent from tiles made a rename cost what a
+    /// stroke costs — and a replay of `n` actions cost `n ×` the document.
+    /// Walking the tree is unavoidable (a layer can be anywhere in it), but that
+    /// is `O(layers)`, which is dozens, where the tiles are thousands.
+    ///
     /// Bounds are **paint-only**: a matte covers the infinite plane, so counting
     /// it would make `bounds` unbounded and break both "frame to content" and
-    /// export's no-frame fallback (§15.6). `Layer::tiles` is empty
-    /// for a matte, so this falls out rather than needing a branch.
+    /// export's no-frame fallback (§15.6). A matte has no tiles and so no extent,
+    /// so this falls out rather than needing a branch.
     ///
     /// `pub(crate)` for the timeline's patch restore (§12.6), which
     /// splices layer records back into the tree.
+    ///
+    /// [`PaintTiles`]: super::layer::PaintTiles
     pub(crate) fn with_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();
         fn walk(layers: &Vector<Layer>, bounds: &mut CanvasBounds) {
             for l in layers.iter() {
-                for coord in l.tiles().into_iter().flat_map(|t| t.keys()) {
-                    bounds.include(*coord);
-                }
+                bounds.union(l.bounds());
                 walk(&l.carries, bounds);
             }
         }
@@ -649,4 +682,63 @@ fn insert_at(stack: &Vector<Layer>, index: usize, layer: &Layer) -> Vector<Layer
         out = out.push_back(layer.clone());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(x: i32, y: i32) -> TileCoord {
+        TileCoord::new(x, y)
+    }
+
+    fn span(coords: &[TileCoord]) -> CanvasBounds {
+        CanvasBounds::of_tiles(coords.iter())
+    }
+
+    #[test]
+    fn an_extent_spans_every_tile_it_was_given() {
+        assert_eq!(span(&[]).tile_range(), None);
+        assert_eq!(
+            span(&[at(3, -2)]).tile_range(),
+            Some((at(3, -2), at(3, -2)))
+        );
+        assert_eq!(
+            span(&[at(3, -2), at(-1, 4), at(0, 0)]).tile_range(),
+            Some((at(-1, -2), at(3, 4))),
+            "the box is the corner-wise span, not the tiles' own hull"
+        );
+    }
+
+    /// `DocState::bounds` is the union of its layers' own extents, so the join
+    /// has to behave like one: identity on the empty box, and containing both
+    /// arguments however they are ordered. If this ever failed, a document's
+    /// bounds would depend on the order its layers happen to be visited in.
+    #[test]
+    fn the_union_is_a_join_with_the_empty_box_as_identity() {
+        let empty = CanvasBounds::default();
+        let a = span(&[at(0, 0), at(2, 1)]);
+        let b = span(&[at(-4, 5)]);
+
+        let mut grown = a;
+        grown.union(empty);
+        assert_eq!(grown.tile_range(), a.tile_range(), "empty adds nothing");
+
+        let mut from_empty = empty;
+        from_empty.union(a);
+        assert_eq!(from_empty.tile_range(), a.tile_range(), "…either way round");
+
+        let mut ab = a;
+        ab.union(b);
+        let mut ba = b;
+        ba.union(a);
+        assert_eq!(ab.tile_range(), ba.tile_range(), "order cannot matter");
+        assert_eq!(ab.tile_range(), Some((at(-4, 0), at(2, 5))));
+        // …and it agrees with spanning the tiles directly, which is what the
+        // per-layer boxes replaced.
+        assert_eq!(
+            ab.tile_range(),
+            span(&[at(0, 0), at(2, 1), at(-4, 5)]).tile_range(),
+        );
+    }
 }

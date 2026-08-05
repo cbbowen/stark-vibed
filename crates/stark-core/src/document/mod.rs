@@ -17,7 +17,7 @@ pub use action::{
     StrokeRecord, Tool,
 };
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
-pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion};
+pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion, PaintTiles};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState, LayerSite};
 pub use timeline::{

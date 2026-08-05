@@ -1499,6 +1499,7 @@ impl Engine {
     fn layer_items(&self, layer: &Layer) -> Vec<CompositeItem> {
         match &layer.content {
             LayerContent::Paint(tiles) => tiles
+                .map()
                 .iter()
                 .map(|(coord, handle)| CompositeItem::Tile {
                     coord: *coord,

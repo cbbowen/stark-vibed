@@ -15,6 +15,7 @@ use rpds::{HashTrieMap, Vector};
 use serde::{Deserialize, Serialize};
 
 use super::action::ActorId;
+use super::state::CanvasBounds;
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::tile::TilePairHandle;
 
@@ -274,12 +275,49 @@ impl MatteRegion {
     }
 }
 
+/// A paint layer's tiles **and the extent they span** (§6) — one value, because
+/// the extent is a function of the map and the two must never disagree.
+///
+/// The pairing is what makes the document's own bounds cheap. `DocState::bounds`
+/// is the union of every layer's, and a union needs only each layer's box, so a
+/// mutation that leaves a layer's tiles alone — a rename, an opacity, a reorder,
+/// a stroke on some *other* layer — contributes the box that layer already knows
+/// instead of re-walking its tiles. Only a layer whose map actually changed pays,
+/// and it pays for itself alone rather than for the whole document.
+///
+/// Both fields are private and the only constructor derives the extent, so there
+/// is no way to build the pair inconsistently. That matters more than the speed:
+/// `bounds` is what "frame to content" and export's no-frame fallback measure
+/// (§15.6), so a stale one is a wrongly-cropped export — and the alternative to
+/// deriving it here is a rule every writer of a tile map has to remember, which
+/// is the kind of rule this codebase spends structure to avoid (§1).
+#[derive(Clone)]
+pub struct PaintTiles {
+    map: HashTrieMap<TileCoord, TilePairHandle>,
+    bounds: CanvasBounds,
+}
+
+impl PaintTiles {
+    /// The tiles, with their extent derived once.
+    fn new(map: HashTrieMap<TileCoord, TilePairHandle>) -> Self {
+        Self {
+            bounds: CanvasBounds::of_tiles(map.keys()),
+            map,
+        }
+    }
+
+    /// The sparse tile map itself.
+    pub fn map(&self) -> &HashTrieMap<TileCoord, TilePairHandle> {
+        &self.map
+    }
+}
+
 /// What a layer is made of (§15.2).
 #[derive(Clone)]
 pub enum LayerContent {
     /// Painted tiles. Only populated ones exist — this sparsity is the infinite
     /// canvas.
-    Paint(HashTrieMap<TileCoord, TilePairHandle>),
+    Paint(PaintTiles),
     /// A procedural region filled with a flat colour.
     ///
     /// `color` is **straight sRGB**, like [`BrushParams::color`], and is converted
@@ -385,7 +423,7 @@ impl Layer {
             opacity: 1.0,
             visible: true,
             name: None,
-            content: LayerContent::Paint(HashTrieMap::new()),
+            content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new())),
             carries: Vector::new(),
         }
     }
@@ -404,8 +442,23 @@ impl Layer {
     /// a matte from silently reading as an empty paint layer.
     pub fn tiles(&self) -> Option<&HashTrieMap<TileCoord, TilePairHandle>> {
         match &self.content {
-            LayerContent::Paint(tiles) => Some(tiles),
+            LayerContent::Paint(tiles) => Some(tiles.map()),
             LayerContent::Matte { .. } => None,
+        }
+    }
+
+    /// The extent of this layer's **own** painted tiles, already derived
+    /// ([`PaintTiles`]) — what `DocState`'s bounds union together.
+    ///
+    /// Empty for a matte, and that is not a special case to remember: a matte
+    /// covers the infinite plane, so counting it would make the document's
+    /// bounds unbounded and break both "frame to content" and export's no-frame
+    /// fallback (§15.6). Having no tiles, it has no extent, and the right answer
+    /// falls out.
+    pub fn bounds(&self) -> CanvasBounds {
+        match &self.content {
+            LayerContent::Paint(tiles) => tiles.bounds,
+            LayerContent::Matte { .. } => CanvasBounds::default(),
         }
     }
 
@@ -428,7 +481,7 @@ impl Layer {
     pub fn with_tiles(&self, tiles: HashTrieMap<TileCoord, TilePairHandle>) -> Self {
         match &self.content {
             LayerContent::Paint(_) => Self {
-                content: LayerContent::Paint(tiles),
+                content: LayerContent::Paint(PaintTiles::new(tiles)),
                 ..self.clone()
             },
             LayerContent::Matte { .. } => self.clone(),

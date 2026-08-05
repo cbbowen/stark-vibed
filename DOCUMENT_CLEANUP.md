@@ -113,15 +113,35 @@ So `observe` now reads `!layers.is_empty()` off the traversal, and
 that is not in the tree" question it had to answer disappears with it. The design
 prose moved to `DocState::visit`, which is where the fact is now derived.
 
-### 2.3 `with_layers` recomputes canvas bounds on every layer mutation — open
+### 2.3 `with_layers` recomputed canvas bounds on every layer mutation — **done**
 
-`state.rs:533-551` walks every layer's every tile key — and `map_layer` routes
-*all* the property setters through it, so setting a layer's name re-derives the
-bounds of the whole document. O(total tiles) per action, so a scrub or replay
-across N actions is O(N·T). The property setters provably cannot change bounds; a
-`with_layers_keeping_bounds` for them is a ten-line change that removes the
-majority of the cost. Incremental union on tile writes, with a full recompute
-only when tiles are *removed*, would finish the job.
+It walked every layer's every tile key, and `map_layer` routes *all* the property
+setters through it — so setting a layer's name re-derived the extent of the whole
+document. O(total tiles) per action, and a scrub or replay across N actions was
+O(N·T).
+
+Now the extent is memoized **per layer**, in a `PaintTiles` value that pairs a
+tile map with the box it spans, and `DocState::bounds` is the union of those
+(`CanvasBounds::union`, a join). A mutation that leaves a layer's tiles alone —
+every property setter, every structural move, a stroke on some *other* layer —
+contributes the box that layer already knows. Only a layer whose map actually
+changed re-derives, and it pays for itself rather than for the document. The tree
+walk stays, because a layer can be anywhere in it, but it is now O(layers)
+(dozens) rather than O(tiles) (thousands).
+
+Correct **by construction** rather than by classification: both of `PaintTiles`'
+fields are private and its only constructor derives the extent, so no caller
+decides whether its own change grew or shrank the document, and no writer of a
+tile map has to remember to refresh anything. That mattered more than the speed —
+`bounds` is what "frame to content" and export's no-frame fallback measure
+(§15.6), so a stale one is a wrongly-cropped export.
+
+Not pursued: making the *within-layer* rederive incremental too, so a stroke
+unions only the tiles it wrote instead of re-spanning its layer. It needs the
+writer to report its written extent — either the renderers returning it (which
+leaves `document/`) or trusting the action's own footprint rect, which would hang
+bounds correctness on §3.1's still-unverified invariant. Worth revisiting after
+§3.1, not before.
 
 ### 2.4 `LinearTimeline::applied()` is O(n) per `scrub_range` — open
 
