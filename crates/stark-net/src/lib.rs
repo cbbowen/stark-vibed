@@ -29,7 +29,8 @@ mod ticket;
 mod transport;
 
 pub use session::{
-    Broadcaster, CollabSession, LinkKind, NetOptions, PeerLink, RemoteEvent, actor_from_endpoint_id,
+    AssetNeed, Broadcaster, CollabSession, LinkKind, NetOptions, PeerLink, RemoteEvent,
+    actor_from_endpoint_id,
 };
 pub use ticket::SessionTicket;
 

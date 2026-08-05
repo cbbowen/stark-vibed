@@ -15,11 +15,8 @@
 
 use dioxus::prelude::*;
 
-use dioxus::dioxus_core::spawn_forever;
-
 use crate::icons::{self, icon};
 use crate::panels::frame::selected_frame;
-use crate::panels::lighting::surface_asset;
 use crate::platform::{download_bytes, pick_file};
 use crate::state::AppState;
 use stark_core::{Background, ExportScale, LayerId, Rendered};
@@ -58,60 +55,20 @@ pub fn open_document(state: AppState) {
         let (mut renderer, mut obs) = (state.renderer, state.obs);
         let mut guard = renderer.write();
         let Some(r) = guard.as_mut() else { return };
+        // One replay, and it is right the first time: the file carries the grounds
+        // it was painted on (§6.4, §8), and `load_document` installs them before
+        // replaying a single action. That is what this used to spend a second full
+        // replay on — fetch the ground the document *ended* on, then run the whole
+        // log again — and it never covered the case of a document that switched
+        // grounds part-way, since it only ever fetched one.
         match r.load_bytes(&bytes) {
             Ok(()) => {
                 r.paint();
                 obs.set(Some(r.observe()));
                 tracing::info!(bytes = bytes.len(), "document loaded");
             }
-            Err(e) => {
-                tracing::error!("could not open that file: {e}");
-                return;
-            }
+            Err(e) => tracing::error!("could not open that file: {e}"),
         }
-        // The document names the canvas it was painted on, and since the deposition
-        // tooth reads that canvas (§6.4) the replay above needs its height map in
-        // hand — a ground whose bytes have not arrived falls back to `Flat`, whose
-        // relief is 0, and every stroke bakes with no tooth at all. Unlike the media
-        // pass, which re-reads the surface every frame and heals itself the moment
-        // the bytes land, those pixels are *stored*.
-        //
-        // So: fetch what the file asked for and replay it again. A second replay of
-        // a log already in hand, in the one case where the first one was wrong —
-        // rather than prefetching every bundled ground at startup on the chance a
-        // document will want one.
-        let surface = r.surface();
-        if r.surface_loaded(surface) {
-            return;
-        }
-        let Some(asset) = surface_asset(surface) else {
-            return;
-        };
-        drop(guard);
-        // `spawn_forever`: the menu handler's scope is long gone by the time this
-        // resolves, and only root-owned signals are touched.
-        spawn_forever(async move {
-            tracing::info!(?surface, "fetching the ground this document was painted on");
-            let Ok(png) = dioxus::asset_resolver::read_asset_bytes(asset).await else {
-                tracing::error!(
-                    ?surface,
-                    "could not fetch it; the document keeps the \
-                                          strokes it replayed on a smooth ground"
-                );
-                return;
-            };
-            let mut guard = renderer.write();
-            let Some(r) = guard.as_mut() else { return };
-            r.register_surface(surface, png);
-            if let Err(e) = r.load_bytes(&bytes) {
-                tracing::error!("re-replay after the ground arrived failed: {e}");
-                return;
-            }
-            r.paint();
-            let observed = r.observe();
-            drop(guard);
-            obs.set(Some(observed));
-        });
     });
 }
 

@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::assets::{AssetId, encode_gray_png};
+use crate::error::{EngineError, Result};
 use crate::gpu::context::{GpuContext, MAX_TEXTURE_DIM_2D};
 
 /// Canvas pixels spanned by one full tile of the surface texture. The bump wraps
@@ -28,27 +30,36 @@ pub fn grain_uv_scale() -> f32 {
 
 /// Which physical surface a document is painted on. Saved in `CanvasMeta` (§8)
 /// because which canvas a piece was painted on is part of the document, so it is
-/// reproducible. The set is open — future custom/uploaded surfaces slot in here.
+/// reproducible.
 ///
-/// Non-`Flat` surfaces need image bytes, which the *frontend* fetches at runtime
-/// and registers with the engine ([`crate::Engine::register_surface`]) — the
-/// engine embeds nothing (§6.4, §Inputs).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+/// **Two variants, and the split is the point.** `Flat` is procedural and needs no
+/// bytes; every other ground *is* its bytes, named by the hash of them. There is no
+/// third case — no ground named by a label whose image the engine would have to be
+/// told about separately — because that case is exactly the one that can go missing
+/// (§6.4). A peer, a save file or a replay that meets an
+/// [`Image`](Self::Image) id it has never seen can always ask for it by content, and
+/// verify what comes back; a ground called "Gesso" could only be looked up in a
+/// table the asker might not have, and the miss was silent — the tooth read a flat
+/// stand-in and baked it into the tiles.
+///
+/// So this is the same bargain brush shapes already make (§6.6): the id
+/// comes *from* the image ([`Engine::import_surface`](crate::Engine::import_surface)),
+/// which is what makes "built-in" a property of the frontend's asset list and of
+/// nothing downstream. The engine still embeds no image bytes.
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub enum SurfaceId {
     /// Perfectly smooth: full height everywhere, so the
     /// constant height has zero gradient (no relief). Paint behaves exactly as if
     /// there were no surface — the orthogonal default.
     #[default]
     Flat,
-    /// The built-in tileable linen canvas weave.
-    Linen,
-    /// Built-in tileable **gesso** — a brushed acrylic ground. Where `Linen` is a
-    /// regular woven grid, this is irregular: broad knife strokes with a fine
-    /// crackle over them, so its height histogram has a long tail rather than a
-    /// periodic peak. That is what makes it the interesting one for the deposition
-    /// tooth (§6.4) — a periodic weave prints a periodic mark, which reads as a
-    /// screen; an irregular ground reads as paper.
-    Gesso,
+    /// A height map, named by the BLAKE3 hash of its canonical decoded form
+    /// ([`surface_id`]). Covers the grounds that ship with the app and the ones a
+    /// user brings, identically — the engine cannot tell them apart, which is why
+    /// neither can go missing in a way the other wouldn't.
+    Image(AssetId),
 }
 
 /// A canvas surface: a single-channel height texture plus a tiling sampler.
@@ -138,32 +149,12 @@ impl Surface {
         mean
     }
 
-    /// Decode a grayscale PNG height map into an `R8Unorm` tileable texture.
+    /// Build from a height-map PNG. The bytes reached the registry through
+    /// [`canonicalize`] or [`identify`], which decoded them once already, so a
+    /// failure here is a broken invariant rather than bad input — hence the
+    /// `expect` rather than a `Result` the caller would have nothing to do with.
     pub fn load(ctx: &GpuContext, png_bytes: &[u8]) -> Self {
-        let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
-        let mut reader = decoder.read_info().expect("surface: read png info");
-        let size = reader
-            .output_buffer_size()
-            .expect("surface: png output size");
-        let mut buf = vec![0u8; size];
-        let info = reader
-            .next_frame(&mut buf)
-            .expect("surface: decode png frame");
-        let (w, h) = (info.width, info.height);
-
-        // Collapse to one height byte per texel (the source is 8-bit grayscale,
-        // but accept the common color types defensively).
-        let n = (w * h) as usize;
-        let height: Vec<u8> = match info.color_type {
-            png::ColorType::Grayscale => buf[..n].to_vec(),
-            png::ColorType::GrayscaleAlpha => buf.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
-            png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().map(|p| p[0]).collect(),
-            png::ColorType::Rgba => buf.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
-            other => panic!("surface: unsupported PNG color type {other:?}"),
-        };
-
-        // Fit within the device texture limit (integer-factor box downsample).
-        let (height, w, h) = downsample_to_limit(height, w, h, MAX_TEXTURE_DIM_2D);
+        let (w, h, height) = canonical_height(png_bytes).expect("surface: registered bytes decode");
         Self::from_height(ctx, &height, w, h)
     }
 
@@ -223,6 +214,83 @@ impl Surface {
     }
 }
 
+/// Import a height map: the id that names it, and the canonical bytes to keep
+/// beside it. Re-encoded from the decoded height, so what is stored, bundled into a
+/// save file and sent to a peer is the form the id actually names — reload it and
+/// you land on the same id.
+///
+/// The engine's entry point is
+/// [`Engine::import_surface`](crate::Engine::import_surface).
+pub fn canonicalize(png_bytes: &[u8]) -> Result<(SurfaceId, Vec<u8>)> {
+    let (w, h, height) = canonical_height(png_bytes)?;
+    let id = SurfaceId::Image(surface_id(w, h, &height));
+    Ok((id, encode_gray_png(w, h, &height)?))
+}
+
+/// The id of an already-canonical height map — bytes out of a save file or off a
+/// peer, which are kept verbatim. Derived rather than taken on trust: a ground whose
+/// bytes did not hash to the id that asked for them is a ground that would silently
+/// deposit the wrong tooth, so the caller gets the id the bytes *are* and compares.
+pub fn identify(png_bytes: &[u8]) -> Result<SurfaceId> {
+    let (w, h, height) = canonical_height(png_bytes)?;
+    Ok(SurfaceId::Image(surface_id(w, h, &height)))
+}
+
+/// Content id of a canonical height field: the hash of its dimensions and texels.
+///
+/// Over the *decoded, downsampled* field rather than the file bytes, for the reason
+/// [`AssetId`] names a brush's coverage the same way — it is what actually drives
+/// pixels, so two peers who encoded the same weave differently converge on one id.
+/// That this is deterministic across peers rests on [`MAX_TEXTURE_DIM_2D`] being a
+/// fixed constant rather than a device query: were the downsample factor to follow
+/// the adapter's real limit, the same PNG would canonicalize differently on two
+/// machines and the id would stop naming one thing.
+fn surface_id(width: u32, height: u32, texels: &[u8]) -> AssetId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&width.to_le_bytes());
+    hasher.update(&height.to_le_bytes());
+    hasher.update(texels);
+    AssetId(*hasher.finalize().as_bytes())
+}
+
+/// Decode a height-map PNG to its canonical form: one height byte per texel,
+/// box-downsampled by an integer factor to fit [`MAX_TEXTURE_DIM_2D`].
+///
+/// Channel 0, not luminance — a height map's grey *is* its height, so an RGB source
+/// carries it in red and weighting the channels would tilt the ground.
+fn canonical_height(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| EngineError::Asset(e.to_string()))?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| EngineError::Asset("surface: missing png size".into()))?;
+    let mut buf = vec![0u8; size];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| EngineError::Asset(e.to_string()))?;
+    let (w, h) = (info.width, info.height);
+
+    // Collapse to one height byte per texel (the source is 8-bit grayscale, but
+    // accept the common color types defensively).
+    let n = (w * h) as usize;
+    let height: Vec<u8> = match info.color_type {
+        png::ColorType::Grayscale => buf[..n].to_vec(),
+        png::ColorType::GrayscaleAlpha => buf.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
+        png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().map(|p| p[0]).collect(),
+        png::ColorType::Rgba => buf.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
+        other => {
+            return Err(EngineError::Asset(format!(
+                "surface: unsupported PNG color type {other:?}"
+            )));
+        }
+    };
+
+    let (height, w, h) = downsample_to_limit(height, w, h, MAX_TEXTURE_DIM_2D);
+    Ok((w, h, height))
+}
+
 /// Box-downsample a single-channel image by the smallest integer factor that
 /// brings both edges within `limit`. An integer factor keeps a tileable texture
 /// tileable; `factor == 1` returns the input unchanged.
@@ -255,9 +323,11 @@ impl crate::gpu::registry::Resource for SurfaceId {
 
     /// `Flat` is a 1x1 full-height texel: a constant
     /// height has zero gradient, so it is exactly equivalent to having no surface
-    /// (§6.4).
+    /// (§6.4). It is the only ground with no bytes behind it, which is what makes
+    /// "the id names an image the holder may not have yet" a question with exactly
+    /// one shape.
     fn is_builtin(self) -> bool {
-        self == SurfaceId::Flat
+        matches!(self, SurfaceId::Flat)
     }
 
     fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Surface {

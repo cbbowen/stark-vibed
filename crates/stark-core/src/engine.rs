@@ -552,10 +552,12 @@ impl Engine {
         color_space: ColorSpaceId,
     ) -> Self {
         let color_space = color_space.make();
-        // The registry starts on the builtin flat surface — it is all that can be
-        // built before any bytes exist. A fresh document is on `DEFAULT_SURFACE`
-        // (linen), so the two are reconciled at the end of this function; until the
-        // frontend registers the height map, linen renders as flat (§6.4).
+        // The registry starts on the builtin flat ground — it is all that can be
+        // built before any bytes exist, and it is also what a fresh document is on
+        // (`DEFAULT_SURFACE`). The two agree now, where they used to have to be
+        // reconciled: a ground is named by the hash of its height map (§6.4), so an
+        // engine with no bytes has exactly one ground it can truthfully name, and a
+        // frontend that wants another opens a document on it.
         let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
@@ -614,9 +616,9 @@ impl Engine {
             outbox: Vec::new(),
             outbox_enabled: false,
         };
-        // Point the surface registry at the document's surface. A no-op when that is
-        // the builtin; otherwise it parks on the id so the frontend's later
-        // `register_surface` is recognised as "the one in use" and takes effect.
+        // Point the ground registry at the document's ground. A no-op for a fresh
+        // document (both are `Flat`), and not for one seeded by `new_document`,
+        // where it parks the registry on the id so the ground actually renders.
         engine.apply_document_surface();
         engine
     }
@@ -1579,8 +1581,9 @@ impl Engine {
         self.session.view.visible_bounds()
     }
 
-    /// Snapshot the document as a saveable [`DocumentFile`] (§8),
-    /// bundling the brush-shape assets that strokes actually reference (§6.6).
+    /// Snapshot the document as a saveable [`DocumentFile`] (§8), bundling the
+    /// brush-shape assets that strokes actually reference (§6.6) and the canvas
+    /// grounds the log names (§6.4).
     pub fn document_file(&self) -> DocumentFile {
         let actions = self.timeline.clone_actions();
         let mut referenced = std::collections::HashSet::new();
@@ -1602,7 +1605,32 @@ impl Engine {
         file.canvas.color_space = self.color_space.id();
         file.canvas.surface = self.initial_surface;
         file.assets = assets;
+        file.surfaces = self.referenced_surfaces(&file);
         file
+    }
+
+    /// The canvas grounds a file's log names, with their height maps — the ground it
+    /// starts on plus every one it switches to (§6.4).
+    ///
+    /// *Every* one, not just the ground it ends on: the tooth reads whichever was in
+    /// force when a stroke was made, so a document that switched part-way through
+    /// needs both to replay to the same pixels. Bundling only the last one is the
+    /// shape of bug this whole change is about, one scope smaller.
+    ///
+    /// `Flat` is skipped — it is procedural and has no bytes — as is any ground whose
+    /// image never arrived, which cannot be bundled because it was never held.
+    fn referenced_surfaces(&self, file: &DocumentFile) -> Vec<(SurfaceId, Vec<u8>)> {
+        let mut named: BTreeSet<SurfaceId> = BTreeSet::new();
+        named.insert(file.canvas.surface);
+        for action in &file.actions {
+            if let ActionKind::SetSurface(id) = &action.kind {
+                named.insert(*id);
+            }
+        }
+        named
+            .into_iter()
+            .filter_map(|id| Some((id, self.surface_bytes(id)?)))
+            .collect()
     }
 
     /// Serialize the document to the compact on-disk container (§8).
@@ -1627,6 +1655,7 @@ impl Engine {
                 eprintln!("skipping unreadable brush asset: {e}");
             }
         }
+        self.load_surfaces(file);
         // Replay only the *effective* sequence: a file saved from a shared
         // session is the full log, including `Undo` actions and the actions
         // they suppress (§12.3). A solo load flattens those away.
@@ -1636,6 +1665,27 @@ impl Engine {
         self.resync_counters(&file.actions);
         // Whatever the replayed log left the document on.
         self.apply_document_surface();
+    }
+
+    /// Install a file's bundled canvas grounds, **before** its log is replayed
+    /// (§6.4, §8).
+    ///
+    /// The ordering is the whole point, and it is the same one the brush assets
+    /// above are subject to: the tooth gates a stroke's deposit by the ground under
+    /// it, so a ground that arrives after the stroke that needed it arrives too late.
+    /// Unlike the media pass — which re-reads the ground every frame and rights
+    /// itself the moment an image lands — a deposit is *stored*, and no later arrival
+    /// un-bakes it.
+    ///
+    /// A ground that fails to install is logged and skipped rather than fatal: the
+    /// document still opens, on the flat stand-in, which is the same degradation a
+    /// missing brush image gets.
+    fn load_surfaces(&mut self, file: &DocumentFile) {
+        for (id, bytes) in &file.surfaces {
+            if let Err(e) = self.accept_surface(*id, bytes) {
+                tracing::warn!("skipping a canvas ground this document names: {e}");
+            }
+        }
     }
 
     /// Decode and load a container produced by [`Engine::save_bytes`].
@@ -1653,10 +1703,18 @@ impl Engine {
     /// signature, not to the replay.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn replay_timelapse(&mut self, file: &DocumentFile, mut on_frame: impl FnMut(RgbaImage)) {
+        // The ground the log starts from, before `reset_document` seeds with it —
+        // the same first step `load_document` takes, and it was missing here: a
+        // timelapse replayed onto whatever ground this engine happened to be on
+        // rather than the one the file names, so every frame before the log's first
+        // `SetSurface` was deposited against the wrong weave (§6.4).
+        self.initial_surface = file.canvas.surface;
         self.reset_document();
         for (_, bytes) in &file.assets {
             let _ = self.apply.assets.insert_bytes(bytes);
         }
+        self.load_surfaces(file);
+        self.apply_document_surface();
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
             on_frame(self.render_to_image());
@@ -1851,6 +1909,10 @@ impl Engine {
                 tracing::warn!("skipping unreadable brush asset: {e}");
             }
         }
+        // The grounds the shared log names, before it is replayed — see
+        // [`Self::load_surfaces`]. A joiner replays the whole painting, so this is
+        // where getting it wrong costs the most.
+        self.load_surfaces(file);
         let ctx = &mut self.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_surface(self.initial_surface);
         self.timeline = Box::new(ReplicatedTimeline::from_log(
@@ -2140,10 +2202,10 @@ impl Engine {
         self.document().surface
     }
 
-    /// Whether `id` is ready to use — `Flat` always is; an image-backed surface
-    /// is ready once its bytes have been [`register_surface`](Self::register_surface)ed.
-    pub fn surface_loaded(&self, id: SurfaceId) -> bool {
-        self.apply.surfaces.is_loaded(id)
+    /// The canonical PNG bytes of a loaded image ground — what a save file bundles
+    /// and what a live session serves to a joining peer (§8, §12.4).
+    pub fn surface_bytes(&self, id: SurfaceId) -> Option<Vec<u8>> {
+        self.apply.surfaces.bytes(id).map(|b| b.to_vec())
     }
 
     /// What share of a ground a tip with this `tooth` stands on (§6.4) — the
@@ -2158,12 +2220,57 @@ impl Engine {
         self.apply.surfaces.get(&gpu, id).bearing(tooth)
     }
 
-    /// Provide (frontend-fetched) image bytes for a surface. If it's the one in
-    /// use, the surface is rebuilt so the bytes take effect immediately.
-    pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
-        if self.apply.surfaces.register(&self.gpu, id, png_bytes) {
+    /// Import a canvas ground from a height-map PNG, returning the id that names it
+    /// (§6.4). The frontend fetches the bytes — the engine embeds none — and this is
+    /// how a ground enters the engine, whether it ships with the app, came out of a
+    /// save file, or arrived from a peer.
+    ///
+    /// **The id is derived from the image, never asserted alongside it.** The
+    /// previous `register_surface(id, bytes)` let a caller bind any name to any
+    /// bytes, and nothing downstream could tell a wrong binding from a right one —
+    /// which is the joint the tooth's divergence came through, since a ground that
+    /// failed to arrive fell back to `Flat` and baked a flat deposit into tiles that
+    /// never heal. Here a mismatch cannot be expressed: ask for `id`, and `id` is
+    /// what these bytes *are*.
+    ///
+    /// Idempotent, and cheap on a repeat — the same image re-imports to the same id.
+    /// If it is the ground in use, it is rebuilt so the bytes take effect at once.
+    pub fn import_surface(&mut self, png_bytes: &[u8]) -> Result<SurfaceId> {
+        let (id, canonical) = crate::gpu::surface::canonicalize(png_bytes)?;
+        if self.apply.surfaces.register(&self.gpu, id, canonical) {
             self.apply_surface();
         }
+        Ok(id)
+    }
+
+    /// Take in a ground that arrives already named: out of a save file's bundle, or
+    /// fetched for a peer's `SetSurface` (§8, §12.4). The bytes are kept verbatim —
+    /// they are canonical by construction — and **checked against the id that asked
+    /// for them**.
+    ///
+    /// The check is the point. Bytes installed under someone else's id are the one
+    /// way a content-addressed ground could still deposit the wrong tooth, so they
+    /// are refused rather than installed. `import_surface` needs no equivalent: there
+    /// the id comes out of the bytes, so there is nothing to disagree with.
+    ///
+    /// If this is the ground the document already moved to while its bytes were in
+    /// flight, registering it is also what swaps the flat stand-in for the real
+    /// weave.
+    pub fn accept_surface(&mut self, expected: SurfaceId, png_bytes: &[u8]) -> Result<SurfaceId> {
+        let actual = crate::gpu::surface::identify(png_bytes)?;
+        if actual != expected {
+            return Err(EngineError::Asset(format!(
+                "ground {expected:?} arrived as {actual:?}; refusing to install it"
+            )));
+        }
+        if self
+            .apply
+            .surfaces
+            .register(&self.gpu, actual, png_bytes.to_vec())
+        {
+            self.apply_surface();
+        }
+        Ok(actual)
     }
 
     /// Bring the GPU-side surface in line with the document's, rebuilding it if the

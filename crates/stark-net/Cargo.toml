@@ -56,3 +56,8 @@ wgpu = { workspace = true }
 glam = { workspace = true }
 # Synthesizing brush-shape PNGs for the mid-session asset replication test.
 png = { workspace = true }
+# The real gesso height map, for the ground-replication test. A synthetic one
+# would do the job less well: the deposition tooth reads the ground's *histogram*
+# (§6.4), and a smooth synthetic blob has almost none of one, so a peer left on
+# the flat stand-in could still land within tolerance.
+stark-testdata = { path = "../stark-testdata" }

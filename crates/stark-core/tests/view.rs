@@ -238,15 +238,16 @@ fn panning_follows_the_pointer_on_a_turned_canvas() {
 /// *sampled*, which is exactly the thing under test.
 #[test]
 fn mirroring_reflects_every_pixel_of_the_screen_path() {
-    use stark_core::SurfaceId;
     use stark_core::command::DocCommand;
 
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
     // The weave, embossed hard enough to see — this is what `surf_m` carries.
-    engine.register_surface(SurfaceId::Linen, stark_testdata::assets::linen());
-    engine.process(DocCommand::SetSurface(SurfaceId::Linen));
+    let linen = engine
+        .import_surface(&stark_testdata::assets::linen())
+        .expect("the linen height map imports");
+    engine.process(DocCommand::SetSurface(linen));
     engine.process(ViewCommand::SetMediaParams(stark_core::MediaParams {
         // The weave *on*, so where it is sampled is part of the answer, but its
         // embossing *off* — see the note above.

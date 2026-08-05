@@ -19,7 +19,11 @@ use crate::error::{EngineError, Result};
 use crate::gpu::context::GpuContext;
 
 /// Stable identity of an asset: the BLAKE3 hash of its source bytes.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Ord` so collections of assets have one order rather than a hash map's — what a
+/// save file's bundle is written in, so the same document serializes to the same
+/// bytes twice running (§8).
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AssetId(pub [u8; 32]);
 
 impl std::fmt::Debug for AssetId {
@@ -94,7 +98,7 @@ impl AssetStore {
         if let Entry::Vacant(slot) = inner.masks.entry(id) {
             let bytes = match store_bytes {
                 Some(b) => b,
-                None => encode_coverage_png(w, h, &coverage)?,
+                None => encode_gray_png(w, h, &coverage)?,
             };
             let cov: Vec<f32> = coverage.iter().map(|&b| b as f32 / 255.0).collect();
             // One coverage layer per shape orientation (§6.6): the swept-depth
@@ -359,8 +363,10 @@ fn coverage_id(width: u32, height: u32, coverage: &[u8]) -> AssetId {
     AssetId(*hasher.finalize().as_bytes())
 }
 
-/// Encode a coverage buffer as a compact grayscale PNG for the save file (§8).
-fn encode_coverage_png(width: u32, height: u32, coverage: &[u8]) -> Result<Vec<u8>> {
+/// Encode a single-channel buffer as a compact grayscale PNG for the save file
+/// (§8) — the canonical stored form of both a brush's coverage mask and a canvas
+/// surface's height map (§6.4), which are the same kind of thing on disk.
+pub(crate) fn encode_gray_png(width: u32, height: u32, coverage: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut out, width, height);

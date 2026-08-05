@@ -26,7 +26,7 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_core::peer::Identity;
 use stark_net::{
-    Broadcaster, CollabSession, LinkKind, NetOptions, RemoteEvent, SessionTicket,
+    AssetNeed, Broadcaster, CollabSession, LinkKind, NetOptions, RemoteEvent, SessionTicket,
     actor_from_endpoint_id,
 };
 
@@ -88,9 +88,12 @@ pub fn share(state: AppState) {
         match CollabSession::host(doc, opts).await {
             Ok(session) => {
                 // Seed every locally-imported brush so peers can fetch any the
-                // snapshot didn't already bundle (§12.4).
+                // snapshot didn't already bundle (§12.4). The grounds need no
+                // equivalent: the snapshot carries every one the log names, and
+                // hosting seeds the blob store from it — a ground imported *later*
+                // is seeded by `grounds::select` before its `SetSurface` goes out.
                 for (id, bytes) in assets {
-                    session.add_asset(id, bytes);
+                    session.add_content(AssetNeed::Brush(id), bytes);
                 }
                 install(state, session);
             }
@@ -140,7 +143,7 @@ pub fn join(state: AppState, ticket_text: String) {
                     r.all_asset_bytes()
                 };
                 for (id, bytes) in assets {
-                    session.add_asset(id, bytes);
+                    session.add_content(AssetNeed::Brush(id), bytes);
                 }
                 install(state, session);
             }
@@ -255,8 +258,19 @@ fn install(state: AppState, mut session: CollabSession) {
                     // round-tip fallback — the import is what upgrades it. (On
                     // the commit path the following Action repaints anyway;
                     // assets are rare enough that one extra request is free.)
-                    RemoteEvent::Asset { bytes } => {
-                        r.import_brush(&bytes);
+                    RemoteEvent::Asset { need, bytes } => {
+                        // The transport says which store these bytes belong in —
+                        // the action that referenced them is the only thing that
+                        // knows, and a brush mask and a canvas ground decode
+                        // differently (§6.6, §6.4).
+                        match need {
+                            AssetNeed::Brush(_) => r.import_brush(&bytes),
+                            // Arrives *before* the `SetSurface` that wanted it, so
+                            // the tooth reads the real weave from the very first
+                            // stroke after the switch rather than baking a flat
+                            // deposit that no later arrival un-bakes.
+                            AssetNeed::Ground(id) => r.accept_surface(id, &bytes),
+                        }
                         (None, true)
                     }
                     RemoteEvent::Action(action) => {

@@ -226,7 +226,7 @@ fn seed_session(state: AppState, id: AssetId, bytes: Vec<u8>) {
         .as_ref()
         .map(|s| s.broadcaster())
     {
-        broadcaster.add_asset(id, bytes);
+        broadcaster.add_content(stark_net::AssetNeed::Brush(id), bytes);
     }
 }
 

@@ -81,10 +81,12 @@ pub struct DocState {
     selections: HashTrieMap<ActorId, Selection>,
     /// The physical canvas surface (§6.4). Document state: which canvas
     /// a piece was painted on is part of what the document *is*, it is saved, and
-    /// reopening on a different weave would be a different painting. Today it is
-    /// read only by the media pass (§6.3), so a switch changes no stored pixel —
-    /// but it is logged like any other edit, which is what would let a future
-    /// deposition gate read it without becoming a history change.
+    /// reopening on a different weave would be a different painting.
+    ///
+    /// Read by the media pass (§6.3) *and* by the deposition tooth (§6.4) — which is
+    /// what having logged it bought. A switch is an ordinary action, so a stroke
+    /// deposits against the ground the log stood on when it was made, on replay and
+    /// on a peer alike, and no history rule had to be invented to say so.
     pub surface: SurfaceId,
     /// The canvas substrate colour — the ground the paint sits on — as straight
     /// sRGB (§15.5).
@@ -106,15 +108,22 @@ pub struct DocState {
 /// a highlight can read lighter than the bare canvas.
 pub const DEFAULT_BACKGROUND: [f32; 3] = [0.85, 0.85, 0.85];
 
-/// The canvas a new document starts on (§6.4): linen, not `Flat`. The
-/// weave is what paint has to sit in — its relief is read by the stroke pass
-/// whether or not `MediaParams::surface_strength` makes the light show it — so it
-/// is the honest starting substrate, and `Flat` is the deliberate switch away.
+/// The canvas a document starts on when nobody says otherwise (§6.4): `Flat`, the
+/// one ground that is procedural.
 ///
-/// Distinct from `SurfaceId::default()`, which stays `Flat`: that is the *builtin*
-/// the surface registry falls back to before any bytes arrive (the frontend fetches
-/// the linen height map at runtime — §6.6).
-pub const DEFAULT_SURFACE: SurfaceId = SurfaceId::Linen;
+/// It used to be linen, and that could not survive grounds being content-addressed
+/// (§6.4): a `SurfaceId` now *is* a height map, and the engine embeds no image
+/// bytes, so core naming linen would be core naming an image it cannot produce. The
+/// old constant papered over exactly that — a fresh document claimed to be on linen
+/// while the registry rendered the flat stand-in until the frontend's fetch landed,
+/// which is the same "named ground, absent bytes" gap the peer divergence came
+/// through.
+///
+/// So the choice of opening ground belongs to whoever holds the bytes: the frontend
+/// imports linen at startup and opens the document on it
+/// (`Engine::new_document`), and a document that never gets told starts smooth
+/// — which is at least *true*.
+pub const DEFAULT_SURFACE: SurfaceId = SurfaceId::Flat;
 
 impl DocState {
     /// An empty document with a single starting layer and nothing masked.

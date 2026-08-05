@@ -86,24 +86,39 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   (postcard-encoded; small — a fitted path, not pixels) on the session's random
   `TopicId`. The message ceiling is raised (256 KiB) so long strokes fit.
 - **Join / catch-up:** a joining peer connects over the `stark/collab/0` ALPN and
-  requests a **snapshot** — the save-format container (§8), assets bundled — then
-  rides the gossip tail. It joins the topic *before* fetching, so the
-  snapshot/gossip overlap covers the seam (dedup by id). Every member serves
-  snapshots from a session **mirror** (log + assets, CPU-side), so sessions
-  survive the original sharer leaving, and any member can mint a **ticket**
+  requests a **snapshot** — the save-format container (§8), assets and grounds
+  bundled — then rides the gossip tail. It joins the topic *before* fetching, so
+  the snapshot/gossip overlap covers the seam (dedup by id). Every member serves
+  snapshots from a session **mirror** (log + assets + grounds, CPU-side), so
+  sessions survive the original sharer leaving, and any member can mint a **ticket**
   (`stark…` base32: an `EndpointAddr` + the topic).
-- **Assets:** a stroke referencing an unknown `AssetId` fetches those bytes over
-  the same ALPN from the peer that delivered the stroke (with retries; a miss
-  degrades to the round tip rather than blocking the log). A mid-session import
-  seeds the mirror at import time, and a *presence* stroke head referencing an
-  unknown shape triggers a detached fetch, so a peer's live preview upgrades from
-  the round-tip fallback without waiting for the commit.
+- **Assets:** an action referencing content the receiver lacks fetches those
+  bytes over the same ALPN from the peer that delivered it (with retries), and
+  the fetch is *awaited* so the content reaches the engine before the action that
+  needs it. Two kinds ride this path, and the transport says which — the
+  referencing action is the only thing that knows, and the two decode differently
+  at the far end:
+  - a **brush shape** an unknown `AssetId` names. A miss degrades to the round
+    tip rather than blocking the log, so the ordering here is cosmetic.
+  - a **canvas ground** a `SetSurface` names (§6.4). A miss is not cosmetic: the
+    deposition tooth reads the ground, an absent one falls back to the flat
+    stand-in, and the resulting deposit is *stored* — so a peer that applied the
+    switch before the height map landed diverged permanently, with nothing on
+    either screen to say so. That was the bug that made grounds content-addressed
+    in the first place; they were previously labels, and a label cannot be
+    fetched.
+
+  A mid-session import seeds the mirror at import time — before the action goes
+  out, since the broadcast attaches a transfer hash looked up from it — and a
+  *presence* stroke head referencing an unknown shape triggers a detached fetch,
+  so a peer's live preview upgrades from the round-tip fallback without waiting
+  for the commit.
 - **Browser:** iroh runs in wasm over its relay (WebSocket) transport, plus a
   vendored **WebRTC custom transport** on the same endpoint, so the Dioxus UI
   uses the same code path the native loopback tests exercise. The UI glue is two
   pumps: `dispatch` drains the engine outbox into `CollabSession::broadcast`, and
-  a spawned task feeds `RemoteEvent`s into `merge_remote`/`import_brush` and
-  repaints. **The page URL is the invitation:** a live session's ticket rides the
+  a spawned task feeds `RemoteEvent`s into
+  `merge_remote`/`import_brush`/`accept_surface` and repaints. **The page URL is the invitation:** a live session's ticket rides the
   URL fragment (`…#stark…`, via `replaceState`; cleared on leave), and opening a
   link with one auto-joins on load — the fragment never leaves the browser, so no
   server sees the ticket.

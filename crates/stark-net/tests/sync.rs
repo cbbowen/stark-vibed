@@ -11,7 +11,7 @@ use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::peer::{GestureFrame, PeerFrame, StrokeHead};
 use stark_core::{Engine, RgbaImage};
-use stark_net::{CollabSession, NetOptions, RemoteEvent, SessionTicket};
+use stark_net::{AssetNeed, CollabSession, NetOptions, RemoteEvent, SessionTicket};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 const SIZE: Extent2 = Extent2 {
@@ -63,9 +63,16 @@ fn drain_events(events: &mut UnboundedReceiver<RemoteEvent>, engine: &mut Engine
     let mut applied = 0;
     while let Ok(event) = events.try_recv() {
         match event {
-            RemoteEvent::Asset { bytes } => {
-                engine.import_brush(&bytes).expect("import remote brush");
-            }
+            RemoteEvent::Asset { need, bytes } => match need {
+                AssetNeed::Brush(_) => {
+                    engine.import_brush(&bytes).expect("import remote brush");
+                }
+                AssetNeed::Ground(id) => {
+                    engine
+                        .accept_surface(id, &bytes)
+                        .expect("install remote ground");
+                }
+            },
             RemoteEvent::Action(action) => {
                 engine.merge_remote(action);
                 applied += 1;
@@ -245,7 +252,10 @@ async fn custom_shapes_replicate_mid_session() {
 
     // --- live-preview path: a stroke head names a shape the peer lacks ---
     let live = host.import_brush(&blob_png(96)).expect("import live shape");
-    host_session.add_asset(live, host.asset_bytes(live).expect("canonical bytes"));
+    host_session.add_content(
+        AssetNeed::Brush(live),
+        host.asset_bytes(live).expect("canonical bytes"),
+    );
     let layer = host.observe().active_layer;
     let brush = BrushParams {
         radius: 24.0,
@@ -290,8 +300,8 @@ async fn custom_shapes_replicate_mid_session() {
     let committed = host
         .import_brush(&blob_png(64))
         .expect("import committed shape");
-    host_session.add_asset(
-        committed,
+    host_session.add_content(
+        AssetNeed::Brush(committed),
         host.asset_bytes(committed).expect("canonical bytes"),
     );
     paint_with(
@@ -314,6 +324,91 @@ async fn custom_shapes_replicate_mid_session() {
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),
         "peers diverged on a mid-session custom-shape stroke"
+    );
+
+    host_session.shutdown().await;
+    peer_session.shutdown().await;
+}
+
+/// **A peer that has never seen a ground still paints on it** (§6.4, §12.4).
+///
+/// The regression this whole design answers. A canvas ground used to be a *name*,
+/// and a name is only as good as the table the reader holds: the host switched to
+/// one the peer had never fetched, the peer's registry silently fell back to the
+/// flat stand-in, and from then on every stroke it merged deposited with no
+/// deposition tooth. The canvases diverged, and nothing on either screen said why —
+/// the peer's pixels were a perfectly plausible painting, just not the same one.
+///
+/// It has to be a *toothed* brush on an irregular ground, because that is the only
+/// thing the fallback changes: with `tooth: 0.0` the gate is 1.0 everywhere and a
+/// missing ground is invisible, which is exactly how this survived the suite.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_paints_on_a_ground_it_has_never_seen() {
+    let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+    let secret = stark_net::SecretKey::generate();
+    let host_actor = stark_net::actor_from_endpoint_id(secret.public());
+    host.start_collaboration(host_actor);
+    let host_session = CollabSession::host(
+        host.document_file(),
+        NetOptions {
+            secret: Some(secret),
+            local_only: true,
+        },
+    )
+    .await
+    .expect("host session");
+    let ticket: SessionTicket = host_session
+        .ticket()
+        .to_string()
+        .parse()
+        .expect("ticket text");
+    let (mut peer_session, snapshot) = CollabSession::join(&ticket, NetOptions::local())
+        .await
+        .expect("join session");
+    let mut peer_events = peer_session.take_events().expect("peer events");
+    peer.join_collaboration(&snapshot, peer_session.actor_id());
+
+    // The host takes up a ground mid-session. The peer has never held these bytes:
+    // it joined a document that was on `Flat`, and nothing has offered it since.
+    let gesso = host
+        .import_surface(&stark_testdata::assets::gesso())
+        .expect("the gesso height map imports");
+    host_session.add_content(
+        AssetNeed::Ground(gesso),
+        host.surface_bytes(gesso).expect("canonical bytes"),
+    );
+    host.process(DocCommand::SetSurface(gesso));
+    flush_outbox(&mut host, &host_session).await;
+    wait_for_actions(&mut peer_events, &mut peer, 1).await;
+
+    assert_eq!(
+        peer.surface(),
+        gesso,
+        "the peer's document must move to the host's ground"
+    );
+
+    // A dry brush: it reaches only for the peaks, so its mark *is* the ground.
+    let dry = BrushParams {
+        color: [0.85, 0.15, 0.1, 1.0],
+        radius: 30.0,
+        tooth: 0.55,
+        drain: 0.005,
+        ..Default::default()
+    };
+    paint_with(
+        &mut host,
+        dry,
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+    flush_outbox(&mut host, &host_session).await;
+    wait_for_actions(&mut peer_events, &mut peer, 1).await;
+
+    assert!(
+        identical(&host.render_to_image(), &peer.render_to_image()),
+        "peers diverged over a ground the peer had never seen — the stroke deposited \
+         through a different tooth on each"
     );
 
     host_session.shutdown().await;

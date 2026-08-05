@@ -790,15 +790,19 @@ fn More(open: Signal<bool>, children: Element) -> Element {
 /// stroke, and paint it with the current brush.
 async fn init_preview(state: AppState, mut preview: Preview) {
     // Copy everything out of the main renderer before any await (no held borrows).
-    let Some((gpu, surface_id, env_id, media, bg)) = state.renderer.peek().as_ref().map(|r| {
-        (
-            r.gpu(),
-            r.surface(),
-            r.environment(),
-            r.media_params(),
-            r.observe().background,
-        )
-    }) else {
+    let Some((gpu, surface_id, surface_bytes, env_id, media, bg)) =
+        state.renderer.peek().as_ref().map(|r| {
+            let surface_id = r.surface();
+            (
+                r.gpu(),
+                surface_id,
+                r.surface_bytes(surface_id),
+                r.environment(),
+                r.media_params(),
+                r.observe().background,
+            )
+        })
+    else {
         return;
     };
 
@@ -807,10 +811,13 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     // The asset bytes were all fetched at app startup, so these hit the browser
     // cache; content-addressed ids make the imports line up with the main engine.
     crate::builtins::import_all(&mut r).await;
-    if let Some(asset) = crate::panels::lighting::surface_asset(surface_id)
-        && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
-    {
-        r.register_surface(surface_id, bytes);
+    // The preview paints on the same ground the canvas is on, so its tooth reads the
+    // same weave. Copied by *bytes*, not re-fetched by name: the main engine already
+    // holds the height map, and a ground is named by the hash of exactly those bytes
+    // — so handing them over is what makes the two engines agree on the id, whether
+    // the ground is a bundled one or came from a peer (§6.4).
+    if let Some(bytes) = surface_bytes {
+        r.accept_surface(surface_id, &bytes);
     }
     r.set_surface(surface_id);
     if let Some(asset) = crate::panels::lighting::environment_asset(env_id)

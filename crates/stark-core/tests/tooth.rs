@@ -49,13 +49,23 @@ fn run() -> [Vec2; 2] {
     [Vec2::new(-140.0, 0.0), Vec2::new(140.0, 0.0)]
 }
 
-/// An engine on the gesso ground, with the height map actually registered — without
-/// the bytes a surface falls back to `Flat`, whose relief is 0, and every test here
-/// would silently be testing nothing.
+/// The gesso ground imported into `engine`, and the id that names it.
+///
+/// The id comes *out of* the height map (§6.4), so it cannot be named before the
+/// bytes are in hand — which is the property that stops a ground going quietly
+/// missing, and the reason every test here imports rather than asserting a name.
+fn gesso(engine: &mut stark_core::Engine) -> SurfaceId {
+    engine
+        .import_surface(&stark_testdata::assets::gesso())
+        .expect("the gesso height map imports")
+}
+
+/// An engine on the gesso ground. Without a real height map a ground is `Flat`,
+/// whose relief is 0, and every test here would silently be testing nothing.
 fn gesso_engine() -> Option<stark_core::Engine> {
     let mut engine = engine_or_skip()?;
-    engine.register_surface(SurfaceId::Gesso, stark_testdata::assets::gesso());
-    engine.process(DocCommand::SetSurface(SurfaceId::Gesso));
+    let id = gesso(&mut engine);
+    engine.process(DocCommand::SetSurface(id));
     Some(engine)
 }
 
@@ -294,7 +304,11 @@ fn a_stroke_keeps_the_ground_it_was_painted_on() {
     let Some(mut loaded) = engine_or_skip() else {
         return;
     };
-    loaded.register_surface(SurfaceId::Gesso, stark_testdata::assets::gesso());
+    // Nothing hands the ground to this engine: the *file* carries it (§6.4, §8).
+    // That is the second half of what makes the round trip meaningful — a file that
+    // named its ground and left the image to the reader would replay these strokes
+    // on the flat stand-in, and pixels cannot say whether a ground was reproduced or
+    // merely defaulted to.
     loaded.load_bytes(&bytes).expect("deserialize + replay");
 
     assert_eq!(
@@ -442,8 +456,8 @@ fn the_bearing_fraction_tracks_the_ground() {
     let flat = engine.surface_bearing(SurfaceId::Flat, 0.5);
     assert_eq!(flat, 1.0, "a smooth ground is full contact at any tooth");
 
-    engine.register_surface(SurfaceId::Gesso, stark_testdata::assets::gesso());
-    let mut at = |t| engine.surface_bearing(SurfaceId::Gesso, t);
+    let ground = gesso(&mut engine);
+    let mut at = |t| engine.surface_bearing(ground, t);
     assert_eq!(at(0.0), 1.0, "no tooth is full contact, exactly");
     let (a, b, c) = (at(0.25), at(0.5), at(0.75));
     assert!(

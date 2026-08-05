@@ -94,6 +94,13 @@ impl<R: Resource> Registry<R> {
         id.is_builtin() || self.bytes.contains_key(&id)
     }
 
+    /// The registered bytes for `id`, if any — what a save file bundles and what a
+    /// peer is served (§8, §12.4). `None` for a builtin, which has none by
+    /// definition, and for an id whose image has not arrived.
+    pub fn bytes(&self, id: R) -> Option<&[u8]> {
+        self.bytes.get(&id).map(|b| b.as_slice())
+    }
+
     /// Provide bytes for `id`. Returns `true` if the live object was rebuilt, which
     /// happens exactly when `id` is the one in use — the caller then has to rebind
     /// it wherever it is sampled.

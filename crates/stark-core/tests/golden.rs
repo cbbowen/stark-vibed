@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use stark_core::SurfaceId;
+
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, BrushParams, BrushShape, OrientationSource, Tool};
@@ -197,9 +197,10 @@ fn golden_canvas_surface() {
     // linen bytes, so they fall back to the flat builtin and test orthogonally. The
     // surface bytes are read from disk and registered (the engine embeds none — the
     // frontend provides them at runtime).
-    let linen_png = stark_testdata::assets::linen();
-    engine.register_surface(SurfaceId::Linen, linen_png);
-    engine.process(DocCommand::SetSurface(SurfaceId::Linen));
+    let linen = engine
+        .import_surface(&stark_testdata::assets::linen())
+        .expect("the linen height map imports");
+    engine.process(DocCommand::SetSurface(linen));
     // Turn the weave up: `surface_strength` defaults to 0, which leaves the relief
     // there for paint to sit in but keeps the light from embossing it. This golden is
     // about the embossing, so it has to ask for it.

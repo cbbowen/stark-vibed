@@ -20,6 +20,7 @@ mod collab;
 mod components;
 mod credits;
 mod files;
+mod grounds;
 mod icons;
 mod identity;
 mod input;
@@ -50,7 +51,7 @@ use input::{
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
-use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset, surface_asset};
+use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{
     FrameBar, FrameOverlay, GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar,
@@ -59,9 +60,9 @@ use panels::{
 use platform::capture_pointer;
 use render::CANVAS_ID;
 use settings::SettingsModal;
+use stark_core::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
-use stark_core::document::{DEFAULT_SURFACE, SelectionOp, ShapeAction};
-use stark_core::{ColorSpaceId, SurfaceId};
+use stark_core::document::{SelectionOp, ShapeAction};
 use state::{AppState, dispatch, dispatch_quiet, resize, update_brush};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
@@ -121,16 +122,18 @@ fn app() -> Element {
             // ready — and so the default presets have ids to name
             // (§6.6, `crate::builtins`).
             builtins::import_all(&mut r).await;
-            // Fetch the default canvas surface's height map (§6.4, §6.6).
-            // The document already starts on it, so registering the bytes is all it
-            // takes for the engine to swap the flat stand-in for the real weave —
-            // no `SetSurface` action, which would put a bogus first step in the undo
-            // history of every fresh document.
-            if let Some(asset) = surface_asset(DEFAULT_SURFACE)
-                && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
-            {
-                r.register_surface(DEFAULT_SURFACE, bytes);
-            }
+            // Fetch the default ground's height map and open the document on it
+            // (§6.4, §6.6). A ground is named by the hash of its image, so this
+            // cannot be done the other way round any more: the engine boots on
+            // `Flat` — the one ground it can name without bytes — and the id it
+            // moves to is only knowable once those bytes are in hand.
+            //
+            // `new_document` rather than a `SetSurface`, so no bogus first step
+            // lands in the undo history of every fresh document. It replaces a
+            // document nobody has touched: the renderer signal is not published
+            // until this whole block finishes, so nothing can have been painted yet.
+            let color_space = r.color_space();
+            grounds::open_default(&mut r, color_space).await;
             // Fetch the default environment's HDR and light the canvas with it
             // (§6.3); until it arrives the procedural neutral one is used,
             // and the Lighting panel can switch back to it at any time. A no-op while
@@ -752,13 +755,17 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
         .unwrap_or(ColorSpaceId::Oklab);
     let choice = use_signal(|| current);
 
-    let current_surface = state
-        .renderer
-        .read()
-        .as_ref()
-        .map(|r| r.surface())
-        .unwrap_or_default();
-    let surf_choice = use_signal(|| current_surface);
+    // The ground is chosen by catalog *name*, not by id: an id is the hash of a
+    // height map, so it is not knowable until that map has been fetched — and this
+    // dialog runs before any of them have (§6.4, `crate::grounds`). The name is
+    // resolved to an id at Create, once the bytes are in hand.
+    let current_surface = state.renderer.read().as_ref().map(|r| r.surface());
+    let current_ground = grounds::resolved(state)
+        .into_iter()
+        .find(|(_, id)| *id == current_surface)
+        .map(|(g, _)| g.name)
+        .unwrap_or(grounds::DEFAULT_GROUND);
+    let surf_choice = use_signal(|| current_ground);
 
     // One selectable color-space card; `selected` toggles the highlight.
     let card = |id: ColorSpaceId, title: &str, desc: &str| {
@@ -777,9 +784,10 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
         }
     };
 
-    // Same card, for the canvas surface choice.
-    let scard = |id: SurfaceId, title: &str, desc: &str| {
-        let class = if surf_choice() == id {
+    // Same card, for the canvas ground choice — one row per catalog entry, so
+    // adding a ground is still a file plus a row in `grounds::GROUNDS`.
+    let scard = |g: &'static grounds::BuiltinGround| {
+        let class = if surf_choice() == g.name {
             "space-card selected"
         } else {
             "space-card"
@@ -787,9 +795,9 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
         rsx! {
             div {
                 class,
-                onclick: move |_| { let mut c = surf_choice; c.set(id); },
-                div { class: "space-card-title", "{title}" }
-                div { class: "space-card-desc", "{desc}" }
+                onclick: move |_| { let mut c = surf_choice; c.set(g.name); },
+                div { class: "space-card-title", "{g.name}" }
+                div { class: "space-card-desc", "{g.blurb}" }
             }
         }
     };
@@ -811,9 +819,9 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                 {card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media.")}
 
                 div { class: "modal-section-label", "SURFACE" }
-                {scard(SurfaceId::Flat, "Smooth", "A perfectly smooth surface — paint lies flat, no canvas texture.")}
-                {scard(SurfaceId::Linen, "Canvas", "Linen weave: the canvas texture catches the light.")}
-                {scard(SurfaceId::Gesso, "Gesso", "Brushed acrylic ground: irregular tooth that a dry brush skips across.")}
+                for g in grounds::GROUNDS.iter() {
+                    {scard(g)}
+                }
 
                 div { class: "modal-actions",
                     button {
@@ -832,9 +840,10 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
     }
 }
 
-/// Replace the document with a fresh one in the chosen color space and surface,
-/// then repaint. Image-backed surfaces are fetched on first use (the large bump
-/// maps stay out of the wasm binary — §6.6), so this runs async.
+/// Replace the document with a fresh one in the chosen color space, on the chosen
+/// ground, then repaint. The ground's height map is fetched on first use (the large
+/// bump maps stay out of the wasm binary — §6.6), so this runs async: `ground` is a
+/// catalog name and the id `new_document` needs is the hash of the image behind it.
 ///
 /// It owns closing the modal (`on_close`), calling it only once the work is done.
 /// `spawn_forever`, not `spawn`: a plain spawn would tie the task to the
@@ -846,7 +855,7 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 fn new_document(
     state: AppState,
     color: ColorSpaceId,
-    surface: SurfaceId,
+    ground: &'static str,
     on_close: EventHandler<()>,
 ) {
     let mut renderer = state.renderer;
@@ -855,39 +864,16 @@ fn new_document(
     // ticket from the URL) — the fresh canvas is private until re-shared.
     collab::leave(state);
     spawn_forever(async move {
-        // Fetch + register the surface bytes the first time it's chosen
-        // (procedural surfaces have no asset — see `surface_asset`).
-        let needs_bytes = renderer
-            .read()
-            .as_ref()
-            .is_some_and(|r| !r.surface_loaded(surface));
-        if needs_bytes && let Some(asset) = surface_asset(surface) {
-            tracing::info!(?surface, url = %asset, "fetching surface asset");
-            match dioxus::asset_resolver::read_asset_bytes(asset).await {
-                Ok(bytes) => {
-                    tracing::info!(
-                        ?surface,
-                        bytes = bytes.len(),
-                        "surface fetched; registering"
-                    );
-                    if let Some(r) = renderer.write().as_mut() {
-                        r.register_surface(surface, bytes);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("surface fetch failed: {e}");
-                    on_close.call(());
-                    return;
-                }
-            }
-        }
-
+        // A ground that will not fetch opens the document smooth rather than
+        // refusing to open it — and, unlike the old behaviour, the document then
+        // honestly *says* it is smooth instead of claiming a weave it hasn't got.
+        let surface = grounds::resolve_signal(renderer, ground).await;
         if let Some(r) = renderer.write().as_mut() {
             r.new_document(color, surface);
             r.paint();
             obs.set(Some(r.observe()));
         }
-        tracing::info!(?color, ?surface, "new document ready");
+        tracing::info!(?color, ground, ?surface, "new document ready");
         on_close.call(());
     });
 }

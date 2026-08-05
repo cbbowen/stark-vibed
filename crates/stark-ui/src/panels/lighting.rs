@@ -8,25 +8,18 @@ use crate::state::{AppState, dispatch};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
 use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::{EnvironmentId, MediaParams, SurfaceId};
+use stark_core::{EnvironmentId, MediaParams};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
-pub const SURFACE_LINEN: Asset = asset!("/assets/surface/Linen.png");
-pub const SURFACE_GESSO: Asset = asset!("/assets/surface/Gesso.png");
+///
+/// The canvas grounds used to live here too; they are `crate::grounds` now, because
+/// a ground is content-addressed and so needs a resolved-id cache that a bare
+/// `Asset` constant has nowhere to keep (§6.4).
 pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 
-/// The selectable canvas surfaces, in display order (§6.4). Adding a
-/// surface = one row here (plus its asset fetch in [`set_surface`]); the Lighting
-/// panel's drop-down renders this table.
-pub const SURFACES: &[(SurfaceId, &str)] = &[
-    (SurfaceId::Flat, "Smooth"),
-    (SurfaceId::Linen, "Linen"),
-    (SurfaceId::Gesso, "Gesso"),
-];
-
-/// The selectable lighting environments, in display order (§6.3). Same
-/// shape as [`SURFACES`]: one row per environment, its bytes (if any) resolved by
+/// The selectable lighting environments, in display order (§6.3). One row per
+/// environment, its bytes (if any) resolved by
 /// [`environment_asset`]. `Neutral` leads because it is the reference light — the
 /// achromatic one you switch to to judge colour; the HDRs are the room you paint in.
 pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
@@ -63,6 +56,9 @@ pub fn LightingPanel() -> Element {
         .map(|o| o.background)
         .unwrap_or(stark_core::document::DEFAULT_BACKGROUND);
     drop(obs);
+    // Each catalog ground with the id it resolved to — `None` while its height map
+    // is still unfetched. `read`, so a row settles the moment a fetch lands.
+    let catalog = crate::grounds::resolved(state);
     let mut show_bg_picker = use_signal(|| false);
     let swatch = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",
@@ -90,12 +86,19 @@ pub fn LightingPanel() -> Element {
             select {
                 class: "select",
                 onchange: move |e| {
-                    if let Some((id, _)) = SURFACES.iter().find(|(s, _)| format!("{s:?}") == e.value()) {
-                        set_surface(state, *id);
+                    if let Some(g) = crate::grounds::GROUNDS.iter().find(|g| g.name == e.value()) {
+                        crate::grounds::select(state, g.name);
                     }
                 },
-                for (id, name) in SURFACES.iter().copied() {
-                    option { value: "{id:?}", selected: surf == id, "{name}" }
+                // A ground the catalog doesn't list — one a peer brought — still has
+                // to be *shown*, or the picker would claim the document is on
+                // whichever row happened to sort first. It leads, selected, and
+                // switching away from it is a normal pick.
+                if !catalog.iter().any(|(_, id)| *id == Some(surf)) {
+                    option { value: "", selected: true, "Custom" }
+                }
+                for (g, id) in catalog.iter() {
+                    option { value: "{g.name}", selected: *id == Some(surf), "{g.name}" }
                 }
             }
         }
@@ -158,51 +161,6 @@ fn preview_background(state: AppState, rgb: [f32; 3]) {
 /// part of what it is, and it is saved with it (§15.5).
 fn update_background(state: AppState, rgb: [f32; 3]) {
     dispatch(state, DocCommand::SetBackground(rgb));
-}
-
-/// The bundled asset behind an image-backed surface (`None` for procedural ones,
-/// which need no bytes). The one place to map a new [`SURFACES`] row to its file.
-pub fn surface_asset(id: SurfaceId) -> Option<Asset> {
-    match id {
-        SurfaceId::Flat => None,
-        SurfaceId::Linen => Some(SURFACE_LINEN),
-        SurfaceId::Gesso => Some(SURFACE_GESSO),
-    }
-}
-
-/// Switch the canvas surface in place and repaint — the document is preserved;
-/// existing paint re-reads against the new weave (§6.4). Image-backed
-/// surfaces are fetched on first use (the bump maps stay out of the wasm binary),
-/// so this runs async, like `new_document`'s fetch.
-pub fn set_surface(state: AppState, id: SurfaceId) {
-    let mut renderer = state.renderer;
-    // `spawn_forever`: the caller is LightingPanel's scope, and hiding the
-    // panel mid-fetch must not cancel the switch (only root-owned signals are
-    // touched, so outliving the panel is safe).
-    spawn_forever(async move {
-        let needs_bytes = renderer
-            .read()
-            .as_ref()
-            .is_some_and(|r| !r.surface_loaded(id));
-        if needs_bytes && let Some(asset) = surface_asset(id) {
-            tracing::info!(surface = ?id, url = %asset, "fetching surface asset");
-            match dioxus::asset_resolver::read_asset_bytes(asset).await {
-                Ok(bytes) => {
-                    if let Some(r) = renderer.write().as_mut() {
-                        r.register_surface(id, bytes);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("surface fetch failed: {e}");
-                    return;
-                }
-            }
-        }
-        if let Some(r) = renderer.write().as_mut() {
-            r.set_surface(id);
-            r.paint();
-        }
-    });
 }
 
 /// The bundled HDR behind an image-backed environment (`None` for the procedural

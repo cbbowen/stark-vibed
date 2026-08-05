@@ -159,13 +159,15 @@ fn a_surface_switch_is_historized() {
         return;
     };
     let start = engine.surface();
-    // Whichever surface a fresh document *doesn't* start on — the test is about the
-    // switch being historized, not about which way it goes.
-    let target = if start == SurfaceId::Linen {
-        SurfaceId::Flat
-    } else {
-        SurfaceId::Linen
-    };
+    assert_eq!(
+        start,
+        SurfaceId::Flat,
+        "an engine holding no height map has exactly one ground it can name"
+    );
+    // A real ground to switch *to*, imported so its id exists at all (§6.4).
+    let target = engine
+        .import_surface(&stark_testdata::assets::linen())
+        .expect("the linen height map imports");
 
     paint(
         &mut engine,
@@ -198,5 +200,98 @@ fn a_surface_switch_is_historized() {
         loaded.surface(),
         target,
         "replaying the log must land on the switched-to surface"
+    );
+}
+
+/// **A document bundles every ground it names, not just the one it ends on**
+/// (§6.4, §8).
+///
+/// The tooth reads whichever ground was in force when a stroke was made, so a
+/// height map is a replay input exactly as a brush's coverage mask is — and a file
+/// that carries only the last one cannot reproduce a document that switched
+/// part-way. Checked on the container rather than on pixels because pixels cannot
+/// distinguish a ground faithfully reproduced from one that fell back to the flat
+/// stand-in; the bundle either holds the bytes or it does not.
+#[test]
+fn a_document_bundles_every_ground_it_names() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let linen = engine
+        .import_surface(&stark_testdata::assets::linen())
+        .expect("the linen height map imports");
+    let gesso = engine
+        .import_surface(&stark_testdata::assets::gesso())
+        .expect("the gesso height map imports");
+    assert_ne!(linen, gesso, "two grounds, two content ids");
+
+    // Paint across a switch, so the log names both and ends on neither of them
+    // first: linen, then gesso, then back to smooth.
+    engine.process(DocCommand::SetSurface(linen));
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, -20.0)],
+    );
+    engine.process(DocCommand::SetSurface(gesso));
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(-40.0, 20.0), Vec2::new(40.0, 20.0)],
+    );
+    engine.process(DocCommand::SetSurface(SurfaceId::Flat));
+
+    let file = engine.document_file();
+    let bundled: Vec<SurfaceId> = file.surfaces.iter().map(|(id, _)| *id).collect();
+    assert!(
+        bundled.contains(&linen) && bundled.contains(&gesso),
+        "both grounds the log names must ride with it, got {bundled:?}"
+    );
+    assert!(
+        !bundled.contains(&SurfaceId::Flat),
+        "`Flat` is procedural and has no bytes to bundle"
+    );
+    for (id, bytes) in &file.surfaces {
+        assert!(!bytes.is_empty(), "{id:?} was bundled with no height map");
+    }
+
+    // And the bundle survives the container, which is what a loader reads.
+    let encoded = engine.save_bytes().expect("serialize");
+    let back = stark_core::DocumentFile::from_bytes(&encoded).expect("deserialize");
+    assert_eq!(
+        back.surfaces.len(),
+        file.surfaces.len(),
+        "the grounds must survive the round trip"
+    );
+}
+
+/// Bytes offered under the wrong id are **refused**, not installed (§6.4).
+///
+/// This is the one way a content-addressed ground could still deposit the wrong
+/// tooth: a peer or a file handing over an image that is not the one the id names.
+/// Since the id is derived from the bytes on the way in, the disagreement is
+/// detectable, so it is detected.
+#[test]
+fn a_ground_that_is_not_what_it_claims_is_refused() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let linen = engine
+        .import_surface(&stark_testdata::assets::linen())
+        .expect("the linen height map imports");
+    assert!(
+        engine
+            .accept_surface(linen, &stark_testdata::assets::gesso())
+            .is_err(),
+        "gesso's bytes must not install themselves as linen"
+    );
+    // The honest pairing still works, and is idempotent.
+    assert_eq!(
+        engine
+            .accept_surface(linen, &stark_testdata::assets::linen())
+            .expect("linen's own bytes are accepted under linen's id"),
+        linen
     );
 }

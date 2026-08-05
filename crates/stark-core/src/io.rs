@@ -49,7 +49,19 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// can signal and postcard cannot. A brush's parameters decide its pixels, so the
 /// mapping had to be in the record rather than in session state; the version is what
 /// that costs. Files are alpha (§19), so old ones are refused rather than migrated.
-const WIRE_VERSION: u32 = 3;
+///
+/// **4** — the canvas ground became content-addressed and is bundled (§6.4).
+/// `SurfaceId` was a closed enum of names (`Flat | Linen | Gesso`) and is now
+/// `Flat | Image(AssetId)`, so a version-3 file's `Linen` would decode as an
+/// `Image` whose hash is whatever bytes followed — and the new `surfaces` field
+/// pushes `assets` along besides. Both are the same break twice over.
+///
+/// It is worth what it costs. The tooth reads the ground, so a document's pixels
+/// depend on a height map the file did not carry and named only by a label: open it
+/// on a build whose `Gesso.png` had been re-authored and the strokes came back
+/// different, silently, with nothing in the file able to notice. A file that bundles
+/// the ground it was painted on is a file that means one thing.
+const WIRE_VERSION: u32 = 4;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes
@@ -72,9 +84,13 @@ impl Default for BuildId {
 pub struct CanvasMeta {
     pub tile_size: u32,
     pub color_space: ColorSpaceId,
-    /// The physical surface the document is painted on (affects deposition, so it
-    /// must be recorded for deterministic replay). `#[serde(default)]` → `Flat`
-    /// for documents saved before surfaces existed.
+    /// The ground the log *starts* from — the initial condition of the empty
+    /// document it replays onto, exactly as `color_space` is (§6.4). A
+    /// mid-document switch is an `ActionKind::SetSurface` in the log, so this is not
+    /// the current ground and loading has to replay to learn that.
+    ///
+    /// The image behind it rides in [`DocumentFile::surfaces`]; this is only its
+    /// name.
     #[serde(default)]
     pub surface: SurfaceId,
 }
@@ -101,6 +117,20 @@ pub struct DocumentFile {
     /// compact grayscale PNGs (§6.6, §8). Bundled so the file is
     /// self-contained and replayable.
     pub assets: Vec<(AssetId, Vec<u8>)>,
+    /// The canvas grounds the document names — `CanvasMeta::surface` plus every
+    /// `SetSurface` in the log — as canonical grayscale height maps (§6.4, §8).
+    ///
+    /// Here for the same reason `assets` is, and it took the deposition tooth to
+    /// make that visible: once the ground gates how much paint lands, a height map
+    /// is a *replay input*, no different from a brush's coverage mask, and a file
+    /// that omits one does not contain its own painting. Keyed separately from
+    /// `assets` because the two decode differently — a mask is luminance × alpha,
+    /// a ground is channel 0 — so a single bag would hand each store the other's
+    /// bytes to reinterpret.
+    ///
+    /// `Flat` contributes nothing: it is procedural, and the empty vector of a
+    /// document that never left it is the honest encoding of that.
+    pub surfaces: Vec<(SurfaceId, Vec<u8>)>,
 }
 
 impl DocumentFile {
@@ -110,6 +140,7 @@ impl DocumentFile {
             canvas: CanvasMeta::default(),
             actions,
             assets: Vec::new(),
+            surfaces: Vec::new(),
         }
     }
 

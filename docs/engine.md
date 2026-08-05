@@ -74,12 +74,27 @@ pub struct DocumentFile {
     pub canvas: CanvasMeta,            // tile size, channel set, colour space, surface
     pub actions: Vec<Action>,          // the full, replayable log (each id-tagged)
     pub assets: Vec<(AssetId, Bytes)>, // content-addressed brush images (§6.6)
+    pub surfaces: Vec<(SurfaceId, Bytes)>, // the canvas grounds it names (§6.4)
     pub checkpoints: Vec<Checkpoint>,  // OPTIONAL cached rasters (see below)
 }
 ```
 
-`assets` bundles every brush image any stroke references, so the file is
-self-contained and replayable; loading populates the asset store before replay.
+`assets` bundles every brush image any stroke references and `surfaces` every
+canvas ground the log names, so the file is self-contained and replayable;
+loading populates both stores before replaying a single action.
+
+**Both are replay inputs, and the ground took a bug to see it.** A brush mask
+obviously decides pixels. So does a height map, once the deposition tooth gates
+how much paint lands on it (§6.4) — but the ground was a *label* (`Linen`,
+`Gesso`) resolved against whatever the reader happened to hold, so a file
+recorded the name and left the image to chance. Open it on a build whose
+`Gesso.png` had been re-authored and the strokes came back different, silently;
+hand the log to a peer who had never fetched that ground and it replayed on the
+flat stand-in, diverging. Naming a ground by the hash of its image and shipping
+the image with the log is what makes a file mean one thing. **Every** ground the
+log names is bundled, not just the one it ends on: the tooth reads whichever was
+in force when a stroke was made, so a document that switched part-way needs both
+to come back the same.
 
 Because every `Action` carries its `ActionId`, a saved file is also a valid
 collaboration log: opening it, painting, and later sharing it with a peer all use
@@ -104,7 +119,12 @@ Serialization uses `serde` over `postcard` with a magic header;
 names and no length**, so a field added in the middle of an existing struct
 variant is not something it can absorb — that is what forced `WIRE_VERSION` to 2
 when `MoveLayer` gained its `carrier` (§14.8). Appending a new enum variant last
-is always safe (enums encode by index).
+is always safe (enums encode by index); *re*-shaping an existing one is not,
+which is half of what took the version to 4 when `SurfaceId` went from three
+named grounds to `Flat | Image(AssetId)` — a version-3 file's `Linen` would
+decode as an `Image` whose hash is whatever bytes followed it. The `surfaces`
+field beside it is the other half. Files are alpha (§19), so old ones are refused
+rather than migrated.
 
 ## 9. Testing — golden images
 

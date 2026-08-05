@@ -247,30 +247,50 @@ catches light across the whole viewport — including the bare substrate, whose
 shading is *normalized* so a flat surface leaves it unchanged. `surface_strength`
 is a view setting; it does not touch stored pixels.
 
-The surface is **document state** (`SurfaceId { Flat, Linen, Gesso }`): which
-canvas a piece was painted on is part of what the document *is*, it is saved, and
-reopening on a different weave would be a different painting. A fresh document
-starts on `DEFAULT_SURFACE` = `Linen` — the honest substrate — while
-`SurfaceId::default()` stays `Flat`, the builtin the registry falls back to before
-the frontend's bytes arrive. `CanvasMeta` records the surface the log *starts*
-from; a mid-document switch is a logged `ActionKind::SetSurface`, so it undoes,
-replays and replicates like any other edit. The deposition tooth reads it, so a
-switch changes the strokes made after it — logging it is what made that a
-rendering change rather than a history one.
+The surface is **document state**: which canvas a piece was painted on is part of
+what the document *is*, it is saved, and reopening on a different weave would be
+a different painting. `CanvasMeta` records the surface the log *starts* from; a
+mid-document switch is a logged `ActionKind::SetSurface`, so it undoes, replays
+and replicates like any other edit. The deposition tooth reads it, so a switch
+changes the strokes made after it — logging it is what made that a rendering
+change rather than a history one.
 
-`Linen` is a regular woven grid; `Gesso` a brushed acrylic ground, irregular,
-whose height histogram is a broad spread rather than a periodic peak — which is
-what makes it the interesting one for the tooth below, since a periodic weave
-prints a periodic mark and reads as a screen. `Flat` is a 1×1 *full-height* texel
-— a constant height has zero gradient, so it is *exactly* equivalent to having no
-surface. That orthogonality is deliberate: most goldens use `Flat` to test other
-features in isolation, and a dedicated golden (`linen_surface`) exercises the
-weave. The engine **embeds no image bytes**:
-image-backed surfaces are fetched at runtime and handed over via
-`register_surface` (§6.6), which builds the texture (downsampling by an integer
-factor to fit the 2048 limit, preserving tileability); one bump tile spans
-`SURFACE_TILE_PX` canvas px. A surface with unregistered bytes falls back to
-`Flat`.
+**A ground is named by its image, not by a label.** `SurfaceId` is
+`Flat | Image(AssetId)`: one procedural ground that needs no bytes, and
+everything else identified by the BLAKE3 hash of its canonical decoded height
+field — the same bargain brush shapes make (§6.6), and for a sharper reason. A
+label is only as good as the table the reader holds. When grounds were
+`{ Flat, Linen, Gesso }`, a peer who received `SetSurface(Gesso)` without ever
+having fetched gesso fell back to the flat stand-in *silently*, and from then on
+deposited every stroke with no tooth at all; the two canvases diverged and
+neither screen could say why. Unlike the media pass — which re-reads the ground
+each frame and rights itself the moment an image lands — a deposit is **stored**,
+so nothing un-bakes it. A content id removes the failure rather than reporting
+it: the holder either has those exact bytes or knows precisely what to ask a peer
+for, and what comes back is verified against the id that asked (`accept_surface`
+refuses a mismatch). The same mechanism carries a ground a *user* brings, which a
+closed enum could never have named.
+
+Three consequences follow. A save file **bundles every ground its log names**,
+not just the one it ends on (§8) — a height map is a replay input exactly as a
+coverage mask is, and a document that switched part-way needs both. The engine
+**embeds no image bytes**: grounds are fetched at runtime and handed to
+`import_surface`, which decodes, downsamples by an integer factor to fit the 2048
+limit (preserving tileability), hashes, and returns the id — so an id is only
+knowable once the bytes are in hand. And `DEFAULT_SURFACE` is `Flat`, because
+core naming linen would be core naming an image it cannot produce; the frontend
+holds a catalog (`stark-ui/src/grounds.rs`, the analogue of `builtins.rs` for
+shapes) and opens a fresh document on linen once its map has landed.
+
+The bundled grounds: linen, a regular woven grid; and gesso, a brushed acrylic
+ground, irregular, whose height histogram is a broad spread rather than a
+periodic peak — which is what makes it the interesting one for the tooth below,
+since a periodic weave prints a periodic mark and reads as a screen. `Flat` is a
+1×1 *full-height* texel — a constant height has zero gradient, so it is *exactly*
+equivalent to having no surface. That orthogonality is deliberate: most goldens
+run on `Flat` to test other features in isolation, and a dedicated golden
+(`linen_surface`) exercises the weave. One bump tile spans `SURFACE_TILE_PX`
+canvas px.
 
 **The deposition tooth.** Paint lands where the tip touches the ground, and on a
 rough ground the tip touches the peaks before the valleys. `BrushParams::tooth`

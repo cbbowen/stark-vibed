@@ -303,7 +303,11 @@ answer.
 ```rust
 // assets — the frontend fetches bytes the engine cannot reach for itself (§6.6)
 fn import_brush(&self, png: &[u8]) -> Result<AssetId>;
-fn register_surface(&mut self, id: SurfaceId, png: Vec<u8>);
+// grounds are content-addressed, so the id comes *out of* the image (§6.4);
+// `accept_surface` takes one that arrives already named — from a file's bundle
+// or a peer — and refuses bytes that don't hash to the id that asked for them.
+fn import_surface(&mut self, png: &[u8]) -> Result<SurfaceId>;
+fn accept_surface(&mut self, id: SurfaceId, png: &[u8]) -> Result<SurfaceId>;
 fn register_environment(&mut self, id: EnvironmentId, hdr: Vec<u8>);
 // persistence (§8)
 fn save_bytes(&self) -> Result<Vec<u8>>;

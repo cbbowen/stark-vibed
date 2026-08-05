@@ -27,7 +27,7 @@ pub use iroh_gossip::proto::TopicId;
 use n0_future::{StreamExt, task};
 use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
 use stark_core::peer::{GestureFrame, PeerFrame};
-use stark_core::{AssetId, DocumentFile};
+use stark_core::{AssetId, DocumentFile, SurfaceId};
 use tokio::sync::mpsc;
 
 use crate::Result;
@@ -62,13 +62,46 @@ pub fn actor_from_endpoint_id(id: EndpointId) -> ActorId {
     ))
 }
 
+/// Content a remote action needs before it can be applied faithfully, and which
+/// store it belongs in (§6.6, §6.4).
+///
+/// Both arms are the same 32-byte content hash and travel the same way; the split
+/// exists because the two decode differently at the far end — a brush mask is
+/// luminance × alpha, a ground is channel 0 — so the receiver has to be told which
+/// it is being handed. It is *told* rather than left to guess, and it is told by the
+/// action that referenced the content, which is the only thing that actually knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetNeed {
+    /// A brush shape a stroke stamps with.
+    Brush(AssetId),
+    /// The canvas ground a `SetSurface` moves the document onto. Missing it is worse
+    /// than missing a brush: an unresolved shape degrades to the round tip and the
+    /// stroke is still visibly a stroke, whereas an unresolved ground silently drops
+    /// the deposition tooth (§6.4) and bakes a smooth deposit into tiles that no
+    /// later arrival un-bakes.
+    Ground(SurfaceId),
+}
+
+impl AssetNeed {
+    /// The id the bytes transfer under. A ground's is the [`AssetId`] inside its
+    /// [`SurfaceId`]; `Flat` has none, and never generates a need.
+    fn content(self) -> Option<AssetId> {
+        match self {
+            AssetNeed::Brush(id) => Some(id),
+            AssetNeed::Ground(id) => crate::mirror::ground_content_id(id),
+        }
+    }
+}
+
 /// Something a peer did, to be applied to the local engine. Apply in order:
 /// assets arrive before the action that references them.
 #[derive(Debug, Clone)]
 pub enum RemoteEvent {
-    /// A content-addressed brush image a remote stroke references — feed to
-    /// [`Engine::import_brush`](stark_core::Engine::import_brush) first.
-    Asset { bytes: Vec<u8> },
+    /// Content a remote action references, resolved off a peer — feed to the store
+    /// `need` names before the action that wanted it: a brush image to
+    /// [`Engine::import_brush`](stark_core::Engine::import_brush), a canvas ground to
+    /// [`Engine::accept_surface`](stark_core::Engine::accept_surface).
+    Asset { need: AssetNeed, bytes: Vec<u8> },
     /// A committed remote action — feed to
     /// [`Engine::merge_remote`](stark_core::Engine::merge_remote).
     Action(Action),
@@ -240,15 +273,16 @@ impl CollabSession {
             dialer.ensure_direct(peer);
         }
         let neighbors = Arc::new(Mutex::new(neighbors));
-        // Every asset already known (the hosted document's, or the joiner's
-        // snapshot's) enters the blob store so this peer can serve it, and the
-        // hash map so this peer's own strokes referencing it can broadcast the
-        // transfer hash.
+        // Every piece of content already known (the hosted document's, or the
+        // joiner's snapshot's) enters the blob store so this peer can serve it, and
+        // the hash map so this peer's own actions referencing it can broadcast the
+        // transfer hash. Brush images and canvas grounds alike — both are content
+        // an action can be waiting on.
         let asset_hashes: AssetHashes = Arc::new(Mutex::new(
             mirror
                 .lock()
                 .expect("mirror poisoned")
-                .assets()
+                .contents()
                 .into_iter()
                 .map(|(id, bytes)| (id, dialer.add_blob(bytes)))
                 .collect(),
@@ -316,10 +350,16 @@ impl CollabSession {
         self.broadcaster().broadcast(action).await
     }
 
-    /// Register a brush image so joiners can be served and peers can fetch it
-    /// (call alongside [`Engine::import_brush`](stark_core::Engine::import_brush)).
-    pub fn add_asset(&self, id: AssetId, bytes: Vec<u8>) {
-        self.broadcaster().add_asset(id, bytes);
+    /// Register content so joiners can be served and peers can fetch it — a brush
+    /// image alongside
+    /// [`Engine::import_brush`](stark_core::Engine::import_brush), a canvas ground
+    /// alongside [`Engine::import_surface`](stark_core::Engine::import_surface).
+    ///
+    /// Call it *before* committing an action that references the content: the
+    /// broadcast attaches a transfer hash looked up here, and an action that goes out
+    /// without one leaves receivers unable to fetch what it needs.
+    pub fn add_content(&self, need: AssetNeed, bytes: Vec<u8>) {
+        self.broadcaster().add_content(need, bytes);
     }
 
     /// See [`Broadcaster::links`].
@@ -368,12 +408,13 @@ impl Broadcaster {
         self.publish_wire(Wire::Presence(frame), asset).await
     }
 
-    async fn publish_wire(&self, wire: Wire, asset: Option<AssetId>) -> Result<()> {
-        // Attach the blob hash for the referenced brush image, so receivers
-        // that lack it know what to fetch. Registered before the stroke could
-        // have been drawn (add_asset accompanies the import), so the lookup
-        // only misses for the round tip (no asset at all).
-        let asset = asset.and_then(|id| {
+    async fn publish_wire(&self, wire: Wire, need: Option<AssetNeed>) -> Result<()> {
+        // Attach the blob hash for the referenced content, so receivers that lack
+        // it know what to fetch. Registered before the action could have been
+        // committed (`add_content` accompanies the import, for a ground as for a
+        // brush), so the lookup only misses for a payload that references nothing.
+        let asset = need.and_then(|need| {
+            let id = need.content()?;
             self.asset_hashes
                 .lock()
                 .expect("asset hashes poisoned")
@@ -392,12 +433,15 @@ impl Broadcaster {
             .map_err(|e| crate::NetError::Other(e.to_string()))
     }
 
-    /// See [`CollabSession::add_asset`].
-    pub fn add_asset(&self, id: AssetId, bytes: Vec<u8>) {
+    /// See [`CollabSession::add_content`].
+    pub fn add_content(&self, need: AssetNeed, bytes: Vec<u8>) {
+        let Some(id) = need.content() else {
+            return;
+        };
         self.mirror
             .lock()
             .expect("mirror poisoned")
-            .insert_asset(id, bytes.clone());
+            .insert_content(need, bytes.clone());
         let hash = self.dialer.add_blob(bytes);
         self.asset_hashes
             .lock()
@@ -497,7 +541,7 @@ async fn recv_loop(
                 // with the real shape as soon as the bytes land; until then
                 // the receiver's preview degrades to the round tip.
                 if let Some(asset) = referenced_presence_asset(&frame)
-                    && !mirror.lock().expect("mirror poisoned").has_asset(asset)
+                    && !mirror.lock().expect("mirror poisoned").has(asset)
                     && let Some(hash) = require_hash(asset, asset_hash)
                 {
                     task::spawn(resolve_asset(
@@ -521,20 +565,23 @@ async fn recv_loop(
             }
         };
 
-        // Resolve the stroke's brush image before surfacing the action so the
-        // engine can render it faithfully (a miss degrades to the round tip
-        // rather than blocking the log). The origin authored the stroke and so
-        // definitely has the asset; the neighbour that forwarded it may not.
-        if let Some(id) = referenced_asset(&action)
-            && !mirror.lock().expect("mirror poisoned").has_asset(id)
-            && let Some(hash) = require_hash(id, asset_hash)
+        // Resolve whatever the action references before surfacing it, so the engine
+        // can apply it faithfully. The origin authored the action and so definitely
+        // holds the content; the neighbour that forwarded it may not.
+        if let Some(need) = referenced_asset(&action)
+            && !mirror.lock().expect("mirror poisoned").has(need)
+            && let Some(hash) = require_hash(need, asset_hash)
         {
             // Awaited (not spawned): the Asset event must reach the engine
-            // before the Action that references it.
+            // before the Action that references it. For a brush that ordering is
+            // cosmetic — arrive late and the stroke merely drew with the round tip
+            // — but for a ground it is the whole fix: a `SetSurface` applied before
+            // its height map lands leaves every stroke after it deposited on the
+            // flat stand-in, and those pixels are stored (§6.4).
             resolve_asset(
                 dialer.clone(),
                 asset_sources(origin, from),
-                id,
+                need,
                 hash,
                 asset_hashes.clone(),
                 mirror.clone(),
@@ -563,12 +610,12 @@ fn asset_sources(origin: EndpointId, from: EndpointId) -> Vec<EndpointId> {
     ids
 }
 
-/// The transfer hash for a referenced-but-missing asset, or a warning: without
-/// it the image cannot be fetched (a sender from before its own import
-/// completed — which `add_asset` ordering prevents — or a version mismatch).
-fn require_hash(id: AssetId, hash: Option<Hash>) -> Option<Hash> {
+/// The transfer hash for referenced-but-missing content, or a warning: without
+/// it the bytes cannot be fetched (a sender from before its own import
+/// completed — which `add_content` ordering prevents — or a version mismatch).
+fn require_hash(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
     if hash.is_none() {
-        tracing::warn!("missing brush asset {id:?} arrived without a transfer hash");
+        tracing::warn!("missing {need:?} arrived without a transfer hash");
     }
     hash
 }
@@ -576,12 +623,12 @@ fn require_hash(id: AssetId, hash: Option<Hash>) -> Option<Hash> {
 /// The brush image a *live* remote gesture depends on, if any: a stroke's head
 /// frame carries the full `BrushParams` (§17.5). Only head/resync
 /// frames name it — delta frames extend the path of a head already seen.
-fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetId> {
+fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetNeed> {
     match &frame.gesture {
         Some(GestureFrame::Stroke {
             head: Some(head), ..
         }) => match head.brush.shape {
-            BrushShape::Stamp(id) => Some(id),
+            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
             BrushShape::Round { .. } => None,
         },
         _ => None,
@@ -597,35 +644,49 @@ fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetId> {
 async fn resolve_asset(
     dialer: Dialer,
     sources: Vec<EndpointId>,
-    id: AssetId,
+    need: AssetNeed,
     hash: Hash,
     asset_hashes: AssetHashes,
     mirror: Arc<Mutex<Mirror>>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
+    let Some(id) = need.content() else {
+        return;
+    };
     match fetch_asset(&dialer, &sources, hash).await {
         Some(bytes) => {
             mirror
                 .lock()
                 .expect("mirror poisoned")
-                .insert_asset(id, bytes.clone());
+                .insert_content(need, bytes.clone());
             asset_hashes
                 .lock()
                 .expect("asset hashes poisoned")
                 .insert(id, hash);
-            let _ = tx.send(RemoteEvent::Asset { bytes });
+            let _ = tx.send(RemoteEvent::Asset { need, bytes });
         }
-        None => tracing::warn!("brush asset {id:?} unavailable; stroke will fall back"),
+        None => tracing::warn!("{need:?} unavailable; the action will fall back"),
     }
 }
 
-/// The brush image a stroke depends on, if any (§6.6).
-fn referenced_asset(action: &Action) -> Option<AssetId> {
+/// The content an action depends on, if any: the brush image a stroke stamps with
+/// (§6.6), or the ground a `SetSurface` moves onto (§6.4).
+///
+/// The ground arm is what stops two clients diverging over the tooth. Before it, a
+/// `SetSurface` naming a ground the receiver had never fetched was applied anyway —
+/// the registry fell back to `Flat`, and every stroke after it deposited as though
+/// the canvas were smooth. It reads like an asset-loading problem, and it was: the
+/// ground was simply not on the list of things an action could be waiting for.
+fn referenced_asset(action: &Action) -> Option<AssetNeed> {
     match &action.kind {
         ActionKind::CommitStroke(rec) => match rec.brush.shape {
-            BrushShape::Stamp(id) => Some(id),
+            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
             BrushShape::Round { .. } => None,
         },
+        // `Flat` is procedural, so it resolves to no content and never waits.
+        ActionKind::SetSurface(id) => AssetNeed::Ground(*id)
+            .content()
+            .map(|_| AssetNeed::Ground(*id)),
         _ => None,
     }
 }

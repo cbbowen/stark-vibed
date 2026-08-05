@@ -29,6 +29,16 @@ pub struct Renderer {
     /// A short list looked up by name a handful of times per frame at most —
     /// a `Vec` beats a map, and keeps gallery order.
     builtins: Vec<(&'static str, stark_core::AssetId)>,
+    /// The canvas grounds bundled with the app (`crate::grounds`), each imported
+    /// once its height map is fetched (§6.4), keyed by the name that module gives
+    /// it.
+    ///
+    /// The same shape as `builtins` above and for the same reason: a ground is
+    /// named by the hash of its image, so its id is only knowable once the bytes
+    /// have arrived, and this is where the answer is remembered. A document may
+    /// perfectly well be on a ground that is in no catalog — one a peer brought —
+    /// which is why this is a *display* index and never the source of truth.
+    grounds: Vec<(&'static str, SurfaceId)>,
     /// The Navigator panel's canvas and everything that draws into it — `None` until
     /// the panel mounts one ([`Renderer::attach_overview`]).
     overview: Option<Overview>,
@@ -150,14 +160,50 @@ impl Renderer {
         self.engine.process(DocCommand::SetSurface(id));
     }
 
-    /// Whether a surface's bytes are loaded (Flat always is).
-    pub fn surface_loaded(&self, id: SurfaceId) -> bool {
-        self.engine.surface_loaded(id)
+    /// Import a canvas ground from a fetched height map, returning the id that
+    /// names it (§6.4). The id comes *out of* the bytes, so it can only be had
+    /// once they have arrived.
+    pub fn import_surface(&mut self, png_bytes: &[u8]) -> Option<SurfaceId> {
+        match self.engine.import_surface(png_bytes) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!("canvas ground failed to import: {e}");
+                None
+            }
+        }
     }
 
-    /// Register frontend-fetched image bytes for a surface (§6.4).
-    pub fn register_surface(&mut self, id: SurfaceId, png_bytes: Vec<u8>) {
-        self.engine.register_surface(id, png_bytes);
+    /// Take in a ground that arrives already named — from a peer — checking the
+    /// bytes against the id that asked for them (§12.4).
+    pub fn accept_surface(&mut self, id: SurfaceId, png_bytes: &[u8]) {
+        if let Err(e) = self.engine.accept_surface(id, png_bytes) {
+            tracing::warn!("remote canvas ground rejected: {e}");
+        }
+    }
+
+    /// The canonical height map of a loaded ground — for seeding a live session so
+    /// peers can fetch it by hash.
+    pub fn surface_bytes(&self, id: SurfaceId) -> Option<Vec<u8>> {
+        self.engine.surface_bytes(id)
+    }
+
+    /// Import a bundled ground from its fetched bytes, caching its id under the
+    /// name `crate::grounds` gives it. Idempotent: a repeat import is free
+    /// (content-addressed) and simply refreshes the entry.
+    pub fn load_ground(&mut self, name: &'static str, png_bytes: &[u8]) -> Option<SurfaceId> {
+        let id = self.import_surface(png_bytes)?;
+        self.grounds.retain(|(n, _)| *n != name);
+        self.grounds.push((name, id));
+        Some(id)
+    }
+
+    /// The ground `name` resolved to, or `None` while its height map has yet to be
+    /// fetched and imported.
+    pub fn ground(&self, name: &str) -> Option<SurfaceId> {
+        self.grounds
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, id)| *id)
     }
 
     /// The current lighting environment (§6.3).
@@ -683,6 +729,7 @@ async fn finish_init(
         config,
         engine,
         builtins: Vec::new(),
+        grounds: Vec::new(),
         overview: None,
     }
 }

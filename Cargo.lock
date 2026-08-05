@@ -6570,6 +6570,7 @@ dependencies = [
  "postcard",
  "serde",
  "stark-core",
+ "stark-testdata",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
