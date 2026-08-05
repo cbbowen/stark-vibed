@@ -494,6 +494,16 @@ i.e. when no `history` snapshot references it. **History retention drives GPU
 memory reclamation for free.** No manual GC, no leak. It is also why tile
 *identity* works as change detection in `Action::inverse` (§12.6).
 
+That returns a tile to the *pool*; the pool then decides when to return it to the
+*driver*. It measures its own peak concurrent demand over an epoch of acquires and
+hands back half of anything it owns beyond that, so a burst — a transform across a
+wide selection, a stroke over a large canvas — decays geometrically once ordinary
+work resumes, instead of being resident for the rest of the session. The epoch is
+counted in acquires rather than seconds because that is the pool's only honest
+clock: the engine renders on demand, so a frame counter would tick fastest when
+there is nothing to reclaim. The cost of that choice is stated where the constant
+is: an idle pool does not shrink, it shrinks on the next spell of work.
+
 ### 5.3 Undo/redo cost
 
 For retained snapshots, undo is instant — the tile map is already held. Between

@@ -216,23 +216,142 @@ impl MaskHandle {
     }
 }
 
-#[derive(Default)]
+/// How many acquires make one **epoch**: the window the pool measures its own peak
+/// demand over, and the cadence it releases surplus textures on.
+///
+/// Counted in acquires rather than frames or seconds, because that is the only clock
+/// the pool honestly has. The engine renders on demand — an idle app paints no
+/// frames — so a frame counter would tick fastest exactly when there is nothing to
+/// reclaim and stop when there is; and a wall clock has no business in a crate that
+/// compiles to wasm and whose whole point is being a deterministic function of an
+/// action log (§1).
+///
+/// **The consequence, stated rather than hidden: an idle pool does not shrink.** A
+/// session that does something enormous and then sits still keeps that memory until
+/// the next spell of work, which is when the epoch advances and the surplus is
+/// measured against what that work actually needs. What this rules out is the thing
+/// §5.1 promises and did not deliver — that a peak reached once is resident for the
+/// rest of the session.
+///
+/// 4096 is about fifty stroke renders (a stroke over twenty tiles acquires ~82), so
+/// an epoch is roughly a second of painting: long enough that the peak is a real
+/// working set rather than one gesture, short enough that a big transform's surplus
+/// is gone within seconds of ordinary work.
+const TRIM_INTERVAL: u32 = 4096;
+
 struct PoolInner {
     /// Recycled textures and their views, one free list per format ([`Pooled`]).
     free: Vec<Pooled>,
-    /// How many textures this pool has ever created — its high-water mark, since
-    /// nothing here is ever handed back to the driver.
+    /// How many textures this pool **owns** — created, less those released back to
+    /// the driver by [`Self::trim`]. `capacity - free.len()` is therefore what its
+    /// consumers are holding.
     capacity: usize,
+    /// The most this pool has had checked out at once during the current epoch.
+    peak: usize,
+    /// Acquires left before the epoch ends ([`TRIM_INTERVAL`]).
+    countdown: u32,
     /// Current allocation sources.
     sources: HashMap<AllocSource, usize>,
 }
 
+impl Default for PoolInner {
+    /// A full epoch to begin with, so a fresh pool measures a whole window before it
+    /// first trims — `countdown: 0` from a derived `Default` would fire on the very
+    /// first acquire, against a peak of one.
+    fn default() -> Self {
+        Self {
+            free: Vec::new(),
+            capacity: 0,
+            peak: 0,
+            countdown: TRIM_INTERVAL,
+            sources: HashMap::new(),
+        }
+    }
+}
+
 impl PoolInner {
+    /// Textures checked out right now. Derived rather than counted: `capacity` is
+    /// what the pool owns and `free` is what it is sitting on, so the difference is
+    /// what its consumers have.
+    fn in_use(&self) -> usize {
+        self.capacity - self.free.len()
+    }
+
     fn increase_capacity(&mut self, format: wgpu::TextureFormat) {
         self.capacity += 1;
         tracing::debug!(format = ?format, capacity = self.capacity, sources = ?self.sources, "increased texture pool capacity");
     }
+
+    /// Note this acquire against the epoch, and release surplus at its end.
+    ///
+    /// **The whole policy is `capacity > peak`.** The most the pool needed at once
+    /// during the epoch was `peak`, so anything it owns beyond that was not needed by
+    /// *any* moment of it — and since `in_use ≤ peak`, that surplus is provably all
+    /// sitting in `free` rather than checked out. Nothing a consumer holds, and
+    /// nothing the epoch's busiest instant wanted, can be dropped by it.
+    ///
+    /// Half the surplus rather than all of it, for hysteresis: demand that alternates
+    /// between epochs — a transform, then a stroke, then a transform — would otherwise
+    /// hand every texture back and build it again. Halving converges within a few
+    /// epochs and costs one epoch's patience.
+    fn tick(&mut self, format: wgpu::TextureFormat) {
+        self.peak = self.peak.max(self.in_use());
+        self.countdown = self.countdown.saturating_sub(1);
+        if self.countdown > 0 {
+            return;
+        }
+        let drop = surplus_to_release(self.capacity, self.peak, self.free.len());
+        if drop > 0 {
+            // Explicitly, not merely by dropping the handle. On the web a dropped
+            // texture only releases its JS object and waits for GC, which is the
+            // opposite of what a trim is for; `destroy()` hands the memory back as
+            // soon as the in-flight work referencing it retires. The view beside it
+            // goes with it and is never read again ([`Pooled`]).
+            for slot in self.free.drain(self.free.len() - drop..) {
+                slot.tex.destroy();
+            }
+            self.capacity -= drop;
+            tracing::debug!(
+                format = ?format,
+                released = drop,
+                capacity = self.capacity,
+                peak = self.peak,
+                "released surplus texture pool capacity",
+            );
+        }
+        self.peak = self.in_use();
+        self.countdown = TRIM_INTERVAL;
+    }
 }
+
+/// How many free slots an epoch ending in this state releases — the whole of the
+/// trim policy, as arithmetic with no GPU in it.
+///
+/// `capacity − peak` is what the pool owns beyond anything the epoch ever needed at
+/// once. Half of that goes back, and never more than is actually idle.
+///
+/// The `min` is not defensive padding: `free = capacity − in_use` and `in_use ≤ peak`
+/// together already prove `free ≥ surplus`, so the clamp is unreachable today. It is
+/// there because the alternative to it being unreachable is truncating a `Vec` past
+/// its length, and the proof lives in two other functions.
+fn surplus_to_release(capacity: usize, peak: usize, free: usize) -> usize {
+    let surplus = capacity.saturating_sub(peak);
+    (surplus / 2).min(free).min(MAX_RELEASE_PER_EPOCH)
+}
+
+/// Most textures one epoch boundary may hand back.
+///
+/// The trim runs inside `acquire_tex`, holding the pool's lock, so its cost lands on
+/// one unlucky acquire — and a transform over a few thousand tiles can leave a
+/// surplus in the thousands, half of which is a lot of `destroy()` calls to make
+/// while a stroke is waiting for a scratch tile.
+///
+/// This is a **bound on a cost that has not been measured**, not a tuned figure: it
+/// says the spike stays within a few hundred driver calls whatever the surplus, and
+/// costs only that a very large one takes more epochs to drain. If profiling ever
+/// shows the release is cheap, the honest change is to raise this and say so, not to
+/// discover the cap by wondering why reclamation is slow.
+const MAX_RELEASE_PER_EPOCH: usize = 256;
 
 /// Recycling allocator for tile textures (§6.1). Hands out one texture at a
 /// time, keyed by format, so `Rgba16Float` textures are shared across every consumer
@@ -287,13 +406,17 @@ impl TilePool {
         let Pooled { tex, view } = {
             let mut pool = pool.lock().expect("tile pool poisoned");
             *pool.sources.entry(source).or_default() += 1;
-            match pool.free.pop() {
+            let slot = match pool.free.pop() {
                 Some(slot) => slot,
                 None => {
                     pool.increase_capacity(format);
                     self.create_pooled(format)
                 }
-            }
+            };
+            // After the slot is out, so `in_use` counts it: the epoch's peak is what
+            // the pool had checked out at its busiest, this acquire included.
+            pool.tick(format);
+            slot
         };
         TexHandle(Arc::new(GpuTex {
             tex: Some(tex),
@@ -336,5 +459,112 @@ impl TilePool {
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         Pooled { tex, view }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A trim may never take a texture the epoch needed**, which is the one way
+    /// this policy could hurt: it runs on the acquire path, so getting it wrong
+    /// trades a memory win for recreating textures inside the work that is using
+    /// them.
+    ///
+    /// The invariant is that the pool never falls below the epoch's peak concurrent
+    /// demand, so every acquire the epoch actually made would still have been served
+    /// from the free list.
+    #[test]
+    fn a_trim_never_drops_below_the_epochs_peak_demand() {
+        for capacity in [0usize, 1, 2, 7, 64, 1000] {
+            for peak in 0..=capacity {
+                // Every idle count the state can actually be in: `free` is
+                // `capacity − in_use` and `in_use ≤ peak`, so it runs from
+                // `capacity − peak` (the epoch's busiest instant, still checked out)
+                // up to `capacity` (everything handed back).
+                for free in (capacity - peak)..=capacity {
+                    let released = surplus_to_release(capacity, peak, free);
+                    assert!(
+                        released <= free,
+                        "released {released} of {free} idle (cap {capacity}, peak {peak})",
+                    );
+                    assert!(
+                        capacity - released >= peak,
+                        "cap {capacity} → {} is under the epoch's peak {peak}",
+                        capacity - released,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A pool that is not holding more than it needed releases nothing — the case
+    /// that must stay free, since it is every epoch of ordinary painting.
+    #[test]
+    fn a_pool_at_its_working_set_releases_nothing() {
+        for n in [0usize, 1, 50, 4096] {
+            assert_eq!(surplus_to_release(n, n, 0), 0, "at exactly the peak");
+            // And a pool whose peak exceeded what it owns (impossible, but the
+            // saturation must not wrap into an enormous release).
+            assert_eq!(surplus_to_release(n, n + 10, n), 0, "peak above capacity");
+        }
+    }
+
+    /// Surplus decays geometrically rather than all at once, so demand that
+    /// alternates between epochs keeps a cushion instead of rebuilding it each time.
+    /// Halving also has to actually *converge* — a policy that rounded down to zero
+    /// early would strand most of the surplus forever.
+    #[test]
+    fn surplus_halves_away_over_a_few_epochs() {
+        let peak = 4;
+        let mut capacity = 1000;
+        let mut epochs = 0;
+        while capacity > peak {
+            let released = surplus_to_release(capacity, peak, capacity - peak);
+            if released == 0 {
+                break;
+            }
+            capacity -= released;
+            epochs += 1;
+            assert!(
+                epochs < 40,
+                "not converging: still {capacity} after {epochs}"
+            );
+        }
+        // Halving from 1000 to 4 is ~8 epochs; the tail rounds down and stops one
+        // slot above the peak, which is a slot and not a leak.
+        assert!(
+            capacity <= peak + 1,
+            "settled at {capacity} for a peak of {peak}"
+        );
+        assert!(epochs >= 8, "converged implausibly fast ({epochs} epochs)");
+    }
+
+    /// No single epoch boundary may hand back an unbounded number of textures: the
+    /// trim holds the pool's lock, so its cost falls on one acquire in the middle of
+    /// whatever work comes next.
+    #[test]
+    fn one_epoch_releases_a_bounded_number_of_textures() {
+        for capacity in [1_000usize, 100_000, usize::MAX / 2] {
+            let released = surplus_to_release(capacity, 0, capacity);
+            assert!(
+                released <= MAX_RELEASE_PER_EPOCH,
+                "a surplus of {capacity} released {released} in one go",
+            );
+        }
+        // And the cap does not stop it converging — a capped release still drains,
+        // it just takes more boundaries.
+        let mut capacity = 100_000usize;
+        let mut epochs = 0;
+        while capacity > 4 {
+            let released = surplus_to_release(capacity, 4, capacity - 4);
+            if released == 0 {
+                break;
+            }
+            capacity -= released;
+            epochs += 1;
+            assert!(epochs < 1_000, "capped release stalled at {capacity}");
+        }
+        assert!(capacity <= 5, "settled at {capacity}");
     }
 }

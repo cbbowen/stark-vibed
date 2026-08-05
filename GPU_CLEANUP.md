@@ -19,7 +19,7 @@ Three passes, separable and in order of value per unit risk:
 - **(c) `composite.rs` split** — structural, no behaviour change. §2.1, §2.6.
   **Done.**
 
-§2.2, §2.4, §2.5 and §4 are what is left. §2.7 is withdrawn — see there.
+§2.4, §2.5 and §4 are what is left. §2.7 is withdrawn — see there.
 
 Run `cargo test --workspace` once after each pass, not after each edit.
 
@@ -125,17 +125,50 @@ it is in `guides.rs` now, and `group.rs` came out with no GPU in it at all.
 The `Compositor`/`CompositorPipeline` split (does it depend on the target?) was
 already a good line. It just wasn't the only line the file needed.
 
-### 2.2 The pool never returns memory, and the largest allocations bypass it
+### 2.2 The pool never returns memory — **done**
 
-`PoolInner::free` only grows; `capacity` is monotonically increasing (the field
-doc says "available to this pool", the log says "increased capacity" — they mean
-different things). A session's peak tile count is permanent GPU residency.
+`PoolInner::free` only grew, so a session's peak tile count was permanent GPU
+residency: one wide transform and ~640 KB per tile pair stayed put for the rest of
+the session. `capacity` was monotonic and its doc, its field name and its log
+message each meant something slightly different.
 
-Meanwhile the biggest transients — dynamics regions up to `MAX_REGION_DIM`² × 8 B
-× 2 = 67 MB — are created and `destroy()`d per piece and never pooled. Two
-opposite policies in one subsystem, neither stated as a decision. Either a
-high-water decay on the free lists, or an explicit note on why unbounded
-retention is right for tiles specifically.
+The pool now measures its own peak concurrent demand over an **epoch** of acquires
+and releases half of anything it owns beyond that at each boundary. The whole
+policy is `capacity > peak`, and it is safe by construction rather than by tuning:
+`in_use ≤ peak` means the surplus is provably all idle, so a trim can never take a
+texture a consumer holds or one the epoch's busiest instant wanted.
+
+The epoch is counted in **acquires** because that is the pool's only honest clock.
+The engine renders on demand — an idle app paints no frames — so a frame counter
+would tick fastest exactly when there is nothing to reclaim; and a wall clock has
+no business in a crate that compiles to wasm and exists to be a deterministic
+function of an action log. The price, stated on the constant rather than hidden: an
+idle pool does not shrink. It shrinks on the next spell of work, measured against
+what that work needs.
+
+Half rather than all, for hysteresis — alternating demand would otherwise hand
+every texture back and rebuild it. `capacity` is now "textures owned" and decreases,
+which is what its name always claimed.
+
+One release is also capped absolutely, because the trim runs inside `acquire_tex`
+holding the pool's lock: half of a few-thousand-texture surplus is a lot of
+`destroy()` calls to make while a stroke waits for a scratch tile. That cap is a
+bound on a cost nobody has measured rather than a tuned number, and it says so
+where it is defined — the failure it prevents is a hitch, the price it charges is
+epochs.
+
+Tests: the policy's arithmetic is a pure function with the safety invariant pinned
+over a grid of states, plus two end-to-end pool tests — a burst of 200 decays to ≤8
+once one-at-a-time work resumes, and a steady working set of 16 is never trimmed
+out from under itself.
+
+**Not done, and no longer the same complaint.** The biggest transients — dynamics
+regions up to `MAX_REGION_DIM`² × 8 B × 2 = 67 MB — are still created and
+`destroy()`d per piece rather than pooled. That was listed here as "two opposite
+policies in one subsystem"; with the pool releasing surplus, the two now agree that
+memory goes back. Whether those regions should be *pooled* is a separate question
+about a different size class, and pooling them would want the eviction story this
+epoch policy only just gave the small ones.
 
 ### 2.3 A `TextureView` is created on every acquire, including recycled ones — **done**
 

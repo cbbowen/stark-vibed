@@ -70,3 +70,72 @@ fn free_lists_do_not_cross_formats() {
         "an aux acquire must not consume the colour free list"
     );
 }
+
+/// **Tile memory comes back.** A pool that reached a high-water mark once used to
+/// sit on it for the rest of the session: the free list only ever grew, so a single
+/// large operation made its peak permanently resident (§5.1 promised reclamation and
+/// delivered it only as far as the free list).
+///
+/// The pool now measures its own peak demand over an epoch of acquires and hands
+/// back half the surplus at each boundary, so a burst's leftovers decay geometrically
+/// once ordinary work resumes.
+///
+/// Driven by spinning acquires rather than by naming the epoch length, which is the
+/// pool's business: the loop is bounded so a policy that never trims fails the test
+/// instead of hanging.
+#[test]
+fn a_burst_of_tiles_is_handed_back_once_the_work_moves_on() {
+    let Some(ctx) = context_or_skip() else { return };
+    let pool = TilePool::new(ctx, [COLOR]);
+
+    // A burst — a big transform, a fill across a wide selection — then done with.
+    const BURST: usize = 200;
+    let held: Vec<_> = (0..BURST)
+        .map(|_| pool.acquire_tex(COLOR, AllocSource::Unknown))
+        .collect();
+    drop(held);
+    assert_eq!(
+        pool.free_count(),
+        BURST,
+        "the burst is idle in the free list"
+    );
+
+    // Ordinary work afterwards: one tile at a time, so the pool's peak demand is
+    // nothing like the burst it is still holding.
+    let mut spins = 0usize;
+    while pool.free_count() > 8 && spins < 1_000_000 {
+        let _one = pool.acquire_tex(COLOR, AllocSource::Unknown);
+        spins += 1;
+    }
+    assert!(
+        pool.free_count() <= 8,
+        "still holding {} of the burst's {BURST} textures after {spins} acquires",
+        pool.free_count(),
+    );
+}
+
+/// And it does not hand back what the work is *using*. A pool kept at a steady
+/// working set must keep serving it from the free list — a trim that undershot would
+/// trade the memory win for recreating textures inside the very loop that needs them.
+#[test]
+fn a_steady_working_set_is_not_trimmed_away() {
+    let Some(ctx) = context_or_skip() else { return };
+    let pool = TilePool::new(ctx, [COLOR]);
+
+    // Hold a working set across every acquire, so the pool's peak never drops.
+    const WORKING: usize = 16;
+    let _held: Vec<_> = (0..WORKING)
+        .map(|_| pool.acquire_tex(COLOR, AllocSource::Unknown))
+        .collect();
+    // Churn a 17th for long enough to cross many epochs.
+    for _ in 0..200_000 {
+        let _one = pool.acquire_tex(COLOR, AllocSource::Unknown);
+    }
+    // The 17th slot is the only idle one, and the working set is untouched: every
+    // acquire above was served without creating a texture.
+    assert!(
+        pool.free_count() <= 1,
+        "the pool grew to {} idle slots for a steady working set",
+        pool.free_count(),
+    );
+}
