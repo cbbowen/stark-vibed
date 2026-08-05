@@ -274,6 +274,39 @@ impl Taper {
     }
 }
 
+/// Where the pen was, at the point a segment samples it.
+///
+/// Attributes are constant across a swept segment, so they are taken at its
+/// **midpoint** rather than its start — with adaptive flattening a segment can be
+/// long, and start-sampling would lag every ramp by half a segment.
+///
+/// Both axes are already clamped to what a pen can report, because the fitter clamps
+/// the *curve* and not just the control polygon (`PathFitter::path`), so the
+/// modulations below are honest without a second guard.
+struct At {
+    pos: Vec2,
+    pressure: f32,
+    tilt: Vec2,
+}
+
+/// The arc one segment sweeps along.
+///
+/// `dir` is the tangent the sweep *starts* along — the frame's x axis — while
+/// `mid_dir` is the one at the midpoint, the same midpoint-sampling argument applied
+/// to the one attribute that reads a direction. They are the same vector on a
+/// straight segment.
+///
+/// `dist` is the exception to that rule: it is the arc length at the segment's
+/// **start**, because the shader adds the fragment's own offset along the travel to
+/// it (`stamp_common.wesl`).
+struct Sweep {
+    dir: Vec2,
+    mid_dir: Vec2,
+    curvature: f32,
+    length: f32,
+    dist: f32,
+}
+
 /// Build swept segments from the fitted control points (§6.2): flatten
 /// the curve adaptively, then make each polyline edge a segment. This is where the
 /// brush's fixed numbers become the per-segment ones the shaders read: the radius
@@ -321,41 +354,21 @@ pub(super) fn generate_segments_in(
     }
     let taper = Taper::resolve(b, reaches_end.then_some(end_dist));
 
-    // Attributes are constant across a swept segment, so they are taken at its
-    // *midpoint* rather than its start — with adaptive flattening a segment can be
-    // long, and start-sampling would lag every ramp by half a segment. `dist` is
-    // the exception: it is the segment start's arc length because the shader adds
-    // the fragment's own offset along the travel to it (stamp_common.wesl).
-    //
-    // `dir` is the tangent the sweep *starts* along (the frame's x axis) while
-    // `mid_dir` is the one at the midpoint — the same midpoint-sampling argument,
-    // applied to the one attribute that reads a direction. They are the same vector
-    // on a straight segment.
-    #[allow(clippy::too_many_arguments)]
-    let make = |pos: Vec2,
-                pressure: f32,
-                tilt: Vec2,
-                dir: Vec2,
-                mid_dir: Vec2,
-                kappa: f32,
-                len: f32,
-                dist: f32,
-                tap: f32| {
+    // `tap` is the taper's radius factor, which only the caller can know: it is
+    // measured against the *whole* stroke and a partial range does not have one.
+    let make = |at: At, sweep: Sweep, tap: f32| {
         // The pen as the modulations read it, at this segment's own attributes
-        // (§6.2). Both axes are already clamped to what a pen can report — the
-        // fitter clamps the *curve* and not just the control polygon
-        // (`PathFitter::path`) — so the factors below are honest without a second
-        // guard, and `Modulation::factor` clamps anyway.
+        // (§6.2). `Modulation::factor` clamps anyway.
         let pen = PenState {
-            pressure,
-            tilt: tilt.length(),
+            pressure: at.pressure,
+            tilt: at.tilt.length(),
         };
         let m = &b.modulation;
         let d = b.dynamics;
         Segment {
-            start: pos,
-            dir,
-            curvature: kappa,
+            start: at.pos,
+            dir: sweep.dir,
+            curvature: sweep.curvature,
             // The size mapping and the taper both scale the tip; the floor keeps a
             // tapered tip a hairline at its very point rather than a degenerate
             // zero-width sweep (which would also divide by zero in the dynamics
@@ -363,9 +376,9 @@ pub(super) fn generate_segments_in(
             // pressure, linearly, so this is the product it has always been — to the
             // bit (`Modulation::factor`).
             radius: (b.radius * m.size(pen) * tap).max(0.5),
-            length: len,
-            orient: orientation_turns(b.orientation, mid_dir, tilt),
-            dist,
+            length: sweep.length,
+            orient: orientation_turns(b.orientation, sweep.mid_dir, at.tilt),
+            dist: sweep.dist,
             add: d.add * m.flow(pen),
             lift: d.lift * m.lift(pen),
             deposit: d.deposit * m.deposit(pen),
@@ -409,14 +422,18 @@ pub(super) fn generate_segments_in(
             let (pos, tan) = crate::path::arc_at(a.pos, dir, kappa, along);
             let (_, mid_tan) = crate::path::arc_at(a.pos, dir, kappa, along + step * 0.5);
             segs.push(make(
-                pos,
-                pressure,
-                tilt,
-                tan,
-                mid_tan,
-                kappa,
-                step,
-                dist,
+                At {
+                    pos,
+                    pressure,
+                    tilt,
+                },
+                Sweep {
+                    dir: tan,
+                    mid_dir: mid_tan,
+                    curvature: kappa,
+                    length: step,
+                    dist,
+                },
                 taper.factor(dist + step * 0.5),
             ));
         }
@@ -464,17 +481,21 @@ pub(super) fn generate_segments_in(
             segs.insert(
                 0,
                 make(
-                    pos - dir * (dwell * 0.5),
-                    pressure,
-                    tilt,
-                    dir,
-                    dir,
-                    0.0,
-                    dwell,
-                    // The dwell is *at* the stroke, not before it: it must not run the
-                    // arc-length clock — which `drain` and the colour noise are
-                    // measured on — backwards past the stroke's own start.
-                    (mid - dwell * 0.5).max(0.0),
+                    At {
+                        pos: pos - dir * (dwell * 0.5),
+                        pressure,
+                        tilt,
+                    },
+                    Sweep {
+                        dir,
+                        mid_dir: dir,
+                        curvature: 0.0,
+                        length: dwell,
+                        // The dwell is *at* the stroke, not before it: it must not run
+                        // the arc-length clock — which `drain` and the colour noise are
+                        // measured on — backwards past the stroke's own start.
+                        dist: (mid - dwell * 0.5).max(0.0),
+                    },
                     tap,
                 ),
             );

@@ -19,6 +19,19 @@ use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
 use crate::gpu::half::f16_to_f32;
 
+/// A texel of `texture`, in bytes.
+///
+/// Asked of the texture rather than of the caller. It used to be a parameter, which
+/// made every reader responsible for restating a fact the texture already carries —
+/// and a mismatch would not fail, it would hand back rows shifted by the difference,
+/// which reads as a picture skewing progressively sideways rather than as an error.
+fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
+    texture
+        .format()
+        .block_copy_size(None)
+        .expect("readback of an uncompressed texture")
+}
+
 /// Copy a texture into a mappable buffer, and return it with the row padding the
 /// copy required. Shared by the async and blocking paths, which differ only in
 /// how they wait.
@@ -26,9 +39,8 @@ fn begin_read(
     ctx: &GpuContext,
     texture: &wgpu::Texture,
     size: Extent2,
-    bytes_per_texel: u32,
 ) -> (wgpu::Buffer, u32, u32) {
-    let unpadded = size.width * bytes_per_texel;
+    let unpadded = size.width * bytes_per_texel(texture);
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded = unpadded.div_ceil(align) * align;
 
@@ -82,14 +94,8 @@ fn take_rows(buffer: &wgpu::Buffer, size: Extent2, unpadded: u32, padded: u32) -
 }
 
 /// Read any texture back to tightly-packed bytes, awaiting the map.
-/// `bytes_per_texel` must match the texture format.
-async fn read_texture_bytes(
-    ctx: &GpuContext,
-    texture: &wgpu::Texture,
-    size: Extent2,
-    bytes_per_texel: u32,
-) -> Vec<u8> {
-    let (buffer, unpadded, padded) = begin_read(ctx, texture, size, bytes_per_texel);
+async fn read_texture_bytes(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
+    let (buffer, unpadded, padded) = begin_read(ctx, texture, size);
 
     let (tx, rx) = futures_channel::oneshot::channel();
     buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
@@ -123,7 +129,7 @@ async fn read_texture_bytes(
 /// Read an 8-bit, 4-channel (e.g. `Rgba8Unorm`) texture back to tightly-packed
 /// RGBA bytes.
 pub async fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
-    read_texture_bytes(ctx, texture, size, 4).await
+    read_texture_bytes(ctx, texture, size).await
 }
 
 /// Blocking readback, for native callers only — the golden tests, which are
@@ -134,7 +140,7 @@ pub async fn read_rgba8(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2
 /// the frontend a compile error rather than a runtime `OperationError`.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
-    let (buffer, unpadded, padded) = begin_read(ctx, texture, size, 4);
+    let (buffer, unpadded, padded) = begin_read(ctx, texture, size);
     buffer
         .slice(..)
         .map_async(wgpu::MapMode::Read, |r| r.expect("map readback buffer"));
@@ -147,7 +153,7 @@ pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Exte
 /// Read an `Rgba16Float` texture back as `f32` RGBA (4 per texel). The texture must carry
 /// `COPY_SRC`. Used by reservoir-visualization debugging (§6.2).
 pub async fn read_rgba16f(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<f32> {
-    let bytes = read_texture_bytes(ctx, texture, size, 8).await; // 4 × f16
+    let bytes = read_texture_bytes(ctx, texture, size).await;
     bytes
         .as_chunks::<2>()
         .0

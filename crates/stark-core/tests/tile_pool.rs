@@ -4,9 +4,9 @@
 //!
 //! Needs a GPU adapter; skips (rather than fails) where none is available.
 
-use stark_core::gpu::{GpuContext, TilePool, tile::AllocSource};
+use stark_core::gpu::{AllocSource, GpuContext, TilePool};
 
-/// The pool's channel format, and the one [`TilePool::free_count`] reports on.
+/// The pool's colour channel format — the free list most of these tests watch.
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Acquire a context, or `None` if the machine has no usable adapter *and*
@@ -29,24 +29,32 @@ fn pool_recycles_dropped_tiles() {
     let Some(ctx) = context_or_skip() else { return };
     let pool = TilePool::new(ctx, [COLOR, wgpu::TextureFormat::R16Float]);
 
-    assert_eq!(pool.free_count(), 0, "fresh pool has no recycled tiles");
+    assert_eq!(
+        pool.free_count(COLOR),
+        0,
+        "fresh pool has no recycled tiles"
+    );
 
     let a = pool.acquire_tex(COLOR, AllocSource::Unknown);
     let b = pool.acquire_tex(COLOR, AllocSource::Unknown);
-    assert_eq!(pool.free_count(), 0, "live tiles are not in the free list");
+    assert_eq!(
+        pool.free_count(COLOR),
+        0,
+        "live tiles are not in the free list"
+    );
 
     drop(a);
     assert_eq!(
-        pool.free_count(),
+        pool.free_count(COLOR),
         1,
         "dropping the last handle recycles the tile"
     );
     drop(b);
-    assert_eq!(pool.free_count(), 2);
+    assert_eq!(pool.free_count(COLOR), 2);
 
     // A subsequent acquire reuses a recycled texture rather than allocating.
     let _c = pool.acquire_tex(COLOR, AllocSource::Unknown);
-    assert_eq!(pool.free_count(), 1, "acquire reuses a recycled tile");
+    assert_eq!(pool.free_count(COLOR), 1, "acquire reuses a recycled tile");
 }
 
 /// Free lists are keyed by format: recycling a colour texture must not satisfy a
@@ -60,12 +68,13 @@ fn free_lists_do_not_cross_formats() {
 
     let c = pool.acquire_tex(COLOR, AllocSource::Unknown);
     drop(c);
-    assert_eq!(pool.free_count(), 1, "the colour texture was recycled");
+    assert_eq!(pool.free_count(COLOR), 1, "the colour texture was recycled");
+    assert_eq!(pool.free_count(aux), 0, "and landed on its own free list");
 
     // Taking an aux texture must allocate, not steal the recycled colour one.
     let _a = pool.acquire_tex(aux, AllocSource::Unknown);
     assert_eq!(
-        pool.free_count(),
+        pool.free_count(COLOR),
         1,
         "an aux acquire must not consume the colour free list"
     );
@@ -95,7 +104,7 @@ fn a_burst_of_tiles_is_handed_back_once_the_work_moves_on() {
         .collect();
     drop(held);
     assert_eq!(
-        pool.free_count(),
+        pool.free_count(COLOR),
         BURST,
         "the burst is idle in the free list"
     );
@@ -103,14 +112,14 @@ fn a_burst_of_tiles_is_handed_back_once_the_work_moves_on() {
     // Ordinary work afterwards: one tile at a time, so the pool's peak demand is
     // nothing like the burst it is still holding.
     let mut spins = 0usize;
-    while pool.free_count() > 8 && spins < 1_000_000 {
+    while pool.free_count(COLOR) > 8 && spins < 1_000_000 {
         let _one = pool.acquire_tex(COLOR, AllocSource::Unknown);
         spins += 1;
     }
     assert!(
-        pool.free_count() <= 8,
+        pool.free_count(COLOR) <= 8,
         "still holding {} of the burst's {BURST} textures after {spins} acquires",
-        pool.free_count(),
+        pool.free_count(COLOR),
     );
 }
 
@@ -134,8 +143,8 @@ fn a_steady_working_set_is_not_trimmed_away() {
     // The 17th slot is the only idle one, and the working set is untouched: every
     // acquire above was served without creating a texture.
     assert!(
-        pool.free_count() <= 1,
+        pool.free_count(COLOR) <= 1,
         "the pool grew to {} idle slots for a steady working set",
-        pool.free_count(),
+        pool.free_count(COLOR),
     );
 }

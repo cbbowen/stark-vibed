@@ -187,6 +187,86 @@ impl CombineUniform {
     }
 }
 
+/// What a transform's passes draw **from**, as against which piece they are drawing.
+///
+/// Assembled once per [`TransformRenderer::apply`] and threaded through every pass —
+/// the shape `stroke::dynamics`'s `PlanCtx` and `StrokeScene` already use, and for
+/// the same reason: these four travel together through every hop, so they are one
+/// parameter rather than four repeated at each.
+///
+/// `src_bgs` rides along because it is scoped to exactly this: a source tile's bind
+/// group is shared across every destination its image reaches, and there is no
+/// destination outside one `apply` for it to be shared with.
+struct Source<'a> {
+    pool: &'a TilePool,
+    base: &'a TileMap,
+    selection: &'a Selection,
+    src_bgs: BTreeMap<TileCoord, wgpu::BindGroup>,
+}
+
+impl<'a> Source<'a> {
+    fn new(pool: &'a TilePool, base: &'a TileMap, selection: &'a Selection) -> Self {
+        Self {
+            pool,
+            base,
+            selection,
+            src_bgs: BTreeMap::new(),
+        }
+    }
+}
+
+/// The rect-scoped map a gated pass draws **through** (§16.8, §16.9): the pieces, the
+/// shared inverse homography a perspective carries (a warp's cells carry their own
+/// fragment map instead), and the source rect that scopes the whole thing.
+struct Gated<'a> {
+    units: &'a [SourceUnit],
+    inv: Option<&'a Homography>,
+    rect: (Vec2, Vec2),
+}
+
+/// A transform's command encoder together with the scratch parcels its passes will
+/// read — and the reason they are one type.
+///
+/// Nothing in a recorded encoder has *run*. A parcel is written by one pass and read
+/// by the `combine` after it, but both are only recorded, so releasing the parcel's
+/// handle early hands its texture straight back to the pool, which gives it to the
+/// next destination tile in this very encoder — whose parcel pass overwrites it
+/// before the earlier tile's combine ever reads it. The corruption would be a
+/// transform that smears one tile's paint into another's, on large selections only,
+/// and no test would name it.
+///
+/// That rule used to live in a comment and a `drop(scratch)` placed after the submit
+/// by hand, twice. Here [`Self::submit`] takes `self`, so the parcels cannot be
+/// released except by submitting first; and dropping the recording *without*
+/// submitting is safe too, because then no pass ran at all.
+struct Recording {
+    encoder: wgpu::CommandEncoder,
+    scratch: Vec<TexHandle>,
+}
+
+impl Recording {
+    fn new(device: &wgpu::Device, label: &str) -> Self {
+        Self {
+            encoder: device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) }),
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Hold a parcel until this recording is submitted.
+    fn keep(&mut self, parcel: Option<(TexHandle, TexHandle)>) {
+        if let Some((color, aux)) = parcel {
+            self.scratch.push(color);
+            self.scratch.push(aux);
+        }
+    }
+
+    /// Submit, then release the parcels — in that order, which is the whole point.
+    fn submit(self, queue: &wgpu::Queue) {
+        queue.submit([self.encoder.finish()]);
+    }
+}
+
 #[derive(Clone)]
 pub struct TransformRenderer {
     ctx: GpuContext,
@@ -436,45 +516,20 @@ impl TransformRenderer {
         let mask_plan = plan_mask(selection, affine)?;
 
         let device = &self.ctx.device;
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("stark transform"),
-        });
+        let mut rec = Recording::new(device, "stark transform");
 
         // Source-tile bind groups are shared across every destination they reach.
-        let mut src_bgs: BTreeMap<TileCoord, wgpu::BindGroup> = BTreeMap::new();
-        // Scratch parcels must outlive their reads: the pool would otherwise hand
-        // the same texture to a later tile inside this same encoder.
-        let mut scratch: Vec<TexHandle> = Vec::new();
+        let mut from = Source::new(pool, base, selection);
 
         let mut tiles = base.clone();
         for (dest, sources) in &plan.rewrites {
-            let parcel = self.render_parcel(
-                &mut encoder,
-                pool,
-                base,
-                selection,
-                affine,
-                *dest,
-                sources,
-                &mut src_bgs,
-            );
+            let parcel = self.render_parcel(&mut rec.encoder, &mut from, affine, *dest, sources);
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
             );
-            self.combine(
-                &mut encoder,
-                base,
-                selection,
-                *dest,
-                parcel.as_ref(),
-                &dst,
-                None,
-            );
-            if let Some((c, a)) = parcel {
-                scratch.push(c);
-                scratch.push(a);
-            }
+            self.combine(&mut rec.encoder, &from, *dest, parcel.as_ref(), &dst, None);
+            rec.keep(parcel);
             tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1));
         }
         for coord in &plan.drops {
@@ -486,7 +541,7 @@ impl TransformRenderer {
             HashTrieMap::new();
         for (dest, sources) in &mask_plan.rewrites {
             let dst = pool.acquire_mask(AllocSource::TransformMask);
-            self.render_mask(&mut encoder, selection, affine, *dest, sources, &dst);
+            self.render_mask(&mut rec.encoder, selection, affine, *dest, sources, &dst);
             mask_tiles = mask_tiles.insert(*dest, dst);
         }
         // The hull rides along: the AABB of the affine image of its corners.
@@ -503,8 +558,7 @@ impl TransformRenderer {
         });
         let moved_selection = Selection::from_parts(mask_tiles, selection.outside() > 0.5, hull);
 
-        self.ctx.queue.submit([encoder.finish()]);
-        drop(scratch); // now safe to recycle
+        rec.submit(&self.ctx.queue);
         Some((tiles, moved_selection))
     }
 
@@ -528,44 +582,32 @@ impl TransformRenderer {
         };
 
         let device = &self.ctx.device;
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("stark transform gated"),
-        });
+        let mut rec = Recording::new(device, "stark transform gated");
 
-        let mut src_bgs: BTreeMap<TileCoord, wgpu::BindGroup> = BTreeMap::new();
-        let mut scratch: Vec<TexHandle> = Vec::new();
+        let mut from = Source::new(pool, base, selection);
+        let paint = Gated {
+            units: &plan.units,
+            inv: inv.as_ref(),
+            rect,
+        };
 
         let mut tiles = base.clone();
         for (dest, unit_idxs) in &plan.rewrites {
-            let parcel = self.render_gated_parcel(
-                &mut encoder,
-                pool,
-                base,
-                selection,
-                &plan.units,
-                unit_idxs,
-                inv.as_ref(),
-                rect,
-                *dest,
-                &mut src_bgs,
-            );
+            let parcel =
+                self.render_gated_parcel(&mut rec.encoder, &mut from, &paint, unit_idxs, *dest);
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
             );
             self.combine(
-                &mut encoder,
-                base,
-                selection,
+                &mut rec.encoder,
+                &from,
                 *dest,
                 parcel.as_ref(),
                 &dst,
                 Some(rect),
             );
-            if let Some((c, a)) = parcel {
-                scratch.push(c);
-                scratch.push(a);
-            }
+            rec.keep(parcel);
             tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1));
         }
         for coord in &plan.drops {
@@ -584,16 +626,12 @@ impl TransformRenderer {
             }
             for (dest, unit_idxs) in &mask_plan.rewrites {
                 let dst = pool.acquire_mask(AllocSource::TransformMask);
-                self.render_gated_mask(
-                    &mut encoder,
-                    selection,
-                    &mask_plan.units,
-                    unit_idxs,
-                    inv.as_ref(),
+                let mask = Gated {
+                    units: &mask_plan.units,
+                    inv: inv.as_ref(),
                     rect,
-                    *dest,
-                    &dst,
-                );
+                };
+                self.render_gated_mask(&mut rec.encoder, selection, &mask, unit_idxs, *dest, &dst);
                 mask_tiles = mask_tiles.insert(*dest, dst);
             }
             // The hull rides along: what stayed plus wherever the map can have
@@ -604,45 +642,43 @@ impl TransformRenderer {
             Selection::from_parts(mask_tiles, selection.outside() > 0.5, hull)
         };
 
-        self.ctx.queue.submit([encoder.finish()]);
-        drop(scratch); // now safe to recycle
+        rec.submit(&self.ctx.queue);
         Some((tiles, moved_selection))
     }
 
     /// Rasterize the pieces reaching `dest` into a fresh scratch pair —
     /// [`render_parcel`](Self::render_parcel)'s shape, with quads generalized
     /// to [`SourceUnit`]s and the deposit gated by the source rect.
-    #[allow(clippy::too_many_arguments)]
     fn render_gated_parcel(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        pool: &TilePool,
-        base: &TileMap,
-        selection: &Selection,
-        units: &[SourceUnit],
+        from: &mut Source<'_>,
+        g: &Gated<'_>,
         unit_idxs: &[usize],
-        inv: Option<&Homography>,
-        rect: (Vec2, Vec2),
         dest: TileCoord,
-        src_bgs: &mut BTreeMap<TileCoord, wgpu::BindGroup>,
     ) -> Option<(TexHandle, TexHandle)> {
         if unit_idxs.is_empty() {
             return None;
         }
         let device = &self.ctx.device;
-        let color = pool.acquire_tex(self.color_format, AllocSource::TransformScratch);
-        let aux = pool.acquire_tex(self.aux_format, AllocSource::TransformScratch);
+        let color = from
+            .pool
+            .acquire_tex(self.color_format, AllocSource::TransformScratch);
+        let aux = from
+            .pool
+            .acquire_tex(self.aux_format, AllocSource::TransformScratch);
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for idx in unit_idxs {
-            let unit = &units[*idx];
-            let Some(tile) = base.get(&unit.src) else {
+            let unit = &g.units[*idx];
+            let Some(tile) = from.base.get(&unit.src) else {
                 continue;
             };
-            let src_bg = src_bgs
+            let src_bg = from
+                .src_bgs
                 .entry(unit.src)
                 .or_insert_with(|| {
-                    let mask = self.selection.mask_for(selection, unit.src);
+                    let mask = self.selection.mask_for(from.selection, unit.src);
                     device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("stark transform src bg"),
                         layout: &self.src_bgl,
@@ -654,7 +690,7 @@ impl TransformRenderer {
                     })
                 })
                 .clone();
-            draws.push((self.gated_bg(unit, inv, rect, dest), src_bg));
+            draws.push((self.gated_bg(unit, g.inv, g.rect, dest), src_bg));
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -681,15 +717,12 @@ impl TransformRenderer {
     /// One destination mask tile under a rect-scoped map: the residue
     /// `old · (1 − box)` laid down fullscreen, then the moved coverage pieces
     /// drawn over with max blending — the soft union (§16.8).
-    #[allow(clippy::too_many_arguments)]
     fn render_gated_mask(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         selection: &Selection,
-        units: &[SourceUnit],
+        g: &Gated<'_>,
         unit_idxs: &[usize],
-        inv: Option<&Homography>,
-        rect: (Vec2, Vec2),
         dest: TileCoord,
         dst: &crate::gpu::tile::MaskHandle,
     ) {
@@ -704,12 +737,12 @@ impl TransformRenderer {
         // The residue reads the destination's *old* coverage — a real tile or
         // the outside constant, through the same clamped-read pattern.
         let old = self.selection.mask_for(selection, dest);
-        let base_draw = (self.gated_base_bg(rect, dest), mask_bg(&old));
+        let base_draw = (self.gated_base_bg(g.rect, dest), mask_bg(&old));
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for idx in unit_idxs {
-            let unit = &units[*idx];
+            let unit = &g.units[*idx];
             let src = self.selection.mask_for(selection, unit.src);
-            draws.push((self.gated_bg(unit, inv, rect, dest), mask_bg(&src)));
+            draws.push((self.gated_bg(unit, g.inv, g.rect, dest), mask_bg(&src)));
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -771,32 +804,35 @@ impl TransformRenderer {
     /// Rasterize the transformed source quads reaching `dest` into a fresh
     /// scratch pair: `(premult color as-is, height·mask)` — the moved parcel.
     /// `None` when nothing reaches this tile (a cut with no incoming paint).
-    #[allow(clippy::too_many_arguments)]
     fn render_parcel(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        pool: &TilePool,
-        base: &TileMap,
-        selection: &Selection,
+        from: &mut Source<'_>,
         affine: Affine2,
         dest: TileCoord,
         sources: &[TileCoord],
-        src_bgs: &mut BTreeMap<TileCoord, wgpu::BindGroup>,
     ) -> Option<(TexHandle, TexHandle)> {
         if sources.is_empty() {
             return None;
         }
         let device = &self.ctx.device;
-        let color = pool.acquire_tex(self.color_format, AllocSource::TransformScratch);
-        let aux = pool.acquire_tex(self.aux_format, AllocSource::TransformScratch);
+        let color = from
+            .pool
+            .acquire_tex(self.color_format, AllocSource::TransformScratch);
+        let aux = from
+            .pool
+            .acquire_tex(self.aux_format, AllocSource::TransformScratch);
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for src in sources {
-            let Some(tile) = base.get(src) else { continue };
-            let src_bg = src_bgs
+            let Some(tile) = from.base.get(src) else {
+                continue;
+            };
+            let src_bg = from
+                .src_bgs
                 .entry(*src)
                 .or_insert_with(|| {
-                    let mask = self.selection.mask_for(selection, *src);
+                    let mask = self.selection.mask_for(from.selection, *src);
                     device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("stark transform src bg"),
                         layout: &self.src_bgl,
@@ -836,12 +872,10 @@ impl TransformRenderer {
     /// fresh CoW `(color, aux)` pair `dst`. `gate` scopes the cut to a source
     /// rect (§16.8); `None` is the affine's whole-plane cut, arithmetically
     /// untouched.
-    #[allow(clippy::too_many_arguments)]
     fn combine(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        base: &TileMap,
-        selection: &Selection,
+        from: &Source<'_>,
         dest: TileCoord,
         parcel: Option<&(TexHandle, TexHandle)>,
         dst: &(TexHandle, TexHandle),
@@ -853,11 +887,11 @@ impl TransformRenderer {
             contents: bytemuck::bytes_of(&CombineUniform::new(dest, gate)),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let (base_color, base_aux) = match base.get(&dest) {
+        let (base_color, base_aux) = match from.base.get(&dest) {
             Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
             None => (self.zero_color.clone(), self.zero_aux.clone()),
         };
-        let base_mask = self.selection.mask_for(selection, dest);
+        let base_mask = self.selection.mask_for(from.selection, dest);
         let (parcel_color, parcel_aux) = match parcel {
             Some((c, a)) => (c.view().clone(), a.view().clone()),
             None => (self.zero_color.clone(), self.zero_aux.clone()),

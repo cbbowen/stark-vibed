@@ -519,9 +519,14 @@ impl TilePool {
         }))
     }
 
-    /// Number of recycled color-format textures available (for tests).
-    pub fn free_count(&self) -> usize {
-        let format = wgpu::TextureFormat::Rgba16Float;
+    /// How many recycled textures of `format` are idle — what the pool would serve
+    /// the next acquires from without touching the device.
+    ///
+    /// Takes the format rather than assuming one. It used to answer for
+    /// `Rgba16Float` alone, on a pool whose whole design is that free lists are
+    /// *per format* — so a test asking about the aux or the mask list was quietly
+    /// told about the colour one instead.
+    pub fn free_count(&self, format: wgpu::TextureFormat) -> usize {
         self.format_pools
             .get(&format)
             .expect("unsupported format")

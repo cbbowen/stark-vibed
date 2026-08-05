@@ -80,6 +80,10 @@ impl<R: Resource> Registry<R> {
     /// This is what a replay asks: the surface a stroke deposits against is the one
     /// the document was on *at that point in the log* (§6.4), which is a question
     /// about the action being applied, not about what the compositor is showing.
+    /// Also how [`register`](Self::register) and [`set`](Self::set) rebuild the
+    /// object they have just invalidated: they call this and drop the reference. It
+    /// used to be a second method, `ensure`, which was this one without the return —
+    /// the same four lines, kept in step by nothing.
     pub fn get(&mut self, gpu: &GpuContext, id: R) -> &R::Gpu {
         if !self.built.contains_key(&id) {
             let obj = self.make(gpu, id);
@@ -113,7 +117,7 @@ impl<R: Resource> Registry<R> {
         if id != self.id {
             return false;
         }
-        self.ensure(gpu, id);
+        self.get(gpu, id);
         true
     }
 
@@ -124,15 +128,8 @@ impl<R: Resource> Registry<R> {
             return false;
         }
         self.id = id;
-        self.ensure(gpu, id);
+        self.get(gpu, id);
         true
-    }
-
-    fn ensure(&mut self, gpu: &GpuContext, id: R) {
-        if !self.built.contains_key(&id) {
-            let obj = self.make(gpu, id);
-            self.built.insert(id, obj);
-        }
     }
 
     fn make(&self, gpu: &GpuContext, id: R) -> R::Gpu {

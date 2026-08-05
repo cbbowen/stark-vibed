@@ -66,6 +66,20 @@ pub use media::MediaParams;
 pub use overlay::SelectionOutline;
 pub(crate) use view::ViewUniform;
 
+/// What stays the same for the whole of pass A, as against what the walk varies.
+///
+/// The recursion down the group tree changes the target, the members and the level;
+/// these three do not, so they travel as one parameter rather than three repeated at
+/// every hop — the shape `CompositeScene` and `stroke::StrokeScene` already use.
+struct Encode<'a> {
+    p: &'a CompositorPipeline,
+    /// One per tile in the frame, in the flat order `prepare_composite` built them.
+    tile_bgs: &'a [wgpu::BindGroup],
+    /// One per level of group nesting the document reaches; empty when nothing needs
+    /// isolating, which is the common document.
+    levels: &'a [ScratchLevel],
+}
+
 /// How far through the frame's flat streams the encoder has drawn.
 ///
 /// The instance buffers and the blend uniform's slots are flat across the whole
@@ -538,17 +552,12 @@ impl Compositor {
         tile_bgs: &[wgpu::BindGroup],
         scratch: Option<&ScratchTargets>,
     ) {
-        let levels: &[ScratchLevel] = scratch.map_or(&[], |s| &s.levels);
-        self.encode_stack(
+        let e = Encode {
             p,
-            encoder,
-            target,
-            groups,
             tile_bgs,
-            &mut Cursors::default(),
-            levels,
-            0,
-        );
+            levels: scratch.map_or(&[], |s| &s.levels),
+        };
+        self.encode_stack(&e, encoder, target, groups, &mut Cursors::default(), 0);
     }
 
     /// Composite one stack's members into `target`, bottom-to-top — the recursion
@@ -559,23 +568,20 @@ impl Compositor {
     /// members composite alone into; a member that is itself a group recurses into
     /// that `iso` at `level + 1`, which is why nesting costs a pair-set per level
     /// rather than per group.
-    #[allow(clippy::too_many_arguments)]
     fn encode_stack(
         &self,
-        p: &CompositorPipeline,
+        e: &Encode<'_>,
         encoder: &mut wgpu::CommandEncoder,
         target: Targets<'_>,
         members: &[CompositeGroup],
-        tile_bgs: &[wgpu::BindGroup],
         cursors: &mut Cursors,
-        levels: &[ScratchLevel],
         level: usize,
     ) {
         let merges = members
             .iter()
             .filter(|m| m.as_direct_run().is_none())
             .count();
-        let here = levels.get(level);
+        let here = e.levels.get(level);
         let swap = here.map_or(target, ScratchLevel::swap);
         let (mut cur, mut alt) = if merges % 2 == 1 {
             (swap, target)
@@ -593,7 +599,7 @@ impl Compositor {
             // and the extraction together, so there is no second match to disagree
             // with the first about what "direct" implies (§14.7).
             if let Some(items) = member.as_direct_run() {
-                self.encode_items(p, encoder, cur, items, tile_bgs, cursors, !written);
+                self.encode_items(e, encoder, cur, items, cursors, !written);
                 written = true;
                 continue;
             }
@@ -607,13 +613,13 @@ impl Compositor {
             let iso = scratch.iso();
             match &member.content {
                 GroupContent::Run(items) => {
-                    self.encode_items(p, encoder, iso, items, tile_bgs, cursors, true)
+                    self.encode_items(e, encoder, iso, items, cursors, true)
                 }
                 GroupContent::Stack(inner) => {
-                    self.encode_stack(p, encoder, iso, inner, tile_bgs, cursors, levels, level + 1)
+                    self.encode_stack(e, encoder, iso, inner, cursors, level + 1)
                 }
             }
-            self.encode_blend(p, encoder, cur, iso, alt, cursors.blend);
+            self.encode_blend(e, encoder, cur, iso, alt, cursors.blend);
             cursors.blend += 1;
             // `alt` now holds the merged stack and becomes the accumulator; what was
             // `cur` is stale, and the next blend pass overwrites all of it.
@@ -631,14 +637,12 @@ impl Compositor {
     ///
     /// The cursors are `&mut` because the streams are flat across the whole tree:
     /// a run draws the next stretch of them and hands the cursor on.
-    #[allow(clippy::too_many_arguments)]
     fn encode_items(
         &self,
-        p: &CompositorPipeline,
+        e: &Encode<'_>,
         encoder: &mut wgpu::CommandEncoder,
         into: Targets<'_>,
         items: &[CompositeItem],
-        tile_bgs: &[wgpu::BindGroup],
         cursors: &mut Cursors,
         clear: bool,
     ) {
@@ -659,23 +663,23 @@ impl Compositor {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_bind_group(0, &p.tiles.view_bg, &[]);
+        pass.set_bind_group(0, &e.p.tiles.view_bg, &[]);
         let mut pipeline_is_matte = None;
         for item in items {
             match item {
                 CompositeItem::Tile { .. } => {
                     if pipeline_is_matte != Some(false) {
-                        pass.set_pipeline(&p.tiles.pipeline);
+                        pass.set_pipeline(&e.p.tiles.pipeline);
                         pass.set_vertex_buffer(0, self.instances.slice(..));
                         pipeline_is_matte = Some(false);
                     }
-                    pass.set_bind_group(1, &tile_bgs[*tile_i as usize], &[]);
+                    pass.set_bind_group(1, &e.tile_bgs[*tile_i as usize], &[]);
                     pass.draw(0..4, *tile_i..*tile_i + 1);
                     *tile_i += 1;
                 }
                 CompositeItem::Matte(_) => {
                     if pipeline_is_matte != Some(true) {
-                        pass.set_pipeline(&p.tiles.matte_pipeline);
+                        pass.set_pipeline(&e.p.tiles.matte_pipeline);
                         pass.set_vertex_buffer(0, self.matte_instances.slice(..));
                         pipeline_is_matte = Some(true);
                     }
@@ -690,33 +694,37 @@ impl Compositor {
     /// `slot`, writing the result to `out` (§18.0.4).
     fn encode_blend(
         &self,
-        p: &CompositorPipeline,
+        e: &Encode<'_>,
         encoder: &mut wgpu::CommandEncoder,
         back: Targets<'_>,
         src: Targets<'_>,
         out: Targets<'_>,
         slot: u32,
     ) {
-        let bg = p.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark blend bg"),
-            layout: &p.blend.bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.blend_buf,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
-                    }),
-                },
-                desc::tex(1, back.0),
-                desc::tex(2, back.1),
-                desc::tex(3, src.0),
-                desc::tex(4, src.1),
-                desc::tex(5, &p.blend.pigment.view),
-                desc::samp(6, &p.blend.pigment.sampler),
-            ],
-        });
+        let bg = e
+            .p
+            .ctx
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark blend bg"),
+                layout: &e.p.blend.bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.blend_buf,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
+                        }),
+                    },
+                    desc::tex(1, back.0),
+                    desc::tex(2, back.1),
+                    desc::tex(3, src.0),
+                    desc::tex(4, src.1),
+                    desc::tex(5, &e.p.blend.pigment.view),
+                    desc::samp(6, &e.p.blend.pigment.sampler),
+                ],
+            });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark blend pass"),
             // The pass covers every texel and reads nothing from `out`, so the load
@@ -731,7 +739,7 @@ impl Compositor {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&p.blend.pipeline);
+        pass.set_pipeline(&e.p.blend.pipeline);
         pass.set_bind_group(0, &bg, &[slot * BLEND_SLOT as u32]);
         pass.draw(0..3, 0..1);
     }

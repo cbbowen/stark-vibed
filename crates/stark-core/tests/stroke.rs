@@ -301,7 +301,7 @@ fn undercoat(engine: &mut Engine) {
 /// integral per segment that composes by summing optical depth, so where the path is
 /// cut genuinely cannot matter. The loop is *sequential*: each segment reads the
 /// canvas the previous one left and the tool the previous one loaded, so cutting it is
-/// only sound because [`ToolState`](stark_core::gpu::stroke::ToolState) carries the
+/// only sound because [`ToolState`](stark_core::gpu::ToolState) carries the
 /// reservoir — and the travel since the last pickup — across the cut. Get either wrong
 /// and the tail draws with a tool that has forgotten where it has been: a visible step
 /// in colour at the freeze boundary, trailing back across the stroke.
