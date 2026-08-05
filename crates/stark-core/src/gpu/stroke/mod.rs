@@ -446,9 +446,9 @@ impl StrokeRenderer {
         let cov = round_coverage(hardness, ROUND_RES);
         // The round tip is rotation-invariant, so a single orientation layer suffices —
         // the shader's wrapping lookup reads it for every orientation (§6.6).
-        let (_tex, prefix) = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
+        let prefix = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
         let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
-        let (_tex, coverage) = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
+        let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
         let tip = RoundTip { prefix, coverage };
         *cache = Some((key, tip.clone()));
         tip

@@ -37,19 +37,23 @@ impl std::fmt::Debug for AssetId {
     }
 }
 
+/// A loaded brush shape: its source bytes and the two textures the stroke path reads
+/// it through.
+///
+/// The **views** alone, with no texture beside them. A `wgpu::TextureView` holds its
+/// own reference to the texture it was made from, so the texture outlives the view by
+/// construction; the two fields that used to sit here to "keep it alive" were kept
+/// alive by nothing but an `#[allow(dead_code)]`. The round tip already proves it —
+/// `StrokeRenderer` drops both textures on the floor at the same call and renders.
 struct Mask {
     /// Source bytes, retained so the asset can be bundled into the save file.
     bytes: Vec<u8>,
     view: wgpu::TextureView,
-    #[allow(dead_code)]
-    texture: wgpu::Texture,
     /// The plain (unrotated) coverage mask, for per-stamp footprint sampling in the
     /// brush-dynamics stamp loop (§6.2) — orientation is applied by rotating
     /// the sample coordinates, so a single layer suffices (unlike the prefix-τ, whose
     /// integration axis is baked in).
     coverage_view: wgpu::TextureView,
-    #[allow(dead_code)]
-    coverage_texture: wgpu::Texture,
 }
 
 #[derive(Default)]
@@ -106,14 +110,12 @@ impl AssetStore {
             // being the identity (the native, follow-stroke orientation).
             let layers = orientation_layers(w, h);
             let rotated = rotate_layers(&cov, w, h, layers);
-            let (texture, view) = build_prefix_tau(&self.ctx, w, h, layers, &rotated);
-            let (coverage_texture, coverage_view) = build_coverage_r8(&self.ctx, w, h, &coverage);
+            let view = build_prefix_tau(&self.ctx, w, h, layers, &rotated);
+            let coverage_view = build_coverage_r8(&self.ctx, w, h, &coverage);
             slot.insert(Mask {
                 bytes,
                 view,
-                texture,
                 coverage_view,
-                coverage_texture,
             });
         }
         Ok(id)
@@ -257,13 +259,16 @@ fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<
 /// Shared by [`AssetStore`] (image brushes, at import — many layers) and the stroke
 /// renderer (the round tip, regenerated per `hardness` — rotation-invariant, 1 layer).
 /// `coverage` is `layers × height × width` row-major in `[0, 1]`.
+///
+/// Returns the view alone: it holds its own reference to the texture, so there is
+/// nothing for a caller to keep beside it.
 pub fn build_prefix_tau(
     ctx: &GpuContext,
     width: u32,
     height: u32,
     layers: u32,
     coverage: &[f32],
-) -> (wgpu::Texture, wgpu::TextureView) {
+) -> wgpu::TextureView {
     let w = width as usize;
     let dx = 2.0 / width as f32; // brush-local width of one column
     let mut prefix = vec![0.0f32; coverage.len()];
@@ -305,23 +310,24 @@ pub fn build_prefix_tau(
     );
     // Always a 2D-array view (even for the single-layer round tip) so the shader binds one
     // texture type for every brush.
-    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+    texture.create_view(&wgpu::TextureViewDescriptor {
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
-    });
-    (texture, view)
+    })
 }
 
 /// Upload a coverage mask as a filterable `R8Unorm` texture — the per-stamp
 /// footprint the brush-dynamics loop samples (rotating the sample coordinates
 /// for orientation, so no pre-rotated layers are needed). Shared by the asset
 /// store (image brushes) and the stroke renderer (the round tip, per hardness).
+///
+/// Returns the view alone, like [`build_prefix_tau`].
 pub fn build_coverage_r8(
     ctx: &GpuContext,
     width: u32,
     height: u32,
     coverage: &[u8],
-) -> (wgpu::Texture, wgpu::TextureView) {
+) -> wgpu::TextureView {
     let extent = wgpu::Extent3d {
         width,
         height,
@@ -347,8 +353,7 @@ pub fn build_coverage_r8(
         },
         extent,
     );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// Content id of a coverage mask: the hash of its dimensions + pixels. Derived

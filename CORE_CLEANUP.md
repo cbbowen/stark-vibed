@@ -94,6 +94,8 @@ asserting nothing.
 
 ## §6 — Inert scaffolding, smaller
 
+**Status: done.**
+
 - `Engine::process_gesture`'s `Start` arm clears and pushes into `debug_samples`
   unconditionally, while `To` gates on `cfg!(feature = "debug-unfrozen")` and
   `log_debug_samples` early-returns without it. A shipping build allocates a
@@ -107,6 +109,8 @@ asserting nothing.
   which computes nothing.
 
 ## §7 — Dead public API
+
+**Status: done.**
 
 Zero callers anywhere in the workspace, tests included:
 

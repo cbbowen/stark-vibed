@@ -276,20 +276,6 @@ impl Peer {
         }
     }
 
-    /// The marquee or lasso this peer is dragging, if any.
-    pub fn live_selection(&self) -> Option<&SelectionOp> {
-        match self.rx.drawn() {
-            Some(LiveGesture::Selection(op)) => Some(op),
-            _ => None,
-        }
-    }
-
-    /// The per-actor ordinal of the gesture in flight — what tells a cached render
-    /// of this peer's stroke apart from a render of the one before it.
-    pub fn gesture_id(&self) -> Option<u64> {
-        self.rx.id()
-    }
-
     /// How many spans of [`live_stroke`](Self::live_stroke) are settled, so the
     /// preview can repaint only the tail (§6.2, §17.6).
     pub fn live_frozen_spans(&self) -> usize {
@@ -520,10 +506,6 @@ impl Peers {
         self.map.get(&actor)
     }
 
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -731,7 +713,10 @@ mod tests {
             ),
             0.0,
         );
-        assert!(peers.get(a).expect("peer").live_selection().is_some());
+        assert!(matches!(
+            peers.get(a).expect("peer").gesture(),
+            Some(LiveGesture::Selection(_))
+        ));
 
         // The frame clearing the marquee and the new stroke's head frame are both
         // lost; a headless delta for the *next* gesture is the first thing to arrive.

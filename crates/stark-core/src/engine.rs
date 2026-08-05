@@ -638,7 +638,6 @@ impl Engine {
         let surface = Registry::<SurfaceId>::new(&gpu, SurfaceId::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
-        let _environment_id = EnvironmentId::default();
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
         let gpu_for_ctx = gpu.clone();
@@ -731,8 +730,13 @@ impl Engine {
                 } else {
                     let seed = self.clock;
                     self.session.start_stroke(tool, sample, seed, tolerance);
-                    self.debug_samples.clear();
-                    self.debug_samples.push(sample);
+                    // Gated like the `To` arm below, which it was not: the capture is
+                    // a diagnostic, so a shipping build must not keep a sample it has
+                    // no path to ever print.
+                    if cfg!(feature = "debug-unfrozen") {
+                        self.debug_samples.clear();
+                        self.debug_samples.push(sample);
+                    }
                 }
                 self.refresh_live();
             }

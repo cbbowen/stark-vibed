@@ -530,11 +530,6 @@ impl Session {
         result
     }
 
-    /// Discard the in-flight shape gesture without committing.
-    pub fn cancel_selection(&mut self) {
-        self.selecting = None;
-    }
-
     /// Begin a stroke. `seed` is supplied by the engine so it can be derived
     /// deterministically (§6.2). `tolerance` is what the frontend says its
     /// input resolves to, in canvas px ([`PathFitter::with_tolerance`]). Replaces any
