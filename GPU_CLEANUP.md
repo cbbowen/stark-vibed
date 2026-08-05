@@ -1,0 +1,231 @@
+# GPU module cleanup
+
+A review of `crates/stark-core/src/gpu` (18 files, ~12.6k lines), recorded as a
+working plan. Like `DOCUMENT_CLEANUP.md` before it, this file is a checklist with
+a lifetime: it is deleted when the passes below are done, because the reasoning
+for each change belongs in the commit that made it and in the doc comments around
+the code it explains.
+
+The module's arguments are sound where they are written down. Nearly every
+problem here is in the **seams** — something the module reasons about correctly in
+one place and then re-implements informally in five others. Several findings are
+the module's own stated conventions applied to code that predates them.
+
+Three passes, separable and in order of value per unit risk:
+
+- **(a) Latent breaks** — small, high value, no pixels move. §1.
+- **(b) Helper extraction** — large, purely mechanical, goldens bit-identical. §3.
+- **(c) `composite.rs` split** — structural, no behaviour change. §2.
+
+Run `cargo test --workspace` once after each pass, not after each edit.
+
+---
+
+## 1. Latent breaks — pass (a)
+
+### 1.1 The tile pool's format contract is one coincidence from panicking
+
+`stroke/mod.rs::acquire_scratch` acquires `SCRATCH_AUX_FORMAT`, but the pool is
+built with `[cs.color_format(), cs.aux_format(), MASK_FORMAT]` (`engine.rs`).
+`acquire_tex` panics `"unsupported format"` on anything else. It works today only
+because `SCRATCH_AUX_FORMAT == Rgba16Float == Oklab's `color_format()`.
+
+This is exactly the failure `acquire_tile`'s own doc comment describes as fixed:
+
+> the pool previously hardcoded `R16Float` for aux, which happened to match every
+> colour space but would have panicked on the first one that chose otherwise (§6.7)
+
+Same bug, one level up. `build_dynamics_kit` has a `debug_assert_eq!` about it,
+which is off in release — where the panic lands.
+
+**Fix.** The pool defines `MASK_FORMAT` and `SCRATCH_AUX_FORMAT` itself, so the
+pool guarantees them: `TilePool::new` unions its own constants into whatever the
+caller passes. No call site can then forget a format the pool already owns, and
+the caller's list shrinks to the one thing it actually knows — the colour space's
+two.
+
+### 1.2 Three uniform mirrors have stale byte counts
+
+In a module where those comments *are* the cross-boundary safety mechanism:
+
+| Struct | Comment says | Actually | Drifted when |
+|---|---|---|---|
+| `composite::ViewUniform` | 32 bytes | 48 | — |
+| `composite::MediaUniform` | 80 bytes | 96 | `surf_m` (§18.1.2 view rotation) |
+| `composite::GuideUniform` | 240 bytes | 304 | the fisheye's second pole set (§20.8) |
+
+A number in a comment that nothing checks is worse than no number: it reads as
+verified. The right answer already exists in this module — `dynamics::SLOT` is
+`size_of::<Stamp>()` with `const _: () = assert!(SLOT == 144);`.
+
+**Fix.** Every `Mirrors X (N bytes)` comment gets a `const _: () =
+assert!(size_of::<T>() == N)` beside it. The comment keeps naming the WESL struct;
+the compiler keeps the number honest.
+
+### 1.3 Two Rust structs mirror one WGSL `View`, with nothing tying them
+
+`composite.rs` and `stroke/dynamics.rs` both declare `ViewUniform` for
+`composite.wesl`'s `View` — and the second's doc says it "Mirrors `View` …
+**exactly**, including the members this path has no use for". They are identical
+(48 bytes) today, and the only thing keeping them so is that sentence.
+
+**Fix.** One definition, beside the shader it mirrors, with a constructor that
+fills the three members neither site should be choosing for itself
+(`TILE_SIZE`, `INTERIOR_UV_SCALE`, `INTERIOR_UV_BIAS`).
+
+### 1.4 Panic in `Drop`, and a silent leak beside it
+
+`tile.rs`'s `Drop for GpuTex` ends `.expect("source not recorded")`. Practically
+unreachable — every acquire records its source — but a panic in `Drop` during an
+unwind is an abort, which is a steep price for an unreachable branch. In the same
+block, a poisoned pool lock makes the `if let Ok(..)` swallow the texture: it is
+never returned to the free list and `capacity` never learns, so the pool quietly
+grows a replacement.
+
+**Fix.** Recover from the poison rather than leaking (the pool's state is a free
+list and a counter; a panic elsewhere cannot leave either meaning something a
+return would violate), and saturate the decrement rather than asserting it.
+
+---
+
+## 2. Architecture — pass (c) and beyond
+
+### 2.1 `composite.rs` is seven unrelated passes in one 2515-line file
+
+`CompositorPipeline::new` is ~540 lines of straight-line construction covering
+composite, matte, blend, overlay, media, resolve and guides. Each is a
+self-contained unit: shader → BGL → layout → pipeline → buffers. `GuideUniform::pack`
+in particular is pure §20 perspective-grid math with nothing to do with
+compositing tiles.
+
+Suggest `composite/{mod,view,blend,media,overlay,guides,resolve}.rs`, each pass
+owning its own `new()`. The `Compositor`/`CompositorPipeline` split (does it
+depend on the target?) is a good line — it just isn't the only line the file needs.
+
+### 2.2 The pool never returns memory, and the largest allocations bypass it
+
+`PoolInner::free` only grows; `capacity` is monotonically increasing (the field
+doc says "available to this pool", the log says "increased capacity" — they mean
+different things). A session's peak tile count is permanent GPU residency.
+
+Meanwhile the biggest transients — dynamics regions up to `MAX_REGION_DIM`² × 8 B
+× 2 = 67 MB — are created and `destroy()`d per piece and never pooled. Two
+opposite policies in one subsystem, neither stated as a decision. Either a
+high-water decay on the free lists, or an explicit note on why unbounded
+retention is right for tiles specifically.
+
+### 2.3 A `TextureView` is created on every acquire, including recycled ones
+
+`acquire_tex` pops a texture off the free list and then calls `create_view`. That
+is a fresh wgpu object per tile acquire of every stroke render — on web, a JS
+object per acquire, which is precisely the allocation-rate problem
+`ScopedResources` and `UNIFORM_STRIDE` were built to fight. Storing
+`(Texture, TextureView)` pairs in the free list removes it.
+
+### 2.4 `AllocSource` is diagnostic-only plumbing threaded through every signature
+
+An 11-variant enum on every `acquire_tex`/`acquire_mask`, a `HashMap` mutation
+under the pool lock on the hot path, and a decrement in `Drop` — all to populate
+one `tracing::debug!`. If it is worth keeping, put it behind a cfg; if it earns
+its place, say so on the enum.
+
+### 2.5 `surface.rs` and `environment.rs` are three concerns each
+
+`surface.rs` (778 lines) holds the `SurfaceId` document type + serde, PNG
+canonicalization + BLAKE3 hashing, a CPU mirror of `paint_common.wesl`'s tooth
+model (`tooth_gate` / `decode_rise` / `rise_ahead` / `tabulate_bearing` — which is
+what all four of its tests exercise), and the GPU upload. `environment.rs` embeds
+a complete Radiance RGBE decoder. Neither the decoder nor the tooth model touches
+the GPU. `surface/{mod,tooth,import}.rs` would let the shader-mirror half be read
+as the physics it is.
+
+Relatedly, `downsample_to_limit` is a generic image utility living in
+`gpu::surface` and imported by `assets.rs` for *brush shapes*.
+
+### 2.6 `is_direct() ⇒ Run` is enforced by two runtime `unreachable!`s
+
+In `CompositeGroup::stack` and in `encode_stack`. Per the crate's own convention —
+*rule out a class rather than enumerate its instances* — this wants to be
+`fn as_direct_run(&self) -> Option<&[CompositeItem]>`, which makes both call sites
+total and deletes the invariant rather than checking it twice.
+
+### 2.7 Bind-group churn is the remaining allocation-rate source
+
+The module went to real lengths to avoid per-tile *buffers* (dynamic offsets,
+`UNIFORM_STRIDE`, `ScopedResources`), but per-tile *bind groups* are still built
+every frame: one per visible tile in `prepare_composite`, one per tile per pointer
+move in `render_swept`, one per halo tile per piece in `composite_region`. At 4K
+with 128 px tiles that is ~500 bind groups a frame. Either cache them keyed on the
+tile handle — which already has allocation identity via `TilePairHandle::same` —
+or record why they are exempt from the argument the buffers were not.
+
+---
+
+## 3. Mechanical duplication — pass (b)
+
+All the same shape: a helper that exists once, correctly, and is then re-typed
+everywhere else. Roughly 800–1000 lines recoverable, none of it behavioural.
+
+| Pattern | Copies | Where |
+|---|---|---|
+| BGL texture entry closure (`load_tex` / `sample_tex` / `ctex` / `filter_tex` / `tex_entry`) | 10 | composite ×2, fill, selection, transform ×2, dynamics ×4 |
+| `clear_attachment` / `const CLEAR` | 5 | composite ×2, fill, transform, dynamics |
+| 1×1 constant texture builder | 5 | fill, transform (byte-identical), selection ×2, pigment |
+| Bind-group texture entry (`tex` vs `view_entry` — one function, two names) | 2 | dynamics, composite |
+| `UNIFORM_STRIDE` slot packing + `write_buffer` | 3 | swept, dynamics ×2 |
+| Grow-buffer-if-needed + write | 5 | `Compositor`: instances, mattes, blend, overlay, guides |
+
+Plus **17 `create_render_pipeline` calls**, each repeating `depth_stencil: None,
+multisample: Default::default(), multiview_mask: None, cache: None,
+compilation_options: Default::default()` — of which **10 are the identical
+fullscreen-triangle shape** (fill, selection rasterize, integrate, blend, media,
+resolve, guides, transform combine, transform mask_base, slice).
+`dynamics::cpipe` is already the right precedent for compute pipelines;
+generalizing it to render pipelines is ~250 lines on its own.
+
+Target: a `gpu/common.rs` holding `tex_entry`, `load_tex_entry`, `storage_entry`,
+`uniform_entry`, `clear_attachment`, `load_attachment`, `constant_texture`,
+`fullscreen_pipeline`, `SlotBuffer`, `GrowBuffer`.
+
+`FillRenderer` and `TransformRenderer` also each allocate their own
+`zero_color`/`zero_aux` for the same two formats, built at the same moment in
+`build_gpu`, and each carry `ctx` + `color_format` + `aux_format` + `selection`.
+A shared `Palette` cloned into each renderer removes the repetition and the
+duplicate textures together.
+
+---
+
+## 4. Smaller cleanups
+
+- **`Registry::ensure` is `get` minus the return value.** `register`/`set` can call
+  `self.get(gpu, id);`. Both also do `contains_key` then `[&id]` — two hash lookups.
+- **7 `#[allow(clippy::too_many_arguments)]`** (transform ×4, composite ×2,
+  segments ×1). `render_gated_parcel` takes 10. `dynamics::PlanCtx` is the pattern
+  this module already found; apply it in transform.
+- **`transform::apply_affine` and `apply_gated` are ~90 near-parallel lines each** —
+  plan, encoder, `src_bgs`, `scratch`, rewrite loop → parcel → acquire → combine →
+  insert, drops, mask, submit, `drop(scratch)`. Only the parcel/mask function and
+  the gate differ. And `drop(scratch); // now safe to recycle` is a
+  correctness-critical ordering rule enforced by a comment: recycling a
+  still-referenced scratch inside the same encoder would corrupt silently.
+  `ScopedResources` solved this class with a type; this should too.
+- **`readback::begin_read` takes `bytes_per_texel` from the caller** when
+  `texture.format().block_copy_size(None)` is right there. A mismatch produces
+  silently wrong rows.
+- **Two hand-rolled f16 codecs** in different files: `readback::f16_to_f32`
+  (general) and `environment::f32_to_f16` (lossy, radiance-only). Colocate them so
+  the asymmetry is visible, or use `half`.
+- **`TilePool::free_count` hardcodes `Rgba16Float`** on an otherwise
+  format-generic pool, and is `pub` while documented "for tests".
+- **`mod.rs` exposes everything twice** — modules are `pub` *and* flat-re-exported,
+  so `gpu::composite::Compositor` and `gpu::Compositor` both work, and `engine.rs`
+  uses both styles. `readback` is the one module not re-exported.
+- **`render_swept` acquires and clears an `empty` base tile unconditionally**, on
+  every pointer move, even when every affected tile already exists in `base`.
+- **`MediaUniform`'s field order and its write site disagree** (the struct declares
+  `surf_a, surf_b, surf_m`; `render` writes `surf_a, surf_m, surf_b`). Harmless in
+  Rust, actively confusing when checking against the WESL.
+- **`min_binding_size: None` on most uniform BGL entries.** `swept.rs` gets this
+  right with `XFORM_SLOT`; selection, fill, transform and composite's
+  view/media/resolve all pass `None`. It is free validation against a truncated
+  write.
