@@ -417,8 +417,15 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      bisects, so a span's segment length depends on the *whole path's* length, and the
      same visible stretch of stroke renders differently depending on where the pen went
      afterwards. `golden_drained_brush_length_independent` paints one visible stretch
-     with five different tails and pins that; the convergence table and the four cheaper
-     fixes that do **not** work are recorded on `RESERVOIR_EXCHANGE_STEP` itself.
+     with five different tails and pins that.
+
+     Why it went unnoticed at a step of 0.5 is worth keeping. Nearly every golden paints
+     with the shared `brush()` helper, whose `drain` used to impose its own `0.02/drain`
+     = 13.3 px cap on segment length — tighter than the step for any tip wider than
+     that, so the goldens rendered at 13.3 px segments *whatever the step said*, and
+     moving it moved nothing. Only once `drain` became a per-fragment falloff did the
+     step become the binding constraint and start deciding pixels. A golden that does
+     not move is evidence about the test, not about the change.
 
      **No reformulation of the pair kernel can help, and that is provable.** Write it as
      the transfer matrix `M(e) = [[keep, dep], [1−keep, 1−dep]]`, whose columns sum to 1
@@ -449,8 +456,8 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      lightening of a smeared field goes 50 → 51 against a bound of 60, and a 240-sample
      zig-zag smear's ink growth 0.97940 → 0.97938 against a bound of 1.0.
 
-     The gain — 2–4× at every step, converging to the same answer, the table is on
-     `RESERVOIR_EXCHANGE_STEP` — is banked as accuracy rather than spent as step size.
+     The gain — 2–4× at every step, converging to the same answer — is banked as
+     accuracy rather than spent as step size.
      Sliding at 0.25 would halve the segment count and still beat the old kernel at
      0.125 on absolute error, but its length-dependence is the row already weighed and
      rejected once, and that is the column a user sees.

@@ -47,192 +47,46 @@ pub(super) const MAX_REGION_DIM: u32 = 2048;
 /// not need.
 pub(super) const MAX_STAMPS: usize = 4096;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
-/// (§6.2) — which, since the tool now exchanges once per *segment*, is
-/// simply a cap on the flattened segment length for a dynamics brush
-/// (see [`flatten_tolerance`]).
+/// (§6.2) — which, since the tool exchanges once per *segment*, is simply a cap on the
+/// flattened segment length for a dynamics brush (see [`flatten_tolerance`]).
 ///
 /// **Quoted at one transfer rate.** This is the travel for `lift = deposit = 0.95`;
 /// [`exchange_travel`] scales it by how fast the brush being drawn actually trades,
-/// because that — not the travel — is what the error is first order in. A gentler
-/// brush is not being given a tolerance, it is being charged its own price.
+/// because that — not the travel — is what the error is first order in. A gentler brush
+/// is not being given a tolerance, it is being charged its own price.
 ///
-/// A property of the exchange loop, not of the tip: it sets how finely the reservoir
-/// tracks the evolving canvas, and nothing about a shape's coverage mask should change
-/// it. It was once a cadence of its own — the tool reloaded every `spacing·radius`
-/// while the canvas was stripped every segment — and the lag between the two is what
-/// left a stroke's last footprint short of paint (`dynamics.wesl`).
+/// A property of the exchange loop rather than of the tip, so nothing about a shape's
+/// coverage mask should change it. What it bounds is the pair of mean-field
+/// approximations either side of the transfer — `bake` gives the canvas a reservoir
+/// frozen at the segment's entry, `exchange` gives the tool a canvas frozen at the same
+/// instant — and halving it halves that error, cleanly, with no knee to sit on.
 ///
-/// **Nothing here is free.** Measured on `golden_drained_brush_length_independent` — a
-/// tip that runs dry and then *carries* paint 400px into view, so every visible pixel
-/// arrived through the reservoir and the transport error has nowhere to hide — against
-/// a reference at 0.03125, and on the green channel (the one red paint moves furthest).
-/// The `sliding` column is what ships; `pair` is the closed-pair kernel it replaced, and
-/// is kept because the argument below is about the difference between them:
-///
-/// ```text
-///           error vs reference          length-dependence
-///   step     pair          sliding      pair         sliding
-///   1.0      50 / 25.77    31 / 8.50    15 / 6.57    16 / 4.48
-///   0.5      24 / 10.69    12 / 2.57     8 / 3.22     7 / 1.58
-///   0.25     12 /  4.31     7 / 1.26     4 / 1.12     4 / 0.85
-///   0.125     7 /  2.38     6 / 1.21     2 / 0.53     2 / 0.57
-/// ```
-///
-/// (max / rms levels. The two kernels converge to the *same* answer — their references
-/// differ by 2 max / 0.49 rms, which is the 8-bit floor — so the sliding form is a
-/// refinement of the pair, not a different brush.)
-///
-/// The second column pair is what makes it a bug and
-/// not a tolerance: the flattener bisects, so a span's segment length depends on the
-/// *whole path's* length, and the same visible stretch of stroke therefore renders
-/// differently depending on where the pen went afterwards. The error prints as one
-/// tip-shaped arc per segment — the tool lifts at a point and lays back down swept, so
-/// the smear translates the canvas by exactly one segment length per segment, which is
-/// a delay line ringing at the segment cadence. 0.125 is where that falls into the
-/// 8-bit quantization noise.
-///
-/// It is worth knowing why 0.5 looked fine for a while. The goldens could not see it:
-/// nearly every one of them paints with the shared `brush()` helper, which sets
-/// `drain = 0.0015`, and `drain` used to impose its own `0.02 / drain` = 13.3px cap on
-/// segment length. For any tip wider than 13.3px that cap was the tighter of the two,
-/// so the goldens rendered at 13.3px segments *whatever this constant said* — a change
-/// here moved nothing, and looked free. Only once the drain cap was retired (it is
-/// evaluated per fragment now, see [`flatten_tolerance`]) did this become the binding
-/// constraint and start deciding pixels. A benchmark or a golden that does not move is
-/// evidence about the test, not about the change. For a radius-80 tip that old cap
-/// worked out to 0.166, so this value is very close to what actually shipped; the step
-/// was never really at 0.5.
-///
-/// **Four cheaper things were tried and none of them work**, which is worth recording
-/// because each looks obvious:
-///
-/// * *Averaging the canvas along the reservoir texel's track* instead of the single
-///   midpoint tap `dynamics.wesl::exchange` takes. Changes the result by less than the
-///   8-bit noise floor on both this test and the pointer-sample-density spread it was
-///   meant for. The midpoint tap is not the error.
-/// * *Sub-stepping the tool's own kernel* over `e/N`. It looks like refinement and is a
-///   different model: the tool lifts its share of a canvas held fixed, N times over,
-///   while the deposit gives up a single share of `e`, so the halves stop being
-///   complements. At a step four times finer than this one it lands 12 levels rms from
-///   where the single step converges.
-/// * *Baking the post-exchange reservoir* rather than the entering one. Tempting — it
-///   scores 5.0 rms at a step of 0.5, better than the honest scheme manages at 0.125 —
-///   and it is a leak: the canvas receives a share of a reservoir the tool never gave
-///   up. It converges to a *different* answer, 3.2 rms from the true one, and stalls
-///   there however fine the step. The good score at 0.5 is discretization error
-///   cancelling the bias.
-/// * *Matching `BAKE_RES` to the prefix-τ volume's 256.* No effect; the two grids
-///   meeting in `deposit`'s ratio are not the problem.
-///
-/// **There is no fix for this inside the closed-pair model, and that is a theorem
-/// rather than a failure to find one.** Write the pair kernel as the transfer matrix
-///
-/// ```text
-///   M(e) = [ keep(e)      dep(e)  ]
-///          [ 1−keep(e)  1−dep(e)  ]
-/// ```
-///
-/// whose columns sum to 1 — that column-stochasticity *is* the complementarity, and it
-/// is why the transfer conserves. Its eigenvalues are 1 and `exp(−s·e)` with
-/// `s = k_lift + k_deposit`, and the stationary split `k_deposit : k_lift` is
-/// independent of `e`, so
-///
-/// ```text
-///   M(e/K)^K = M(e)     exactly, for every K, every exposure, every rate pair.
-/// ```
-///
-/// The kernel already composes perfectly under subdivision. So no re-derivation of it,
-/// no sub-stepping of it, no K-fold refinement of it can change a single pixel while
-/// remaining a closed pair — a product of column-stochastic matrices is the matrix it
-/// started from. Subdividing only does something if the *partner* is held fixed across
-/// the sub-steps, and that is not a refinement: it is a one-parameter deformation away
-/// from the pair model, whose `K → ∞` limit is exactly the sliding kernel below
-/// (`keep` runs 0.503 → 0.076 for the smear brush as K goes 1 → ∞).
-///
-/// So the error is not in the kernel at all, *while the kernel is a closed pair*. It is
-/// in the two mean-field approximations either side of it — `bake` gives the canvas a
-/// reservoir frozen at the segment's entry, and `exchange` gives the tool a canvas
-/// frozen at the same instant — and those are bounded by the segment length and nothing
-/// else. Which is what this constant is.
-///
-/// **What the theorem really argues is for leaving the closed pair**, and that is what
-/// `dynamics.wesl::exchange_at` now does: a **sliding** kernel, `keep = exp(−k_lift·e)`
-/// and `dep = 1 − exp(−k_dep·e)`, on the grounds that a canvas point does not stay under
-/// one reservoir cell for a segment but slides through a stream of them, each pairing
-/// lasting an instant — so the pair's saturation at `k_lift/s` is modelling a coupling
-/// that is not there. Worth 2–4× at every step in the table above.
-///
-/// It was recorded here as blocked: the sliding form "gives up the column-stochasticity
-/// … so it needs a conserving formulation (bake the *flux*, not the load) before it can
-/// land". **That reading was too pessimistic, in two separate ways.** The shares still
-/// sum to one identically — `keep + (1−keep)` is a tautology whatever `keep` is, and the
-/// tool retains exactly the `1 − dep` the canvas does not receive — so the
-/// 39%-of-height failure in `dynamics.wesl`'s header, which came of the two sides
-/// solving *different equations*, cannot recur. And each direction balances in the
-/// aggregate on its own, with no flux bookkeeping at all: integrate the canvas's gain
-/// `∫k_dep·τ(x−p)·R₀(x−p)·exp(−k_dep·τ(x−p)·p)dp` over the canvas, substitute
-/// `u = x−p`, and what comes back is exactly `∫R₀(u)(1−exp(−k_dep·τ(u)·lr))du` — the
-/// tool's loss, to the last term. The lift direction telescopes the same way under
-/// `q = P(1)−P(u)`. The derivation sits on `exchange_at`.
-///
-/// What *is* left of the concern: the two sides evaluate their exponentials at different
-/// **quadratures** of the same exposure (the canvas differences the prefix-τ, the tool
-/// takes `τ(u)·lr`), and an exponential that saturates harder turns the same small
-/// quadrature disagreement into a larger height disagreement. Real, and it measured as
-/// nothing — on the two conservation tests in `tests/dynamics.rs`, the worst lightening
-/// of a smeared field goes 50 → 51 levels against a bound of 60, and a 240-sample
-/// zig-zag smear's ink growth goes 0.97940 → 0.97938 against a bound of 1.0.
-///
-/// **The gain is banked as accuracy rather than spent as step size**, deliberately.
-/// Sliding at 0.25 would halve the segment count and still beat the shipped pair kernel
-/// on absolute error (1.26 vs 2.38 rms) — but its length-dependence, 4 max / 0.85 rms,
-/// is the row that was already weighed and rejected once, when the pair kernel sat at
-/// 0.25. That is the column a user actually sees, so the answer has not changed.
-/// Spending it later is one constant, and the table above is the price list.
+/// Why the error is a visible bug rather than a tolerance, why no reformulation of the
+/// pair kernel avoids it, and why the gain from the sliding kernel was banked as
+/// accuracy instead of spent here: **§6.2**.
+/// `golden_drained_brush_length_independent` is what pins it.
 const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// How far the tip travels between `wick` passes, in radii (§6.2).
 ///
-/// **The wick keeps a cadence of its own, decoupled from the segment cadence**, and
-/// this is it. It used to run once per segment and absorb whatever travel that was by
-/// widening the flux's reach — which is well founded about variance and badly
-/// conditioned in practice, because a four-point stencil at an integer distance `d`
-/// couples only cells of the same parity in `d`. At the reach of exactly 2 that
-/// `MAX_EXCHANGE_TRAVEL` produces, the grid's two sublattices decouple entirely: the
-/// checkerboard mode has eigenvalue 1 and never decays, and the cell keeps none of its
-/// own value. Every brush relaxed to the travel cap ran there. See `dynamics.wesl::wick`
-/// for the measured eigenvalues across the range.
-///
-/// The value is not a tolerance, it is the travel one pass of the stencil can carry.
-/// The shader's 1-D binomial `C(2m, m+k)/4^m` has variance `m/2` against a target of
-/// `0.5 · WICK_RATE · lr`, so `lr = m / WICK_RATE`. **It must track `dynamics.wesl`'s
-/// `WICK_HALF / WICK_RATE`**, which is 2/4.
+/// **The wick keeps a cadence of its own, decoupled from the segment cadence** — why
+/// the reach it replaced was badly conditioned, and why the stencil is separable, are
+/// in §6.2. The value is not a tolerance: it is the travel one pass of that stencil
+/// carries, so **it must track `dynamics.wesl`'s `WICK_HALF / WICK_RATE`**, which is
+/// 2/4. (`the_host_and_the_shader_agree_on_the_loops_constants` asserts the pair.)
 ///
 /// Because variance adds under composition, a stroke gets the same total smoothing
 /// whatever the segmentation and whatever the quantum — widening the kernel and firing
 /// it less often is an exact trade, not an approximation, which is what makes this a
 /// free parameter to spend on cost.
 ///
-/// `m = 1` is the tensor `[¼, ½, ¼]²` this started at, at a quantum of 0.25 radii and 8
-/// taps per firing. `m = 2` doubles the quantum and, run *separably* as two 1-D passes,
-/// costs 8 taps — so per unit of travel the wick does **half the work** for the same
-/// dispatch count. (A non-separable 2-D kernel of the same variance would want
-/// `(2m+1)² − 1 = 24` taps. Separability is what makes widening pay at all.)
-///
 /// **It stops at 2 on purpose, and the reason is a cost the variance argument cannot
 /// see.** A firing lands at the start of whichever segment its boundary fell in, so its
 /// position jitters by up to one segment length, and a kernel carrying more variance per
 /// firing amplifies that jitter proportionally. Measured on
-/// `a_carried_stroke_is_independent_of_how_the_path_was_cut`, an `m` of 1/2/4/8 gives
-/// 2/3/4/5 levels of cut-dependence. `m = 4` would halve the dispatches as well — but 4
-/// levels is the row [`RESERVOIR_EXCHANGE_STEP`] was tightened *away* from, and buying
-/// it back to save a wick dispatch is the wrong trade.
-///
-/// **The separability is what the stroke-space march needs**, and is the reason this is
-/// shaped as two passes rather than one wider gather — as well as the reason to hold the
-/// width here. A march that owns a lateral row runs the along-travel pass inside its own
-/// workgroup with no barrier, so only the across-row pass is a dispatch and only *it*
-/// wants a wide kernel. Here both axes are dispatches and must share one cadence, so
-/// widening now would bank the jitter on both to save on one.
+/// `a_carried_stroke_is_independent_of_how_the_path_was_cut`, a stencil half-width of
+/// 1/2/4/8 gives 2/3/4/5 levels of cut-dependence — and 4 levels is what
+/// [`RESERVOIR_EXCHANGE_STEP`] was tightened *away* from, so buying it back to save a
+/// wick dispatch is the wrong trade.
 pub(super) const WICK_TRAVEL_QUANTUM: f32 = 0.5;
 /// How much travel (in radii) the `bleed` stencil carries per firing (§6.2) — the
 /// same cadence pattern as [`WICK_TRAVEL_QUANTUM`], and adopted for the same reason

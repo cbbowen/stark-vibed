@@ -286,7 +286,38 @@ so it runs in CI whether or not there is an adapter.
 * `swept.rs` recomputes `flatten_tolerance` that `dynamics_setup` already
   computed and discarded on the `Swept` arm. `StrokePath::Swept(tol)` carries it.
 
-## 12. Open question: where the derivations live
+## 12. Where the derivations live — **done**
+
+Resolved by the owner: strip the dead ends and the convergence table, keep the
+theorem and the derivations in `docs/brush.md` §6.2.
+
+Doing it turned out to be mostly **deduplication**. §6.2 already carried the
+column-stochastic transfer-matrix argument, the sliding kernel, the
+too-pessimistic-on-both-counts note and the quadrature measurements, nearly
+verbatim — and it deferred to the constant for the two things now deleted ("the
+convergence table and the four cheaper fixes … are recorded on
+`RESERVOIR_EXCHANGE_STEP` itself"). Those two references would have dangled, and
+are repaired.
+
+Deleted: the 4×4 convergence table, the four cheaper approaches that do not work,
+and every paragraph duplicating §6.2. `RESERVOIR_EXCHANGE_STEP` keeps what a
+reader of the *code* needs — what it caps, the rate it is quoted at, what it
+bounds, and a `§6.2` cite — going 145 doc lines to 20.
+
+`WICK_TRAVEL_QUANTUM` had the same duplication (its parity/sublattice and
+separability derivations are both in §6.2) and was trimmed the same way, keeping
+the `WICK_HALF / WICK_RATE` contract and the measured reason it stops at 2.
+
+One thing moved rather than deleted: why the error went unnoticed at a step of
+0.5 — the `drain` cap that made every golden render at 13.3 px segments whatever
+the step said. Not a dead end and not a derivation, but the lesson generalises
+("a golden that does not move is evidence about the test, not about the change"),
+so it is now a paragraph in §6.2.
+
+`budget.rs` 393 → 247 lines. Comment-only; the module's rustdoc stays at 0
+warnings.
+
+## Original note
 
 `RESERVOIR_EXCHANGE_STEP` carries ~120 lines of doc including a measured 4×4
 error table, a theorem about column-stochastic transfer matrices, and four
