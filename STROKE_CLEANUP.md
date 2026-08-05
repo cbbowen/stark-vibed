@@ -1,0 +1,156 @@
+# `gpu/stroke` cleanup
+
+A review of `crates/stark-core/src/gpu/stroke` (2026-08-04), kept as a working
+list. Ordered by what to do first — the first three compose, so doing them in
+order makes each smaller than it looks.
+
+Nothing here is a known-wrong pixel. It is structure, doc drift, and one class of
+per-frame allocation churn.
+
+## 1. The `Stamp` slot — **done**
+
+`LoopDispatch.slot` was `[f32; 36]`, built at three positional construction sites
+in `dynamics_plan` (segment, bleed, settle) whose only structure was comments
+naming shader lanes. The receiving `Stamp { a..i: vec4 }` in `dynamics.wesl` is
+nine vec4s; nothing checked the count, the lane alignment, or that the three
+sites agreed on which lane meant what.
+
+Replaced with a `#[repr(C)] Pod` `Stamp` mirroring the shader's nine lanes, a
+`const SLOT = size_of::<Stamp>()` pinned by a compile-time assert (retiring the
+`144` that was duplicated between the buffer window and the layout's
+`min_binding_size`), and a `SlotCommon` holding the lanes every slot fills the
+same way — so each of the three sites now lists only what differs.
+
+## 2. Split `DynamicsRun::draw`
+
+520 lines doing six jobs: region composite, selection gather, snapshot sizing,
+plan upload, bind-group construction, the dispatch loop, write-back. The `// ----`
+banner comments already mark the extraction points.
+
+Retires the `#[allow(clippy::too_many_arguments)]` on `dynamics_plan` — its 8
+args want a `PieceGeom { region_origin, dsize, channels, surface }` bundle.
+
+## 3. `LoopDispatch` should be an enum
+
+Three slot kinds are encoded as `bleed_only: bool` plus a position
+(`segment_slots = plan.len() - usize::from(settle)`, then `plan.get(segment_slots)`).
+`enum Slot { Segment { wick_steps }, Bleed, Settle }` turns the dispatch loop
+into a `match` with no index arithmetic.
+
+`exchange_groups` is dead data and goes with it: it is
+`(BRUSH_RES/8, BRUSH_RES/8)` for every segment slot, and `(0, 0)` for the other
+two kinds — where it is never read (the bleed branch `continue`s before the
+exchange dispatch; the settle path uses `groups` only). Replace with a const.
+
+## 4. Per-tile uniform buffer + bind-group churn
+
+`swept.rs` creates a buffer *and* a bind group per affected tile, per render — on
+the path that re-renders every pointer move. `dynamics.rs` does the same for the
+slice write-back, plus one bind group per halo tile for the region composite.
+
+The module already knows the answer: `stamp_buf` is one buffer read through
+dynamic offsets. Apply it to `TileXform` and `SliceUniform`.
+
+This also resolves an inconsistency: `ScopedResources` exists because dropping a
+WebGPU handle only releases it to JS GC, which can't keep up — but the per-tile
+`ubuf`s in both paths, plus `view_buf` and `tile_inst` in `draw`, are not
+registered with it. Either the rule applies or small per-frame uniforms are
+genuinely exempt; folding them into dynamic-offset buffers makes the question
+disappear.
+
+## 5. Module boundaries
+
+`mod.rs` is ~1000 lines, of which the renderer is ~350. The rest is the cadence
+constants plus `flatten_tolerance` / `exchange_travel` / `safe_frozen` (~470
+lines), and the incremental-render protocol (`StrokeSpans`, `StrokeCarry`,
+`ToolState`). The tell is `segments.rs`'s tests reaching through `super::super::`
+eleven times. A `budget.rs` would leave `mod.rs` as the renderer it claims to be.
+
+Smaller: `ViewUniform` and `TileInstance` are declared in `swept.rs` and used
+only by `dynamics.rs`. `swept.rs` touches neither.
+
+## 6. Three caches, three policies, one in the wrong place
+
+`round_prefix` (single-entry, on the renderer), `noise_cache` (unbounded `Vec`,
+on the renderer), and `round_cov` — single-entry but living in `DynamicsKit`, a
+struct documented as immutable GPU objects built once.
+
+Both round caches key on `hardness.to_bits()` and both call
+`round_coverage(hardness, ROUND_RES)` — 65,536 texels with a `powf` each — so a
+dynamics round brush computes the identical coverage field twice. One
+`BrushTextures` cache keyed on the shape, returning `{ prefix, coverage }`, fixes
+the layering, the duplicate work, and the single-entry thrash when a user
+alternates two hardnesses.
+
+## 7. The two paths derive shared stroke constants independently
+
+`grain_uv = surface.relief * grain_uv_scale()` appears in both `swept.rs` and
+`dynamics.rs`; so does the `rgb_to_channels` dance. These are exactly the
+quantities that must agree between the paths for `preview == committed`, and they
+agree by the same line being written twice. A shared
+`StrokeConstants::new(rec, surface, color_space)` makes the agreement structural
+— the "rule out a class rather than enumerate its instances" convention.
+
+## 8. `MAX_STAMPS` no longer bounds what its doc claims
+
+It says "cap on the segments one piece dispatches, which bounds its stamp uniform
+buffer". `chunk_segments` enforces it on segments, but `dynamics_plan` then
+appends up to one bleed slot per segment plus a settle slot, so the buffer can
+reach `2·MAX_STAMPS + 1` slots. Harmless today — the binding window is one slot
+and the buffer is far under `maxBufferSize` — but the stated bound is off by 2×.
+Either chunk on planned slots or fix the sentence.
+
+## 9. Doc drift
+
+* `build_dynamics_kit` says "three" compute pipelines / entry points, twice. The
+  shader has seven: `wick_x`, `wick_y`, `bake`, `snapshot`, `exchange`,
+  `deposit`, `settle`.
+* `mod.rs`'s `dynamics` field still calls the axis `load`; it has been `lift`
+  since the rename. That list and the module header both omit `bleed`, which
+  `dynamics_setup` does gate on.
+
+## 10. CPU tests for the plan builders
+
+`bleed_fires`, `settle_tangent` and `dynamics_plan`'s rect math are pure,
+float-deterministic, and covered only through full GPU renders in
+`tests/dynamics.rs`. Three properties are asserted in prose and worth asserting
+in code, beside the taper tests in `segments.rs` that already do this for
+`generate_segments_in`:
+
+* `bleed_fires`'s headline claim — the firing windows are a pure function of the
+  record, independent of the cut. Comparing the `(dist, length)` list for `whole`
+  against `head + tail` is a five-line test, and its failure was a visible
+  `preview == committed` break.
+* Every dispatch rect fits `dsize`. Currently guaranteed by an argument spanning
+  two functions about how `+3.0…+2` relates to the `1.5` margins — the kind of
+  arithmetic that survives a refactor by luck.
+* `settle_tangent` against a trailing cluster of zero-length segments — the exact
+  input its doc says produced 0°/−90°/90°/180° on a stroke running at 90°.
+
+## 11. Small
+
+* `let deposit_bgs: Vec<_> = (0..1).map(…).collect()`, then always
+  `deposit_bgs[0]`. Leftover ping-pong generality.
+* `let mut fires = fires.iter().peekable()` shadows the parameter. The consumer
+  also relies on `fires` being sorted by segment index — true by construction,
+  unstated at the type.
+* The coverage-box → dispatch-rect computation is copy-pasted twice with a
+  near-variant for the settle. One `dispatch_rect(box, region_origin, dsize)`
+  helper is also where item 10's `dsize` fit becomes checkable in one place.
+* `ScopedResources::is_empty` doubles as "has a piece been recorded yet" in
+  `flush`. A `piece_open: bool` says what is meant.
+* `swept.rs` recomputes `flatten_tolerance` that `dynamics_setup` already
+  computed and discarded on the `Swept` arm. `StrokePath::Swept(tol)` carries it.
+
+## 12. Open question: where the derivations live
+
+`RESERVOIR_EXCHANGE_STEP` carries ~120 lines of doc including a measured 4×4
+error table, a theorem about column-stochastic transfer matrices, and four
+recorded dead ends; `WICK_TRAVEL_QUANTUM` and `BLEED_TRAVEL_QUANTUM` add ~70
+more. The content is worth keeping to the word — but `docs/brush.md` §6.2 already
+discusses all three constants by name, so the material is split across two homes
+with the deeper half in the file `CLAUDE.md` says is not where design lives.
+
+Moving the derivations into §6.2 and leaving each constant with a short summary
+plus a `§` cite would halve `mod.rs`. Against it: proximity is why these
+arguments survive refactors. Deliberately left undecided.

@@ -36,12 +36,61 @@ struct SliceUniform {
     offset: [f32; 4],
 }
 
+/// Mirrors `Stamp` in `dynamics.wesl` — **exactly**, lane for lane. The shader
+/// names its nine vec4s `a`–`i` and this names its fields the same, so the two can
+/// be read side by side; what each lane holds is documented in both places because
+/// nothing checks the correspondence. A mismatch is a wgpu validation error at
+/// best and a silently misread lane at worst, which is why [`SLOT`] is pinned by a
+/// compile-time assert rather than written out as a number.
+///
+/// Every slot is a pure function of the [`StrokeRecord`] and the piece's own
+/// geometry, computed in plain CPU float math, so replay is deterministic (§12.1).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct Stamp {
+    /// `a`: the sweep frame — position .xy (region px) + travel tangent .zw (unit).
+    a: [f32; 4],
+    /// `b`: radius (px), travel / radius (0 for a standing tip), λ_lift, λ_deposit.
+    /// λ = ln(1 − axis) ≤ 0, clamped away from −∞.
+    b: [f32; 4],
+    /// `c`: the brush's own colour channels .xyz + per-unit opacity .w.
+    /// **Undrained** — the falloff is applied per fragment from its own arc length,
+    /// never baked in per segment (`dynamics.wesl::stroke_drain`).
+    c: [f32; 4],
+    /// `d`: under-rect origin .xy (region px, integral), orientation .z
+    /// (turns ∈ [0, 1), picks the prefix-τ slice), the `drain` falloff per canvas
+    /// px .w.
+    d: [f32; 4],
+    /// `e`: the `add` rate per unit exposure .x, the segment's signed curvature .y
+    /// (1/region px, 0 = a straight sweep), and the midpoint `exchange` samples the
+    /// canvas at .zw.
+    e: [f32; 4],
+    /// `f`: colour-dynamics frequency per lookup axis (across the stroke, along
+    /// it) .xy, 1/NOISE_TILE_PX .z.
+    f: [f32; 4],
+    /// `g`: per colour-channel noise amplitude .xyz (all 0 = off), arc length at
+    /// this slot's start .w.
+    g: [f32; 4],
+    /// `h`: the per-stroke noise translation .xy; the tooth's **bearing fraction**
+    /// .z — what the tool books its half of the transfer against, having no ground
+    /// of its own (§6.4); λ_bleed .w, nonzero only on a bleed slot.
+    h: [f32; 4],
+    /// `i`: the deposition tooth .x (0 = the ground gates nothing), and the map
+    /// from this dispatch's *region* texel to the weave: `uv = rt·.y + .zw`, with
+    /// the piece's own origin already folded into the bias (§6.4).
+    i: [f32; 4],
+}
+
+/// One slot's window into the stamp buffer, and the `min_binding_size` its layout
+/// declares — both of which have to be `Stamp`'s own size, so they are taken from
+/// it rather than written down. The assert is what pins the shader-side `9 × vec4`.
+const SLOT: usize = std::mem::size_of::<Stamp>();
+const _: () = assert!(SLOT == 144);
+
 /// One segment of the sequential swept-exchange loop (§6.2): its
 /// `wick`, `bake`, `exchange` (which carries the snapshot) and `deposit` dispatches.
-/// `slot` is the 144-byte `Stamp` uniform (see dynamics.wesl), precomputed CPU-side as
-/// a pure function of the `StrokeRecord`, so replay is deterministic.
 struct LoopDispatch {
-    slot: [f32; 36],
+    slot: Stamp,
     /// A dedicated **bleed slot** (§6.2): a straight quad whose sweep is one firing
     /// of the bleed cadence's travel window, with every vertical rate and the
     /// source zeroed. Dispatched as `snapshot` + `deposit` alone — the tool plays
@@ -614,10 +663,9 @@ impl<'a> DynamicsRun<'a> {
         // it is a segment, and the loop below dispatches the two differently.
         let segment_slots = plan.len() - usize::from(settle);
         const STRIDE: usize = 256;
-        const SLOT: usize = 144; // sizeof the `Stamp` uniform (9 × vec4)
         let mut data = vec![0u8; plan.len() * STRIDE];
         for (i, d) in plan.iter().enumerate() {
-            data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::cast_slice(&d.slot));
+            data[i * STRIDE..i * STRIDE + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
         }
         let stamp_buf = self
             .scoped
@@ -1050,6 +1098,46 @@ fn reservoir_desc(
     }
 }
 
+/// The [`Stamp`] lanes every slot in a plan fills the same way, resolved once — so
+/// the three slot kinds below list only what actually differs between them, which
+/// is the whole of what makes a bleed slot or a settle slot readable against a
+/// painting segment.
+struct SlotCommon {
+    /// `c` outright: the brush's own channels + per-unit opacity, undrained.
+    c: [f32; 4],
+    /// `i.yzw`: the region texel → weave map, with the piece's origin already
+    /// folded into the bias. Only `i.x` — how deep this slot's tip bites — varies.
+    weave: [f32; 3],
+    /// The colour-dynamics lookup, which fills `f`, `g.xyz` and `h.xy`. The same
+    /// uniform triplet the fast path reads, so both paths sample the identical
+    /// field (§6.2).
+    nfreq: [f32; 4],
+    namp: [f32; 4],
+    noff: [f32; 4],
+}
+
+impl SlotCommon {
+    /// `i`: how deep this slot's tip bites into the weave, over the shared map.
+    fn weave_at(&self, tooth: f32) -> [f32; 4] {
+        [tooth, self.weave[0], self.weave[1], self.weave[2]]
+    }
+
+    /// `f`, `g` and `h` for a slot that lays the brush's own `add` paint: the shared
+    /// field, this slot's arc length, and the bearing fraction it books the tool's
+    /// half of the transfer against.
+    ///
+    /// λ_bleed (`h.w`) comes back 0, which is what every such slot wants: the
+    /// lateral flux runs only on the dedicated bleed slots, so between firings the
+    /// canvas takes the no-bleed path bit-for-bit (§6.2).
+    fn jitter(&self, dist: f32, bearing: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
+        (
+            self.nfreq,
+            [self.namp[0], self.namp[1], self.namp[2], dist],
+            [self.noff[0], self.noff[1], bearing, 0.0],
+        )
+    }
+}
+
 /// Build the swept-exchange dispatch plan (§6.2): one `snapshot` +
 /// `deposit` pair per flattened segment (the canvas-side exchange, swept through
 /// the prefix-τ integral), each followed by the tool's own `exchange`.
@@ -1097,8 +1185,17 @@ fn dynamics_plan(
     // Colour dynamics for the `add` paint — the same uniform triplet as the fast
     // path, so both paths sample the identical field (§6.2).
     let (nfreq, namp, noff) = noise_uniform(rec);
+    let common = SlotCommon {
+        c: [channels[0], channels[1], channels[2], b.color[3]],
+        weave: [grain_uv, grain_bias.x, grain_bias.y],
+        nfreq,
+        namp,
+        noff,
+    };
 
     let mut plan = Vec::new();
+    // Sorted by segment index, as `bleed_fires` builds it — which is what lets the
+    // loop below drain it in step with its own walk.
     let mut fires = fires.iter().peekable();
     for (si, s) in segments.iter().enumerate() {
         // The segment's swept exchange: the frame is (start, travel tangent at the
@@ -1113,7 +1210,7 @@ fn dynamics_plan(
         let lo = clo - region_origin - Vec2::splat(1.5);
         let hi = chi - region_origin + Vec2::splat(1.5);
         let (ox, oy) = (lo.x.floor(), lo.y.floor());
-        let (w, h) = (
+        let (rw, rh) = (
             (((hi.x - ox).ceil() as u32) + 1).min(dsize),
             (((hi.y - oy).ceil() as u32) + 1).min(dsize),
         );
@@ -1137,73 +1234,40 @@ fn dynamics_plan(
         // matters.
         let quantum = WICK_TRAVEL_QUANTUM * s.radius;
         let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
+        let (f, g, h) = common.jitter(s.dist, bearing(s.tooth));
         plan.push(LoopDispatch {
             bleed_only: false,
-            groups: (w.div_ceil(8), h.div_ceil(8)),
+            groups: (rw.div_ceil(8), rh.div_ceil(8)),
             exchange_groups: (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(8)),
             wick_steps: wick_steps.max(0.0) as u32,
-            slot: [
-                p.x,
-                p.y,
-                s.dir.x,
-                s.dir.y,
-                s.radius,
-                s.length / s.radius,
-                lambda(s.lift),
-                lambda(s.deposit),
-                channels[0],
-                channels[1],
-                channels[2],
-                // Undrained: the shader fades both this and the `add` rate below by
-                // the fragment's own arc length (`dynamics.wesl::stroke_drain`).
-                b.color[3],
-                ox,
-                oy,
-                s.orient,
-                b.drain,
-                // e: the `add` source rate — height per unit exposure — the segment's
-                // signed curvature, which bends the travel frame every dispatch of
-                // this loop measures its exchange in, and the midpoint `exchange`
-                // lifts from (dynamics.wesl).
+            slot: Stamp {
+                a: [p.x, p.y, s.dir.x, s.dir.y],
+                b: [
+                    s.radius,
+                    s.length / s.radius,
+                    lambda(s.lift),
+                    lambda(s.deposit),
+                ],
+                c: common.c,
+                d: [ox, oy, s.orient, b.drain],
+                // The `add` source rate is passed through **unscaled**, exactly as
+                // `stamp_oklab.wesl` takes it. It used to carry a gain of 2 ("tuned so
+                // `add = 1` lays roughly a full-thickness deposit per pass"), which made
+                // the same slider mean two different amounts of paint depending on
+                // whether some *other* axis happened to be non-zero — nudging `deposit`
+                // off zero doubled the flow. The tuning it claimed is already met without
+                // it: a pass of the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so
+                // `add = 1` lays 6.9 of height, which the slab law reads as 0.999
+                // coverage.
                 //
-                // Passed through **unscaled**, exactly as `stamp_oklab.wesl` takes it.
-                // It used to carry a gain of 2 ("tuned so `add = 1` lays roughly a
-                // full-thickness deposit per pass"), which made the same slider mean
-                // two different amounts of paint depending on whether some *other*
-                // axis happened to be non-zero — nudging `deposit` off zero doubled
-                // the flow. The tuning it claimed is already met without it: a pass of
-                // the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so `add = 1` lays 6.9
-                // of height, which the slab law reads as 0.999 coverage.
-                //
-                // Off the segment, since the pen can drive it (§6.2) — the same
-                // number the swept path now reads off its instance.
-                s.add,
-                s.curvature,
-                mid.x,
-                mid.y,
-                // f–h: the colour-dynamics lookup (see `Stamp` in dynamics.wesl).
-                nfreq[0],
-                nfreq[1],
-                nfreq[2],
-                nfreq[3],
-                namp[0],
-                namp[1],
-                namp[2],
-                s.dist,
-                noff[0],
-                noff[1],
-                bearing(s.tooth),
-                // No λ_bleed on a painting segment: the lateral flux runs only on
-                // the dedicated bleed slots below, so between firings the canvas
-                // takes the no-bleed path bit-for-bit.
-                0.0,
-                // i: the deposition tooth (§6.4) — how deep this segment's tip bites,
-                // and the canvas → weave map the texel needs to look its own ground up.
-                s.tooth,
-                grain_uv,
-                grain_bias.x,
-                grain_bias.y,
-            ],
+                // Off the segment, since the pen can drive it (§6.2) — the same number
+                // the swept path now reads off its instance.
+                e: [s.add, s.curvature, mid.x, mid.y],
+                f,
+                g,
+                h,
+                i: common.weave_at(s.tooth),
+            },
         });
 
         // The bleed slots that fire at this segment's end (§6.2, `bleed_fires`):
@@ -1212,69 +1276,55 @@ fn dynamics_plan(
         // everywhere except the lateral flux. The noise lanes are zeroed too, so
         // the deposit skips its colour-jitter taps; `mid` is filled for form, since
         // no exchange ever reads this slot.
-        while let Some((_, f)) = fires.next_if(|(after, _)| *after == si) {
-            let p = f.start - region_origin;
-            let (clo, chi) = coverage_bounds(f);
+        while let Some((_, fire)) = fires.next_if(|(after, _)| *after == si) {
+            let p = fire.start - region_origin;
+            let (clo, chi) = coverage_bounds(fire);
             let lo = clo - region_origin - Vec2::splat(1.5);
             let hi = chi - region_origin + Vec2::splat(1.5);
             let (ox, oy) = (lo.x.floor(), lo.y.floor());
-            let (w, h) = (
+            let (rw, rh) = (
                 (((hi.x - ox).ceil() as u32) + 1).min(dsize),
                 (((hi.y - oy).ceil() as u32) + 1).min(dsize),
             );
-            let mid = f.start + f.dir * (f.length * 0.5) - region_origin;
+            let mid = fire.start + fire.dir * (fire.length * 0.5) - region_origin;
             plan.push(LoopDispatch {
                 bleed_only: true,
-                groups: (w.div_ceil(8), h.div_ceil(8)),
+                groups: (rw.div_ceil(8), rh.div_ceil(8)),
                 exchange_groups: (0, 0), // no exchange: the tool is not involved
                 wick_steps: 0,
-                slot: [
-                    p.x,
-                    p.y,
-                    f.dir.x,
-                    f.dir.y,
-                    f.radius,
-                    f.length / f.radius,
-                    0.0, // λ_lift = 0: the canvas keeps everything…
-                    0.0, // …and λ_deposit = 0: the (uninvolved) tool lays nothing
-                    channels[0],
-                    channels[1],
-                    channels[2],
-                    b.color[3],
-                    ox,
-                    oy,
-                    f.orient,
-                    0.0, // no drain: nothing is laid, so nothing runs dry
-                    0.0, // no `add`: the slot is not a stretch of painting
-                    0.0, // straight chord: no curvature
-                    mid.x,
-                    mid.y,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    f.dist,
-                    0.0,
-                    0.0,
-                    // No exchange runs on a bleed slot, so nothing reads the bearing;
-                    // 1 is the value that would leave one alone if it did.
-                    1.0,
-                    // The firing's own rate, as the pen asked for it at the crossing
-                    // (`bleed_fires`). A firing whose modulated rate has fallen to
-                    // zero still dispatches: λ = 0 makes it the identity, and keeping
-                    // the plan a pure function of the segmentation is worth more than
-                    // the dispatch it would save.
-                    lambda(f.bleed),
+                slot: Stamp {
+                    a: [p.x, p.y, fire.dir.x, fire.dir.y],
+                    // λ_lift = 0, so the canvas keeps everything; λ_deposit = 0, so the
+                    // (uninvolved) tool lays nothing.
+                    b: [fire.radius, fire.length / fire.radius, 0.0, 0.0],
+                    c: common.c,
+                    // No drain: nothing is laid, so nothing runs dry.
+                    d: [ox, oy, fire.orient, 0.0],
+                    // No `add` — the slot is not a stretch of painting — and no
+                    // curvature, since the window is a straight chord. `mid` is filled
+                    // for form: no exchange ever reads this slot.
+                    e: [0.0, 0.0, mid.x, mid.y],
+                    // The colour jitter is zeroed rather than shared, so the deposit
+                    // skips its noise taps entirely.
+                    f: [0.0; 4],
+                    g: [0.0, 0.0, 0.0, fire.dist],
+                    h: [
+                        0.0,
+                        0.0,
+                        // Nothing reads the bearing on a bleed slot; 1 is the value that
+                        // would leave an exchange alone if one ran.
+                        1.0,
+                        // The firing's own rate, as the pen asked for it at the crossing
+                        // (`bleed_fires`). A firing whose modulated rate has fallen to
+                        // zero still dispatches: λ = 0 makes it the identity, and keeping
+                        // the plan a pure function of the segmentation is worth more than
+                        // the dispatch it would save.
+                        lambda(fire.bleed),
+                    ],
                     // No tooth: this slot lays no `add`, so there is nothing for the
                     // ground to gate. The weave map is filled for form.
-                    0.0,
-                    grain_uv,
-                    grain_bias.x,
-                    grain_bias.y,
-                ],
+                    i: common.weave_at(0.0),
+                },
             });
         }
     }
@@ -1295,73 +1345,48 @@ fn dynamics_plan(
         let lo = p - Vec2::splat(s.radius + 1.5);
         let hi = p + Vec2::splat(s.radius + 1.5);
         let (ox, oy) = (lo.x.floor(), lo.y.floor());
-        let (w, h) = (
+        let (rw, rh) = (
             (((hi.x - ox).ceil() as u32) + 1).min(dsize),
             (((hi.y - oy).ceil() as u32) + 1).min(dsize),
         );
+        let (f, g, h) = common.jitter(s.dist + s.length, 1.0);
         plan.push(LoopDispatch {
             bleed_only: false,
-            groups: (w.div_ceil(8), h.div_ceil(8)),
+            groups: (rw.div_ceil(8), rh.div_ceil(8)),
             exchange_groups: (0, 0), // the tool is not written back; nothing reads it
             // Nor is there travel to wick over: a pen-up is a break of contact.
             wick_steps: 0,
-            slot: [
-                p.x,
-                p.y,
-                tan.x,
-                tan.y,
-                s.radius,
-                0.0, // no travel: a pen-up is a break of contact, not a stretch of it
-                // The rates the *last* segment ran at, which is where the pen was
-                // when it left the page — the same segment this slot takes its radius
-                // and orientation from.
-                lambda(s.lift),
-                lambda(s.deposit),
-                channels[0],
-                channels[1],
-                channels[2],
+            slot: Stamp {
+                a: [p.x, p.y, tan.x, tan.y],
+                // No travel: a pen-up is a break of contact, not a stretch of it. The
+                // rates are the *last* segment's, which is where the pen was when it
+                // left the page — the same segment this slot takes its radius and
+                // orientation from.
+                b: [s.radius, 0.0, lambda(s.lift), lambda(s.deposit)],
                 // The settle lays the tool's *carried* paint, which already carries the
-                // opacity it was picked up with, so it reads neither of these. They are
-                // filled consistently with a segment slot rather than left as junk.
-                b.color[3],
-                ox,
-                oy,
-                s.orient,
-                b.drain,
+                // opacity it was picked up with, so it reads none of `c`. Filled
+                // consistently with a segment slot rather than left as junk.
+                c: common.c,
+                d: [ox, oy, s.orient, b.drain],
                 // No `add`: the source is a rate per unit of travel, and there is none.
                 // No curvature, for the same reason — the frame is a standing tip.
-                0.0,
-                0.0,
-                p.x,
-                p.y,
-                nfreq[0],
-                nfreq[1],
-                nfreq[2],
-                nfreq[3],
-                namp[0],
-                namp[1],
-                namp[2],
-                s.dist + s.length,
-                noff[0],
-                noff[1],
-                // The tool is not written back at pen-up, so nothing reads this; the
-                // settle's own gate is per texel, from `i` below.
-                1.0,
-                // No λ_bleed either: the axis carries no reservoir — every firing
-                // already applied its window as the tip passed — so a break of
-                // contact strands nothing for a settle to finish (unlike the
-                // vertical transfer, whose in-flight half lives on the tool).
-                0.0,
+                e: [0.0, 0.0, p.x, p.y],
+                // The tool is not written back at pen-up, so nothing reads the bearing;
+                // the settle's own gate is per texel, from `i`. And no λ_bleed either:
+                // that axis carries no reservoir — every firing already applied its
+                // window as the tip passed — so a break of contact strands nothing for
+                // a settle to finish, unlike the vertical transfer whose in-flight half
+                // lives on the tool.
+                f,
+                g,
+                h,
                 // The last segment's tooth: the settle delivers what the pass still
                 // owed, and it owes it through the same ground the pass was laying
                 // through. What the valleys do not take stays on the tool, which is
                 // discarded — a knife lifted off a canvas keeps what it did not
                 // reach (§6.4).
-                s.tooth,
-                grain_uv,
-                grain_bias.x,
-                grain_bias.y,
-            ],
+                i: common.weave_at(s.tooth),
+            },
         });
     }
     plan
@@ -1676,7 +1701,7 @@ pub(super) fn build_dynamics_kit(
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: true,
-            min_binding_size: wgpu::BufferSize::new(144), // sizeof `Stamp` (9 × vec4)
+            min_binding_size: wgpu::BufferSize::new(SLOT as u64),
         },
         count: None,
     };
