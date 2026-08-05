@@ -14,7 +14,8 @@ use crate::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use crate::noise::NOISE_TILE_PX;
 
-use super::{MAX_REGION_DIM, MAX_STAMPS, StrokeSpans};
+use super::StrokeSpans;
+use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
 
 /// One swept segment of the stroke.
 ///
@@ -748,6 +749,8 @@ pub(super) fn region_rect(
 
 #[cfg(test)]
 mod tests {
+    use super::super::budget::{MAX_TIP_TURN, flatten_tolerance};
+    use super::super::safe_frozen;
     use super::*;
 
     // --- tapers ----------------------------------------------------------
@@ -776,12 +779,7 @@ mod tests {
     }
 
     fn whole(rec: &StrokeRecord) -> Vec<Segment> {
-        generate_segments_in(
-            rec,
-            super::super::flatten_tolerance(&rec.brush),
-            StrokeSpans::whole(rec),
-        )
-        .0
+        generate_segments_in(rec, flatten_tolerance(&rec.brush), StrokeSpans::whole(rec)).0
     }
 
     /// The profile's two end conditions are the whole design (see [`taper_profile`]),
@@ -958,7 +956,7 @@ mod tests {
         let untapered = |len: f32| {
             let rec = tapered_record(radius, 0.0, 0.0, len);
             let all = crate::path::span_count(rec.path.len());
-            (super::super::safe_frozen(&rec, all), rec)
+            (safe_frozen(&rec, all), rec)
         };
         let (frozen, _) = untapered(20.0);
         assert_eq!(frozen, 0, "a stroke inside its own dab froze a span");
@@ -967,7 +965,7 @@ mod tests {
 
         // And what it admits really is dab-free: the head it hands over renders the
         // same segments the commit does, which is the property the whole rule is for.
-        let tol = super::super::flatten_tolerance(&rec.brush);
+        let tol = flatten_tolerance(&rec.brush);
         let all = crate::path::span_count(rec.path.len());
         let (head, dist) = generate_segments_in(
             &rec,
@@ -1009,9 +1007,9 @@ mod tests {
     #[test]
     fn a_taper_safe_head_plus_tail_is_the_single_pass_stroke() {
         let rec = tapered_record(18.0, 5.0, 9.0, 1200.0);
-        let tol = super::super::flatten_tolerance(&rec.brush);
+        let tol = flatten_tolerance(&rec.brush);
         let all = crate::path::span_count(rec.path.len());
-        let frozen = super::super::safe_frozen(&rec, all);
+        let frozen = safe_frozen(&rec, all);
         assert!(frozen > 0, "nothing could be frozen at all");
         assert!(
             frozen < all,
@@ -1061,7 +1059,7 @@ mod tests {
             &rec.path,
             0..crate::path::span_count(rec.path.len()),
             0.0,
-            super::super::flatten_tolerance(&rec.brush),
+            flatten_tolerance(&rec.brush),
         );
         assert_eq!(
             segs.len(),
@@ -1073,7 +1071,7 @@ mod tests {
             "an untapered stroke is full width throughout"
         );
         assert_eq!(
-            super::super::safe_frozen(&rec, 7),
+            safe_frozen(&rec, 7),
             7,
             "an untapered brush holds nothing back from freezing"
         );
@@ -1109,7 +1107,7 @@ mod tests {
     /// below are measured against. Fifty times tighter than the render budget, so its
     /// own flattening error is nowhere near what is being compared.
     fn dense(rec: &StrokeRecord) -> Vec<Vec2> {
-        let tol = super::super::flatten_tolerance(&rec.brush).relaxed(0.02);
+        let tol = flatten_tolerance(&rec.brush).relaxed(0.02);
         crate::path::flatten(&rec.path, tol)
             .into_iter()
             .map(|s| s.pos)
@@ -1277,14 +1275,14 @@ mod tests {
     /// The bound exists because both shaders sweep a curved segment by unrolling the
     /// annulus about its centre of curvature, and that approximation degrades as the
     /// tip grows against the curve's own radius — see
-    /// [`MAX_TIP_TURN`](super::super::MAX_TIP_TURN).
+    /// [`MAX_TIP_TURN`](super::super::budget::MAX_TIP_TURN).
     #[test]
     fn a_fat_tip_on_a_tight_turn_sweeps_straight() {
         let curve_radius = 60.0;
         let fat = 50.0;
         for s in whole(&curved_record(fat, curve_radius, 1.5)) {
             assert!(
-                s.radius * s.curvature.abs() <= super::super::MAX_TIP_TURN,
+                s.radius * s.curvature.abs() <= MAX_TIP_TURN,
                 "a segment sweeps an arc of radius {} under a {} tip",
                 1.0 / s.curvature.abs(),
                 s.radius
@@ -1295,8 +1293,7 @@ mod tests {
         // the assertion above would pass on any straight line.
         let fine = whole(&curved_record(2.0, curve_radius, 1.5));
         assert!(
-            fine.iter()
-                .any(|s| fat * s.curvature.abs() > super::super::MAX_TIP_TURN),
+            fine.iter().any(|s| fat * s.curvature.abs() > MAX_TIP_TURN),
             "the test curve is too gentle to exercise the guard"
         );
     }
@@ -1315,7 +1312,7 @@ mod tests {
         for radius in [2.0f32, 18.0, 50.0, 120.0] {
             for curve_radius in [80.0f32, 300.0, 1200.0, 5000.0] {
                 let rec = curved_record(radius, curve_radius, 1.4);
-                let tol = super::super::flatten_tolerance(&rec.brush);
+                let tol = flatten_tolerance(&rec.brush);
                 let pts = crate::path::flatten(&rec.path, tol);
                 let segs = whole(&rec);
                 // Untapered, so it is one segment per flattened edge — except the
@@ -1472,14 +1469,14 @@ mod tests {
     /// peers agree on geometry — so a count that differs *per machine* is a bug in that
     /// determinism, not a tolerance to loosen.
     /// The exchange budget means the same thing to every brush
-    /// (`super::super::flatten_tolerance`). These are properties of the rule, not
+    /// (`budget::flatten_tolerance`). These are properties of the rule, not
     /// measured counts — unlike the table below, a failure here is a bug rather than a
     /// retuning.
     #[test]
     fn the_exchange_budget_scales_with_the_transfer_rate() {
         use crate::document::BrushDynamics;
         let at = |lift: f32, deposit: f32, charge: f32| {
-            super::super::flatten_tolerance(&BrushParams {
+            flatten_tolerance(&BrushParams {
                 radius: 100.0,
                 dynamics: BrushDynamics {
                     lift,
@@ -1832,7 +1829,7 @@ mod tests {
                 ..BrushParams::default()
             };
             b.dynamics.lift = 0.5;
-            segment_fits_region(&b, super::super::flatten_tolerance(&b))
+            segment_fits_region(&b, flatten_tolerance(&b))
         };
         assert!(fits(1.0), "a hairline tip fits");
         assert!(fits(120.0), "the largest tip the UI offers fits");

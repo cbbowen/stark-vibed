@@ -18,16 +18,31 @@ use std::collections::BTreeSet;
 use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, TileCoord, Vec2};
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TilePairHandle};
 
+use super::budget::{BLEED_TRAVEL_QUANTUM, TAU_PER_PASS, WICK_TRAVEL_QUANTUM, flatten_tolerance};
 use super::segments::{
     Segment, affected_tiles, chunk_segments, coverage_bounds, generate_segments_in, noise_uniform,
     region_rect, segment_fits_region,
 };
 use super::swept::{TileInstance, ViewUniform};
 use super::{
-    BAKE_FORMAT, BAKE_RES, BLEED_TRAVEL_QUANTUM, BRUSH_RES, ScopedResources, StrokeCarry,
-    StrokeRenderer, StrokeScene, StrokeSpans, TAU_PER_PASS, ToolState, UNIFORM_STRIDE,
-    WICK_TRAVEL_QUANTUM, flatten_tolerance,
+    ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState,
+    UNIFORM_STRIDE,
 };
+
+/// Resolution (texels per side) of the stamp loop's tool reservoir
+/// (§6.2). Brush-local, so carried colour detail is ~radius/32 canvas px — plenty
+/// for smeared paint, and small enough that the per-stamp reservoir update is
+/// nearly free.
+const BRUSH_RES: u32 = 64;
+/// Resolution of the per-segment **swept prefix** of the reservoir
+/// (`dynamics.wesl::bake`). Finer than the reservoir along the travel axis, since
+/// it also has to resolve the footprint's optical-depth density it integrates
+/// against; the bake is a one-workgroup-per-row shared-memory scan, so this costs
+/// almost nothing. Must match the shader's own `BAKE_RES` (its workgroup width).
+const BAKE_RES: u32 = 128;
+/// fp32, for the same reason the prefix-τ volume is: every fragment reads it as a
+/// *difference* of two prefix sums (§6.2).
+const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 /// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
 #[repr(C)]

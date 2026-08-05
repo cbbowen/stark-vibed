@@ -89,16 +89,41 @@ and per-tile `integrate` bind groups in `swept.rs`. Those bind *different
 textures* per tile, so there is nothing to fold — and a bind group holds no
 allocation of its own.
 
-## 5. Module boundaries
+## 5. Module boundaries — **mostly done**
 
-`mod.rs` is ~1000 lines, of which the renderer is ~350. The rest is the cadence
-constants plus `flatten_tolerance` / `exchange_travel` / `safe_frozen` (~470
-lines), and the incremental-render protocol (`StrokeSpans`, `StrokeCarry`,
-`ToolState`). The tell is `segments.rs`'s tests reaching through `super::super::`
-eleven times. A `budget.rs` would leave `mod.rs` as the renderer it claims to be.
+`mod.rs` went 1046 → 544 lines and is now the renderer it claims to be:
+`StrokeRenderer`, `StrokeScene`, `ScopedResources`, `RoundTip`, and the two
+constants those actually use.
 
-Smaller: `ViewUniform` and `TileInstance` are declared in `swept.rs` and used
-only by `dynamics.rs`. `swept.rs` touches neither.
+* **`budget.rs`** (381) — what a stroke is allowed to cost. The cadence constants
+  with their measurements and dead ends (`RESERVOIR_EXCHANGE_STEP`,
+  `WICK_TRAVEL_QUANTUM`, `BLEED_TRAVEL_QUANTUM`, `MAX_TIP_TURN`), the piece
+  ceilings (`MAX_REGION_DIM`, `MAX_STAMPS`), `TAU_PER_PASS`, and the two
+  functions that spend them (`flatten_tolerance`, `exchange_travel`). Touches no
+  GPU — float arithmetic over a `BrushParams`, which is what lets the
+  segment-budget tests pin it exactly.
+* **`incremental.rs`** (152) — drawing a stroke in pieces and resuming:
+  `ToolState`, `StrokeSpans`, `StrokeCarry`, `safe_frozen`.
+* `BRUSH_RES` / `BAKE_RES` / `BAKE_FORMAT` moved into `dynamics.rs`, their only
+  user.
+
+Call sites outside the module are unchanged — `mod.rs` re-exports the surface, so
+nothing depends on which file an item lives in.
+
+Two things fell out:
+
+* The eleven `super::super::` spellings in `segments.rs`'s tests are gone; the
+  test module imports `budget::{MAX_TIP_TURN, flatten_tolerance}` and
+  `safe_frozen` by name.
+* `safe_frozen` is `pub(crate)` now. Nothing outside `stark-core/src` used it,
+  and being `pub` was what made rustdoc object to its doc comment pointing at
+  `segments` internals. **The stroke module's rustdoc warnings are 5 → 0.**
+  (`StrokeCarry` and `ToolState` have to stay `pub` — they are in `render_range`'s
+  signature — so the one link `dirty` made into `segments` became a code span.)
+
+Still open: `ViewUniform` and `TileInstance` are declared in `swept.rs` and used
+only by `dynamics.rs`. `swept.rs` touches neither. Left for a follow-up so this
+change stays a pure move of `mod.rs`'s contents.
 
 ## 6. Three caches, three policies, one in the wrong place — **done**
 
