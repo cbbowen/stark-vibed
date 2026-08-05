@@ -398,6 +398,92 @@ fn impossible_exports_are_errors() {
     );
 }
 
+/// A piece too large to export at 1:1 can still be *previewed* (§15.6).
+///
+/// The navigator asks for the largest plan that fits its panel, and that question has
+/// to be answerable for any piece at all — the miniature matters most on the ones too
+/// big to see. It used to be asked as a 1× plan (to learn the rect) followed by a
+/// scaled one, which made a piece past `MAX_EXPORT_DIM` fail the query for a render
+/// that was never going to happen: `draw_overview` returned `None` and the panel went
+/// on quietly showing a stale picture.
+#[test]
+fn a_piece_past_the_export_limit_still_has_an_overview() {
+    use stark_core::geom::Extent2;
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let frame = add_frame(&mut engine);
+    // Wider and taller than the 8192-px cap, and not square, so the fit has to
+    // respect the binding axis rather than whichever it looked at first.
+    engine.process(DocCommand::SetMatteRect(
+        frame,
+        Vec2::ZERO,
+        Vec2::new(20000.0, 12000.0),
+    ));
+    assert!(
+        engine
+            .export_plan(Some(frame), ExportScale::Factor(1.0))
+            .is_err(),
+        "20000 × 12000 px should still be refused as an export"
+    );
+
+    let panel = Extent2::new(252, 176);
+    let plan = engine
+        .export_plan(Some(frame), ExportScale::Fit(panel))
+        .expect("a piece of any size has an overview");
+    assert!(
+        plan.size.width <= panel.width && plan.size.height <= panel.height,
+        "the overview is {} × {}, which does not fit {} × {}",
+        plan.size.width,
+        plan.size.height,
+        panel.width,
+        panel.height
+    );
+    // The piece is 5:3 against a panel nearer 1.4:1, so it is width that binds — and
+    // the fit is *tight* on that axis. A preview that fitted by coming in under the
+    // box on both axes would be quietly wasting the panel it was given.
+    assert_eq!(plan.size.width, panel.width);
+    assert!(plan.size.height < panel.height);
+
+    // The overview really is renderable, which is the thing the panel gave up on.
+    let image = pollster::block_on(
+        engine
+            .export(
+                &mut Offscreen::default(),
+                Some(frame),
+                ExportScale::Fit(panel),
+                Background::Substrate,
+                Rendered::Committed,
+            )
+            .expect("export"),
+    );
+    assert_eq!(
+        (image.width, image.height),
+        (plan.size.width, plan.size.height)
+    );
+}
+
+/// Fitting scales a small piece *up*: the overview shows the whole of it at a glance,
+/// and a 60-px sketch shown at 60 px says less than the empty panel around it.
+#[test]
+fn fitting_a_small_piece_fills_the_box() {
+    use stark_core::geom::Extent2;
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let frame = add_frame(&mut engine); // 120 × 80
+    let plan = engine
+        .export_plan(Some(frame), ExportScale::Fit(Extent2::new(252, 176)))
+        .expect("plan");
+    assert!(
+        plan.zoom > 1.0,
+        "a 120 × 80 piece should fit at {}×",
+        plan.zoom
+    );
+    // 252/120 = 2.1 binds before 176/80 = 2.2.
+    assert_eq!((plan.size.width, plan.size.height), (252, 168));
+}
+
 /// An export is RGBA whatever the render target's own channel order is.
 ///
 /// This is the bug that shipped: every test renders to `Rgba8Unorm`, but a browser

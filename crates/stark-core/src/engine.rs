@@ -103,6 +103,20 @@ pub enum ExportScale {
     Factor(f32),
     /// An exact width in image px; the height follows the frame's aspect.
     Width(u32),
+    /// The largest scale whose output fits inside a box of image px, both axes
+    /// respected — what a *preview* of the whole piece asks for.
+    ///
+    /// It exists so asking that question does not require answering a harder one
+    /// first. The navigator used to ask for a 1× plan purely to learn the rect's
+    /// size, then scale that itself — which meant a piece wider than
+    /// [`MAX_EXPORT_DIM`] failed the query for a render it was never going to make,
+    /// and the miniature quietly stopped refreshing at the size where an overview
+    /// starts to matter most.
+    ///
+    /// Scales *up* as happily as down: the overview's job is to show the whole of a
+    /// piece at a glance, and a 60 px sketch shown at 60 px says less than the empty
+    /// panel around it.
+    Fit(Extent2),
 }
 
 /// What an export will produce, before producing it — so a dialog can show the
@@ -1234,6 +1248,7 @@ impl Engine {
         let zoom = match scale {
             ExportScale::Factor(f) => f,
             ExportScale::Width(px) => px as f32 / w,
+            ExportScale::Fit(into) => (into.width as f32 / w).min(into.height as f32 / h),
         };
         if !(zoom.is_finite() && zoom > 0.0) {
             return Err(EngineError::Export("export scale must be positive".into()));

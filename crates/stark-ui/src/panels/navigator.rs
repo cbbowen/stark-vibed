@@ -49,7 +49,7 @@ use crate::input::{elem_xy, shortest_turn, snap_quarter};
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch};
 use stark_core::command::ViewCommand;
-use stark_core::geom::Vec2;
+use stark_core::geom::{Extent2, Vec2};
 use stark_core::{ExportScale, LayerId, ObservableState};
 
 /// The largest miniature, in CSS px. The width is the panel's inner width (see
@@ -102,16 +102,6 @@ fn overview_frame(o: &ObservableState) -> Option<LayerId> {
         .map(|l| l.id)
 }
 
-/// Scale for a miniature of a `(width, height)` canvas rect: the largest that fits
-/// the panel's box. Small pieces are scaled *up* as happily as large ones down —
-/// the overview's job is to show the whole of it at a glance, and a 60 px sketch
-/// shown at 60 px would say less than the empty panel around it.
-fn fit_scale(width: u32, height: u32) -> f32 {
-    let by_width = MAX_WIDTH as f32 / width.max(1) as f32;
-    let by_height = MAX_HEIGHT as f32 / height.max(1) as f32;
-    by_width.min(by_height)
-}
-
 /// Draw the miniature: one render of the committed document into the panel's own
 /// surface, scaled to fit the panel's box.
 ///
@@ -120,19 +110,25 @@ fn fit_scale(width: u32, height: u32) -> f32 {
 /// which [`export_plan`](stark_core::Engine::export_plan) refuses; the panel then
 /// keeps showing whatever it last drew rather than blinking.
 ///
+/// **One plan, asked for what is actually wanted.** This used to ask for a 1× plan
+/// first, purely to learn the rect's size, and work the fitting scale out here. That
+/// put a whole extra question in the way of the answer — and one with a stricter
+/// precondition than the render it was standing in for, since a 1× plan of a piece
+/// past `MAX_EXPORT_DIM` is refused as a texture no device would allocate. Past about
+/// 8k of painting or frame the first call therefore failed, `draw_overview` returned
+/// `None`, and the panel silently went on showing a stale miniature at exactly the
+/// size where an overview earns its place. [`ExportScale::Fit`] asks the engine the
+/// question the panel has — "the largest that fits this box" — and nothing about the
+/// size the picture *isn't* being rendered at can refuse it.
+///
 /// Synchronous throughout: there is no readback, so nothing here awaits and nothing
 /// has to survive an await.
 fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
     let mut renderer = state.renderer;
     let mut guard = renderer.write();
     let r = guard.as_mut()?;
-    // The rect at 1:1 first, because the scale that fits the panel is a property of
-    // the rect; the plan is then asked again *at that scale* rather than scaled here,
-    // so the size the surface is configured to and the size the picture is rendered at
-    // are one number from one source.
-    let rect = r.export_plan(frame, ExportScale::Factor(1.0)).ok()?;
-    let factor = ExportScale::Factor(fit_scale(rect.size.width, rect.size.height));
-    let plan = r.export_plan(frame, factor).ok()?;
+    let fit = ExportScale::Fit(Extent2::new(MAX_WIDTH, MAX_HEIGHT));
+    let plan = r.export_plan(frame, fit).ok()?;
     r.paint_overview(&plan).then_some(Overview {
         min: plan.min,
         max: plan.max,

@@ -616,6 +616,19 @@ point is **private** — the screen has no reason to render through anything but
 the session's own view, and `export` is the only consumer. The public surface is
 `render`, `render_to_image`, `export` and `export_plan`.
 
+`ExportScale` is the vocabulary for "how large", and it has three words because
+there are three questions a caller actually has: a `Factor` of the canvas size, an
+exact `Width`, and `Fit`ting a box on both axes. The third is the navigator's
+(§11), and it is in the engine rather than in the panel for a reason worth
+recording. The panel used to ask for a **1× plan purely to learn the rect's size**
+and work the fitting scale out itself — which put a question with a *stricter*
+precondition in front of the one it wanted, since a 1× plan of a piece past
+`MAX_EXPORT_DIM` is refused as a texture no device would allocate. Past ~8k of
+painting or frame the query failed, `draw_overview` returned `None`, and the
+miniature silently went on showing a stale picture at exactly the size where an
+overview earns its place. A preview must be answerable for a piece of *any* size,
+so the question it asks may not be routed through one that isn't.
+
 **Export is `async`, and had to be.** Reading pixels back off the GPU is the one
 inherently asynchronous GPU operation (§7), and it is the one place native and
 web genuinely diverge:
