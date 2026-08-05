@@ -346,6 +346,7 @@ impl GestureRx {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::command::InputSample;
     use crate::document::{ActorId, LayerId, Tool};
     use crate::geom::{Extent2, Vec2, ViewTransform};
@@ -496,46 +497,83 @@ mod tests {
         );
     }
 
-    /// Invariant 3, isolated: a resync repairs a receiver that has missed everything.
+    /// The control points a receiver would draw.
+    fn shown(rx: &GestureRx) -> Vec<ControlPoint> {
+        match rx.drawn() {
+            Some(LiveGesture::Stroke(rec)) => rec.path.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Invariant 3, isolated: **one resync frame repairs a receiver that has missed
+    /// everything.** The protocol's whole promise — loss costs latency, not
+    /// correctness.
+    ///
+    /// Driven through the two halves directly rather than through [`Session::publish`],
+    /// which decides *when* to resync by consulting [`GESTURE_RESYNC`]. That constant
+    /// is currently `None`, and this test used to wrap its entire body in
+    /// `if let Some(interval) = GESTURE_RESYNC` — so it checked nothing at all and
+    /// reported `ok`, which is the failure mode CLAUDE.md names for a skipped GPU test.
+    ///
+    /// The cadence and the mechanism are separate questions, and only the cadence is
+    /// deferred: `encode` already takes `resync` as a parameter, so the repair can be
+    /// exercised whatever the shipping interval is set to. Turning the constant on must
+    /// not be the thing that first tells us whether this works.
     #[test]
-    fn a_resync_makes_the_receiver_exact() {
-        let mut session = Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId(0));
-        let mut peers = Peers::new();
-        let actor = ActorId(1);
-        session.start_stroke(
-            Tool::Brush,
-            InputSample::at(Vec2::ZERO),
-            7,
-            DEFAULT_TOLERANCE,
+    fn a_resync_repairs_a_receiver_that_missed_everything() {
+        let mut tx = GestureTx::new();
+        let mut rx = GestureRx::default();
+        let layer = LayerId(0);
+        let path: Vec<ControlPoint> = (0..12)
+            .map(|i| ControlPoint::at(Vec2::new(f32::from(i as u16) * 4.0, 0.0)))
+            .collect();
+        let head = StrokeHead {
+            layer,
+            brush: crate::document::BrushParams::default(),
+            seed: 7,
+        };
+        let stroke = |n: usize, frozen: usize| GestureSource::Stroke {
+            head: head.clone(),
+            path: path[..n].to_vec(),
+            frozen,
+        };
+
+        // The gesture's first frame lands, and the receiver is exact.
+        let first = tx.encode(0, Some(stroke(3, 1)), false).expect("a frame");
+        assert!(rx.apply(first, 1, layer));
+        assert_eq!(shown(&rx), path[..3], "the first frame carries the head");
+
+        // Then every frame for a while is sent and lost. The watermarks move — they
+        // record what the wire was *told*, and the wire was told — so the sender goes
+        // on trimming its deltas to a prefix the receiver never saw.
+        for (seq, n) in (4..=9).enumerate() {
+            let lost = tx
+                .encode(0, Some(stroke(n, n - 2)), false)
+                .expect("a frame");
+            let _ = (seq, lost);
+        }
+        assert_eq!(
+            shown(&rx),
+            path[..3],
+            "nothing was delivered, so nothing grew"
         );
-        let mut now = 0.0;
-        // Every frame of the first half-second is dropped on the floor.
-        for step in 1..20u32 {
-            session.stroke_to(InputSample::at(Vec2::new(
-                f32::from(step as u16) * 4.0,
-                0.0,
-            )));
-            now += 0.025;
-            let _ = session.publish(now);
-        }
-        assert!(peers.get(actor).is_none(), "nothing has been delivered");
+        let held = rx.frozen();
 
-        // The next resync frame is delivered, and it alone must be enough.
-        if let Some(resync_interval) = crate::peer::GESTURE_RESYNC {
-            now += resync_interval;
-            session.stroke_to(InputSample::at(Vec2::new(120.0, 0.0)));
-            let frame = session.publish(now).expect("a resync frame is due");
-            peers.merge(actor, frame, now);
-
-            let truth = session.preview_record().expect("in flight");
-            let shown = peers
-                .get(actor)
-                .and_then(|p| p.live_stroke())
-                .expect("repaired from one frame");
-            assert_eq!(
-                shown.path, truth.path,
-                "a resync carries the whole path, so one frame is a complete repair"
-            );
-        }
+        // One resync frame — head present, whole path, `from` back to 0 — and it must
+        // be a complete repair on its own. Its seq is far past the last one spliced,
+        // which is exactly the gap a delta would be refused for: a whole frame stands
+        // on its own and is not subject to the continuity rule.
+        let repair = tx.encode(0, Some(stroke(12, 9)), true).expect("a frame");
+        assert!(rx.apply(repair, 40, layer));
+        assert_eq!(
+            shown(&rx),
+            path,
+            "a resync carries the whole path, so one frame is a complete repair"
+        );
+        assert!(
+            rx.frozen() >= held,
+            "a resync says nothing new about what is frozen, so it must not walk the \
+             watermark back"
+        );
     }
 }

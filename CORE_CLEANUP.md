@@ -84,6 +84,15 @@ log them.
 
 ## §5 — `GESTURE_RESYNC = None` is inert scaffolding, and its test is vacuous
 
+**Status: done**, by separating the two questions. The *cadence* stays deferred —
+it needs a loss-rate and latency measurement on a real transport, which this
+crate cannot make — but the constant now says so, and the *mechanism* is tested
+regardless of what the cadence is set to: `encode` already takes `resync` as a
+parameter, so the repair is driven through `GestureTx`/`GestureRx` directly
+instead of through `Session::publish`, which consults the constant. Turning it on
+is a one-line change that cannot be the thing that first tells us whether the
+repair works.
+
 `peer::GESTURE_RESYNC` is `Option<f64> = None`, which makes `GestureTx::resync_due`
 constantly false, `stamp_resync` unreachable, `encode`'s `resync` parameter
 constantly false, and `GestureRx`'s whole resync branch — including the

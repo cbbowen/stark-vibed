@@ -54,7 +54,21 @@ pub const GESTURE_TIMEOUT: f64 = HEARTBEAT + 1.0;
 
 /// How often the sender re-sends a gesture's invariant head and its whole path
 /// (seconds), repairing any receiver that missed a delta and priming any client
-/// that arrived mid-stroke (§17.5).
+/// that arrived mid-stroke (§17.5) — or `None` to send no resync frames at all.
+///
+/// **Currently `None`, deliberately.** This is a cadence, not a switch on the
+/// feature: the encoder takes `resync` as a parameter and both halves implement the
+/// repair in full, which is why
+/// `presence::tests::a_resync_repairs_a_receiver_that_missed_everything` exercises it
+/// regardless of what this says. What is deferred is only *how often it is worth
+/// paying for*, and that needs a measurement this crate cannot make — a resync frame
+/// carries the whole path, so on a long stroke it is the largest presence frame a
+/// session sends, and whether it earns its place depends on the loss rate and the
+/// added latency on a real transport rather than on anything visible from here.
+///
+/// Setting it is a one-line change with no other edit anywhere: what a receiver does
+/// with a resync frame is already settled, already tested, and already the reason
+/// `GestureRx` carries its frozen watermark across one.
 pub const GESTURE_RESYNC: Option<f64> = None;
 
 /// Who this client is on the wire.
