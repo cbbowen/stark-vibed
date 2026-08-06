@@ -1,8 +1,28 @@
 # stark-shaders cleanup
 
 A review of `crates/stark-shaders/src` — the WESL tree and the build step that
-links it. Twelve items, ordered by what unblocks what. Retire this file when the
-last one lands, the way `CORE_CLEANUP.md` and `STROKE_CLEANUP.md` were retired.
+links it. Twelve items, ordered by what unblocks what.
+
+**All twelve are resolved.** Ten were done as written; two were resolved
+*differently* than proposed, for reasons recorded under their headings — §7 by
+accessors rather than by repacking an ABI struct, §8 by stating the binding
+aliasing rather than splitting a file whose invariants are load-bearing. Three
+sub-items were dropped as mistakes in the original review: `OPACITY_K` and
+`MATTE_THICKNESS` have no CPU counterpart to assert (§3), and `VirtualResolver`
+was the wrong tool for the generated module (§9).
+
+This file is ready to retire, the way `CORE_CLEANUP.md` and `STROKE_CLEANUP.md`
+were. What is worth carrying forward first, since it is the part a future reader
+would otherwise rediscover the hard way:
+
+- **`lib/` may not declare a binding.** That rule is what makes a helper shareable
+  at all, and it is in `CLAUDE.md` and at the head of the two new leaf modules.
+- **`wesl_const` is how a constant crosses the boundary.** Its three traps —
+  stripping, mangling, `f32` vs `f64` — are in its own doc comment.
+- **`Stamp.e.zw` is a dead lane** kept for the ABI, reclaimable next time that
+  struct is touched.
+- **`transform.wesl` aliases `@group(0) @binding(0)` three ways**, legally, and a
+  fourth map must get its own module rather than a fourth struct.
 
 The organising complaint: **modules mix bindings with pure helpers, so a helper
 cannot be shared without dragging a bind group along.** Everything in §1–§4 is
@@ -269,7 +289,7 @@ merely near it.
 
 ## 12. Smaller items
 
-**Status: three done, one outstanding.**
+**Status: done.**
 
 - ~~`selection.wesl` uses `f32` enum tags compared with `==`.~~ Now `u32` codes
   read out of the float lane, matching `blend_common`'s `BlendMode`. The equality
@@ -279,7 +299,10 @@ merely near it.
   now.
 - ~~`noise.wesl::_unit` carries a commented-out alternative implementation.~~ Gone
   with §5.
-- `blend_common::merge` takes `cb`/`cs` as parameters but reads `back_aux` /
-  `src_aux` from globals — hence its otherwise-unused `p` argument. Asymmetric
-  enough to slow a reader down. **Outstanding**, and a genuine design call rather
-  than a tidy-up: `merge` either takes everything or reads everything.
+- ~~`blend_common::merge` takes `cb`/`cs` as parameters but reads `back_aux` /
+  `src_aux` from globals — hence its otherwise-unused `p` argument.~~ It takes
+  everything now: the two aux heights arrive as `hb`/`hs` and the `vec2<i32>`
+  disappears from the signature, which was the visible symptom. Half its inputs
+  used to come down the parameter list and half were fetched behind the caller's
+  back, at a position the caller had already computed. The compositing algebra is
+  now a function of its arguments and the mode uniform, nothing else.

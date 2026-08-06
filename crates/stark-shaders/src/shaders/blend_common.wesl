@@ -274,7 +274,14 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
 // additive merge, so it will not erase the relief under it the way a `Normal` matte
 // does (§15.4.2). A frame that screens light is not a thing anyone has
 // asked for; if it becomes one, this is the line that has to learn the difference.
-fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, p: vec2<i32>) -> FsOut {
+// `hb` / `hs` are the two aux heights. They arrive as arguments like everything else
+// rather than being loaded from `back_aux` / `src_aux` in here, which is what this
+// function used to do — and the `p: vec2<i32>` it needed to do it was the only reason
+// a compositing routine took a texel coordinate at all. Half its inputs came down the
+// parameter list and half were fetched behind the caller's back, at a position the
+// caller had already computed. Now the whole of the algebra below is a function of its
+// arguments and the mode uniform, and the two colour spaces read identically.
+fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, hb: f32, hs: f32) -> FsOut {
     // The group's opacity, applied to its composited result — premultiplied
     // colour and coverage scale together, which is the same thing
     // `composite.wesl` does to a leaf layer's tiles one at a time.
@@ -296,9 +303,6 @@ fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, p: vec2<i32>) -> 
         mix(cs.rgb * outside, src_term, cb.a) + cb.rgb * (1.0 - cs.a),
         cs.a * keep + cb.a * (1.0 - cs.a),
     );
-    out.aux = vec4<f32>(
-        textureLoad(back_aux, p, 0).x + textureLoad(src_aux, p, 0).x * keep * b.opacity,
-        0.0, 0.0, 0.0,
-    );
+    out.aux = vec4<f32>(hb + hs * keep * b.opacity, 0.0, 0.0, 0.0);
     return out;
 }
