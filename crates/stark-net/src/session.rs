@@ -27,9 +27,9 @@ use iroh_blobs::Hash;
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
 pub use iroh_gossip::proto::TopicId;
 use n0_future::{StreamExt, task};
-use stark_core::document::{Action, ActionKind, ActorId, BrushShape};
+use stark_core::document::{Action, ActorId, BrushShape};
 use stark_core::peer::{GestureFrame, PeerFrame};
-use stark_core::{AssetId, DocumentFile, SurfaceId};
+use stark_core::{AssetId, DocumentFile};
 use tokio::sync::mpsc;
 
 use crate::Result;
@@ -86,57 +86,12 @@ pub fn actor_from_endpoint_id(id: EndpointId) -> ActorId {
 }
 
 /// Content a remote action needs before it can be applied faithfully, and which
-/// store it belongs in (§6.6, §6.4).
+/// store it belongs in — [`stark_core::AssetNeed`], re-exported so a frontend
+/// pumping this transport does not need to name two crates for one idea.
 ///
-/// Both arms are the same 32-byte content hash and travel the same way; the split
-/// exists because the two decode differently at the far end — a brush mask is
-/// luminance × alpha, a ground is channel 0 — so the receiver has to be told which
-/// it is being handed. It is *told* rather than left to guess, and it is told by the
-/// action that referenced the content, which is the only thing that actually knows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AssetNeed {
-    /// A brush shape a stroke stamps with.
-    Brush(AssetId),
-    /// The canvas ground a `SetSurface` moves the document onto — named by the
-    /// [`AssetId`] inside its [`SurfaceId`], the only kind of ground there is bytes
-    /// to move for. Missing it is worse than missing a brush: an unresolved shape
-    /// degrades to the round tip and the stroke is still visibly a stroke, whereas an
-    /// unresolved ground silently drops the deposition tooth (§6.4) and bakes a
-    /// smooth deposit into tiles that no later arrival un-bakes.
-    Ground(AssetId),
-}
-
-impl AssetNeed {
-    /// The need a document moving onto `surface` creates — `None` for `Flat`,
-    /// which is procedural, has no bytes to move, and so is never waited on.
-    ///
-    /// This is the only place a ground's `Flat` case is answered. Past it the
-    /// need carries an [`AssetId`], so every question about it — what hash it
-    /// transfers under, which store it belongs in, whether this peer holds it —
-    /// has an answer instead of an answer and a special case.
-    pub fn ground(surface: SurfaceId) -> Option<Self> {
-        match surface {
-            SurfaceId::Flat => None,
-            SurfaceId::Image(id) => Some(AssetNeed::Ground(id)),
-        }
-    }
-
-    /// The id the bytes transfer under.
-    pub fn content(self) -> AssetId {
-        match self {
-            AssetNeed::Brush(id) | AssetNeed::Ground(id) => id,
-        }
-    }
-
-    /// The surface a `Ground` need names, for the receiver's
-    /// [`Engine::accept_surface`](stark_core::Engine::accept_surface).
-    pub fn surface(self) -> Option<SurfaceId> {
-        match self {
-            AssetNeed::Brush(_) => None,
-            AssetNeed::Ground(id) => Some(SurfaceId::Image(id)),
-        }
-    }
-}
+/// It lives in the engine because the engine is what has the two stores, and
+/// because loading a file asks the same question a joining peer does.
+pub use stark_core::AssetNeed;
 
 /// Something a peer did, to be applied to the local engine. Apply in order:
 /// assets arrive before the action that references them.
@@ -389,10 +344,10 @@ impl CollabSession {
         catchup.close().await;
         let file = DocumentFile::from_bytes(&snapshot)?;
         // What the log names but the bundle no longer carries — the bill for the
-        // promise, worked out here rather than left to the caller to derive,
-        // because deriving it means knowing which action kinds reference content
-        // and that is this crate's question (`referenced_asset`).
-        let owed = owed_content(&file);
+        // promise. Worked out by the file itself rather than here, because it is
+        // the same question loading a document off disk asks, and one definition
+        // of "what does this log need" is what stops the two drifting.
+        let owed = file.unbundled_content();
         *mirror.lock().expect("mirror poisoned") = Mirror::from_file(&file);
 
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
@@ -537,7 +492,7 @@ impl Broadcaster {
     /// See [`CollabSession::broadcast`].
     pub async fn broadcast(&self, action: Action) -> Result<()> {
         self.waitlist.published(action.clone());
-        let asset = referenced_asset(&action);
+        let asset = stark_core::action_content(&action);
         self.publish_wire(Wire::Action(action), asset).await
     }
 
@@ -733,7 +688,7 @@ async fn recv_loop(
         // action that references nothing and one whose sender attached no
         // transfer hash: there is nothing to fetch, so parking would be parking
         // forever, and the kind's fallback is the best that is available.
-        if let Some(need) = referenced_asset(&action)
+        if let Some(need) = stark_core::action_content(&action)
             && let Some(hash) = hash_or_warn(need, asset_hash)
         {
             match waitlist.claim(need, &action) {
@@ -845,55 +800,6 @@ async fn resolve_asset(
     // Recording the transfer hash with the bytes is what lets this peer announce
     // the content onward on its own actions.
     waitlist.resolved(need, bytes, hash);
-}
-
-/// What a joined document's log names but its bundle does not carry.
-///
-/// Derived from the same [`referenced_asset`] the receive loop uses, so "what an
-/// action needs" has one definition and a new action kind that references content
-/// cannot be added to one of them and forgotten in the other.
-fn owed_content(file: &DocumentFile) -> Vec<AssetNeed> {
-    let bundled: HashSet<AssetId> = file
-        .assets
-        .iter()
-        .map(|(id, _)| *id)
-        .chain(
-            file.surfaces
-                .iter()
-                .filter_map(|(id, _)| crate::mirror::ground_content_id(*id)),
-        )
-        .collect();
-    let mut owed: Vec<AssetNeed> = file
-        .actions
-        .iter()
-        .filter_map(referenced_asset)
-        // The ground the document *starts* on is named by the container, not by
-        // any action, so it would otherwise be owed and never asked for.
-        .chain(AssetNeed::ground(file.canvas.surface))
-        .filter(|need| !bundled.contains(&need.content()))
-        .collect();
-    owed.sort_by_key(|need| need.content().0);
-    owed.dedup();
-    owed
-}
-
-/// The content an action depends on, if any: the brush image a stroke stamps with
-/// (§6.6), or the ground a `SetSurface` moves onto (§6.4).
-///
-/// The ground arm is what stops two clients diverging over the tooth. Before it, a
-/// `SetSurface` naming a ground the receiver had never fetched was applied anyway —
-/// the registry fell back to `Flat`, and every stroke after it deposited as though
-/// the canvas were smooth. It reads like an asset-loading problem, and it was: the
-/// ground was simply not on the list of things an action could be waiting for.
-fn referenced_asset(action: &Action) -> Option<AssetNeed> {
-    match &action.kind {
-        ActionKind::CommitStroke(rec) => match rec.brush.shape {
-            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
-            BrushShape::Round { .. } => None,
-        },
-        ActionKind::SetSurface(id) => AssetNeed::ground(*id),
-        _ => None,
-    }
 }
 
 /// Fetch one content blob, trying each source in turn on a widening backoff (a

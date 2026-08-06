@@ -44,6 +44,7 @@ pub mod assist;
 pub mod color;
 pub mod colorspace;
 pub mod command;
+pub mod content;
 pub mod document;
 pub mod engine;
 pub mod error;
@@ -62,6 +63,7 @@ pub mod spline;
 pub use assets::{AssetId, AssetStore};
 pub use colorspace::{ColorSpace, ColorSpaceId};
 pub use command::{InputCommand, InputSample};
+pub use content::{AssetNeed, action_content};
 pub use document::{LayerId, Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use engine::{
     Background, Engine, ExportPlan, ExportScale, LayerInfo, MatteInfo, ObservableState,
