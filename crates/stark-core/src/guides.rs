@@ -11,6 +11,10 @@
 //! - each world axis's **vanishing point**, the projection of a direction —
 //!   a projective point that is allowed to be at infinity (§20.2);
 //! - each axis pair's **vanishing line** (the horizon, for the ground pair);
+//! - the **lattice** the fans measure out: a cube of cells, whose three
+//!   coordinate planes through one corner each carry a grid of *squares*, which
+//!   is what makes a grid something to measure on rather than to look at
+//!   (§20.3);
 //! - the **45° circle**, radius = focal length: the cone at 45° off the view
 //!   axis, the classical "keep the drawing inside this" bound (§20.1);
 //! - the three **station points**, the eye rotated into the picture plane
@@ -41,6 +45,12 @@ use std::sync::Arc;
 use glam::{Mat3, Quat, Vec2, Vec3};
 
 use crate::geom::{Ellipse, principal_axis};
+
+/// A lattice whose corner sits closer than this many cells to the eye names no
+/// grid (§20.3). Not a tolerance: there all three planes pass through the eye,
+/// every family's index is constant, and what the fans would draw is not an
+/// inaccurate grid but the whole canvas at once.
+const LATTICE_EPS: f32 = 1e-3;
 
 /// A world-axis direction whose camera-space `z` is smaller than this is taken
 /// to vanish *at infinity* — its lines are drawn parallel. At any plausible
@@ -163,11 +173,37 @@ pub struct PerspectiveGuide {
     /// camera — orientation, center, focal — means the same thing under both,
     /// which is what makes this one field a *toggle* rather than a mode.
     pub lens: Lens,
-    /// Fan lines per half-turn of each axis's plane pencil (§20.3). The step
-    /// between guide lines is `π / density` of *visual angle* — equal steps as
-    /// the eye turns, not equal spacing on the canvas, which is what makes the
-    /// same slider mean the same thing in every perspective case.
-    pub density: u32,
+    /// The **lattice** the fans measure out (§20.3): how far each of the three
+    /// squared planes lies from the eye, in *cells*, one component per world
+    /// axis. Equivalently the corner they meet at, as a displacement from the
+    /// eye in world-axis coordinates.
+    ///
+    /// One vector is the whole of the grid's metric, and it has to be a world
+    /// quantity rather than a canvas one: a camera carries no world scale, so
+    /// the only thing about a cell that can be seen is how many of them lie
+    /// between the eye and a plane. Scaling this vector is therefore the density
+    /// control — twice as many cells to the same planes is a grid of half the
+    /// size — and turning it is where the grid sits.
+    ///
+    /// **The grid's phase is the eye, not the corner.** Every guide line lies a
+    /// whole number of cells from the *viewer*, so the foot of the perpendicular
+    /// from the eye to each plane is one of that plane's cell corners: look
+    /// straight down any axis and the crossing under the center of view is the
+    /// grid's own, at every scale and for any lattice whatever. Anchoring the
+    /// phase at the corner instead made that true only when the corner's
+    /// components happened to be whole — and a scale control that halves is
+    /// exactly what turns `(-4, 3, 6)` into `(-1, ¾, 1½)`, one axis on a line,
+    /// one a quarter off and one a half, which reads as three grids laid out
+    /// separately. Nothing about the corner needs to be round now, and the
+    /// scale expands and contracts *about the viewer* rather than pivoting on a
+    /// line some cells away.
+    ///
+    /// A zero component puts the eye *inside* the plane normal to that axis,
+    /// whose grid then images onto its own vanishing line and has nothing to
+    /// show; the pass declines it by the test that says what it is, that a level
+    /// set with no gradient is not a curve. A zero *vector* is that for all
+    /// three at once, and [`corner`](Self::corner) declines it at the source.
+    pub lattice: Vec3,
     /// Master opacity of the whole overlay.
     pub opacity: f32,
     /// Which world axes' fans are drawn (X, Y, Z). The markers derived from an
@@ -177,8 +213,16 @@ pub struct PerspectiveGuide {
 
 impl Default for PerspectiveGuide {
     /// Unnamed and visible, centred on the canvas origin, at a moderate lens,
-    /// turned to the most-reached-for case (2-point), with 15° fans. The caller
-    /// placing a new guide moves `center` to where the artist is looking.
+    /// turned to the most-reached-for case (2-point). The caller placing a new
+    /// guide moves `center` to where the artist is looking.
+    ///
+    /// The lattice stands the artist four cells above its floor and a short way
+    /// in from its two walls, which under this turn puts the corner just below
+    /// the center of view — squares the eye can count rather than a haze it
+    /// reads as tone. All three components are nonzero, as they must be for all
+    /// three planes to have a grid to show at all; whole numbers are no longer
+    /// required of them, but they cost nothing and put the corner's own three
+    /// edges on guide lines.
     fn default() -> Self {
         Self {
             name: None,
@@ -187,7 +231,7 @@ impl Default for PerspectiveGuide {
             focal: 900.0,
             rotation: Quat::from_rotation_y(30f32.to_radians()),
             lens: Lens::Rectilinear,
-            density: 12,
+            lattice: Vec3::new(-4.0, 4.0, 8.0),
             opacity: 0.65,
             axes: [true; 3],
         }
@@ -204,6 +248,21 @@ impl PerspectiveGuide {
     pub fn axis_dirs(&self) -> [Vec3; 3] {
         let m = Mat3::from_quat(self.rotation);
         [m.x_axis, m.y_axis, m.z_axis]
+    }
+
+    /// The [`lattice`](Self::lattice)'s corner in **camera space**, still in
+    /// cells (§20.3) — the guide's one world-metric datum, turned by the camera
+    /// exactly as an axis is, which is why the drag never mentions it.
+    ///
+    /// `None` for a corner sitting *on* the eye ([`LATTICE_EPS`]): there a cell
+    /// has no angular size, all three planes pass through the eye at once, and
+    /// what the fans would draw is not an inaccurate grid but the whole canvas.
+    /// No grid rather than a bad one.
+    pub fn corner(&self) -> Option<Vec3> {
+        let d = self.axis_dirs();
+        let l = self.lattice;
+        (l.is_finite() && l.length_squared() > LATTICE_EPS * LATTICE_EPS)
+            .then(|| d[0] * l.x + d[1] * l.y + d[2] * l.z)
     }
 
     /// The eye's ray through canvas point `p`, unit, in camera space — through
@@ -307,6 +366,13 @@ impl PerspectiveGuide {
     /// down to nothing all offer nothing — the same rule stated once, over the
     /// same three controls the panel puts on the bar.
     ///
+    /// An axis shown **alone** offers nothing either, and that is the same rule
+    /// rather than a fourth one. A guide line is a line *in a pair plane*
+    /// (§20.3), so an axis draws only on the two planes it is a side of, and
+    /// both of those need their other axis. Switch off two fans and the third
+    /// has no plane left to draw on — nothing appears, so nothing may bend a
+    /// stroke.
+    ///
     /// A **fisheye** guide offers nothing either (§20.8): its guide lines are
     /// circles, and the pencil this returns describes straight lines — a snap
     /// through it would align a stroke to a line the guide does not draw,
@@ -317,7 +383,8 @@ impl PerspectiveGuide {
         let shown = self.visible && self.opacity > 0.0 && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
         std::array::from_fn(|i| {
-            (shown && self.axes[i]).then_some(AxisPencil {
+            let partnered = self.axes[(i + 1) % 3] || self.axes[(i + 2) % 3];
+            (shown && self.axes[i] && partnered).then_some(AxisPencil {
                 center: self.center,
                 focal: self.focal,
                 dir: dirs[i],
@@ -457,7 +524,7 @@ impl PerspectiveGuide {
             focal: f,
             lens: self.lens,
             rings: self.rings(),
-            step: std::f32::consts::PI / (self.density.clamp(2, 90) as f32),
+            lattice: self.corner(),
             opacity: self.opacity.clamp(0.0, 1.0),
             dirs,
             axis_alpha: self.axes.map(|on| if on { 1.0 } else { 0.0 }),
@@ -746,13 +813,18 @@ pub struct GuideScene {
     /// The dressed view-cone rings about the center, canvas px: the 45° ring,
     /// and the 90° ring where the lens has one ([`PerspectiveGuide::rings`]).
     pub rings: (f32, Option<f32>),
-    /// Fan step, radians of visual angle (§20.3).
-    pub step: f32,
+    /// The lattice's corner in camera space, in cells (§20.3) — what the six
+    /// families of guide lines step away from. `None` for a guide whose lattice
+    /// names no grid, and then no fan is drawn
+    /// ([`PerspectiveGuide::corner`]).
+    pub lattice: Option<Vec3>,
     /// Master opacity, 0..=1.
     pub opacity: f32,
-    /// World axes in camera space. The fan for axis `i` measures its pencil
-    /// angle against the other two axes, so the pair planes — the vanishing
-    /// traces — are themselves fan curves (§20.3).
+    /// World axes in camera space. Axis `i` carries **two** families of guide
+    /// lines, one for each pair plane it lies in, and both are read off the
+    /// ray's components along the *other* two axes (§20.3) — so the fan
+    /// arithmetic never computes a vanishing point and never branches on
+    /// whether one is finite.
     pub dirs: [Vec3; 3],
     /// Per-axis fan opacity (0 = axis hidden).
     pub axis_alpha: [f32; 3],
@@ -873,29 +945,247 @@ mod tests {
         }
     }
 
-    /// The fan phase convention (§20.3): axis `i`'s pencil angle is measured
-    /// against the other two axes, so the plane spanned with either partner —
-    /// whose trace is a vanishing line — lands on a multiple of a quarter
-    /// turn. With an even density, every vanishing line is a fan line.
+    // --- the lattice the fans measure out (§20.3) --------------------------
+
+    /// The two continuous **cell indices** canvas point `p` carries for axis
+    /// `i` — the expression `guides.wesl` evaluates at every texel (§20.3),
+    /// restated here so the lattice's claim can be held to the lines that will
+    /// actually be drawn rather than to a description of them.
+    ///
+    /// A guide line is where one of the two is an integer. `.x` counts cells
+    /// across the pair plane axis `i` spans with its **successor**, `.y` the
+    /// one it spans with its predecessor; an infinity is that plane's vanishing
+    /// line, where the whole plane images onto one line and there is no cell to
+    /// be in.
+    fn cell(g: &PerspectiveGuide, i: usize, p: Vec2) -> Vec2 {
+        let d = g.axis_dirs();
+        let corner = g.corner().expect("a lattice");
+        let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+        let r = g.ray(p);
+        let (u, v) = (r.dot(d[j]), -r.dot(d[k]));
+        // Each family's plane contributes only its own distance from the eye,
+        // since the phase is the eye rather than the corner (§20.3).
+        let (pj, pk) = (corner.dot(d[j]), corner.dot(d[k]));
+        Vec2::new(-pk * u / v, -pj * v / u)
+    }
+
+    /// The point of the plane normal to axis `n` that is nearest the eye — the
+    /// foot of the eye's own perpendicular, `lattice[n]` cells away. Where the
+    /// grid's phase is anchored, so both families crossing there read cell zero
+    /// and everything else is counted from it in whole cells.
+    fn foot(g: &PerspectiveGuide, n: usize) -> Vec3 {
+        let d = g.axis_dirs();
+        let corner = g.corner().expect("a lattice");
+        d[n] * corner.dot(d[n])
+    }
+
+    /// The property that makes a grid something to measure on rather than
+    /// something to look at (§20.3): the cells the fans cut on a pair plane are
+    /// **squares** — one lattice cell each, the same size in both directions,
+    /// the same size everywhere on the plane, and the same size on all three
+    /// planes because there is one cube behind them.
+    ///
+    /// Checked where the two halves meet. Cell corner `(a, b)` of the plane —
+    /// counted in whole cells from the eye's own foot on it — is projected; the
+    /// *drawn* fans are asked which cell that texel falls in and have to answer
+    /// `(a, b)` exactly; and then the chart §20.7 already tests independently is
+    /// asked how far apart those corners lie **on the plane itself**, where a
+    /// square is a statement with no perspective left in it.
     #[test]
-    fn pair_planes_land_on_quarter_turns_of_the_fan() {
-        let s = guide(0.5, 0.35, 0.2).scene();
-        for i in 0..3 {
-            for step in [1, 2] {
-                let j = (i + step) % 3;
-                // The pencil coordinate of the plane span(a_i, a_j): its
-                // normal, resolved against the measuring basis.
-                let n = s.dirs[i].cross(s.dirs[j]);
-                let u = n.dot(s.dirs[(i + 2) % 3]);
-                let v = n.dot(s.dirs[(i + 1) % 3]);
-                let theta = v.atan2(u);
-                let quarter = theta / std::f32::consts::FRAC_PI_2;
+    fn the_fans_cut_squares_on_every_pair_plane() {
+        let g = guide(0.5, 0.35, 0.2);
+        let d = g.axis_dirs();
+        let corner = g.corner().expect("a lattice");
+        for k in 0..3 {
+            let (i, j) = (k, (k + 1) % 3);
+            let plane = g.planes()[k].expect("plane shown");
+            // One cell on this plane, in the chart's units: the chart is taken
+            // at unit distance along the plane's normal and the plane is
+            // `corner · m` cells away, so the two are reciprocal (§20.7).
+            let side = 1.0 / corner.dot(d[(k + 2) % 3]).abs();
+            let origin = foot(&g, (k + 2) % 3);
+            let corner_at = |a: f32, b: f32| {
+                // Projectively: a plane's nearest point can lie behind the eye,
+                // and both the fans and the chart read the pencil rather than the
+                // ray's sign, so the image of `-x` answers for `x`.
+                let x = origin + d[i] * b + d[j] * a;
+                let p = g.project(x.normalize()).expect("the cell corner images");
+                // Axis `i` steps across this plane in `a` (its successor's
+                // direction), axis `j` in `b` (its predecessor's) — the two
+                // families the plane is served by, and no others.
                 assert!(
-                    (quarter - quarter.round()).abs() < 1e-3,
-                    "axis {i} with partner {j}: θ = {theta}"
+                    (cell(&g, i, p).x - a).abs() < 1e-3,
+                    "plane {k}: axis {i}'s fan puts ({a}, {b}) in cell {}",
+                    cell(&g, i, p).x
+                );
+                assert!(
+                    (cell(&g, j, p).y - b).abs() < 1e-3,
+                    "plane {k}: axis {j}'s fan puts ({a}, {b}) in cell {}",
+                    cell(&g, j, p).y
+                );
+                plane.to_plane(p).expect("on the plane")
+            };
+            for (a, b) in [(-2.0, 1.0), (0.0, 0.0), (2.0, -1.0)] {
+                let o = corner_at(a, b);
+                let (ea, eb) = (corner_at(a + 1.0, b) - o, corner_at(a, b + 1.0) - o);
+                assert!(
+                    (ea.length() - side).abs() < 1e-3 * side
+                        && (eb.length() - side).abs() < 1e-3 * side,
+                    "plane {k} at ({a}, {b}): sides {} and {}, not {side}",
+                    ea.length(),
+                    eb.length()
+                );
+                assert!(
+                    ea.dot(eb).abs() < 1e-3 * side * side,
+                    "plane {k} at ({a}, {b}): {ea:?} and {eb:?} are not square"
                 );
             }
         }
+    }
+
+    /// Where two planes meet, their grids meet: along the edge a pair shares,
+    /// both planes put their cell corners on the same points, one cell apart.
+    ///
+    /// Two planes crossing at a shared edge is the only thing that stops the
+    /// three grids from being three grids: it is why a count carried along an
+    /// edge means the same on either side of it, and why a box drawn in one
+    /// plane lands on the grid of the next. It holds for any lattice at all,
+    /// because both planes count the same whole cells from the same eye — the
+    /// edge is measured from the point of it nearest the viewer.
+    #[test]
+    fn the_planes_agree_along_the_edges_they_share() {
+        let g = guide(0.5, 0.35, 0.2);
+        let d = g.axis_dirs();
+        let corner = g.corner().expect("a lattice");
+        for (i, along) in d.iter().enumerate() {
+            let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+            // The edge is where the two planes meet; its nearest point to the
+            // eye is the corner with this axis's own offset taken out.
+            let near = corner - *along * corner.dot(*along);
+            for n in [-2.0, 0.0, 1.0, 3.0] {
+                // A point `n` cells along the edge that the planes spanned with
+                // the successor and with the predecessor both contain.
+                let x = near + *along * n;
+                assert!(x.z > 0.0, "the sample must be in front of the eye");
+                let p = g.center + Vec2::new(x.x, x.y) * (g.focal / x.z);
+                // The cross-family of each plane — the one whose lines run
+                // across the edge — has to call this the *same* cell corner.
+                assert!(
+                    (cell(&g, j, p).y - n).abs() < 1e-3 && (cell(&g, k, p).x - n).abs() < 1e-3,
+                    "edge {i} at {n}: the two planes cut it at {} and {}",
+                    cell(&g, j, p).y,
+                    cell(&g, k, p).x
+                );
+            }
+        }
+    }
+
+    /// **The viewer stands on the grid** (§20.3): the foot of the eye's own
+    /// perpendicular to a plane is one of that plane's cell corners, so looking
+    /// straight down an axis puts the crossing beneath the center of view on the
+    /// grid's own. That is what anchoring the phase at the eye *means*, and it
+    /// is where the two families lying in each plane both read cell zero.
+    ///
+    /// Asserted with a deliberately **fractional** lattice, because that is the
+    /// case the anchoring exists to answer. With the phase at the corner this
+    /// held only when the corner's components happened to be whole — and a scale
+    /// control that halves turns `(-4, 3, 6)` into `(-1, ¾, 1½)`, which put the
+    /// crossing a quarter of a cell off on one axis and a half on the next.
+    #[test]
+    fn the_viewer_stands_on_the_grid_of_every_plane() {
+        let g = PerspectiveGuide {
+            lattice: Vec3::new(-3.7, 2.15, 6.4),
+            ..guide(0.5, 0.35, 0.2)
+        };
+        for n in 0..3 {
+            // Plane `n` is the one normal to axis `n`, spanned by the other two;
+            // axis `n+1`'s first family and axis `n+2`'s second are the pair that
+            // lie in it.
+            let (i, j) = ((n + 1) % 3, (n + 2) % 3);
+            let x = foot(&g, n);
+            let p = g.project(x.normalize()).expect("the foot images");
+            let (across, along) = (cell(&g, i, p).x, cell(&g, j, p).y);
+            assert!(
+                across.abs() < 1e-3 && along.abs() < 1e-3,
+                "plane {n}: the foot of the eye's perpendicular sits at cell \
+                 ({across}, {along}), not the origin"
+            );
+        }
+    }
+
+    /// The classical chequerboard, where the answer can be written down. Look
+    /// straight down Z with the floor `h` cells below the eye, and its transverse
+    /// guide lines fall at canvas heights `f·h/n` — the tile `n` cells out is
+    /// seen at the depth `n`, the harmonic run of a receding chequered floor and
+    /// what "squares in perspective" means when there is only one vanishing point
+    /// to say it with. An equal-angle fan would draw `f·cot(n·θ)` there, and the
+    /// two agree at exactly one line.
+    ///
+    /// The depths are counted from the **eye**, not from where the walls happen
+    /// to stand, which is why `h` is the only part of the lattice in the answer:
+    /// a fractional floor height moves every line together and still lands them
+    /// on whole cells out from the viewer.
+    #[test]
+    fn a_one_point_floor_recedes_harmonically() {
+        let h = 4.25;
+        let g = PerspectiveGuide {
+            lattice: Vec3::new(-3.0, h, 6.0),
+            ..guide(0.0, 0.0, 0.0)
+        };
+        for n in [1.0, 2.0, 3.0, 7.0] {
+            // The floor is the X/Z plane, so its transverse lines belong to
+            // axis X and step along Z — X's *second* family (`.y`).
+            let at = g.center + Vec2::new(0.0, g.focal * h / n);
+            assert!(
+                (cell(&g, 0, at).y - n).abs() < 1e-3,
+                "the tile {n} cells out is drawn at cell {}",
+                cell(&g, 0, at).y
+            );
+        }
+    }
+
+    /// Halving the cell **subdivides** the grid rather than sliding it: every
+    /// line of the coarser grid is still a line of the finer one, with one new
+    /// line between each pair, so nothing an artist has already counted against
+    /// moves (§20.3). It is why the bar's scale steps in halvings and offers
+    /// nothing between them.
+    ///
+    /// Stated over arbitrary texels rather than over the lines themselves,
+    /// because the strong form is what makes it true of *every* line at once:
+    /// doubling the lattice doubles the cell index everywhere, so an integer
+    /// index goes to an even one and no texel's place in the grid is renamed by
+    /// anything but a factor of two.
+    #[test]
+    fn doubling_the_cells_keeps_every_line_it_had() {
+        let coarse = guide(0.5, 0.35, 0.2);
+        let fine = PerspectiveGuide {
+            lattice: coarse.lattice * 2.0,
+            ..coarse.clone()
+        };
+        for p in [
+            coarse.center + Vec2::new(-380.0, 210.0),
+            coarse.center + Vec2::new(140.0, -95.0),
+            coarse.center + Vec2::new(620.0, 480.0),
+        ] {
+            for i in 0..3 {
+                let (was, now) = (cell(&coarse, i, p), cell(&fine, i, p));
+                assert!(
+                    (now - was * 2.0).abs().max_element() < 1e-3 * was.abs().max_element().max(1.0),
+                    "axis {i} at {p:?}: cell {was:?} became {now:?}, not twice it"
+                );
+            }
+        }
+    }
+
+    /// A lattice collapsed onto the eye names no grid, and the scene says so
+    /// rather than handing the shader a corner every family would fall onto.
+    #[test]
+    fn a_lattice_at_the_eye_is_no_lattice() {
+        let mut g = guide(0.5, 0.35, 0.2);
+        assert!(g.scene().lattice.is_some());
+        g.lattice = Vec3::ZERO;
+        assert!(g.corner().is_none());
+        assert!(g.scene().lattice.is_none());
     }
 
     /// A direction 45° off the view axis projects onto the circle of radius
@@ -961,6 +1251,11 @@ mod tests {
         g.axes = [true, false, true];
         assert!(g.pencils()[1].is_none(), "a hidden fan");
         assert!(g.pencils()[0].is_some());
+
+        // A lone axis has no pair plane left to draw a line on (§20.3), so it
+        // draws nothing — and so it offers nothing, by the same rule.
+        g.axes = [true, false, false];
+        assert!(g.pencils().iter().all(Option::is_none), "an axis alone");
 
         g.axes = [true; 3];
         g.visible = false;

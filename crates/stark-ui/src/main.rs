@@ -272,7 +272,7 @@ fn app() -> Element {
                 // selection bar while one is composing (§16.6).
                 TransformBar {}
                 // The drawing-guide edit mode's controls — locks, axis
-                // visibility, density, opacity — while a perspective grid is
+                // visibility, cell count, opacity — while a perspective grid is
                 // being composed (§20.5).
                 PerspectiveGuideBar {}
                 // The frame's composition controls, present only while a frame is

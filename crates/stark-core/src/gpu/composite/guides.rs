@@ -31,7 +31,7 @@ pub(super) fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform
     GuideUniform {
         inv: inv.to_cols_array(),
         org: [org.x, org.y, view.zoom, scene.focal],
-        cov: [scene.center.x, scene.center.y, scene.step, scene.opacity],
+        cov: [scene.center.x, scene.center.y, scene.opacity, 0.0],
         proj: [
             match scene.lens {
                 Lens::Rectilinear => 0.0,
@@ -41,6 +41,12 @@ pub(super) fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform
             r90.unwrap_or(0.0),
             0.0,
         ],
+        // A guide whose lattice names no grid is a zeroed slot like any other
+        // absent element, and its `.w = 0` takes all six fans out (§20.3).
+        grid: match scene.lattice {
+            Some(g) => [g.x, g.y, g.z, 1.0],
+            None => [0.0; 4],
+        },
         dirs: std::array::from_fn(|i| {
             let d = scene.dirs[i];
             [d.x, d.y, d.z, scene.axis_alpha[i]]

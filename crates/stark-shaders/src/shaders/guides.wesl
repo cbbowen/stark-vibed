@@ -6,13 +6,15 @@
 // for anti-aliasing, so the overlay is crisp at any zoom, rotation or mirror
 // and costs no geometry.
 //
-// The fan for axis `a` is the pencil of planes through the eye containing `a`,
-// stepped by equal *visual angle* (§20.3). A texel's pencil coordinate is
-// θ = atan2(n·b1, n·b0) with n = a × r (r = the eye's ray through the texel)
-// and (b0, b1) the other two axes — which lands every pair plane (every
-// vanishing trace) on a quarter turn of the fan. The gradient of θ is taken
-// analytically from the atan2 quotient rather than with fwidth(θ), because θ
-// has a branch cut and its true gradient does not.
+// The fans draw a **lattice** of cubic cells (§20.3), so that the cells they cut
+// on a pair plane are squares and the grid can be measured on. Each axis carries
+// two families — one for each pair plane it lies in — and a family is the planes
+// through the eye containing that plane's lines parallel to the axis, counted in
+// whole cells **from the eye**. With (u, v) the ray resolved on the other two
+// axes and p the plane's own distance from the eye in cells, the family is
+// `p·u = −i·v` for integer i: one linear level set per guide line, whose gradient
+// is exact and whose spacing is |v|/|∇|. Nothing here computes a vanishing point,
+// branches on whether one is finite, or depends on where the corner fell.
 //
 // The lens (§20.8) enters exactly once: the map from the texel to its eye ray.
 // Under the stereographic fisheye that map is the inverse stereographic
@@ -28,11 +30,16 @@ struct Guide {
     inv: vec4<f32>,
     // org.xy, zoom (screen px per canvas px), focal (canvas px).
     org: vec4<f32>,
-    // Center of view .xy (canvas px), fan step (radians), master opacity.
+    // Center of view .xy (canvas px), master opacity, unused.
     cov: vec4<f32>,
     // Lens flag (0 rectilinear, 1 fisheye), 45° ring radius, 90° ring radius
     // (≤ 0 when the lens has none), unused.
     proj: vec4<f32>,
+    // The lattice the fans measure out (§20.3): .xyz the corner where its three
+    // squared planes meet, in camera space, in cells; .w = 1 when it names a
+    // grid at all, 0 when the corner has come to rest at the eye and there is
+    // no fan to draw.
+    grid: vec4<f32>,
     // World axes in camera space .xyz; .w = that axis's fan opacity (0 = off).
     dirs: array<vec4<f32>, 3>,
     // Vanishing trace of pair (k, k+1), by .w: 0 = none; 1 = line (unit normal
@@ -66,6 +73,14 @@ const CIRCLE_HW: f32 = 0.8;
 // fully gone below SPACING_LO screen px, fully present above SPACING_HI.
 const SPACING_LO: f32 = 3.0;
 const SPACING_HI: f32 = 9.0;
+// Every plane recedes in the periphery, and the more squarely it faces the eye
+// the sooner (`plane_fade`). Distance is in units of the 45° ring: a plane whose
+// normal *is* the view axis holds inside PLANE_LO of it and is gone by PLANE_HI,
+// and one the view axis lies in recedes at PLANE_BASE of that rate — far enough
+// out that the ground under a drawing is never the thing that goes.
+const PLANE_LO: f32 = 0.18;
+const PLANE_HI: f32 = 0.50;
+const PLANE_BASE: f32 = 0.25;
 // Dash period of the 45° circle, screen px of arc.
 const DASH: f32 = 10.0;
 
@@ -89,6 +104,61 @@ fn disc_cov(d: f32, r: f32) -> f32 {
 fn over(acc: vec4<f32>, rgb: vec3<f32>, a: f32) -> vec4<f32> {
     let aa = clamp(a, 0.0, 1.0);
     return vec4<f32>(rgb * aa + acc.rgb * (1.0 - aa), aa + acc.a * (1.0 - aa));
+}
+
+/// How much of a plane's grid survives at `periph` — the texel's distance from
+/// the center of view in units of the 45° ring (§20.3).
+///
+/// A plane the view axis is **normal** to repeats across the whole canvas
+/// without ever foreshortening: out in the periphery it is saying nothing the
+/// middle did not already say, and it says it over everything else. A plane the
+/// view axis **lies in** is doing the opposite out there — running away toward
+/// its own vanishing line, where every cell is a fresh statement — so it recedes
+/// at a fraction of the rate and only well past the useful cone.
+///
+/// `face` is what sets the rate: the plane normal's component along the view
+/// axis, which for the plane two axes span is just the third axis's own `z`. One
+/// pose reads the whole scale — look straight down an axis and the picture-plane
+/// wall thins to a patch around the center while the floor and side wall, whose
+/// lines all converge, stay.
+///
+/// A legibility rule rather than a theorem, and the second the overlay spends on
+/// the fans after the moiré guard — which it deliberately does not duplicate:
+/// that one answers "these lines are too close to resolve", this one answers
+/// "these lines are too far out to mean anything". Stated in units of the 45°
+/// ring so it names the same visual angle at any focal length and under either
+/// lens, and so the bound it leans on is one the guide already draws.
+fn plane_fade(face: f32, periph: f32) -> f32 {
+    let rate = mix(PLANE_BASE, 1.0, abs(face));
+    return 1.0 - smoothstep(PLANE_LO, PLANE_HI, rate * periph);
+}
+
+/// Coverage of one family of guide lines: the lattice planes `w = i·den` for
+/// integer `i` (§20.3), at a texel where `w` and `den` change by `dw` and
+/// `dden` per screen px.
+///
+/// Taken as the level set of `w − i·den` rather than as `|w/den − i|`, so the
+/// distance stays exact where the quotient runs away, and the two are computed
+/// from the *same* gradient — which is also the family's spacing, and so drives
+/// the moiré fade for free. Both sides are homogeneous in the ray's length, so
+/// the fisheye's unnormalized ray cancels to first order, which is all an
+/// antialiasing width needs.
+///
+/// Nothing where `den` vanishes: that is the plane's own vanishing line, where
+/// the whole plane images onto one line and no texel is *between* cells. And
+/// nothing where the level set has no **gradient**: a constant function has no
+/// curve in it, so a family whose plane contains the eye — a zero in that
+/// component of the lattice — draws no line here rather than a line everywhere.
+/// Both tests reject a NaN rather than admitting one, so no indeterminate
+/// reaches the accumulator.
+fn fan_cov(w: f32, den: f32, dw: vec2<f32>, dden: vec2<f32>) -> f32 {
+    if !(abs(den) > 1e-9) { return 0.0; }
+    let i = round(w / den);
+    let grad = length(dw - i * dden);
+    let spacing = abs(den) / grad;
+    if !(spacing < 1e6) { return 0.0; }
+    return stroke_cov(abs(w - i * den) / grad, FAN_HW)
+        * smoothstep(SPACING_LO, SPACING_HI, spacing);
 }
 
 /// One dashed chrome ring about the center of view — the 45° and 90° cones'
@@ -122,8 +192,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let zoom = guide.org.z;
     let f = guide.org.w;
     let cov = guide.cov.xy;
-    let step_r = guide.cov.z;
-    let master = guide.cov.w;
+    let master = guide.cov.z;
 
     // The eye's ray through this texel, camera space — the one place the lens
     // enters (§20.8). Unnormalized both ways: every use below is projective,
@@ -141,34 +210,64 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         ray = vec3<f32>((p - cov) / f, 1.0);
     }
 
+    // How far out this texel is, in units of the 45° ring — the guide's own
+    // statement of how far out is far out (§20.1), and the one radius that names
+    // the same visual angle at any focal length and under either lens.
+    let periph = length(p - cov) / max(guide.proj.y, 1e-6);
+
     var acc = vec4<f32>(0.0);
 
-    // --- The three fans (§20.3), faintest layer first. ---------------------
+    // --- The six fans (§20.3), faintest layer first. -----------------------
+    //
+    // Two families per axis, one for each pair plane the axis lies in — which
+    // is what it costs to have every plane's cells be squares: a family that is
+    // evenly spaced on one of an axis's two planes is a reciprocal run on the
+    // other, so three families can square one plane and six square all three.
     //
     // No varying-dependent branch may precede the derivative calls: WebGPU's
     // uniformity analysis requires them in uniform control flow, and only the
-    // loop bounds and uniform-buffer reads are uniform here. Degenerate texels
-    // (the axis's own vanishing point, where the pencil coordinate collapses)
-    // are handled by value instead — the spacing fade reaches zero there, and
-    // the `select` keeps atan2's indeterminate 0/0 out of the accumulator.
+    // loop bounds and uniform-buffer reads are uniform here. The degenerate
+    // texels — a plane's own vanishing line — are handled by value, inside
+    // `fan_cov`, after the derivatives are already in hand.
     for (var i = 0u; i < 3u; i++) {
-        let a = guide.dirs[i].xyz;
-        let n = cross(a, ray);
-        let u = dot(n, guide.dirs[(i + 2u) % 3u].xyz);
-        let v = dot(n, guide.dirs[(i + 1u) % 3u].xyz);
-        // |∇θ| per screen px, from the atan2 quotient — continuous where θ
-        // itself wraps, which fwidth(θ) is not.
-        let gx = u * dpdx(v) - v * dpdx(u);
-        let gy = u * dpdy(v) - v * dpdy(u);
-        let den = max(u * u + v * v, 1e-10);
-        let grad = max(length(vec2<f32>(gx, gy)) / den, 1e-8);
-        let theta = select(atan2(v, u), 0.0, u * u + v * v < 1e-10);
-        let t = theta / step_r;
-        let d_px = abs(t - round(t)) * step_r / grad;
-        let spacing = step_r / grad;
-        let fade = smoothstep(SPACING_LO, SPACING_HI, spacing);
-        let alpha = stroke_cov(d_px, FAN_HW) * fade * guide.dirs[i].w * master;
-        acc = over(acc, axis_color(i), alpha);
+        let j = (i + 1u) % 3u;
+        let k = (i + 2u) % 3u;
+        // The eye ray resolved on the *other* two axes. Identically `n·a_k` and
+        // `n·a_j` for n = a × r, one cross product cheaper: the pencil of planes
+        // through the eye containing `a` is named by the ray's component across
+        // it, and `(u, v)` is that direction projectively.
+        let u = dot(ray, guide.dirs[j].xyz);
+        let v = -dot(ray, guide.dirs[k].xyz);
+        let du = vec2<f32>(dpdx(u), dpdy(u));
+        let dv = vec2<f32>(dpdx(v), dpdy(v));
+        // How far each of this axis's two planes lies from the eye, in cells —
+        // all the lattice contributes, because the grid's *phase* is the eye
+        // rather than the corner (§20.3). The line `m` cells from the viewer on
+        // the plane at `p` satisfies `p·u = −m·v`, so the whole family is that
+        // level set and the corner never enters it. (`dot` with the axis rather
+        // than a component read, since the lattice arrives turned into camera
+        // space with everything else; a rotation makes the two the same number.)
+        let pj = dot(guide.grid.xyz, guide.dirs[j].xyz);
+        let pk = dot(guide.grid.xyz, guide.dirs[k].xyz);
+        // A family is a set of lines *in a plane*, so it is shown when that
+        // plane is: both of the axes spanning it, exactly as the plane's own
+        // vanishing trace and station point are gated below. Hiding one axis
+        // therefore takes the two planes it is a side of whole — including the
+        // lines the other axes draw on them — and leaves standing exactly the
+        // plane it is not part of.
+        //
+        // The plane's obliquity fade rides in the same product, keyed on the one
+        // axis *not* in the plane, which is its normal (`plane_fade`).
+        let lattice = guide.grid.w * master;
+        let a_ij = min(guide.dirs[i].w, guide.dirs[j].w)
+            * plane_fade(guide.dirs[k].z, periph) * lattice;
+        let a_ik = min(guide.dirs[i].w, guide.dirs[k].w)
+            * plane_fade(guide.dirs[j].z, periph) * lattice;
+        // Stepping across the plane spanned with the successor axis (whose own
+        // distance from the eye is `pk`, its normal being the predecessor), then
+        // across the other: the two planes this axis is a side of.
+        acc = over(acc, axis_color(i), fan_cov(-pk * u, v, -pk * du, dv) * a_ij);
+        acc = over(acc, axis_color(i), fan_cov(-pj * v, u, -pj * dv, du) * a_ik);
     }
 
     // --- Vanishing traces: each pair's horizon, straight or bowed (§20.2,

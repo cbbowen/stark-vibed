@@ -21,7 +21,7 @@
 //!
 //! The **Perspective Guide bar** stands at the bottom for the mode's duration:
 //! per-axis locks (constraining the drag — lock the vertical and 2-point
-//! stays 2-point under any gesture), per-axis visibility, density, opacity,
+//! stays 2-point under any gesture), per-axis visibility, the cell count, opacity,
 //! and "Done". There is no case switch anywhere: which of 1/2/3-point you are
 //! in is something the canvas *shows* (the count of finite vanishing points),
 //! not something a control stores.
@@ -53,6 +53,18 @@ const CIRCLE_BAND_PX: f32 = 10.0;
 /// The lens's travel, canvas px: wide enough for any drawing, floored so the
 /// circle cannot be dragged through its own center into a degenerate camera.
 const FOCAL_RANGE: (f32, f32) = (120.0, 12000.0);
+
+/// The cell scale the bar offers, as **halvings** of the default lattice
+/// (§20.3): two steps coarser to two steps finer, and nothing in between.
+///
+/// The model draws a valid grid at any scale; this is what the control offers,
+/// and the reason is that a grid meant to be counted on should *refine* rather
+/// than slide. Double the cells and every line of the coarser grid is still a
+/// line of the finer one with a new line between each pair — nothing an artist
+/// has already counted against moves. At any other ratio the whole family slides
+/// along its pencil toward the corner's own edge, which reads as the grid
+/// drifting sideways rather than as a change of scale.
+const CELL_OCTAVES: (i32, i32) = (-2, 2);
 
 /// The engine's guide list, cloned for a read-modify-commit.
 fn guides_of(state: AppState) -> Vec<PerspectiveGuide> {
@@ -482,7 +494,14 @@ pub fn PerspectiveGuideBar() -> Element {
     // The bar names the guide the same way its row does, so a renamed guide is
     // called the same thing in both places.
     let name = guide_label(index, g);
-    let (density, opacity, axes, lens) = (g.density, g.opacity, g.axes, g.lens);
+    // The grid's scale is the *length* of the lattice: how many cells lie
+    // between the eye and its corner, which is all a camera with no world scale
+    // of its own can say about the size of a cell (§20.3). The bar states it in
+    // halvings of the default ([`CELL_OCTAVES`]) — the guide's own length is the
+    // ladder's rung, so there is no separate number to keep in step.
+    let base = PerspectiveGuide::default().lattice;
+    let octave = (g.lattice.length() / base.length()).log2().round();
+    let (opacity, axes, lens) = (g.opacity, g.axes, g.lens);
 
     rsx! {
         div { class: chrome_class(state, "guide-bar"),
@@ -571,16 +590,25 @@ pub fn PerspectiveGuideBar() -> Element {
             // of the thing the slider makes more or fewer of.
             span { class: "bar-sub",
                 {icon(icons::DENSITY)}
-                {label("Density")}
+                {label("Cells")}
             }
             input {
                 class: "slider",
-                r#type: "range", min: "4", max: "36", step: "1",
-                value: "{density}",
-                title: "Guide lines per half turn",
+                r#type: "range",
+                min: "{CELL_OCTAVES.0}", max: "{CELL_OCTAVES.1}", step: "1",
+                value: "{octave}",
+                title: "How fine the grid is \u{2014} each step halves the cell, so \
+                        every line of the coarser grid is still a line of this one",
+                // Stepped off the *default* rather than off the guide's current
+                // lattice, so a rung is the same grid however it was reached.
+                // Where the corner sits is the drag's business, and there is no
+                // drag for it yet (§20.5) — when there is, this scales about it,
+                // and the grid stays hung on the viewer either way (§20.3).
                 oninput: move |e| {
-                    if let Ok(v) = e.value().parse::<f32>() {
-                        update_guide(state, index, move |g| g.density = v.round() as u32);
+                    if let Ok(k) = e.value().parse::<f32>() {
+                        update_guide(state, index, move |g| {
+                            g.lattice = base * 2f32.powi(k.round() as i32);
+                        });
                     }
                 },
             }
@@ -712,7 +740,7 @@ pub fn GuideEditOverlay() -> Element {
             // The turn only, rather than the whole guide the drag was started
             // from: a drag is a statement about the camera's orientation, and
             // writing back a snapshot would also write back the name, opacity and
-            // density as they stood at the press. Assigning the one field the drag
+            // lattice as they stood at the press. Assigning the one field the drag
             // computes leaves nothing for a mid-drag edit elsewhere to lose.
             GuideRegion::Orbit => update_guide(state, index, move |g| {
                 g.rotation = d.start.dragged(d.from, pc, locked).rotation;

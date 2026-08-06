@@ -286,8 +286,8 @@ pub fn recognize(trace: &[Vec2], tolerance: f32, guides: &Scaffold) -> Option<As
 /// the line is already anchored at — the start, placed deliberately (see [`fit_line`]).
 /// Aligning about it turns the stroke onto the grid without sliding it off where the
 /// hand began, which is also why this snaps to a *direction* rather than to the nearest
-/// drawn fan line: the fans are a sampling of the pencil at whatever density the slider
-/// says, and there is no reason a stroke's position should quantize to it.
+/// drawn fan line: the fans are a sampling of the pencil at whatever cell size the
+/// slider says, and there is no reason a stroke's position should quantize to it.
 fn snap_to_pencil(
     trace: &[Vec2],
     anchor: Vec2,
