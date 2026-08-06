@@ -66,7 +66,9 @@ struct FsOut {
 @vertex
 fn vs_main(
     @builtin(vertex_index) vi: u32,
+    // Per-matte instance: min.xy, max.xy in canvas px.
     @location(0) rect: vec4<f32>,
+    // The fill, in the working colour space.
     @location(1) channels: vec4<f32>,
     @location(2) opacity: f32,
 ) -> VsOut {

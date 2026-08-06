@@ -38,7 +38,9 @@ struct VsOut {
 @vertex
 fn vs_main(
     @builtin(vertex_index) vi: u32,
+    // Per-tile instance: the mask tile interior's top-left in canvas px.
     @location(0) origin: vec2<f32>,
+    // The outline's colour — the marching ants, or a peer's hue (§17.3).
     @location(1) tint: vec4<f32>,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));

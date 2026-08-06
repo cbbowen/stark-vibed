@@ -58,10 +58,22 @@ import package::lib::paint_common::{OPACITY_K};
 @vertex
 fn vs_main(
     @builtin(vertex_index) vi: u32,
+    // Per-segment instance data: what actually varies from segment to segment.
+    // `drain` is the one rate that does not, and rides the `TileXform` uniform
+    // because it is recovered per *fragment* from its own arc length rather than
+    // being a segment constant at all.
     @location(0) start: vec2<f32>,
+    // Unit tangent at the segment start.
     @location(1) dir: vec2<f32>,
+    // Radius, arc length.
     @location(2) geom: vec2<f32>,
+    // Orientation (turns ∈ [0,1)), arc length at the segment start, signed
+    // curvature, and the `add` source rate — the one paint rate the swept path
+    // reads, here because a modulation can point at it (§6.2).
     @location(3) extra: vec4<f32>,
+    // How deep this segment's tip bites into the canvas weave (§6.4). Its own
+    // attribute rather than a lane of `extra`, because `extra` is full and a
+    // five-float vector would be three unused lanes to carry one number.
     @location(4) tooth: f32,
 ) -> VsOut {
     return sweep_vertex(vi, start, dir, geom, extra, tooth);

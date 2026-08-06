@@ -466,7 +466,6 @@ impl Compositor {
                     rect: m.rect,
                     channels: m.channels,
                     opacity: m.opacity,
-                    _pad: [0.0; 3],
                 }),
             }
         }

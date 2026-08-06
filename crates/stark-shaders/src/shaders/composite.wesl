@@ -58,7 +58,9 @@ struct FsOut {
 @vertex
 fn vs_main(
     @builtin(vertex_index) vi: u32,
+    // Per-tile instance: the tile interior's top-left in canvas px.
     @location(0) origin: vec2<f32>,
+    // The layer's opacity.
     @location(1) opacity: f32,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));

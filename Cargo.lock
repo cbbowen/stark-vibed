@@ -6616,6 +6616,7 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "wesl",
+ "wgpu",
 ]
 
 [[package]]

@@ -7,7 +7,6 @@
 //! (no CPU readback, so it works on WebGPU) with a per-segment x per-lateral-band
 //! reservoir texture standing in for the tip's load.
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
@@ -43,13 +42,10 @@ use stark_shaders::mirror::dynamics::BAKE_RES;
 /// *difference* of two prefix sums (§6.2).
 const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
-/// Per-tile instance for the region composite: canvas origin + layer opacity.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct TileInstance {
-    origin: [f32; 2],
-    opacity: f32,
-}
+// The region composite runs `composite.wesl`, so it draws that shader's own
+// per-instance record (§6.10) — which this module used to declare a second
+// `#[repr(C)]` copy of, under a different name.
+use stark_shaders::mirror::composite::Instance as TileInstance;
 
 // The write-back's uniform, generated from `slice.wesl`'s own declaration (§6.7):
 // the tile texture's top-left in region texels.
@@ -1790,11 +1786,9 @@ pub(super) fn build_dynamics_kit(
             // region and the slice writes it back to persistent tiles.
             fs: "fs_raw",
             primitive: desc::QUAD_STRIP,
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<TileInstance>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32],
-            })],
+            buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
+                wgpu::VertexStepMode::Instance,
+            ))],
             targets: &[
                 desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
                 desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),

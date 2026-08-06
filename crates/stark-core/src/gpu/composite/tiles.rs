@@ -5,7 +5,6 @@
 //! [`View`] holds. The two pipelines share group 0, so a run that interleaves them
 //! changes only the pipeline and the vertex buffer.
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
@@ -13,23 +12,11 @@ use crate::gpu::desc::{self, RenderPipe};
 
 use super::view::View;
 
-/// Per-tile instance: canvas-space origin + the layer's opacity.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct Instance {
-    pub(super) origin: [f32; 2],
-    pub(super) opacity: f32,
-}
-
-/// Per-matte instance, mirroring `matte.wesl`'s vertex attributes.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct MatteInstance {
-    pub(super) rect: [f32; 4],     // min.xy, max.xy in canvas px
-    pub(super) channels: [f32; 4], // fill, in the working color space
-    pub(super) opacity: f32,
-    pub(super) _pad: [f32; 3],
-}
+// The two per-instance records pass A draws with, generated from the `@location`
+// parameters of the vertex entry points that read them (§6.10) — the struct, the
+// attribute formats and their offsets all from the one declaration.
+pub(super) use stark_shaders::mirror::composite::Instance;
+pub(super) use stark_shaders::mirror::matte::MatteInstance;
 
 /// Pass A's pipelines and the bind groups they draw through.
 pub(super) struct TilePass {
@@ -92,11 +79,9 @@ impl TilePass {
                 vs: "vs_main",
                 fs: "fs_main",
                 primitive: desc::QUAD_STRIP,
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Instance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32],
-                })],
+                buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
+                    wgpu::VertexStepMode::Instance,
+                ))],
                 targets: &space_targets,
             },
         );
@@ -127,11 +112,9 @@ impl TilePass {
                 vs: "vs_main",
                 fs: "fs_main",
                 primitive: desc::QUAD_STRIP,
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<MatteInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32],
-                })],
+                buffers: &[Some(stark_shaders::mirror::matte::matte_instance_layout(
+                    wgpu::VertexStepMode::Instance,
+                ))],
                 targets: &matte_targets,
             },
         );

@@ -4,7 +4,6 @@
 //! local actor's selection draws as marching ants; a peer's draws as a flat line in
 //! their own colour, so the two never read as the same thing.
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::document::selection::Selection;
@@ -17,12 +16,8 @@ use super::view::View;
 /// anything else draws a flat line in `tint.rgb` at that alpha — which is how
 /// another collaborator's selection is distinguished from your own
 /// (§17.3).
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct OverlayInstance {
-    pub(super) origin: [f32; 2],
-    pub(super) tint: [f32; 4],
-}
+// Generated from `overlay.wesl`'s vertex parameters (§6.10).
+pub(super) use stark_shaders::mirror::overlay::OverlayInstance;
 
 /// One selection to outline, and whose it is (§17.3).
 #[derive(Copy, Clone)]
@@ -85,11 +80,11 @@ impl OverlayPass {
                 vs: "vs_main",
                 fs: "fs_main",
                 primitive: desc::QUAD_STRIP,
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<OverlayInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
-                })],
+                buffers: &[Some(
+                    stark_shaders::mirror::overlay::overlay_instance_layout(
+                        wgpu::VertexStepMode::Instance,
+                    ),
+                )],
                 // The outline is drawn *over* the finished image, so it is the one
                 // pass that blends in straight (non-premultiplied) alpha.
                 targets: &[desc::blended_target(

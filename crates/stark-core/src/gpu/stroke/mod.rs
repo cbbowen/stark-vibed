@@ -42,7 +42,7 @@ use budget::MAX_REGION_DIM;
 use dynamics::{
     DynamicsKit, StrokePath, build_dynamics_kit, build_integrate_pipeline, dynamics_setup,
 };
-use segments::{SegmentInstance, round_coverage};
+use segments::round_coverage;
 
 // The module's surface, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not
@@ -271,14 +271,9 @@ impl StrokeRenderer {
                 vs: "vs_main",
                 fs: "fs_main",
                 primitive: desc::QUAD_STRIP,
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SegmentInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4,
-                        4 => Float32
-                    ],
-                })],
+                buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
+                    wgpu::VertexStepMode::Instance,
+                ))],
                 targets: &[
                     desc::blended_target(
                         color_space.color_format(),

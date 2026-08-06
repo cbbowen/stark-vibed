@@ -16,7 +16,6 @@
 //! Like [`StrokeRenderer`](super::stroke::StrokeRenderer) this holds only immutable
 //! GPU objects, so it is cheap to `Clone` and can ride in the `Action::Context` (§5).
 
-use bytemuck::{Pod, Zeroable};
 use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
@@ -34,12 +33,8 @@ use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use stark_shaders::mirror::mask_region::Region as RegionUniform;
 use stark_shaders::mirror::selection::Params as MaskUniform;
 
-/// Per-tile instance for the region gather: the tile texture's top-left in region px.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct MaskInstance {
-    origin: [f32; 2],
-}
+// Generated from `mask_region.wesl`'s vertex parameters (§6.10).
+use stark_shaders::mirror::mask_region::MaskInstance;
 
 /// The mode code `selection.wesl` reads for an inversion. Not a [`SelectionMode`] —
 /// inverting is not a way of combining a shape, it is its own edit.
@@ -136,11 +131,11 @@ impl SelectionRenderer {
                 vs: "vs_main",
                 fs: "fs_main",
                 primitive: desc::QUAD_STRIP,
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<MaskInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2],
-                })],
+                buffers: &[Some(
+                    stark_shaders::mirror::mask_region::mask_instance_layout(
+                        wgpu::VertexStepMode::Instance,
+                    ),
+                )],
                 targets: &mask_target,
             },
         );

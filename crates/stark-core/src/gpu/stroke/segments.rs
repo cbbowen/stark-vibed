@@ -8,8 +8,6 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use bytemuck::{Pod, Zeroable};
-
 use crate::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
@@ -69,25 +67,10 @@ pub(super) struct Segment {
     pub(super) tooth: f32,
 }
 
-/// Per-segment instance data for the sweep shader. Carries what actually varies from
-/// segment to segment; `drain` is the one rate that does not, and rides the
-/// `TileXform` uniform because it is recovered per *fragment* from its own arc
-/// length rather than being a segment constant at all (see [`generate_segments_in`]).
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct SegmentInstance {
-    pub(super) start: [f32; 2],
-    pub(super) dir: [f32; 2],  // unit tangent at the segment start
-    pub(super) geom: [f32; 2], // radius, arc length
-    // orientation (turns ∈ [0,1)), arc length at segment start, signed curvature,
-    // and the `add` source rate — the one paint rate the swept path reads, here
-    // because a modulation can point at it (§6.2).
-    pub(super) extra: [f32; 4],
-    /// How deep this segment's tip bites into the canvas weave (§6.4). Its own
-    /// attribute rather than a lane of `extra`, because `extra` is full and a
-    /// five-float vector would be three unused lanes to carry one number.
-    pub(super) tooth: f32,
-}
+// Per-segment instance data for the sweep shader, generated from `stamp.wesl`'s own
+// vertex parameters (§6.10) — including the prose on each lane, which now lives
+// beside the declaration that decides how it is read.
+pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 
 /// Generate the round tip's coverage: a soft disc with `hardness` falloff.
 pub(super) fn round_coverage(hardness: f32, res: u32) -> Vec<f32> {

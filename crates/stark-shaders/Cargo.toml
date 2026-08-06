@@ -7,8 +7,12 @@ publish = false
 
 # WESL sources are linked/compiled in build.rs and embedded via `include_wesl!`.
 [dependencies]
-# For the derives on the generated host mirrors (`src/lib.rs`'s `mirror`).
+# Both for the generated host mirrors (`src/lib.rs`'s `mirror`): `bytemuck` for the
+# derives, `wgpu` for the vertex attribute arrays. A vertex buffer layout is derived
+# from a shader's parameter list, so it belongs to this crate — and the types it needs
+# are plain data, no device and no runtime.
 bytemuck = { workspace = true }
+wgpu = { workspace = true }
 wesl = { workspace = true }
 
 [build-dependencies]

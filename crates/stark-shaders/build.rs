@@ -61,6 +61,23 @@ const CONSTS: &[(&str, &str)] = &[
     ("stamp_common", "SWEEP_VERTS"),
 ];
 
+/// The per-instance records a vertex entry point's `@location` parameters describe,
+/// as `(module, entry point, Rust name)`.
+///
+/// The name is the one thing here the shader cannot supply — a parameter list has no
+/// name of its own — so it is written down once, next to the declaration it names.
+///
+/// `composite`'s record is generated once and used twice: pass A draws the layer
+/// stack with it and the brush-dynamics loop composites its working region through
+/// the very same shader (§6.3), and the two had a `#[repr(C)]` struct each.
+const VERTEX: &[(&str, &str, &str)] = &[
+    ("composite", "vs_main", "Instance"),
+    ("mask_region", "vs_main", "MaskInstance"),
+    ("matte", "vs_main", "MatteInstance"),
+    ("overlay", "vs_main", "OverlayInstance"),
+    ("stamp", "vs_main", "SegmentInstance"),
+];
+
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
 const MIXBOX_GLSL: &str = "../../vendor/mixbox/shaders/mixbox.glsl";
@@ -89,6 +106,7 @@ fn main() {
         &out_dir.join("mirror.rs"),
         MIRRORS,
         CONSTS,
+        VERTEX,
     );
 
     // Generated modules resolve out of `OUT_DIR`; everything else out of the tree.

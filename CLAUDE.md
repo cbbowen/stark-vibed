@@ -62,8 +62,10 @@ crates/
   stark-core/      the engine — no UI, no windowing; compiles to wasm
     document/      versioned state: actions, timeline, layers, selection, footprints
     gpu/           tile pool, stroke renderer, compositor, readback
-  stark-shaders/   WESL sources + the build step that links them
+  stark-shaders/   WESL sources, the build step that links them, and the host
+                   mirrors generated from them (§6.10)
     shaders/lib/   binding-free leaves — a module here may NOT declare a binding
+    build/         the generator: WESL declarations -> Rust structs/consts/attrs
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
   stark-ui/        Dioxus 0.7 frontend; owns the wgpu::Surface

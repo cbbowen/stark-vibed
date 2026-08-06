@@ -25,7 +25,11 @@ struct VsOut {
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32, @location(0) origin: vec2<f32>) -> VsOut {
+fn vs_main(
+    @builtin(vertex_index) vi: u32,
+    // The tile texture's top-left in region px.
+    @location(0) origin: vec2<f32>,
+) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let px = origin + corner * r.a.z;
     var out: VsOut;

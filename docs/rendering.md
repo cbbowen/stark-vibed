@@ -714,19 +714,59 @@ whatever no entry point uses, and drops the comments that are half of what is be
 generated. Parsing the linked WGSL with `naga` would buy the offsets and cost all
 four.
 
+### Adding a vertex instance record
+
+Add `("<wesl module>", "<vs entry>", "<RustName>")` to `VERTEX`. The name is the
+one thing the shader cannot supply — a parameter list has no name of its own — so
+it is written once, beside the declaration it names. Then delete the host struct
+*and* its `vertex_attr_array!`, and build the buffer from the generated layout:
+
+```rust
+buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
+    wgpu::VertexStepMode::Instance,
+))],
+```
+
+**Three transcriptions collapse here, not two.** A vertex input was written as the
+shader's parameter list, as a host `#[repr(C)]` struct, and *again* as
+`vertex_attr_array![0 => Float32x2, 1 => Float32]` — where the formats restate the
+types and the offsets are implied by the order. The third is the one with no
+redundancy to catch it: swapping two same-sized attributes made every instance read
+its neighbour's lane, silently.
+
+**Its layout rule is not the uniforms'.** A vertex attribute's offset is the
+*host's* to choose — WGSL's alignment tables do not reach a vertex buffer at all —
+and what `vertex_attr_array!` chooses, so what the shaders were built against, is
+**tight packing**. Members follow one another with no padding, which for these
+types is also exactly what `#[repr(C)]` does (each is 4-byte aligned and a multiple
+of 4 in size). The emitted `offset_of` assertions are what say those two rules
+still agree. `MatteInstance` had carried a `_pad: [f32; 3]` for no stated reason,
+making its stride 48 where its attributes span 36; generating it tightly dropped
+the pad, and the goldens confirmed the stride change is pixel-identical.
+
+`step_mode` stays the caller's, because nothing in the shader says whether the host
+means to advance the buffer per vertex or per instance. Everything else — stride,
+formats, offsets — comes from the declaration.
+
+This is also where the generator stops *catching* mismatches and starts making them
+unrepresentable. Renumbering a `@location` or reordering the parameters moves the
+struct, the formats and the offsets together, so there is nothing left to disagree;
+the only thing that can still fail is the host assigning a wrong *value*, and a
+type change fails at the assignment.
+
+It is why `stark-shaders` depends on `wgpu`: a vertex buffer layout is derived from
+a shader, so it belongs to the crate that owns the shaders, and the types it needs
+(`VertexAttribute`, `VertexFormat`, `VertexBufferLayout`) are plain data — no
+device, no runtime.
+
 ### What this does and does not cover
 
 A bind group layout that disagrees with its shader is a **loud** failure — wgpu
 reflects the module at `create_*_pipeline` and names the offending binding — so
 those stay hand-written in `gpu/desc.rs`, where the call sites are more legible
-than generated ones. The same goes for entry-point names and vertex attribute
-formats. Generation is aimed at the **silent** half of the boundary.
-
-One piece of that half is still open. **Vertex instance structs** (`TileInstance`,
-`MaskInstance`, `SegmentInstance`, …) are not WESL structs at all — they are
-`@location` parameters on the vertex entry point, so a struct-based generator
-cannot see them. Reading the entry point's parameter list is the extension that
-would, and it is the last transcription on this boundary.
+than generated ones. The same goes for entry-point names. Generation is aimed at
+the **silent** half of the boundary, and that half is now covered: uniforms,
+constants, and vertex instance records.
 
 `gpu/wesl.rs` is gone entirely, both of its halves with it. `mirrors_wesl!` pinned
 a hand-written struct's size against a number written beside it; `wesl_const`
