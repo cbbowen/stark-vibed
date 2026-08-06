@@ -2,10 +2,12 @@
 //! shapes one guide, and the bar that serves the mode.
 //!
 //! Three pieces, one list. The **panel** is the roster — add a perspective,
-//! name one, remove one, show or hide one, pick one up to work on —
-//! deliberately shaped like the Layers panel, because it answers the same
-//! question about a different stack, down to the row's controls and the
-//! double-click that renames.
+//! name one, remove one, show or hide one, reorder by dragging, pick one up to
+//! work on — deliberately shaped like the Layers panel, because it answers the
+//! same question about a different stack, down to the row's controls, the
+//! double-click that renames, and the drag that moves a row (`panels::reorder`,
+//! §14.6). What that drag *means* is all that differs: a guide list is flat, so
+//! a landing is an index and nothing sideways is asked of the hand.
 //! Selecting a row (or adding a guide) enters the **edit mode**: a
 //! full-viewport catcher owns the pointer, exactly as transform mode does
 //! (§16.6), and dragging on the canvas *is* the manipulation:
@@ -31,7 +33,8 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_class;
-use crate::platform::select_all;
+use crate::panels::reorder::{self, Grab, Motion, Slide};
+use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::state::{AppState, GuideEdit, dispatch};
 use stark_core::command::ViewCommand;
 use stark_core::geom::Vec2;
@@ -126,6 +129,46 @@ fn duplicate_guide(state: AppState, index: usize) {
     begin_guide_edit(state, index + 1);
 }
 
+/// Move the guide at `from` so that it sits at index `to`, and keep the edit mode
+/// pointed at the **guide** it was pointed at rather than at the index.
+///
+/// That second half is not a nicety. This panel's rows are addressed by position —
+/// a guide has no id — so every index in flight is a claim about a list that has
+/// just changed underneath it, and the mode holds one. [`remove_guide`] carries the
+/// same correction for the same reason; this is that rule for a move rather than a
+/// removal.
+///
+/// The list is view state, so it goes back whole — the read-modify-commit shape
+/// every mutation here takes ([`update_guide`]) — and there is no undo step to spend.
+/// A drag that lands where it began is still declined, but for the plainer reason
+/// that it is not a move.
+fn move_guide(state: AppState, from: usize, to: usize) {
+    let mut guides = guides_of(state);
+    if from >= guides.len() || to >= guides.len() {
+        return;
+    }
+    let guide = guides.remove(from);
+    guides.insert(to, guide);
+    dispatch(state, ViewCommand::SetGuides(guides));
+    let mut mode = state.guide_edit;
+    let current = *mode.peek();
+    mode.set(current.map(|e| GuideEdit {
+        index: moved(e.index, from, to),
+        ..e
+    }));
+}
+
+/// Where the guide at `i` ends up once the one at `from` has been taken out and put
+/// back at `to` — the two steps, in that order, which is the only reading under which
+/// `to` is an index into the list the drag was drawn against.
+fn moved(i: usize, from: usize, to: usize) -> usize {
+    if i == from {
+        return to;
+    }
+    let out = if i > from { i - 1 } else { i };
+    if out >= to { out + 1 } else { out }
+}
+
 /// Remove a guide, keeping the edit mode pointed at the row it was on: the
 /// indices above the removed one all shift down, and the mode follows —
 /// unless it was the removed guide itself, in which case it ends.
@@ -162,13 +205,38 @@ fn guide_label(index: usize, guide: &PerspectiveGuide) -> String {
     }
 }
 
-/// The Drawing Guides panel: the roster of guides, shaped like the Layers
-/// panel — a header that adds, rows that select, rename, remove and hide.
+/// The Drawing Guides panel: the roster of guides, shaped like the Layers panel — a
+/// header that adds, rows that select, rename, remove, hide, and drag to reorder.
+///
+/// The drag is the layer panel's, sharing its code (`panels::reorder`): the press,
+/// the lift, the slot opening under the hand, the release. All this panel adds is
+/// what a landing means, which for a flat list is an index — and the correction that
+/// costs, since a guide is addressed by *position* and the mode holds one of those
+/// (see [`move_guide`]).
 #[component]
 pub fn GuidesPanel() -> Element {
     let state = use_context::<AppState>();
     let guides = guides_of(state);
     let editing = (*state.guide_edit.read()).map(|e| e.index);
+    // The in-flight row drag, if any — panel-local, and delimited by the browser's
+    // own gesture rather than by a timer (§11).
+    let mut drag = use_signal(|| None::<Grab>);
+    // Resolved once here rather than read by each row, so the rows that do not move
+    // do not re-render as the pointer travels. `lift` is where the dragged row is
+    // drawn: straight down the column, because a flat list has no depth for a
+    // sideways drag to choose — the one thing the layer tree asks of the hand that
+    // this roster has nothing to ask.
+    let (land, lift) = match drag.read().as_ref().filter(|d| d.live()) {
+        Some(d) => {
+            let keys: Vec<String> = (0..guides.len()).map(|i| i.to_string()).collect();
+            let dy = d.delta().1;
+            let slide = d
+                .resolve(&keys)
+                .and_then(|(from, boxes)| Slide::resolve(&boxes, (from, from), dy));
+            (slide, (0.0, dy))
+        }
+        None => (None, (0.0, 0.0)),
+    };
 
     rsx! {
         div { class: "layer-header",
@@ -186,7 +254,45 @@ pub fn GuidesPanel() -> Element {
             }
         }
         for (i, g) in guides.into_iter().enumerate() {
-            GuideRow { key: "{i}", index: i, guide: g, active: editing == Some(i) }
+            GuideRow {
+                key: "{i}",
+                index: i,
+                guide: g,
+                active: editing == Some(i),
+                motion: land.map_or_else(Motion::default, |s| s.motion(i, lift)),
+                drag,
+                onland: move |from: usize| {
+                    // A press that never travelled is a click, and the browser is
+                    // about to send one; nothing here has anything to say about it.
+                    if drag.peek().as_ref().is_none_or(|d| !d.live()) {
+                        drag.set(None);
+                        return;
+                    }
+                    // The disarm first, so no frame carries both the new order and
+                    // the transforms that were describing the old one — spent rather
+                    // than dropped, so the click behind the release can be swallowed
+                    // (`reorder::claimed`). It has to be: this panel's rows are
+                    // addressed by position, so that click names whichever guide has
+                    // just taken the dragged one's place, and acting on it would put
+                    // the artist in the wrong guide's edit mode.
+                    if let Some(d) = drag.write().as_mut() {
+                        d.spend();
+                    }
+                    let Some(slide) = land else {
+                        return;
+                    };
+                    if slide.inert() {
+                        // A drag that went nowhere is the click it nearly was, and on
+                        // this row a click is picking the guide up to shape it.
+                        begin_guide_edit(state, from);
+                    } else {
+                        // Deliberately *not* an edit-mode entry: reordering the roster
+                        // is tidying, and tidying must not take over the canvas. What
+                        // you were shaping stays what you are shaping.
+                        move_guide(state, from, slide.gap);
+                    }
+                },
+            }
         }
     }
 }
@@ -196,7 +302,14 @@ pub fn GuidesPanel() -> Element {
 /// field's draft is *row-local* state, so opening one leaves every other row alone
 /// and closing it needs nothing cleaned up — and a hook cannot live inside a `for`.
 #[component]
-fn GuideRow(index: usize, guide: PerspectiveGuide, active: bool) -> Element {
+fn GuideRow(
+    index: usize,
+    guide: PerspectiveGuide,
+    active: bool,
+    motion: Motion,
+    drag: Signal<Option<Grab>>,
+    onland: EventHandler<usize>,
+) -> Element {
     let state = use_context::<AppState>();
     // The rename in progress on this row, or `None` while the row is just a row.
     // Held here rather than read back off the field on commit because both commit
@@ -221,10 +334,24 @@ fn GuideRow(index: usize, guide: PerspectiveGuide, active: bool) -> Element {
     // move when a guide is removed. The placeholder carries the label instead.
     let seed = guide.name.as_deref().unwrap_or_default().to_string();
     let visible = guide.visible;
+    // The row's transform, written by `Motion` so every declaration is stated on
+    // every render — including the ones that are "off" (see `reorder::Motion::css`).
+    let class = format!(
+        "guide-row{}{}",
+        if active { " active" } else { "" },
+        motion.class()
+    );
+    let shift = motion.css();
 
     rsx! {
         div {
-            class: if active { "guide-row active" } else { "guide-row" },
+            class: "{class}",
+            style: "{shift}",
+            // Which row this element is, for `platform::guide_boxes` to read back.
+            // The index *is* the identity here — a guide has no id — which is sound
+            // for the length of one gesture, since nothing reorders the list while a
+            // pointer is down on it.
+            "data-guide": "{index}",
             if let Some(text) = draft() {
                 input {
                     class: "guide-name",
@@ -263,9 +390,45 @@ fn GuideRow(index: usize, guide: PerspectiveGuide, active: bool) -> Element {
                 // renaming is the one you were about to work on.
                 button {
                     class: "guide-name",
-                    title: "Shape this guide \u{2014} double-click to rename",
-                    onclick: move |_| begin_guide_edit(state, index),
+                    title: "Shape this guide \u{2014} drag to reorder, double-click to rename",
+                    // The click a drag leaves behind is not this row's: the drop has
+                    // already said what it meant, and on a roster addressed by
+                    // position that click names whichever guide took this one's place.
+                    onclick: move |_| {
+                        if !reorder::claimed(&mut drag) {
+                            begin_guide_edit(state, index);
+                        }
+                    },
                     ondoubleclick: move |_| draft.set(Some(seed.clone())),
+                    // The name is the grip, as it is on a layer row: the thing you
+                    // would reach for to move a guide is the guide. Capture is what
+                    // makes the release certain — it is delivered to the capturing
+                    // element whatever the pointer is over by then, and this is a drag
+                    // where everything under the pointer moves as you drag it.
+                    onpointerdown: move |e: Event<PointerData>| {
+                        capture_pointer(&e);
+                        let p = e.client_coordinates();
+                        drag.set(Some(Grab::begin(
+                            index.to_string(),
+                            guide_boxes(),
+                            (p.x as f32, p.y as f32),
+                        )));
+                    },
+                    onpointermove: move |e: Event<PointerData>| {
+                        // The armed check first: it keeps every pointer move over the
+                        // panel from dirtying the whole roster.
+                        if drag.peek().is_none() {
+                            return;
+                        }
+                        let p = e.client_coordinates();
+                        if let Some(d) = drag.write().as_mut() {
+                            d.track((p.x as f32, p.y as f32));
+                        }
+                    },
+                    onpointerup: move |_| onland.call(index),
+                    // A cancel — the browser taking the gesture, a pen leaving the
+                    // tablet — ends it the same way.
+                    onpointercancel: move |_| onland.call(index),
                     "{label}"
                 }
             }
@@ -609,5 +772,64 @@ pub fn GuideEditOverlay() -> Element {
             onpointercancel: move |e| if !nav.release(&e) { nav.stop(); drag.set(None); },
             onwheel: move |e| nav.wheel(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`moved`] must agree with the list surgery it describes, for **every** pair of
+    /// positions: take the guide at `from` out, put it back at `to`, and every other
+    /// guide's new index is the one it claims.
+    ///
+    /// Exhaustive rather than sampled, because this is off-by-one arithmetic over two
+    /// steps that shift indices in opposite directions, and the pair that is wrong is
+    /// never the one anyone would think to write down. It is worth the certainty: the
+    /// edit mode holds one of these indices, so an error here points the Perspective
+    /// bar — and every drag on the canvas — at a guide the artist did not touch.
+    #[test]
+    fn the_index_remap_agrees_with_the_move_it_describes() {
+        for n in 1..7usize {
+            let list: Vec<usize> = (0..n).collect();
+            for from in 0..n {
+                for to in 0..n {
+                    let mut after = list.clone();
+                    let guide = after.remove(from);
+                    after.insert(to, guide);
+                    for i in 0..n {
+                        assert_eq!(
+                            after[moved(i, from, to)],
+                            i,
+                            "n={n} from={from} to={to}: guide {i} is not where it was sent"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A flat list's landing is an index, and the one the shared gesture reports is
+    /// the index to insert at **once the row has been taken out**.
+    ///
+    /// Asserted end to end rather than trusted, because "counted in the rows that stay
+    /// put" and "index into the list after the removal" are the same number for a
+    /// reason that is one sentence long and easy to get backwards — and getting it
+    /// backwards is off by one only in the direction you dragged.
+    #[test]
+    fn a_row_lands_where_it_was_dropped() {
+        const H: f32 = 20.0;
+        let boxes: Vec<(f32, f32)> = (0..4).map(|i| (i as f32 * H, H)).collect();
+        let order = |from: usize, dy: f32| {
+            let slide = Slide::resolve(&boxes, (from, from), dy).expect("resolves");
+            let mut list: Vec<usize> = (0..4).collect();
+            let row = list.remove(from);
+            list.insert(slide.gap, row);
+            list
+        };
+        assert_eq!(order(0, H), vec![1, 0, 2, 3], "one row down");
+        assert_eq!(order(0, 3.0 * H), vec![1, 2, 3, 0], "to the foot");
+        assert_eq!(order(3, -3.0 * H), vec![3, 0, 1, 2], "to the head");
+        assert_eq!(order(1, 0.0), vec![0, 1, 2, 3], "nowhere at all");
     }
 }

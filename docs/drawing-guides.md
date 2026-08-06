@@ -177,7 +177,18 @@ or blur, abandoned on Escape, and a field left empty is *no name* rather than a
 blank one, so the row goes back to describing its position ("Perspective 2").
 That last rule is `normalize_name` in the engine, shared with layers and
 applied to every guide the `SetGuides` arm accepts: the list arrives whole, so
-there is no path to a guide's name that avoids it. Selecting a row — or
+there is no path to a guide's name that avoids it. A row **moves by being
+dragged**, and it is the same gesture the layer tree is arranged with, down to
+the code (§14.6, `panels::reorder`): the rows open the slot the guide is going
+into and the guide floats over it, so the preview is the answer rather than a
+symbol for one. What differs is only what a landing *means* — this list is flat,
+so it is an index, and nothing sideways is asked of the hand where the layer tree
+asks for a depth. Two smaller differences follow from the list being view state
+rather than document state: there is no undo step to spend on a move, and the
+mode's index has to be **remapped** as the list closes up behind the dragged row
+(`moved`), since a guide is addressed by position and has no id to be found by.
+Reordering deliberately does *not* enter the edit mode: arranging the roster is
+tidying, and tidying must not take over the canvas. Selecting a row — or
 adding — enters the **edit mode**: a full-viewport catcher owns the pointer for the
 mode's duration (the transform-mode bargain, §16.6; navigation still works),
 and the **Perspective Guide bar** stands at the bottom with the per-axis

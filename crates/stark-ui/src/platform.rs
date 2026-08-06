@@ -81,6 +81,18 @@ pub fn layer_boxes() -> Vec<(String, f32, f32)> {
     Vec::new()
 }
 
+/// The guides panel's rows, each under its `data-guide` position — see
+/// [`element_boxes`]. A *position* rather than an id, because a guide has none; it
+/// holds for the length of one gesture, which is all it is asked to.
+#[cfg(target_arch = "wasm32")]
+pub fn guide_boxes() -> Vec<(String, f32, f32)> {
+    element_boxes(".guide-row[data-guide]", "data-guide")
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn guide_boxes() -> Vec<(String, f32, f32)> {
+    Vec::new()
+}
+
 /// Route the window's `kind` events ("keydown" / "keyup") to `handler`.
 ///
 /// The shortcuts hang off the **window** rather than off an element, so they keep

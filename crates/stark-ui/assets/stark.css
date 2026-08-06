@@ -2275,6 +2275,9 @@ button.layer-remove:hover {
 }
 
 .guide-row {
+  /* The ground a lifted row's z-index is stated against, so a row being dragged
+     passes over its neighbours rather than under them. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2289,6 +2292,42 @@ button.layer-remove:hover {
 
 .guide-row.active {
   background: #3a6ea5;
+}
+
+/* --- dragging a row to move it (§20.5) ---
+   The same gesture the layer tree is arranged with, on a list that is flat: the rows
+   open the slot the guide is going into and the guide floats over it, so the preview
+   is the answer rather than a symbol for one. Every transform is written inline by
+   the panel (`reorder::Motion`); the stylesheet only says what a lifted row looks
+   like — and says it in the same ink as `.layer-item.dragging`, because a hand that
+   has learned one roster has learned the other.
+
+   After `:hover` and `.active`, so a row under the pointer is lit as the thing being
+   carried rather than as the thing being pointed at. */
+.guide-row.dragging {
+  z-index: 3;
+  background: #45454f;
+  box-shadow: 0 6px 14px #00000059;
+}
+
+.guide-row.active.dragging {
+  background: #4a7cb4;
+}
+
+/* A row in flight is not a row to press buttons on, and the pointer is over it for
+   the whole gesture — so its own hover controls would be three glyphs following the
+   hand around. The eye of a *hidden* guide stays, because that one is not a control
+   answering a hover, it is the row saying what it is. */
+.guide-row.dragging:hover .guide-duplicate,
+.guide-row.dragging:hover .guide-remove,
+.guide-row.dragging:hover .guide-eye:not(.hidden) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.guide-row.dragging,
+.guide-row.dragging * {
+  cursor: grabbing;
 }
 
 /* The name — a button that selects, and (while renaming) the field standing in its
@@ -2308,6 +2347,11 @@ button.layer-remove:hover {
   cursor: pointer;
   /* The row's full height stays clickable through the name. */
   padding: 2px 0;
+  /* The name is also the row's drag grip, and both of these are what let a *pen* use
+     it: without them a press that travels is a text selection and a scroll rather
+     than a gesture the panel ever hears about. `.layer-name` carries the same pair. */
+  user-select: none;
+  touch-action: none;
 }
 
 .guide-rename {

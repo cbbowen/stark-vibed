@@ -9,6 +9,9 @@ pub mod layer;
 pub mod lighting;
 pub mod navigator;
 pub mod pick;
+/// The drag that moves a row of a list — shared by the two panels that are
+/// rosters of a stack the artist arranges (the layer tree and the guide list).
+pub mod reorder;
 pub mod select;
 pub mod timeline;
 pub mod transform;
