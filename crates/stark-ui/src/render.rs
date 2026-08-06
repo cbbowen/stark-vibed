@@ -577,6 +577,30 @@ impl Renderer {
             .process(ViewCommand::Resize(Extent2::new(width, height)));
     }
 
+    /// Re-measure the canvas element and match the surface to it. A no-op when it
+    /// already agrees.
+    ///
+    /// The size [`finish_init`] seeds from is a *guess*. It is read one animation
+    /// frame in, which is not the same thing as the stylesheet having applied: until
+    /// it does, `.paint-canvas` is not in force and the element measures the canvas's
+    /// intrinsic 300×150 rather than the window. Nothing corrects that on its own,
+    /// because the only correction is the DOM resize observer, and it reports through
+    /// [`crate::state::resize`], which can act only once the renderer signal is
+    /// published — while everything between `init` and that publish is a *network
+    /// fetch* (shape assets, the ground's height map, the environment HDR). The
+    /// corrected size therefore lands squarely inside the window where it is dropped,
+    /// and the viewport keeps a size the canvas has not had since the first frame:
+    /// the view's `half()` is off by the difference, so every stroke lands away from
+    /// the pointer until something else changes the layout.
+    ///
+    /// So the seed is treated as provisional and this re-reads the element at the
+    /// first moment a resize could no longer be missed — the statement immediately
+    /// before the renderer is published, with no `await` between the two.
+    pub fn sync_to_canvas(&mut self) {
+        let (width, height) = canvas_size(&self.canvas);
+        self.resize(width, height);
+    }
+
     /// Render the current canvas straight into the surface texture and present.
     pub fn paint(&mut self) {
         use wgpu::CurrentSurfaceTexture::{Suboptimal, Success};
@@ -702,11 +726,15 @@ async fn finish_init(
 ) -> Renderer {
     // Size the drawing buffer to the canvas's laid-out size (CSS pixels). We
     // measure the *element*, not the window, so an embedded/sub-window canvas
-    // works too. Crucially we do it here — after the async device setup and a
-    // layout frame — so the stylesheet (linked via `document::Stylesheet`) has
-    // applied: measuring up front would read the unstyled 300×150 intrinsic size,
-    // and Dioxus `onresize` only delivers *later* resizes, so it wouldn't correct
-    // the seed. Subsequent resizes are handled by `onresize`.
+    // works too, and we do it here — after the async device setup and a layout
+    // frame — rather than up front, where the unstyled 300×150 intrinsic size is
+    // all there is to read.
+    //
+    // A frame is not a *guarantee* that the stylesheet (linked via
+    // `document::Stylesheet`) has applied, though, so this is a seed and not the
+    // answer: the caller re-reads the element with `Renderer::sync_to_canvas` just
+    // before publishing the renderer, which is where the guarantee actually is.
+    // Everything after that is handled by `onresize`.
     next_frame().await;
     let (width, height) = canvas_size(&canvas);
     canvas.set_width(width);

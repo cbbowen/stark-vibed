@@ -152,6 +152,13 @@ fn app() -> Element {
                 r.register_environment(DEFAULT_ENVIRONMENT, bytes);
                 r.set_environment(DEFAULT_ENVIRONMENT);
             }
+            // Every fetch above is a window in which the canvas can be laid out —
+            // and any resize reported during it was dropped, because the signal
+            // `state::resize` needs is the one being set two lines down. Re-read
+            // the element here, where a size can no longer go missing, so the
+            // first frame is painted through the viewport the canvas actually has
+            // (`Renderer::sync_to_canvas`). No `await` between this and the set.
+            r.sync_to_canvas();
             r.paint();
             obs.set(Some(r.observe()));
             renderer.set(Some(r));

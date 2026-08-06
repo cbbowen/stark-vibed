@@ -1256,6 +1256,14 @@ pub fn dispatch_quiet(state: AppState, command: impl Into<InputCommand>) {
 /// Resize the surface/engine, then repaint — inline, not [`request_paint`]: the
 /// surface was just reconfigured, and a frame of the old size shown until the next
 /// rAF is a visible flash. Resize arrives at layout rate, which cannot flood.
+///
+/// A report that arrives before the renderer exists is *dropped*, and the app start
+/// is full of them — the canvas is laid out long before WebGPU init has finished
+/// fetching its assets. That is safe only because the last thing init does before
+/// publishing the renderer is re-read the element itself
+/// ([`Renderer::sync_to_canvas`](crate::render::Renderer::sync_to_canvas)): the size
+/// is recovered from the DOM rather than replayed from here, so nothing needs to be
+/// queued. Move that call and the viewport goes stale again.
 pub fn resize(state: AppState, width: u32, height: u32) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;

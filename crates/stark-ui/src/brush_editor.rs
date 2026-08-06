@@ -849,6 +849,13 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     r.set_media_params(media);
     r.process(DocCommand::SetBackground(bg));
 
+    // The column was laid out while the fetches above were in flight, and
+    // `resize_preview` could not act on any of it — the renderer signal it reads is
+    // set below. Re-read the element before anything is measured against it: both
+    // strokes are placed from `r.size()`, so a stale viewport would put them off the
+    // column as well as leaving the surface stretched (`Renderer::sync_to_canvas`).
+    r.sync_to_canvas();
+
     // Lay the fixed red reference stroke: committed once, beneath the
     // replayable test stroke, so the user can preview how the brush interacts
     // with paint already on the canvas. `restroke`'s single undo never reaches
