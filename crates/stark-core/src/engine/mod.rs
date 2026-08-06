@@ -676,8 +676,8 @@ impl Engine {
                     self.commit(ActionKind::SetLayerName(id, name));
                 }
             }
-            DocCommand::MoveLayer { id, carrier, above } => {
-                self.commit(ActionKind::MoveLayer { id, carrier, above })
+            DocCommand::MoveLayer { id, carrier, at } => {
+                self.commit(ActionKind::MoveLayer { id, carrier, at })
             }
         }
     }

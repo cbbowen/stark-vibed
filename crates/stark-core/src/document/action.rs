@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::brush::BrushParams;
-use super::layer::{BlendMode, LayerId, MatteRegion};
+use super::layer::{BlendMode, LayerId, MatteRegion, Place};
 use super::selection::SelectionOp;
 use super::state::DocState;
 use crate::geom::Vec2;
@@ -108,7 +108,7 @@ pub enum ActionKind {
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
     /// Move a layer — with everything it carries — into the stack carried by
-    /// `carrier` (the document's own when `None`), directly above `above`.
+    /// `carrier` (the document's own when `None`), at the place `at` names in it.
     ///
     /// The **only** structural move, covering all three gestures at once
     /// (§14.8): reorder is `carrier` unchanged, *carry* is `carrier`
@@ -119,7 +119,7 @@ pub enum ActionKind {
     MoveLayer {
         id: LayerId,
         carrier: Option<LayerId>,
-        above: Option<LayerId>,
+        at: Place,
     },
     /// Undo **as a logged action** (§5.4, §12.3): a fact peers can see
     /// and order, meaning "derive the document as if `target` were absent".
@@ -438,7 +438,7 @@ impl history::Action for Action {
             ActionKind::SetLayerName(id, name) => {
                 state.set_layer_name(*id, name.as_deref().map(Into::into))
             }
-            ActionKind::MoveLayer { id, carrier, above } => state.move_layer(*id, *carrier, *above),
+            ActionKind::MoveLayer { id, carrier, at } => state.move_layer(*id, *carrier, *at),
             // Resolved at the timeline layer (effective-sequence filtering); an
             // `Undo` should never be materialized through `apply`. Identity, so
             // a stray one is harmless rather than wrong.

@@ -246,7 +246,7 @@ pub enum DocCommand {              // each becomes an Action
     SetLayerClip(LayerId, bool),   // §14.4
     SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
-    MoveLayer { id, above, carrier },   // reorder, carry and release in one action
+    MoveLayer { id, at, carrier },  // reorder, carry and release in one action (§14.8)
     SetMatteRect(..), SetMatteColor(..),
     Select(SelectionOp),
     InvertSelection,

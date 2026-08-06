@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rpds::{HashTrieMap, Vector};
 
 use super::action::ActorId;
-use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion};
+use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion, Place};
 use super::selection::Selection;
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::SurfaceId;
@@ -358,6 +358,10 @@ impl DocState {
     }
 
     fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Option<LayerId>) -> Self {
+        // A new layer goes above a named sibling or on top; it has no reason to
+        // ask for the foot of a stack, so insertion keeps the two-state anchor and
+        // widens it here (`Place::from`).
+        let above = Place::from(above);
         let layers = match carrier {
             None => Some(splice(&self.layers, above, &layer)),
             // Into the carrier's own stack. An unknown carrier inserts nowhere:
@@ -510,9 +514,9 @@ impl DocState {
     }
 
     /// Move layer `id` into the stack carried by `carrier` (the root stack when
-    /// `None`), immediately above `above` — or on top of that stack when `above`
-    /// is absent or lives elsewhere. The layer keeps its tiles **and everything
-    /// it carries**, so a whole group travels as one.
+    /// `None`), at `at` — above a named sibling, on top, or at the foot. The layer
+    /// keeps its tiles **and everything it carries**, so a whole group travels as
+    /// one.
     ///
     /// This is the *only* structural move, and it is deliberately one operation
     /// rather than three (§14.8): reordering within a stack is
@@ -530,12 +534,7 @@ impl DocState {
     ///   `(lamport, actor)` means the second to apply sees the first's result and
     ///   refuses, so no tree-CRDT cycle machinery is needed (§17.9).
     /// - **An unknown carrier**, for the reason [`Self::insert`] gives.
-    pub fn move_layer(
-        &self,
-        id: LayerId,
-        carrier: Option<LayerId>,
-        above: Option<LayerId>,
-    ) -> Self {
+    pub fn move_layer(&self, id: LayerId, carrier: Option<LayerId>, at: Place) -> Self {
         // Taken out first, so the cycle check below reads the subtree the
         // removal already had to find — rather than searching for it again, and
         // then searching for it again to remove it.
@@ -549,9 +548,9 @@ impl DocState {
             return self.clone();
         }
         let layers = match carrier {
-            None => Some(splice(&remaining, above, &moved)),
+            None => Some(splice(&remaining, at, &moved)),
             Some(c) => map_in(&remaining, c, &mut |l: &Layer| {
-                l.with_carries(splice(&l.carries, above, &moved))
+                l.with_carries(splice(&l.carries, at, &moved))
             }),
         };
         match layers {
@@ -698,15 +697,16 @@ fn remove_in(layers: &Vector<Layer>, id: LayerId) -> Option<(Vector<Layer>, Laye
     None
 }
 
-/// `stack` with `layer` directly above `above`, or on top when `above` is absent
-/// or is not a member of this stack.
-fn splice(stack: &Vector<Layer>, above: Option<LayerId>, layer: &Layer) -> Vector<Layer> {
-    let at = match above {
-        Some(target) => stack
+/// `stack` with `layer` at `place`: directly above a named sibling, at the foot,
+/// or on top — which is also where a sibling this stack does not contain lands.
+fn splice(stack: &Vector<Layer>, place: Place, layer: &Layer) -> Vector<Layer> {
+    let at = match place {
+        Place::Above(target) => stack
             .iter()
             .position(|l| l.id == target)
             .map_or(stack.len(), |i| i + 1),
-        None => stack.len(),
+        Place::Top => stack.len(),
+        Place::Bottom => 0,
     };
     insert_at(stack, at, layer)
 }

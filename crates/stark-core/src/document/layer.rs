@@ -64,6 +64,56 @@ impl LayerId {
     }
 }
 
+/// Where in a stack a layer lands — the anchor half of a structural move
+/// (§14.8).
+///
+/// [`Above`](Self::Above) names a sibling, and a stack of `n` layers has `n + 1`
+/// places to land in, so naming siblings covers all of them but one: the place
+/// **under the bottom layer**, which has no sibling below it to be named after.
+/// [`Bottom`](Self::Bottom) is that place. Without it a panel could offer every
+/// drop position in a stack except its foot — and "put this behind everything"
+/// is not an exotic move, it is where a background goes.
+///
+/// The variant order is load-bearing. This replaced an `Option<LayerId>`, and
+/// postcard writes an `Option` as `0` for `None` / `1` for `Some` and an enum as
+/// its variant index — so `Top` and `Above` encode exactly as the `None` and
+/// `Some` they stand in for, and `Bottom` is an *appended* third variant. That
+/// is the one shape of change §8 allows without a format break, and
+/// `place_encodes_as_the_option_it_replaced` below is what keeps the
+/// claim honest.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Place {
+    /// On top of the stack, over everything already in it.
+    Top,
+    /// Directly above this sibling — or on top, if it is not in this stack.
+    Above(LayerId),
+    /// At the foot of the stack, under everything already in it.
+    Bottom,
+}
+
+impl Place {
+    /// The sibling this place is stated against, if any — what a footprint has to
+    /// name as read (§12.6), since where the move lands depends on where that
+    /// layer is.
+    pub fn anchor(self) -> Option<LayerId> {
+        match self {
+            Place::Above(id) => Some(id),
+            Place::Top | Place::Bottom => None,
+        }
+    }
+}
+
+impl From<Option<LayerId>> for Place {
+    /// The old two-state anchor, which is still what insertion takes: a named
+    /// sibling, or the top of the stack.
+    fn from(above: Option<LayerId>) -> Self {
+        match above {
+            Some(id) => Place::Above(id),
+            None => Place::Top,
+        }
+    }
+}
+
 /// splitmix64's finalizer, folded to 32 bits: decorrelates the bits an
 /// endpoint-derived [`ActorId`] takes verbatim from a public key.
 fn mix32(x: u64) -> u32 {
@@ -524,5 +574,40 @@ impl Layer {
             return Some(self);
         }
         self.carries.iter().find_map(|l| l.find(id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`Place`] replaced an `Option<LayerId>` in a logged action, and it claims to
+    /// have done so **without changing a byte** of what was already written: postcard
+    /// encodes an `Option` as a `0`/`1` discriminant and an enum as its variant index,
+    /// so the two existing cases had to keep their indices and the new one had to be
+    /// appended (§8).
+    ///
+    /// Asserted rather than reasoned about, because the failure is silent in exactly
+    /// the way §8 warns: reorder the variants and every `MoveLayer` in every saved
+    /// document decodes as a *different* move, with nothing in the file able to notice.
+    #[test]
+    fn place_encodes_as_the_option_it_replaced() {
+        let id = LayerId(0x1234_5678_9ABC_DEF0);
+        assert_eq!(
+            postcard::to_allocvec(&Place::Top).expect("encodes"),
+            postcard::to_allocvec(&None::<LayerId>).expect("encodes"),
+            "Top must occupy None's discriminant"
+        );
+        assert_eq!(
+            postcard::to_allocvec(&Place::Above(id)).expect("encodes"),
+            postcard::to_allocvec(&Some(id)).expect("encodes"),
+            "Above must occupy Some's discriminant, payload and all"
+        );
+        // And the new case is appended, so nothing that existed had to move.
+        assert_eq!(
+            postcard::to_allocvec(&Place::Bottom).expect("encodes"),
+            vec![2u8],
+            "Bottom is the third variant"
+        );
     }
 }

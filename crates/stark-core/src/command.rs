@@ -36,7 +36,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::document::{
-    BlendMode, BrushParams, FillOp, LayerId, MatteRegion, SelectionOp, ShapeAction, Tool,
+    BlendMode, BrushParams, FillOp, LayerId, MatteRegion, Place, SelectionOp, ShapeAction, Tool,
     TransformMap,
 };
 use crate::geom::{Extent2, Vec2};
@@ -187,16 +187,20 @@ pub enum DocCommand {
     /// read" holds however the frontend collects it.
     SetLayerName(LayerId, Option<String>),
     /// Move a layer — with everything it carries — into the stack carried by
-    /// `carrier` (the document's own when `None`), directly above `above`.
+    /// `carrier` (the document's own when `None`), at the place `at` names in it.
     ///
     /// One command for all three gestures (§14.8): **reorder**
     /// leaves `carrier` as it was, **carry** sets it to the layer being dropped
     /// onto, **release** clears it. Asking a layer to carry its own ancestor is
     /// declined.
+    ///
+    /// That is also why the layers panel can spell a drag-and-drop reorder with
+    /// this one command: a drop lands in *some* stack at *some* place in it, which
+    /// is exactly the pair below (§14.6).
     MoveLayer {
         id: LayerId,
         carrier: Option<LayerId>,
-        above: Option<LayerId>,
+        at: Place,
     },
 
     /// Apply a selection op directly — the menu path (Select All / Deselect), and

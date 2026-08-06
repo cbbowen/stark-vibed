@@ -33,7 +33,7 @@ use stark_core::assets::AssetId;
 use stark_core::command::{DocCommand, InputCommand};
 use stark_core::document::{
     ActionKind, ActorId, BlendMode, DocState, FillOp, Layer, LayerContent, LayerId, MatteRegion,
-    PerspectiveMap, Prop, Resource, Selection, SelectionMode, SelectionOp, SelectionShape,
+    PerspectiveMap, Place, Prop, Resource, Selection, SelectionMode, SelectionOp, SelectionShape,
     TransformMap, WarpMap, footprint, rect_corners,
 };
 use stark_core::geom::{Affine2, TileCoord, Vec2};
@@ -313,7 +313,7 @@ fn every_action_touches_only_what_it_declares() {
         DocCommand::MoveLayer {
             id: copy,
             carrier: Some(root),
-            above: None,
+            at: Place::Top,
         },
     );
     step(
@@ -323,7 +323,7 @@ fn every_action_touches_only_what_it_declares() {
         DocCommand::MoveLayer {
             id: copy,
             carrier: None,
-            above: Some(root),
+            at: Place::Above(root),
         },
     );
 
@@ -539,7 +539,7 @@ fn every_action_touches_only_what_it_declares() {
         DocCommand::MoveLayer {
             id: copy,
             carrier: Some(second),
-            above: None,
+            at: Place::Top,
         },
     );
     step(

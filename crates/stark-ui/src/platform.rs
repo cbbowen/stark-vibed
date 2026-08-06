@@ -18,22 +18,29 @@ pub async fn sleep_ms(ms: i32) {
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn sleep_ms(_ms: i32) {}
 
-/// The panel stack's panels: each one's `data-panel` id and its `(top, height)` in client
-/// px. Empty off-wasm, and empty before the stack has mounted.
+/// Every element matching `selector`: the identity it wears in `attr`, and its
+/// `(top, height)` in client px. Empty off-wasm, and empty before the elements have
+/// mounted.
 ///
-/// In DOM order, which is *not* the order they appear in — the stack's children are a
-/// fixed sequence and the column is ordered by a flex `order` on each one
-/// ([`crate::layout::PanelStack`]). Hence the id: it travels **with** the box, off the same
-/// element, so a caller matches on identity rather than on position. Matched by position a
-/// panel would be measured through its neighbour's box in silence, because a box is a
-/// plausible box whichever panel it came from (§11).
+/// In DOM order, which a caller must **not** read as the order they appear in — the
+/// panel stack's children are a fixed sequence ordered by a flex `order`
+/// ([`crate::layout::PanelStack`]). Hence the attribute: the identity travels *with*
+/// the box, off the same element, so a caller matches on identity rather than on
+/// position. Matched by position an element would be measured through its
+/// neighbour's box in silence, because a box is a plausible box whichever element it
+/// came from (§11).
+///
+/// The two callers are the two drags that reorder a column by dropping a thing into
+/// it: the panel stack ([`panel_boxes`]) and the layer tree ([`layer_boxes`]). Both
+/// measure once at grab time and derive everything after from the live pointer, so
+/// there is no cached geometry to fall out of date.
 #[cfg(target_arch = "wasm32")]
-pub fn panel_boxes() -> Vec<(String, f32, f32)> {
+fn element_boxes(selector: &str, attr: &str) -> Vec<(String, f32, f32)> {
     use wasm_bindgen::JsCast;
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return Vec::new();
     };
-    let Ok(nodes) = doc.query_selector_all(".panel-stack > .panel") else {
+    let Ok(nodes) = doc.query_selector_all(selector) else {
         return Vec::new();
     };
     (0..nodes.length())
@@ -42,15 +49,35 @@ pub fn panel_boxes() -> Vec<(String, f32, f32)> {
         .map(|el| {
             let r = el.get_bounding_client_rect();
             (
-                el.get_attribute("data-panel").unwrap_or_default(),
+                el.get_attribute(attr).unwrap_or_default(),
                 r.top() as f32,
                 r.height() as f32,
             )
         })
         .collect()
 }
+
+/// The panel stack's panels, each under its `data-panel` id — see [`element_boxes`].
+#[cfg(target_arch = "wasm32")]
+pub fn panel_boxes() -> Vec<(String, f32, f32)> {
+    element_boxes(".panel-stack > .panel", "data-panel")
+}
 #[cfg(not(target_arch = "wasm32"))]
 pub fn panel_boxes() -> Vec<(String, f32, f32)> {
+    Vec::new()
+}
+
+/// The layer panel's rows, each under its `data-layer` id — see [`element_boxes`].
+///
+/// The whole entry is measured (`.layer-item`, indent included) rather than the row
+/// inside it, because that is the box a drag opens a slot the size of: the margin
+/// between two entries is the gap the drop lands in.
+#[cfg(target_arch = "wasm32")]
+pub fn layer_boxes() -> Vec<(String, f32, f32)> {
+    element_boxes(".layer-item[data-layer]", "data-layer")
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn layer_boxes() -> Vec<(String, f32, f32)> {
     Vec::new()
 }
 

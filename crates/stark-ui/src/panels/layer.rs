@@ -25,6 +25,14 @@
 //! empty the document. On a row it names its own layer, and the row that would empty
 //! the document simply has no Remove — which is also what makes the Guides panel's
 //! rows and these ones one shape rather than two (`panels::guides`).
+//!
+//! And because the panel draws where every layer *is*, the way to put one somewhere
+//! else is to drag it there. That gesture is one move, not three, for the reason the
+//! model has one command: a drop lands in some stack, at some place in it (§14.8).
+//! Carry and Release stay — they are the two moves worth having a one-click name for,
+//! and they say what they do without being tried — but reordering *within* a stack
+//! had no control at all before this, because it is the one move neither of them can
+//! express. See [`landing`] for what a drop means and [`Motion`] for how it is drawn.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,17 +41,25 @@ use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
 use crate::panels::frame::AddFrameButton;
-use crate::platform::select_all;
+use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch};
 use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::BlendMode;
+use stark_core::document::{BlendMode, Place};
 use stark_core::{LayerId, LayerInfo};
 
-/// How far one level of membership indents a row, in pixels. Named because two
-/// things are measured in it: the row's own offset, and the slot the indent leaves
-/// empty to its left, which is where Release sits.
+/// How far one level of membership indents a row, in pixels. Named because three
+/// things are measured in it: the row's own offset, the slot the indent leaves empty
+/// to its left, which is where Release sits, and — since a drag can change a row's
+/// depth as well as its place — how far sideways the pointer must travel to mean one
+/// level of it.
 const INDENT: usize = 14;
+
+/// How far the pointer must travel before a press on a row is a drag rather than a
+/// click. Small, because the row's other two gestures are a click and a double-click
+/// and neither survives being mistaken for a drag; large enough that the hand's own
+/// tremor on a pen does not lift a layer out of its group.
+const GRAB_SLOP: f32 = 4.0;
 
 /// A row as the panel draws it: the layer, plus what its neighbours in the flat
 /// list say about it that the layer alone cannot.
@@ -70,6 +86,240 @@ pub struct Row {
     removable: bool,
 }
 
+/// A press on a row that has become a drag: which layer, where the pointer started
+/// and is now, and every row's box **as it stood when the press landed**.
+///
+/// Nothing derived is kept here. The geometry is measured once and everything after
+/// is a function of the live pointer, so a row that has slid out of the way cannot
+/// feed back into the decision that moved it — the same bargain the panel-stack drag
+/// makes ([`crate::layout::DragState`]), for the same reason.
+///
+/// Boxes carry the `data-layer` string off the element they were measured from, so
+/// the panel matches them to its rows **by identity**. Matched by position, a row
+/// would be measured through its neighbour's box in silence.
+#[derive(Clone, PartialEq)]
+pub struct RowDrag {
+    id: LayerId,
+    boxes: Vec<(String, f32, f32)>,
+    anchor: (f32, f32),
+    pointer: (f32, f32),
+    /// Whether the pointer has travelled [`GRAB_SLOP`] yet. Until it has, this is a
+    /// click that has not been let go of, and the panel draws nothing.
+    live: bool,
+}
+
+/// How a row is drawn while a drag is in flight — resolved by the panel and handed
+/// to the row, so the rows that do not move do not re-render as the pointer travels.
+///
+/// The default is the resting state, which is what every row gets when there is no
+/// drag: no shift, no lift, no transition.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct Motion {
+    /// Where to draw this row relative to where it belongs, in px.
+    shift: (f32, f32),
+    /// In the travelling block: this row is one of the ones being carried by the
+    /// pointer, so it tracks the hand 1:1 and slides for nobody.
+    lifted: bool,
+    /// A drag is in flight, so a row that is *not* lifted eases into its new place
+    /// rather than jumping there.
+    live: bool,
+    /// This layer would carry what is being dropped. The one fact the indent alone
+    /// leaves to be inferred, so it is marked on the row that would do the carrying.
+    carrying: bool,
+}
+
+/// What a drag would commit, resolved against the rows as they stand now.
+///
+/// Every field is derived from the pointer and the measured boxes; nothing here is
+/// stored between frames.
+#[derive(Clone, Copy, PartialEq)]
+struct Landing {
+    /// Display indices of the travelling block: the dragged row and everything it
+    /// carries. A subtree is contiguous in the panel — a base is drawn under the
+    /// rows it carries and nothing else may come between — so a range says it.
+    block: (usize, usize),
+    /// How far a displaced row slides: the block's whole extent, gap included, so
+    /// the slot it opens is exactly the size of what is going into it.
+    step: f32,
+    /// Where the block lands, counted in rows that stay put — `n` rows above it.
+    gap: usize,
+    /// The depth it lands at, which the pointer's *horizontal* travel chooses among
+    /// the depths this gap can express.
+    depth: usize,
+    /// Where the block is drawn while in flight.
+    shift: (f32, f32),
+    /// The move this commits to (§14.8).
+    carrier: Option<LayerId>,
+    at: Place,
+    /// Whether that move would change anything. A drag that ends where it began must
+    /// not spend an undo step saying so.
+    inert: bool,
+}
+
+impl Landing {
+    /// How to draw the row at display index `i`.
+    fn motion(&self, i: usize, id: LayerId) -> Motion {
+        let (start, end) = self.block;
+        if (start..=end).contains(&i) {
+            return Motion {
+                shift: self.shift,
+                lifted: true,
+                live: true,
+                carrying: false,
+            };
+        }
+        // Where this row sits among the ones that stay put, which is what `gap` is
+        // counted in. Everything below the block closes up behind it.
+        let k = if i < start { i } else { i - (end - start + 1) };
+        let dy = if i > end && k < self.gap {
+            -self.step
+        } else if i < start && k >= self.gap {
+            self.step
+        } else {
+            0.0
+        };
+        Motion {
+            shift: (0.0, dy),
+            lifted: false,
+            live: true,
+            carrying: self.carrier == Some(id),
+        }
+    }
+}
+
+/// Resolve an in-flight drag against the displayed rows: where the block would land,
+/// what that spells as a [`MoveLayer`], and how to draw the panel meanwhile.
+///
+/// `None` when the drag cannot be resolved — a row without a box, which is what a
+/// document that changed under the pointer looks like (a peer's edit, §17). The panel
+/// then draws itself at rest and the release commits nothing, rather than acting on
+/// geometry that describes a tree that is gone.
+///
+/// **A gap, not a row, is the drop target**, and the pointer's *x* chooses the depth
+/// within it. That is the whole gesture: the same drop point between two rows can
+/// mean several different places in several different stacks — all of which draw at
+/// that one seam — and which one it means is how far right you are holding it. Where
+/// a gap can only mean one thing, which is most of them, x does nothing at all.
+///
+/// The depths a gap can express run from the depth of the row **above** it to one
+/// past the depth of the row **below** it. Both bounds are the panel's own picture
+/// read back: a drop cannot be shallower than the row it is directly under (that
+/// position renders somewhere else entirely — outside the group, below its base), and
+/// one deeper than the row below it is that row carrying the drop, since what a layer
+/// carries is drawn directly above it.
+///
+/// Two things fall out rather than being checked. A cycle is impossible: every place
+/// this can name is stated against a row that **stays put**, and a row inside the
+/// travelling block is not one. And the landing is total — every depth in the range
+/// names exactly one real position, because the ancestors of the row below the gap
+/// cover every depth beneath it without a gap.
+fn landing(display: &[Row], drag: &RowDrag) -> Option<Landing> {
+    // Each row's box, found by the id it wears rather than by where it sits.
+    let boxes: Vec<(f32, f32)> = display
+        .iter()
+        .map(|r| {
+            let key = r.info.id.0.to_string();
+            drag.boxes
+                .iter()
+                .find(|(k, ..)| *k == key)
+                .map(|&(_, top, h)| (top, h))
+        })
+        .collect::<Option<_>>()?;
+    let from = display.iter().position(|r| r.info.id == drag.id)?;
+    let deep = display[from].info.depth;
+    // The block reaches back over the rows this one carries — everything above it
+    // that is deeper than it, up to the first row that is not.
+    let start = display[..from]
+        .iter()
+        .rposition(|r| r.info.depth <= deep)
+        .map_or(0, |i| i + 1);
+    let (block_top, block_bottom) = (boxes[start].0, boxes[from].0 + boxes[from].1);
+    // The space between two entries, so a slide closes the slot exactly rather than
+    // leaving a seam the width of a margin.
+    let gap_px = if boxes.len() > 1 {
+        (boxes[1].0 - boxes[0].0 - boxes[0].1).max(0.0)
+    } else {
+        0.0
+    };
+    let step = block_bottom - block_top + gap_px;
+
+    let (dx, dy) = (
+        drag.pointer.0 - drag.anchor.0,
+        drag.pointer.1 - drag.anchor.1,
+    );
+    let (top, bottom) = (block_top + dy, block_bottom + dy);
+    // The rows that stay put, in display order.
+    let rest: Vec<usize> = (0..display.len())
+        .filter(|i| *i < start || *i > from)
+        .collect();
+    // How many of them now sit above the block: one yields when the block's *leading*
+    // edge — its top going up, its bottom going down — crosses that row's centre, so
+    // the block can always be dragged clear to either end.
+    let gap = rest
+        .iter()
+        .filter(|&&k| {
+            let center = boxes[k].0 + boxes[k].1 * 0.5;
+            if k < start {
+                top >= center
+            } else {
+                bottom > center
+            }
+        })
+        .count();
+
+    let above = gap.checked_sub(1).map(|k| &display[rest[k]]);
+    let below = rest.get(gap).map(|&k| &display[k]);
+    let low = above.map_or(0, |r| r.info.depth);
+    let high = below.map_or(0, |r| r.info.depth + 1).max(low);
+    // Relative to the depth it was grabbed at, so a straight-down drag keeps the
+    // nesting it had wherever that is still legal, and only a sideways one changes it.
+    let want = (deep as f32 + dx / INDENT as f32).round().max(0.0) as usize;
+    let depth = want.clamp(low, high);
+
+    let (carrier, at) = match below {
+        // Under everything: the foot of the document's own stack, the one place no
+        // sibling can name.
+        None => (None, Place::Bottom),
+        Some(b) if depth > b.info.depth => (
+            Some(b.info.id),
+            // What a layer carries is drawn above it, so the seam directly over a row
+            // is the *foot* of its carried stack — unless those rows are folded away,
+            // in which case this seam stands for the whole subtree and a drop belongs
+            // on top of it, where it will be when the fold opens.
+            if b.collapsed && b.info.is_group {
+                Place::Top
+            } else {
+                Place::Bottom
+            },
+        ),
+        // Otherwise the drop is in an ancestor's stack: `depth` picks which one, and
+        // it goes directly above the ancestor that sits at that depth.
+        Some(b) => {
+            let mut anchor = b;
+            while anchor.info.depth > depth {
+                let up = anchor.info.carrier?;
+                anchor = display.iter().find(|r| r.info.id == up)?;
+            }
+            (anchor.info.carrier, Place::Above(anchor.info.id))
+        }
+    };
+
+    Some(Landing {
+        block: (start, from),
+        step,
+        gap,
+        depth,
+        // The block keeps its own shape and moves as one: every row in it takes the
+        // same shift, so the indents *within* a dragged group stay where they were
+        // while the whole of it steps to the depth it is going to.
+        shift: ((depth as f32 - deep as f32) * INDENT as f32, dy),
+        carrier,
+        at,
+        // Same slot, same depth, same tree.
+        inert: gap == start && depth == deep,
+    })
+}
+
 #[component]
 pub fn LayerPanel() -> Element {
     let state = use_context::<AppState>();
@@ -78,6 +328,11 @@ pub fn LayerPanel() -> Element {
     // part of the painting, is not saved, and is not something a collaborator
     // should see happen to their panel.
     let mut collapsed = use_signal(HashSet::<LayerId>::new);
+    // The in-flight row drag, if any. Panel-local for the same reason `collapsed` is:
+    // it exists only between a press and its release, is nobody else's business, and
+    // — like the panel stack's — is delimited by the browser's own gesture, so it
+    // cannot be left armed by a timer that failed to fire (§11).
+    let mut drag = use_signal(|| None::<RowDrag>);
 
     let obs = state.obs.read();
     let layers = obs.as_ref().map(|o| o.layers.clone()).unwrap_or_default();
@@ -90,6 +345,19 @@ pub fn LayerPanel() -> Element {
     drop(obs);
     let shut = collapsed.read().clone();
     let rows = rows(&layers, &shut);
+    // The rows as the panel actually shows them: top of the document first, with
+    // whatever is folded away left out. One list, used three times — to draw, to
+    // resolve the drag against, and to say what a drop means — so the gesture is
+    // reasoning about the same picture the user is looking at.
+    let display: Vec<Row> = rows.iter().rev().filter(|r| !r.hidden).cloned().collect();
+    // The drag preview, resolved to numbers here rather than read by each row: the
+    // rows that do not move do not re-render as the pointer travels, and the drop's
+    // meaning is decided in one place instead of once per row.
+    let land = drag
+        .read()
+        .as_ref()
+        .filter(|d| d.live)
+        .and_then(|d| landing(&display, d));
 
     // `LayerInfo` carries the layer's name now, so it is `Clone` rather than `Copy`
     // and cannot be read again after a handler has moved it. The id is all most
@@ -125,14 +393,46 @@ pub fn LayerPanel() -> Element {
 
         // Top of the document first, which is what a stack looks like from in front
         // of it — and within a group, what it carries above its base.
-        for row in rows.iter().rev().filter(|r| !r.hidden).cloned() {
+        for (i, row) in display.iter().enumerate() {
             LayerRow {
+                // Keyed by the layer, so a reorder *moves* the row's element instead
+                // of repainting whichever row now stands in that position. Positional
+                // diffing was harmless while the panel only ever grew and shrank; a
+                // drop reorders, and it would leave the click that follows the release
+                // landing on the row that took the dragged one's place.
+                key: "{row.info.id.0}",
                 row: row.clone(),
+                motion: land.map_or_else(Motion::default, |l| l.motion(i, row.info.id)),
+                drag,
                 ontoggle: move |id| {
                     let mut shut = collapsed.write();
                     if !shut.remove(&id) {
                         shut.insert(id);
                     }
+                },
+                onland: move |_| {
+                    // **The disarm goes first**, and for the reason the panel stack's
+                    // does: a row's shift is stated against the panel as it stood when
+                    // the press landed, so a frame carrying the new order while the
+                    // transforms are still on would be the move applied twice.
+                    let taken = drag.write().take();
+                    let (Some(d), Some(l)) = (taken, land) else {
+                        return;
+                    };
+                    if l.inert {
+                        return;
+                    }
+                    // A layer dropped into a folded group would otherwise vanish into
+                    // it. Opening the fold is not a second decision — it is the panel
+                    // showing the move it just made.
+                    if let Some(c) = l.carrier {
+                        collapsed.write().remove(&c);
+                    }
+                    dispatch(state, DocCommand::MoveLayer {
+                        id: d.id,
+                        carrier: l.carrier,
+                        at: l.at,
+                    });
                 },
             }
         }
@@ -392,7 +692,13 @@ fn layer_label(info: &LayerInfo) -> String {
 }
 
 #[component]
-pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
+pub fn LayerRow(
+    row: Row,
+    motion: Motion,
+    drag: Signal<Option<RowDrag>>,
+    ontoggle: EventHandler<LayerId>,
+    onland: EventHandler<()>,
+) -> Element {
     let state = use_context::<AppState>();
     let info = row.info.clone();
     // The rename in progress on *this* row, or `None` while the row is just a row.
@@ -443,11 +749,18 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
     // Membership is an indent; clipping is a rail. Two marks, because they are two
     // facts (§14.6) — and a row can wear one without the other, which
     // is the state Photoshop's single arrow cannot express.
-    let row_class = if info.clip {
+    let mut row_class = if info.clip {
         format!("{row_class} clipped")
     } else {
         row_class.to_string()
     };
+    // The layer that would carry what is being dropped. Marked while a drag is over
+    // it because that is the one part of the landing the indent leaves to be inferred
+    // — the seam says *where*, the block's own indent says *how deep*, and this says
+    // *whose stack that depth is*.
+    if motion.carrying {
+        row_class.push_str(" carrying");
+    }
     let indent = info.depth * INDENT;
     let is_group = info.is_group;
     let collapsed = row.collapsed;
@@ -470,12 +783,35 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
     // triangle straddling its top edge, and Release standing in the indent. The
     // per-layer opacity slider lives in the panel's single set of controls for
     // whatever is selected.
+    // **Every declaration, every render, including the ones that are "off".** Inline
+    // styles are applied property by property rather than by replacing the attribute,
+    // so a declaration left out of this string is not cleared — it keeps whatever the
+    // last render that *did* mention it gave it, which is how a dropped row was left
+    // wearing a preview's transform over a panel that had since reordered
+    // (`layout::Panel` carries the same warning and the same scar).
+    let (dx, dy) = motion.shift;
+    let ease = if motion.live && !motion.lifted {
+        "transform 180ms ease"
+    } else {
+        "none"
+    };
+    let item_class = if motion.lifted {
+        "layer-item dragging"
+    } else {
+        "layer-item"
+    };
+
     rsx! {
         // The indent is padding on the wrapper rather than a margin on the row,
         // because the space it opens is not empty any more: Release is drawn in it.
         div {
-            class: "layer-item",
-            style: "padding-left:{indent}px",
+            class: item_class,
+            style: "padding-left:{indent}px; transform: translate({dx}px, {dy}px); transition: {ease};",
+            // Which layer this element is, for `platform::layer_boxes` to read back.
+            // A drag measures the DOM and then talks about rows, so the two have to
+            // agree; this is what lets it match on identity rather than assume an
+            // order the panel does not promise.
+            "data-layer": "{id.0}",
             // Release, in the last step of the indent — the space this layer's own
             // membership carved out, which is the only place in the panel that means
             // "the group you are in" without a word. A layer in no group has no such
@@ -493,7 +829,7 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                         dispatch(state, DocCommand::MoveLayer {
                             id,
                             carrier: outer,
-                            above: Some(group),
+                            at: Place::Above(group),
                         });
                     },
                     {icon(icons::RELEASE)}
@@ -539,7 +875,7 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                             dispatch(state, DocCommand::MoveLayer {
                                 id,
                                 carrier: Some(onto),
-                                above: None,
+                                at: Place::Top,
                             });
                         },
                         {icon(icons::CARRY)}
@@ -603,6 +939,59 @@ pub fn LayerRow(row: Row, ontoggle: EventHandler<LayerId>) -> Element {
                         title,
                         onclick: move |_| dispatch(state, PeerCommand::SetActiveLayer(id)),
                         ondoubleclick: move |_| draft.set(Some(seed.clone())),
+                        // The name **is** the grip, as the panel's title is
+                        // (`layout::Panel`): the thing you would reach for to move a
+                        // layer is the layer, and a separate handle beside it would be
+                        // the one part of the row that can be dragged while looking
+                        // like the rest. Its three gestures share one press — a click
+                        // selects, two rename, and a press that travels
+                        // [`GRAB_SLOP`] is a move — so the drag arms here and only
+                        // *becomes* one once the pointer has said so.
+                        //
+                        // Capture is what makes the release certain: it is delivered
+                        // to the capturing element whatever the pointer is over by
+                        // then, and this is a drag where everything under the pointer
+                        // moves as you drag it.
+                        onpointerdown: move |e: Event<PointerData>| {
+                            capture_pointer(&e);
+                            let p = e.client_coordinates();
+                            let at = (p.x as f32, p.y as f32);
+                            drag.set(Some(RowDrag {
+                                id,
+                                // Measured on the press rather than on the first move,
+                                // so the panel is described as it stood when the hand
+                                // closed on it and no pointer travel is lost waiting
+                                // for a measurement.
+                                boxes: layer_boxes(),
+                                anchor: at,
+                                pointer: at,
+                                live: false,
+                            }));
+                        },
+                        onpointermove: move |e: Event<PointerData>| {
+                            // The armed check first: it is what keeps every pointer
+                            // move over the panel from dirtying the whole tree.
+                            if drag.peek().is_none() {
+                                return;
+                            }
+                            let p = e.client_coordinates();
+                            if let Some(d) = drag.write().as_mut() {
+                                d.pointer = (p.x as f32, p.y as f32);
+                                let (dx, dy) = (
+                                    d.pointer.0 - d.anchor.0,
+                                    d.pointer.1 - d.anchor.1,
+                                );
+                                // Latched, not re-tested: once a press is a drag it
+                                // stays one, or bringing a layer back near where it
+                                // started would turn the gesture into a click again.
+                                d.live |= dx.abs().max(dy.abs()) > GRAB_SLOP;
+                            }
+                        },
+                        onpointerup: move |_| onland.call(()),
+                        // A cancel — the browser taking the gesture, a pen leaving the
+                        // tablet — ends it the same way, and `onland` declines a drag
+                        // that never went live or that lands where it began.
+                        onpointercancel: move |_| onland.call(()),
                         // The frame's crop marks, on the row as on the bar — the only
                         // kind of layer that is a *what* rather than a place to paint,
                         // and the one row in the panel whose dashed border is already
@@ -702,4 +1091,251 @@ fn peers_on(state: AppState, id: stark_core::LayerId) -> Vec<PeerInfo> {
         .filter(|p| p.active_layer == id)
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row's height and the gap between two of them, as the stylesheet leaves them.
+    /// The exact numbers do not matter — every answer here is a comparison against a
+    /// row's centre — but they have to be *consistent*, which is what makes a drag of
+    /// `STEP` "one row down".
+    const H: f32 = 20.0;
+    const GAP: f32 = 8.0;
+    const STEP: f32 = H + GAP;
+    const FIRST: f32 = 100.0;
+
+    fn info(id: u64, depth: usize, carrier: Option<u64>, is_group: bool) -> LayerInfo {
+        LayerInfo {
+            id: LayerId(id),
+            blend: BlendMode::Normal,
+            clip: false,
+            opacity: 1.0,
+            visible: true,
+            carrier: carrier.map(LayerId),
+            depth,
+            is_group,
+            has_backdrop: true,
+            name: None,
+            matte: None,
+        }
+    }
+
+    /// A display list from `(id, depth)` pairs given **as the panel draws them** — top
+    /// of the document first, a base under the rows it carries.
+    ///
+    /// Each row's carrier is derived rather than stated, because the picture already
+    /// says it: a row's carrier is the first row *below* it that is one level
+    /// shallower. Deriving it is also what keeps a malformed spec from quietly
+    /// describing a tree the panel could never draw.
+    ///
+    /// `shut` names the groups whose carried rows are folded away — the one thing a
+    /// display list cannot show, since those rows are not in it.
+    fn display(spec: &[(u64, usize)], shut: &[u64]) -> Vec<Row> {
+        spec.iter()
+            .enumerate()
+            .map(|(i, &(id, depth))| {
+                let carrier = spec[i + 1..]
+                    .iter()
+                    .find(|(_, d)| *d < depth)
+                    .map(|(base, _)| *base);
+                let carries = spec[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|(_, d)| *d > depth)
+                    .count()
+                    > 0;
+                Row {
+                    info: info(id, depth, carrier, carries || shut.contains(&id)),
+                    hidden: false,
+                    collapsed: shut.contains(&id),
+                    carry_onto: None,
+                    release_to: None,
+                    removable: true,
+                }
+            })
+            .collect()
+    }
+
+    /// A drag of row `id` by `(dx, dy)`, taken from the middle of its own row.
+    fn drag(rows: &[Row], id: u64, dx: f32, dy: f32) -> RowDrag {
+        let at = rows
+            .iter()
+            .position(|r| r.info.id == LayerId(id))
+            .expect("the dragged row is displayed");
+        let anchor = (200.0, FIRST + at as f32 * STEP + H * 0.5);
+        RowDrag {
+            id: LayerId(id),
+            boxes: rows
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (r.info.id.0.to_string(), FIRST + i as f32 * STEP, H))
+                .collect(),
+            anchor,
+            pointer: (anchor.0 + dx, anchor.1 + dy),
+            live: true,
+        }
+    }
+
+    /// A flat document: three layers in the root stack, drawn top-first.
+    fn flat() -> Vec<Row> {
+        display(&[(1, 0), (2, 0), (3, 0)], &[])
+    }
+
+    /// Dragging a row past its neighbour reorders it within its own stack — the move
+    /// the panel had no control for at all, since Carry and Release only ever changed
+    /// *whose* stack a layer is in.
+    #[test]
+    fn a_drag_down_lands_above_the_row_it_passed() {
+        let rows = flat();
+        let l = landing(&rows, &drag(&rows, 1, 0.0, STEP)).expect("resolves");
+        assert_eq!((l.carrier, l.at), (None, Place::Above(LayerId(3))));
+        assert!(!l.inert);
+    }
+
+    /// The foot of a stack — the place `Place::Above` cannot name, and the reason the
+    /// anchor grew a third state at all.
+    #[test]
+    fn a_drag_to_the_bottom_lands_under_everything() {
+        let rows = flat();
+        let l = landing(&rows, &drag(&rows, 1, 0.0, 3.0 * STEP)).expect("resolves");
+        assert_eq!((l.carrier, l.at), (None, Place::Bottom));
+    }
+
+    /// Sideways is what nests. The same drop point one indent to the right is not a
+    /// place in the same stack — it is the row below the seam carrying the layer,
+    /// which is exactly what the Carry button spells (§14.2).
+    #[test]
+    fn a_drag_to_the_right_is_what_carries() {
+        let rows = flat();
+        let straight = landing(&rows, &drag(&rows, 1, 0.0, STEP)).expect("resolves");
+        let over = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
+        assert_eq!(straight.depth, 0);
+        assert_eq!(
+            (over.carrier, over.at),
+            (Some(LayerId(3)), Place::Bottom),
+            "one indent right of the same seam, layer 3 carries it"
+        );
+    }
+
+    /// A drag that ends where it began commits nothing. Undo is cheap but it is not
+    /// free, and a step that does nothing when you reach it is worse than no step.
+    #[test]
+    fn a_drag_that_goes_nowhere_is_inert() {
+        let rows = flat();
+        for dy in [0.0, 6.0, -6.0] {
+            let l = landing(&rows, &drag(&rows, 2, 0.0, dy)).expect("resolves");
+            assert!(l.inert, "a {dy}px drag stayed in the same slot");
+        }
+    }
+
+    /// A tree three deep, drawn as the panel draws it:
+    ///
+    /// ```text
+    ///   D  1        depth 0
+    ///   B  2        depth 0
+    ///   K  3        depth 2   -,
+    ///   H  4        depth 1    | G's subtree
+    ///   G  5        depth 0   -'
+    ///   A  6        depth 0
+    /// ```
+    fn nested() -> Vec<Row> {
+        display(&[(1, 0), (2, 0), (3, 2), (4, 1), (5, 0), (6, 0)], &[])
+    }
+
+    /// **One seam, four meanings.** The gap between `B` and `K` is where four
+    /// different stacks all end, so the drop point alone cannot say which is meant —
+    /// and the pointer's horizontal travel is what says it.
+    ///
+    /// This is the whole reason depth is a live part of the gesture rather than a
+    /// consequence of it: without it the deepest three of these are unreachable by
+    /// dragging, and a panel that can draw a place it cannot drop into is a panel that
+    /// has to grow a second control to reach it.
+    #[test]
+    fn one_seam_can_mean_four_different_stacks() {
+        let rows = nested();
+        let landed = |steps: f32| {
+            let l = landing(&rows, &drag(&rows, 1, steps * INDENT as f32, STEP)).expect("resolves");
+            (l.depth, l.carrier, l.at)
+        };
+        assert_eq!(
+            landed(0.0),
+            (0, None, Place::Above(LayerId(5))),
+            "the document's own stack, above the group"
+        );
+        assert_eq!(
+            landed(1.0),
+            (1, Some(LayerId(5)), Place::Above(LayerId(4))),
+            "inside G, above H"
+        );
+        assert_eq!(
+            landed(2.0),
+            (2, Some(LayerId(4)), Place::Above(LayerId(3))),
+            "inside H, above K"
+        );
+        assert_eq!(
+            landed(3.0),
+            (3, Some(LayerId(3)), Place::Bottom),
+            "and one deeper still is K carrying it"
+        );
+    }
+
+    /// A group travels as one: the block is the whole subtree, which is contiguous in
+    /// the panel because a base is drawn under exactly the rows it carries.
+    #[test]
+    fn dragging_a_group_lifts_everything_it_carries() {
+        let rows = nested();
+        let l = landing(&rows, &drag(&rows, 5, 0.0, STEP)).expect("resolves");
+        assert_eq!(l.block, (2, 4), "K, H and G move together");
+        // Three rows and the gaps between them, so the slot opened is the size of what
+        // is going into it.
+        assert!((l.step - 3.0 * STEP).abs() < 0.01, "step {}", l.step);
+    }
+
+    /// Nothing can be dropped into what it is carrying. Not checked at the drop —
+    /// **ruled out by construction**: every place a landing can name is stated against
+    /// a row that stays put, and no row of the travelling block is one. The engine
+    /// declines a cycle anyway (§14.8), but a panel that offers a move the engine will
+    /// silently refuse is a panel that lies.
+    #[test]
+    fn a_group_cannot_be_dropped_inside_itself() {
+        let rows = nested();
+        let block = [LayerId(3), LayerId(4), LayerId(5)];
+        for steps in 0..8 {
+            for dy in [-3.0 * STEP, -STEP, 0.0, STEP, 3.0 * STEP] {
+                let d = drag(&rows, 5, steps as f32 * INDENT as f32, dy);
+                let l = landing(&rows, &d).expect("resolves");
+                assert!(
+                    !l.carrier.is_some_and(|c| block.contains(&c)),
+                    "landed inside its own subtree at {steps} indents, {dy}px"
+                );
+            }
+        }
+    }
+
+    /// A drop into a folded group goes on **top** of what it carries rather than under
+    /// it. The seam over a shut group stands for the whole subtree rather than for the
+    /// foot of it, so that is where the layer will be when the fold opens — which the
+    /// drop then does, so the answer is looked at rather than inferred.
+    #[test]
+    fn a_folded_group_takes_the_drop_on_top() {
+        let rows = display(&[(1, 0), (2, 0), (3, 0), (4, 0)], &[3]);
+        // One row down puts the seam directly over the shut group, and one indent
+        // right is the depth that goes into it.
+        let l = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
+        assert_eq!((l.carrier, l.at), (Some(LayerId(3)), Place::Top));
+    }
+
+    /// A row the drag has no box for resolves to nothing at all: the panel draws
+    /// itself at rest and the release commits nothing. That is what a document
+    /// changing under the pointer looks like — a peer's edit landing mid-drag (§17) —
+    /// and the alternative is acting on geometry that describes a tree that is gone.
+    #[test]
+    fn a_row_that_was_not_measured_abandons_the_drag() {
+        let rows = flat();
+        let mut d = drag(&rows, 1, 0.0, STEP);
+        d.boxes.retain(|(k, ..)| k != "2");
+        assert!(landing(&rows, &d).is_none());
+    }
 }

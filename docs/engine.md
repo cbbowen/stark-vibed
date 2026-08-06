@@ -126,6 +126,14 @@ decode as an `Image` whose hash is whatever bytes followed it. The `surfaces`
 field beside it is the other half. Files are alpha (§19), so old ones are refused
 rather than migrated.
 
+The rule cuts the other way too, and it is worth knowing which side a change is
+on before paying for it: an `Option<T>` *is* an enum on the wire (`0` for `None`,
+`1` for `Some`), so widening one into a named enum whose first two variants are
+those two cases costs nothing at all. That is how `MoveLayer`'s anchor grew a
+third state (§14.8) without a version bump — and why the variant order is under
+test rather than under a comment, since getting it wrong reinterprets every
+affected action in every saved file with nothing able to notice.
+
 ## 9. Testing — golden images
 
 Separating backend from frontend lets the engine be driven headlessly:

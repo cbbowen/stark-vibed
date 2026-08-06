@@ -1249,6 +1249,14 @@ button.layer-remove:hover {
   border: none;
   color: #eee;
   cursor: pointer;
+  /* The name is also the row's drag grip, and both of these are what let a *pen*
+     use it: without them a press that travels is a text selection and a scroll
+     rather than a gesture the panel ever hears about. The panel's own title bar
+     carries the same pair for the same reason. `cursor` stays `pointer` — at rest
+     the commonest thing to do with a row is select it, and `grab` would advertise
+     the rarer half. */
+  user-select: none;
+  touch-action: none;
 }
 
 /* The rename field, standing in for the name button while a row is being renamed.
@@ -1264,6 +1272,61 @@ button.layer-remove:hover {
    are about to edit. */
 .layer-rename::placeholder {
   color: #eeeeee59;
+}
+
+/* --- dragging a row to move it (§14.6) ---
+   The panel already draws where every layer sits, so the way to put one somewhere
+   else is to move it there. One gesture spells all three of the moves the row's
+   buttons make one at a time — reorder, carry, release — because in the model they
+   *are* one move (§14.8): a drop lands in some stack, at some place in it.
+
+   Nothing here is a drop indicator drawn on top of the panel. The rows themselves
+   open the slot the layer is going into, and the layer floats over it at the indent
+   it will land at, so the preview is the answer rather than a symbol for it. Every
+   transform is written inline by the panel, which resolves the whole gesture to two
+   numbers per row; the stylesheet only says what a lifted row looks like. */
+
+/* The travelling block: the dragged row and everything it carries, which move as one
+   because a group *is* its subtree. Over the rest of the panel, and lit a step
+   brighter than a resting row so the thing under the hand is the thing being read. */
+.layer-item.dragging {
+  z-index: 3;
+}
+
+.layer-item.dragging .layer-row {
+  background: #45454f;
+  box-shadow: 0 6px 14px #00000059;
+}
+
+.layer-item.dragging .layer-row.active {
+  background: #4a7cb4;
+}
+
+/* A row in flight is not a row to press buttons on, and the pointer is over it for
+   the whole gesture — so its own hover controls would be four glyphs following the
+   hand around. The eye of a *hidden* layer stays, because that one is not a control
+   answering a hover, it is the row saying what it is (see `.layer-eye.hidden`). */
+.layer-item.dragging:hover .layer-carry,
+.layer-item.dragging:hover .layer-duplicate,
+.layer-item.dragging:hover .layer-remove,
+.layer-item.dragging:hover .layer-release,
+.layer-item.dragging:hover .layer-eye:not(.hidden) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.layer-item.dragging,
+.layer-item.dragging * {
+  cursor: grabbing;
+}
+
+/* The layer that would carry the drop. A ring around the whole row, because the fact
+   it is stating is *containment* — and because the two marks it must not be confused
+   with are both edges: the indent to its left means membership, the rail means
+   clipping (§14.6). Drawn inside the row's own box so nothing reflows when it
+   appears; a border would step every glyph on the line sideways by a pixel. */
+.layer-row.carrying {
+  box-shadow: inset 0 0 0 1.5px #8fb0e8;
 }
 
 /* --- command rail --- */

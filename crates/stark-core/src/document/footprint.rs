@@ -243,8 +243,8 @@ pub fn footprint(action: &Action) -> Footprint {
                 Resource::Paint(*id, TileRect::ALL),
             ],
         },
-        ActionKind::MoveLayer { id, carrier, above } => Footprint {
-            reads: [Some(*id), *carrier, *above]
+        ActionKind::MoveLayer { id, carrier, at } => Footprint {
+            reads: [Some(*id), *carrier, at.anchor()]
                 .into_iter()
                 .flatten()
                 .map(Resource::Existence)
@@ -340,6 +340,7 @@ fn prop_write(id: LayerId, prop: Prop) -> Footprint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::Place;
     use crate::document::action::ActionId;
     use crate::document::brush::BrushParams;
     use crate::geom::Vec2;
@@ -437,7 +438,7 @@ mod tests {
             ActionKind::MoveLayer {
                 id: LayerId(3),
                 carrier: None,
-                above: None,
+                at: Place::Top,
             },
         );
         assert!(!commutes(&add, &mv));
@@ -506,7 +507,7 @@ mod tests {
             ActionKind::MoveLayer {
                 id: LayerId(0),
                 carrier: Some(LayerId(1)),
-                above: None,
+                at: Place::Top,
             },
         );
         let b_onto_a = act(
@@ -514,7 +515,7 @@ mod tests {
             ActionKind::MoveLayer {
                 id: LayerId(1),
                 carrier: Some(LayerId(0)),
-                above: None,
+                at: Place::Top,
             },
         );
         assert!(!commutes(&a_onto_b, &b_onto_a));

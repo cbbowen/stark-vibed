@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use stark_core::command::DocCommand;
-use stark_core::document::LayerId;
+use stark_core::document::{LayerId, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
 
@@ -98,7 +98,7 @@ fn reordering_changes_which_layer_wins() {
     engine.process(DocCommand::MoveLayer {
         carrier: None,
         id: ROOT,
-        above: Some(TOP),
+        at: Place::Above(TOP),
     });
     assert!(
         red_dominant(center(&engine.render_to_image())),

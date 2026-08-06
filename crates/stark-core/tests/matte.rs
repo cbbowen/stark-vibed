@@ -17,7 +17,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_core::document::{LayerId, MatteRegion};
+use stark_core::document::{LayerId, MatteRegion, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
 
@@ -193,7 +193,7 @@ fn matte_below_paint_does_not_cover_it() {
     engine.process(DocCommand::MoveLayer {
         carrier: None,
         id: LayerId(0),
-        above: Some(matte_id),
+        at: Place::Above(matte_id),
     });
     let img = engine.render_to_image();
     assert!(

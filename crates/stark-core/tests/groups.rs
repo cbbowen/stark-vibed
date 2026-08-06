@@ -24,7 +24,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::{BlendMode, LayerId, MatteRegion};
+use stark_core::document::{BlendMode, LayerId, MatteRegion, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, LayerInfo, RgbaImage};
 
@@ -85,12 +85,12 @@ fn carry_and_release_move_the_whole_subtree() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(mid),
-        above: None,
+        at: Place::Top,
     });
     engine.process(DocCommand::MoveLayer {
         id: mid,
         carrier: Some(ROOT),
-        above: None,
+        at: Place::Top,
     });
 
     let ls = layers(&engine);
@@ -107,7 +107,7 @@ fn carry_and_release_move_the_whole_subtree() {
     engine.process(DocCommand::MoveLayer {
         id: mid,
         carrier: None,
-        above: Some(ROOT),
+        at: Place::Above(ROOT),
     });
     assert_eq!(info(&engine, mid).carrier, None);
     assert_eq!(
@@ -129,7 +129,7 @@ fn a_layer_cannot_carry_its_own_ancestor() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(ROOT),
-        above: None,
+        at: Place::Top,
     });
     let before = layers(&engine);
 
@@ -137,12 +137,12 @@ fn a_layer_cannot_carry_its_own_ancestor() {
     engine.process(DocCommand::MoveLayer {
         id: ROOT,
         carrier: Some(top),
-        above: None,
+        at: Place::Top,
     });
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(top),
-        above: None,
+        at: Place::Top,
     });
 
     let after = layers(&engine);
@@ -150,6 +150,61 @@ fn a_layer_cannot_carry_its_own_ancestor() {
         after.iter().map(|l| (l.id, l.depth)).collect::<Vec<_>>(),
         before.iter().map(|l| (l.id, l.depth)).collect::<Vec<_>>(),
         "a cycle is declined, leaving the tree exactly as it was"
+    );
+}
+
+/// The foot of a stack is a place a move can land in — in the document's own stack
+/// and inside a group alike (§14.8).
+///
+/// It is the one position `Place::Above` cannot name, because a stack of `n` layers
+/// has `n + 1` places and only `n` siblings to state them against. Both ends are
+/// tested because the two take different paths through `move_layer` — the root stack
+/// is spliced directly, a group's is spliced inside the carrier — and a panel that
+/// can drop a layer behind everything at one depth and not the other would be a
+/// panel with a hole in it.
+#[test]
+fn a_layer_can_be_moved_to_the_foot_of_a_stack() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let mid = add_layer(&mut engine);
+    let top = add_layer(&mut engine);
+
+    // Under the root layer, which no `Above` in the document could have said.
+    engine.process(DocCommand::MoveLayer {
+        id: top,
+        carrier: None,
+        at: Place::Bottom,
+    });
+    assert_eq!(
+        layers(&engine).iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![top, ROOT, mid],
+        "composite order is bottom-first, so the foot of the stack comes first"
+    );
+    assert!(
+        !info(&engine, top).has_backdrop,
+        "and it is now the layer with nothing under it"
+    );
+
+    // The same place inside a group: `mid` carries `top`, then `ROOT` is dropped
+    // under `top` — the foot of `mid`'s carried stack, not the base of the group.
+    engine.process(DocCommand::MoveLayer {
+        id: top,
+        carrier: Some(mid),
+        at: Place::Top,
+    });
+    engine.process(DocCommand::MoveLayer {
+        id: ROOT,
+        carrier: Some(mid),
+        at: Place::Bottom,
+    });
+    assert_eq!(
+        layers(&engine)
+            .iter()
+            .map(|l| (l.id, l.depth))
+            .collect::<Vec<_>>(),
+        vec![(mid, 0), (ROOT, 1), (top, 1)],
+        "under everything the group carries, and `mid` is still the base"
     );
 }
 
@@ -166,7 +221,7 @@ fn removing_a_group_takes_its_carried_layers_and_undo_returns_them() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(mid),
-        above: None,
+        at: Place::Top,
     });
     let before = layers(&engine);
 
@@ -202,7 +257,7 @@ fn only_the_bottom_of_the_document_has_no_backdrop() {
     engine.process(DocCommand::MoveLayer {
         id: carried,
         carrier: Some(ROOT),
-        above: None,
+        at: Place::Top,
     });
 
     assert!(
@@ -241,7 +296,7 @@ fn grouping_plain_layers_changes_nothing() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(ROOT),
-        above: None,
+        at: Place::Top,
     });
     let grouped = engine.render_to_image();
 
@@ -265,12 +320,12 @@ fn carry_then_release_returns_the_same_picture() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(ROOT),
-        above: None,
+        at: Place::Top,
     });
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: None,
-        above: Some(ROOT),
+        at: Place::Above(ROOT),
     });
     let after = engine.render_to_image();
 
@@ -294,7 +349,7 @@ fn duplicating_a_group_copies_the_whole_subtree() {
     engine.process(DocCommand::MoveLayer {
         id: carried,
         carrier: Some(base),
-        above: None,
+        at: Place::Top,
     });
     let before = engine.render_to_image();
 
@@ -358,7 +413,7 @@ fn grouping_rescopes_an_interior_blend_mode() {
     engine.process(DocCommand::MoveLayer {
         id: glow,
         carrier: Some(base),
-        above: None,
+        at: Place::Top,
     });
     let grouped = engine.render_to_image();
 
@@ -384,7 +439,7 @@ fn hiding_a_group_hides_what_it_carries() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(ROOT),
-        above: None,
+        at: Place::Top,
     });
 
     engine.process(DocCommand::SetLayerVisible(ROOT, false));
@@ -516,7 +571,7 @@ fn clipping_inherits_the_whole_stack_below_it() {
     engine.process(DocCommand::MoveLayer {
         id: middle,
         carrier: Some(ROOT),
-        above: None,
+        at: Place::Top,
     });
     let without_top = engine.render_to_image();
 
@@ -528,7 +583,7 @@ fn clipping_inherits_the_whole_stack_below_it() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(ROOT),
-        above: Some(middle),
+        at: Place::Above(middle),
     });
     let with_top = engine.render_to_image();
 
@@ -563,7 +618,7 @@ fn clipping_the_base_clips_the_whole_group() {
     engine.process(DocCommand::MoveLayer {
         id: carried,
         carrier: Some(base),
-        above: None,
+        at: Place::Top,
     });
 
     let unclipped = engine.render_to_image();
@@ -613,7 +668,7 @@ fn the_bases_blend_mode_is_the_groups() {
     engine.process(DocCommand::MoveLayer {
         id: carried,
         carrier: Some(base),
-        above: None,
+        at: Place::Top,
     });
 
     let normal = engine.render_to_image();
@@ -648,7 +703,7 @@ fn group_opacity_fades_the_composite_not_the_members() {
     engine.process(DocCommand::MoveLayer {
         id: carried,
         carrier: Some(base),
-        above: None,
+        at: Place::Top,
     });
 
     engine.process(DocCommand::SetLayerOpacity(base, 0.5));
@@ -681,7 +736,7 @@ fn the_active_layer_repoints_out_of_a_removed_group() {
     engine.process(DocCommand::MoveLayer {
         id: top,
         carrier: Some(mid),
-        above: None,
+        at: Place::Top,
     });
     engine.process(PeerCommand::SetActiveLayer(top));
     assert_eq!(engine.observe().active_layer, top);

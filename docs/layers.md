@@ -268,6 +268,49 @@ no inapplicable state: Release is simply absent on a layer that is in no group,
 Remove on the row whose removal would empty the document, and Duplicate on neither,
 because every layer can be copied.
 
+#### Moving a layer by dragging it
+
+The panel draws where every layer sits, so the way to put one somewhere else is to
+drag it there. **The whole row is the grip** (its name — the thing you would reach
+for), and one gesture spells all three of the moves above, because in the model
+they are one move: a drop lands in *some stack*, at *some place in it*, which is
+exactly `MoveLayer`'s two anchors (§14.8). Reordering within a stack, which Carry
+and Release could not express at all, falls out of the same gesture rather than
+needing a fourth control.
+
+Two things make the gesture say what it will do before it does it:
+
+- **The drop target is a seam between rows, not a row.** The rows themselves open
+  the slot the layer is going into and the layer floats over that slot at the
+  indent it will land at, so the preview *is* the answer rather than a symbol for
+  one. A group travels as one block, which is the same fact §14.2 states about
+  removal and duplication, drawn.
+- **Sideways is what nests.** One seam can be the end of several different stacks
+  — all of which draw at that one place — and how far right you are holding the
+  layer is which of them you mean. Where a seam can only mean one thing, which is
+  most of them, horizontal travel does nothing at all. The layer that would carry
+  the drop is ringed while you hold it there, because that is the one part of the
+  landing an indent alone leaves to be inferred.
+
+Two invariants fall out of stating a drop against the rows that *stay put*, rather
+than being checked at the drop:
+
+- **A layer can never be dropped inside itself.** Every place a drop can name is
+  named after a row that is not travelling. The engine declines a cycle anyway
+  (§14.8), but a panel that offers a move the engine will silently refuse is a
+  panel that lies.
+- **Every place the panel can draw, it can drop into.** Each depth a seam admits
+  names exactly one real position, because the ancestors of the row below it cover
+  every depth beneath it without a gap. The one place this did *not* hold was the
+  foot of a stack, which no sibling can be named against — hence `Place::Bottom`
+  (§14.8).
+
+The base of a group is still not swappable by a drag (§14.2): dropping a layer at
+the foot of a group's carried stack puts it under everything the group carries,
+above the base. Becoming the base is a different move — it is that layer carrying
+the others — and it stays an explicit restructure rather than a side effect of a
+reorder.
+
 ### 14.7 Compositing
 
 `CompositeGroup` is a tree, and the existing fast path is an invariant of its
@@ -343,6 +386,19 @@ resource is already coarse.
   **no actions of their own**: carrying *is* a move to a position inside another
   layer, so `MoveLayer` covers reorder, carry and release by which of its two
   anchors changes. One structural action, one inverse.
+- **The second anchor is three-state**, not two. A stack of `n` layers has `n + 1`
+  places to land in and only `n` siblings to name them after, so "above this
+  sibling, or on top" leaves exactly one place unsayable: the foot of the stack.
+  `MoveLayer`'s `above: Option<LayerId>` is therefore a `Place { Top,
+  Above(LayerId), Bottom }`. That mattered the moment the panel could drop a layer
+  anywhere it could draw one (§14.6) — "put this behind everything" is where a
+  background goes, not an exotic move. It cost no format break: postcard writes an
+  `Option` as a `0`/`1` discriminant and an enum as its variant index, so `Top` and
+  `Above` keep the encoding of the `None` and `Some` they replaced and `Bottom` is
+  an appended third variant — the one shape of change §8 allows. A unit test in
+  `document/layer.rs` asserts the three byte strings rather than leaving that to
+  reasoning, because reordering the variants would silently reinterpret every
+  `MoveLayer` in every saved document.
 - **Duplicate.** `DuplicateLayer { ids: Vec<(LayerId, LayerId)> }`: the copy lands
   in the source's own stack directly above it, and the subtree travels as one, for
   the reason removing it does. The action pairs every layer of that subtree with
