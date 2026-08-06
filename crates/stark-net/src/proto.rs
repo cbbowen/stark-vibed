@@ -22,7 +22,7 @@ use stark_core::peer::PeerFrame;
 use crate::mirror::Mirror;
 
 /// The catch-up (snapshot) protocol.
-pub const ALPN: &[u8] = b"stark/collab/0";
+pub(crate) const ALPN: &[u8] = b"stark/collab/0";
 
 /// One gossip broadcast: the payload plus who authored it. Postcard-encoded.
 ///
@@ -47,7 +47,7 @@ pub(crate) struct Stamped {
 
 /// A live-wire message. Postcard-encoded, inside [`Stamped`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Wire {
+pub(crate) enum Wire {
     /// A freshly committed action for the shared log.
     Action(Action),
     /// One client's presence: cursor, selected layer, the gesture it is drawing
@@ -64,7 +64,7 @@ pub enum Wire {
 /// A request over the collab ALPN (one per bi-stream; the response is the
 /// stream's full contents).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum Request {
+pub(crate) enum Request {
     /// The whole session: a [`DocumentFile`](stark_core::DocumentFile) container.
     Snapshot,
 }
@@ -107,7 +107,11 @@ mod iroh_wire {
     /// Upper bound on an encoded request (a variant tag).
     const MAX_REQUEST: usize = 256;
     /// Upper bound on a response: a whole session snapshot (log + brush PNGs).
+    /// A session that outgrows it stops accepting new members, so crossing most
+    /// of the way there is worth saying out loud while joining still works.
     const MAX_RESPONSE: usize = 64 * 1024 * 1024;
+    /// Fraction of [`MAX_RESPONSE`] a snapshot may reach before it is reported.
+    const RESPONSE_WARN_AT: usize = MAX_RESPONSE / 2;
 
     /// Serves [`Request`]s over iroh connections.
     #[derive(Debug, Clone)]
@@ -128,6 +132,13 @@ mod iroh_wire {
                     .map_err(AcceptError::from_err)?;
                 let req = decode_request(&req).map_err(AcceptError::from_err)?;
                 let response = answer(&self.mirror, req).map_err(AcceptError::from_err)?;
+                if response.len() > RESPONSE_WARN_AT {
+                    tracing::warn!(
+                        bytes = response.len(),
+                        limit = MAX_RESPONSE,
+                        "session snapshot is approaching the response ceiling;                          past it no new member can join"
+                    );
+                }
                 send.write_all(&response)
                     .await
                     .map_err(AcceptError::from_err)?;

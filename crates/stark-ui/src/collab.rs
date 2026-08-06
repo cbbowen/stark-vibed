@@ -24,6 +24,7 @@
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
+use stark_core::SurfaceId;
 use stark_core::peer::Identity;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, LinkKind, NetOptions, RemoteEvent,
@@ -268,7 +269,7 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
                             // the tooth reads the real weave from the very first
                             // stroke after the switch rather than baking a flat
                             // deposit that no later arrival un-bakes.
-                            AssetNeed::Ground(id) => r.accept_surface(id, &bytes),
+                            AssetNeed::Ground(id) => r.accept_surface(SurfaceId::Image(id), &bytes),
                         }
                         (None, true)
                     }

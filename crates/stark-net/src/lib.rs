@@ -54,6 +54,12 @@ pub enum NetError {
     Read(#[from] iroh::endpoint::ReadToEndError),
     #[error("encode/decode failed: {0}")]
     Codec(#[from] postcard::Error),
+    #[error("gossip: {0}")]
+    Gossip(#[from] iroh_gossip::api::ApiError),
+    #[error("blob transfer failed: {0}")]
+    BlobFetch(#[from] iroh_blobs::get::GetError),
+    #[error("blob store read failed: {0}")]
+    BlobRead(#[from] iroh_blobs::api::ExportBaoError),
     #[error("document error: {0}")]
     Document(#[from] stark_core::EngineError),
     #[error("bad ticket: {0}")]

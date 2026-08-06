@@ -33,7 +33,7 @@ use stark_core::{AssetId, DocumentFile, SurfaceId};
 use tokio::sync::mpsc;
 
 use crate::Result;
-use crate::backend::{self, Dialer, Shutdown};
+use crate::backend::{self, Bound, Dialer, Shutdown};
 use crate::mirror::Mirror;
 use crate::proto::{Request, Stamped, Wire};
 use crate::ticket::SessionTicket;
@@ -88,21 +88,43 @@ pub fn actor_from_endpoint_id(id: EndpointId) -> ActorId {
 pub enum AssetNeed {
     /// A brush shape a stroke stamps with.
     Brush(AssetId),
-    /// The canvas ground a `SetSurface` moves the document onto. Missing it is worse
-    /// than missing a brush: an unresolved shape degrades to the round tip and the
-    /// stroke is still visibly a stroke, whereas an unresolved ground silently drops
-    /// the deposition tooth (§6.4) and bakes a smooth deposit into tiles that no
-    /// later arrival un-bakes.
-    Ground(SurfaceId),
+    /// The canvas ground a `SetSurface` moves the document onto — named by the
+    /// [`AssetId`] inside its [`SurfaceId`], the only kind of ground there is bytes
+    /// to move for. Missing it is worse than missing a brush: an unresolved shape
+    /// degrades to the round tip and the stroke is still visibly a stroke, whereas an
+    /// unresolved ground silently drops the deposition tooth (§6.4) and bakes a
+    /// smooth deposit into tiles that no later arrival un-bakes.
+    Ground(AssetId),
 }
 
 impl AssetNeed {
-    /// The id the bytes transfer under. A ground's is the [`AssetId`] inside its
-    /// [`SurfaceId`]; `Flat` has none, and never generates a need.
-    pub(crate) fn content(self) -> Option<AssetId> {
+    /// The need a document moving onto `surface` creates — `None` for `Flat`,
+    /// which is procedural, has no bytes to move, and so is never waited on.
+    ///
+    /// This is the only place a ground's `Flat` case is answered. Past it the
+    /// need carries an [`AssetId`], so every question about it — what hash it
+    /// transfers under, which store it belongs in, whether this peer holds it —
+    /// has an answer instead of an answer and a special case.
+    pub fn ground(surface: SurfaceId) -> Option<Self> {
+        match surface {
+            SurfaceId::Flat => None,
+            SurfaceId::Image(id) => Some(AssetNeed::Ground(id)),
+        }
+    }
+
+    /// The id the bytes transfer under.
+    pub(crate) fn content(self) -> AssetId {
         match self {
-            AssetNeed::Brush(id) => Some(id),
-            AssetNeed::Ground(id) => crate::mirror::ground_content_id(id),
+            AssetNeed::Brush(id) | AssetNeed::Ground(id) => id,
+        }
+    }
+
+    /// The surface a `Ground` need names, for the receiver's
+    /// [`Engine::accept_surface`](stark_core::Engine::accept_surface).
+    pub fn surface(self) -> Option<SurfaceId> {
+        match self {
+            AssetNeed::Brush(_) => None,
+            AssetNeed::Ground(id) => Some(SurfaceId::Image(id)),
         }
     }
 }
@@ -239,13 +261,11 @@ impl NetOptions {
 /// A live shared session: broadcasts local actions, serves joiners and asset
 /// requests, and surfaces remote edits as [`RemoteEvent`]s.
 pub struct CollabSession {
-    local_id: EndpointId,
+    /// Everything publishing needs, which is everything the session needs but
+    /// four — so the session holds one rather than assembling one per call.
+    broadcaster: Broadcaster,
     shutdown: Shutdown,
     topic: TopicId,
-    dialer: Dialer,
-    sender: GossipSender,
-    neighbors: Arc<Mutex<HashSet<EndpointId>>>,
-    waitlist: Arc<Waitlist>,
     ticket_addr: EndpointAddr,
 }
 
@@ -262,20 +282,9 @@ impl CollabSession {
         // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
         let topic = TopicId::from_bytes(SecretKey::generate().to_bytes());
         // The first member starts the swarm alone; joiners bootstrap from it.
-        let sub = bound
-            .gossip
-            .subscribe(topic, Vec::new())
-            .await
-            .map_err(|e| crate::NetError::Other(e.to_string()))?;
+        let sub = bound.gossip.subscribe(topic, Vec::new()).await?;
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        Self::finish(
-            bound.dialer,
-            bound.shutdown,
-            topic,
-            sub,
-            mirror,
-            ticket_addr,
-        )
+        Self::finish(bound, topic, sub, mirror, ticket_addr)
     }
 
     /// Join an existing session from a ticket. Returns the session and the
@@ -304,8 +313,7 @@ impl CollabSession {
         let mut sub = bound
             .gossip
             .subscribe(ticket.topic, vec![ticket.addr.id])
-            .await
-            .map_err(|e| crate::NetError::Other(e.to_string()))?;
+            .await?;
         if n0_future::time::timeout(JOIN_TIMEOUT, sub.joined())
             .await
             .is_err()
@@ -319,26 +327,21 @@ impl CollabSession {
         *mirror.lock().expect("mirror poisoned") = Mirror::from_file(&file);
 
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        let (session, events) = Self::finish(
-            bound.dialer,
-            bound.shutdown,
-            ticket.topic,
-            sub,
-            mirror,
-            ticket_addr,
-        )?;
+        let (session, events) = Self::finish(bound, ticket.topic, sub, mirror, ticket_addr)?;
         Ok((session, events, file))
     }
 
     fn finish(
-        dialer: Dialer,
-        shutdown: Shutdown,
+        bound: Bound,
         topic: TopicId,
         sub: iroh_gossip::api::GossipTopic,
         mirror: Arc<Mutex<Mirror>>,
         ticket_addr: EndpointAddr,
     ) -> Result<(Self, Events)> {
-        let local_id = dialer.local_id()?;
+        let Bound {
+            dialer, shutdown, ..
+        } = bound;
+        let local_id = dialer.local_id();
         let (sender, receiver) = sub.split();
         // Seed with the neighbors met before the receive loop takes over
         // (typically the bootstrap peer a joiner already awaited).
@@ -370,13 +373,15 @@ impl CollabSession {
             tx,
         ));
         let session = Self {
-            local_id,
+            broadcaster: Broadcaster {
+                local_id,
+                sender,
+                dialer,
+                neighbors,
+                waitlist,
+            },
             shutdown,
             topic,
-            dialer,
-            sender,
-            neighbors,
-            waitlist,
             ticket_addr,
         };
         Ok((session, Events { rx, presence }))
@@ -393,25 +398,19 @@ impl CollabSession {
 
     /// The author id this session's identity maps to.
     pub fn actor_id(&self) -> ActorId {
-        actor_from_endpoint_id(self.local_id)
+        actor_from_endpoint_id(self.broadcaster.local_id)
     }
 
     /// A cheap, `Clone` handle for feeding the session from elsewhere (e.g. a
     /// UI task that can't borrow the session across an `await`).
     pub fn broadcaster(&self) -> Broadcaster {
-        Broadcaster {
-            local_id: self.local_id,
-            sender: self.sender.clone(),
-            dialer: self.dialer.clone(),
-            neighbors: self.neighbors.clone(),
-            waitlist: self.waitlist.clone(),
-        }
+        self.broadcaster.clone()
     }
 
     /// Broadcast one locally-committed action (from
     /// [`Engine::take_outbox`](stark_core::Engine::take_outbox)) to the swarm.
     pub async fn broadcast(&self, action: Action) -> Result<()> {
-        self.broadcaster().broadcast(action).await
+        self.broadcaster.broadcast(action).await
     }
 
     /// Register content so joiners can be served and peers can fetch it — a brush
@@ -426,12 +425,12 @@ impl CollabSession {
     /// the fault is only visible there, since what it produces at the far end is
     /// indistinguishable from content that has not arrived yet.
     pub fn add_content(&self, need: AssetNeed, bytes: impl Into<Bytes>) {
-        self.broadcaster().add_content(need, bytes);
+        self.broadcaster.add_content(need, bytes);
     }
 
     /// See [`Broadcaster::links`].
     pub async fn links(&self) -> Vec<PeerLink> {
-        self.broadcaster().links().await
+        self.broadcaster.links().await
     }
 
     /// Leave the session gracefully.
@@ -477,9 +476,7 @@ impl Broadcaster {
         // ground as for a brush, so a registered lookup is the normal case and a
         // miss means that ordering was broken.
         let asset = need.and_then(|need| {
-            // `Flat` names no content; nothing to attach and nothing wrong.
-            let id = need.content()?;
-            let hash = self.waitlist.transfer_hash(id);
+            let hash = self.waitlist.transfer_hash(need.content());
             if hash.is_none() {
                 // What a call site that committed before registering looks like
                 // from here. Reported at the fault rather than left to surface
@@ -504,17 +501,11 @@ impl Broadcaster {
             wire,
         };
         let bytes = postcard::to_allocvec(&stamped)?;
-        self.sender
-            .broadcast(bytes.into())
-            .await
-            .map_err(|e| crate::NetError::Other(e.to_string()))
+        Ok(self.sender.broadcast(bytes.into()).await?)
     }
 
     /// See [`CollabSession::add_content`].
     pub fn add_content(&self, need: AssetNeed, bytes: impl Into<Bytes>) {
-        if need.content().is_none() {
-            return;
-        }
         let bytes = bytes.into();
         let hash = self.dialer.add_blob(bytes.clone());
         // Through the waitlist, not straight into the mirror: a remote action
@@ -771,10 +762,7 @@ fn referenced_asset(action: &Action) -> Option<AssetNeed> {
             BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
             BrushShape::Round { .. } => None,
         },
-        // `Flat` is procedural, so it resolves to no content and never waits.
-        ActionKind::SetSurface(id) => AssetNeed::Ground(*id)
-            .content()
-            .map(|_| AssetNeed::Ground(*id)),
+        ActionKind::SetSurface(id) => AssetNeed::ground(*id),
         _ => None,
     }
 }
@@ -816,7 +804,7 @@ impl std::fmt::Debug for CollabSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CollabSession")
             .field("topic", &self.topic)
-            .field("endpoint", &self.local_id)
+            .field("endpoint", &self.broadcaster.local_id)
             .finish_non_exhaustive()
     }
 }

@@ -18,6 +18,14 @@ use serde::{Deserialize, Serialize};
 /// Human-pasteable prefix so tickets are recognizable in the wild.
 const PREFIX: &str = "stark";
 
+/// The encoding this build mints, and the only one it reads.
+///
+/// The wire protocols carry their version in the ALPN (`stark/collab/0`); the
+/// ticket had nowhere to carry one, so the first change to [`EndpointAddr`] or
+/// [`TopicId`]'s postcard shape would have surfaced as an unexplained decode
+/// failure on a link someone pasted (§19). One byte buys the message instead.
+const VERSION: u8 = 0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTicket {
     /// A reachable member of the session (initially the sharer).
@@ -28,7 +36,7 @@ pub struct SessionTicket {
 
 impl fmt::Display for SessionTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bytes = postcard::to_allocvec(self).map_err(|_| fmt::Error)?;
+        let bytes = postcard::to_allocvec(&(VERSION, self)).map_err(|_| fmt::Error)?;
         let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
         encoded.make_ascii_lowercase();
         write!(f, "{PREFIX}{encoded}")
@@ -47,7 +55,18 @@ impl FromStr for SessionTicket {
         let bytes = data_encoding::BASE32_NOPAD
             .decode(encoded.to_ascii_uppercase().as_bytes())
             .map_err(|e| bad(&e.to_string()))?;
-        postcard::from_bytes(&bytes).map_err(|e| bad(&e.to_string()))
+        let (version, ticket): (u8, Self) =
+            postcard::from_bytes(&bytes).map_err(|e| bad(&e.to_string()))?;
+        if version != VERSION {
+            // Named rather than guessed at: past the version byte the fields are
+            // a different shape, so anything else this could say about them would
+            // be about the wrong shape.
+            return Err(bad(&format!(
+                "ticket is version {version}; this build speaks {VERSION} — \
+                 both ends need the same version of Stark"
+            )));
+        }
+        Ok(ticket)
     }
 }
 
@@ -72,5 +91,35 @@ mod tests {
             back.addr.ip_addrs().collect::<Vec<_>>(),
             ticket.addr.ip_addrs().collect::<Vec<_>>()
         );
+    }
+
+    /// The version byte earns its place only if a mismatch is *named*. Decoding
+    /// a future ticket as a current one otherwise yields a postcard error about
+    /// whatever field happened to move, which tells a user nothing.
+    #[test]
+    fn a_ticket_from_another_version_says_so() {
+        let bytes = postcard::to_allocvec(&(
+            VERSION + 1,
+            SessionTicket {
+                addr: EndpointAddr::new(SecretKey::from_bytes(&[3u8; 32]).public()),
+                topic: TopicId::from_bytes([1u8; 32]),
+            },
+        ))
+        .expect("encode");
+        let mut encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
+        encoded.make_ascii_lowercase();
+
+        let err = format!("{PREFIX}{encoded}")
+            .parse::<SessionTicket>()
+            .expect_err("a version this build does not speak");
+        assert!(err.to_string().contains("version 1"), "{err}");
+    }
+
+    #[test]
+    fn a_ticket_without_the_prefix_is_rejected() {
+        let err = "not-a-ticket"
+            .parse::<SessionTicket>()
+            .expect_err("no prefix");
+        assert!(err.to_string().contains("prefix"), "{err}");
     }
 }

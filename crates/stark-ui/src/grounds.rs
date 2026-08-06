@@ -205,8 +205,9 @@ fn seed_session(state: AppState, id: SurfaceId) {
         .peek()
         .as_ref()
         .and_then(|r| r.surface_bytes(id));
-    if let Some(bytes) = bytes {
-        broadcaster.add_content(stark_net::AssetNeed::Ground(id), bytes);
+    // `Flat` is procedural: no bytes to register, and no peer can be waiting on it.
+    if let (Some(bytes), Some(need)) = (bytes, stark_net::AssetNeed::ground(id)) {
+        broadcaster.add_content(need, bytes);
     }
 }
 

@@ -10,7 +10,7 @@ use stark_core::engine::headless_engine;
 use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::peer::{GestureFrame, PeerFrame, StrokeHead};
-use stark_core::{Engine, RgbaImage};
+use stark_core::{Engine, RgbaImage, SurfaceId};
 use stark_net::{AssetNeed, CollabSession, Events, NetOptions, RemoteEvent, SessionTicket};
 
 const SIZE: Extent2 = Extent2 {
@@ -68,7 +68,7 @@ fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
                 }
                 AssetNeed::Ground(id) => {
                     engine
-                        .accept_surface(id, &bytes)
+                        .accept_surface(SurfaceId::Image(id), &bytes)
                         .expect("install remote ground");
                 }
             },
@@ -369,7 +369,7 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
         .import_surface(&stark_testdata::assets::gesso())
         .expect("the gesso height map imports");
     host_session.add_content(
-        AssetNeed::Ground(gesso),
+        AssetNeed::ground(gesso).expect("the gesso ground is an image"),
         host.surface_bytes(gesso).expect("canonical bytes"),
     );
     host.process(DocCommand::SetSurface(gesso));

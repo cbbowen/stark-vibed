@@ -33,7 +33,7 @@ pub(crate) struct Mirror {
     /// two are both grayscale PNGs and both content-addressed, but a brush mask
     /// decodes as luminance × alpha and a ground as channel 0, so one bag would hand
     /// each store the other's bytes to reinterpret.
-    surfaces: HashMap<SurfaceId, Bytes>,
+    surfaces: HashMap<AssetId, Bytes>,
     /// The blob hash each piece of content transfers under.
     ///
     /// An [`AssetId`] names the *decoded coverage* (encoding-independent), so it is
@@ -53,7 +53,7 @@ pub(crate) struct Snapshot {
     canvas: CanvasMeta,
     actions: Vec<Action>,
     assets: Vec<(AssetId, Bytes)>,
-    surfaces: Vec<(SurfaceId, Bytes)>,
+    surfaces: Vec<(AssetId, Bytes)>,
 }
 
 impl Snapshot {
@@ -69,7 +69,7 @@ impl Snapshot {
         file.surfaces = self
             .surfaces
             .into_iter()
-            .map(|(id, b)| (id, b.to_vec()))
+            .map(|(id, b)| (SurfaceId::Image(id), b.to_vec()))
             .collect();
         file
     }
@@ -86,10 +86,13 @@ impl Mirror {
                 .iter()
                 .map(|(id, b)| (*id, Bytes::from(b.clone())))
                 .collect(),
+            // A `Flat` entry would carry no bytes and name no content; the save
+            // format cannot produce one, and skipping it is what keeps every
+            // ground in here fetchable.
             surfaces: file
                 .surfaces
                 .iter()
-                .map(|(id, b)| (*id, Bytes::from(b.clone())))
+                .filter_map(|(id, b)| Some((ground_content_id(*id)?, Bytes::from(b.clone()))))
                 .collect(),
             hashes: HashMap::new(),
         }
@@ -127,9 +130,7 @@ impl Mirror {
                 self.surfaces.insert(id, bytes);
             }
         }
-        if let Some(id) = need.content() {
-            self.hashes.insert(id, hash);
-        }
+        self.hashes.insert(need.content(), hash);
     }
 
     /// Whether this peer already holds what `need` names — the test that decides
@@ -158,10 +159,7 @@ impl Mirror {
     /// answered by the action that referenced them.
     pub fn seed_blobs(&mut self, add: impl Fn(Bytes) -> Hash) {
         let assets = self.assets.iter().map(|(id, b)| (*id, b.clone()));
-        let grounds = self
-            .surfaces
-            .iter()
-            .filter_map(|(id, b)| Some((ground_content_id(*id)?, b.clone())));
+        let grounds = self.surfaces.iter().map(|(id, b)| (*id, b.clone()));
         let hashes: Vec<(AssetId, Hash)> = assets
             .chain(grounds)
             .map(|(id, bytes)| (id, add(bytes)))
