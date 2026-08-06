@@ -5,19 +5,11 @@
 //! target directly, this is never bound, and every golden blessed at `zoom = 1.0`
 //! is bit-identical to before supersampling existed.
 
-use bytemuck::{Pod, Zeroable};
-
 use crate::geom::Extent2;
 use crate::gpu::desc;
-use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `Resolve` in `resolve.wesl`.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct ResolveUniform {
-    pub(super) n: [f32; 4], // samples per axis, then padding
-}
-mirrors_wesl!(ResolveUniform, 16);
+// Generated from `resolve.wesl`'s own declaration (§6.7).
+pub(super) use stark_shaders::mirror::resolve::Resolve as ResolveUniform;
 
 /// Most samples per axis presentation will take (§6.4). A 4×4 box is 16
 /// taps per output pixel; past that the box filter's remaining error is dominated by

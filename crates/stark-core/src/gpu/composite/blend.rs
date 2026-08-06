@@ -6,33 +6,18 @@
 //! the accumulator and writes the result, and a texture cannot be both, the
 //! accumulator ping-pongs between the caller's pair and this module's `swap`.
 
-use bytemuck::{Pod, Zeroable};
-
 use crate::colorspace::ColorSpace;
 use crate::document::BlendMode;
 use crate::geom::Extent2;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::pigment::PigmentLut;
-use crate::gpu::wesl::mirrors_wesl;
 
 /// A color + aux target pair, as pass A hands one around.
 pub(super) type Targets<'a> = (&'a wgpu::TextureView, &'a wgpu::TextureView);
 
-/// Mirrors `Blend` in `blend_common.wesl`.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct BlendUniform {
-    pub(super) mode: u32,
-    pub(super) k: f32,
-    pub(super) clip: u32,
-    /// The group's own opacity, applied to its composited result at the merge —
-    /// which is the *only* place it can be applied for a group, since its members
-    /// overlap (§14.7). Always 1.0 for a leaf layer, whose opacity
-    /// rides on its tiles instead.
-    pub(super) opacity: f32,
-}
-mirrors_wesl!(BlendUniform, 16);
+// Generated from `blend_common.wesl`'s own declaration (§6.7).
+pub(super) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 
 /// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
 /// a mode is numbered is a fact about `blend_common.wesl`, not about the document.

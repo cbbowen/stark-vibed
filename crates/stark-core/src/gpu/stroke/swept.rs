@@ -5,8 +5,6 @@
 //! Carries no brush state between segments, which is what makes it the fast path —
 //! a range needs nothing from its predecessor but the arc length.
 
-use bytemuck::{Pod, Zeroable};
-
 use crate::document::StrokeRecord;
 use crate::geom::{TILE_APRON, TILE_TEX};
 use crate::gpu::desc;
@@ -24,31 +22,10 @@ use super::{
 /// would clip the sweep short, more would fold the strip back over itself.
 const SWEEP_VERTS: u32 = 18;
 
-/// Per-tile uniform: the tile *texture's* top-left in canvas px + canvas→NDC
-/// scale, plus the brush's stroke-constant colour channels. The texture origin is
-/// the interior origin minus the apron, so the stroke rasterizes into the apron
-/// too (keeping it consistent with the neighbor's interior — see
-/// [`crate::geom::TILE_APRON`]).
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct TileXform {
-    params: [f32; 4], // tex_origin.x, tex_origin.y, 2/TILE_TEX, _
-    color: [f32; 4],  // brush channels (.xyz), per-unit opacity (.w)
-    /// The `drain` falloff per canvas px in `.x`, and the canvas → surface-tile uv
-    /// scale in `.y` (0 on a ground with no relief, which makes the tooth exactly 1);
-    /// `.zw` unused.
-    ///
-    /// These are here, and the `add` source is not, because of what each is a
-    /// function of. `drain` depends on arc length and the tooth on canvas position —
-    /// both things the fragment already knows — so each is recovered there and is a
-    /// stroke constant in the only sense that matters. `add` is a *pen*-driven
-    /// quantity now (§6.2) and varies segment to segment like the radius does, so it
-    /// rides the instance, as does the brush's `tooth`.
-    paint: [f32; 4],
-    noise_freq: [f32; 4], // colour-dynamics frequency (across, along), 1/NOISE_TILE_PX, _
-    noise_amp: [f32; 4],  // per colour-channel noise amplitude, _
-    noise_off: [f32; 4],  // per-stroke noise lookup translation (2), _, _
-}
+// The per-tile uniform, generated from `stamp_common.wesl`'s own declaration
+// (§6.7): the tile *texture's* top-left in canvas px + canvas→NDC scale, plus the
+// brush's stroke-constant colour channels.
+use stark_shaders::mirror::stamp_common::TileXform;
 
 /// One tile's window into the stroke's transform buffer — the `min_binding_size` the
 /// sweep's layout declares, taken from the struct rather than written down.

@@ -54,7 +54,7 @@ use group::scratch_levels;
 // The free items are imported by name rather than qualified, because `render`'s own
 // `guides` binding (the scene's list) would otherwise shadow the module in a reader's
 // eye — `alloc_guides(device, guides.len())` resolves fine and reads badly.
-use guides::{GUIDE_SLOT, GuidePass, GuideUniform, alloc_guides};
+use guides::{GUIDE_SLOT, GuidePass, GuideUniform, alloc_guides, pack_guides};
 use media::{MediaPass, MediaUniform};
 use overlay::{OverlayInstance, OverlayPass, PEER_OUTLINE_ALPHA, alloc_overlay};
 use resolve::{ResolvePass, ResolveUniform, supersample};
@@ -64,7 +64,7 @@ use view::View;
 pub use group::{CompositeGroup, CompositeItem, GroupContent, MatteDraw};
 pub use media::MediaParams;
 pub use overlay::SelectionOutline;
-pub(crate) use view::ViewUniform;
+pub(crate) use view::view_uniform;
 
 /// What stays the same for the whole of pass A, as against what the walk varies.
 ///
@@ -1051,7 +1051,7 @@ impl Compositor {
                 p.ctx.queue.write_buffer(
                     &self.guide_buf,
                     i as u64 * GUIDE_SLOT,
-                    bytemuck::bytes_of(&GuideUniform::pack(scene, view)),
+                    bytemuck::bytes_of(&pack_guides(scene, view)),
                 );
             }
             // Per render rather than kept, like the blend bind group: it has

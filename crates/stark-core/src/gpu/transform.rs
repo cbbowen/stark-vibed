@@ -29,7 +29,7 @@
 
 use std::collections::BTreeMap;
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Zeroable;
 use rpds::HashTrieMap;
 use wgpu::util::DeviceExt;
 
@@ -45,145 +45,109 @@ use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TexHandle, TileMap, TilePairHandle, TilePool};
 
-/// Mirrors `Quad` in `transform.wesl`.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct QuadUniform {
-    a: [f32; 4], // dest tex origin .xy, TILE_TEX, _
-    m: [f32; 4], // forward affine linear part, rows (vertex: coverage)
-    t: [f32; 4], // forward translation .xy, src *texture* origin .zw
-    u: [f32; 4], // src interior origin .xy, TILE_SIZE, _
-    i: [f32; 4], // inverse affine linear part, rows (fragment: the source tap)
-    j: [f32; 4], // inverse translation .xy, _, _
-}
+// Generated from `transform.wesl`'s own declarations (§6.7). The three constructors
+// below are free functions rather than inherent impls: the types live in
+// `stark-shaders` now, and an inherent impl on another crate's type is not allowed.
+// Each is still the only way one is built.
+use stark_shaders::mirror::transform::{
+    Combine as CombineUniform, Gated as GatedUniform, Quad as QuadUniform,
+};
 
-impl QuadUniform {
-    /// One source tile's interior quad, drawn into `dest`'s texture (paint and
-    /// mask tiles share the `TILE_TEX` geometry).
-    fn new(affine: Affine2, src: TileCoord, dest: TileCoord) -> Self {
-        let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
-        let src_origin = src.origin();
-        let src_tex_origin = src_origin - Vec2::splat(TILE_APRON as f32);
-        let m = affine.matrix2;
-        let t = affine.translation;
-        // The fragment stage maps back through the inverse (see `src_uv` in the
-        // shader). Exact for the exactness-invariant affines: the identity's
-        // inverse is the identity, a translation's is its negation, an axis
-        // flip's is itself.
-        let inv = affine.inverse();
-        let (im, it) = (inv.matrix2, inv.translation);
-        Self {
-            a: [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0],
-            // Shader rows: c.x = m.x·p.x + m.y·p.y; glam's Mat2 is column-major.
-            m: [m.x_axis.x, m.y_axis.x, m.x_axis.y, m.y_axis.y],
-            t: [t.x, t.y, src_tex_origin.x, src_tex_origin.y],
-            u: [src_origin.x, src_origin.y, TILE_SIZE as f32, 0.0],
-            i: [im.x_axis.x, im.y_axis.x, im.x_axis.y, im.y_axis.y],
-            j: [it.x, it.y, 0.0, 0.0],
-        }
+/// One source tile's interior quad, drawn into `dest`'s texture (paint and mask
+/// tiles share the `TILE_TEX` geometry).
+fn quad_uniform(affine: Affine2, src: TileCoord, dest: TileCoord) -> QuadUniform {
+    let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+    let src_origin = src.origin();
+    let src_tex_origin = src_origin - Vec2::splat(TILE_APRON as f32);
+    let m = affine.matrix2;
+    let t = affine.translation;
+    // The fragment stage maps back through the inverse (see `src_uv` in the
+    // shader). Exact for the exactness-invariant affines: the identity's
+    // inverse is the identity, a translation's is its negation, an axis
+    // flip's is itself.
+    let inv = affine.inverse();
+    let (im, it) = (inv.matrix2, inv.translation);
+    QuadUniform {
+        a: [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0],
+        // Shader rows: c.x = m.x·p.x + m.y·p.y; glam's Mat2 is column-major.
+        m: [m.x_axis.x, m.y_axis.x, m.x_axis.y, m.y_axis.y],
+        t: [t.x, t.y, src_tex_origin.x, src_tex_origin.y],
+        u: [src_origin.x, src_origin.y, TILE_SIZE as f32, 0.0],
+        i: [im.x_axis.x, im.y_axis.x, im.x_axis.y, im.y_axis.y],
+        j: [it.x, it.y, 0.0, 0.0],
     }
 }
 
-/// Mirrors `Gated` in `transform.wesl` — one drawn piece of a rect-scoped map
-/// (§16.8, §16.9).
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct GatedUniform {
-    a: [f32; 4],  // dest tex origin .xy, TILE_TEX, fragment mode
-    c0: [f32; 4], // piece corners (00, 10)
-    c1: [f32; 4], // piece corners (01, 11)
-    i0: [f32; 4], // inverse homography rows (mode 0)
-    i1: [f32; 4],
-    i2: [f32; 4],
-    g0: [f32; 4], // warp cell corner images (00, 10) (mode 1)
-    g1: [f32; 4], // (01, 11)
-    s: [f32; 4],  // warp cell source sub-rect: min .xy, size .zw
-    r: [f32; 4],  // gate rect: min .xy, max .zw
-    t: [f32; 4],  // src tile texture origin .xy
-}
-
-impl GatedUniform {
-    /// One [`SourceUnit`] drawn into `dest`'s texture. `inv` is the map's
-    /// shared inverse homography (perspective); warp cells carry their own
-    /// fragment map in the unit.
-    fn new(
-        unit: &SourceUnit,
-        inv: Option<&Homography>,
-        rect: (Vec2, Vec2),
-        dest: TileCoord,
-    ) -> Self {
-        let mut u = Self::base(rect, dest);
-        let c = &unit.corners;
-        u.c0 = [c[0].x, c[0].y, c[1].x, c[1].y];
-        u.c1 = [c[2].x, c[2].y, c[3].x, c[3].y];
-        let src_tex_origin = unit.src.origin() - Vec2::splat(TILE_APRON as f32);
-        u.t = [src_tex_origin.x, src_tex_origin.y, 0.0, 0.0];
-        match &unit.frag {
-            FragMap::Persp => {
-                let h = inv.expect("perspective units carry a shared inverse");
-                u.set_rows(&h.rows);
-            }
-            FragMap::Cell { g, min, size } => {
-                let d = g[3] - g[1] - g[2] + g[0];
-                if d == Vec2::ZERO {
-                    // The cell is a parallelogram — an affine, inverted through
-                    // the same arithmetic the affine action trusts, so an
-                    // untouched cell (whose map is exactly the identity) keeps
-                    // §16.4's tap exactness.
-                    let m = Mat2::from_cols((g[1] - g[0]) / size.x, (g[2] - g[0]) / size.y);
-                    let fwd = Affine2::from_mat2_translation(m, g[0] - m * *min);
-                    u.set_rows(&Homography::from_affine(fwd.inverse()).rows);
-                } else {
-                    u.a[3] = 1.0; // inverse-bilinear mode
-                    u.g0 = [g[0].x, g[0].y, g[1].x, g[1].y];
-                    u.g1 = [g[2].x, g[2].y, g[3].x, g[3].y];
-                    u.s = [min.x, min.y, size.x, size.y];
-                }
+/// One [`SourceUnit`] drawn into `dest`'s texture — one piece of a rect-scoped map
+/// (§16.8, §16.9). `inv` is the map's shared inverse homography (perspective); warp
+/// cells carry their own fragment map in the unit.
+fn gated_uniform(
+    unit: &SourceUnit,
+    inv: Option<&Homography>,
+    rect: (Vec2, Vec2),
+    dest: TileCoord,
+) -> GatedUniform {
+    let mut u = gated_base(rect, dest);
+    let c = &unit.corners;
+    u.c0 = [c[0].x, c[0].y, c[1].x, c[1].y];
+    u.c1 = [c[2].x, c[2].y, c[3].x, c[3].y];
+    let src_tex_origin = unit.src.origin() - Vec2::splat(TILE_APRON as f32);
+    u.t = [src_tex_origin.x, src_tex_origin.y, 0.0, 0.0];
+    match &unit.frag {
+        FragMap::Persp => {
+            let h = inv.expect("perspective units carry a shared inverse");
+            set_rows(&mut u, &h.rows);
+        }
+        FragMap::Cell { g, min, size } => {
+            let d = g[3] - g[1] - g[2] + g[0];
+            if d == Vec2::ZERO {
+                // The cell is a parallelogram — an affine, inverted through
+                // the same arithmetic the affine action trusts, so an
+                // untouched cell (whose map is exactly the identity) keeps
+                // §16.4's tap exactness.
+                let m = Mat2::from_cols((g[1] - g[0]) / size.x, (g[2] - g[0]) / size.y);
+                let fwd = Affine2::from_mat2_translation(m, g[0] - m * *min);
+                set_rows(&mut u, &Homography::from_affine(fwd.inverse()).rows);
+            } else {
+                u.a[3] = 1.0; // inverse-bilinear mode
+                u.g0 = [g[0].x, g[0].y, g[1].x, g[1].y];
+                u.g1 = [g[2].x, g[2].y, g[3].x, g[3].y];
+                u.s = [min.x, min.y, size.x, size.y];
             }
         }
-        u
     }
-
-    /// The uniform for `fs_mask_base`: only the destination origin and the
-    /// gate rect matter — the residue pass has no piece.
-    fn base(rect: (Vec2, Vec2), dest: TileCoord) -> Self {
-        let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
-        let mut u = Self::zeroed();
-        u.a = [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0];
-        u.r = [rect.0.x, rect.0.y, rect.1.x, rect.1.y];
-        u
-    }
-
-    fn set_rows(&mut self, rows: &[[f32; 3]; 3]) {
-        self.i0 = [rows[0][0], rows[0][1], rows[0][2], 0.0];
-        self.i1 = [rows[1][0], rows[1][1], rows[1][2], 0.0];
-        self.i2 = [rows[2][0], rows[2][1], rows[2][2], 0.0];
-    }
+    u
 }
 
-/// Mirrors `Combine` in `transform.wesl`: whether (and where) the cut is gated
-/// by a source rect. The affine path binds the zero gate, whose arithmetic is
-/// untouched from before the gate existed.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct CombineUniform {
-    a: [f32; 4],
-    r: [f32; 4],
+/// The uniform for `fs_mask_base`: only the destination origin and the gate rect
+/// matter — the residue pass has no piece.
+fn gated_base(rect: (Vec2, Vec2), dest: TileCoord) -> GatedUniform {
+    let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+    let mut u = GatedUniform::zeroed();
+    u.a = [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0];
+    u.r = [rect.0.x, rect.0.y, rect.1.x, rect.1.y];
+    u
 }
 
-impl CombineUniform {
-    fn new(dest: TileCoord, gate: Option<(Vec2, Vec2)>) -> Self {
-        let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
-        match gate {
-            Some(rect) => Self {
-                a: [dest_origin.x, dest_origin.y, 1.0, 0.0],
-                r: [rect.0.x, rect.0.y, rect.1.x, rect.1.y],
-            },
-            None => Self {
-                a: [dest_origin.x, dest_origin.y, 0.0, 0.0],
-                r: [0.0; 4],
-            },
-        }
+fn set_rows(u: &mut GatedUniform, rows: &[[f32; 3]; 3]) {
+    u.i0 = [rows[0][0], rows[0][1], rows[0][2], 0.0];
+    u.i1 = [rows[1][0], rows[1][1], rows[1][2], 0.0];
+    u.i2 = [rows[2][0], rows[2][1], rows[2][2], 0.0];
+}
+
+/// Whether (and where) the cut is gated by a source rect. The affine path binds the
+/// zero gate, whose arithmetic is untouched from before the gate existed.
+fn combine_uniform(dest: TileCoord, gate: Option<(Vec2, Vec2)>) -> CombineUniform {
+    let dest_origin = dest.origin() - Vec2::splat(TILE_APRON as f32);
+    match gate {
+        Some(rect) => CombineUniform {
+            a: [dest_origin.x, dest_origin.y, 1.0, 0.0],
+            r: [rect.0.x, rect.0.y, rect.1.x, rect.1.y],
+        },
+        None => CombineUniform {
+            a: [dest_origin.x, dest_origin.y, 0.0, 0.0],
+            r: [0.0; 4],
+        },
     }
 }
 
@@ -769,12 +733,12 @@ impl TransformRenderer {
         rect: (Vec2, Vec2),
         dest: TileCoord,
     ) -> wgpu::BindGroup {
-        self.gated_uniform_bg(GatedUniform::new(unit, inv, rect, dest))
+        self.gated_uniform_bg(gated_uniform(unit, inv, rect, dest))
     }
 
     /// The group-0 bind for the mask residue pass.
     fn gated_base_bg(&self, rect: (Vec2, Vec2), dest: TileCoord) -> wgpu::BindGroup {
-        self.gated_uniform_bg(GatedUniform::base(rect, dest))
+        self.gated_uniform_bg(gated_base(rect, dest))
     }
 
     fn gated_uniform_bg(&self, uniform: GatedUniform) -> wgpu::BindGroup {
@@ -880,7 +844,7 @@ impl TransformRenderer {
         let device = &self.ctx.device;
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark transform combine uniform"),
-            contents: bytemuck::bytes_of(&CombineUniform::new(dest, gate)),
+            contents: bytemuck::bytes_of(&combine_uniform(dest, gate)),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let (base_color, base_aux) = match from.base.get(&dest) {
@@ -969,7 +933,7 @@ impl TransformRenderer {
         let device = &self.ctx.device;
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark transform quad uniform"),
-            contents: bytemuck::bytes_of(&QuadUniform::new(affine, src, dest)),
+            contents: bytemuck::bytes_of(&quad_uniform(affine, src, dest)),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         device.create_bind_group(&wgpu::BindGroupDescriptor {

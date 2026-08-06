@@ -27,25 +27,12 @@ use crate::geom::{TileCoord, Vec2};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
-use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `Params` in `selection.wesl`.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct MaskUniform {
-    a: [f32; 4], // tex_origin.xy (canvas px), 2/TILE_TEX, feather
-    b: [f32; 4], // shape parameters
-    c: [f32; 4], // kind, mode, edge count, _
-}
-mirrors_wesl!(MaskUniform, 48);
-
-/// Mirrors `Region` in `mask_region.wesl`.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct RegionUniform {
-    a: [f32; 4], // region size .xy (px), TILE_TEX, _
-}
-mirrors_wesl!(RegionUniform, 16);
+// Generated from the two shaders' own declarations (§6.7). `selection.wesl` and
+// `slice.wesl` both call theirs `Params`, which is why the mirrors are namespaced by
+// the WESL module they came from.
+use stark_shaders::mirror::mask_region::Region as RegionUniform;
+use stark_shaders::mirror::selection::Params as MaskUniform;
 
 /// Per-tile instance for the region gather: the tile texture's top-left in region px.
 #[repr(C)]

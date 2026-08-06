@@ -1,6 +1,6 @@
 # Compositing, media, and colour
 
-The three passes, blend modes, presentation and the canvas surface, Oklab, and pluggable colour spaces — §6.3, §6.4, §6.5, §6.7.
+The three passes, blend modes, presentation and the canvas surface, Oklab, pluggable colour spaces, and the generated CPU↔shader mirrors — §6.3, §6.4, §6.5, §6.7, §6.10.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -615,5 +615,90 @@ The GPU polynomial in `media_mixbox.wesl` is **generated at build time** from th
 vendored GLSL (`stark-shaders/build.rs` transpiles `mixbox_eval_polynomial` into
 a WESL module), so the trained coefficients stay sourced from the licensed
 submodule rather than copied into this repo.
+
+## 6.10 The CPU↔shader boundary: generated mirrors
+
+Every uniform is one half of a pair the compiler cannot see across. The shader
+decides how the lanes are *read*; nothing on the host knows what it decided. Both
+halves used to be written by hand — nine `vec4` lanes in `dynamics.wesl` against
+nine `[f32; 4]` fields in `dynamics.rs`, each carrying its own copy of the lane
+map — and what two hand-written copies of one fact do is drift. All three of these
+had, silently: `ViewUniform`'s doc said 32 bytes and it was 48, `MediaUniform`'s
+said 80 and it was 96 (`surf_m`, §18.1.2), `GuideUniform`'s said 240 and it was
+304 (§20.8), and `Stamp.e.zw` was still documented on the host as the midpoint
+`exchange` samples the canvas at, long after the shader stopped reading the lane.
+
+**So the shader's declaration is now the only one.** `stark-shaders/build.rs`
+already holds a parsed WESL tree; `build/mirror.rs` walks it and emits the Rust
+struct into `stark_shaders::mirror::<wesl module>::<Name>` — fields, padding, and
+the lane documentation, which lives exactly once and is read off the WESL comment
+that abuts each member.
+
+### Adding a mirror
+
+1. Add `(&["<wesl module>"], "<Struct>")` to `MIRRORS` in
+   `stark-shaders/build.rs`. Where several shaders declare the same struct against
+   one host type, list them all: the first is generated from and the rest are
+   **checked to agree**, member for member and offset for offset. `View` is why —
+   `composite.wesl`, `matte.wesl` and `overlay.wesl` each write it out separately.
+2. Delete the hand-written struct and import the generated one in its place,
+   aliasing it to the host's name (`use stark_shaders::mirror::fill::Fill as
+   FillUniform;`). Namespacing by WESL module is not cosmetic: `selection.wesl` and
+   `slice.wesl` both call theirs `Params`, with different members.
+3. A constructor has to become a **free function** — the type lives in another
+   crate now, and Rust allows no inherent impl on it. `ViewUniform::new` →
+   `view_uniform`, `GuideUniform::pack` → `pack_guides`.
+
+### Why it is trustworthy
+
+**The layout is the point, and it is not the layout `#[repr(C)]` would give.** WGSL
+aligns a `vec3<f32>` to 16 and sizes it 12, rounds a struct up to its own
+alignment, and pads array elements and matrix columns out to a stride. A Rust
+struct of the obvious field types agrees with none of that in general — it only
+happened to agree here because every member was a `vec4`. A `vec3` anywhere but
+last would have put every later lane four bytes early, with nothing failing to say
+so.
+
+None of those rules are implemented in the generator. `wesl::eval::ty_eval_ty`
+resolves a member's type and `wgsl-types` gives it the spec's own `size_of` /
+`align_of`, including the `@size`/`@align` attributes, nested structs and `f16`.
+What is left is where the *host* has a choice: which Rust spelling occupies a given
+stride, and the explicit padding fields that put the real members on their offsets
+(explicit, so the struct has no *implicit* padding and stays `Pod`; a `Default` of
+zeroes is generated so callers can write `..Default::default()` rather than name
+them). Each struct then carries `size_of`, `align_of` and per-field `offset_of`
+assertions, so an error in that last part is a build failure at the struct it got
+wrong rather than a lane misread at run time.
+
+It reads the **unlinked** sources, never the artifacts. The linker mangles `Stamp`
+to `package__1dynamics_Stamp`, emits it once per artifact that reaches it, strips
+whatever no entry point uses, and drops the comments that are half of what is being
+generated. Parsing the linked WGSL with `naga` would buy the offsets and cost all
+four.
+
+### What this does and does not cover
+
+A bind group layout that disagrees with its shader is a **loud** failure — wgpu
+reflects the module at `create_*_pipeline` and names the offending binding — so
+those stay hand-written in `gpu/desc.rs`, where the call sites are more legible
+than generated ones. The same goes for entry-point names and vertex attribute
+formats. Generation is aimed at the **silent** half of the boundary.
+
+Two pieces of that half are still open:
+
+- **Vertex instance structs** (`TileInstance`, `MaskInstance`, `SegmentInstance`,
+  …) are not WESL structs at all — they are `@location` parameters on the vertex
+  entry point, so a struct-based generator cannot see them. Reading the entry
+  point's parameter list is the extension that would.
+- **Constants** are still transcribed, checked by `wesl_const` (`gpu/wesl.rs`)
+  against the *linked* artifact, with the four limits documented there — stripping,
+  reachability, `f64` widening, mangling. Generating them from the same AST would
+  retire all four: `use_stripping(false)` / `keep_declarations` keeps a constant
+  that survives only in prose, and `wesl`'s const evaluator computes a derived one
+  like `WICK_HALF` that a literal parse cannot.
+
+`mirrors_wesl!` — which pinned a hand-written struct's size against a number
+written beside it — is gone rather than improved. There is no second declaration
+left for it to check.
 
 

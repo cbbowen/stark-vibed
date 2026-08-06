@@ -17,7 +17,6 @@
 
 use std::sync::Arc;
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
@@ -27,16 +26,9 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
-use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `Fill` in `fill.wesl`.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct FillUniform {
-    c: [f32; 4], // latent .xyz, per-unit opacity .w
-    p: [f32; 4], // height at full coverage, _, _, _
-}
-mirrors_wesl!(FillUniform, 32);
+// Generated from `fill.wesl`'s own declaration (§6.7).
+use stark_shaders::mirror::fill::Fill as FillUniform;
 
 #[derive(Clone)]
 pub struct FillRenderer {

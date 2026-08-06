@@ -1,46 +1,22 @@
 //! Checks across the CPU↔shader boundary (§6.7, §7).
 //!
-//! Every `#[repr(C)]` uniform in this subsystem is one half of a pair the compiler
-//! cannot see across: the shader decides how the lanes are *read*, and nothing on
-//! this side knows what it decided. Whatever can be checked here should be, because
-//! the failure is quiet — a wgpu validation error at best, a silently misread lane
-//! at worst.
-
-/// Pin a uniform struct's size against the WESL declaration it mirrors.
-///
-/// The convention had been to write the size into the doc comment — which is worse
-/// than writing nothing, because a stale number reads as a verified one. Three had
-/// drifted by the time this existed: `ViewUniform` said 32 and was 48,
-/// `MediaUniform` said 80 and was 96 (`surf_m`, §18.1.2), and `GuideUniform` said
-/// 240 and was 304 (the fisheye's second set of poles, §20.8). None of the three
-/// was wrong in a way a pixel could show; all three were wrong in the one place a
-/// maintainer goes to check.
-///
-/// So the number moves out of the prose and into the build. It does **not** prove
-/// the lanes line up — only the shader-side declaration can say that, which is what
-/// `the_stamp_struct_has_the_same_nine_lanes_on_both_sides` reads out of the WESL
-/// source for `Stamp`, the one struct here whose mismatch would be silent rather
-/// than a validation error. What this catches is the realistic change: a lane
-/// appended to one side and not the other.
-macro_rules! mirrors_wesl {
-    ($t:ty, $bytes:expr) => {
-        const _: () = assert!(
-            std::mem::size_of::<$t>() == $bytes,
-            concat!(
-                stringify!($t),
-                " is no longer the size of the WESL struct it mirrors",
-            ),
-        );
-    };
-}
-pub(crate) use mirrors_wesl;
+//! What remains here is the **constants**. The structs used to be checked here too,
+//! by a `mirrors_wesl!` that pinned a Rust uniform's size against a number written
+//! beside it — a mechanism that existed because three declarations had already
+//! drifted in the one place a maintainer goes to check (`ViewUniform` said 32 and
+//! was 48; `MediaUniform` said 80 and was 96, §18.1.2; `GuideUniform` said 240 and
+//! was 304, §20.8). It only ever pinned the size, so a permuted lane passed it.
+//!
+//! Every one of those structs is now *generated* from the WESL that reads it
+//! (`stark-shaders/build/mirror.rs`), which is why the macro is gone rather than
+//! improved: there is no second declaration left for it to check. A constant is the
+//! remaining case, because both sides still write one out and both go on producing
+//! plausible pixels when they disagree.
 
 /// The value of a `const NAME` in some linked WESL source, as an `f64`.
 ///
-/// The other half of this module's job. `mirrors_wesl!` pins a *struct*; this pins a
-/// *scalar* that both sides compute with — the constants a comment can only ask to
-/// match, and whose mismatch is silent by construction because both sides go on
-/// producing plausible pixels.
+/// The constants a comment can only ask to match, and whose mismatch is silent by
+/// construction.
 ///
 /// Enough of a parser for a scalar `const`, and no more: anything it cannot find is a
 /// failed test rather than a silently skipped one. Three limits worth knowing before

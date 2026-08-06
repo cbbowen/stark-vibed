@@ -5,53 +5,37 @@
 //! to screen px with the zoom, §6.8), and the brush-dynamics loop writes its own
 //! [`ViewUniform`] into a buffer of its own for the region it composites (§6.2).
 
-use bytemuck::{Pod, Zeroable};
-
 use crate::geom::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TILE_SIZE, ViewTransform};
-use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `View` in `composite.wesl` and `overlay.wesl`.
+// Generated from `composite.wesl`'s declaration of `View`, which `matte.wesl` and
+// `overlay.wesl` declare identically — the generator checks all three agree (§6.7).
+//
+// **The one definition of that struct on this side of the boundary.** The
+// brush-dynamics loop composites its 1:1 canvas region through the very same
+// `composite.wesl`, and used to declare a second, identical `ViewUniform` of its own
+// with a doc comment asking that the two match exactly — which is a job for the
+// compiler, not for a sentence. It builds one of these through [`view_uniform`].
+pub(crate) use stark_shaders::mirror::composite::View as ViewUniform;
+
+/// The canvas px → NDC map `st` (column-major) with translation `xlate`, at `zoom`.
 ///
-/// **The one definition of that struct on this side of the boundary.** The
-/// brush-dynamics loop composites its 1:1 canvas region through the very same
-/// `composite.wesl`, and used to declare a second, identical `ViewUniform` of its
-/// own with a doc comment asking that the two match exactly — which is a job for
-/// the compiler, not for a sentence. It builds one of these through
-/// [`ViewUniform::new`] instead.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(crate) struct ViewUniform {
-    // The canvas px -> NDC linear map, column-major (`mat2x2` in the shaders). A
-    // full 2x2 rather than a scale pair because the view can be turned and mirrored
-    // (§18.1.2); upright and unmirrored it is diagonal, and every
-    // shader that reads it multiplies the same way either way.
-    st: [f32; 4],
-    // translate.xy, then padding to the 16-byte stride a uniform member takes
-    // anyway.
-    xlate: [f32; 4],
-    misc: [f32; 4], // tile_size, interior uv scale, interior uv bias, zoom
-}
-mirrors_wesl!(ViewUniform, 48);
-
-impl ViewUniform {
-    /// The canvas px → NDC map `st` (column-major) with translation `xlate`, at
-    /// `zoom`.
-    ///
-    /// The three tile constants in `misc` are filled here rather than at the call
-    /// sites, because they are facts about the tile layout (§6.4) that no caller
-    /// should be choosing: a consumer that quoted a different `INTERIOR_UV_BIAS`
-    /// would sample its neighbours' aprons and the seam would show only on that
-    /// one path.
-    ///
-    /// `zoom` reaches only the overlay pass, which measures its outline width in
-    /// screen px from a canvas-space distance (§6.8). Anything drawing into a frame
-    /// with no outline over it passes 0.
-    pub(crate) fn new(st: [f32; 4], xlate: crate::geom::Vec2, zoom: f32) -> Self {
-        Self {
-            st,
-            xlate: [xlate.x, xlate.y, 0.0, 0.0],
-            misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, zoom],
-        }
+/// The three tile constants in `misc` are filled here rather than at the call sites,
+/// because they are facts about the tile layout (§6.4) that no caller should be
+/// choosing: a consumer that quoted a different `INTERIOR_UV_BIAS` would sample its
+/// neighbours' aprons and the seam would show only on that one path.
+///
+/// `zoom` reaches only the overlay pass, which measures its outline width in screen
+/// px from a canvas-space distance (§6.8). Anything drawing into a frame with no
+/// outline over it passes 0.
+///
+/// A free function rather than the `ViewUniform::new` it replaced: the type is
+/// generated into `stark-shaders` now, and an inherent impl on another crate's type
+/// is not allowed. It is still the only way one is built.
+pub(crate) fn view_uniform(st: [f32; 4], xlate: crate::geom::Vec2, zoom: f32) -> ViewUniform {
+    ViewUniform {
+        st,
+        xlate: [xlate.x, xlate.y, 0.0, 0.0],
+        misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, zoom],
     }
 }
 
@@ -93,7 +77,7 @@ impl View {
         queue.write_buffer(
             &self.buf,
             0,
-            bytemuck::bytes_of(&ViewUniform::new(m.to_cols_array(), translate, view.zoom)),
+            bytemuck::bytes_of(&view_uniform(m.to_cols_array(), translate, view.zoom)),
         );
     }
 }

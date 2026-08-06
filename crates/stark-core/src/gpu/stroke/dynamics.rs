@@ -15,10 +15,9 @@ use crate::document::StrokeRecord;
 use std::collections::BTreeSet;
 
 use crate::geom::{TileCoord, Vec2};
-use crate::gpu::composite::ViewUniform;
+use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
-use crate::gpu::wesl::mirrors_wesl;
 
 use super::budget::{BLEED_TRAVEL_QUANTUM, TAU_PER_PASS, WICK_TRAVEL_QUANTUM, flatten_tolerance};
 use super::segments::{
@@ -53,13 +52,9 @@ struct TileInstance {
     opacity: f32,
 }
 
-/// Mirrors `Params` in `slice.wesl`: the tile texture's top-left in region texels.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct SliceUniform {
-    offset: [f32; 4],
-}
-mirrors_wesl!(SliceUniform, 16);
+// The write-back's uniform, generated from `slice.wesl`'s own declaration (§6.7):
+// the tile texture's top-left in region texels.
+use stark_shaders::mirror::slice::Params as SliceUniform;
 
 /// One tile's window into the write-back's offset buffer — the `min_binding_size` the
 /// slice layout declares, taken from the struct rather than written down.
@@ -78,7 +73,7 @@ const SLICE_SLOT: u64 = std::mem::size_of::<SliceUniform>() as u64;
 //
 // Every slot is still a pure function of the `StrokeRecord` and the piece's own
 // geometry, computed in plain CPU float math, so replay is deterministic (§12.1).
-use stark_shaders::mirror::Stamp;
+use stark_shaders::mirror::dynamics::Stamp;
 
 /// One slot's window into the stamp buffer, and the `min_binding_size` its layout
 /// declares — both of which have to be `Stamp`'s own size, so they are taken from it
@@ -537,7 +532,7 @@ impl<'a> DynamicsRun<'a> {
         // `composite.wesl`, so it wants that struct rather than a second declaration
         // of it that a comment asks to be kept in step (§6.2).
         let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
-        let view = ViewUniform::new(
+        let view = view_uniform(
             // Diagonal: the region is axis-aligned with the canvas whatever angle the
             // *screen* view happens to be at.
             [sx, 0.0, 0.0, sy],

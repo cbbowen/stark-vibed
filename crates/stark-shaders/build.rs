@@ -16,8 +16,29 @@ include!("src/entry_points.rs");
 /// The WESL structs the host fills in, and which are therefore generated into Rust
 /// rather than transcribed (`build/mirror.rs`).
 ///
-/// Grows as each hand-written mirror is retired.
-const MIRRORS: &[(&str, &str)] = &[("dynamics", "Stamp")];
+/// The first module of each entry is where the mirror is generated from and what its
+/// Rust module is named after; any others declare the same struct for their own
+/// pipeline and are checked to agree with it. `View` is the reason that exists: three
+/// shaders write it out separately against one host type.
+///
+/// Kept sorted by module, like [`ENTRY_POINTS`], so a missing entry is visible at a
+/// glance.
+const MIRRORS: &[(&[&str], &str)] = &[
+    (&["blend_common"], "Blend"),
+    (&["composite", "matte", "overlay"], "View"),
+    (&["dynamics"], "Stamp"),
+    (&["fill"], "Fill"),
+    (&["guides"], "Guide"),
+    (&["mask_region"], "Region"),
+    (&["media_common"], "Media"),
+    (&["resolve"], "Resolve"),
+    (&["selection"], "Params"),
+    (&["slice"], "Params"),
+    (&["stamp_common"], "TileXform"),
+    (&["transform"], "Combine"),
+    (&["transform"], "Gated"),
+    (&["transform"], "Quad"),
+];
 
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.

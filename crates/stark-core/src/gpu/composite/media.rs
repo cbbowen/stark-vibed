@@ -5,32 +5,14 @@
 //! paint film's gloss, converts the working channels to display, and composites
 //! over the substrate into the target. This is the "old masters" payoff.
 
-use bytemuck::{Pod, Zeroable};
-
 use crate::colorspace::ColorSpace;
 use crate::geom::Extent2;
 use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::Surface;
-use crate::gpu::wesl::mirrors_wesl;
 
-/// Mirrors `Media` in `media_common.wesl`.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct MediaUniform {
-    pub(super) light: [f32; 4], // _, _, _, height_strength (relief slope; xyz unused under IBL)
-    pub(super) bg: [f32; 4],    // background (substrate) in latent channels (xyz), unused w
-    pub(super) shade: [f32; 4], // exposure, diffuse_lod, gloss, _
-    // Screen→canvas mapping + surface (bump) sampling for the canvas relief:
-    pub(super) surf_a: [f32; 4], // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
-    pub(super) surf_b: [f32; 4], // surface_strength, transparent (0/1), _, _
-    // The screen→canvas linear map, column-major: what carries a fragment's position
-    // into canvas space so the weave stays attached to the canvas however the view is
-    // turned or mirrored. `surf_a.z` is the same map's *length* scale, which rotation
-    // and mirroring leave alone, and which the relief slope still wants as a scalar.
-    pub(super) surf_m: [f32; 4],
-}
-mirrors_wesl!(MediaUniform, 96);
+// Generated from `media_common.wesl`'s own declaration (§6.7).
+pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
 
 /// Lighting parameters for the media pass (§6.3). The painting is lit by
 /// image-based lighting from an [`Environment`]; this is a single place to tune the
