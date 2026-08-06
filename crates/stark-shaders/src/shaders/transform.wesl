@@ -20,10 +20,32 @@
 //
 // Every output is a pure function of canvas position, so a tile's apron is
 // rewritten identically to its neighbour's interior (the §6.4 seam invariant).
+//
+//
+// THREE PIPELINES, ONE FILE — AND `@group(0) @binding(0)` MEANS THREE THINGS
+//
+// Read the bindings below as **per pipeline**, not as one layout. `Quad` (the
+// affine) and `Gated` (perspective/warp) are *different structs at the same slot*,
+// and the combine pass claims bindings 2–7 of that same group for textures the other
+// two never see. `gpu/transform.rs` declares a separate bind group layout for each —
+// `quad_bgl`, `mask_src_bgl`, `combine_bgl` — so nothing is actually ambiguous at
+// run time; what makes it work here is that no entry point references two of them,
+// and stripping drops the rest before validation ever sees the collision.
+//
+// That is a real constraint and not an accident to be tidied later: **an entry point
+// that touched both `q` and `qg` would link a module declaring two uniforms at one
+// slot**, and the failure would be a wgpu validation error a long way from this file.
+// If a fourth map is added, give it its own module rather than a fourth struct here.
+//
+//   group 0 binding 0  `q` (vs_quad/fs_parcel/fs_mask) *or* `qg` (vs_gated/…)
+//   group 0 binding 1  the bilinear clamp sampler, shared by both quad paths
+//   group 0 binding 2–6 combine's base/parcel textures — combine only
+//   group 0 binding 7  `qc`, the combine's gate rect — combine only
+//   group 1 binding 0–2 the source tile being carried — both quad paths
 
 import package::lib::paint_common::{blend_latent, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
-import package::lib::sample::{load1};
+import package::lib::sample::{load1, box_coverage};
 
 struct Quad {
     // a: destination tile texture's top-left in canvas px .xy; .z = TILE_TEX.
@@ -164,15 +186,6 @@ struct Gated {
 }
 
 @group(0) @binding(0) var<uniform> qg: Gated;
-
-// Coverage of an axis-aligned box with a half-pixel antialiasing ramp: exactly
-// 1 deeper than half a pixel inside, exactly 0 outside, a 1-px ramp on the
-// boundary. A pure function of canvas position, so the cut side and the paste
-// side compute the identical gate and identity recombines exactly (§16.4).
-fn box_coverage(p: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> f32 {
-    let d = min(p - lo, hi - p);
-    return clamp(min(d.x, d.y) + 0.5, 0.0, 1.0);
-}
 
 // The piece's corners arrive precomputed rather than transformed here: under a
 // warp adjacent pieces belong to *different* bilinear cells, and only the CPU,

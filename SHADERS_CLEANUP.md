@@ -147,34 +147,63 @@ and which are current wiring. `exchange` is the name in all six live cases.
 
 ## 7. `dynamics.wesl`: the packed uniform
 
-**Status: outstanding.**
+**Status: done, by accessors.**
 
-1624 lines is five passes plus their shared kernel, but the length is not the
-tax — the **nine-`vec4` `Stamp` uniform with a prose field map** is. The body
-reads `st.b.y * st.b.x`, `st.d.z`, `st.h.z`, `st.i.y`, `st.e.y`. WGSL's uniform
-layout rules permit named scalar and `vec2` members, so the packing buys nothing
-a properly ordered `#[repr(C)]`-matched struct would not. Failing that, a dozen
-one-line accessors (`fn lift_rate() -> f32 { return -st.b.z; }`) recover most of
-it at no ABI risk.
+1624 lines is five passes plus their shared kernel, but the length was not the
+tax — the **nine-`vec4` `Stamp` uniform with a prose field map** was. The body
+read `st.b.y * st.b.x`, `st.d.z`, `st.h.z`, `st.i.y`, `st.e.y`, and the lane map
+had to be re-read from a comment at each of the fifty-odd sites.
 
-The same pattern runs through `Media` (`surf_a.z`, `surf_b.y`), `View`
-(`misc.x/y/z/w`), `selection::Params` (`c.x` = kind, `c.y` = mode),
-`Resolve.n.x` and `Guide`.
+Twenty-two one-line accessors now sit next to the struct, and all 39 statements
+that read the uniform go through them: `travel_px()`, `lift_rate()`,
+`tooth_bearing()`. The two rate accessors also fold in the `k = −λ` negation,
+which is an easy sign to lose in a kernel where the sign is the whole physics.
+
+**Accessors rather than repacking the struct**, which is what the original note
+suggested. The `Stamp` layout is an ABI shared with `SLOT` and pinned by
+`mirrors_wesl!` and `the_stamp_struct_has_the_same_nine_lanes_on_both_sides`;
+renaming reads costs nothing and moving lanes would put a delicate loop's
+correctness on the line for a cosmetic gain. Verified as a pure rename: every one
+of the 39 statements maps to the identical expression with the accessor
+substituted, checked mechanically against the linked WGSL.
+
+It also turned up a **dead lane**. `Stamp.e.zw` is documented as "the segment's
+midpoint, which is where `exchange` samples the canvas" — but `exchange` walks the
+texel's own track through `tip_at` now and nothing reads it. The lane stays (it is
+an ABI), with a comment saying so and marking it as reclaimable next time the
+struct is touched for a reason of its own.
+
+The same packing runs through `Media` (`surf_a.z`, `surf_b.y`), `View`
+(`misc.x/y/z/w`), `selection::Params` and `Guide`. Those are smaller and read far
+less often; the same treatment would suit them if they ever start costing.
 
 ## 8. `transform.wesl`: three pipelines, one file, aliased layouts
 
-**Status: outstanding.**
+**Status: documented, not split — deliberately.**
 
 `Quad` at `@group(0) @binding(0)` and `Gated` at `@group(0) @binding(0)` are
 different structs at the same slot; the combine pass then claims bindings 2–7 of
 the same group. It works only because no entry point references two of them and
-DCE prunes the rest. Nothing in the file says this out loud, and an entry point
-that touched both would be silently invalid. Split into three modules over a
-shared `transform_common`, or state the aliasing loudly at the top.
+stripping prunes the rest before validation sees the collision.
 
-Related: `mixbox_lut.wesl` hardcodes `@group(0) @binding(5)` and `(6)`, correct
-only because `blend_common` happens to stop at 4. Neither file mentions the
-other's binding budget.
+The file now opens with a binding map and says the constraint out loud, including
+what breaks if it is violated and what to do instead (a fourth map gets its own
+module). `box_coverage` — the one genuinely shared, binding-free helper, and the
+gate that makes a rect-scoped identity recombine exactly — moved to
+`lib/sample.wesl`.
+
+**Why not the full split.** The three pipelines' bind group layouts are already
+declared separately and correctly on the Rust side (`quad_bgl`, `mask_src_bgl`,
+`combine_bgl` in `gpu/transform.rs`), so the aliasing is a *legibility* problem,
+not a correctness one. Splitting means three shader modules and three
+`create_shader_module` calls for a file that is currently correct and heavily
+invariant-laden (§16.4's exactness guarantees run through it). The comment buys
+most of the safety at none of the risk; the split is the right move if a fourth
+map ever arrives, and the header now says so.
+
+`mixbox_lut.wesl`'s claim on `@group(0)` bindings 5 and 6 — correct only because
+`blend_common` stops at 4 — is likewise now stated in the file, along with what
+the error would look like if that stopped being true.
 
 ## 9. The generated `mixbox_poly.wesl` was written into the source tree
 

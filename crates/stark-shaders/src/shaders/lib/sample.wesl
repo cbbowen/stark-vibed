@@ -91,3 +91,18 @@ fn bilerp_mix(b: Bilerp, p00: vec4<f32>, p10: vec4<f32>, p01: vec4<f32>, p11: ve
 fn bilerp_mix1(b: Bilerp, p00: f32, p10: f32, p01: f32, p11: f32) -> f32 {
     return mix(mix(p00, p10, b.f.x), mix(p01, p11, b.f.x), b.f.y);
 }
+
+// ---- analytic coverage ----------------------------------------------------------
+
+// Coverage of an axis-aligned box with a half-pixel antialiasing ramp: exactly 1
+// deeper than half a pixel inside, exactly 0 outside, a 1-px ramp on the boundary.
+//
+// A pure function of canvas position, which is what lets the two sides of a
+// rect-scoped transform agree: `transform.wesl`'s parcel pass scales what it *cuts*
+// by this gate at the source, and its combine pass scales what it *keeps* by the
+// same gate at the destination, so an identity map recombines exactly (§16.4, §16.8).
+// Two evaluations of one function rather than two spellings of one idea.
+fn box_coverage(p: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> f32 {
+    let d = min(p - lo, hi - p);
+    return clamp(min(d.x, d.y) + 0.5, 0.0, 1.0);
+}

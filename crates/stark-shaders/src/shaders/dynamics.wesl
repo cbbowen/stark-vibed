@@ -104,9 +104,14 @@ struct Stamp {
     //    picks the prefix-τ slice) .z; the `drain` falloff per canvas px .w.
     d: vec4<f32>,
     // e: the `add` rate per unit exposure, **undrained** like `c.w`: height .x; the
-    //    segment's signed curvature
-    //    (1/region px, 0 = a straight sweep) .y; the segment's midpoint .zw (region
-    //    px), which is where `exchange` samples the canvas.
+    //    segment's signed curvature (1/region px, 0 = a straight sweep) .y.
+    //
+    //    `.zw` carried the segment's midpoint, which is where `exchange` used to
+    //    sample the canvas — one bilinear tap for the whole segment. It walks the
+    //    texel's own track through `tip_at` now, so nothing reads the lane. It stays
+    //    because the lane map is an ABI (`SLOT`, `mirrors_wesl!`); reclaiming it is a
+    //    change to both sides, worth making the next time this struct is touched for
+    //    a reason of its own.
     e: vec4<f32>,
     // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
@@ -140,6 +145,76 @@ struct Stamp {
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
+
+// ---- Reading the slot ------------------------------------------------------------
+//
+// The nine lanes above are packed `vec4`s because that is what a uniform wants, but
+// nothing downstream should have to know which. Every field is read through one of
+// these, so the loop's arithmetic says `travel_px()` and `lift_rate()` rather than
+// `st.b.y * st.b.x` and `-st.b.z` — the two spellings that cost the most to decode,
+// and appear five and two times respectively.
+//
+// This is a rename, not a repacking. The `Stamp` layout is an ABI shared with
+// `gpu::stroke::dynamics`'s `SLOT`, pinned by `mirrors_wesl!` and by
+// `the_stamp_struct_has_the_same_nine_lanes_on_both_sides`; moving a lane would be a
+// change to both sides and to those checks. What these buy is that the *lane map*
+// exists in exactly one place — here, next to the struct that documents it — instead
+// of being re-read from a comment at each of the fifty-odd use sites.
+//
+// The two rate accessors also fold in the negation. `λ = ln(1 − axis) ≤ 0` is what
+// the host packs, and every consumer wants `k = −λ ≥ 0`; spelling that at each site
+// is an easy sign to lose in a kernel where the sign is the whole physics.
+
+// The sweep's start and its travel tangent, in region px (see `Stamp::a`).
+fn seg_start() -> vec2<f32> { return st.a.xy; }
+fn seg_dir() -> vec2<f32> { return st.a.zw; }
+
+// The tip's radius in region px, its travel as a multiple of that radius, and the
+// travel in px — which is the product, and is what the arc arithmetic wants.
+fn radius() -> f32 { return st.b.x; }
+fn travel_radii() -> f32 { return st.b.y; }
+fn travel_px() -> f32 { return st.b.y * st.b.x; }
+
+// The three exchange rates, as `k = −λ ≥ 0`. `lift` and `deposit` are the vertical
+// pair; `bleed` is the lateral one, and is nonzero only on a dedicated bleed slot.
+fn lift_rate() -> f32 { return -st.b.z; }
+fn deposit_rate() -> f32 { return -st.b.w; }
+fn bleed_rate() -> f32 { return -st.h.w; }
+
+// The brush's own paint: its latent channels and its per-unit opacity, both
+// **undrained** — the falloff is applied per fragment from its own arc (`stroke_drain`).
+fn brush_lat() -> vec3<f32> { return st.c.xyz; }
+fn brush_op() -> f32 { return st.c.w; }
+
+// The `add` source rate — height per unit exposure, undrained like `brush_op`.
+fn add_rate() -> f32 { return st.e.x; }
+
+// The segment's signed curvature, 1/region px; 0 is a straight sweep.
+fn curvature() -> f32 { return st.e.y; }
+
+// Where this dispatch's footprint rect sits in the region, and the shape's
+// orientation in turns ∈ [0,1) — which picks the prefix-τ slice (§6.6) and is the
+// rotation `bake` and `exchange` take out of the travel frame.
+fn under_origin() -> vec2<i32> { return vec2<i32>(st.d.xy); }
+fn orientation() -> f32 { return st.d.z; }
+
+// The `drain` falloff per canvas px, and the arc length the segment starts at.
+fn drain_rate() -> f32 { return st.d.w; }
+fn arc_at_start() -> f32 { return st.g.w; }
+
+// Colour dynamics (§6.2): the noise field's frequency, per-channel amplitude and
+// per-stroke translation. Amplitude all-zero is jitter off.
+fn noise_freq() -> vec4<f32> { return st.f; }
+fn noise_amp() -> vec3<f32> { return st.g.xyz; }
+fn noise_off() -> vec2<f32> { return st.h.xy; }
+
+// The tooth (§6.4): how little give this tip has, the **bearing fraction** the tool
+// books against (1 where there is nothing to bite), and the region-texel → weave map
+// `uv = rt·scale + bias`, whose scale is zero on a ground with no relief.
+fn tooth_knob() -> f32 { return st.i.x; }
+fn tooth_bearing() -> f32 { return st.h.z; }
+fn weave_uv_scale() -> f32 { return st.i.y; }
+fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 
 // The stroke's canvas region: premultiplied colour (latent·op, op) + wide aux
 // (height, _, _, _). Read by `snapshot` (textureLoad) and `exchange` (bilinear).
@@ -299,8 +374,8 @@ struct Exchange {
 }
 
 fn exchange_at(e: f32) -> Exchange {
-    let kl = -st.b.z; // the lift rate; 0 when the brush does not lift
-    let kd = -st.b.w; // the deposit rate
+    let kl = lift_rate(); // the lift rate; 0 when the brush does not lift
+    let kd = deposit_rate(); // the deposit rate
     var out: Exchange;
     // Each side's own one-sided decay over the exposure it saw. No `s = kl + kd`
     // anywhere: the two directions do not share a relaxation, which is the whole point.
@@ -330,7 +405,7 @@ fn exchange_at(e: f32) -> Exchange {
 // closer; it used to be baked in at the segment midpoint and bought back with a
 // `0.02 / drain` cap on segment length (`gpu::stroke::budget::flatten_tolerance`).
 fn stroke_drain(arc: f32) -> f32 {
-    return max(1.0 - st.d.w * arc, 0.0);
+    return max(1.0 - drain_rate() * arc, 0.0);
 }
 
 // The share of the tip's contact a canvas texel gets from the ground under it (§6.4)
@@ -338,8 +413,9 @@ fn stroke_drain(arc: f32) -> f32 {
 // map, so a brush's tooth reads the same whether or not some other axis put it on this
 // path.
 //
-// `rt` is in region px; `st.i.zw` folds the piece's own canvas origin into the map, so
-// the value is a pure function of canvas position exactly as the fast path's is.
+// `rt` is in region px; `weave_uv_bias()` folds the piece's own canvas origin into
+// the map, so the value is a pure function of canvas position exactly as the fast
+// path's is.
 // `turn` is how far the tip's heading has swung by this point (`segment_frame(rt)`),
 // which `sweep_tangent` turns into the direction the rise is read along —
 // after the guards, so an ordinary brush never pays for the rotation. A settle slot
@@ -354,13 +430,13 @@ fn stroke_drain(arc: f32) -> f32 {
 // over it, so there is no travel to read the ground's rise along, and gating it would
 // break the flux's antisymmetry (the two threads of a pair sit over different ground).
 fn surface_tooth(rt: vec2<i32>, turn: f32) -> f32 {
-    if st.i.y <= 0.0 || st.i.x <= 0.0 {
+    if weave_uv_scale() <= 0.0 || tooth_knob() <= 0.0 {
         return 1.0;
     }
-    let uv = vec2<f32>(rt) * st.i.y + st.i.zw;
+    let uv = vec2<f32>(rt) * weave_uv_scale() + weave_uv_bias();
     let dims = textureDimensions(surface_tex);
     let g = textureLoad(surface_tex, ground_at(uv, dims), 0);
-    return tooth_gate(rise_ahead(g, sweep_tangent(st.a.zw, turn)), st.i.x);
+    return tooth_gate(rise_ahead(g, sweep_tangent(seg_dir(), turn)), tooth_knob());
 }
 
 // The footprint's **optical depth** for a given coverage — the currency every
@@ -729,14 +805,14 @@ fn bake(
     let row = wid.y; // dispatched as (1, dim.y, 1), so every row is in range
     let i = lid.x;
     let yl = (f32(row) + 0.5) / f32(dim.y) * 2.0 - 1.0;
-    let theta = st.d.z * TAU;
+    let theta = orientation() * TAU;
     let cs = cos(theta);
     let sn = sin(theta);
 
     // This column's share of the exposure: the prefix-τ difference across it.
     // Each thread reads its right edge; the left edge is the neighbour's.
     let x1 = (f32(i) + 1.0) / f32(dim.x) * 2.0 - 1.0;
-    ws_e[i] = prefix_at(x1, yl, st.d.z);
+    ws_e[i] = prefix_at(x1, yl, orientation());
     workgroupBarrier();
     var de = ws_e[i];
     if i > 0u {
@@ -789,11 +865,11 @@ fn bake(
 // measured in. Straight or curved, `sweep_at` hands back the same three quantities
 // (see stamp_common.wesl), so nothing downstream branches on the segment's shape.
 //
-// `st.b.y` carries the travel as `length / radius`, so the arc length it was built
+// `travel_radii()` carries the travel as `length / radius`, so the arc length it was built
 // from is recovered by multiplying back through.
 fn segment_frame(rt: vec2<i32>) -> Sweep {
     let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
-    return sweep_at(p, st.a.xy, st.a.zw, st.b.x, st.b.y * st.b.x, st.e.y);
+    return sweep_at(p, seg_start(), seg_dir(), radius(), travel_px(), curvature());
 }
 
 // Whether a region texel is provably outside the segment's sweep — the span
@@ -822,7 +898,7 @@ fn snapshot_at(gx: u32, gy: u32) {
         return;
     }
     let t = vec2<i32>(i32(gx), i32(gy));
-    let rt = vec2<i32>(st.d.xy) + t;
+    let rt = under_origin() + t;
     if outside_sweep(segment_frame(rt)) {
         return; // deposit never reads these texels of the snapshot
     }
@@ -891,10 +967,10 @@ fn versin_small(x: f32) -> f32 {
 // `path::arc_at` walks, run forwards, with the same sign convention (curvature turns
 // towards the left of `dir`). A straight segment never touches the arc arithmetic.
 fn tip_at(f: f32) -> vec4<f32> {
-    let start = st.a.xy;
-    let dir = st.a.zw;
-    let s = f * st.b.y * st.b.x; // travel = (length / radius) · radius · f
-    let k = st.e.y;
+    let start = seg_start();
+    let dir = seg_dir();
+    let s = f * travel_px(); // travel = (length / radius) · radius · f
+    let k = curvature();
     if k == 0.0 {
         return vec4<f32>(start + dir * s, dir.x, dir.y);
     }
@@ -995,17 +1071,19 @@ fn exchange(
     // and a reservoir cell has no ground of its own to ask — it is dragged over a
     // fresh stretch of canvas at every sub-step. So it books against the ground's
     // mean *for the way this segment is going*, which the host read off the ground's
-    // per-direction table (`Surface::bearing`, `st.h.z`), while each canvas texel scales
+    // per-direction table (`Surface::bearing`, `tooth_bearing()`), while each canvas
+    // texel scales
     // by the ground ahead of itself. The two agree in expectation over any footprint spanning many
     // grain features — which is every usable tip — and that is what keeps a toothed
     // smear conserving. Exactly 1 when there is no tooth, so an ordinary brush is
     // untouched.
-    let e_step = tau_of(coverage_at(local)) * st.b.y * st.h.z / f32(EXCHANGE_STEPS);
+    let e_step =
+        tau_of(coverage_at(local)) * travel_radii() * tooth_bearing() / f32(EXCHANGE_STEPS);
     let ex = exchange_at(e_step);
     let rdim = vec2<f32>(textureDimensions(region_color));
     // The tool's shape frame is the travel frame turned by the shape's orientation
     // (§6.6) — the same rotation `bake` applies to read the reservoir.
-    let theta = st.d.z * TAU;
+    let theta = orientation() * TAU;
     let cs = cos(theta);
     let sn = sin(theta);
 
@@ -1015,7 +1093,7 @@ fn exchange(
         let tip = tip_at(f);
         let dir = tip.zw;
         let rot = vec2<f32>(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs);
-        let world = tip.xy + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * st.b.x;
+        let world = tip.xy + (local.x * rot + local.y * vec2<f32>(-rot.y, rot.x)) * radius();
         let uv = world / rdim;
 
         // Outside the selection the canvas gives nothing up and the source mints
@@ -1075,11 +1153,11 @@ fn exchange(
         // source stop balancing: the `deposit` hands the canvas `add_w · A` at the
         // canvas texel's arc, and this takes back `src_w · A` at the tool texel's. The
         // two are the same place at the same moment, so they must read the same `A`.
-        let arc = st.g.w + f * st.b.y * st.b.x + (local.x * cs - local.y * sn) * st.b.x;
+        let arc = arc_at_start() + f * travel_px() + (local.x * cs - local.y * sn) * radius();
         let drain = stroke_drain(arc);
-        let src_h = st.e.x * drain * ex.src_w * sel;
-        let src_m = st.c.w * drain * src_h;
-        lat = blend_latent(lat, m, st.c.xyz, src_m);
+        let src_h = add_rate() * drain * ex.src_w * sel;
+        let src_m = brush_op() * drain * src_h;
+        lat = blend_latent(lat, m, brush_lat(), src_m);
         h = h + src_h;
         m = m + src_m;
     }
@@ -1180,7 +1258,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let t = vec2<i32>(gid.xy);
-    let rt = vec2<i32>(st.d.xy) + t;
+    let rt = under_origin() + t;
     let rdim = vec2<i32>(textureDimensions(region_color_w));
     if rt.x < 0 || rt.y < 0 || rt.x >= rdim.x || rt.y >= rdim.y {
         return;
@@ -1206,7 +1284,10 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Both are needed: every exchange rate below is per unit tip travel, but the bake
     // was integrated against the same prefix and its ratios must be taken in the
     // measure it was integrated in — where the factor cancels rather than squaring.
-    let dpre = max(prefix_at(xl, yl, st.d.z) - prefix_at(xl - sw.lr, yl, st.d.z), 0.0);
+    let dpre = max(
+        prefix_at(xl, yl, orientation()) - prefix_at(xl - sw.lr, yl, orientation()),
+        0.0,
+    );
     if dpre <= 0.0 {
         return; // outside the swept footprint: the region keeps its value
     }
@@ -1263,7 +1344,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var op0 = uc.a;
     var lat0 = uc.rgb / max(uc.a, PAINT_EPS);
     var bled = false;
-    let kb = -st.h.w; // the bleed rate; nonzero only on a dedicated bleed slot
+    let kb = bleed_rate(); // the bleed rate; nonzero only on a dedicated bleed slot
     if kb > 0.0 {
         let w_t = 1.0 - exp(-kb * e);
         // Entering quantities in the mass-weighted form every flux moves (§6.1):
@@ -1277,7 +1358,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         // The tap distances, per BLEED_REACH above. Every thread derives the same
         // three integers from the same uniform, so a pair at any scale still
         // computes one number — the antisymmetry the conservation rests on.
-        let reach = max(i32(round(BLEED_REACH * st.b.x)), 1);
+        let reach = max(i32(round(BLEED_REACH * radius())), 1);
         var dists = array<i32, 3>(1, max(reach / 4, 1), reach);
         for (var k = 0; k < 3; k = k + 1) {
             for (var i = 0; i < 4; i = i + 1) {
@@ -1293,15 +1374,15 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if all(tn == t) {
                     continue; // a tiny tip's collapsed scale, or the wall itself
                 }
-                let rtn = vec2<i32>(st.d.xy) + tn;
+                let rtn = under_origin() + tn;
                 // The neighbour's own exposure, from the same uniform its own thread
                 // reads it — same floats, same verdict, so the pair agrees on its flux.
                 let swn = segment_frame(rtn);
                 var w_n = 0.0;
                 if !outside_sweep(swn) {
                     let dpn = max(
-                        prefix_at(swn.local.x, swn.local.y, st.d.z)
-                            - prefix_at(swn.local.x - swn.lr, swn.local.y, st.d.z),
+                        prefix_at(swn.local.x, swn.local.y, orientation())
+                            - prefix_at(swn.local.x - swn.lr, swn.local.y, orientation()),
                         0.0,
                     );
                     w_n = 1.0 - exp(-kb * dpn * swn.warp);
@@ -1340,16 +1421,16 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // `dᵢ` and sees this texel at `(arc − dᵢ)/radius` — so both rates below come out
     // independent of how the path was cut (`stroke_drain`). It is also the domain the
     // colour-dynamics lookup already ran on, so there is one arc, not two.
-    let arc = st.g.w + xl * st.b.x;
+    let arc = arc_at_start() + xl * radius();
     let drain = stroke_drain(arc);
-    let own_op = st.c.w * drain;
+    let own_op = brush_op() * drain;
 
-    var own_lat = st.c.xyz;
-    if any(st.g.xyz != vec3<f32>(0.0, 0.0, 0.0)) {
-        let lateral = yl * st.b.x;
+    var own_lat = brush_lat();
+    if any(noise_amp() != vec3<f32>(0.0, 0.0, 0.0)) {
+        let lateral = yl * radius();
         own_lat += color_jitter(
             dyn_noise_tex, dyn_noise_samp, vec2<f32>(lateral, arc),
-            st.f, st.g.xyz, st.h.xy,
+            noise_freq(), noise_amp(), noise_off(),
         );
     }
 
@@ -1361,7 +1442,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // because `ex` was solved at the exposure the ground let through. Multiplying
     // again would charge the weave twice — and would take the deposit out of the
     // complement the tool's own dispatch computed, which is what would destroy paint.
-    let add_h = st.e.x * drain * ex.add_w;
+    let add_h = add_rate() * drain * ex.add_w;
     let par_h = dep_h + add_h;
     let par_m = tool_op * dep_h + own_op * add_h;
 
@@ -1452,7 +1533,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let t = vec2<i32>(gid.xy);
-    let rt = vec2<i32>(st.d.xy) + t;
+    let rt = under_origin() + t;
     let rdim = vec2<i32>(textureDimensions(region_color_w));
     if rt.x < 0 || rt.y < 0 || rt.x >= rdim.x || rt.y >= rdim.y {
         return;
@@ -1467,8 +1548,8 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let xl = sw.local.x;
     let yl = sw.local.y;
 
-    let total = prefix_at(1.0, yl, st.d.z);
-    let owed = prefix_at(xl, yl, st.d.z);
+    let total = prefix_at(1.0, yl, orientation());
+    let owed = prefix_at(xl, yl, orientation());
     let e = min(owed, total - owed);
     if e <= 0.0 {
         return; // the footprint's rim: nothing in flight, nothing to settle
@@ -1531,8 +1612,8 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // cell to the point it serves, so no single baked integral carries it. The
     // settle runs once per stroke, which is what makes O(BAKE_RES) taps per texel
     // the right trade here where the per-segment deposit could never afford it.
-    let kd = -st.b.w;
-    let kl = -st.b.z;
+    let kd = deposit_rate();
+    let kl = lift_rate();
     let bdimf = vec2<f32>(textureDimensions(bake_load));
     // The bake row pair this texel sits between — `bake_at`'s own addressing, kept
     // linear through the differencing below (a difference of blends is a blend of
