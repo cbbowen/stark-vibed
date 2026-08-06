@@ -92,6 +92,27 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   snapshots from a session **mirror** (log + assets + grounds, CPU-side), so
   sessions survive the original sharer leaving, and any member can mint a **ticket**
   (`stark…` base32: an `EndpointAddr` + the topic).
+- **What the joiner already has** is left out of that bundle. Content-addressing
+  makes provenance irrelevant to correctness, which is what it is for — but it
+  also means the app cannot tell that a ground it is being sent is the one it
+  ships with. So the joiner *says*: it sends the ids of its bundled assets and the
+  host omits them. The app's own Linen weave is 14 MB, and it was moving into
+  installs that already had it.
+
+  The list is a **promise**, not an inventory — "I can get these", not "I have
+  these loaded" — and it is knowable ahead of the bytes only because the frontend
+  hashes its bundle at build time, which is what `stark-assetid` exists to make
+  possible without linking a renderer. The promise is called in twice: `owed`
+  comes back from the join and must be installed **before the log is replayed**
+  (a `SetSurface` whose height map is not registered when its strokes replay
+  deposits them through the flat stand-in, and those pixels are stored, §6.4);
+  and for the rest of the session a need whose id was promised raises a
+  local-resolution request instead of a dial.
+
+  Breaking the promise is safe by construction. The log still names the content,
+  so the ordinary blob fetch pulls it off a peer exactly as it would have — a
+  frontend that cannot deliver, or does not implement any of this, loses a grace
+  period and nothing else. Being wrong costs a transfer, not a picture.
 - **Assets:** an action referencing content the receiver lacks fetches those
   bytes over the blobs ALPN from its author, falling back to the peer that
   delivered it, and the action is **parked** on a waitlist until they arrive — so
@@ -121,6 +142,12 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
     the strokes that merged ahead of it are replayed against the real ground when
     it lands. Parking is what makes that affordable — an unbounded wait costs
     nothing when nothing waits behind it.
+
+  Content the receiver said it could produce itself is asked of the frontend
+  before any of this: one request, a grace period, and only then a dial. What
+  comes back arrives through the same `add_content` a local import uses, so a
+  locally-resolved ground is not a different kind of content — only a different
+  way of getting hold of it.
 
   A mid-session import seeds the mirror at import time — before the action goes
   out, since the broadcast attaches a transfer hash looked up from it — and

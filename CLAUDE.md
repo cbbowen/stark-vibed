@@ -59,6 +59,10 @@ docs became §14–§19.
 
 ```
 crates/
+  stark-assetid/   what a content id *is*: decode, cap, hash for brush shapes
+                   and canvas grounds. No GPU, so a build script can compute one
+                   — which is what lets the frontend know a bundled asset's id
+                   before fetching it. The file format's identity contract (§19)
   stark-core/      the engine — no UI, no windowing; compiles to wasm
     document/      versioned state: actions, timeline, layers, selection, footprints
     gpu/           tile pool, stroke renderer, compositor, readback
