@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
 use crate::document::{ActorId, ApplyCtx, DocState, LayerId, StrokeRecord};
-use crate::geom::TileCoord;
+use crate::geom::{TileCoord, TileRect};
 use crate::gpu::StrokeSpans;
 use crate::peer::{GestureView, LiveGesture, Peer};
 
@@ -119,14 +119,23 @@ impl Preview {
     /// Rebuild the fold: `committed` (or the drag standing in for it) with every
     /// in-flight gesture composited over it, in ascending [`ActorId`] order (§17.6).
     ///
-    /// The order is fixed and derivable, so every client folds the same picture. Each
-    /// stroke is rendered against the *committed* base and then overlaid tile-wise,
-    /// rather than chained peer-over-peer: chaining would invalidate one peer's
-    /// cached head on every move of the peers before it, which is precisely when two
-    /// people are painting at once and the cache matters most. Where two live strokes
-    /// touch the same tile in the same instant, the higher `ActorId` wins it — and a
-    /// preview of concurrent strokes is provisional in any case, because the true
-    /// result depends on the total order, which is not known until both commit.
+    /// The order is fixed and derivable, so every client folds the same picture. A
+    /// stroke is rendered against the *committed* base and then overlaid tile-wise
+    /// rather than chained peer-over-peer, because chaining would invalidate one
+    /// peer's cached head on every move of the peers before it — precisely when two
+    /// people are painting at once and the cache matters most.
+    ///
+    /// **Unless they are painting on the same tiles.** The overlay copies whole tiles,
+    /// so a tile two live strokes share carries the committed pixels plus one
+    /// stroke's paint whichever way it is copied: the second copy puts back exactly
+    /// what the first had drawn there, and one of the two strokes disappears from that
+    /// tile until it commits. So a stroke whose reach meets one already in the fold is
+    /// rendered over **the fold** instead, and gives up its cached head to do it —
+    /// which is the honest price, and one paid only while two people are painting the
+    /// same tiles rather than merely at the same time. `preview == committed` still
+    /// holds tile-wise for each stroke; what stays provisional is which of two
+    /// concurrent strokes ends up on top, since that depends on a total order neither
+    /// is in until both commit.
     ///
     /// The head cache is rebuilt into a **fresh** map rather than edited in place,
     /// which is what bounds it: a head is kept by being carried over, so one whose
@@ -149,6 +158,9 @@ impl Preview {
         // across is released when `cached` drops at the end of the call.
         let mut cached = std::mem::take(&mut self.heads);
         let mut heads = BTreeMap::new();
+        // The paint every gesture already folded in has claimed, so a stroke can tell
+        // whether the tiles it is about to overlay still hold nothing but the base.
+        let mut claimed: Vec<(LayerId, TileRect)> = Vec::new();
         for GestureView {
             actor,
             gesture,
@@ -172,6 +184,9 @@ impl Preview {
                 // each move rather than accumulated, which is what keeps dragging a
                 // rectangle out from stacking a hundred glazes.
                 LiveGesture::Fill { layer, op } => {
+                    // Already chained: it reads `out`, not `base`, and replaces the
+                    // layer's whole tile map rather than copying tiles across.
+                    claimed.push((layer, crate::document::footprint::fill_rect(&op)));
                     if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
                         let gate = base.selection_of(actor);
                         if let Some(filled) = ctx.fill.apply(&ctx.pool, &tiles, &gate, &op) {
@@ -180,11 +195,27 @@ impl Preview {
                     }
                 }
                 LiveGesture::Stroke(rec) => {
+                    let reach = crate::document::footprint::stroke_rect(&rec);
+                    let contested = claimed
+                        .iter()
+                        .any(|(layer, rect)| *layer == rec.layer && rect.intersects(&reach));
+                    claimed.push((rec.layer, reach));
+                    // A contested stroke draws over the fold, which is a different
+                    // document on every move — so its head is unrepeatable by
+                    // construction, and both halves of the cache follow from that one
+                    // fact: nothing cached is reused, and what this fold caches is
+                    // marked never to be.
                     let head = cached.remove(&actor).filter(|h| {
-                        h.epoch == self.epoch && h.gesture == ordinal && h.spans <= frozen
+                        !contested
+                            && !h.contested
+                            && h.epoch == self.epoch
+                            && h.gesture == ordinal
+                            && h.spans <= frozen
                     });
-                    let (head, tail_state) =
-                        self.render_live_stroke(ctx, actor, &base, &rec, frozen, head, ordinal);
+                    let root = if contested { &out } else { &base };
+                    let (head, tail_state) = self.render_live_stroke(
+                        ctx, actor, root, &rec, frozen, head, ordinal, contested,
+                    );
                     out = overlay_tiles(&out, rec.layer, &tail_state, &head.dirty);
                     heads.insert(actor, head);
                 }
@@ -209,6 +240,7 @@ impl Preview {
         frozen: usize,
         head: Option<FrozenHead>,
         ordinal: u64,
+        contested: bool,
     ) -> (FrozenHead, DocState) {
         // A stroke cannot freeze a span whose pixels are still measured against a
         // length the stroke has not reached — the taper, from the *ends* of the whole
@@ -229,6 +261,7 @@ impl Preview {
             state: base.clone(),
             gesture: ordinal,
             epoch: self.epoch,
+            contested,
             dirty: BTreeSet::new(),
         });
         if frozen > head.spans {
@@ -305,6 +338,13 @@ pub(super) struct FrozenHead {
     /// — bumps the epoch, and a head from an earlier one is discarded rather than
     /// drawn over a canvas that no longer exists.
     epoch: u64,
+    /// Whether this head was rooted at the *fold* rather than at the committed
+    /// document, because another live stroke had already claimed tiles it reaches.
+    /// The fold is rebuilt from scratch on every move, so such a head can never be
+    /// reused — it is still kept, because it is what the overlay reads and what
+    /// [`Preview::head_count`] has to account for, but it is stale the moment it
+    /// is stored. The epoch cannot say this: nothing about the *document* changed.
+    contested: bool,
     /// Every tile the head has rewritten so far, so the fold knows what to overlay
     /// (§17.6). Accumulated because a head grows across many advances.
     dirty: BTreeSet<TileCoord>,
@@ -436,6 +476,7 @@ fn advance_head(
             state,
             gesture: head.gesture,
             epoch: head.epoch,
+            contested: head.contested,
             dirty,
         }
     }

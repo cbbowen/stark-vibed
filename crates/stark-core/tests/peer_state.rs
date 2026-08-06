@@ -595,6 +595,84 @@ fn a_settled_head_does_not_outlive_its_gesture() {
     assert_eq!(engine.live_head_count(), 0);
 }
 
+/// Two parallel strokes well inside **one tile** — tile `(0, 0)` owns canvas
+/// `[0, TILE_SIZE)²`, and every pixel either lays is inside it. Far enough apart that
+/// neither's paint stands where the other's does, so "both are on screen" is a
+/// question about the fold and not about how two overlapping brushes mix.
+const LOWER: [Vec2; 2] = [Vec2::new(20.0, 40.0), Vec2::new(110.0, 40.0)];
+const UPPER: [Vec2; 2] = [Vec2::new(20.0, 80.0), Vec2::new(110.0, 80.0)];
+
+/// Whether the pixel reads as the green of [`stroking`]'s brush, the mirror of
+/// [`is_painted`] for the other actor's colour.
+fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
+    let half = Vec2::new(img.width as f32, img.height as f32) * 0.5;
+    let p = canvas + half;
+    let i = ((p.y as u32 * img.width + p.x as u32) * 4) as usize;
+    let (r, g, b) = (
+        img.pixels[i] as i32,
+        img.pixels[i + 1] as i32,
+        img.pixels[i + 2] as i32,
+    );
+    g - r > 40 && g - b > 40
+}
+
+/// Draw this client's live stroke along `points`, and leave the pointer down.
+fn start_live_stroke(engine: &mut Engine, color: [f32; 4], points: [Vec2; 2]) {
+    engine.process(ViewCommand::SetBrush(common::brush(color, 12.0)));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(points[0]),
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    for i in 1..=8 {
+        let t = i as f32 / 8.0;
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(points[0] + (points[1] - points[0]) * t),
+        });
+    }
+}
+
+/// **Two live strokes that land on the same tile must both be shown** (§17.6).
+///
+/// The fold renders each in-flight stroke against the *committed* document and then
+/// copies the tiles it dirtied into the accumulated picture. On a tile only one
+/// stroke touches that is exactly right. On a tile they share it is not: the second
+/// actor's copy carries the committed tile plus its own paint, so it puts back
+/// everything the first actor had just drawn there. One of the two strokes simply
+/// vanishes from that tile until whichever it is commits — the committed state is
+/// fine, because commits go through the log one at a time over the real document,
+/// which is why nothing but the live preview can show this.
+///
+/// Both orders are checked. The clobbering is by ascending [`ActorId`], so a test
+/// with the peer above this client would pass unchanged if the fold merely folded the
+/// other way round.
+#[test]
+fn two_live_strokes_sharing_a_tile_are_both_shown() {
+    for (local, peer) in [(ActorId(1), ActorId(2)), (ActorId(3), ActorId(2))] {
+        let Some(mut engine) = engine_or_skip() else {
+            return;
+        };
+        engine.start_collaboration(local);
+
+        // This client paints the lower line; the peer is mid-stroke on the upper one.
+        start_live_stroke(&mut engine, RED, LOWER);
+        assert!(engine.merge_presence(peer, stroking(1, &UPPER), 0.0));
+
+        let img = snap(&mut engine);
+        let mid = |line: [Vec2; 2]| (line[0] + line[1]) * 0.5;
+        assert!(
+            is_painted(&img, mid(LOWER)),
+            "local {local:?} / peer {peer:?}: this client's own live stroke \
+             must survive the peer's overlay of the tile they share"
+        );
+        assert!(
+            is_green(&img, mid(UPPER)),
+            "local {local:?} / peer {peer:?}: the peer's live stroke must survive \
+             this client's overlay of the tile they share"
+        );
+    }
+}
+
 /// **Every path that replaces the base a preview is drawn over moves the epoch**
 /// (§17.6) — including dropping the unlogged drag preview when nothing else about
 /// the command took effect.

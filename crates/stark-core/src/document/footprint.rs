@@ -146,7 +146,13 @@ fn stroke_pad(brush: &BrushParams) -> f32 {
 }
 
 /// The tile-aligned reach of a stroke: everything its render may read or write.
-fn stroke_rect(rec: &StrokeRecord) -> TileRect {
+///
+/// Shared with the live-preview fold (§17.6), which asks the same question of a
+/// gesture that has not become an action yet: whether two people painting at once
+/// are painting on the same tiles. Deliberately the *same* answer the commit's
+/// footprint gives, so the fold cannot decide two strokes are independent where the
+/// log would decide they conflict.
+pub(crate) fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
     for p in &rec.path {
@@ -323,7 +329,8 @@ fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
 }
 
 /// The tile-aligned reach of a fill: everything its pass may read or write.
-fn fill_rect(op: &super::fill::FillOp) -> TileRect {
+/// Shared with the live-preview fold for the same reason as [`stroke_rect`].
+pub(crate) fn fill_rect(op: &super::fill::FillOp) -> TileRect {
     let Some((lo, hi)) = super::fill::fill_bounds(op) else {
         return TileRect::ALL;
     };

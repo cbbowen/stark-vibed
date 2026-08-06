@@ -508,22 +508,39 @@ Two decisions in that sentence, both deliberate:
 - **Ascending `ActorId`, with the local actor taking its place like any other.** A
   fixed order every client can compute means every client composites the same
   picture, and it removes "the local one is special" from the render path.
-- **Every live gesture renders over the *committed* document, not over the
-  previous peer's preview.** Chaining would be marginally more faithful for two
-  strokes overlapping in the same instant, and would cost far more: peer *k*'s
-  cached head would be invalidated by every move of peers < *k*, so with two
-  painters each move invalidates the other's cache and the incremental repaint
-  collapses. Rooting every head at the committed state keeps per-move cost O(1)
-  in the number of peers. The overlay is per-tile in actor order, using the dirty
-  set the renderer already computes (`affected_tiles`, surfaced in `StrokeCarry`).
-  Where two peers' live strokes touch the same tile in the same instant, the
-  higher `ActorId` wins that tile.
+- **A live gesture renders over the *committed* document, not over the previous
+  peer's preview — unless the two reach the same tiles.** Chaining unconditionally
+  would cost far more: peer *k*'s cached head would be invalidated by every move
+  of peers < *k*, so with two painters each move invalidates the other's cache and
+  the incremental repaint collapses. Rooting every head at the committed state
+  keeps per-move cost O(1) in the number of peers. The overlay is per-tile in
+  actor order, using the dirty set the renderer already computes
+  (`affected_tiles`, surfaced in `StrokeCarry`).
 
-That last case deserves a plain statement rather than a hedge: **a preview of
-concurrent strokes is provisional and the commit is authoritative.** It has to be
-— the true result depends on the total order, which is not known until both
-strokes commit, so *any* preview of two simultaneous overlapping strokes is a
-guess. When they commit, replay produces the ordered, correct pixels everywhere.
+**But the overlay copies whole tiles, so a shared tile cannot be split between two
+strokes.** Each copy carries the committed pixels *plus* one stroke's paint, so
+the second copy puts back exactly what the first had drawn there and one of the
+two strokes disappears from that tile until it commits. Rooting at the committed
+state is therefore conditional on the tiles being uncontested, and the condition
+is checked with the very footprint the commit will use (`stroke_rect`,
+`fill_rect`, §12.6 — so the fold cannot call two strokes independent where the log
+would call them conflicting):
+
+> A stroke whose reach meets that of a gesture already in the fold, on the same
+> layer, renders over **the fold** instead — and gives up its cached head to do
+> it, because the fold is rebuilt on every move and a head rooted there is stale
+> as soon as it is stored.
+
+The price is paid only while two people are painting the *same tiles*, rather than
+merely at the same time, which is what keeps the cache argument above intact for
+the case it was made about. A fill needs no such rule: it already reads the fold
+and replaces the layer's whole tile map rather than copying tiles across.
+
+What stays provisional is which of two concurrent strokes ends up on top, and that
+deserves a plain statement rather than a hedge: **a preview of concurrent strokes
+is provisional and the commit is authoritative.** It has to be — the true result
+depends on the total order, which is not known until both strokes commit. When
+they commit, replay produces the ordered, correct pixels everywhere.
 
 Two related consequences:
 
@@ -696,9 +713,11 @@ joiner's snapshot.
   presence has a single writer per key and no merge semantics worth the name —
   "latest from that actor wins" is the entire specification, and a per-actor `seq`
   plus an expiry implements it in a few lines.
-- **Chaining live previews peer-over-peer.** Rejected on the cache argument in
-  §17.6; the fidelity it buys applies only to strokes overlapping in the same
-  instant, which is provisional either way.
+- **Chaining live previews peer-over-peer *unconditionally*.** Rejected on the
+  cache argument in §17.6. Chaining only where the footprints meet is not the same
+  proposal and is not optional: without it the tile-wise overlay drops one of the
+  two strokes outright, which is a missing stroke rather than a provisional
+  ordering.
 - **Making presence an `Action` with a TTL.** Rejected — it puts pointer-rate
   traffic in a grow-only log, which no amount of compaction makes right.
 
