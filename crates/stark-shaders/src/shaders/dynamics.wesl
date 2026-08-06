@@ -381,6 +381,47 @@ struct Exchange {
     src_w: f32,
 }
 
+// The tool's share of the minted source, as a fraction of the exposure:
+// `ψ(x) = 1 − (1 − e^{−x})/x` at `x = k_lift·e`, summed as its own series
+// `Σ_{n≥1} (−1)^{n+1}·xⁿ/(n+1)!` rather than as that difference.
+//
+// **The difference is the whole bug.** `(1 − e^{−x})/x` is a quotient of two
+// quantities that both vanish with `x`, and subtracting it from 1 throws away every
+// digit the quotient's leading `1 − x/2 + …` occupies: at `lift = 0.002`
+// (`x ≈ 3e−4` for a segment's exposure) the true share is `x/2 ≈ 1.5e−4` and the
+// error in the difference is a whole float ulp of 1 — `6e−8`, but *of the wrong
+// sign about half the time*, and `ψ` is what the tool takes **back** off the canvas.
+// A negative share is the tool minting height it never lifted, which is the one thing
+// this loop's books cannot absorb: `deposit` empties the reservoir every segment, so
+// with a high `deposit` the residue is not a rounding error on a large load, it *is*
+// the load. The reservoir goes negative, and every reciprocal downstream — the
+// tool's own `m / max(h, PAINT_EPS)`, the region's `rc.rgb / rc.a`, the deposit's
+// `latm / max(tool_m, PAINT_EPS)` — is then a quotient by a negative or vanishing
+// denominator, which is the wild colour that prints as a speckle of blown-out texels.
+// Reproduced at `lift = 0.002, deposit = 0.95`; clean at `lift = 0`, at `lift = 0.5`
+// and at any small `deposit`, which is the fingerprint of a cancellation and not of
+// the physics (`a_barely_lifting_brush_does_not_mint_on_its_tool`).
+//
+// The series has no such digits to lose: every term is computed from `x` alone, so
+// the result carries `x`'s own relative accuracy and is non-negative for `x ≥ 0`
+// **by construction** rather than by a clamp. Truncated after `x⁶/5040`, which is
+// under an ulp of the result at the crossover below.
+fn src_share(x: f32) -> f32 {
+    return x * (1.0 / 2.0
+        - x * (1.0 / 6.0
+        - x * (1.0 / 24.0
+        - x * (1.0 / 120.0
+        - x * (1.0 / 720.0
+        - x * (1.0 / 5040.0))))));
+}
+
+// Where the series hands over to the closed form. Not a tolerance: it is the point
+// either side of which the *other* form is the conditioned one. Below it the series
+// converges in a handful of terms and the difference cancels; above it `1 − e^{−x}`
+// has left the cancellation behind (it is already `≥ 0.39`) while the series needs
+// ever more terms. Both forms are good to an ulp here, so nothing steps across it.
+const SRC_SERIES_MAX_X: f32 = 0.5;
+
 fn exchange_at(e: f32) -> Exchange {
     let kl = lift_rate(); // the lift rate; 0 when the brush does not lift
     let kd = deposit_rate(); // the deposit rate
@@ -391,15 +432,22 @@ fn exchange_at(e: f32) -> Exchange {
     out.dep = 1.0 - exp(-kd * e);
     // The source rides the lift's decay and nothing else — `∫₀ᵉ A·exp(−k_lift·(e−q))dq`
     // — so what settles is `(1 − exp(−k_lift·e))/k_lift` per unit rate, and the tool
-    // lifted the rest of the `e·A` minted back off before it set. A brush that does not
-    // lift keeps all of it, which is the limit of that quotient and not a special case
-    // in the physics; the branch is only because the quotient is 0/0 in floats.
-    if kl < 1e-6 {
-        out.add_w = e;
+    // lifted the rest of the `e·A` minted back off before it set.
+    //
+    // **Whichever of the two shares is the small one is the one computed**, and the
+    // other is the remainder — so the subtraction only ever takes a small number off a
+    // large one and neither share can come out negative. A brush that does not lift
+    // keeps all of it, which is the limit of that quotient and not a special case in
+    // the physics: `x = 0` takes the series with every term zero, so the old
+    // `kl < 1e-6` guard against a 0/0 has nothing left to guard.
+    let x = kl * e;
+    if x < SRC_SERIES_MAX_X {
+        out.src_w = e * src_share(x);
+        out.add_w = e - out.src_w;
     } else {
-        out.add_w = (1.0 - out.keep) / kl;
+        out.add_w = (1.0 - out.keep) / kl; // `x ≥ 0.5` and `e > 0`, so `kl > 0`
+        out.src_w = e - out.add_w;
     }
-    out.src_w = e - out.add_w;
     return out;
 }
 

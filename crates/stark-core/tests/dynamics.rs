@@ -741,6 +741,86 @@ fn a_conservative_smear_does_not_destroy_paint_either() {
     );
 }
 
+/// A `lift` a whisker off zero must paint what a `lift` of exactly zero paints.
+///
+/// The axis is continuous at 0 — `keep = exp(−k·e)` with `k ≈ 3e−4` leaves the canvas
+/// 99.97% of its height — so the two renders are the same picture, and any *visible*
+/// difference is arithmetic rather than physics.
+///
+/// It was 210 levels, as a speckle of blown-out texels along the stroke (measured here
+/// at 102 isolated ones; the user-visible report was NaN/inf). The tool's share of the
+/// brush's own source was evaluated as `e − (1 − exp(−k·e))/k`, a difference whose two
+/// terms agree to every digit the answer needed: at `k·e ≈ 3e−4` the true share is
+/// `1.5e−4` and the cancellation error is a full ulp of 1, **signed**. A negative share
+/// is the tool minting height it never lifted, and a high `deposit` is what turns that
+/// residue into the whole reservoir — it empties the tool every segment, so there is no
+/// load left for the error to be small against. From there every reciprocal in the loop
+/// divides by a negative or vanishing denominator (`exchange_at`, `src_share`).
+///
+/// So the pair of rates is the point: `lift = 0` is clean (the series is exactly zero),
+/// `lift = 0.5` is clean (nothing cancels), and `deposit = 0.1` is clean at the very
+/// same `lift`. Only the corner where the tool is drained faster than it is filled
+/// shows it, which is why this pins the corner and not the axis.
+#[test]
+fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let smear = |lift: f32| BrushParams {
+        color: RED,
+        radius: 30.0,
+        shape: BrushShape::Round { hardness: 0.9 },
+        dynamics: BrushDynamics {
+            add: 0.6,
+            lift,
+            // High enough to empty the tool every segment: with nothing lifted to
+            // refill it, whatever the source hands back is all it carries.
+            deposit: 0.95,
+            ..BrushDynamics::default()
+        },
+        ..brush(RED, 30.0)
+    };
+    let mut render = |lift: f32| {
+        stroke_with(
+            &mut engine,
+            smear(lift),
+            &[
+                Vec2::new(-120.0, -90.0),
+                Vec2::new(-40.0, -20.0),
+                Vec2::new(20.0, 40.0),
+                Vec2::new(90.0, 100.0),
+            ],
+        );
+        let img = engine.render_to_image();
+        engine.process(DocCommand::Undo);
+        img
+    };
+    let barely = render(0.002);
+    let none = render(0.0);
+
+    let (_, worst) = diff_fraction(&barely, &none);
+    eprintln!("lift 0.002 vs 0.0: {worst} levels");
+    assert!(
+        worst < 12,
+        "a lift of 0.002 painted {worst} levels away from a lift of 0 — the exchange's \
+         two shares of the source are not both non-negative"
+    );
+    // The failure's own signature, since a speckle of a hundred texels can hide under a
+    // whole-image bound: a texel more than 100 levels from *both* its neighbours is not
+    // paint, it is a blown-out quotient.
+    let speckles = (0..barely.height)
+        .flat_map(|y| (1..barely.width - 1).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let far = |a: [u8; 4], b: [u8; 4]| {
+                (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).max() > Some(100)
+            };
+            let c = barely.pixel(x, y);
+            far(c, barely.pixel(x - 1, y)) && far(c, barely.pixel(x + 1, y))
+        })
+        .count();
+    assert_eq!(speckles, 0, "{speckles} blown-out texels along the stroke");
+}
+
 /// The same visible stretch of stroke, painted with five different tails, must come
 /// out the same however the flattener happened to cut it.
 ///
