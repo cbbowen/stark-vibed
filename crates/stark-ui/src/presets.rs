@@ -65,7 +65,7 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
                     add: 2.0,
                     lift: 0.6,
                     deposit: 0.95,
-                    bleed: 1.0,
+                    bleed: 0.5,
                     ..BrushDynamics::default()
                 },
                 color_dynamics: ColorDynamics {
