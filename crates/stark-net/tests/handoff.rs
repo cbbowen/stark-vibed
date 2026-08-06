@@ -33,7 +33,11 @@ async fn next_action(events: &mut Events) -> Action {
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
             Ok(Some(RemoteEvent::Action(action))) => return action,
-            Ok(Some(RemoteEvent::Asset { .. } | RemoteEvent::Presence { .. })) => continue,
+            Ok(Some(
+                RemoteEvent::Asset { .. }
+                | RemoteEvent::Presence { .. }
+                | RemoteEvent::ResolveLocally { .. },
+            )) => continue,
             Ok(None) => panic!("event stream ended"),
             Err(_) => panic!("timed out waiting for a remote action"),
         }
@@ -57,7 +61,7 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
         events: mut peer_events,
         document: doc,
         ..
-    } = CollabSession::join(&ticket_of(&host), NetOptions::local(), &[])
+    } = CollabSession::join(&ticket_of(&host), NetOptions::local())
         .await
         .expect("join via founder");
     assert!(
@@ -74,7 +78,7 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
         events: _newcomer_events,
         document: newcomer_doc,
         ..
-    } = CollabSession::join(&ticket_of(&peer), NetOptions::local(), &[])
+    } = CollabSession::join(&ticket_of(&peer), NetOptions::local())
         .await
         .expect("join via a remaining member after the founder left");
     assert!(

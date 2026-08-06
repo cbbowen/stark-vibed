@@ -84,6 +84,7 @@ pub fn share(state: AppState) {
 
         let opts = NetOptions {
             secret: Some(id.secret),
+            resolvable: crate::builtin_ids::resolvable(),
             ..Default::default()
         };
         match CollabSession::host(doc, opts).await {
@@ -124,16 +125,17 @@ pub fn join(state: AppState, ticket_text: String) {
     spawn_forever(async move {
         // Same persisted key as hosting uses: joining is not a different person.
         let id = crate::identity::get();
-        let opts = NetOptions {
-            secret: Some(id.secret),
-            ..Default::default()
-        };
         // What this build ships with, offered so the host can leave it out of the
         // snapshot — Linen alone is 14 MB of weave every install already has
         // (§12.4). A promise, settled by `fetch_owed` below before anything is
-        // replayed.
-        let resolvable = crate::builtin_ids::resolvable();
-        match CollabSession::join(&ticket, opts, &resolvable).await {
+        // replayed, and called in again by `ResolveLocally` for the rest of the
+        // session.
+        let opts = NetOptions {
+            secret: Some(id.secret),
+            resolvable: crate::builtin_ids::resolvable(),
+            ..Default::default()
+        };
+        match CollabSession::join(&ticket, opts).await {
             Ok(Joined {
                 session,
                 events,
@@ -215,6 +217,45 @@ fn adopt_owed(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
         Some(id) => r.accept_surface(id, bytes),
         None => r.import_brush(bytes),
     }
+}
+
+/// Make good on [`RemoteEvent::ResolveLocally`]: read the content out of this
+/// app's own bundle, install it, and register it with the session — which is what
+/// releases the remote action that was waiting on it.
+///
+/// Doing nothing here would also be correct: the transport dials a peer after a
+/// grace period, which is what it did before any of this existed. What this saves
+/// is the transfer — a collaborator switching to a ground the app ships with costs
+/// a read from its own files instead of megabytes off a peer (§12.4).
+fn supply_locally(state: AppState, need: AssetNeed) {
+    let Some(broadcaster): Option<Broadcaster> = state
+        .collab
+        .session
+        .read()
+        .as_ref()
+        .map(|s| s.broadcaster())
+    else {
+        return;
+    };
+    spawn_forever(async move {
+        let Some((need, bytes)) = fetch_owed(&[need]).await.into_iter().next() else {
+            return;
+        };
+        {
+            let mut renderer = state.renderer;
+            let mut guard = renderer.write();
+            let Some(r) = guard.as_mut() else {
+                return;
+            };
+            // Into the engine *before* the session is told. `add_content` releases
+            // the action parked on this content, and that action is applied on the
+            // assumption its content is already installed — for a ground, getting
+            // that order wrong is the flat stand-in again (§6.4).
+            adopt_owed(r, need, &bytes);
+        }
+        broadcaster.add_content(need, bytes);
+        crate::state::request_paint(state);
+    });
 }
 
 /// Leave the session: tear down the network side and keep painting solo on the
@@ -355,6 +396,13 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
                         // — and a frame stamped a whole heartbeat stale is what
                         // used to trip `GESTURE_TIMEOUT` mid-stroke.
                         (None, r.merge_presence(actor, frame, now_seconds()))
+                    }
+                    // The promise `join` made, called in: a peer named content
+                    // this build ships with. Handled off this task — the read is
+                    // a fetch and the pump is holding the renderer guard.
+                    RemoteEvent::ResolveLocally { need } => {
+                        supply_locally(state, need);
+                        (None, false)
                     }
                 }
             };

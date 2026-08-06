@@ -35,8 +35,8 @@
 //! — is a fact about one file instead of a convention every call site could
 //! break.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -65,15 +65,42 @@ pub(crate) struct Waitlist {
     /// empty vec is a live fetch nothing is waiting on — a presence head's.
     parked: Mutex<HashMap<AssetNeed, Vec<Action>>>,
     events: mpsc::UnboundedSender<RemoteEvent>,
+    /// What the frontend promised it could produce without the network
+    /// ([`NetOptions::resolvable`](crate::NetOptions::resolvable)). Fixed for the
+    /// life of the session: it is a property of the build, not of what has been
+    /// loaded so far.
+    resolvable: HashSet<AssetId>,
 }
 
 impl Waitlist {
-    pub fn new(mirror: Arc<Mutex<Mirror>>, events: mpsc::UnboundedSender<RemoteEvent>) -> Self {
+    pub fn new(
+        mirror: Arc<Mutex<Mirror>>,
+        events: mpsc::UnboundedSender<RemoteEvent>,
+        resolvable: &[AssetId],
+    ) -> Self {
         Self {
             mirror,
             parked: Mutex::new(HashMap::new()),
             events,
+            resolvable: resolvable.iter().copied().collect(),
         }
+    }
+
+    /// Whether the frontend claims it can produce this content itself — the test
+    /// that decides whether a resolver asks it before it dials.
+    pub fn is_local(&self, need: AssetNeed) -> bool {
+        self.resolvable.contains(&need.content())
+    }
+
+    /// Whether the content has arrived since — how a resolver finds out that the
+    /// frontend made good on [`RemoteEvent::ResolveLocally`].
+    pub fn holds(&self, need: AssetNeed) -> bool {
+        self.mirror.lock().expect("mirror poisoned").has(need)
+    }
+
+    /// Ask the frontend for content it said it could produce.
+    pub fn ask_locally(&self, need: AssetNeed) {
+        let _ = self.events.send(RemoteEvent::ResolveLocally { need });
     }
 
     /// Whether the engine is still listening. A resolver that may retry
@@ -208,11 +235,16 @@ mod tests {
     use super::*;
 
     fn setup() -> (Waitlist, mpsc::UnboundedReceiver<RemoteEvent>) {
+        with_resolvable(&[])
+    }
+
+    /// A waitlist whose frontend claims it can produce `resolvable` itself.
+    fn with_resolvable(resolvable: &[AssetId]) -> (Waitlist, mpsc::UnboundedReceiver<RemoteEvent>) {
         let mirror = Arc::new(Mutex::new(Mirror::from_file(
             &DocumentFile::new(Vec::new()),
         )));
         let (tx, rx) = mpsc::unbounded_channel();
-        (Waitlist::new(mirror, tx), rx)
+        (Waitlist::new(mirror, tx, resolvable), rx)
     }
 
     fn action(lamport: u64) -> Action {
@@ -357,6 +389,16 @@ mod tests {
 
         waitlist.accept(action(1));
         assert!(drain(&mut rx).is_empty(), "and never again");
+    }
+
+    /// The promise is per-id, not a blanket setting: content the frontend did not
+    /// claim still goes straight to the network, and content it did claim is
+    /// asked for first.
+    #[test]
+    fn only_promised_content_is_asked_of_the_frontend() {
+        let (waitlist, _rx) = with_resolvable(&[need(1).content()]);
+        assert!(waitlist.is_local(need(1)));
+        assert!(!waitlist.is_local(need(2)));
     }
 
     /// A local commit is mirrored so joiners get it, but must not come back at

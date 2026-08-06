@@ -59,7 +59,7 @@ async fn presence_reaches_peers_attributed_to_its_sender() {
         mut events,
         document: _doc,
         ..
-    } = CollabSession::join(&ticket_of(&host), NetOptions::local(), &[])
+    } = CollabSession::join(&ticket_of(&host), NetOptions::local())
         .await
         .expect("join session");
 
@@ -108,7 +108,7 @@ async fn presence_never_enters_the_snapshot() {
         events: _peer_events,
         document: doc,
         ..
-    } = CollabSession::join(&ticket_of(&host), NetOptions::local(), &[])
+    } = CollabSession::join(&ticket_of(&host), NetOptions::local())
         .await
         .expect("join session");
     assert_eq!(

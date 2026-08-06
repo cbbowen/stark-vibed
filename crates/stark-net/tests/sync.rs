@@ -57,6 +57,15 @@ fn identical(a: &RgbaImage, b: &RgbaImage) -> bool {
     a.width == b.width && a.height == b.height && a.pixels == b.pixels
 }
 
+/// Local options that promise this client can produce `ids` without the network
+/// — what the frontend passes from its build-time manifest of bundled assets.
+fn promising(ids: &[stark_core::AssetId]) -> NetOptions {
+    NetOptions {
+        resolvable: ids.to_vec(),
+        ..NetOptions::local()
+    }
+}
+
 /// Apply every queued remote event to the engine (the UI pump, §12.4).
 fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
     let mut applied = 0;
@@ -80,6 +89,13 @@ fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
                 // A fixed clock is fine here: nothing in these tests waits out an
                 // expiry, and 0.0 keeps them deterministic.
                 engine.merge_presence(actor, frame, 0.0);
+            }
+            // These tests promise nothing they do not then supply by hand, so
+            // nothing should be asking. Ignoring it is safe either way — the
+            // transport falls back to a peer — but it would mean the test is
+            // measuring the fallback rather than what it says it measures.
+            RemoteEvent::ResolveLocally { need } => {
+                panic!("unexpected local-resolution request for {need:?}")
             }
         }
     }
@@ -132,6 +148,7 @@ async fn two_peers_converge_over_iroh() {
         NetOptions {
             secret: Some(secret),
             local_only: true,
+            ..Default::default()
         },
     )
     .await
@@ -148,7 +165,7 @@ async fn two_peers_converge_over_iroh() {
         events: mut peer_events,
         document: snapshot,
         ..
-    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+    } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
@@ -232,6 +249,7 @@ async fn custom_shapes_replicate_mid_session() {
         NetOptions {
             secret: Some(secret),
             local_only: true,
+            ..Default::default()
         },
     )
     .await
@@ -247,7 +265,7 @@ async fn custom_shapes_replicate_mid_session() {
         events: mut peer_events,
         document: snapshot,
         ..
-    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+    } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
@@ -356,6 +374,7 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
         NetOptions {
             secret: Some(secret),
             local_only: true,
+            ..Default::default()
         },
     )
     .await
@@ -370,7 +389,7 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
         events: mut peer_events,
         document: snapshot,
         ..
-    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+    } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
@@ -442,6 +461,7 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
         NetOptions {
             secret: Some(secret),
             local_only: true,
+            ..Default::default()
         },
     )
     .await
@@ -456,7 +476,7 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
         events: mut peer_events,
         document: snapshot,
         ..
-    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+    } = CollabSession::join(&ticket, NetOptions::local())
         .await
         .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
@@ -511,6 +531,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
         NetOptions {
             secret: Some(secret),
             local_only: true,
+            ..Default::default()
         },
     )
     .await
@@ -524,7 +545,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
         events: mut middle_events,
         document: middle_doc,
         ..
-    } = CollabSession::join(&ticket(&host_session), NetOptions::local(), &[])
+    } = CollabSession::join(&ticket(&host_session), NetOptions::local())
         .await
         .expect("middle joins the host");
     middle.join_collaboration(&middle_doc, middle_session.actor_id());
@@ -559,7 +580,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
         events: mut far_events,
         document: far_doc,
         ..
-    } = CollabSession::join(&ticket(&middle_session), NetOptions::local(), &[])
+    } = CollabSession::join(&ticket(&middle_session), NetOptions::local())
         .await
         .expect("far joins through the intermediary");
     far.join_collaboration(&far_doc, far_session.actor_id());
@@ -621,6 +642,7 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
         NetOptions {
             secret: Some(secret),
             local_only: true,
+            ..Default::default()
         },
     )
     .await
@@ -641,7 +663,7 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
         events: _peer_events,
         document: snapshot,
         owed,
-    } = CollabSession::join(&ticket, NetOptions::local(), &[promised])
+    } = CollabSession::join(&ticket, promising(&[promised]))
         .await
         .expect("join session");
 
@@ -670,6 +692,123 @@ async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),
         "the peer replayed a toothed stroke against a ground it resolved locally and          landed somewhere else — the omission is not sound"
+    );
+
+    host_session.shutdown().await;
+    peer_session.shutdown().await;
+}
+
+/// **Mid-session, a promised ground is asked of the frontend rather than a peer.**
+///
+/// The join negotiation covers the snapshot; this is the rest of the session. A
+/// collaborator switching to a ground that ships with the app used to cost every
+/// other client a transfer of the canonical weave. Now the transport asks the
+/// frontend first, and only dials if the answer does not come.
+///
+/// The peer here plays the frontend by hand: it promises the ground, waits to be
+/// asked, and supplies the bytes from its own copy — which is exactly what
+/// `stark-ui`'s `supply_locally` does with its bundle. The proof that the local
+/// answer was *used* rather than merely offered is in the pixels: the toothed
+/// stroke that follows lands identically, which it cannot do against the flat
+/// stand-in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_promised_ground_is_asked_of_the_frontend_mid_session() {
+    let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+
+    let secret = stark_net::SecretKey::generate();
+    host.start_collaboration(stark_net::actor_from_endpoint_id(secret.public()));
+    let (host_session, _host_events) = CollabSession::host(
+        host.document_file(),
+        NetOptions {
+            secret: Some(secret),
+            local_only: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("host session");
+    let ticket: SessionTicket = host_session
+        .ticket()
+        .to_string()
+        .parse()
+        .expect("ticket text");
+
+    // The peer promises the gesso ground before it has any reason to want it.
+    let gesso_bytes = stark_testdata::assets::gesso();
+    // Derived without a GPU, exactly as `stark-ui`'s build script derives the ids
+    // of the assets it bundles — and the `assert_eq!` below is what checks that
+    // this route and the engine's `import_surface` agree on the name.
+    let probe = stark_assetid::height(&gesso_bytes)
+        .expect("decode the ground")
+        .id();
+    let Joined {
+        session: peer_session,
+        events: mut peer_events,
+        document: snapshot,
+        ..
+    } = CollabSession::join(&ticket, promising(&[probe]))
+        .await
+        .expect("join session");
+    peer.join_collaboration(&snapshot, peer_session.actor_id());
+
+    // The host takes it up mid-session and paints through a dry, toothed brush,
+    // whose mark *is* the ground.
+    let gesso = host.import_surface(&gesso_bytes).expect("import ground");
+    host_session.add_content(
+        AssetNeed::ground(gesso).expect("an image ground"),
+        host.surface_bytes(gesso).expect("canonical bytes"),
+    );
+    host.process(DocCommand::SetSurface(gesso));
+    paint_with(
+        &mut host,
+        BrushParams {
+            color: [0.85, 0.15, 0.1, 1.0],
+            radius: 30.0,
+            tooth: 0.55,
+            drain: 0.005,
+            ..Default::default()
+        },
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+    flush_outbox(&mut host, &host_session).await;
+
+    // Play the frontend: wait to be asked, then answer out of our own copy. The
+    // stroke is not parked (a round tip references nothing), so it can arrive
+    // while we are still waiting — merged as it comes, and counted, because what
+    // is left to wait for afterwards depends on how much got through here.
+    let mut merged = 0usize;
+    let asked = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match peer_events.recv().await.expect("event stream ended") {
+                RemoteEvent::ResolveLocally { need } => return need,
+                RemoteEvent::Asset { need, .. } => {
+                    panic!("{need:?} was fetched off a peer instead of asked for")
+                }
+                RemoteEvent::Action(action) => {
+                    peer.merge_remote(action);
+                    merged += 1;
+                }
+                RemoteEvent::Presence { .. } => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting to be asked for the promised ground");
+    assert_eq!(asked, AssetNeed::ground(gesso).expect("an image ground"));
+
+    // Supply it the way `supply_locally` does: into the engine, then the session,
+    // which releases the `SetSurface` parked on it.
+    peer.accept_surface(asked.surface().expect("a ground"), &gesso_bytes)
+        .expect("install locally");
+    peer_session.add_content(asked, gesso_bytes.clone());
+
+    // The `SetSurface` and the stroke, less whatever landed before we were asked.
+    wait_for_actions(&mut peer_events, &mut peer, 2 - merged).await;
+    assert!(
+        identical(&host.render_to_image(), &peer.render_to_image()),
+        "the peer answered locally but still deposited through a different tooth"
     );
 
     host_session.shutdown().await;

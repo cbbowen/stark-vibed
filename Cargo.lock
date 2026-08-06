@@ -6609,6 +6609,7 @@ dependencies = [
  "pollster",
  "postcard",
  "serde",
+ "stark-assetid",
  "stark-core",
  "stark-testdata",
  "thiserror 2.0.19",

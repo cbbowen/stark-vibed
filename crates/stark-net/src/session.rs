@@ -64,6 +64,15 @@ const BRUSH_ATTEMPTS: u32 = 5;
 const ASSET_RETRY_DELAY: Duration = Duration::from_millis(300);
 const ASSET_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
+/// How long a resolver waits for the frontend to make good on
+/// [`RemoteEvent::ResolveLocally`] before dialling a peer anyway.
+///
+/// Generous, because the cost of being early is a transfer this whole mechanism
+/// exists to avoid, while the cost of being late is a wait on an action that is
+/// parked regardless — and a read from the app's own bundle that takes longer
+/// than this is one that was probably never going to arrive.
+const LOCAL_GRACE: Duration = Duration::from_secs(3);
+
 /// Map an iroh endpoint identity to the engine's author id (§12.4:
 /// "an iroh node id *is* the `ActorId`"). `ActorId` is 8 bytes to keep every
 /// action id small, so this takes the key's first 8 bytes — collisions across
@@ -147,6 +156,18 @@ pub enum RemoteEvent {
     /// the log refers to it, so losing one costs a frame of someone else's cursor
     /// and nothing else.
     Presence { actor: ActorId, frame: PeerFrame },
+    /// A remote action needs content this client said it could resolve itself
+    /// ([`NetOptions::resolvable`]) — the promise being called in.
+    ///
+    /// Read the bytes from wherever you promised they were and hand them back
+    /// with [`CollabSession::add_content`]; the action waiting on them is released
+    /// when you do. Nothing else is expected of you and nothing is on fire.
+    ///
+    /// **Ignoring it is safe.** After a short grace period the transport dials a
+    /// peer for the content exactly as it would have without the promise, so a
+    /// frontend that cannot deliver — or does not handle this at all — loses a
+    /// little time and nothing else.
+    ResolveLocally { need: AssetNeed },
 }
 
 /// The stream of remote edits, handed out once by [`CollabSession::host`] /
@@ -246,6 +267,18 @@ pub struct NetOptions {
     /// Skip the public n0 relay + address-lookup infrastructure and rely on
     /// the ticket's direct socket addresses only — for LAN use and tests.
     pub local_only: bool,
+    /// Content this client can produce **without asking anyone** — the ids of the
+    /// assets that ship with its build (§12.4).
+    ///
+    /// It does two things, and they are the same promise read from either end. A
+    /// joiner's list is left out of the snapshot it is sent ([`Joined::owed`] is
+    /// the bill). And for the rest of the session, a remote action naming one of
+    /// these raises [`RemoteEvent::ResolveLocally`] instead of dialling a peer —
+    /// so a collaborator switching to a ground this app ships with costs a read
+    /// from disk rather than megabytes over the wire.
+    ///
+    /// Empty promises nothing, which is exactly the old behaviour.
+    pub resolvable: Vec<AssetId>,
 }
 
 impl NetOptions {
@@ -312,24 +345,15 @@ impl CollabSession {
         // The first member starts the swarm alone; joiners bootstrap from it.
         let sub = bound.gossip.subscribe(topic, Vec::new()).await?;
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        Self::finish(bound, topic, sub, mirror, ticket_addr)
+        Self::finish(bound, topic, sub, mirror, ticket_addr, &opts.resolvable)
     }
 
     /// Join an existing session from a ticket.
     ///
-    /// `resolvable` is the content this client can produce **without asking
-    /// anyone** — the ids of the assets that ship with its build. The host leaves
-    /// those out of the snapshot, which is what stops a joiner pulling megabytes
-    /// of a canvas ground that is already sitting next to its binary (§12.4).
-    ///
-    /// It is a promise, and [`Joined::owed`] is the bill. Pass an empty slice to
-    /// promise nothing and receive everything, which is what the old behaviour
-    /// was.
-    pub async fn join(
-        ticket: &SessionTicket,
-        opts: NetOptions,
-        resolvable: &[AssetId],
-    ) -> Result<Joined> {
+    /// [`NetOptions::resolvable`] is what this client can produce without asking
+    /// anyone; the host leaves it out of the snapshot, and [`Joined::owed`] is the
+    /// bill for that.
+    pub async fn join(ticket: &SessionTicket, opts: NetOptions) -> Result<Joined> {
         let mirror = Arc::new(Mutex::new(Mirror::from_file(
             &DocumentFile::new(Vec::new()),
         )));
@@ -356,10 +380,10 @@ impl CollabSession {
             tracing::warn!("joined without meeting a peer yet; relying on catch-up");
         }
 
-        let request = if resolvable.is_empty() {
+        let request = if opts.resolvable.is_empty() {
             Request::Snapshot
         } else {
-            Request::SnapshotWithout(resolvable.to_vec())
+            Request::SnapshotWithout(opts.resolvable.clone())
         };
         let snapshot = catchup.request(request).await?;
         catchup.close().await;
@@ -372,7 +396,14 @@ impl CollabSession {
         *mirror.lock().expect("mirror poisoned") = Mirror::from_file(&file);
 
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        let (session, events) = Self::finish(bound, ticket.topic, sub, mirror, ticket_addr)?;
+        let (session, events) = Self::finish(
+            bound,
+            ticket.topic,
+            sub,
+            mirror,
+            ticket_addr,
+            &opts.resolvable,
+        )?;
         Ok(Joined {
             session,
             events,
@@ -387,6 +418,7 @@ impl CollabSession {
         sub: iroh_gossip::api::GossipTopic,
         mirror: Arc<Mutex<Mirror>>,
         ticket_addr: EndpointAddr,
+        resolvable: &[AssetId],
     ) -> Result<(Self, Events)> {
         let Bound {
             dialer, shutdown, ..
@@ -411,7 +443,7 @@ impl CollabSession {
             .seed_blobs(|bytes| dialer.add_blob(bytes));
         let (tx, rx) = mpsc::unbounded_channel();
         let presence = Arc::new(PresenceQuota::default());
-        let waitlist = Arc::new(Waitlist::new(mirror, tx.clone()));
+        let waitlist = Arc::new(Waitlist::new(mirror, tx.clone(), resolvable));
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
         task::spawn(recv_loop(
@@ -782,6 +814,23 @@ async fn resolve_asset(
     hash: Hash,
     waitlist: Arc<Waitlist>,
 ) {
+    // First refusal to the frontend, when it said it ships with this content: a
+    // ground the app bundles is a read from its own files, not megabytes off a
+    // peer (§12.4). Asking costs one event and a wait on an action that is parked
+    // either way; being ignored costs `LOCAL_GRACE` and then behaves exactly as it
+    // would have.
+    if waitlist.is_local(need) {
+        waitlist.ask_locally(need);
+        n0_future::time::sleep(LOCAL_GRACE).await;
+        if waitlist.holds(need) {
+            // `add_content` recorded it and released whatever was parked; there is
+            // nothing left for this resolver to do.
+            tracing::debug!(?need, "resolved from the frontend's own bundle");
+            return;
+        }
+        tracing::debug!(?need, "local resolution did not arrive; asking a peer");
+    }
+
     let attempts = match need {
         AssetNeed::Brush(_) => Some(BRUSH_ATTEMPTS),
         AssetNeed::Ground(_) => None,
