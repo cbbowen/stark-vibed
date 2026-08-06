@@ -192,3 +192,183 @@ impl Waitlist {
         }
     }
 }
+
+/// The parking mechanism, without a network under it.
+///
+/// These are here rather than in an integration test because the properties
+/// worth pinning are about *this* type — that a claim and a delivery cannot
+/// interleave wrongly, that the asset precedes what waited on it — and reaching
+/// them through two iroh endpoints would test the swarm instead, more slowly and
+/// less exactly.
+#[cfg(test)]
+mod tests {
+    use stark_core::document::{ActionId, ActionKind, ActorId};
+    use stark_core::{AssetId, DocumentFile};
+
+    use super::*;
+
+    fn setup() -> (Waitlist, mpsc::UnboundedReceiver<RemoteEvent>) {
+        let mirror = Arc::new(Mutex::new(Mirror::from_file(
+            &DocumentFile::new(Vec::new()),
+        )));
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Waitlist::new(mirror, tx), rx)
+    }
+
+    fn action(lamport: u64) -> Action {
+        Action {
+            id: ActionId {
+                lamport,
+                actor: ActorId(1),
+            },
+            kind: ActionKind::SetBackground([0.0; 3]),
+        }
+    }
+
+    fn need(tag: u8) -> AssetNeed {
+        AssetNeed::Brush(AssetId([tag; 32]))
+    }
+
+    fn content(tag: u8) -> (Bytes, Hash) {
+        let bytes = Bytes::from(vec![tag; 16]);
+        let hash = Hash::new(&bytes);
+        (bytes, hash)
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<RemoteEvent>) -> Vec<RemoteEvent> {
+        let mut out = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            out.push(event);
+        }
+        out
+    }
+
+    #[test]
+    fn an_action_waits_for_its_content_and_arrives_behind_it() {
+        let (waitlist, mut rx) = setup();
+        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
+        assert!(drain(&mut rx).is_empty(), "nothing surfaces while parked");
+
+        let (bytes, hash) = content(1);
+        waitlist.resolved(need(1), bytes, hash);
+
+        // The order is the whole point: applying the action first is what bakes a
+        // flat deposit for a ground (§6.4).
+        let events = drain(&mut rx);
+        assert!(
+            matches!(events[0], RemoteEvent::Asset { .. }),
+            "asset first"
+        );
+        assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn content_already_held_does_not_park_at_all() {
+        let (waitlist, _rx) = setup();
+        let (bytes, hash) = content(1);
+        waitlist.imported(need(1), bytes, hash);
+        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Ready));
+    }
+
+    /// A live gesture's head and the commit it becomes name the same shape, and
+    /// only one of them should be dialing for it.
+    #[test]
+    fn a_second_claimant_rides_the_first_resolver() {
+        let (waitlist, mut rx) = setup();
+        assert!(
+            waitlist.claim_detached(need(1)),
+            "the head starts the fetch"
+        );
+        assert!(
+            !waitlist.claim_detached(need(1)),
+            "a repeated head starts nothing further"
+        );
+        assert!(matches!(
+            waitlist.claim(need(1), &action(1)),
+            Admit::Waiting
+        ));
+
+        let (bytes, hash) = content(1);
+        waitlist.resolved(need(1), bytes, hash);
+        assert_eq!(drain(&mut rx).len(), 2, "one asset, one released action");
+    }
+
+    /// A local import satisfies a remote action's need exactly as a fetch does —
+    /// and if it did not release, the action would wait for a fetch of bytes
+    /// already in hand.
+    #[test]
+    fn a_local_import_releases_what_was_waiting_on_it() {
+        let (waitlist, mut rx) = setup();
+        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
+
+        let (bytes, hash) = content(1);
+        waitlist.imported(need(1), bytes, hash);
+
+        // No `Asset` event: the engine did the importing, so it already holds them.
+        let events = drain(&mut rx);
+        assert!(matches!(&events[0], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert_eq!(events.len(), 1);
+    }
+
+    /// Giving up must still let the action through — a brush that never arrives
+    /// costs the round tip, whereas an action parked forever costs the stroke.
+    #[test]
+    fn abandoning_a_fetch_releases_to_the_fallback() {
+        let (waitlist, mut rx) = setup();
+        waitlist.claim(need(1), &action(1));
+        waitlist.abandoned(need(1));
+
+        let events = drain(&mut rx);
+        assert!(matches!(&events[0], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn parking_one_need_does_not_hold_up_another() {
+        let (waitlist, mut rx) = setup();
+        waitlist.claim(need(1), &action(1));
+        waitlist.claim(need(2), &action(2));
+
+        let (bytes, hash) = content(2);
+        waitlist.resolved(need(2), bytes, hash);
+
+        let ids: Vec<_> = drain(&mut rx)
+            .iter()
+            .filter_map(|e| match e {
+                RemoteEvent::Action(a) => Some(a.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec![action(2).id], "only the resolved need released");
+    }
+
+    /// Gossip delivers the same action more than once, and a duplicate that
+    /// parked would otherwise surface a second time when its content landed.
+    #[test]
+    fn a_duplicate_action_surfaces_once() {
+        let (waitlist, mut rx) = setup();
+        waitlist.claim(need(1), &action(1));
+        waitlist.claim(need(1), &action(1));
+
+        let (bytes, hash) = content(1);
+        waitlist.resolved(need(1), bytes, hash);
+        assert_eq!(drain(&mut rx).len(), 2, "one asset, one action");
+
+        waitlist.accept(action(1));
+        assert!(drain(&mut rx).is_empty(), "and never again");
+    }
+
+    /// A local commit is mirrored so joiners get it, but must not come back at
+    /// the engine that authored it.
+    #[test]
+    fn a_published_action_is_mirrored_but_not_surfaced() {
+        let (waitlist, mut rx) = setup();
+        waitlist.published(action(1));
+        assert!(drain(&mut rx).is_empty());
+
+        // Mirrored, so the same action arriving from a peer is not fresh.
+        waitlist.accept(action(1));
+        assert!(drain(&mut rx).is_empty());
+    }
+}

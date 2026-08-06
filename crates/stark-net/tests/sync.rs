@@ -407,3 +407,150 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
     host_session.shutdown().await;
     peer_session.shutdown().await;
 }
+
+/// **An unregistered shape must not strand the stroke that names it.**
+///
+/// `add_content` is documented to precede the commit that references its content,
+/// and the sender now reports the violation (it is the only end that can tell one
+/// from content merely still in flight). What the *receiver* does with it is this
+/// test: the action arrives with no transfer hash, so there is nothing to fetch,
+/// and parking it would be parking forever. It applies at once and draws with the
+/// round tip — the same degradation an unreachable brush gets, reached without a
+/// single dial.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
+    let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+
+    let secret = stark_net::SecretKey::generate();
+    host.start_collaboration(stark_net::actor_from_endpoint_id(secret.public()));
+    let (host_session, _host_events) = CollabSession::host(
+        host.document_file(),
+        NetOptions {
+            secret: Some(secret),
+            local_only: true,
+        },
+    )
+    .await
+    .expect("host session");
+    let ticket: SessionTicket = host_session
+        .ticket()
+        .to_string()
+        .parse()
+        .expect("ticket text");
+    let (peer_session, mut peer_events, snapshot) =
+        CollabSession::join(&ticket, NetOptions::local())
+            .await
+            .expect("join session");
+    peer.join_collaboration(&snapshot, peer_session.actor_id());
+
+    // Imported into the engine but deliberately NOT registered with the session:
+    // the call `stark-ui` makes beside every import is the one being skipped.
+    let orphan = host.import_brush(&blob_png(80)).expect("import shape");
+    paint_with(
+        &mut host,
+        BrushParams {
+            color: [0.2, 0.4, 0.9, 1.0],
+            radius: 22.0,
+            shape: BrushShape::Stamp(orphan),
+            ..Default::default()
+        },
+        &[Vec2::new(50.0, 128.0), Vec2::new(206.0, 128.0)],
+    );
+    flush_outbox(&mut host, &host_session).await;
+
+    // The point of the test is that this returns at all. Before parking, an
+    // action with no hash was applied inline; the hazard parking introduced is
+    // that a need with nothing to fetch waits for a resolver nobody started.
+    wait_for_actions(&mut peer_events, &mut peer, 1).await;
+    assert!(
+        !peer.has_asset(orphan),
+        "nothing registered the bytes, so there was nothing for the peer to fetch"
+    );
+
+    host_session.shutdown().await;
+    peer_session.shutdown().await;
+}
+
+/// **Content replicates through an intermediary, not just from its author.**
+///
+/// A peer that fetched a shape records the hash it transferred under, which is
+/// what lets it both serve the bytes onward and *announce* them on its own
+/// actions. Without that a swarm would only ever be as good as its original
+/// author's reachability — and the two-peer tests cannot tell the difference,
+/// because there the author is always the deliverer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
+    let (Some(mut host), Some(mut middle), Some(mut far)) =
+        (engine_or_skip(), engine_or_skip(), engine_or_skip())
+    else {
+        return;
+    };
+
+    let secret = stark_net::SecretKey::generate();
+    host.start_collaboration(stark_net::actor_from_endpoint_id(secret.public()));
+    let (host_session, _host_events) = CollabSession::host(
+        host.document_file(),
+        NetOptions {
+            secret: Some(secret),
+            local_only: true,
+        },
+    )
+    .await
+    .expect("host session");
+
+    let ticket = |s: &CollabSession| -> SessionTicket {
+        s.ticket().to_string().parse().expect("ticket text")
+    };
+    let (middle_session, mut middle_events, middle_doc) =
+        CollabSession::join(&ticket(&host_session), NetOptions::local())
+            .await
+            .expect("middle joins the host");
+    middle.join_collaboration(&middle_doc, middle_session.actor_id());
+
+    // The host paints with a shape imported mid-session; `middle` fetches it.
+    let shape = host.import_brush(&blob_png(72)).expect("import shape");
+    host_session.add_content(
+        AssetNeed::Brush(shape),
+        host.asset_bytes(shape).expect("canonical bytes"),
+    );
+    paint_with(
+        &mut host,
+        BrushParams {
+            color: [0.1, 0.7, 0.3, 1.0],
+            radius: 18.0,
+            shape: BrushShape::Stamp(shape),
+            ..Default::default()
+        },
+        &[Vec2::new(60.0, 120.0), Vec2::new(190.0, 120.0)],
+    );
+    flush_outbox(&mut host, &host_session).await;
+    wait_for_actions(&mut middle_events, &mut middle, 1).await;
+    assert!(
+        middle.has_asset(shape),
+        "the intermediary fetched the shape"
+    );
+
+    // A newcomer joins through the *intermediary*, whose snapshot must carry the
+    // shape it fetched rather than only the ones it was handed at join time.
+    let (far_session, mut far_events, far_doc) =
+        CollabSession::join(&ticket(&middle_session), NetOptions::local())
+            .await
+            .expect("far joins through the intermediary");
+    far.join_collaboration(&far_doc, far_session.actor_id());
+    drain_events(&mut far_events, &mut far);
+
+    assert!(
+        far.has_asset(shape),
+        "a shape the intermediary fetched must reach whoever joins through it"
+    );
+    assert!(
+        identical(&host.render_to_image(), &far.render_to_image()),
+        "the newcomer diverged from the host over a shape it reached second-hand"
+    );
+
+    host_session.shutdown().await;
+    middle_session.shutdown().await;
+    far_session.shutdown().await;
+}
