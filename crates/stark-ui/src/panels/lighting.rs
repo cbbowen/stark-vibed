@@ -81,6 +81,27 @@ pub fn LightingPanel() -> Element {
                 onclick: move |_| show_bg_picker.set(!show_bg_picker()),
             }
         }
+        // Mounted only while open, so the picker re-seeds from the current colour each
+        // time, and placed directly under the well that opens it — where in flow it
+        // reads as that row opening rather than as something the row below grew.
+        //
+        // It opens *in* the panel rather than flying out beside it: the stack is a
+        // scroll container (`overflow-x: clip`), so a pop-out would be clipped at its
+        // edge, and a column that scrolls can simply be taller. The frame bar's copy
+        // of this control does fly out (`.color-popout`), because a bar cannot grow.
+        if show_bg_picker() {
+            div { class: "color-inline",
+                OklabPicker {
+                    init: c,
+                    // Previewed while the pointer is down, committed once on release:
+                    // the substrate colour is document state, so one drag has to cost
+                    // one undo step (and one replicated action) rather than one per
+                    // pointer sample — the same bargain the frame drag makes.
+                    onchange: move |rgb: [f32; 3]| preview_background(state, rgb),
+                    oncommit: move |rgb: [f32; 3]| update_background(state, rgb),
+                }
+            }
+        }
         div { class: "slider-row",
             div { class: "slider-label", "Surface" }
             select {
@@ -113,22 +134,6 @@ pub fn LightingPanel() -> Element {
                 },
                 for (id, name) in ENVIRONMENTS.iter().copied() {
                     option { value: "{id:?}", selected: env == id, "{name}" }
-                }
-            }
-        }
-        // Pop-out colour selector: mounted only while open, so the picker re-seeds from
-        // the current colour each time. Positioned by `.color-popout` (flies out beside
-        // the panel, whose `.panel` is the nearest positioned ancestor).
-        if show_bg_picker() {
-            div { class: "color-popout",
-                OklabPicker {
-                    init: c,
-                    // Previewed while the pointer is down, committed once on release:
-                    // the substrate colour is document state, so one drag has to cost
-                    // one undo step (and one replicated action) rather than one per
-                    // pointer sample — the same bargain the frame drag makes.
-                    onchange: move |rgb: [f32; 3]| preview_background(state, rgb),
-                    oncommit: move |rgb: [f32; 3]| update_background(state, rgb),
                 }
             }
         }

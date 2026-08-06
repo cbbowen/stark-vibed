@@ -23,6 +23,7 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon, label};
 use crate::input::page_xy;
 use crate::layout::chrome_class;
+use crate::panels::color::OklabPicker;
 use crate::state::{AppState, dispatch};
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::MatteRegion;
@@ -180,10 +181,9 @@ pub fn AddFrameButton() -> Element {
 #[component]
 pub fn FrameBar() -> Element {
     let state = use_context::<AppState>();
-    // The colour being previewed by an open picker, if one is in flight — the pick's
-    // own "there is something to commit". **Before** the early return, because a hook
+    // Whether the colour pop-out is open. **Before** the early return, because a hook
     // that runs only when a frame is selected is a hook that runs sometimes.
-    let mut picking = use_signal(|| None::<[f32; 3]>);
+    let mut show_picker = use_signal(|| false);
     let Some((info, matte)) = selected_frame(state) else {
         return rsx! {};
     };
@@ -192,6 +192,13 @@ pub fn FrameBar() -> Element {
     let set_rect = move |min: Vec2, max: Vec2| {
         dispatch(state, DocCommand::SetMatteRect(info.id, min, max));
     };
+    let c = matte.color;
+    let swatch = format!(
+        "background: rgb({:.1}% {:.1}% {:.1}%);",
+        c[0] * 100.0,
+        c[1] * 100.0,
+        c[2] * 100.0
+    );
 
     rsx! {
         div { class: chrome_class(state, "frame-bar"),
@@ -260,29 +267,48 @@ pub fn FrameBar() -> Element {
             // removal are ordinary layer properties, so they belong to the Layers
             // panel's single set of controls for whatever is selected, and having
             // them in two places was the duplication this replaced.
-            input {
-                class: "frame-swatch",
-                r#type: "color",
-                title: "Frame colour",
-                value: "{hex(matte.color)}",
-                // Previewed while the picker is open, committed once when it settles:
-                // the fill is document state, so choosing it must cost one undo step —
-                // and one replicated action — rather than one per colour the pointer
-                // crossed on the way (§15.7). A native colour input reports every one
-                // of those through `input`, and says the pick is over with `change`.
-                oninput: move |e| {
-                    if let Some(rgb) = parse_hex(&e.value()) {
-                        picking.set(Some(rgb));
-                        dispatch(state, ViewCommand::PreviewMatteColor(Some((info.id, rgb))));
+            //
+            // A well that pops out the app's own Oklab picker, rather than the
+            // browser's colour dialog it used to be, because a mat board is chosen by
+            // *lightness against the piece*: a shade too close and the frame stops
+            // reading as a frame, a shade too far and it shouts over what it
+            // surrounds. Oklab puts that search on an axis you can drag along — `L`
+            // moves lightness with hue and chroma held — where an sRGB triple moves
+            // all three at once. It is the picker the canvas substrate already uses
+            // (`panels::lighting`), because it is the same question asked about a
+            // different flat expanse.
+            //
+            // Its edges are real DOM events on its own tracks too, so the
+            // preview-and-commit split rests on `pointerup`/`pointercancel` rather
+            // than on what a native `<input type=color>` chooses to send when its
+            // dialog closes — see `panels::color::end_pick`.
+            span { class: "frame-color",
+                button {
+                    class: "swatch frame-swatch",
+                    style: "{swatch}",
+                    title: "Frame colour",
+                    onclick: move |_| show_picker.set(!show_picker()),
+                }
+                // Mounted only while open, so the picker re-seeds from the frame's
+                // current colour each time — and flies *up*, since the bar it hangs
+                // off sits at the bottom of the screen.
+                if show_picker() {
+                    div { class: "color-popout",
+                        OklabPicker {
+                            init: matte.color,
+                            // Previewed while the pointer is down, committed once on
+                            // release: the fill is document state, so a pick costs one
+                            // undo step — and one replicated action — rather than one
+                            // per colour the pointer crossed on the way (§15.7).
+                            onchange: move |rgb: [f32; 3]| {
+                                dispatch(state, ViewCommand::PreviewMatteColor(Some((info.id, rgb))));
+                            },
+                            oncommit: move |rgb: [f32; 3]| {
+                                dispatch(state, DocCommand::SetMatteColor(info.id, rgb));
+                            },
+                        }
                     }
-                },
-                // `blur` as well as `change`, for the reason the opacity slider takes
-                // its pointer edges: a picker dismissed on the colour it opened on
-                // sends no `change`, and the preview it left standing has to be
-                // superseded by something. `settle_frame_color` is idempotent, so the
-                // pick that ends properly and then loses focus still commits once.
-                onchange: move |_| settle_frame_color(state, info.id, picking),
-                onblur: move |_| settle_frame_color(state, info.id, picking),
+                }
             }
 
             span { class: "bar-sep" }
@@ -296,44 +322,6 @@ pub fn FrameBar() -> Element {
             }
         }
     }
-}
-
-/// End a frame-colour pick: commit the colour the previews have been showing, once,
-/// and disarm — the settled half of the bargain the swatch's `oninput` makes (§15.7).
-///
-/// A no-op when nothing is pending, which is what lets the swatch wire it to both of
-/// the events that can end a pick without spending an undo step per event. The commit
-/// supersedes the preview engine-side and a commit to the colour the matte already
-/// holds is refused there, so a picker closed where it opened logs nothing.
-fn settle_frame_color(
-    state: AppState,
-    id: stark_core::LayerId,
-    mut pending: Signal<Option<[f32; 3]>>,
-) {
-    let settled = pending.write().take();
-    if let Some(rgb) = settled {
-        dispatch(state, DocCommand::SetMatteColor(id, rgb));
-    }
-}
-
-/// sRGB triple → `#rrggbb`, for the colour input.
-fn hex(c: [f32; 3]) -> String {
-    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    format!("#{:02x}{:02x}{:02x}", b(c[0]), b(c[1]), b(c[2]))
-}
-
-/// `#rrggbb` → sRGB triple.
-fn parse_hex(s: &str) -> Option<[f32; 3]> {
-    let s = s.strip_prefix('#')?;
-    if s.len() != 6 {
-        return None;
-    }
-    let c = |i: usize| {
-        u8::from_str_radix(&s[i..i + 2], 16)
-            .ok()
-            .map(|v| v as f32 / 255.0)
-    };
-    Some([c(0)?, c(2)?, c(4)?])
 }
 
 // --- on-canvas handles ---------------------------------------------------

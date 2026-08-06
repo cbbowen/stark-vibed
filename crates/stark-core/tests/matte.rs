@@ -409,9 +409,10 @@ fn dragging_the_canvas_colour_previews_without_logging() {
 
 /// A frame-colour pick previews live but logs once (§15.7) — the frame's own
 /// colour, next to the substrate's above, because the two are the same control
-/// making the same bargain against different state. A native colour input reports
-/// a value per pointer move while it is open, so without this, choosing a mat
-/// board costs an undo step per shade the pointer crossed on the way to it.
+/// making the same bargain against different state — the same Oklab picker, even,
+/// asked about a different flat expanse. It reports a colour per pointer move, so
+/// without this, choosing a mat board costs an undo step per shade the pointer
+/// crossed on the way to it.
 #[test]
 fn picking_a_frame_colour_previews_without_logging() {
     let Some(mut engine) = engine_or_skip() else {
@@ -461,10 +462,10 @@ fn picking_a_frame_colour_previews_without_logging() {
     );
 }
 
-/// A picker dismissed on the colour it opened on is not an edit — but it still has
-/// to commit, because the preview it left standing must be superseded by something.
-/// The refusal that reconciles those two lives in the engine, which is what this
-/// pins (§15.7).
+/// A pick that lands back on the colour it opened on is not an edit — but it still
+/// has to commit, because every release commits (`panels::color::end_pick`) and the
+/// preview it left standing must be superseded by something. The refusal that
+/// reconciles those two lives in the engine, which is what this pins (§15.7).
 #[test]
 fn a_frame_colour_pick_that_changes_nothing_logs_nothing() {
     let Some(mut engine) = engine_or_skip() else {

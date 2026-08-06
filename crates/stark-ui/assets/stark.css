@@ -381,12 +381,27 @@ hr {
   border-color: #ffffff66;
 }
 
-/* Pop-out colour selector: flies out beside the owning panel (the nearest
-   positioned ancestor is the `.panel`), styled as a small sibling panel. */
+/* The colour selector opened by a `.swatch`, in the two places a swatch lives.
+
+   A **panel** grows to hold it: the stack is a scroll container (`overflow-y: auto`,
+   `overflow-x: clip`), so anything that flew out beside a panel would be clipped at
+   the stack's padding box — and a column that scrolls has somewhere to put the extra
+   height anyway. The picker is 252px across, which is exactly a panel's content
+   width, so it needs no surface of its own and takes none: it is already inside one. */
+.color-inline {
+  margin-top: 8px;
+}
+
+/* A **bar** cannot grow, so its picker flies up out of the well that opened it,
+   styled as a small sibling panel. Up rather than sideways because the frame bar
+   sits at the foot of the window; centred on the well by `.frame-color`, not on the
+   bar, so it tracks the swatch rather than the middle of a bar whose width changes
+   with the frame's dimensions. Nothing clips it — `.bottom-bars` is not a scroller. */
 .color-popout {
   position: absolute;
-  right: calc(100% + 12px);
-  top: 0;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
   background: var(--panel-background);
   border-radius: 12px;
   padding: 12px 14px;
@@ -2108,20 +2123,22 @@ button.layer-remove:hover {
 
 
 
-/* Native colour input, stripped back to a plain swatch. */
+/* The frame's colour well and what it pops out. Positioned, because it is what the
+   pop-out is placed against — see `.color-popout`. */
+.frame-color {
+  position: relative;
+  display: flex;
+}
+
+/* The same `.swatch` well the Lighting panel uses, at a size that sits in a bar
+   rather than filling a panel row. Only the dimensions differ, which is the point:
+   the two colour wells in the app are one control, not two that resemble each
+   other. */
 .frame-swatch {
   flex: none;
   width: 26px;
   height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 5px;
-  background: none;
-  cursor: pointer;
 }
-.frame-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
-.frame-swatch::-webkit-color-swatch { border: 1px solid #ffffff2e; border-radius: 4px; }
-.frame-swatch::-moz-color-swatch { border: 1px solid #ffffff2e; border-radius: 4px; }
 
 /* The on-canvas frame box. `pointer-events: none` is load-bearing: the interior of
    the frame is exactly where the user paints, so every event over it must reach the

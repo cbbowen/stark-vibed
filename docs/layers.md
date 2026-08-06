@@ -871,16 +871,33 @@ frontend's business. What it keeps is the shape that matters — build in view
 state, commit once on release.
 
 **The frame's colour makes the same bargain**, through
-`ViewCommand::PreviewMatteColor` and one `DocCommand::SetMatteColor` when the
-pick settles. It has to: what is being chosen is how the mat board reads against
-the piece inside it, which is a judgement made *by looking*, so every colour the
-pointer crosses has to reach the canvas and only the answer belongs in the log.
-A native colour input reports those through `input` and says the pick is over
-with `change` — and, because a picker dismissed on the colour it opened on sends
-no `change` at all, `blur` settles it too. Both edges run the same idempotent
-settle, and a commit to the colour the matte already holds is refused engine-side
-(§14.6), so the pick that changes nothing logs nothing while still superseding
-what it was showing.
+`ViewCommand::PreviewMatteColor` and one `DocCommand::SetMatteColor` on release.
+It has to: what is being chosen is how the mat board reads against the piece
+inside it, which is a judgement made *by looking*, so every colour the pointer
+crosses has to reach the canvas and only the answer belongs in the log.
+
+It is picked with the app's **Oklab picker**, the same control the substrate
+colour uses (§15.5) — one control asking the same question about a different
+flat expanse, rather than two that resemble each other. That is not only
+consistency:
+
+- **A mat board is chosen by lightness against the piece.** Too close and the
+  frame stops reading as a frame; too far and it shouts over what it surrounds.
+  Oklab puts that search on an axis you can drag along — `L` moves lightness with
+  hue and chroma held — where the sRGB triple a native colour input offers moves
+  all three at once.
+- **The edges are the app's own.** The preview/commit split rests on
+  `pointerup` / `pointercancel` over the picker's tracks, not on what a browser
+  chooses to send when its colour dialog closes. A cancelled pick still commits,
+  for the reason `panels::color::end_pick` gives: every instant of it is a colour
+  the user chose and is already looking at, and discarding it would strand the
+  preview with no commit to supersede it.
+
+A commit to the colour the matte already holds is refused engine-side (§14.6),
+so a pick that lands back where it started logs nothing while still superseding
+what it was showing. What was given up with the native input is typing a hex code
+and the OS eyedropper; the pop-out is the trade, and the picker is where either
+would be added.
 
 Still to come: snapping while dragging (to content bounds, to other frames, to
 the canvas origin) is most of what makes a crop tool feel good and is cheap;
