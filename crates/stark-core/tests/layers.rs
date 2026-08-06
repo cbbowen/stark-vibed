@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use stark_core::command::DocCommand;
+use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::{LayerId, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
@@ -307,6 +307,98 @@ fn layer_names_survive_save_load() {
     loaded.load_bytes(&bytes).expect("load");
     assert_eq!(name_of(&loaded, TOP), Some("Sky".to_string()));
     assert_eq!(name_of(&loaded, ROOT), None);
+}
+
+/// The opacity of a layer, off the projection the panel reads — which is the
+/// *previewed* document while a drag is in flight.
+fn opacity_of(engine: &Engine, id: LayerId) -> Option<f32> {
+    engine
+        .observe()
+        .layers
+        .iter()
+        .find(|l| l.id == id)
+        .map(|l| l.opacity)
+}
+
+/// An opacity drag previews live but logs once (§14.6) — the third rider on the
+/// preview slot, beside the frame drag and the canvas colour (`tests/matte.rs`),
+/// and here for the reason those two are: a slider reports a value per pointer
+/// *move*, so without this one adjustment buries the history under a hundred
+/// one-percent-apart edits and undo stops being able to take it back.
+#[test]
+fn dragging_layer_opacity_previews_without_logging() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    let opaque = engine.render_to_image();
+
+    // Three "pointer moves" of a drag towards transparent.
+    for v in [0.6f32, 0.3, 0.0] {
+        engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, v))));
+    }
+    assert!(
+        red_dominant(center(&engine.render_to_image())),
+        "the preview should fade the green layer on screen"
+    );
+    // `observe` reports the previewed opacity, so the slider's own track agrees with
+    // the canvas it controls instead of trailing a commit behind it.
+    assert_eq!(opacity_of(&engine, TOP), Some(0.0));
+
+    // Undoing now must reach the *stroke*, not a drag step, and drop the preview with
+    // it — so undo-then-redo lands exactly back on the opaque document, which nothing
+    // about the drag has been logged into.
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
+    assert!(
+        images_match(&opaque, &engine.render_to_image(), 2),
+        "a history step during a drag should drop the preview and log nothing of it"
+    );
+
+    // Release: one commit, which supersedes the preview it matches.
+    for v in [0.6f32, 0.3, 0.0] {
+        engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, v))));
+    }
+    let dragging = engine.render_to_image();
+    engine.process(DocCommand::SetLayerOpacity(TOP, 0.0));
+    assert!(
+        images_match(&dragging, &engine.render_to_image(), 2),
+        "the committed opacity should match what the drag previewed"
+    );
+    engine.process(DocCommand::Undo);
+    assert!(
+        images_match(&opaque, &engine.render_to_image(), 2),
+        "one undo should take back the whole drag"
+    );
+}
+
+/// A drag that travels out and comes back is not an edit — the same rule
+/// `renaming_to_the_same_name_is_not_an_edit` states, and the case that makes it
+/// here is the one the frontend cannot avoid: a slider released on the value it was
+/// pressed on still has to commit, because the preview it left up must be
+/// superseded by *something*.
+#[test]
+fn an_opacity_drag_that_ends_where_it_started_logs_nothing() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    let opaque = engine.render_to_image();
+
+    for v in [0.6f32, 0.3, 1.0] {
+        engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, v))));
+    }
+    engine.process(DocCommand::SetLayerOpacity(TOP, 1.0));
+    assert!(
+        images_match(&opaque, &engine.render_to_image(), 2),
+        "the settled drag should leave the document as it found it, preview and all"
+    );
+
+    engine.process(DocCommand::Undo);
+    assert!(
+        red_dominant(center(&engine.render_to_image())),
+        "one undo should reach the green stroke, so the settled drag logged no step"
+    );
 }
 
 #[test]

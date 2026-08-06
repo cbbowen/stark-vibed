@@ -311,6 +311,33 @@ above the base. Becoming the base is a different move — it is that layer carry
 the others — and it stays an explicit restructure rather than a side effect of a
 reorder.
 
+#### The opacity slider previews live and logs once
+
+Every other control in the panel reports a value the hand *chose* — a blend mode,
+a clip, a name — and one of those per interaction. The opacity slider reports one
+per pointer **move**, and so it makes the same bargain the frame drag (§15.7) and
+the canvas colour (§15.5) make, on the same slot: each sample sends
+`ViewCommand::PreviewLayerOpacity` (view state, never logged), and the settled
+drag commits a single `DocCommand::SetLayerOpacity`. A drag costs one undo step
+rather than a hundred, and in a shared session one replicated action rather than
+a hundred. `observe()` reports the *previewed* opacity, which keeps the track and
+the canvas agreeing with each other under the pointer.
+
+Two details are the difference between that working and nearly working:
+
+- **The commit supersedes the preview, and a settled drag always commits.** A
+  preview left standing pins the document to the last dragged value and shadows
+  every later edit, so the release has to reach the engine even when the value
+  did not change. The frontend cannot lean on the browser's `change` event alone
+  for that, because a drag ending on the value it started from does not send one.
+- **A commit to the value the layer already holds is refused** (`Engine::process`,
+  as for `SetLayerName`) — that is what stops the out-and-back drag the previous
+  point forces into the engine from spending a step that appears to do nothing
+  when undo reaches it.
+
+Both are asserted by `dragging_layer_opacity_previews_without_logging` and
+`an_opacity_drag_that_ends_where_it_started_logs_nothing` (`tests/layers.rs`).
+
 ### 14.7 Compositing
 
 `CompositeGroup` is a tree, and the existing fast path is an invariant of its

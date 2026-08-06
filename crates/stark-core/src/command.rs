@@ -402,6 +402,28 @@ pub enum ViewCommand {
     /// where the drag ends and commits one [`DocCommand::SetBackground`] there.
     PreviewBackground(Option<[f32; 3]>),
 
+    /// Show a layer at `opacity` **without logging it** — the in-flight half of an
+    /// opacity-slider drag (§14.6). `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewBackground`](Self::PreviewBackground), for the
+    /// same reason: a slider reports a value per pointer *move*, so committing each
+    /// one spends an undo step — and, in a shared session, a replicated action — on
+    /// every sample of what the hand did once. The frontend knows where the drag
+    /// ends and commits one [`DocCommand::SetLayerOpacity`] there.
+    ///
+    /// A view command rather than a `GestureCommand` for the reason
+    /// [`PreviewMatteRect`](Self::PreviewMatteRect) is one: a slider is not
+    /// sample-driven, so there is no [`InputSample`] to feed `Start`/`To`/`End`
+    /// with, and it reports the value it wants rather than the motion that reached
+    /// it. What it borrows from a gesture is the shape that matters — build in view
+    /// state, commit once on release.
+    ///
+    /// Opacity is a presentation property folded in at composite time (§14.7), so a
+    /// preview costs a refold and moves no pixels: unlike
+    /// [`PreviewTransform`](Self::PreviewTransform) there is nothing to resample,
+    /// which is what makes it affordable at pointer rate.
+    PreviewLayerOpacity(Option<(LayerId, f32)>),
+
     /// Tune the media/lighting pass (§6.3). Changes how the canvas
     /// looks, not what it is.
     SetMediaParams(MediaParams),

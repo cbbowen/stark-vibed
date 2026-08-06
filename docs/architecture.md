@@ -265,6 +265,8 @@ pub enum ViewCommand {             // never logged, never sent
     SetActiveLayer(LayerId),       // (see PeerCommand — published when sharing)
     PreviewMatteRect(..),          // §15.7
     PreviewTransform(..),          // §16.6
+    PreviewBackground(..),         // §15.5
+    PreviewLayerOpacity(..),       // §14.6  — the in-flight half of a slider drag
     SetShowPeerSelections(bool),   // §17.3
 }
 

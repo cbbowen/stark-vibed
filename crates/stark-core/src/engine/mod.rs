@@ -661,7 +661,25 @@ impl Engine {
             }
             DocCommand::SetLayerClip(id, clip) => self.commit(ActionKind::SetLayerClip(id, clip)),
             DocCommand::SetLayerOpacity(id, opacity) => {
-                self.commit(ActionKind::SetLayerOpacity(id, opacity))
+                // The committed opacity supersedes whatever the drag was previewing,
+                // for the same reason `SetMatteRect` drops its preview above — and
+                // it is dropped whether or not the commit below happens, so a drag
+                // that ends where it started leaves nothing pinned.
+                self.preview.set_doc(None);
+                // Clamped here rather than compared raw, because that is what the
+                // action would store (`DocState::set_layer_opacity`): without it a
+                // slider that reports 1.0000001 would log a step that changes
+                // nothing when reached. The same argument as `SetLayerName`'s, and
+                // the same case makes it — a drag that returns to the value it
+                // started on is not an edit.
+                let opacity = opacity.clamp(0.0, 1.0);
+                if self
+                    .document()
+                    .layer(id)
+                    .is_none_or(|l| l.opacity != opacity)
+                {
+                    self.commit(ActionKind::SetLayerOpacity(id, opacity));
+                }
             }
             DocCommand::SetLayerVisible(id, visible) => {
                 self.commit(ActionKind::SetLayerVisible(id, visible))
@@ -744,6 +762,11 @@ impl Engine {
             }
             ViewCommand::PreviewBackground(rgb) => {
                 let preview = rgb.map(|rgb| self.timeline.current().with_background(rgb));
+                self.set_doc_preview(preview);
+            }
+            ViewCommand::PreviewLayerOpacity(set) => {
+                let preview =
+                    set.map(|(id, opacity)| self.timeline.current().set_layer_opacity(id, opacity));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewTransform(t) => {

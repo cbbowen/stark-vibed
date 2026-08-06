@@ -44,7 +44,7 @@ use crate::panels::frame::AddFrameButton;
 use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch};
-use stark_core::command::{DocCommand, PeerCommand};
+use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{BlendMode, Place};
 use stark_core::{LayerId, LayerInfo};
 
@@ -333,6 +333,12 @@ pub fn LayerPanel() -> Element {
     // — like the panel stack's — is delimited by the browser's own gesture, so it
     // cannot be left armed by a timer that failed to fire (§11).
     let mut drag = use_signal(|| None::<RowDrag>);
+    // The opacity being previewed by a slider drag, if one is in flight — the drag's
+    // own "there is something to commit", panel-local like `drag` and delimited by the
+    // same browser gesture. It is the *value*, not a flag, so the commit says what the
+    // last preview showed rather than reading it back off a projection that the
+    // in-flight preview is itself feeding (§14.6).
+    let mut fading = use_signal(|| None::<f32>);
 
     let obs = state.obs.read();
     let layers = obs.as_ref().map(|o| o.layers.clone()).unwrap_or_default();
@@ -441,9 +447,9 @@ pub fn LayerPanel() -> Element {
 
         if let Some(l) = selected {
             // `marked`, as `widgets::Slider` sets it on the rows it builds: these two are
-            // hand-rolled (one drives a command per sample, the other holds a picker and a
-            // chip rather than a track), but they wear a glyph, so they fold onto one line
-            // in minimal mode exactly as the component's rows do.
+            // hand-rolled (one splits its samples between a preview and one commit, the
+            // other holds a picker and a chip rather than a track), but they wear a glyph,
+            // so they fold onto one line in minimal mode exactly as the component's rows do.
             div { class: "slider-row marked",
                 // The "— of the group" qualifier rides inside the hideable word rather
                 // than beside it. It is not a second fact about the control; it is the
@@ -458,11 +464,29 @@ pub fn LayerPanel() -> Element {
                     r#type: "range", min: "0", max: "100", step: "any",
                     value: "{(l.opacity * 100.0) as i32}",
                     title: "{opacity_hint(&l)}",
+                    // Previewed per sample, committed once when the drag settles: a
+                    // layer's opacity is document state, so one adjustment must cost
+                    // one undo step — and one replicated action — rather than one per
+                    // pointer move, which is the bargain the frame drag and the canvas
+                    // colour already make (§14.6). The engine renders the preview and
+                    // reports it back through `observe`, so the track and the canvas
+                    // both follow the pointer.
                     oninput: move |e| {
                         if let Ok(v) = e.value().parse::<f32>() {
-                            dispatch(state, DocCommand::SetLayerOpacity(l.id, v / 100.0));
+                            let opacity = v / 100.0;
+                            fading.set(Some(opacity));
+                            dispatch(state, ViewCommand::PreviewLayerOpacity(Some((l.id, opacity))));
                         }
                     },
+                    // Three ways to end, because a range control has three: `change`
+                    // is the one a *keyboard* adjustment sends and the pointer sends
+                    // on release, and the two pointer edges are here because `change`
+                    // is not sent at all when the drag ends on the value it started
+                    // on — which would strand a preview with no commit to supersede
+                    // it. `settle_opacity` is idempotent, so arriving twice is free.
+                    onchange: move |_| settle_opacity(state, l.id, fading),
+                    onpointerup: move |_| settle_opacity(state, l.id, fading),
+                    onpointercancel: move |_| settle_opacity(state, l.id, fading),
                 }
             }
             div { class: "slider-row marked",
@@ -623,6 +647,21 @@ fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
             "Takes light away instead of adding it, the way stacked glazes do \u{2014} \
              white leaves the layer below alone, black hides it. For shadows and tinting."
         }
+    }
+}
+
+/// End an opacity drag: commit the value the previews have been showing, once, and
+/// disarm — the release half of the bargain `oninput` makes above (§14.6).
+///
+/// A no-op when nothing is pending, which is what lets the row wire it to all three
+/// of the events that can end a drag without spending an undo step per event. The
+/// commit supersedes the preview engine-side, so nothing has to drop it here — and a
+/// commit to the value the layer already holds is refused there too, so a drag that
+/// travelled out and came back logs nothing.
+fn settle_opacity(state: AppState, id: LayerId, mut pending: Signal<Option<f32>>) {
+    let settled = pending.write().take();
+    if let Some(opacity) = settled {
+        dispatch(state, DocCommand::SetLayerOpacity(id, opacity));
     }
 }
 
