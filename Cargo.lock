@@ -6556,6 +6556,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "stark-assetid"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "png",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "stark-core"
 version = "0.0.0"
 dependencies = [
@@ -6573,6 +6583,7 @@ dependencies = [
  "postcard",
  "rpds",
  "serde",
+ "stark-assetid",
  "stark-shaders",
  "stark-testdata",
  "thiserror 2.0.19",

@@ -22,6 +22,7 @@ exclude = [
 # default build/test so `cargo build`/`cargo test` stay host-only. Build it with
 # `dx serve --platform web` or `cargo build -p stark-ui --target wasm32-unknown-unknown`.
 default-members = [
+    "crates/stark-assetid",
     "crates/stark-core",
     "crates/stark-net",
     "crates/stark-shaders",
@@ -56,6 +57,7 @@ flate2 = "1"
 tracing = { version = "0.1", features = ["release_max_level_info"] }
 
 # stark-shaders is consumed by stark-core.
+stark-assetid = { path = "crates/stark-assetid" }
 stark-shaders = { path = "crates/stark-shaders" }
 nalgebra = "0.35"
 

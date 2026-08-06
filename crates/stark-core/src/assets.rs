@@ -10,32 +10,12 @@
 //! `Action::Context` alongside the tile pool and stroke renderer.
 
 use std::collections::hash_map::{Entry, HashMap};
-use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
-
-use crate::error::{EngineError, Result};
+use crate::error::Result;
 use crate::gpu::context::GpuContext;
 
-/// Stable identity of an asset: the BLAKE3 hash of its source bytes.
-///
-/// `Ord` so collections of assets have one order rather than a hash map's — what a
-/// save file's bundle is written in, so the same document serializes to the same
-/// bytes twice running (§8).
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct AssetId(pub [u8; 32]);
-
-impl std::fmt::Debug for AssetId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // First 8 hex chars are plenty to identify in logs.
-        write!(
-            f,
-            "AssetId({:02x}{:02x}{:02x}{:02x}…)",
-            self.0[0], self.0[1], self.0[2], self.0[3]
-        )
-    }
-}
+pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
 
 /// A loaded brush shape: its source bytes and the two textures the stroke path reads
 /// it through.
@@ -91,17 +71,26 @@ impl AssetStore {
     }
 
     fn load(&self, decode_from: &[u8], store_bytes: Option<Vec<u8>>) -> Result<AssetId> {
-        let (w, h, coverage) = decode_coverage(decode_from)?;
-        // Cap user imports at MAX_SHAPE_DIM before hashing, so the id names the
-        // canonical (stored) coverage and a reload of the downsampled PNG maps
-        // to the same id. Integer box filter — deterministic across peers.
-        let (coverage, w, h) = downsample_to_limit(coverage, w, h, MAX_SHAPE_DIM);
-        let id = coverage_id(w, h, &coverage);
+        // Decode, cap and hash are the identity contract's, not ours (§19): the id
+        // names the canonical coverage, so a reload of the stored PNG lands back on
+        // the same id.
+        let canonical = stark_assetid::coverage(decode_from)?;
+        let id = canonical.id();
+        let stark_assetid::Canonical {
+            width: w,
+            height: h,
+            texels: coverage,
+        } = canonical;
         let mut inner = self.inner.lock().expect("asset store poisoned");
         if let Entry::Vacant(slot) = inner.masks.entry(id) {
             let bytes = match store_bytes {
                 Some(b) => b,
-                None => encode_gray_png(w, h, &coverage)?,
+                None => stark_assetid::Canonical {
+                    width: w,
+                    height: h,
+                    texels: coverage.clone(),
+                }
+                .encode()?,
             };
             let cov: Vec<f32> = coverage.iter().map(|&b| b as f32 / 255.0).collect();
             // One coverage layer per shape orientation (§6.6): the swept-depth
@@ -174,14 +163,6 @@ impl AssetStore {
             .collect()
     }
 }
-
-/// Largest edge (px) an imported brush shape keeps; bigger images are
-/// box-downsampled by an integer factor on import. 1024 matches the largest
-/// practical stamp footprint (brush radius caps at ~500 canvas px), stays well
-/// inside the device's 2048 texture limit, and — via [`orientation_layers`]'s
-/// memory budget — keeps rotated stamps smooth (16 slices at 1024², vs 4 if a
-/// 2048² source were kept).
-pub const MAX_SHAPE_DIM: u32 = 1024;
 
 /// Largest number of orientation slices a brush's prefix-τ volume holds
 /// (§6.6). With linear interpolation between adjacent layers this is ~5.6° resolution
@@ -354,124 +335,4 @@ pub fn build_coverage_r8(
         extent,
     );
     texture.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-/// Content id of a coverage mask: the hash of its dimensions + pixels. Derived
-/// from the decoded coverage (not the file bytes) so it is stable across source
-/// encodings and PNG encoder versions — important for replay and collaboration.
-fn coverage_id(width: u32, height: u32, coverage: &[u8]) -> AssetId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&width.to_le_bytes());
-    hasher.update(&height.to_le_bytes());
-    hasher.update(coverage);
-    AssetId(*hasher.finalize().as_bytes())
-}
-
-/// Encode a single-channel buffer as a compact grayscale PNG for the save file
-/// (§8) — the canonical stored form of both a brush's coverage mask and a canvas
-/// surface's height map (§6.4), which are the same kind of thing on disk.
-pub(crate) fn encode_gray_png(width: u32, height: u32, coverage: &[u8]) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Grayscale);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::High);
-        let mut writer = encoder
-            .write_header()
-            .map_err(|e| EngineError::Asset(e.to_string()))?;
-        writer
-            .write_image_data(coverage)
-            .map_err(|e| EngineError::Asset(e.to_string()))?;
-    }
-    Ok(out)
-}
-
-/// Decode a PNG to a `width × height` single-channel coverage buffer.
-///
-/// Coverage = luminance × alpha, so white-on-black masks (luminance) and
-/// alpha-cut masks both work. Palette/grayscale/16-bit inputs are normalized.
-fn decode_coverage(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
-    let mut decoder = png::Decoder::new(Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder
-        .read_info()
-        .map_err(|e| EngineError::Asset(e.to_string()))?;
-    let mut buf = vec![
-        0u8;
-        reader
-            .output_buffer_size()
-            .ok_or_else(|| EngineError::Asset("missing size".into()))?
-    ];
-    let info = reader
-        .next_frame(&mut buf)
-        .map_err(|e| EngineError::Asset(e.to_string()))?;
-    buf.truncate(info.buffer_size());
-
-    let n = (info.width * info.height) as usize;
-    let mut coverage = vec![0u8; n];
-    let lum =
-        |r: u8, g: u8, b: u8| -> u32 { (77 * r as u32 + 150 * g as u32 + 29 * b as u32) >> 8 };
-    match info.color_type {
-        png::ColorType::Grayscale => {
-            coverage.copy_from_slice(&buf[..n]);
-        }
-        png::ColorType::GrayscaleAlpha => {
-            for i in 0..n {
-                let g = buf[i * 2] as u32;
-                let a = buf[i * 2 + 1] as u32;
-                coverage[i] = (g * a / 255) as u8;
-            }
-        }
-        png::ColorType::Rgb => {
-            for i in 0..n {
-                coverage[i] = lum(buf[i * 3], buf[i * 3 + 1], buf[i * 3 + 2]) as u8;
-            }
-        }
-        png::ColorType::Rgba => {
-            for i in 0..n {
-                let l = lum(buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]);
-                let a = buf[i * 4 + 3] as u32;
-                coverage[i] = (l * a / 255) as u8;
-            }
-        }
-        png::ColorType::Indexed => {
-            return Err(EngineError::Asset("indexed PNG not expanded".into()));
-        }
-    }
-    Ok((info.width, info.height, coverage))
-}
-
-/// Box-downsample a single-channel image by the smallest integer factor that
-/// brings both edges within `limit`. An integer factor keeps a tileable texture
-/// tileable; `factor == 1` returns the input unchanged.
-///
-/// Here rather than beside either caller because both do the same thing for the
-/// same reason: a brush shape and a canvas ground are each capped **before** they
-/// are hashed, so the id names the canonical form and reloading the stored PNG
-/// lands on the same id (§6.6, §6.4). It lived in `gpu::surface`, which made the
-/// brush-shape import reach into the ground's module for an image utility with no
-/// GPU in it — and left it next to the one caller it was *not* written for.
-pub(crate) fn downsample_to_limit(src: Vec<u8>, w: u32, h: u32, limit: u32) -> (Vec<u8>, u32, u32) {
-    let factor = w.div_ceil(limit).max(h.div_ceil(limit)).max(1);
-    if factor == 1 {
-        return (src, w, h);
-    }
-    let (nw, nh) = (w / factor, h / factor);
-    let area = factor * factor;
-    let mut out = vec![0u8; (nw * nh) as usize];
-    for y in 0..nh {
-        for x in 0..nw {
-            let mut sum = 0u32;
-            for dy in 0..factor {
-                for dx in 0..factor {
-                    let sx = x * factor + dx;
-                    let sy = y * factor + dy;
-                    sum += src[(sy * w + sx) as usize] as u32;
-                }
-            }
-            out[(y * nw + x) as usize] = (sum / area) as u8;
-        }
-    }
-    (out, nw, nh)
 }

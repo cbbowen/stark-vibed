@@ -28,6 +28,11 @@ pub enum EngineError {
 
     #[error("asset decode failed: {0}")]
     Asset(String),
+    /// A content id could not be derived — an image that would not decode. Its own
+    /// crate because the derivation is the format's identity contract (§19), so it
+    /// arrives as its own error and is folded in here.
+    #[error("{0}")]
+    AssetId(#[from] stark_assetid::AssetError),
 
     #[error("cannot export: {0}")]
     Export(String),

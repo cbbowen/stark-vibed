@@ -119,8 +119,8 @@ impl Surface {
     /// failure here is a broken invariant rather than bad input — hence the
     /// `expect` rather than a `Result` the caller would have nothing to do with.
     pub fn load(ctx: &GpuContext, png_bytes: &[u8]) -> Self {
-        let (w, h, height) = canonical_height(png_bytes).expect("surface: registered bytes decode");
-        Self::from_height(ctx, &height, w, h)
+        let f = canonical_height(png_bytes).expect("surface: registered bytes decode");
+        Self::from_height(ctx, &f.texels, f.width, f.height)
     }
 
     /// Upload a height field as the `Rgba8Unorm` **ground** texture — height in `R`,
