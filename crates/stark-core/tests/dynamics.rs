@@ -1056,8 +1056,8 @@ fn bleed_softens_a_colour_boundary() {
             ..Default::default()
         },
     );
-    // Several passes along the boundary: the axis is a rate, and each pass of the
-    // tip buys another helping of variance.
+    // Several passes along the boundary: the axis is a diffusivity, so each pass of
+    // the tip buys another helping of variance and the spread grows as its root.
     stroke_with(
         &mut engine,
         b,
@@ -1081,13 +1081,29 @@ fn bleed_softens_a_colour_boundary() {
         "scrubbing bleed = 0.95 along the boundary should soften its steepest step \
          by at least a fifth, got {step_before} -> {step_after} levels/row"
     );
-    // The diffusion is local: 15 px out from the boundary each stripe still reads
-    // as its own colour, so the edge softened by mixing rather than by erasure.
-    assert!(
-        is_red(after.pixel(cx, cy - 15)) && is_green(after.pixel(cx, cy + 15))
-            || is_green(after.pixel(cx, cy - 15)) && is_red(after.pixel(cx, cy + 15)),
-        "the stripes themselves should survive a boundary blur"
-    );
+    // The edge softened by **mixing rather than erasure**, said two ways that do not
+    // depend on how far this calibration of the axis happens to spread — the reach is
+    // solved per firing from a diffusivity now (`stroke::budget::bleed_stencil`), so a
+    // purity reading at a fixed distance measures the tuning rather than the model.
+    //
+    // Outside the tip nothing moved at all. The pair's mobility is `min` of its two
+    // exposures, so a texel the footprint never covered has no partner and no share:
+    // the stripes still read pure where the blender never reached, 32 px out against a
+    // 28 px tip.
+    for y in [cy - 32, cy + 32] {
+        let (b, a) = (before.pixel(cx, y), after.pixel(cx, y));
+        let moved = (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).max();
+        assert!(
+            moved <= Some(1),
+            "a texel 32 px out, outside a 28 px tip, moved {b:?} -> {a:?}"
+        );
+    }
+    // That the paint *inside* the tip is redistributed rather than consumed is not
+    // checked here, and deliberately: the conserved quantities are height and optical
+    // mass, and what this reads is an 8-bit composite of a perceptual mix over paper,
+    // where neither survives as a mean. Two tests carry it on the quantities it is
+    // actually true of — `bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field`
+    // and `a_dense_bleed_scribble_over_flat_paint_is_a_no_op`.
 }
 
 /// The property the reach fix exists for: `bleed`'s smoothing distance scales

@@ -594,12 +594,33 @@ falls out naturally; and there is no band, column or stamp structure to alias.
 - `charge` — a finite glob pre-loaded onto the tool (the palette-knife scoop); it
   depletes as the tool deposits and refills as it lifts.
 - `bleed` — **lateral** flux within the canvas itself: the paint already under the
-  tip relaxes towards a neighbourhood **a fixed fraction of the tip wide** at
+  tip relaxes towards a neighbourhood **a fraction of the tip wide** at
   `1 − exp(−k_bleed·e)`, the same saturating form as the vertical rates, keyed on
   the same swept exposure — so a texel the tip never covers never moves, and
   overlapping segments compose to first order. Alone it is a blur brush; under
   `add` it melts the height ridges of the strokes being painted over instead of
   embossing them through the new paint.
+  **The axis is a diffusivity, not a rate**, and that is the one place it differs
+  from its three neighbours. What the stencil realises per unit exposure is
+  `D = k_bleed·Σ(share·d²)` — a rate times a second moment — and only the second
+  factor has headroom in it: the blend `w = 1 − exp(−k·e)` clips at 1, so at a
+  fixed stencil `D` has a hard ceiling of `Σ(share·d²)` per firing however hard
+  the rate is driven. Measured on a 40 px tip, whose firing carries `e ≈ 1.7`, the
+  whole of `bleed` from 0.95 to 1.0 took `w` from 0.52 to 0.99 — ×1.9 in `D`, ×1.4
+  in distance, and nothing past it. That ceiling is the stencil's geometry, not a
+  stability bound, and `Σ(share·d²)` is quadratic in the reach. So the host is
+  handed `D` (in radius² per pass, the unit that makes the axis mean one look at
+  every brush size) and **solves for the pair**: the reach that delivers this
+  window's variance at a fixed well-conditioned blend, and the rate that lands the
+  window's nominal exposure on that blend (`stroke::budget::bleed_stencil`). The
+  knob is then linear in `D` across its whole travel, and `σ = sqrt(2·D·τ)` —
+  scrubbing keeps buying distance, as a blender does. Holding the blend near ½
+  rather than at saturation is the other half of it: the stencil's worst-case
+  eigenvalue is `1 − w`, so a firing at `w → 1` annihilates its worst mode — a hard
+  local average, not a Laplacian — and consecutive firings stop composing.
+  `BLEED_DIFFUSIVITY` is *derived* from the two ceilings (`BLEED_REACH_MAX`,
+  `BLEED_BLEND`) rather than chosen, so full crank sits on both at once and the
+  three cannot drift apart.
   It runs inside `deposit` in **flux form** (both threads of a neighbour pair
   compute one number from the same `under` snapshot and apply it with opposite
   signs, `min` of the pair's exposures as the mobility, the wick's own scheme), so
@@ -612,14 +633,22 @@ falls out naturally; and there is no band, column or stamp structure to alias.
   strands nothing.
   **It fires on dedicated slots at the wick's kind of cadence, not on the painting
   segments** (`BLEED_TRAVEL_QUANTUM`, `stroke::dynamics::bleed_fires`): one
-  quad per crossing of half a radius of *absolute arc*, whose sweep is the
-  firing's travel window (the last quantum of path, bent along the crossing
-  segment's own arc — a chord would bow the relaxed band off the paint by
-  `span²·κ/8`, which is under the tip on a lazy curve but not once the pen
-  modulates the radius down and a window is many tip-widths long) and whose
-  vertical rates and source are all zero — so its exposure is an ordinary,
-  well-conditioned prefix difference, and the painting segments carry
-  `λ_bleed = 0` and take the no-bleed path bit-for-bit. Per-segment firing is
+  quad per crossing of half a radius of *absolute arc*, whose sweep is exactly one
+  quantum of path, bent along the crossing segment's own arc, and whose vertical
+  rates and source are all zero — so its exposure is an ordinary, well-conditioned
+  prefix difference, and the painting segments carry `λ_bleed = 0` and take the
+  no-bleed path bit-for-bit. **One quantum per firing, not one firing per
+  segment**, and that is what keeps the axis a diffusivity: a window asks for
+  variance in proportion to its own travel while a firing can only carry
+  `2·Σ(share·d²)`, so a window merged across N quanta is clamped back to roughly
+  `1/N` of the axis. A segment at the travel cap crosses a half-radius cadence
+  twice, so that was an ordinary fast stroke diffusing a tenth short, not a corner
+  case; variance adds linearly in travel across firings, so N of them deliver N
+  quanta exactly — more steps, not bigger ones, as in any explicit diffusion
+  solver. The count per segment is capped (`MAX_BLEED_FIRES_PER_SEGMENT`) because
+  the flattener buys segment length off the brush's *nominal* radius while the
+  cadence is the modulated one, so a pen thinning the tip would otherwise let a
+  degenerate stroke choose the plan's size. Per-segment firing is
   broken twice over on real slow input, which the fitter keeps at a control point
   per pointer sample (a field repro: 177 knots over 68 px): the per-texel exposure
   of a 0.4 px segment is prefix-cancellation noise, and the per-segment flux sits
@@ -631,20 +660,25 @@ falls out naturally; and there is no band, column or stamp structure to alias.
   kept everything, the parcel is empty and no flux moved, the texel is not
   re-stored at all. Measured on the repro, the guard alone took a 28-level
   directional ghost to bit-exact zero.
-  The stencil's taps sit at three scales per direction — 1 px, a quarter of the
-  reach, the reach (`BLEED_REACH = 0.25` of the radius) — because any stencil is
-  bounded (one application moves at most `Σshare·d²` of variance and the blend
-  saturates at 1), so a fixed-pixel kernel tops out near a pixel of σ per pass
-  and is invisible under any brush big enough to blur with. Scaling the reach
-  with the tip is what makes the axis **resolution-independent**: at full crank a
-  pass of the tip buys σ ≈ 0.3·radius whatever the canvas resolution, the same
-  property the tapers get from being quoted in radii. The 1 px taps are the floor
+  The stencil's taps sit at three scales per direction — 1 px, a
+  `BLEED_MID_DIVISOR`-th of the reach, the reach — with the reach solved per
+  firing and arriving in the slot, so every thread of a flux pair derives one set
+  of integers from one uniform. Its ceiling is the footprint (`BLEED_REACH_MAX`):
+  a tap leaving the sweep has `w_n = 0` and carries nothing, so past about half
+  the radius the long tap is truncated over most of the tip and `D` falls short
+  *unevenly across the footprint*, which is worse than falling short at all. Past
+  that the honest way to diffuse further is a finer cadence — more firings, not
+  longer taps. The three shares are declared one scalar apiece and **generated**
+  into the host (§6.10), because the host computes `Σ(share·d²)` to solve for the
+  reach and a second copy of them is a way for the two sides to disagree about how
+  much a firing diffuses with nothing failing. The 1 px taps are the floor
   rather than the rate — sparse ±d taps alone decouple the grid into d²
   sublattices (the wick's parity failure generalized) and would let sub-reach
   texture ride through a "blur" untouched; coupling every texel to its true
   neighbours makes every non-zero frequency strictly decay. Shares sum to 1/8, so
-  the worst mode's eigenvalue at full saturation is exactly 0 — annihilated, not
-  flipped — and no segment can overshoot.
+  the worst mode's eigenvalue is `1 − w`: at the aimed-for blend it is damped by
+  half, at full saturation it would be annihilated rather than flipped, and no
+  firing can overshoot at any rate.
 
 That is the whole set. `drag`, `ridge`, `load_pressure` and
 `deposit_tilt` were listed as inert placeholders and were **removed** rather than

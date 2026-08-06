@@ -117,16 +117,22 @@ pub struct BrushDynamics {
     /// [`add`](Self::add) source (§6.2).
     #[serde(default)]
     pub charge: f32,
-    /// Canvas paint **diffusing under the tip** per step, as a fraction of full smoothing,
-    /// in [0, 1]: 0 = the paint under the stroke holds still, 1 = it relaxes towards its
-    /// neighbourhood as fast as the loop can carry. The one **lateral** flux, and it is
-    /// internal to the canvas — the tool neither takes nor gives (§6.2).
+    /// Canvas paint **diffusing under the tip**, in [0, 1]. The one **lateral** flux,
+    /// and it is internal to the canvas — the tool neither takes nor gives (§6.2).
     ///
-    /// The neighbourhood is **a fixed fraction of the tip** (`BLEED_REACH`,
-    /// dynamics.wesl), not a pixel count, so the axis is resolution-independent: at
-    /// full crank a pass of the tip blurs by roughly a third of the radius whatever
-    /// the canvas resolution — the same property the tapers get from being quoted
-    /// in radii.
+    /// Unlike its three neighbours the axis is **a diffusivity, not a rate**: it is
+    /// linear in `D`, quoted in radius² per pass of the tip, so scrubbing spreads paint
+    /// as `σ = sqrt(2·D·τ)` — further the longer you work at it, as a blender does,
+    /// rather than converging on a fixed blur. 1 is `D = 0.04`, about `0.28 · radius`
+    /// of σ for one pass.
+    ///
+    /// Quoting it against the **radius** rather than in pixels is what makes it
+    /// resolution- and size-independent: the same setting is the same look on any
+    /// brush, the property the tapers get from being quoted in radii. The engine
+    /// realises `D` by choosing how far the stencil reaches and how hard it relaxes
+    /// (`stroke::budget::bleed_stencil`) — a rate alone cannot, because the share that
+    /// crosses per step clips at 1 and the axis would stop meaning anything well below
+    /// full crank.
     ///
     /// Alone it is a blur brush; alongside [`add`](Self::add) it melts the ridges of the
     /// strokes being painted over instead of leaving their height profile embossed

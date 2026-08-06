@@ -52,6 +52,10 @@ const MIRRORS: &[(&[&str], &str)] = &[
 /// proportional to how far they moved (§6.4).
 const CONSTS: &[(&str, &str)] = &[
     ("dynamics", "BAKE_RES"),
+    ("dynamics", "BLEED_MID_DIVISOR"),
+    ("dynamics", "BLEED_SHARE_FAR"),
+    ("dynamics", "BLEED_SHARE_MID"),
+    ("dynamics", "BLEED_SHARE_NEAR"),
     ("dynamics", "WICK_HALF"),
     ("dynamics", "WICK_RATE"),
     ("lib/paint_common", "RISE_LIMIT"),

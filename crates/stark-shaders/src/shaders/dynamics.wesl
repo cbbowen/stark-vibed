@@ -104,14 +104,18 @@ struct Stamp {
     //    picks the prefix-τ slice) .z; the `drain` falloff per canvas px .w.
     d: vec4<f32>,
     // e: the `add` rate per unit exposure, **undrained** like `c.w`: height .x; the
-    //    segment's signed curvature (1/region px, 0 = a straight sweep) .y.
+    //    segment's signed curvature (1/region px, 0 = a straight sweep) .y; the
+    //    **bleed stencil's longest tap** in texels, integral and ≥ 1, .z — nonzero
+    //    ONLY on a bleed slot, and solved per firing from the diffusivity the axis
+    //    asks for (`stroke::budget::bleed_stencil`). It arrives as a number rather
+    //    than a rule so that every thread of a flux pair reads one uniform and
+    //    derives one integer, which is what the antisymmetry rests on.
     //
-    //    `.zw` carried the segment's midpoint, which is where `exchange` used to
-    //    sample the canvas — one bilinear tap for the whole segment. It walks the
-    //    texel's own track through `tip_at` now, so nothing reads the lane. It stays
-    //    because the lane map is an ABI: the host's `Stamp` is generated from this
-    //    declaration (§6.10), so reclaiming the lane moves both sides at once — worth
-    //    doing the next time this struct is touched for a reason of its own.
+    //    `.w` carried the segment's midpoint's y (`.z` its x), which is where
+    //    `exchange` used to sample the canvas — one bilinear tap for the whole
+    //    segment. It walks the texel's own track through `tip_at` now, so nothing
+    //    reads it; `.z` was reclaimed above when this struct was next touched, as its
+    //    note said to, and `.w` is the last of that lane still going spare.
     e: vec4<f32>,
     // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
@@ -190,6 +194,11 @@ fn add_rate() -> f32 { return st.e.x; }
 
 // The segment's signed curvature, 1/region px; 0 is a straight sweep.
 fn curvature() -> f32 { return st.e.y; }
+
+// The bleed stencil's longest tap, in texels — integral, and 0 on every slot that is
+// not a bleed firing. Solved host-side from the diffusivity the axis asks for; see
+// the note at `BLEED_SHARES`.
+fn bleed_reach() -> i32 { return i32(st.e.z); }
 
 // Where this dispatch's footprint rect sits in the region, and the shape's
 // orientation in turns ∈ [0,1) — which picks the prefix-τ slice (§6.6) and is the
@@ -1213,38 +1222,62 @@ fn exchange(
 // `sel` lerp gates this one, so a feathered mask scales the pair's flux by both
 // coverages and deselected paint neither gives nor takes (§6.8).
 //
-// **The reach scales with the tip, or the axis is decorative.** A stencil is
-// bounded: one application moves at most `Σshare·d²` texels² of variance, and the
-// per-firing blend saturates at 1, so a 1-texel stencil tops out near σ ≈ 1 px
-// per pass of the tip whatever the rate — imperceptible under any brush big
-// enough to blur with (measured: cranking the knob past its 0.95 λ-clamp changed
-// nothing visible, because nothing past the clamp *can*). So the longest tap is
-// a fixed fraction of the radius, which is what makes `bleed` mean the same
-// *look* at every brush size — the same property the tapers get from being
-// quoted in radii. At full crank a pass of the tip buys σ ≈ 0.3·radius.
-const BLEED_REACH: f32 = 0.25;
-
-// Three tap scales per direction — 1 px, a quarter of the reach, the reach —
-// because a sparse pair of ±d taps alone decouples the grid into d² sublattices
-// (the wick's parity failure, generalized): sub-d texture would ride through a
-// "blur" untouched. The 1 px taps couple every texel to its actual neighbours, so
-// every non-zero frequency strictly decays; the long taps carry the variance; the
-// middle scale fills the response in between. Shares are per tap, 12 taps total:
-// worst-case eigenvalue is `1 − 8·Σshare·w = 1 − w ≥ 0` (Σshare = 1/8), so at
-// full saturation the worst mode is annihilated rather than flipped — the same
-// margin the 5-point form had, spent on reach instead of slack. Total shed is
-// bounded by `4·Σshare·w = w/2`: no segment can overshoot, and positivity of
-// height and mass survives any rate.
+// **The axis is a diffusivity, and the reach is how it is spent.** Per unit of
+// exposure the stencil injects `σ² ≈ 2·k_bleed·Σ(share·d²)` texels² per axis, so
+// what it realises is a diffusion coefficient `D = k_bleed·Σ(share·d²)` — a *rate*
+// times a *second moment*. Only one of those two factors has room in it. The blend
+// `w = 1 − exp(−k·e)` clips at 1, and a firing can never move more than its share of
+// the difference, so at a fixed stencil `D` has a hard ceiling of `Σ(share·d²)` per
+// firing however hard the rate is driven. Measured on a 40 px tip, whose window
+// carries `e ≈ 1.7`: the whole of `bleed` from 0.95 to 1.0 takes `w` from 0.52 to
+// 0.99, ×1.9 in `D` and ×1.4 in distance, and past that nothing — which is exactly
+// why cranking the old knob past its λ-clamp changed nothing visible.
 //
-// Per unit of exposure, in the composing regime, the stencil injects
-// `σ² ≈ 2·k_bleed·Σ(share·d²)` texels² per axis; at saturation each firing
-// contributes its capped share and scrubbing keeps buying variance linearly in
-// travel — like a real blender, more passes blur further.
+// That ceiling is not a stability bound, it is the stencil's own geometry, and
+// `Σ(share·d²)` is quadratic in the reach. So the host is given the diffusivity and
+// **solves for the pair**: it picks the reach that delivers the variance this
+// window's travel calls for at a fixed, well-conditioned blend, and derives the rate
+// that lands the window's nominal exposure on that blend
+// (`stroke::budget::bleed_stencil`). The reach arrives in the slot; `bleed` is then
+// linear in `D` across its whole travel, and `σ = sqrt(2·D·τ)` — real diffusion, with
+// the distance growing as the root of the scrubbing, like a blender.
+//
+// Holding the blend near ½ rather than at saturation is the other half of the win.
+// The worst-case eigenvalue is `1 − 8·Σshare·w = 1 − w` (Σshare = 1/8): at `w → 1` the
+// operator annihilates its worst mode — a hard local average, not a Laplacian — and
+// firings stop composing. Half leaves the margin the model is written against.
+//
+// The reach is quoted as a fraction of the tip's radius rather than in px, which is
+// what makes `bleed` mean the same *look* at every brush size — the same property the
+// tapers get from being quoted in radii. Its own ceiling is the footprint: a tap that
+// leaves the sweep has `w_n = 0` and carries nothing, so past about half the radius
+// the long tap is truncated for most of the tip and the delivered `D` falls short of
+// the asked-for one. Past that the honest move is a finer cadence, not a longer tap.
+
+// Three tap scales per direction — 1 px, a `BLEED_MID_DIVISOR`-th of the reach, the
+// reach — because a sparse pair of ±d taps alone decouples the grid into d²
+// sublattices (the wick's parity failure, generalized): sub-d texture would ride
+// through a "blur" untouched. The 1 px taps couple every texel to its actual
+// neighbours, so every non-zero frequency strictly decays; the long taps carry the
+// variance; the middle scale fills the response in between. Shares are per tap, 12
+// taps total. Total shed is bounded by `4·Σshare·w = w/2`: no firing can overshoot,
+// and positivity of height and mass survives any rate.
+//
+// Declared one scalar apiece because the **host** computes `Σ(share·d²)` to solve for
+// the reach, and a second copy of these three numbers over there is a way for the
+// two sides to disagree about how much a firing diffuses without anything failing.
+// They are generated from these declarations instead (§6.10).
+const BLEED_SHARE_NEAR: f32 = 1.0 / 64.0;
+const BLEED_SHARE_MID: f32 = 2.0 / 64.0;
+const BLEED_SHARE_FAR: f32 = 5.0 / 64.0;
 const BLEED_SHARES = array<f32, 3>(
-    1.0 / 64.0,
-    2.0 / 64.0,
-    5.0 / 64.0,
+    BLEED_SHARE_NEAR,
+    BLEED_SHARE_MID,
+    BLEED_SHARE_FAR,
 );
+// The middle scale, as a divisor of the reach. Integer division, floored, and at
+// least 1 — the host's `stencil_moment` floors the same way, off this same constant.
+const BLEED_MID_DIVISOR: i32 = 4;
 const BLEED_OFFS = array<vec2<i32>, 4>(
     vec2<i32>(1, 0),
     vec2<i32>(-1, 0),
@@ -1356,11 +1389,12 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         var dh = 0.0;
         var dm = 0.0;
         var dlm = vec3<f32>(0.0, 0.0, 0.0);
-        // The tap distances, per BLEED_REACH above. Every thread derives the same
-        // three integers from the same uniform, so a pair at any scale still
-        // computes one number — the antisymmetry the conservation rests on.
-        let reach = max(i32(round(BLEED_REACH * radius())), 1);
-        var dists = array<i32, 3>(1, max(reach / 4, 1), reach);
+        // The tap distances, off the reach the host solved for this firing (see
+        // `BLEED_SHARES` above). Every thread derives the same three integers from the
+        // same uniform, so a pair at any scale still computes one number — the
+        // antisymmetry the conservation rests on.
+        let reach = max(bleed_reach(), 1);
+        var dists = array<i32, 3>(1, max(reach / BLEED_MID_DIVISOR, 1), reach);
         for (var k = 0; k < 3; k = k + 1) {
             for (var i = 0; i < 4; i = i + 1) {
                 // Clamped into the snapshot rect. A clamped tap lands on the rect's
