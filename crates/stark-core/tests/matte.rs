@@ -8,10 +8,10 @@
 //! *erases* the relief beneath it rather than letting underlying impasto emboss
 //! ghost ridges through it (§15.4.2).
 //!
-//! The two `previews_without_logging` tests are here together rather than split by
-//! subject: the frame drag and the substrate-colour drag are one mechanism — an
-//! unlogged stand-in document while the pointer is down, one action on release —
-//! and they are worth reading side by side.
+//! The `previews_without_logging` tests are here together rather than split by
+//! subject: the frame drag, the frame's colour and the substrate's are one
+//! mechanism — an unlogged stand-in document while the pointer is down, one action
+//! on release — and they are worth reading side by side.
 
 mod common;
 
@@ -404,6 +404,91 @@ fn dragging_the_canvas_colour_previews_without_logging() {
     assert!(
         images_match(&painted, &engine.render_to_image(), 2),
         "and restore the image it started from"
+    );
+}
+
+/// A frame-colour pick previews live but logs once (§15.7) — the frame's own
+/// colour, next to the substrate's above, because the two are the same control
+/// making the same bargain against different state. A native colour input reports
+/// a value per pointer move while it is open, so without this, choosing a mat
+/// board costs an undo step per shade the pointer crossed on the way to it.
+#[test]
+fn picking_a_frame_colour_previews_without_logging() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    add_frame(&mut engine);
+    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let black = engine.render_to_image();
+
+    // Three "pointer moves" of a pick towards a pale mat board.
+    for v in [0.3f32, 0.6, 0.9] {
+        engine.process(ViewCommand::PreviewMatteColor(Some((matte_id, [v, v, v]))));
+    }
+    let picking = engine.render_to_image();
+    assert!(
+        !is_dark(outside(&picking)),
+        "the preview should recolour the frame on screen"
+    );
+    // `observe` reports the previewed colour, so the swatch agrees with the canvas
+    // it controls instead of trailing a commit behind it.
+    let previewed = engine.observe().layers.last().and_then(|l| l.matte);
+    assert_eq!(previewed.map(|m| m.color), Some([0.9, 0.9, 0.9]));
+
+    // A history step during the pick drops the preview and finds nothing of it
+    // logged, so undo-then-redo lands back on the black frame.
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
+    assert!(
+        images_match(&black, &engine.render_to_image(), 2),
+        "nothing about the pick should have been logged by it"
+    );
+
+    // Settling commits exactly one action, which supersedes the preview it matches.
+    for v in [0.3f32, 0.6, 0.9] {
+        engine.process(ViewCommand::PreviewMatteColor(Some((matte_id, [v, v, v]))));
+    }
+    engine.process(DocCommand::SetMatteColor(matte_id, [0.9, 0.9, 0.9]));
+    assert!(
+        images_match(&picking, &engine.render_to_image(), 2),
+        "the committed colour should match what the pick previewed"
+    );
+    engine.process(DocCommand::Undo);
+    assert!(
+        images_match(&black, &engine.render_to_image(), 2),
+        "one undo should take back the whole pick"
+    );
+}
+
+/// A picker dismissed on the colour it opened on is not an edit — but it still has
+/// to commit, because the preview it left standing must be superseded by something.
+/// The refusal that reconciles those two lives in the engine, which is what this
+/// pins (§15.7).
+#[test]
+fn a_frame_colour_pick_that_changes_nothing_logs_nothing() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    add_frame(&mut engine);
+    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let black = engine.render_to_image();
+
+    for v in [0.3f32, 0.6, 0.0] {
+        engine.process(ViewCommand::PreviewMatteColor(Some((matte_id, [v, v, v]))));
+    }
+    engine.process(DocCommand::SetMatteColor(matte_id, BLACK));
+    assert!(
+        images_match(&black, &engine.render_to_image(), 2),
+        "the settled pick should leave the document as it found it, preview and all"
+    );
+
+    // Nothing was logged, so one undo reaches past it to the frame itself.
+    engine.process(DocCommand::Undo);
+    assert!(
+        red_dominant(outside(&engine.render_to_image())),
+        "one undo should remove the frame, so the settled pick logged no step"
     );
 }
 

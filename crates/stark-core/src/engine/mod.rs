@@ -615,7 +615,23 @@ impl Engine {
                 self.commit(ActionKind::SetMatteRect(id, min, max));
             }
             DocCommand::SetMatteColor(id, color) => {
-                self.commit(ActionKind::SetMatteColor(id, color))
+                // Drops the preview whether or not the commit below happens, for the
+                // reason `SetMatteRect` drops it above: a pick that settles on the
+                // colour it opened on must still supersede what it was showing.
+                self.preview.set_doc(None);
+                // Refused when it would change nothing, as `SetLayerOpacity` and
+                // `SetLayerName` are — and asked of the layer's *content*, since a
+                // matte is the only thing that has a colour to compare (§15.2). A
+                // paint layer still commits, which is what it did before: that action
+                // is inert rather than duplicated, and refusing it here would be a
+                // second rule about what a matte is, kept somewhere `apply` cannot see.
+                let unchanged = matches!(
+                    self.document().layer(id).map(|l| &l.content),
+                    Some(LayerContent::Matte { color: current, .. }) if *current == color
+                );
+                if !unchanged {
+                    self.commit(ActionKind::SetMatteColor(id, color));
+                }
             }
             DocCommand::SetBackground(rgb) => {
                 // The committed colour supersedes whatever the drag was previewing,
@@ -762,6 +778,11 @@ impl Engine {
             }
             ViewCommand::PreviewBackground(rgb) => {
                 let preview = rgb.map(|rgb| self.timeline.current().with_background(rgb));
+                self.set_doc_preview(preview);
+            }
+            ViewCommand::PreviewMatteColor(pick) => {
+                let preview =
+                    pick.map(|(id, color)| self.timeline.current().set_matte_color(id, color));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewLayerOpacity(set) => {

@@ -180,6 +180,10 @@ pub fn AddFrameButton() -> Element {
 #[component]
 pub fn FrameBar() -> Element {
     let state = use_context::<AppState>();
+    // The colour being previewed by an open picker, if one is in flight — the pick's
+    // own "there is something to commit". **Before** the early return, because a hook
+    // that runs only when a frame is selected is a hook that runs sometimes.
+    let mut picking = use_signal(|| None::<[f32; 3]>);
     let Some((info, matte)) = selected_frame(state) else {
         return rsx! {};
     };
@@ -261,11 +265,24 @@ pub fn FrameBar() -> Element {
                 r#type: "color",
                 title: "Frame colour",
                 value: "{hex(matte.color)}",
+                // Previewed while the picker is open, committed once when it settles:
+                // the fill is document state, so choosing it must cost one undo step —
+                // and one replicated action — rather than one per colour the pointer
+                // crossed on the way (§15.7). A native colour input reports every one
+                // of those through `input`, and says the pick is over with `change`.
                 oninput: move |e| {
                     if let Some(rgb) = parse_hex(&e.value()) {
-                        dispatch(state, DocCommand::SetMatteColor(info.id, rgb));
+                        picking.set(Some(rgb));
+                        dispatch(state, ViewCommand::PreviewMatteColor(Some((info.id, rgb))));
                     }
                 },
+                // `blur` as well as `change`, for the reason the opacity slider takes
+                // its pointer edges: a picker dismissed on the colour it opened on
+                // sends no `change`, and the preview it left standing has to be
+                // superseded by something. `settle_frame_color` is idempotent, so the
+                // pick that ends properly and then loses focus still commits once.
+                onchange: move |_| settle_frame_color(state, info.id, picking),
+                onblur: move |_| settle_frame_color(state, info.id, picking),
             }
 
             span { class: "bar-sep" }
@@ -278,6 +295,24 @@ pub fn FrameBar() -> Element {
                 {label("Done")}
             }
         }
+    }
+}
+
+/// End a frame-colour pick: commit the colour the previews have been showing, once,
+/// and disarm — the settled half of the bargain the swatch's `oninput` makes (§15.7).
+///
+/// A no-op when nothing is pending, which is what lets the swatch wire it to both of
+/// the events that can end a pick without spending an undo step per event. The commit
+/// supersedes the preview engine-side and a commit to the colour the matte already
+/// holds is refused there, so a picker closed where it opened logs nothing.
+fn settle_frame_color(
+    state: AppState,
+    id: stark_core::LayerId,
+    mut pending: Signal<Option<[f32; 3]>>,
+) {
+    let settled = pending.write().take();
+    if let Some(rgb) = settled {
+        dispatch(state, DocCommand::SetMatteColor(id, rgb));
     }
 }
 

@@ -870,6 +870,18 @@ because a frame drag is handle-relative, not sample-driven: there is no
 frontend's business. What it keeps is the shape that matters — build in view
 state, commit once on release.
 
+**The frame's colour makes the same bargain**, through
+`ViewCommand::PreviewMatteColor` and one `DocCommand::SetMatteColor` when the
+pick settles. It has to: what is being chosen is how the mat board reads against
+the piece inside it, which is a judgement made *by looking*, so every colour the
+pointer crosses has to reach the canvas and only the answer belongs in the log.
+A native colour input reports those through `input` and says the pick is over
+with `change` — and, because a picker dismissed on the colour it opened on sends
+no `change` at all, `blur` settles it too. Both edges run the same idempotent
+settle, and a commit to the colour the matte already holds is refused engine-side
+(§14.6), so the pick that changes nothing logs nothing while still superseding
+what it was showing.
+
 Still to come: snapping while dragging (to content bounds, to other frames, to
 the canvas origin) is most of what makes a crop tool feel good and is cheap;
 frame from selection; ratio-locked dragging.

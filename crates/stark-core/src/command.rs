@@ -380,6 +380,17 @@ pub enum ViewCommand {
     /// so a drag costs one undo step rather than one per pointer move.
     PreviewMatteRect(Option<(LayerId, Vec2, Vec2)>),
 
+    /// Show a matte in `color` (straight sRGB) **without logging it** — the
+    /// in-flight half of a frame-colour pick (§15.7). `None` drops the preview.
+    ///
+    /// The rect's argument, made by the other half of the same control: a colour
+    /// picker reports a value per pointer move while it is open, so the frontend
+    /// previews those and commits one [`DocCommand::SetMatteColor`] when the pick
+    /// settles. What is being chosen here is how a frame reads against the piece
+    /// inside it, which is a judgement made *by looking* — so the picking has to
+    /// show on the canvas, and only the answer belongs in the log.
+    PreviewMatteColor(Option<(LayerId, [f32; 3])>),
+
     /// Show the document as a [`DocCommand::Transform`] would leave it, **without
     /// logging it** — the in-flight half of the transform gesture
     /// (§16.6). `None` drops the preview.
