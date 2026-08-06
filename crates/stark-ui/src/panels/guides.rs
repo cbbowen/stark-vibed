@@ -533,18 +533,21 @@ pub fn PerspectiveGuideBar() -> Element {
                 {icon(icons::LOCK)}
                 {label("Lock")}
             }
-            for i in 0..3 {
-                button {
-                    class: if edit.locked[i] { "chip axis-chip active" } else { "chip axis-chip" },
-                    style: "--axis: {AXIS_CSS[i]}",
-                    title: "Hold the {AXIS_NAMES[i]} axis fixed under the drag",
-                    onclick: move |_| {
-                        let mut mode = state.guide_edit;
-                        if let Some(e) = mode.write().as_mut() {
-                            e.locked[i] = !e.locked[i];
-                        }
-                    },
-                    "{AXIS_NAMES[i]}"
+            div {
+                class: "segmented",
+                for i in 0..3 {
+                    button {
+                        class: if edit.locked[i] { "chip axis-chip active" } else { "chip axis-chip" },
+                        style: "--axis: {AXIS_CSS[i]}",
+                        title: "Hold the {AXIS_NAMES[i]} axis fixed under the drag",
+                        onclick: move |_| {
+                            let mut mode = state.guide_edit;
+                            if let Some(e) = mode.write().as_mut() {
+                                e.locked[i] = !e.locked[i];
+                            }
+                        },
+                        "{AXIS_NAMES[i]}"
+                    }
                 }
             }
             span { class: "bar-sep" }
@@ -554,13 +557,16 @@ pub fn PerspectiveGuideBar() -> Element {
                 {icon(icons::VISIBLE)}
                 {label("Show")}
             }
-            for i in 0..3 {
-                button {
-                    class: if axes[i] { "chip axis-chip active" } else { "chip axis-chip" },
-                    style: "--axis: {AXIS_CSS[i]}",
-                    title: "Show the {AXIS_NAMES[i]} axis's fan of guide lines",
-                    onclick: move |_| update_guide(state, index, move |g| g.axes[i] = !g.axes[i]),
-                    "{AXIS_NAMES[i]}"
+            div {
+                class: "segmented",
+                for i in 0..3 {
+                    button {
+                        class: if axes[i] { "chip axis-chip active" } else { "chip axis-chip" },
+                        style: "--axis: {AXIS_CSS[i]}",
+                        title: "Show the {AXIS_NAMES[i]} axis's fan of guide lines",
+                        onclick: move |_| update_guide(state, index, move |g| g.axes[i] = !g.axes[i]),
+                        "{AXIS_NAMES[i]}"
+                    }
                 }
             }
             span { class: "bar-sep" }
