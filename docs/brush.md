@@ -612,8 +612,11 @@ falls out naturally; and there is no band, column or stamp structure to alias.
   strands nothing.
   **It fires on dedicated slots at the wick's kind of cadence, not on the painting
   segments** (`BLEED_TRAVEL_QUANTUM`, `stroke::dynamics::bleed_fires`): one
-  straight quad per crossing of half a radius of *absolute arc*, whose sweep is
-  the firing's travel window (the chord over the last quantum of path) and whose
+  quad per crossing of half a radius of *absolute arc*, whose sweep is the
+  firing's travel window (the last quantum of path, bent along the crossing
+  segment's own arc — a chord would bow the relaxed band off the paint by
+  `span²·κ/8`, which is under the tip on a lazy curve but not once the pen
+  modulates the radius down and a window is many tip-widths long) and whose
   vertical rates and source are all zero — so its exposure is an ordinary,
   well-conditioned prefix difference, and the painting segments carry
   `λ_bleed = 0` and take the no-bleed path bit-for-bit. Per-segment firing is

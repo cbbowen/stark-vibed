@@ -121,8 +121,10 @@ const _: () = assert!(
 /// Keyed on **absolute arc length**, exactly like the wick's crossings, so the
 /// firings — and the windows they sweep — are a pure function of the record,
 /// independent of how the path was cut (§6.2, live == committed). Each firing is a
-/// dedicated **bleed slot** in the dispatch plan (`dynamics::bleed_fires`): a
-/// straight quad whose sweep *is* the window, so its exposure is an ordinary,
+/// dedicated **bleed slot** in the dispatch plan (`dynamics::bleed_fires`): a quad
+/// whose sweep *is* the window — bent along the path it stands for, since half a
+/// radius of travel is many tip-widths of it once the pen modulates the radius
+/// down — so its exposure is an ordinary,
 /// well-conditioned prefix difference over half a radius of travel, and one firing
 /// moves the paint 176 micro-segments would have tried to move — in one step that
 /// sits far above the f16 noise floor. The painting segments themselves carry

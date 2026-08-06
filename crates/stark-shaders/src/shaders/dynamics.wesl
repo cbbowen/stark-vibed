@@ -1184,10 +1184,12 @@ fn exchange(
 // prefix difference over 3e-4 radii — cancellation noise, whose arbitrary sign
 // draws crescents of misclassified texels through the footprint. So the host emits
 // one **bleed slot** per crossing of `BLEED_TRAVEL_QUANTUM` of absolute arc
-// (`stroke::dynamics::dynamics_plan`): a straight quad whose sweep IS the firing's travel
-// window — the chord over the last quantum of path — with every vertical rate and
-// the source zeroed, and λ_bleed alone nonzero. This dispatch then needs nothing
-// special: the slot's own `dpre`, over half a radius of travel, is the window's
+// (`stroke::dynamics::dynamics_plan`): a quad whose sweep IS the firing's travel
+// window — the last quantum of path, carrying the crossing segment's own curvature
+// so the relaxed band follows the paint rather than cutting the corner off it — with
+// every vertical rate and the source zeroed, and λ_bleed alone nonzero. This dispatch
+// then needs nothing special: it sweeps an arc the way every painting segment does
+// (`sweep_at`), and the slot's own `dpre`, over half a radius of travel, is the window's
 // exposure and is numerically healthy; participation, pairing and the no-flux wall
 // all sit at the window-sweep's rim, where the weight fades to zero smoothly.
 // Keyed on absolute arc, the cadence is a pure function of the record, so every

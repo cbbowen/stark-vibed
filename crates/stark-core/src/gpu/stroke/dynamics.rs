@@ -104,8 +104,8 @@ enum SlotKind {
     /// wick keeps its own cadence, so a segment shorter than the quantum often skips
     /// it entirely and a long one pays for several.
     Segment { wick_steps: u32 },
-    /// A dedicated **bleed slot**: a straight quad whose sweep is one firing of the
-    /// bleed cadence's travel window, with every vertical rate and the source zeroed.
+    /// A dedicated **bleed slot**: a quad whose sweep is one firing of the bleed
+    /// cadence's travel window, with every vertical rate and the source zeroed.
     /// Dispatched as `snapshot` + `deposit` alone — the tool plays no part, so there
     /// is nothing to wick, bake or exchange, and the reservoir ping-pong is left
     /// exactly where the previous segment put it.
@@ -1422,16 +1422,18 @@ fn dynamics_plan(
         });
 
         // The bleed slots that fire at this segment's end (§6.2, `bleed_fires`):
-        // a straight quad whose sweep is the firing's travel window, with every
-        // vertical rate and the source zeroed — the dispatch is the identity
-        // everywhere except the lateral flux. The noise lanes are zeroed too, so
-        // the deposit skips its colour-jitter taps; `mid` is filled for form, since
-        // no exchange ever reads this slot.
+        // a quad whose sweep is the firing's travel window, with every vertical rate
+        // and the source zeroed — the dispatch is the identity everywhere except the
+        // lateral flux. The noise lanes are zeroed too, so the deposit skips its
+        // colour-jitter taps; `mid` is filled for form, since no exchange ever reads
+        // this slot.
         while let Some((_, fire)) = pending.next_if(|(after, _)| *after == si) {
             let p = fire.start - region_origin;
             let (clo, chi) = coverage_bounds(fire);
             let rect = ctx.rect(clo, chi);
-            let mid = fire.start + fire.dir * (fire.length * 0.5) - region_origin;
+            let (mid_p, _) =
+                crate::path::arc_at(fire.start, fire.dir, fire.curvature, fire.length * 0.5);
+            let mid = mid_p - region_origin;
             plan.push(LoopDispatch {
                 groups: rect.groups,
                 kind: SlotKind::Bleed,
@@ -1443,10 +1445,11 @@ fn dynamics_plan(
                     c: common.k.channels,
                     // No drain: nothing is laid, so nothing runs dry.
                     d: [rect.origin.x, rect.origin.y, fire.orient, 0.0],
-                    // No `add` — the slot is not a stretch of painting — and no
-                    // curvature, since the window is a straight chord. `mid` is filled
-                    // for form: no exchange ever reads this slot.
-                    e: [0.0, 0.0, mid.x, mid.y],
+                    // No `add` — the slot is not a stretch of painting — but the
+                    // window's own curvature, so the relaxed band follows the paint
+                    // rather than cutting the corner off it (`bleed_fires`). `mid` is
+                    // filled for form: no exchange ever reads this slot.
+                    e: [0.0, fire.curvature, mid.x, mid.y],
                     // The colour jitter is zeroed rather than shared, so the deposit
                     // skips its noise taps entirely.
                     f: [0.0; 4],
@@ -1528,9 +1531,9 @@ fn dynamics_plan(
 
 /// The bleed cadence (§6.2): one dedicated **bleed slot** per crossing of
 /// [`BLEED_TRAVEL_QUANTUM`] of absolute arc, as `(after, window)` pairs — the index
-/// of the piece segment the firing follows, and a straight synthetic segment whose
-/// sweep is the firing's travel window (the chord over the last quantum of path,
-/// ending where the crossing segment ends).
+/// of the piece segment the firing follows, and a synthetic segment whose sweep is
+/// the firing's travel window: the last quantum of path, ending where the crossing
+/// segment ends, and bending the way that segment bends.
 ///
 /// Counted off the **absolute** arc exactly as the wick's crossings are, and for
 /// the same reason: the firings, and the windows they sweep, are then a pure
@@ -1542,12 +1545,12 @@ fn dynamics_plan(
 /// the heights they edit — measured as a 20-level directional ghost on a 177-knot
 /// repro. A half-radius window has neither problem.
 ///
-/// The chord stands in for up to a quantum of curved travel — sagitta-class error,
-/// bounded by [`MAX_TIP_TURN`](super::MAX_TIP_TURN) like every other straightening
-/// in the loop. Its start is walked **back along the crossing segment's own arc**
-/// rather than looked up among the segments in hand, so a window is never truncated
-/// by where the range being drawn happens to begin — see the note at the walk itself
-/// for what that truncation cost.
+/// The window is an **arc**, not the chord across one: it stands in for a whole
+/// cadence of curved travel, which at a modulated-down radius is many tip-widths of
+/// it. Its start is walked **back along the crossing segment's own arc** rather than
+/// looked up among the segments in hand, so a window is never truncated by where the
+/// range being drawn happens to begin — see the note at the walk itself for what that
+/// truncation cost.
 fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
     let mut fires = Vec::new();
     // The brush's own axis, so *which* windows fire stays a function of the geometry
@@ -1565,6 +1568,9 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
         }
         // The window's travel, and where on the path it began.
         let span = crossings * bq;
+        if span <= 1e-3 {
+            continue; // a stationary hand: nothing swept, nothing to relax
+        }
         let start_arc = s.dist + s.length - span;
         let (end, end_dir) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
         // Walked **back along the crossing segment's own arc**, rather than looked up
@@ -1581,25 +1587,40 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
         // repainted, and it was visible: a bleeding stroke lightened when the pointer
         // came up.
         //
-        // What it costs is extrapolating one segment's curvature over up to a quantum
-        // — half a radius — where the old form used the true path. Sagitta-class, the
-        // same straightening the window already was (it is a chord either way), and
-        // smaller than that chord's own error over the same span since this one at
-        // least bends.
-        let start = crate::path::arc_at(end, end_dir * -1.0, -s.curvature, span).0;
-        let chord = end - start;
-        let len = chord.length();
-        if len <= 1e-3 {
-            continue; // a stationary hand: nothing swept, nothing to relax
-        }
+        // What it costs is extrapolating one segment's curvature over the window,
+        // where the old form used the true path — the same bend for the whole span
+        // rather than each segment's own. Bounded by
+        // [`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN), which caps how far the tip's
+        // curvature may move at all, and the window is the arc that extrapolation
+        // describes rather than a chord across it, so nothing else is given up on top.
+        let (start, back_dir) = crate::path::arc_at(end, end_dir * -1.0, -s.curvature, span);
         fires.push((
             i,
             Segment {
                 start,
-                dir: chord / len,
-                curvature: 0.0,
+                // The reversed walk arrives pointing back the way it came, so the
+                // window's own heading is its negation — the tangent the path had at
+                // `start`, which is where the arc below is measured from.
+                dir: back_dir * -1.0,
+                // **The window bends with the path it stands for.** Its two endpoints
+                // were always on the arc; carrying the curvature is what puts the
+                // sweep between them there too. A chord left the relaxed band bowed
+                // `span²·κ/8` off the paint — nothing against a brush at full size,
+                // but the flattener prices a segment off the brush's *nominal* radius
+                // while the cadence and the footprint are the modulated one, so a pen
+                // thinning a big brush through a curve makes that bow a real fraction
+                // of the tip actually painting, and the diffusion relaxes texels the
+                // stroke is not on. Nothing downstream needs telling: `coverage_bounds`
+                // already grows a box by the sagitta, and `deposit` sweeps an arc for
+                // every painting segment by unrolling the annulus
+                // (`stamp_common::sweep_at`) — a bleed slot just takes the same path.
+                // The unroll's own error is `radius·|curvature|/2`, which the window
+                // inherits from the crossing segment and the flattener has capped
+                // ([`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN)).
+                curvature: s.curvature,
                 radius: s.radius,
-                length: len,
+                // Arc length, which is what `sweep_at` measures travel in.
+                length: span,
                 orient: s.orient,
                 dist: start_arc,
                 // The window inherits the crossing segment's rates: it is that
@@ -2189,6 +2210,64 @@ mod tests {
             assert_eq!(
                 split, whole,
                 "cutting after segment {cut} changed the firings"
+            );
+        }
+    }
+
+    /// A firing's window follows the path it stands for, rather than cutting the
+    /// corner off it.
+    ///
+    /// The window is a whole cadence of travel long, and the two lengths it is
+    /// measured against come from different places: the flattener prices a segment
+    /// off the brush's *nominal* radius, while the cadence and the footprint are the
+    /// **modulated** one. So a pen that thins a big brush through a curve produces
+    /// windows many tip-widths long, and the `span²·κ/8` a chord bows off the arc —
+    /// invisible against the brush at full size — becomes a real fraction of the tip
+    /// actually painting. Bleed is lateral diffusion of the paint under the tip; a
+    /// band offset from that paint relaxes the wrong texels.
+    #[test]
+    fn a_firing_bends_the_way_the_path_it_stands_for_bends() {
+        use super::super::budget::MAX_TIP_TURN;
+        // A 40 px brush at the tightest arc the flattener will sweep it along, its
+        // size modulated down to a 3 px tip — and segments at the travel cap, which
+        // is priced off the 40 rather than the 3.
+        let (nominal, tip, len) = (40.0f32, 3.0f32, 40.0f32);
+        let kappa = MAX_TIP_TURN / nominal;
+        let r = 1.0 / kappa;
+        let centre = Vec2::new(0.0, r);
+
+        let mut segs = Vec::new();
+        let (mut p, mut d, mut dist) = (Vec2::ZERO, Vec2::new(1.0, 0.0), 0.0);
+        for _ in 0..20 {
+            let mut s = seg(p, d, len, tip, dist);
+            s.curvature = kappa;
+            segs.push(s);
+            (p, d) = crate::path::arc_at(p, d, kappa, len);
+            dist += len;
+        }
+
+        let fires = bleed_fires(0.4, &segs);
+        assert!(fires.len() > 5, "only {} firings", fires.len());
+        for (_, f) in &fires {
+            // Every point of the window sits on the circle the path traced — not just
+            // its two ends, which the walk back along the crossing segment's own arc
+            // already put there.
+            for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let on = crate::path::arc_at(f.start, f.dir, f.curvature, f.length * t).0;
+                assert!(
+                    ((on - centre).length() - r).abs() < 1e-2,
+                    "the window left the path {} px at t = {t}",
+                    (on - centre).length() - r,
+                );
+            }
+            // And the chord this used to be really does miss, by enough to matter
+            // against the 3 px tip doing the painting — so the assertion above is not
+            // passing on a case too flat to tell.
+            let end = crate::path::arc_at(f.start, f.dir, f.curvature, f.length).0;
+            let bow = r - ((f.start + end) * 0.5 - centre).length();
+            assert!(
+                bow > 0.1 * tip,
+                "the case does not bow enough to be interesting: {bow} px",
             );
         }
     }
