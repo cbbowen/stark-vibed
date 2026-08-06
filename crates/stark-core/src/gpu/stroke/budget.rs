@@ -13,6 +13,7 @@
 //! is what lets the segment-budget tests pin it exactly (`segments::tests`).
 
 use crate::document::{BrushDynamics, BrushParams};
+use stark_shaders::mirror::dynamics as wick;
 
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
 /// ceiling `assets::build_prefix_tau` clamps to.
@@ -71,8 +72,8 @@ const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// **The wick keeps a cadence of its own, decoupled from the segment cadence** — why
 /// the reach it replaced was badly conditioned, and why the stencil is separable, are
 /// in §6.2. The value is not a tolerance: it is the travel one pass of that stencil
-/// carries, so **it must track `dynamics.wesl`'s `WICK_HALF / WICK_RATE`**, which is
-/// 2/4. (`the_host_and_the_shader_agree_on_the_loops_constants` asserts the pair.)
+/// carries, so **it must track `dynamics.wesl`'s `WICK_HALF / WICK_RATE`** — which the
+/// assertion below now states to the compiler rather than to the reader.
 ///
 /// Because variance adds under composition, a stroke gets the same total smoothing
 /// whatever the segmentation and whatever the quantum — widening the kernel and firing
@@ -88,6 +89,20 @@ const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// [`RESERVOIR_EXCHANGE_STEP`] was tightened *away* from, so buying it back to save a
 /// wick dispatch is the wrong trade.
 pub(super) const WICK_TRAVEL_QUANTUM: f32 = 0.5;
+
+/// The wick's cadence is the shader's stencil, divided by its rate.
+///
+/// A stencil widened on one side without moving the cadence on the other smooths by
+/// the wrong amount per unit travel: it does not crash, it renders subtly wrong. This
+/// used to be a runtime test that could only reach `WICK_HALF`, because `WICK_RATE`
+/// survives in the shader only as prose — it computes with the baked `WICK_KERNEL` —
+/// and the linker strips what no entry point reaches. Both are generated from the
+/// *unlinked* source now (§6.10), so all three numbers are real and the relation is
+/// checked where it is declared.
+const _: () = assert!(
+    WICK_TRAVEL_QUANTUM * wick::WICK_RATE == wick::WICK_HALF as f32,
+    "the wick's travel quantum and `dynamics.wesl`'s stencil have diverged — the \n     smoothing per unit travel moved with one of them",
+);
 /// How much travel (in radii) the `bleed` stencil carries per firing (§6.2) — the
 /// same cadence pattern as [`WICK_TRAVEL_QUANTUM`], and adopted for the same reason
 /// the wick has one: **the cadence carries the step, so the segmentation cannot.**

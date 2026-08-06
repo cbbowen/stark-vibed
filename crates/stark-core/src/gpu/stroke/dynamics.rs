@@ -34,12 +34,11 @@ use super::{
 /// for smeared paint, and small enough that the per-stamp reservoir update is
 /// nearly free.
 const BRUSH_RES: u32 = 64;
-/// Resolution of the per-segment **swept prefix** of the reservoir
-/// (`dynamics.wesl::bake`). Finer than the reservoir along the travel axis, since
-/// it also has to resolve the footprint's optical-depth density it integrates
-/// against; the bake is a one-workgroup-per-row shared-memory scan, so this costs
-/// almost nothing. Must match the shader's own `BAKE_RES` (its workgroup width).
-const BAKE_RES: u32 = 128;
+// Resolution of the per-segment **swept prefix** of the reservoir
+// (`dynamics.wesl::bake`), and the workgroup width of the scan that builds it —
+// generated from the shader, which is the side that decides it (§6.10). A mismatch
+// scanned the wrong width and rendered subtly wrong without crashing.
+use stark_shaders::mirror::dynamics::BAKE_RES;
 /// fp32, for the same reason the prefix-τ volume is: every fragment reads it as a
 /// *difference* of two prefix sums (§6.2).
 const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
@@ -2355,44 +2354,13 @@ mod tests {
         }
     }
 
-    // --- the host and the shader agree -------------------------------------
-
-    use crate::gpu::wesl::wesl_const;
-
-    /// Two numbers the host and `dynamics.wesl` **must** agree on, asserted rather than
-    /// asked for in a comment.
-    ///
-    /// Both fail silently if broken: a mismatched `BAKE_RES` scans the wrong width, and
-    /// a stencil widened without moving the host's cadence smooths by the wrong amount
-    /// per unit travel. Neither crashes; both just render subtly wrong. Reading them
-    /// out of the shader costs nothing and needs no adapter, so this holds in CI
-    /// whether or not there is a GPU.
-    ///
-    /// `WICK_RATE` — the other half of the quantum's derivation — cannot be read: the
-    /// WESL linker drops constants that survive only in prose, and the shader computes
-    /// with `WICK_KERNEL` rather than with the rate. So the 4 below is the one number
-    /// still trusted across the boundary, and it is written on both sides
-    /// (`WICK_TRAVEL_QUANTUM`, and `dynamics.wesl`'s `WICK_RATE`). What the assertion
-    /// does catch is the realistic change: widening the stencil.
-    #[test]
-    fn the_host_and_the_shader_agree_on_the_loops_constants() {
-        let src = stark_shaders::dynamics();
-
-        assert_eq!(
-            f64::from(BAKE_RES),
-            wesl_const(src, "BAKE_RES"),
-            "the bake's scan width and the bake textures' side have diverged",
-        );
-
-        const WICK_RATE: f64 = 4.0;
-        let half = wesl_const(src, "WICK_HALF");
-        assert_eq!(
-            f64::from(WICK_TRAVEL_QUANTUM) * WICK_RATE,
-            half,
-            "the wick fires every {WICK_TRAVEL_QUANTUM} radii but its stencil is now \
-             {half} wide — the smoothing per unit travel moved with it",
-        );
-    }
+    // `the_host_and_the_shader_agree_on_the_loops_constants` stood here, reading
+    // `BAKE_RES` and `WICK_HALF` out of the linked shader. Both are generated now, so
+    // there is one declaration of each; the wick's cadence relation moved to a
+    // compile-time assertion beside `WICK_TRAVEL_QUANTUM` (`budget.rs`), which is
+    // where it constrains something. `WICK_RATE` — which this test noted it could not
+    // read, the linker having stripped a constant that survives only in prose — is
+    // read from the unlinked source and is part of that assertion.
 
     // `the_stamp_struct_has_the_same_nine_lanes_on_both_sides` stood here, counting
     // `vec4<f32>` in the shader source and comparing against [`SLOT`]. There is no

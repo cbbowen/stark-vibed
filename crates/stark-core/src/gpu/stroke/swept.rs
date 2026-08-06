@@ -15,12 +15,22 @@ use super::{
     ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE,
 };
 
-/// Vertices in one segment's swept geometry: a triangle strip of two rims across
-/// `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc
-/// rather than a chord (§6.2). Must match `SWEEP_VERTS` in
-/// `stamp_common.wesl`, which is where the strip is actually built — asking for fewer
-/// would clip the sweep short, more would fold the strip back over itself.
-const SWEEP_VERTS: u32 = 18;
+// Vertices in one segment's swept geometry: a triangle strip of two rims across
+// `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc rather
+// than a chord (§6.2). Generated from `stamp_common.wesl`, which is where the strip is
+// actually built — asking for fewer would clip the sweep short, more would fold the
+// strip back over itself.
+use stark_shaders::mirror::stamp_common::{SWEEP_SLICES, SWEEP_VERTS};
+
+/// The draw call and the strip agree on the vertex count.
+///
+/// Both numbers are the shader's now, so this is the shader's own invariant rather
+/// than a boundary check — and it holds at compile time, where the runtime test that
+/// scraped `SWEEP_SLICES` out of the linked source used to.
+const _: () = assert!(
+    SWEEP_VERTS == 2 * (SWEEP_SLICES + 1),
+    "the sweep strip's slice count and its vertex count have diverged",
+);
 
 // The per-tile uniform, generated from `stamp_common.wesl`'s own declaration
 // (§6.7): the tile *texture's* top-left in canvas px + canvas→NDC scale, plus the
@@ -270,31 +280,8 @@ impl StrokeRenderer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::gpu::wesl::wesl_const;
-
-    /// The draw call and the strip it draws agree on how many vertices there are.
-    ///
-    /// Asking for fewer clips the sweep short; asking for more folds the strip back
-    /// over itself. Neither is a validation error — both just render, wrongly, and
-    /// only at the segment lengths that happen to expose the missing or doubled
-    /// slice.
-    ///
-    /// Checked through `SWEEP_SLICES` rather than the shader's own `SWEEP_VERTS`,
-    /// because that constant is exactly the case [`wesl_const`] warns about: the
-    /// shader states it for the host's benefit and never computes with it, so the
-    /// linker strips it. `SWEEP_SLICES` is what `sweep_vertex` actually indexes by,
-    /// and the strip's vertex count is two rims across `slices + 1` cross-sections.
-    #[test]
-    fn the_draw_call_and_the_strip_agree_on_the_vertex_count() {
-        let slices = wesl_const(stark_shaders::stamp(), "SWEEP_SLICES");
-        assert_eq!(
-            f64::from(SWEEP_VERTS),
-            2.0 * (slices + 1.0),
-            "the sweep strip is now {slices} slices, so the draw call asks for the \
-             wrong number of vertices",
-        );
-    }
-}
+// `the_draw_call_and_the_strip_agree_on_the_vertex_count` stood here. It had to check
+// through `SWEEP_SLICES` rather than the shader's own `SWEEP_VERTS`, because the
+// shader states that one for the host's benefit and never computes with it — so the
+// linker stripped it and the check could not see it. Reading the *unlinked* source
+// retires that limitation, and the assertion above holds at compile time.

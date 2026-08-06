@@ -26,7 +26,6 @@ pub(crate) mod stroke;
 pub(crate) mod surface;
 pub(crate) mod tile;
 pub(crate) mod transform;
-mod wesl;
 
 pub use composite::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, GroupContent,

@@ -40,6 +40,27 @@ const MIRRORS: &[(&[&str], &str)] = &[
     (&["transform"], "Quad"),
 ];
 
+/// The WESL constants the host also computes with, generated rather than
+/// transcribed (`build/mirror.rs`).
+///
+/// The other half of the same problem the mirrors solve, and the worse-behaved half:
+/// a struct that disagrees is usually a wgpu validation error, while a constant that
+/// disagrees leaves both sides rendering perfectly plausible pixels that no longer
+/// add up. The tooth's three are the sharpest case — the CPU averages the gate over
+/// the ground's rise distribution for the *tool's* half of a transfer and the shader
+/// evaluates it per texel for the *canvas* half, so drift is a conservation leak
+/// proportional to how far they moved (§6.4).
+const CONSTS: &[(&str, &str)] = &[
+    ("dynamics", "BAKE_RES"),
+    ("dynamics", "WICK_HALF"),
+    ("dynamics", "WICK_RATE"),
+    ("lib/paint_common", "RISE_LIMIT"),
+    ("lib/paint_common", "TOOTH_RISE"),
+    ("lib/paint_common", "TOOTH_SOFTNESS"),
+    ("stamp_common", "SWEEP_SLICES"),
+    ("stamp_common", "SWEEP_VERTS"),
+];
+
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
 const MIXBOX_GLSL: &str = "../../vendor/mixbox/shaders/mixbox.glsl";
@@ -63,7 +84,12 @@ fn main() {
     // once per artifact that reaches it, and has already stripped whatever no entry
     // point uses — none of which the declaration in the tree has done.
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
-    mirror::generate(Path::new(SHADER_DIR), &out_dir.join("mirror.rs"), MIRRORS);
+    mirror::generate(
+        Path::new(SHADER_DIR),
+        &out_dir.join("mirror.rs"),
+        MIRRORS,
+        CONSTS,
+    );
 
     // Generated modules resolve out of `OUT_DIR`; everything else out of the tree.
     //

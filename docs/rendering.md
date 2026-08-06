@@ -649,6 +649,44 @@ that abuts each member.
    crate now, and Rust allows no inherent impl on it. `ViewUniform::new` →
    `view_uniform`, `GuideUniform::pack` → `pack_guides`.
 
+### Adding a constant
+
+Add `("<wesl module>", "<NAME>")` to `CONSTS` and delete the host's copy. The path
+may reach into `lib/` (`("lib/paint_common", "TOOTH_RISE")`); the generated Rust
+module is named for the file, since `lib` is a placement rule — binding-free leaves
+— rather than a namespace.
+
+A constant that disagrees is worse-behaved than a struct that does. A struct
+usually surfaces as a wgpu validation error; a constant leaves both sides rendering
+perfectly plausible pixels that no longer add up. The tooth's three are the sharpest
+case — the CPU averages the gate over the ground's rise distribution for the
+*tool's* half of a transfer while the shader evaluates it per texel for the
+*canvas* half, so drift is a conservation leak proportional to how far they moved
+(§6.4).
+
+Values are **evaluated, not scraped**. The generator runs `wesl`'s const evaluator
+over the initializer and converts the result to the declared type, so a derived
+constant is the number the shader will actually compute with, and an abstract
+literal (`2`, `4.0`) becomes the concrete type the shader gives it rather than
+whichever one it looked like. An explicit type is required — WGSL's abstract
+numerics have no single honest Rust counterpart, and guessing is how a host
+constant ends up a different type from the shader's.
+
+Where two generated constants stand in a **relation** rather than mirroring each
+other, assert it where it constrains something:
+
+```rust
+const _: () = assert!(SWEEP_VERTS == 2 * (SWEEP_SLICES + 1), "…");
+const _: () = assert!(WICK_TRAVEL_QUANTUM * WICK_RATE == WICK_HALF as f32, "…");
+```
+
+Both were runtime tests reading the *linked* shader, and both were limited by it.
+The first had to check through `SWEEP_SLICES` because the shader states
+`SWEEP_VERTS` for the host's benefit and never computes with it, so the linker
+stripped it. The second could not read `WICK_RATE` at all, for the same reason —
+the shader computes with the baked `WICK_KERNEL`. Reading unlinked sources retires
+that whole class, and the checks moved from `cargo test` to `cargo build`.
+
 ### Why it is trustworthy
 
 **The layout is the point, and it is not the layout `#[repr(C)]` would give.** WGSL
@@ -684,21 +722,16 @@ those stay hand-written in `gpu/desc.rs`, where the call sites are more legible
 than generated ones. The same goes for entry-point names and vertex attribute
 formats. Generation is aimed at the **silent** half of the boundary.
 
-Two pieces of that half are still open:
+One piece of that half is still open. **Vertex instance structs** (`TileInstance`,
+`MaskInstance`, `SegmentInstance`, …) are not WESL structs at all — they are
+`@location` parameters on the vertex entry point, so a struct-based generator
+cannot see them. Reading the entry point's parameter list is the extension that
+would, and it is the last transcription on this boundary.
 
-- **Vertex instance structs** (`TileInstance`, `MaskInstance`, `SegmentInstance`,
-  …) are not WESL structs at all — they are `@location` parameters on the vertex
-  entry point, so a struct-based generator cannot see them. Reading the entry
-  point's parameter list is the extension that would.
-- **Constants** are still transcribed, checked by `wesl_const` (`gpu/wesl.rs`)
-  against the *linked* artifact, with the four limits documented there — stripping,
-  reachability, `f64` widening, mangling. Generating them from the same AST would
-  retire all four: `use_stripping(false)` / `keep_declarations` keeps a constant
-  that survives only in prose, and `wesl`'s const evaluator computes a derived one
-  like `WICK_HALF` that a literal parse cannot.
-
-`mirrors_wesl!` — which pinned a hand-written struct's size against a number
-written beside it — is gone rather than improved. There is no second declaration
-left for it to check.
+`gpu/wesl.rs` is gone entirely, both of its halves with it. `mirrors_wesl!` pinned
+a hand-written struct's size against a number written beside it; `wesl_const`
+scraped a decimal literal out of the linked artifact, carrying four documented
+limits — stripping, reachability, `f64` widening, and name mangling. Neither was
+improved, because there is no second declaration left for either to check.
 
 

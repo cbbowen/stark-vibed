@@ -34,7 +34,7 @@ use std::path::Path;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::eval::{Context, Type, ty_eval_ty};
+use wesl::eval::{Context, Convert, Eval, Instance, LiteralInstance, Type, ty_eval_ty};
 use wesl::syntax::{GlobalDeclaration, Struct, TranslationUnit};
 
 /// Generate mirrors for `wanted` into `dest`.
@@ -52,28 +52,44 @@ use wesl::syntax::{GlobalDeclaration, Struct, TranslationUnit};
 /// An explicit list rather than "every struct reachable from a binding", which is the
 /// rule this should end at: entries are added as each hand-written mirror is retired,
 /// so nothing is generated that nothing uses.
-pub fn generate(shader_dir: &Path, dest: &Path, wanted: &[(&[&str], &str)]) {
-    // Grouped by the module a struct is emitted under, in first-seen order.
+pub fn generate(
+    shader_dir: &Path,
+    dest: &Path,
+    wanted: &[(&[&str], &str)],
+    consts: &[(&str, &str)],
+) {
+    // Grouped by the module a declaration is emitted under, in first-seen order.
     // `Params` is declared in both `selection.wesl` and `slice.wesl` with *different*
     // members, so the WESL module has to be part of the Rust path.
-    let mut modules: Vec<(&str, TokenStream)> = Vec::new();
+    let mut modules: Vec<(String, TokenStream)> = Vec::new();
+    let mut push = |module: &str, item: TokenStream| {
+        // A module under `lib/` is named for its file, not its path: `lib` holds the
+        // binding-free leaves and is a placement rule rather than a namespace. Two
+        // shaders with the same file name in different directories would collide, so
+        // the assertion below refuses rather than silently merging them.
+        let rust = module.rsplit('/').next().expect("a module has a name");
+        match modules.iter_mut().find(|(m, _)| m == rust) {
+            Some((_, items)) => items.extend(item),
+            None => modules.push((rust.to_string(), item)),
+        }
+    };
+    let read = |module: &str| {
+        let path = shader_dir.join(format!("{module}.wesl"));
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        // The *unlinked* source. The linker mangles `Stamp` to
+        // `package__1dynamics_Stamp`, emits it once per artifact that reaches it, and
+        // strips whatever no entry point uses — the reason the check this replaces
+        // could not see `WICK_RATE` at all. And it drops the comments that are half of
+        // what is being generated here.
+        let tu: TranslationUnit = src
+            .parse()
+            .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()));
+        (src, tu)
+    };
 
     for (sources, name) in wanted {
         let (canonical, others) = sources.split_first().expect("a mirror names a module");
-        let read = |module: &str| {
-            let path = shader_dir.join(format!("{module}.wesl"));
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-            // The *unlinked* source. The linker mangles `Stamp` to
-            // `package__1dynamics_Stamp`, emits it once per artifact that reaches it,
-            // strips whatever no entry point uses — and it drops the comments that are
-            // half of what is being generated here.
-            let tu: TranslationUnit = src
-                .parse()
-                .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()));
-            (src, tu)
-        };
-
         let (src, tu) = read(canonical);
         let laid = lay_out(find(&tu, canonical, name), &src, canonical, &tu);
 
@@ -82,17 +98,17 @@ pub fn generate(shader_dir: &Path, dest: &Path, wanted: &[(&[&str], &str)]) {
             let o_laid = lay_out(find(&o_tu, other, name), &o_src, other, &o_tu);
             agrees(name, canonical, &laid, other, &o_laid);
         }
+        push(canonical, emit(name, sources, &laid));
+    }
 
-        let item = emit(name, sources, &laid);
-        match modules.iter_mut().find(|(m, _)| m == canonical) {
-            Some((_, items)) => items.extend(item),
-            None => modules.push((canonical, item)),
-        }
+    for (module, name) in consts {
+        let (src, tu) = read(module);
+        push(module, emit_const(&tu, &src, module, name));
     }
 
     let items = modules.iter().map(|(module, items)| {
         let ident = format_ident!("{module}");
-        let doc = format!(" Host mirrors of the structs declared in `{module}.wesl`.");
+        let doc = format!(" Host mirrors of what `{module}.wesl` declares.");
         quote! {
             #[doc = #doc]
             pub mod #ident {
@@ -107,6 +123,99 @@ pub fn generate(shader_dir: &Path, dest: &Path, wanted: &[(&[&str], &str)]) {
         prettyplease::unparse(&file),
     );
     std::fs::write(dest, text).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
+/// Emit `const NAME` from `module` as a Rust constant of the same type and value.
+///
+/// **Evaluated, not read.** The value is whatever `wesl`'s const evaluator makes of
+/// the initializer, so a constant derived from its neighbours — `WICK_HALF` from a
+/// rate and a quantum — comes out as the number the shader will actually compute
+/// with. The check this replaces parsed a decimal literal out of the *linked* source
+/// and could do neither: a derived constant is not a literal, and the linker had
+/// already stripped anything no entry point reached.
+fn emit_const(tu: &TranslationUnit, src: &str, module: &str, name: &str) -> TokenStream {
+    let decl = tu
+        .global_declarations
+        .iter()
+        .find_map(|d| match &**d {
+            GlobalDeclaration::Declaration(decl)
+                if decl.kind.is_const() && decl.ident.name().as_str() == name =>
+            {
+                Some((decl, d.span().range()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{module}.wesl` declares no `const {name}`"));
+    let (decl, span) = decl;
+
+    let init = decl
+        .initializer
+        .as_ref()
+        .unwrap_or_else(|| panic!("`{module}.wesl`'s `const {name}` has no value"));
+    let mut ctx = Context::new(tu);
+    let value = init
+        .eval_value(&mut ctx)
+        .unwrap_or_else(|e| panic!("`{module}.wesl`'s `const {name}` does not evaluate: {e}"));
+
+    // An explicit type is required rather than inferred from the value. WGSL's
+    // *abstract* numerics have no Rust counterpart to pick — `const N = 4` could
+    // honestly become an `i32`, a `u32` or an `f32` — and guessing is how a host
+    // constant ends up a different type from the one the shader computes with.
+    let declared = decl.ty.as_ref().unwrap_or_else(|| {
+        panic!(
+            "`{module}.wesl`'s `const {name}` has no declared type, so there is no \
+             Rust type to generate. Write one (`const {name}: f32 = …`)."
+        )
+    });
+    let ty = ty_eval_ty(declared, &mut ctx)
+        .unwrap_or_else(|e| panic!("`{module}.wesl`'s `const {name}` has no type: {e}"));
+
+    // `2` evaluates to an *abstract* int, and `4.0` to an abstract float — WGSL
+    // defers the choice of a concrete type to the declaration. Converting to the
+    // declared type is what the shader itself does, and doing it here is why the
+    // generated constant is the type the shader computes with rather than whichever
+    // one the literal happened to look like.
+    let value = value.convert_to(&ty).unwrap_or_else(|| {
+        panic!("`{module}.wesl`'s `const {name}` is a `{value}`, which is not a `{ty}`")
+    });
+    let Instance::Literal(lit) = &value else {
+        panic!(
+            "`{module}.wesl`'s `const {name}` is not a scalar, which is all a host constant can be"
+        )
+    };
+    let (rust, literal) = match (&ty, lit) {
+        (Type::F32, LiteralInstance::F32(v)) => {
+            assert!(
+                v.is_finite(),
+                "`{module}.wesl`'s `const {name}` is {v}, which no Rust literal spells"
+            );
+            // `{:?}` on an `f32` prints the shortest decimal that reads back to the
+            // same bits, so the generated literal *is* this value — which is the whole
+            // difficulty the check this replaces documented, having compared the
+            // host's rounded `0.06f32` against the source's exact decimal as `f64`.
+            (quote!(f32), format!("{v:?}"))
+        }
+        (Type::U32, LiteralInstance::U32(v)) => (quote!(u32), format!("{v}")),
+        (Type::I32, LiteralInstance::I32(v)) => (quote!(i32), format!("{v}")),
+        (Type::Bool, LiteralInstance::Bool(v)) => (quote!(bool), format!("{v}")),
+        _ => panic!(
+            "`{module}.wesl`'s `const {name}` is a `{ty}` holding `{value}`, which has \
+             no host constant. Scalars only."
+        ),
+    };
+    let literal: TokenStream = literal.parse().expect("a scalar literal is one token");
+
+    let ident = format_ident!("{name}");
+    let mut docs = doc_lines(&src[..span.start]);
+    docs.push(String::new());
+    docs.push(format!(
+        " Generated from `{module}.wesl`'s `const {name}` — the shader's declaration is",
+    ));
+    docs.push(" the only one.".to_string());
+    quote! {
+        #(#[doc = #docs])*
+        pub const #ident: #rust = #literal;
+    }
 }
 
 /// The `struct name` declared in `tu`.

@@ -17,47 +17,19 @@ use std::sync::Arc;
 
 use super::SURFACE_TILE_PX;
 
-/// Width of the tooth's contact transition, in the rise's own units — height per
-/// [`TOOTH_REACH`] of travel.
-///
-/// **Must match `TOOTH_SOFTNESS` in `paint_common.wesl`.** The trio below is a
-/// deliberate mirror of the shader's, and the mirror is load-bearing rather than
-/// convenient: the canvas evaluates the gate per texel on the GPU while the tool
-/// books its side against [`Surface::bearing`] on the CPU, so if the two functions
-/// disagree the two halves of the transfer disagree and a smear stops conserving.
-/// That is also what guards it — `tests/dynamics.rs`'s conservation pair is sensitive
-/// to exactly this, so a drift here fails a test rather than quietly leaking paint.
-///
-/// 0.06 is the bundled grounds' own interquartile rise (±0.023–0.031 on gesso,
-/// ±0.047–0.078 on linen), so the transition spans the grain's natural variation:
-/// narrower reads as binary speckle, much wider smears the faces into a flat grey.
-const TOOTH_SOFTNESS: f32 = 0.06;
-
-/// The **contact scale**: the rise, per [`TOOTH_REACH`] of travel, that a full-tooth
-/// tip demands of the ground before it presses — and the unit the knob's follow
-/// limit is measured in ([`tooth_level`]).
-///
-/// **Must match `TOOTH_RISE` in `paint_common.wesl`** (same mirror as
-/// [`TOOTH_SOFTNESS`]). Measured, not picked: the mean |rise| over the reach is
-/// 0.037–0.043 on gesso and 0.060–0.090 on linen, so 0.05 asks of the ground
-/// roughly its own typical face — `tooth = 1` catches the leading edges that stand
-/// out of the weave and nothing else, without any real ground gating to nothing.
-const TOOTH_RISE: f32 = 0.05;
-
-/// The rise the map's `GB` encoding spans: a stored byte covers ±this, in height
-/// units per [`TOOTH_REACH`] ([`encode_rise`]/[`decode_rise`], and the span of
-/// [`Surface::bearing_hist`]'s bins).
-///
-/// A quarter of the height range, because the rise *is* small: it is a difference
-/// across a few canvas px of a field the antialias has already smoothed, and across
-/// both bundled grounds its 99th percentile is under 0.26. Spanning ±1 would spend
-/// three quarters of the byte on values no ground produces and leave the gate's
-/// whole transition ([`TOOTH_SOFTNESS`]) eight quanta wide — which prints as tone
-/// *steps* across the grain. What a pathological ground loses to the clamp is
-/// nothing visible: the gate saturates at `±(TOOTH_RISE + TOOTH_SOFTNESS/2)`, far
-/// inside it, and both halves of the transfer read the same clamped byte, so even
-/// the booking agrees (§6.4).
-const RISE_LIMIT: f32 = 0.25;
+// The three constants this module and `lib/paint_common.wesl` **both** compute with,
+// generated from the shader's own declarations (§6.10) — including the prose on each
+// saying what it is and why it is that number, which now lives once.
+//
+// They were the worst kind of pair to leave to two declarations, because the failure
+// had no symptom of its own. This module averages `tooth_gate` over the ground's rise
+// distribution to get the bearing fraction the *tool* books its half of a transfer
+// against, while the shader evaluates the same gate per texel for the *canvas* half
+// (§6.4). Move either copy and the two halves go on rendering perfectly plausible
+// paint that no longer adds up — a conservation leak proportional to how far they
+// drifted, which `tests/dynamics.rs` would eventually notice and no golden would
+// localize.
+use stark_shaders::mirror::paint_common::{RISE_LIMIT, TOOTH_RISE, TOOTH_SOFTNESS};
 
 /// The span the rise is measured across — how far ahead of itself a moving tip reads
 /// the ground, in **canvas px** (§6.4).
@@ -370,47 +342,19 @@ impl Bearing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::wesl::wesl_const;
 
-    /// The three constants this module and `lib/paint_common.wesl` **both** compute
-    /// with, asserted rather than asked for in a comment.
-    ///
-    /// These are the worst kind of pair to leave to prose, because the failure has no
-    /// symptom of its own. The CPU averages `tooth_gate` over the ground's rise
-    /// distribution to get the bearing fraction the *tool* books its half of a
-    /// transfer against, while the shader evaluates the same gate per texel for the
-    /// *canvas* half (§6.4). Move either constant on one side and the two halves go on
-    /// rendering perfectly plausible paint that no longer adds up — a conservation
-    /// leak proportional to how far they drifted, which `tests/dynamics.rs` would
-    /// eventually notice and no golden would localize.
-    ///
-    /// `RISE_LIMIT` is here at all because it stopped being folded into the literals
-    /// `255.0 / 512.0` and `0.25`, which is what put it beyond reach of this check
-    /// while its comment still claimed the folded constants had to match.
-    ///
-    /// Read through `stamp()`: the tooth gates its deposit, so all three
-    /// survive stripping there. No adapter needed, so this holds in CI.
-    #[test]
-    fn the_host_and_the_shader_agree_on_the_tooths_constants() {
-        let src = stark_shaders::stamp();
-        for (name, ours) in [
-            ("TOOTH_SOFTNESS", TOOTH_SOFTNESS),
-            ("TOOTH_RISE", TOOTH_RISE),
-            ("RISE_LIMIT", RISE_LIMIT),
-        ] {
-            // Narrowed to `f32`, which is what both sides actually hold. Widening
-            // instead compares the host's rounded `0.06f32` against the shader
-            // source's exact decimal and fails on every constant that is not a
-            // power of two.
-            assert_eq!(
-                ours,
-                wesl_const(src, name) as f32,
-                "{name} has drifted between `gpu::surface::tooth` and \
-                 `lib/paint_common.wesl`; the two halves of a toothed transfer no \
-                 longer book against the same gate",
-            );
-        }
-    }
+    // `the_host_and_the_shader_agree_on_the_tooths_constants` stood here, reading all
+    // three out of the linked `stamp()` and comparing them against this module's own
+    // copies. There are no copies left to compare — the three are generated from
+    // `lib/paint_common.wesl` (§6.10) and this module uses them directly.
+    //
+    // Two of the things that test had to work around are gone with it. It narrowed to
+    // `f32` before asserting, because reading a decimal literal out of the source
+    // gives an `f64` and the host's rounded `0.06f32` is not the source's exact
+    // `0.06`; the generator evaluates in the declared type, so there is nothing to
+    // narrow. And `RISE_LIMIT` was only checkable at all because it had been pulled
+    // out of the folded literals `255.0 / 512.0` and `0.25` — a constant that survives
+    // only in prose was invisible to a check that read the *linked* shader.
 
     /// A ground of **ramps**: height climbing steadily to a peak, then dropping back
     /// over a few texels. Every feature has a long near face and a short far one, and —

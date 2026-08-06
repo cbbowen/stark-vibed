@@ -109,9 +109,9 @@ struct Stamp {
     //    `.zw` carried the segment's midpoint, which is where `exchange` used to
     //    sample the canvas — one bilinear tap for the whole segment. It walks the
     //    texel's own track through `tip_at` now, so nothing reads the lane. It stays
-    //    because the lane map is an ABI (`SLOT`, `mirrors_wesl!`); reclaiming it is a
-    //    change to both sides, worth making the next time this struct is touched for
-    //    a reason of its own.
+    //    because the lane map is an ABI: the host's `Stamp` is generated from this
+    //    declaration (§6.10), so reclaiming the lane moves both sides at once — worth
+    //    doing the next time this struct is touched for a reason of its own.
     e: vec4<f32>,
     // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
@@ -154,10 +154,9 @@ struct Stamp {
 // `st.b.y * st.b.x` and `-st.b.z` — the two spellings that cost the most to decode,
 // and appear five and two times respectively.
 //
-// This is a rename, not a repacking. The `Stamp` layout is an ABI shared with
-// `gpu::stroke::dynamics`'s `SLOT`, pinned by `mirrors_wesl!` and by
-// `the_stamp_struct_has_the_same_nine_lanes_on_both_sides`; moving a lane would be a
-// change to both sides and to those checks. What these buy is that the *lane map*
+// This is a rename, not a repacking. The `Stamp` layout is an ABI: the host's mirror
+// is generated from the declaration above (§6.10), so moving a lane moves
+// `gpu::stroke::dynamics`'s `SLOT` with it. What these buy is that the *lane map*
 // exists in exactly one place — here, next to the struct that documents it — instead
 // of being re-read from a comment at each of the fifty-odd use sites.
 //
