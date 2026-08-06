@@ -80,7 +80,7 @@ pub const GROUNDS: &[BuiltinGround] = &[
 /// image bytes and a ground now *is* its bytes: core naming linen would be core
 /// naming an image it cannot produce. `document::DEFAULT_SURFACE` is `Flat`
 /// accordingly, and [`open_default`] is what moves a starting document off it.
-pub const DEFAULT_GROUND: &str = LINEN;
+pub const DEFAULT_GROUND: &str = SMOOTH;
 
 /// The catalog row for `name`.
 fn ground(name: &str) -> Option<&'static BuiltinGround> {
