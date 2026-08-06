@@ -2281,6 +2281,42 @@ button.layer-remove:hover {
   color: #101014;
 }
 
+/* A plane chip (§20.3), lettered in the two axes' own hues (`--axis-a`,
+   `--axis-b`, set inline): a plane is named by the two families of lines that
+   rule it, so the chip is written in exactly those two colors and needs no
+   third one invented for it. A lit chip fills with the pair as a gradient
+   running the way the letters do, and the letters go dark against it — the same
+   figure/ground swap the axis chip makes with one hue. */
+.chip.plane-chip {
+  min-width: 34px;
+  font-weight: 600;
+  /* The chip's own gap separates a mark from its word; here the two children
+     are the two letters of one name, so they close up and read as "XY". */
+  gap: 0;
+}
+
+.chip.plane-chip .ax-a {
+  color: var(--axis-a);
+}
+
+.chip.plane-chip .ax-b {
+  color: var(--axis-b);
+}
+
+/* Interpolated `in oklab`, like the Color panel's L ramp and for the same
+   reason: sRGB's straight line between two hues dips through a greyer, darker
+   midpoint — badly so between the red and the blue — where Oklab's holds the
+   lightness the two ends share, so the fill reads as one colour becoming
+   another rather than as two colours with a shadow between them. */
+.chip.plane-chip.active {
+  background: linear-gradient(in oklab 100deg, var(--axis-a), var(--axis-b));
+}
+
+.chip.plane-chip.active .ax-a,
+.chip.plane-chip.active .ax-b {
+  color: #101014;
+}
+
 /* The Drawing Guides panel's roster (§20.5): one row per guide, shaped like
    a layer row — the name selects, Remove takes the guide away, the eye shows and
    hides. Same two controls in the same order wearing the same glyphs, because the two

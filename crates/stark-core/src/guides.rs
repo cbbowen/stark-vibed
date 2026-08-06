@@ -203,9 +203,27 @@ pub struct PerspectiveGuide {
     pub lattice: Vec3,
     /// Master opacity of the whole overlay.
     pub opacity: f32,
-    /// Which world axes' fans are drawn (X, Y, Z). The markers derived from an
-    /// axis (its vanishing point, its pair lines) follow its fan.
-    pub axes: [bool; 3],
+    /// Which of the three **pair planes** are drawn — pair `k` being the plane
+    /// axes `k` and `k + 1` span, so the three are XY, YZ and ZX (§20.3), the
+    /// names the bar's chips wear.
+    ///
+    /// The plane rather than the axis, because the plane is what is actually
+    /// drawn. A guide line is a line *in* a plane: an axis on its own rules
+    /// nothing, and the two families an axis contributes live on two different
+    /// planes and are only ever wanted together by coincidence. Naming the axes
+    /// instead could reach three of the eight states — none, one plane, all
+    /// three — because a plane needed both of its axes and so a second plane
+    /// came free with the second axis. "Draw the ground and the near wall, not
+    /// the far one" was not sayable at all, and it is the most common thing to
+    /// want.
+    ///
+    /// Everything a plane carries follows its flag: the two fans that rule it,
+    /// its vanishing trace (and with it the [`horizon`](Self::horizons) that
+    /// turns about its normal), and its station point. An **axis** is drawn
+    /// when either plane it is a side of is — that is what its vanishing point
+    /// and its stroke [`pencil`](Self::pencils) follow, since an axis with no
+    /// plane left draws no line anywhere.
+    pub pairs: [bool; 3],
 }
 
 impl Default for PerspectiveGuide {
@@ -230,7 +248,7 @@ impl Default for PerspectiveGuide {
             lens: Lens::Rectilinear,
             lattice: Vec3::new(-4.0, 4.0, 8.0),
             opacity: 0.65,
-            axes: [true; 3],
+            pairs: [true; 3],
         }
     }
 }
@@ -403,12 +421,11 @@ impl PerspectiveGuide {
     /// off by one.
     ///
     /// `None` for a horizon that is not on the screen to be grabbed: a hidden
-    /// guide, one turned down to nothing, a trace at infinity, or a pair
-    /// missing one of its axes — the same rule [`pencils`](Self::pencils) is
-    /// gated by, over the same controls, because it exists for the same reason.
-    /// It applies to a pair rather than an axis for the reason
-    /// [`planes`](Self::planes) does: a plane is what two axes span, so it is
-    /// drawn exactly when both of them are.
+    /// guide, one turned down to nothing, a plane switched off, or a trace at
+    /// infinity — the same rule [`pencils`](Self::pencils) is gated by, over
+    /// the same controls, because it exists for the same reason. A horizon
+    /// belongs to a plane rather than to the axis it turns about, and follows
+    /// that plane's flag: it is the plane's own infinity that is being drawn.
     ///
     /// Unlike a pencil, a horizon is offered under **both** lenses. What the
     /// hand grabs here is the curve itself and what it asks for is a turn about
@@ -418,9 +435,10 @@ impl PerspectiveGuide {
     pub fn horizons(&self) -> [Option<PairTrace>; 3] {
         let shown = self.visible && self.opacity > 0.0;
         std::array::from_fn(|n| {
-            let (i, j) = ((n + 1) % 3, (n + 2) % 3);
-            (shown && self.axes[i] && self.axes[j])
-                .then(|| self.pair_trace(i))
+            // Pair `(n+1, n+2)` is the plane axis `n` is normal to.
+            let k = (n + 1) % 3;
+            (shown && self.pairs[k])
+                .then(|| self.pair_trace(k))
                 .flatten()
         })
     }
@@ -430,16 +448,15 @@ impl PerspectiveGuide {
     ///
     /// Gated on what is *shown* rather than on what exists, because a snap the
     /// artist cannot see coming reads as the tool bending a considered line. A
-    /// hidden guide, an axis whose fan is switched off, and an overlay turned
-    /// down to nothing all offer nothing — the same rule stated once, over the
-    /// same three controls the panel puts on the bar.
+    /// hidden guide, an overlay turned down to nothing, and an axis with no
+    /// plane left to rule all offer nothing — the same rule stated once, over
+    /// the same three controls the panel puts on the bar.
     ///
-    /// An axis shown **alone** offers nothing either, and that is the same rule
-    /// rather than a fourth one. A guide line is a line *in a pair plane*
-    /// (§20.3), so an axis draws only on the two planes it is a side of, and
-    /// both of those need their other axis. Switch off two fans and the third
-    /// has no plane left to draw on — nothing appears, so nothing may bend a
-    /// stroke.
+    /// That last one is [`is_drawn`](Self::is_drawn), and it is the same rule
+    /// rather than a second one. A guide line is a line *in a pair plane*
+    /// (§20.3), so an axis draws only on the two planes it is a side of; switch
+    /// both of those off and nothing of the axis appears, so nothing of it may
+    /// bend a stroke — even though its vanishing point is as computable as ever.
     ///
     /// A **fisheye** guide offers nothing either (§20.8): its guide lines are
     /// circles, and the pencil this returns describes straight lines — a snap
@@ -451,8 +468,7 @@ impl PerspectiveGuide {
         let shown = self.visible && self.opacity > 0.0 && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
         std::array::from_fn(|i| {
-            let partnered = self.axes[(i + 1) % 3] || self.axes[(i + 2) % 3];
-            (shown && self.axes[i] && partnered).then_some(AxisPencil {
+            (shown && self.is_drawn(i)).then_some(AxisPencil {
                 center: self.center,
                 focal: self.focal,
                 dir: dirs[i],
@@ -460,13 +476,27 @@ impl PerspectiveGuide {
         })
     }
 
+    /// Whether axis `i` appears on the canvas at all: whether either of the two
+    /// pair planes it is a side of is drawn (§20.3).
+    ///
+    /// An axis is not a thing that is shown or hidden — a plane is. What an
+    /// axis *has* is lines, and every one of them lies in one of its two
+    /// planes, so switching both off leaves the axis with nothing on the screen
+    /// however well defined its direction still is. That is the question its
+    /// vanishing point and its stroke pencil both turn on, and it is written
+    /// down once here rather than as the same disjunction in three places.
+    pub fn is_drawn(&self, i: usize) -> bool {
+        self.pairs[i % 3] || self.pairs[(i + 2) % 3]
+    }
+
     /// The planes a circle can be drawn on (§20.7): pair `k` spans axes
     /// `(k, k+1)`, one chart each.
     ///
     /// Gated like [`pencils`](Self::pencils) — including the fisheye
     /// exclusion, since the chart is a homography of the *flat* picture plane
-    /// — but on **both** axes of the pair: a plane is the thing two axes span,
-    /// so it is on the screen exactly when they both are. The chart's third
+    /// — but on the plane's own flag, which is the whole of the question here:
+    /// a circle is drawn *on a plane*, so the plane the artist switched off is
+    /// exactly the plane no loop may be read as a circle on. The chart's third
     /// column is `a_i × a_j`, which for a right-handed frame is the remaining
     /// axis, so the three planes are this guide's one axis matrix with its
     /// columns cyclically shifted.
@@ -483,7 +513,7 @@ impl PerspectiveGuide {
         );
         std::array::from_fn(|k| {
             let (i, j) = (k, (k + 1) % 3);
-            (shown && self.axes[i] && self.axes[j]).then(|| {
+            (shown && self.pairs[k]).then(|| {
                 let canvas_from_plane = lens * Mat3::from_cols(dirs[i], dirs[j], dirs[(k + 2) % 3]);
                 AxisPlane {
                     plane_from_canvas: canvas_from_plane.inverse(),
@@ -557,7 +587,12 @@ impl PerspectiveGuide {
             lattice: self.corner(),
             opacity: self.opacity.clamp(0.0, 1.0),
             dirs,
-            axis_alpha: self.axes.map(|on| if on { 1.0 } else { 0.0 }),
+            // Both derived here rather than in the shader, which is the pass's
+            // standing bargain (§20.4): the CPU hands it numbers, not rules.
+            // An axis is drawn when either plane it is a side of is
+            // ([`is_drawn`](Self::is_drawn)).
+            axis_alpha: std::array::from_fn(|i| if self.is_drawn(i) { 1.0 } else { 0.0 }),
+            pair_alpha: self.pairs.map(|on| if on { 1.0 } else { 0.0 }),
             lines,
             vps,
             anti_vps,
@@ -869,8 +904,22 @@ pub struct GuideScene {
     /// arithmetic never computes a vanishing point and never branches on
     /// whether one is finite.
     pub dirs: [Vec3; 3],
-    /// Per-axis fan opacity (0 = axis hidden).
+    /// Per-**axis** opacity (0 = the axis is nowhere on the canvas). What the
+    /// markers belonging to an axis alone follow — its vanishing points — and
+    /// derived rather than set: an axis is drawn when either pair plane it is a
+    /// side of is ([`PerspectiveGuide::is_drawn`]).
     pub axis_alpha: [f32; 3],
+    /// Per-**pair-plane** opacity (0 = the plane is switched off), pair `k`
+    /// being the plane axes `k` and `k + 1` span. What everything that lives on
+    /// a plane follows: the two fans that rule it, its vanishing trace and its
+    /// station point.
+    ///
+    /// Two arrays because the pass asks two genuinely different questions, and
+    /// neither answers the other: switching one plane off leaves both of its
+    /// axes on the screen, still ruling the other planes they border, so a dark
+    /// plane does not darken an axis. Only losing *both* of an axis's planes
+    /// does that.
+    pub pair_alpha: [f32; 3],
     /// Vanishing trace of pair `(k, k+1)`; `None` when it is at infinity.
     pub lines: [Option<PairTrace>; 3],
     /// Where each axis's direction images, canvas px; `None` off the lens.
@@ -1287,26 +1336,70 @@ mod tests {
     }
 
     /// What is not on the screen offers nothing to snap to (§20.6) — one rule
-    /// over the guide's eye, its per-axis fans and its opacity.
+    /// over the guide's eye, its planes and its opacity.
+    ///
+    /// An axis survives while *either* of its two planes does, because its
+    /// lines are still being ruled on that one: switching a plane off is not a
+    /// statement about the two axes bordering it. Only when both of an axis's
+    /// planes are gone does it have nothing on the canvas, and only then does
+    /// it stop offering a pencil.
     #[test]
-    fn an_unshown_axis_offers_no_pencil() {
+    fn an_axis_with_no_plane_left_offers_no_pencil() {
         let mut g = guide(0.5, 0.35, 0.2);
-        g.axes = [true, false, true];
-        assert!(g.pencils()[1].is_none(), "a hidden fan");
-        assert!(g.pencils()[0].is_some());
+        // Only the Y/Z plane. Y and Z still rule it; X borders neither it nor
+        // anything else that is left.
+        g.pairs = [false, true, false];
+        assert!(g.pencils()[0].is_none(), "X has no plane left");
+        assert!(g.pencils()[1].is_some() && g.pencils()[2].is_some());
 
-        // A lone axis has no pair plane left to draw a line on (§20.3), so it
-        // draws nothing — and so it offers nothing, by the same rule.
-        g.axes = [true, false, false];
-        assert!(g.pencils().iter().all(Option::is_none), "an axis alone");
+        // One plane off leaves every axis with one, so every pencil stands.
+        g.pairs = [true, true, false];
+        assert!(g.pencils().iter().all(Option::is_some), "still all ruled");
 
-        g.axes = [true; 3];
+        g.pairs = [false; 3];
+        assert!(g.pencils().iter().all(Option::is_none), "nothing drawn");
+
+        g.pairs = [true; 3];
         g.visible = false;
         assert!(g.pencils().iter().all(Option::is_none), "a hidden guide");
 
         g.visible = true;
         g.opacity = 0.0;
         assert!(g.pencils().iter().all(Option::is_none), "an invisible one");
+    }
+
+    /// The eight states the bar can reach, and the axes each leaves standing —
+    /// the reason the control names planes and not axes (§20.3).
+    ///
+    /// Written out exhaustively because the claim *is* the completeness: three
+    /// axis toggles could only ever produce none, one plane, or all three (a
+    /// plane needed both its axes, so the second axis always brought a second
+    /// plane free), and "the ground and one wall" — three of these rows — was
+    /// not sayable at all. The axis column is the derived half, and it is here
+    /// so that the derivation is checked against every input rather than the
+    /// two or three anyone would think to try.
+    #[test]
+    fn every_combination_of_planes_is_reachable() {
+        let mut g = guide(0.5, 0.35, 0.2);
+        for bits in 0..8u8 {
+            let pairs = std::array::from_fn(|k| bits >> k & 1 == 1);
+            g.pairs = pairs;
+            for i in 0..3 {
+                // Axis `i` borders pairs `i` and `i+2`.
+                let expected = pairs[i] || pairs[(i + 2) % 3];
+                assert_eq!(
+                    g.is_drawn(i),
+                    expected,
+                    "planes {pairs:?}: axis {i} should{} be drawn",
+                    if expected { "" } else { " not" }
+                );
+                assert_eq!(g.pencils()[i].is_some(), expected, "planes {pairs:?}");
+                assert_eq!(g.scene().axis_alpha[i] > 0.0, expected, "planes {pairs:?}");
+                // A plane answers for itself, and for nothing else.
+                assert_eq!(g.planes()[i].is_some(), pairs[i], "planes {pairs:?}");
+                assert_eq!(g.scene().pair_alpha[i] > 0.0, pairs[i], "planes {pairs:?}");
+            }
+        }
     }
 
     // --- the planes circles are drawn on (§20.7) ---------------------------
@@ -1427,18 +1520,16 @@ mod tests {
         assert!(plane.circle_seen(Vec2::ZERO, reach * 1.5).is_none());
     }
 
-    /// A plane is what two axes span, so it needs both of them shown — and the guide's
-    /// eye and opacity govern it exactly as they govern a pencil.
+    /// A plane's chart follows that plane's own flag and nothing else — and the
+    /// guide's eye and opacity govern it exactly as they govern a pencil.
     #[test]
-    fn a_plane_needs_both_of_its_axes() {
+    fn a_plane_follows_its_own_flag() {
         let mut g = guide(0.5, 0.35, 0.2);
-        g.axes = [true, false, true];
-        // Pairs (0,1) and (1,2) lose their Y axis; (2,0) survives.
-        assert!(g.planes()[0].is_none());
-        assert!(g.planes()[1].is_none());
-        assert!(g.planes()[2].is_some());
+        g.pairs = [false, true, false];
+        assert!(g.planes()[1].is_some(), "the plane that is on");
+        assert!(g.planes()[0].is_none() && g.planes()[2].is_none());
 
-        g.axes = [true; 3];
+        g.pairs = [true; 3];
         g.opacity = 0.0;
         assert!(g.planes().iter().all(Option::is_none));
     }
@@ -1594,21 +1685,23 @@ mod tests {
         );
     }
 
-    /// A horizon is a handle only where its curve is drawn (§20.5): a plane is
-    /// what two axes span, so switching an axis's fan off takes with it the two
-    /// horizons whose planes it is a side of — leaving standing exactly the one
-    /// that turns *about* it, whose plane it is normal to. The guide's eye and
-    /// its opacity govern all three at once, as they govern a pencil.
+    /// A horizon is a handle only where its curve is drawn (§20.5). It belongs
+    /// to a *plane* — the plane's own infinity is what is being drawn — so
+    /// switching a plane off takes exactly the one horizon that turns about its
+    /// normal, and leaves the other two standing. The guide's eye and its
+    /// opacity govern all three at once, as they govern a pencil.
     #[test]
     fn a_horizon_is_offered_only_where_it_is_drawn() {
         let mut g = guide(0.5, 0.35, 0.2);
         assert!(g.horizons().iter().all(Option::is_some));
 
-        g.axes = [true, false, true];
-        assert!(g.horizons()[1].is_some(), "the Z/X pair is untouched");
-        assert!(g.horizons()[0].is_none() && g.horizons()[2].is_none());
+        // Pair 2 is the Z/X plane, normal to Y: switching it off takes Y's
+        // horizon and nothing else.
+        g.pairs = [true, true, false];
+        assert!(g.horizons()[1].is_none(), "Y's horizon went with its plane");
+        assert!(g.horizons()[0].is_some() && g.horizons()[2].is_some());
 
-        g.axes = [true; 3];
+        g.pairs = [true; 3];
         g.visible = false;
         assert!(g.horizons().iter().all(Option::is_none), "a hidden guide");
 

@@ -51,6 +51,12 @@ pub(super) fn pack_guides(scene: &crate::guides::GuideScene, view: ViewTransform
             let d = scene.dirs[i];
             [d.x, d.y, d.z, scene.axis_alpha[i]]
         }),
+        pairs: [
+            scene.pair_alpha[0],
+            scene.pair_alpha[1],
+            scene.pair_alpha[2],
+            0.0,
+        ],
         lines: std::array::from_fn(|i| match scene.lines[i] {
             Some(PairTrace::Line { normal, offset }) => [normal.x, normal.y, offset, 1.0],
             Some(PairTrace::Circle { center, radius }) => [center.x, center.y, radius, 2.0],

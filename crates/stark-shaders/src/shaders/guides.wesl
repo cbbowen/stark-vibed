@@ -40,8 +40,15 @@ struct Guide {
     // grid at all, 0 when the corner has come to rest at the eye and there is
     // no fan to draw.
     grid: vec4<f32>,
-    // World axes in camera space .xyz; .w = that axis's fan opacity (0 = off).
+    // World axes in camera space .xyz; .w = that axis's opacity (0 = the axis
+    // is nowhere on the canvas, both of its planes being off) — what the
+    // markers belonging to an axis alone, its vanishing points, follow.
     dirs: array<vec4<f32>, 3>,
+    // .xyz = pair plane k's opacity (0 = off), k spanning axes (k, k+1); .w
+    // unused. What everything living on a plane follows: the two fans that rule
+    // it, its vanishing trace, its station point. Handed over already resolved,
+    // as everything here is — the pass draws numbers, it does not apply rules.
+    pairs: vec4<f32>,
     // Vanishing trace of pair (k, k+1), by .w: 0 = none; 1 = line (unit normal
     // .xy, offset .z — evaluating gives signed canvas px); 2 = circle (center
     // .xy, radius .z).
@@ -249,20 +256,18 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         // space with everything else; a rotation makes the two the same number.)
         let pj = dot(guide.grid.xyz, guide.dirs[j].xyz);
         let pk = dot(guide.grid.xyz, guide.dirs[k].xyz);
-        // A family is a set of lines *in a plane*, so it is shown when that
-        // plane is: both of the axes spanning it, exactly as the plane's own
-        // vanishing trace and station point are gated below. Hiding one axis
-        // therefore takes the two planes it is a side of whole — including the
-        // lines the other axes draw on them — and leaves standing exactly the
-        // plane it is not part of.
+        // A family is a set of lines *in a plane*, so it follows that plane's
+        // own flag, exactly as the plane's vanishing trace and station point do
+        // below. Switching a plane off takes both of the families ruling it —
+        // one from each of its two axes — and touches nothing else those axes
+        // do elsewhere. The pair spanned with the successor is pair `i`, the one
+        // spanned with the predecessor is pair `k`.
         //
         // The plane's obliquity fade rides in the same product, keyed on the one
         // axis *not* in the plane, which is its normal (`plane_fade`).
         let lattice = guide.grid.w * master;
-        let a_ij = min(guide.dirs[i].w, guide.dirs[j].w)
-            * plane_fade(guide.dirs[k].z, periph) * lattice;
-        let a_ik = min(guide.dirs[i].w, guide.dirs[k].w)
-            * plane_fade(guide.dirs[j].z, periph) * lattice;
+        let a_ij = guide.pairs[i] * plane_fade(guide.dirs[k].z, periph) * lattice;
+        let a_ik = guide.pairs[k] * plane_fade(guide.dirs[j].z, periph) * lattice;
         // Stepping across the plane spanned with the successor axis (whose own
         // distance from the eye is `pk`, its normal being the predecessor), then
         // across the other: the two planes this axis is a side of.
@@ -275,7 +280,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     for (var k = 0u; k < 3u; k++) {
         let kind = guide.lines[k].w;
         if kind < 0.5 { continue; }
-        let pair_a = min(guide.dirs[k].w, guide.dirs[(k + 1u) % 3u].w);
+        let pair_a = guide.pairs[k];
         if pair_a <= 0.0 { continue; }
         var d_px: f32;
         if kind > 1.5 {
@@ -295,7 +300,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // --- Station points: rings on the Thales circle (§20.2). ---------------
     for (var k = 0u; k < 3u; k++) {
         if guide.sps[k].z <= 0.0 { continue; }
-        let pair_a = min(guide.dirs[k].w, guide.dirs[(k + 1u) % 3u].w);
+        let pair_a = guide.pairs[k];
         if pair_a <= 0.0 { continue; }
         let d = length(p - guide.sps[k].xy) * zoom;
         let rgb = mix(axis_color(k), axis_color((k + 1u) % 3u), 0.5);

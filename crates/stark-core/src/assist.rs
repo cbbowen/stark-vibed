@@ -1671,8 +1671,8 @@ mod tests {
         assert!(plane.is_none(), "a deliberate ellipse was made a circle");
     }
 
-    /// What the artist cannot see cannot reshape a loop — and a plane needs *both* of
-    /// its axes shown, being the thing the two of them span.
+    /// What the artist cannot see cannot reshape a loop — and a plane is switched off
+    /// directly, being the thing the bar's chips name.
     #[test]
     fn an_unshown_plane_does_not_snap() {
         let mut g = guide();
@@ -1686,10 +1686,14 @@ mod tests {
         };
         assert!(claimed(&g));
 
-        // Pair 2 spans axes (2, 0); hiding either takes the plane with it.
-        g.axes = [true, true, false];
-        assert!(!claimed(&g), "a plane survived losing an axis");
-        g.axes = [true; 3];
+        // The loop is a circle on pair 2, and only that plane's own flag governs
+        // it: switching off the other two leaves it claimed, switching off its
+        // own takes it.
+        g.pairs = [false, false, true];
+        assert!(claimed(&g), "a plane went with its neighbours");
+        g.pairs = [true, true, false];
+        assert!(!claimed(&g), "a plane survived being switched off");
+        g.pairs = [true; 3];
         g.visible = false;
         assert!(!claimed(&g), "a plane survived the guide's eye");
     }

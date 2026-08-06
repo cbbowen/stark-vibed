@@ -27,8 +27,10 @@
 //!
 //! The **Perspective Guide bar** stands at the bottom for the mode's duration:
 //! per-axis locks (constraining the drag — lock the vertical and 2-point
-//! stays 2-point under any gesture), per-axis visibility, the cell count, opacity,
-//! and "Done". There is no case switch anywhere: which of 1/2/3-point you are
+//! stays 2-point under any gesture), per-plane visibility (XY / YZ / ZX, each
+//! chip lettered in its two axes' own hues), the cell count, opacity,
+//! and "Done". Locks name axes and visibility names planes because a rotation
+//! is about an axis and a guide line is drawn in a plane. There is no case switch anywhere: which of 1/2/3-point you are
 //! in is something the canvas *shows* (the count of finite vanishing points),
 //! not something a control stores.
 
@@ -46,10 +48,35 @@ use stark_core::command::ViewCommand;
 use stark_core::geom::Vec2;
 use stark_core::{Lens, PairTrace, PerspectiveGuide};
 
-/// The axis hues, as CSS — the same values `guides.wesl` draws the fans in,
-/// so a lock chip and the lines it governs read as one thing.
-const AXIS_CSS: [&str; 3] = ["#e8575c", "#54b566", "#618cf0"];
+/// The axis hues, as CSS — the same three colours `guides.wesl` draws the fans
+/// in, so a lock chip and the lines it governs read as one thing. Held to that
+/// by [`the_chips_are_painted_in_the_shader_s_own_axis_hues`], since a colour
+/// stated in one space and declared in another cannot be checked by eye.
+///
+/// **In Oklab**, the space the app picks every other colour in (§6.5) — the
+/// same `oklab(L a b)` the Color panel's own ramps are written in. Same
+/// colours, said in coordinates that mean something: `L` is how light the hue
+/// reads, and the three are within 0.05 of each other, which is why no axis
+/// shouts over the others on the bar. It is also what lets a chip's fill be an
+/// **interpolation** — the plane chips run a gradient between two of these, and
+/// `in oklab` keeps the midpoint as light as its ends instead of dipping
+/// through the grey sRGB puts between a red and a blue.
+const AXIS_CSS: [&str; 3] = [
+    "oklab(0.6493 0.1675 0.0664)",
+    "oklab(0.6952 -0.1237 0.0782)",
+    "oklab(0.6564 -0.0143 -0.1553)",
+];
 const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
+
+/// The two axes of each pair plane, in the order the chip shows them: XY, YZ,
+/// ZX.
+///
+/// The model's own cyclic order, pair `k` being spanned by axes `(k, k+1)`, and
+/// the chips are read in it rather than sorted: the three then run X→Y→Z→X, so
+/// each chip picks up where the last left off and every axis letter appears
+/// exactly twice, once on each side. Sorting the last one to "XZ" would break
+/// that at the only place it shows.
+const PAIR_AXES: [[usize; 2]; 3] = [[0, 1], [1, 2], [2, 0]];
 
 /// Grab radius of the center-of-view crosshair, screen px.
 const CENTER_GRAB_PX: f32 = 14.0;
@@ -509,7 +536,7 @@ pub fn PerspectiveGuideBar() -> Element {
     // ladder's rung, so there is no separate number to keep in step.
     let base = PerspectiveGuide::default().lattice;
     let octave = (g.lattice.length() / base.length()).log2().round();
-    let (opacity, axes, lens) = (g.opacity, g.axes, g.lens);
+    let (opacity, pairs, lens) = (g.opacity, g.pairs, g.lens);
 
     rsx! {
         div { class: chrome_class(state, "guide-bar"),
@@ -559,21 +586,37 @@ pub fn PerspectiveGuideBar() -> Element {
                 }
             }
             span { class: "bar-sep" }
-            // The same eye the guide's own row wears, asked of a fan of guide lines
-            // rather than of the whole guide.
+            // The same eye the guide's own row wears, asked of one plane of the
+            // grid rather than of the whole guide. A plane rather than an axis
+            // because a plane is what is drawn — a guide line lies *in* one
+            // (§20.3) — and because the three planes are independently
+            // switchable where three axes were not: two axes could never show
+            // one plane without a second coming free with them.
             span { class: "bar-sub",
                 {icon(icons::VISIBLE)}
                 {label("Show")}
             }
             div {
                 class: "segmented",
-                for i in 0..3 {
-                    button {
-                        class: if axes[i] { "chip axis-chip active" } else { "chip axis-chip" },
-                        style: "--axis: {AXIS_CSS[i]}",
-                        title: "Show the {AXIS_NAMES[i]} axis's fan of guide lines",
-                        onclick: move |_| update_guide(state, index, move |g| g.axes[i] = !g.axes[i]),
-                        "{AXIS_NAMES[i]}"
+                for k in 0..3 {
+                    {
+                        let [a, b] = PAIR_AXES[k];
+                        rsx! {
+                            button {
+                                class: if pairs[k] { "chip plane-chip active" } else { "chip plane-chip" },
+                                style: "--axis-a: {AXIS_CSS[a]}; --axis-b: {AXIS_CSS[b]}",
+                                title: "Show the {AXIS_NAMES[a]}{AXIS_NAMES[b]} plane \u{2014} \
+                                        its two fans of guide lines, its horizon and its \
+                                        station point",
+                                onclick: move |_| update_guide(state, index, move |g| {
+                                    g.pairs[k] = !g.pairs[k];
+                                }),
+                                // Each letter in its own axis's hue, so the chip
+                                // names the plane by the two colors ruling it.
+                                span { class: "ax-a", "{AXIS_NAMES[a]}" }
+                                span { class: "ax-b", "{AXIS_NAMES[b]}" }
+                            }
+                        }
                     }
                 }
             }
@@ -889,6 +932,45 @@ pub fn GuideEditOverlay() -> Element {
 mod tests {
     use super::*;
 
+    /// The bar is painted in the guide pass's own axis hues (§20.4) — a lock
+    /// chip, a plane chip and the lines they govern are one colour, or the
+    /// controls stop looking like they belong to what they control.
+    ///
+    /// The two declarations cannot be merged: `guides.wesl` needs its colours as
+    /// shader constants, the bar needs them as CSS, and the mirror carries
+    /// scalars only (a `vec3` has no host constant). So they are two statements
+    /// of one fact, and this is the thing that notices when they part. It earns
+    /// its keep now that [`AXIS_CSS`] is in **Oklab**: `#e8575c` beside
+    /// `vec3(0.91, 0.34, 0.36)` could be checked by a reader who cared to,
+    /// `oklab(0.6493 0.1675 0.0664)` cannot be checked by anyone.
+    ///
+    /// The tolerance is a **quantization step**, not a fudge: the CSS carries
+    /// four decimals of `L`, `a` and `b`, and what has to survive that rounding
+    /// is the 8-bit colour the screen shows. Anything inside 1/255 is the same
+    /// pixel.
+    #[test]
+    fn the_chips_are_painted_in_the_shader_s_own_axis_hues() {
+        // `guides.wesl`'s AXIS_X / AXIS_Y / AXIS_Z, display sRGB.
+        const SHADER: [[f32; 3]; 3] = [[0.91, 0.34, 0.36], [0.33, 0.71, 0.40], [0.38, 0.55, 0.94]];
+        for (i, want) in SHADER.iter().enumerate() {
+            let lab: Vec<f32> = AXIS_CSS[i]
+                .trim_start_matches("oklab(")
+                .trim_end_matches(')')
+                .split_whitespace()
+                .map(|n| n.parse().expect("a number"))
+                .collect();
+            assert_eq!(lab.len(), 3, "axis {i}: {} is not an oklab()", AXIS_CSS[i]);
+            let got = stark_core::color::oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
+            for c in 0..3 {
+                assert!(
+                    (got[c] - want[c]).abs() < 1.0 / 255.0,
+                    "axis {i}: {} is {got:?}, but the shader draws {want:?}",
+                    AXIS_CSS[i]
+                );
+            }
+        }
+    }
+
     /// Where each of the default guide's horizons sits, as the one coordinate
     /// it is a level set of.
     ///
@@ -985,13 +1067,14 @@ mod tests {
     /// A horizon that is not drawn is not grabbable, and the press falls
     /// through to the free world grab — the rule the guide states
     /// ([`PerspectiveGuide::horizons`]) carried all the way to the hand.
-    /// Hiding an axis takes the two horizons whose planes it is a side of and
-    /// leaves the one that turns about it.
+    /// Switching a plane off takes the one horizon that turns about its normal
+    /// and leaves the other two.
     #[test]
     fn an_undrawn_horizon_cannot_be_grabbed() {
         let mut g = PerspectiveGuide::default();
         let [x_at, y_at, _] = horizons_of(&g);
-        g.axes = [true, false, true];
+        // Pair 1 is the Y/Z plane, normal to X.
+        g.pairs = [true, false, true];
         let h = Handles::of(&g);
         assert_eq!(h.at(Vec2::new(x_at, 400.0), 1.0), GuideRegion::Orbit);
         assert_eq!(h.at(Vec2::new(300.0, y_at), 1.0), GuideRegion::Horizon(1));

@@ -205,16 +205,27 @@ from the edges: two planes' lines toward a shared vanishing point are two
 different families of world lines, and where the image happens to bring one of
 each close together they read as a doubled line. That is not a phase error to be
 corrected, it is what showing three planes at once costs; the levers against it
-are switching a fan off and the obliquity fade below.
+are switching a plane off and the obliquity fade below.
 
-- **Hiding an axis hides the two planes it is a side of** — including the lines
-  the *other* axes draw on them, since those lines are on a plane that is no
-  longer there. So a family is gated on both of its plane's axes, exactly as
-  that plane's vanishing trace and station point already were, and switching one
-  fan off leaves standing precisely the one plane that axis is not part of. It
-  also settles a question §20.6 would otherwise get wrong: an axis shown *alone*
-  has no plane left to draw on, draws nothing, and therefore offers no pencil to
-  snap to.
+- **The plane is what is shown or hidden** (`PerspectiveGuide::pairs`, three
+  flags: XY, YZ, ZX). It is the unit the drawing has: a guide line lies *in* a
+  plane, so the two families ruling one go together, and everything else the
+  plane carries — its vanishing trace, the horizon that turns about its normal
+  (§20.5), its station point — goes with them. An axis is not a thing that can
+  be hidden; what an axis has is lines, and every one of them is on one of its
+  two planes.
+- **An axis is *drawn* when either of its planes is** (`is_drawn`). That is the
+  derived half, and what the markers belonging to an axis alone follow: its
+  vanishing point, and the pencil §20.6 offers a stroke. Lose both of an axis's
+  planes and it rules nothing anywhere, however well defined its direction still
+  is — so nothing of it may bend a stroke either.
+
+  Naming the plane rather than the axis is also what makes the control
+  complete. Three axis toggles reached three of the eight states — none, one
+  plane, or all three — because a plane needed *both* its axes, so the second
+  axis always brought a second plane free with it. "The ground and the near
+  wall, not the far one" is three of those eight rows and was not sayable at
+  all, and it is the most common thing to want.
 - **A plane recedes in the periphery, the sooner the more squarely it faces the
   eye.** A plane the view axis is normal to repeats across the whole canvas
   without ever foreshortening: out at the edges it is saying nothing the middle
@@ -318,8 +329,12 @@ tidying, and tidying must not take over the canvas. Selecting a row — or
 adding — enters the **edit mode**: a full-viewport catcher owns the pointer for the
 mode's duration (the transform-mode bargain, §16.6; navigation still works),
 and the **Perspective Guide bar** stands at the bottom with the per-axis
-locks, per-axis visibility, the Fisheye lens toggle (§20.8), the cell count,
-opacity, and "Done". The cell count is the *length* of the lattice (§20.3) —
+locks, per-plane visibility (§20.3 — three chips, XY / YZ / ZX, each lettered
+in its two axes' own hues), the Fisheye lens toggle (§20.8), the cell count,
+opacity, and "Done". The locks stay per-*axis* and the visibility is
+per-*plane*, which is not an inconsistency: a lock constrains a rotation, and a
+rotation is about an axis; visibility governs what is drawn, and what is drawn
+is a plane. The cell count is the *length* of the lattice (§20.3) —
 how many cells lie between the eye and its corner — so the slider scales the
 grid and leaves the corner where it is, and it steps in **halvings** so that a
 change of scale subdivides the grid instead of sliding it. Which of 1/2/3-point you are in is never stored or displayed as a
@@ -431,13 +446,13 @@ accepted the stroke, never instead of it — a curve that happens to bow along a
 fan line is still a curve — and among the axes that pass, the closest wins.
 
 **Only what is shown may bend a stroke.** `PerspectiveGuide::pencils` is gated
-on the guide's eye, the per-axis fans, and the overlay opacity, in one place:
+on the guide's eye, the planes it draws, and the overlay opacity, in one place:
 a snap the artist cannot see coming reads as the tool bending a considered
-line, so anything invisible offers nothing. An axis switched on *alone* is
-covered by the same rule rather than by an exception — its lines live on the two
-pair planes it is a side of (§20.3), both of those are switched off with their
-other axis, and an axis that draws nothing offers nothing. A document with no guides up
-gathers an empty list and the assist behaves precisely as it did before.
+line, so anything invisible offers nothing. An axis whose two planes are both
+switched off is covered by the same rule rather than by an exception — its lines
+live on those planes (§20.3), so it draws nothing, and an axis that draws
+nothing offers nothing. A document with no guides up gathers an empty list and
+the assist behaves precisely as it did before.
 
 **The axis is held for the rest of the drag.** Steering resolves the pointer's
 travel onto the line and drops the rest, so the far end runs out and back along
@@ -531,8 +546,9 @@ foreshortened circle — which is the right way round, since how open a
 near-edge-on ellipse should be is genuinely hard to see and which way it leans
 is not.
 
-Gating is §20.6's, with one addition: a plane needs **both** of its axes shown,
-being the thing the two of them span.
+Gating is §20.6's, asked of the plane's own flag rather than of an axis: a
+circle is drawn *on a plane*, so the plane switched off is exactly the plane no
+loop may be read as a circle on.
 
 ## 20.8 The curvilinear lens
 
