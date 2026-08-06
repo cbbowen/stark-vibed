@@ -32,8 +32,10 @@
 //! [`ViewCommand::SetGuides`](crate::command::ViewCommand::SetGuides).
 //! [`PerspectiveGuide::scene`] derives the [`GuideScene`] the compositor's
 //! guide pass draws (§20.4), and [`PerspectiveGuide::dragged`] is the direct
-//! manipulation: the grabbed direction follows the pointer, snapping to and
-//! lockable about the world axes (§20.5). [`PerspectiveGuide::pencils`] and
+//! manipulation: the grabbed direction follows the pointer, held about the
+//! world axes by the locks — one of which is what grabbing a
+//! [`horizon`](PerspectiveGuide::horizons) puts on for a single drag (§20.5).
+//! [`PerspectiveGuide::pencils`] and
 //! [`PerspectiveGuide::planes`] are the other direction — what the drawing
 //! assist holds a snapped stroke to: the axes a line is aimed along (§20.6) and
 //! the planes a loop is a circle on (§20.7), gathered for it as a [`Scaffold`].
@@ -74,11 +76,6 @@ const LINE_EPS: f32 = 1e-4;
 /// there is a sliver with no shape to recognize. It is also what keeps the chart
 /// from answering with astronomical coordinates as the divisor goes to zero.
 const PLANE_REACH: f32 = 1e3;
-
-/// How close a free drag's rotation axis must lie to a world axis before the
-/// drag snaps to turning purely about it (§20.5): cos 15°. Wide enough to
-/// fall into deliberately, narrow enough that a diagonal drag stays free.
-const SNAP_COS: f32 = 0.966;
 
 /// Below this much normal component along the view axis, a fisheye pair trace
 /// is drawn as its limiting straight line rather than as a circle (§20.8).
@@ -315,46 +312,117 @@ impl PerspectiveGuide {
 
     /// The orbit drag (§20.5): the world direction grabbed at `from` follows
     /// the pointer to `to`, by rotating the whole frame — always computed from
-    /// the drag's *start* state, so a long drag cannot drift and the snap
-    /// decision cannot flicker.
+    /// the drag's *start* state, so a long drag cannot drift.
     ///
     /// `locked` axes are held fixed. Rotations fixing one axis are exactly the
     /// turns about it, so one lock constrains the drag to that axis's orbit —
     /// lock the vertical and a 2-point setup stays 2-point under any drag —
     /// and two locks pin the frame entirely (the identity is the only rotation
-    /// fixing two axes). Unlocked, the drag is a free grab, *snapping* to a
-    /// pure axis turn whenever the rotation it implies lies within
-    /// [`SNAP_COS`] of a world axis.
+    /// fixing two axes). Unlocked, the drag is the free arc, and it carries the
+    /// grabbed direction to the pointer *exactly*.
+    ///
+    /// There is no snap. A free drag that happens to pass near an axis turn
+    /// stays free: the constrained turn is something the hand asks for by
+    /// grabbing the axis's [`horizon`](Self::horizons) — which is a lock held
+    /// for the drag's duration and arrives here as one — rather than something
+    /// the drag falls into partway through. Deciding it from the geometry meant
+    /// the same gesture could be free at the press and constrained a moment
+    /// later, and a rotation that changes what it is mid-drag reads as the tool
+    /// grabbing the guide out of the hand.
     #[must_use]
     pub fn dragged(&self, from: Vec2, to: Vec2, locked: [bool; 3]) -> Self {
         if locked.iter().filter(|l| **l).count() >= 2 {
             return self.clone();
         }
         let (r0, r1) = (self.ray(from), self.ray(to));
-        let dirs = self.axis_dirs();
-        let delta = if let Some(i) = locked.iter().position(|l| *l) {
-            axis_turn(dirs[i], r0, r1)
-        } else {
-            let w = r0.cross(r1);
-            if w.length_squared() < 1e-12 {
-                Quat::IDENTITY
-            } else {
-                // Snap to the closest world axis the free rotation nearly is.
-                let w = w.normalize();
-                let close = (0..3)
-                    .map(|i| (w.dot(dirs[i]).abs(), i))
-                    .max_by(|a, b| a.0.total_cmp(&b.0))
-                    .filter(|(d, _)| *d > SNAP_COS);
-                match close {
-                    Some((_, i)) => axis_turn(dirs[i], r0, r1),
-                    None => Quat::from_rotation_arc(r0, r1),
-                }
-            }
+        let delta = match locked.iter().position(|l| *l) {
+            Some(i) => axis_turn(self.axis_dirs()[i], r0, r1),
+            None if r0.cross(r1).length_squared() < 1e-12 => Quat::IDENTITY,
+            None => Quat::from_rotation_arc(r0, r1),
         };
         Self {
             rotation: (delta * self.rotation).normalize(),
             ..self.clone()
         }
+    }
+
+    /// The **vanishing trace** of pair plane `k` — the plane axes `k` and
+    /// `k + 1` span — exactly as the guide pass draws it (§20.2, §20.8): the
+    /// straight vanishing line of the rectilinear lens, or the circle the
+    /// fisheye bows it into.
+    ///
+    /// `None` when the trace is at infinity, which is the plane facing the
+    /// camera square-on: there is no curve on the canvas, and so nothing to
+    /// draw, to measure a station point against, or to grab.
+    pub fn pair_trace(&self, k: usize) -> Option<PairTrace> {
+        let dirs = self.axis_dirs();
+        let m = dirs[k % 3].cross(dirs[(k + 1) % 3]);
+        let (c, f) = (self.center, self.focal);
+        let planar = Vec2::new(m.x, m.y);
+        match self.lens {
+            // The vanishing line of the plane with (unit) normal `m` is the
+            // trace of the parallel plane through the eye: with the eye at
+            // distance f over c, that is `m.x·x + m.y·y + (f·m.z − m·c) = 0`,
+            // normalized so its first two coefficients are a unit normal and
+            // evaluating it *is* signed canvas-px distance.
+            Lens::Rectilinear => {
+                let len = planar.length();
+                (len >= LINE_EPS).then(|| PairTrace::Line {
+                    normal: planar / len,
+                    offset: (f * m.z - planar.dot(c)) / len,
+                })
+            }
+            // The stereographic image of the great circle of directions in the
+            // pair plane: an exact circle — conformality's gift (§20.8) — with
+            // center `c + 2f·m.xy/m.z` and radius `2f/|m.z|`, from substituting
+            // the inverse projection into `m·d = 0`. A pair plane containing the
+            // view axis (m.z ≈ 0) images straight, through the center of view.
+            Lens::Fisheye if m.z.abs() > FISHEYE_LINE_EPS => Some(PairTrace::Circle {
+                center: c + planar * (2.0 * f / m.z),
+                radius: 2.0 * f / m.z.abs(),
+            }),
+            Lens::Fisheye => planar.try_normalize().map(|n| PairTrace::Line {
+                normal: n,
+                offset: -n.dot(c),
+            }),
+        }
+    }
+
+    /// The **horizons**, indexed by the world axis each one turns the camera
+    /// about (§20.5): entry `n` is the vanishing trace of the plane *normal* to
+    /// axis `n` — the pair the other two axes span, drawn through their two
+    /// vanishing points. Grabbing it is how a constrained turn is asked for, so
+    /// this is the same list the overlay hit-tests a press against.
+    ///
+    /// That indexing is the whole point of the method: `pair_trace(k)` is
+    /// stated in terms of the two axes spanning the plane, and the drag is
+    /// stated in terms of the one axis it holds fixed. The two are related by
+    /// the cross product — pair `(n+1, n+2)` has normal `n` — and it is written
+    /// down once here rather than at each call site, where "the line between
+    /// the X and Z vanishing points turns about Y" is a step it is easy to take
+    /// off by one.
+    ///
+    /// `None` for a horizon that is not on the screen to be grabbed: a hidden
+    /// guide, one turned down to nothing, a trace at infinity, or a pair
+    /// missing one of its axes — the same rule [`pencils`](Self::pencils) is
+    /// gated by, over the same controls, because it exists for the same reason.
+    /// It applies to a pair rather than an axis for the reason
+    /// [`planes`](Self::planes) does: a plane is what two axes span, so it is
+    /// drawn exactly when both of them are.
+    ///
+    /// Unlike a pencil, a horizon is offered under **both** lenses. What the
+    /// hand grabs here is the curve itself and what it asks for is a turn about
+    /// an axis, and a turn is a statement in direction space that the lens
+    /// never enters (§20.8) — where a pencil would have had to promise a
+    /// straight line the fisheye does not draw.
+    pub fn horizons(&self) -> [Option<PairTrace>; 3] {
+        let shown = self.visible && self.opacity > 0.0;
+        std::array::from_fn(|n| {
+            let (i, j) = ((n + 1) % 3, (n + 2) % 3);
+            (shown && self.axes[i] && self.axes[j])
+                .then(|| self.pair_trace(i))
+                .flatten()
+        })
     }
 
     /// The pencils a stroke may align to (§20.6): one per world axis, and
@@ -443,79 +511,41 @@ impl PerspectiveGuide {
             Lens::Fisheye => dirs.map(|d| self.project(-d)),
         };
 
-        // Pair k spans axes (k, k+1): its vanishing trace and station point.
+        // Pair k spans axes (k, k+1): its vanishing trace ([`pair_trace`], the
+        // same curve the drag grabs to turn about the remaining axis) and its
+        // station point.
         let mut lines = [None; 3];
         let mut stations = [None; 3];
         for k in 0..3 {
-            let m = dirs[k].cross(dirs[(k + 1) % 3]);
-            match self.lens {
-                Lens::Rectilinear => {
-                    // The vanishing line of the plane with (unit) normal `m` is
-                    // the trace of the parallel plane through the eye: with the
-                    // eye at distance f over c, that is
-                    // `m.x·x + m.y·y + (f·m.z − m·c) = 0`, normalized so its
-                    // first two coefficients are a unit normal and evaluating
-                    // it *is* signed canvas-px distance. A plane facing the
-                    // camera square-on (m.xy ≈ 0) has its line at infinity:
-                    // nothing to draw, and no station point either.
-                    let planar = Vec2::new(m.x, m.y);
-                    let len = planar.length();
-                    if len < LINE_EPS {
-                        continue;
-                    }
-                    let n = planar / len;
-                    let offset = (f * m.z - planar.dot(c)) / len;
-                    lines[k] = Some(PairTrace::Line { normal: n, offset });
-
-                    // The station point: the eye, rotated into the picture
-                    // plane about the vanishing line (§20.2). The eye sits at
-                    // height f over c, at distance √(a² + f²) from the line
-                    // (a = the line's distance from c); rotating preserves that
-                    // distance, landing on the ray from the foot of c's
-                    // perpendicular through c. With the view axis in the pair
-                    // plane (a ≈ 0 — exact 2-point) either side is the same
-                    // rotation; the canvas-down side is the drawing-board
-                    // convention.
-                    let s = n.dot(c) + offset;
-                    let a = s.abs();
-                    let foot = c - n * s;
-                    let u = if a > f * 1e-3 {
-                        n * s.signum()
-                    } else if n.y.abs() > 0.5 {
-                        n * n.y.signum()
-                    } else {
-                        n * n.x.signum()
-                    };
-                    stations[k] = Some(foot + u * (a * a + f * f).sqrt());
-                }
-                Lens::Fisheye => {
-                    // The stereographic image of the great circle of directions
-                    // in the pair plane: an exact circle — conformality's gift
-                    // (§20.8) — with center `c + 2f·m.xy/m.z` and radius
-                    // `2f/|m.z|`, from substituting the inverse projection into
-                    // `m·d = 0`. A pair plane containing the view axis
-                    // (m.z ≈ 0) images straight, through the center of view.
-                    //
-                    // No station point: rotating the eye into the picture plane
-                    // is a *flat-plane* measuring construction, and under a
-                    // curved lens the distances it would transfer do not exist
-                    // on the canvas to be measured.
-                    if m.z.abs() > FISHEYE_LINE_EPS {
-                        lines[k] = Some(PairTrace::Circle {
-                            center: c + Vec2::new(m.x, m.y) * (2.0 * f / m.z),
-                            radius: 2.0 * f / m.z.abs(),
-                        });
-                    } else {
-                        let planar = Vec2::new(m.x, m.y);
-                        let Some(n) = planar.try_normalize() else {
-                            continue;
-                        };
-                        lines[k] = Some(PairTrace::Line {
-                            normal: n,
-                            offset: -n.dot(c),
-                        });
-                    }
-                }
+            lines[k] = self.pair_trace(k);
+            // The station point: the eye, rotated into the picture plane about
+            // the vanishing line (§20.2). The eye sits at height f over c, at
+            // distance √(a² + f²) from the line (a = the line's distance from
+            // c); rotating preserves that distance, landing on the ray from the
+            // foot of c's perpendicular through c. With the view axis in the
+            // pair plane (a ≈ 0 — exact 2-point) either side is the same
+            // rotation; the canvas-down side is the drawing-board convention.
+            //
+            // Rectilinear only, and never from the fisheye's straight traces:
+            // rotating the eye into the picture plane is a *flat-plane*
+            // measuring construction, and under a curved lens the distances it
+            // would transfer do not exist on the canvas to be measured. A pair
+            // with no line at all — the plane facing the camera square-on — has
+            // no station point either, and falls out of the same `let`.
+            if self.lens == Lens::Rectilinear
+                && let Some(PairTrace::Line { normal: n, offset }) = lines[k]
+            {
+                let s = n.dot(c) + offset;
+                let a = s.abs();
+                let foot = c - n * s;
+                let u = if a > f * 1e-3 {
+                    n * s.signum()
+                } else if n.y.abs() > 0.5 {
+                    n * n.y.signum()
+                } else {
+                    n * n.x.signum()
+                };
+                stations[k] = Some(foot + u * (a * a + f * f).sqrt());
             }
         }
 
@@ -798,6 +828,19 @@ pub enum PairTrace {
     Line { normal: Vec2, offset: f32 },
     /// `|p − center| = radius`, canvas px.
     Circle { center: Vec2, radius: f32 },
+}
+
+impl PairTrace {
+    /// How far canvas point `p` lies from the trace, canvas px — the one
+    /// number both kinds answer, which is why the shader draws them with one
+    /// `stroke_cov` and the overlay hit-tests them with one comparison
+    /// (§20.4, §20.5).
+    pub fn distance(self, p: Vec2) -> f32 {
+        match self {
+            PairTrace::Line { normal, offset } => (normal.dot(p) + offset).abs(),
+            PairTrace::Circle { center, radius } => (p.distance(center) - radius).abs(),
+        }
+    }
 }
 
 /// The derived, draw-ready guide: what the compositor's guide pass uniform
@@ -1403,8 +1446,8 @@ mod tests {
     // --- the orbit drag (§20.5) --------------------------------------------
 
     /// The drag's contract: the world direction under the pointer at the start
-    /// is under it at the end. (A diagonal drag, chosen away from every axis
-    /// so the snap stays out of the way.)
+    /// is under it at the end — for *any* drag, since the free arc is what an
+    /// unconstrained grab always is now (§20.5).
     #[test]
     fn a_drag_keeps_the_grabbed_direction_under_the_pointer() {
         let g = guide(0.5, 0.35, 0.2);
@@ -1450,23 +1493,140 @@ mod tests {
         assert_eq!(g.rotation, g2.rotation);
     }
 
-    /// The snap: a horizontal drag through the center of view implies a
-    /// rotation about the (near-vertical) Y axis, well within the snap cone —
-    /// so it turns purely about Y and the verticals stay parallel, without
-    /// any lock being held.
+    /// A free drag does **not** snap (§20.5). The case that used to fall into
+    /// one: a horizontal drag through the center of view implies a rotation
+    /// within a few degrees of the near-vertical Y axis, and it is still the
+    /// free arc — the grabbed direction lands exactly under the pointer, and Y
+    /// moves, because nothing asked for it to be held.
+    ///
+    /// Asserted as a pair, since "did not snap" on its own would also be
+    /// satisfied by a drag that did nothing at all: the exact carry is what
+    /// says the free arc ran, and Y's motion is what says the constrained turn
+    /// did not.
     #[test]
-    fn a_near_axis_drag_snaps_to_a_pure_axis_turn() {
+    fn a_drag_near_an_axis_turn_stays_free() {
         let g = guide(0.6, 0.0, 0.0);
-        let g2 = g.dragged(
+        let (from, to) = (
             g.center + Vec2::new(-100.0, 0.0),
-            g.center + Vec2::new(140.0, 0.0),
-            [false; 3],
+            g.center + Vec2::new(140.0, 12.0),
         );
-        let before = g.axis_dirs()[1];
-        assert!((g2.axis_dirs()[1] - before).length() < 1e-4, "snapped turn");
-        assert!(g2.scene().vps[1].is_none(), "still 2-point");
-        // And it did actually turn.
-        assert!((g2.rotation.dot(g.rotation).abs() - 1.0).abs() > 1e-4);
+        // The rotation this implies really is the near-Y one the old cone
+        // caught, so the test still stands where the snap used to fire.
+        let w = g.ray(from).cross(g.ray(to)).normalize();
+        assert!(w.dot(g.axis_dirs()[1]).abs() > 0.99, "not a near-Y turn");
+
+        let g2 = g.dragged(from, to, [false; 3]);
+        let world = g.rotation.inverse() * g.ray(from);
+        assert!(
+            ((g2.rotation * world).normalize() - g2.ray(to)).length() < 1e-4,
+            "the free arc carries the grabbed direction exactly"
+        );
+        assert!(
+            (g2.axis_dirs()[1] - g.axis_dirs()[1]).length() > 1e-3,
+            "Y was held without being asked for"
+        );
+    }
+
+    /// The horizon a press grabs to turn about axis `n` is the line **between
+    /// the other two axes' vanishing points** (§20.5) — the claim the whole
+    /// gesture is described by, checked by finding those two points on it.
+    ///
+    /// A vanishing point lying on a vanishing line is not a coincidence to be
+    /// spot-checked but the definition of both: the line is the image of the
+    /// pair plane's infinity, and each of the two axes spanning that plane
+    /// vanishes there. Checking it through [`PairTrace::distance`] — the same
+    /// expression the overlay hit-tests with — is what ties the index the drag
+    /// uses to the curve the hand can actually reach for.
+    #[test]
+    fn the_horizon_of_an_axis_runs_between_the_other_two_vanishing_points() {
+        let g = guide(0.5, 0.35, 0.2);
+        let s = g.scene();
+        for n in 0..3 {
+            let horizon = g.horizons()[n].expect("every axis shown");
+            for i in [(n + 1) % 3, (n + 2) % 3] {
+                let vp = s.vps[i].expect("3-point: all finite");
+                assert!(
+                    horizon.distance(vp) < 1e-2,
+                    "axis {n}'s horizon misses axis {i}'s vanishing point by {}px",
+                    horizon.distance(vp)
+                );
+            }
+            // …and it is the curve the pass draws, not a second derivation of
+            // it: the drag grabs exactly what is on the screen.
+            assert_eq!(Some(horizon), s.lines[(n + 1) % 3]);
+        }
+    }
+
+    /// Grabbing axis `n`'s horizon is a lock on `n` for one drag, so the turn it
+    /// asks for is the one the lock already gives: the axis holds still, and a
+    /// 2-point setup dragged by its horizon stays exactly 2-point.
+    ///
+    /// The horizon *is* the lock rather than a second path to the same place —
+    /// which is why this asserts the drag through the grabbed axis's index
+    /// agrees with the lock's own arm, and why there is no third rotation mode
+    /// to keep in step with the other two.
+    #[test]
+    fn a_horizon_grab_turns_about_its_axis() {
+        let g = guide(0.6, 0.0, 0.0);
+        let (from, to) = (
+            g.center + Vec2::new(-100.0, 40.0),
+            g.center + Vec2::new(180.0, -70.0),
+        );
+        for n in 0..3 {
+            let mut held = [false; 3];
+            held[n] = true;
+            let g2 = g.dragged(from, to, held);
+            assert!(
+                (g2.axis_dirs()[n] - g.axis_dirs()[n]).length() < 1e-4,
+                "axis {n}'s horizon moved axis {n}"
+            );
+            assert!(
+                (g2.rotation.dot(g.rotation).abs() - 1.0).abs() > 1e-4,
+                "axis {n}'s horizon turned nothing at all"
+            );
+        }
+        // The vertical one, in the terms an artist would put it in.
+        let mut held = [false; 3];
+        held[1] = true;
+        assert!(
+            g.dragged(from, to, held).scene().vps[1].is_none(),
+            "2-point"
+        );
+    }
+
+    /// A horizon is a handle only where its curve is drawn (§20.5): a plane is
+    /// what two axes span, so switching an axis's fan off takes with it the two
+    /// horizons whose planes it is a side of — leaving standing exactly the one
+    /// that turns *about* it, whose plane it is normal to. The guide's eye and
+    /// its opacity govern all three at once, as they govern a pencil.
+    #[test]
+    fn a_horizon_is_offered_only_where_it_is_drawn() {
+        let mut g = guide(0.5, 0.35, 0.2);
+        assert!(g.horizons().iter().all(Option::is_some));
+
+        g.axes = [true, false, true];
+        assert!(g.horizons()[1].is_some(), "the Z/X pair is untouched");
+        assert!(g.horizons()[0].is_none() && g.horizons()[2].is_none());
+
+        g.axes = [true; 3];
+        g.visible = false;
+        assert!(g.horizons().iter().all(Option::is_none), "a hidden guide");
+
+        g.visible = true;
+        g.opacity = 0.0;
+        assert!(g.horizons().iter().all(Option::is_none), "an invisible one");
+    }
+
+    /// A pair plane facing the camera square-on images its infinity nowhere on
+    /// the canvas, so there is no horizon to grab — the 1-point pose's X/Y pair,
+    /// which is also the one with no station point (§20.2). Turning about the
+    /// view axis is then asked for with the lock chip, the control that does not
+    /// need a curve to exist.
+    #[test]
+    fn a_trace_at_infinity_offers_no_horizon() {
+        let g = guide(0.0, 0.0, 0.0);
+        assert!(g.horizons()[2].is_none(), "Z's horizon is at infinity");
+        assert!(g.horizons()[0].is_some() && g.horizons()[1].is_some());
     }
 
     // --- the fisheye lens (§20.8) ------------------------------------------
@@ -1562,33 +1722,13 @@ mod tests {
 
     /// The drag's contract survives the lens swap: grab a direction through
     /// the fisheye and it is still under the pointer when the drag ends —
-    /// nothing about the orbit ever mentioned the projection.
-    ///
-    /// The target is *found* rather than fixed: the exact-carry contract
-    /// belongs to the free-arc branch, and which canvas drags fall into the
-    /// snap cone depends on the lens (fisheye rays bend, so a pair of points
-    /// clear of every axis under the rectilinear lens need not be here). The
-    /// fixture asserts its own precondition — the drag's rotation axis stays
-    /// a margin outside [`SNAP_COS`] — so a tuned threshold moves the choice,
-    /// never silently changes what is being tested.
+    /// nothing about the orbit ever mentioned the projection. Well past the
+    /// 45° ring, where the two lenses have long since parted company.
     #[test]
     fn a_fisheye_drag_keeps_the_grabbed_direction_under_the_pointer() {
         let g = fisheye(0.5, 0.35, 0.2);
         let from = g.center + Vec2::new(320.0, -260.0);
-        let dirs = g.axis_dirs();
-        let to = [
-            Vec2::new(-500.0, 1400.0),
-            Vec2::new(900.0, 700.0),
-            Vec2::new(-150.0, -900.0),
-            Vec2::new(1200.0, -350.0),
-        ]
-        .into_iter()
-        .map(|d| g.center + d)
-        .find(|to| {
-            let w = g.ray(from).cross(g.ray(*to)).normalize();
-            dirs.iter().all(|a| w.dot(*a).abs() < 0.9)
-        })
-        .expect("a candidate drag clear of the snap cone");
+        let to = g.center + Vec2::new(-500.0, 1400.0);
         let g2 = g.dragged(from, to, [false; 3]);
         let world = g.rotation.inverse() * g.ray(from);
         let now = g2.rotation * world;

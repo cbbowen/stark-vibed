@@ -330,19 +330,49 @@ The drag *is* the manipulation, classified by what the press lands on:
 - **Anywhere: grab the world.** The world direction under the pointer follows
   it — `PerspectiveGuide::dragged` rotates the frame by the arc from the
   press's eye-ray to the current one, always recomputed from the drag's start
-  so nothing drifts and nothing flickers. When the implied rotation axis lies
-  within ~15° of a world axis, the drag **snaps** to a pure turn about it: a
-  roughly-horizontal drag orbits the vertical axis and a 2-point setup stays
-  exactly 2-point, without a mode.
-- **Locks** are the same constraint made deliberate: rotations fixing an axis
-  are exactly the turns about it, so one locked axis confines the drag to its
-  orbit, and two pin the frame (the identity is the only rotation fixing two
-  axes). Locks are gesture state, held by the mode and released with it.
+  so nothing drifts. The grabbed direction lands exactly under the pointer, at
+  every pose and under either lens.
+- **A horizon: turn about one axis.** A pair plane's vanishing line runs
+  between the two vanishing points of the axes spanning it, which makes it the
+  line belonging to the *third* — the plane it is normal to. So grabbing the
+  line between the X and Z vanishing points orbits Y, and a 2-point setup
+  dragged by its own horizon stays exactly 2-point. `PerspectiveGuide::horizons`
+  is that list indexed the way the hand thinks of it, by the axis turned about,
+  and it offers a horizon only where the guide draws one — a hidden guide, a
+  pair missing an axis, or a trace at infinity puts up no handle, the gating
+  §20.6 states for the same reason.
+- **Locks** are the same constraint made standing rather than momentary:
+  rotations fixing an axis are exactly the turns about it, so one locked axis
+  confines *every* drag to its orbit, and two pin the frame (the identity is
+  the only rotation fixing two axes). A horizon grab is a lock on its axis held
+  for the drag's duration, and it arrives at `dragged` as one — so there is one
+  constrained-turn path rather than two, and a lit lock the horizon contradicts
+  pins the frame by the standing two-lock rule instead of by a new one. Locks
+  are gesture state, held by the mode and released with it.
 - **The 45° circle: drag the lens.** The circle's radius *is* the focal
   length, so `f` becomes the distance from the center to the pointer and the
   ring follows the hand exactly — the §20.1 identity made into a handle.
 - **The crosshair: move the construction.** The center of view follows the
   drag, grab-offset preserved.
+
+The crosshair is topmost, as it is drawn; below it the rings and the horizons
+compete on distance in **screen** px, so a press between two curves takes the
+one it is nearer and every handle stays equally grabbable at any magnification.
+A dead tie goes to the ring, which matters under the fisheye, where a pair
+trace can *be* one (§20.8).
+
+**There is no snap.** A free drag that passes near an axis turn stays free.
+This was the other way round — a rotation axis landing within ~15° of a world
+axis was taken to mean a pure turn about it — and the cone had to be entered
+*during* the drag, since the axis is only known once the hand has moved. So the
+same gesture was free at the press and constrained a moment later, and a
+rotation that changes what it is halfway through reads as the tool taking the
+guide out of the hand. Making it a region of the canvas instead moves the whole
+decision to the press, where the artist makes it: reach for the horizon and get
+the constrained turn, reach anywhere else and get the free one. The constraint
+is also now *visible before it applies* — the line you grab is the line drawn
+between the two vanishing points that stay put — where the cone could only be
+discovered by falling into it.
 
 Deferred, deliberately (§18 discipline — nothing inert ships):
 
@@ -508,8 +538,8 @@ being the thing the two of them span.
 
 The Fisheye toggle on the perspective bar swaps the guide's **lens** — the one
 map from a canvas point to the eye's ray through it — and nothing else. That is
-the whole design: the camera, the fans, the orbit drag, the axis snap and the
-locks are all stated in *direction space* (§20.3, §20.5), so a guide seen
+the whole design: the camera, the fans, the orbit drag, the horizon grab and
+the locks are all stated in *direction space* (§20.3, §20.5), so a guide seen
 through a different lens keeps every behavior and every theorem that lives on
 the view sphere, while everything drawn on the canvas bends to the new
 projection. `PerspectiveGuide::ray` and `::project` are the only functions that

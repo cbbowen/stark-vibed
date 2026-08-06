@@ -12,12 +12,18 @@
 //! full-viewport catcher owns the pointer, exactly as transform mode does
 //! (§16.6), and dragging on the canvas *is* the manipulation:
 //!
-//! - **anywhere** — grab the world: the direction under the pointer follows
-//!   it, and the rotation snaps to a pure turn about a world axis whenever the
-//!   drag nearly is one ([`PerspectiveGuide::dragged`], §20.5);
+//! - **anywhere** — grab the world: the direction under the pointer follows it
+//!   exactly, the free arc ([`PerspectiveGuide::dragged`], §20.5);
+//! - **a horizon** — turn about one axis: the vanishing line between two axes'
+//!   vanishing points belongs to the third, so grabbing the line between the X
+//!   and Z vanishing points orbits Y and nothing else
+//!   ([`PerspectiveGuide::horizons`]);
 //! - **the 45° circle** — drag the lens: the circle's radius *is* the focal
 //!   length, so it follows the hand exactly;
 //! - **the center-of-view crosshair** — move the whole construction.
+//!
+//! A constrained turn is therefore something the hand *reaches for*, not
+//! something a free drag falls into on its way past an axis.
 //!
 //! The **Perspective Guide bar** stands at the bottom for the mode's duration:
 //! per-axis locks (constraining the drag — lock the vertical and 2-point
@@ -38,7 +44,7 @@ use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::state::{AppState, GuideEdit, dispatch};
 use stark_core::command::ViewCommand;
 use stark_core::geom::Vec2;
-use stark_core::{Lens, PerspectiveGuide};
+use stark_core::{Lens, PairTrace, PerspectiveGuide};
 
 /// The axis hues, as CSS — the same values `guides.wesl` draws the fans in,
 /// so a lock chip and the lines it governs read as one thing.
@@ -47,9 +53,11 @@ const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
 
 /// Grab radius of the center-of-view crosshair, screen px.
 const CENTER_GRAB_PX: f32 = 14.0;
-/// Half-width of the 45° circle's grab band, screen px — converted by the
-/// zoom, so the ring is equally grabbable at any magnification.
-const CIRCLE_BAND_PX: f32 = 10.0;
+/// Half-width of the grab band around a drawn curve — a view-cone ring or a
+/// horizon — in screen px, so a handle is equally grabbable at any
+/// magnification. One number for both because the two are the same ask of the
+/// hand: put the pointer on a line about a pixel wide.
+const LINE_BAND_PX: f32 = 10.0;
 /// The lens's travel, canvas px: wide enough for any drawing, floored so the
 /// circle cannot be dragged through its own center into a degenerate camera.
 const FOCAL_RANGE: (f32, f32) = (120.0, 12000.0);
@@ -647,10 +655,10 @@ pub fn PerspectiveGuideBar() -> Element {
     }
 }
 
-/// What a press at a point would grab, tried nearest-first: the crosshair
-/// moves the construction, a ring is the lens, and everywhere else is the
-/// world.
-#[derive(Copy, Clone, PartialEq)]
+/// What a press at a point would grab, nearest wins: the crosshair moves the
+/// construction, a ring is the lens, a horizon is a turn about one axis, and
+/// everywhere else is the world.
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum GuideRegion {
     Center,
     /// A view-cone ring was grabbed; the payload is that ring's radius **per
@@ -659,19 +667,89 @@ enum GuideRegion {
     /// the fisheye shows two rings and the one grabbed must stay the one held
     /// — the 90° ring dragged inward must not hand off to the 45°.
     Focal(f32),
+    /// A **horizon** was grabbed (§20.5): the vanishing line between two axes'
+    /// vanishing points, which is the plane normal to the third — so the
+    /// payload is that third axis, and the drag turns about it. Grab the line
+    /// between the X and Z vanishing points and the camera orbits Y.
+    Horizon(usize),
     Orbit,
 }
 
 /// An in-flight guide drag: what it grabbed, where it started in canvas px,
-/// and the guide as it was then. Recomputed from the start on every move —
-/// the same discipline as the transform drag (§16.6), and here it is also
-/// what keeps the axis *snap* stable: the snap classifies the whole drag from
-/// its origin, so it cannot flicker between axes mid-gesture.
+/// and the guide as it was then. Recomputed from the start on every move — the
+/// same discipline as the transform drag (§16.6), and here it is also what
+/// makes a constrained turn a decision of the *press*: the region is
+/// classified once, so which axis a drag turns about is settled before the
+/// hand has moved and cannot change under it.
 #[derive(Clone)]
 struct Drag {
     region: GuideRegion,
     from: Vec2,
     start: PerspectiveGuide,
+}
+
+/// The guide's grabbable geometry, read out once when the overlay renders: all
+/// canvas-space, and `Copy`, so the pointer handlers can share the hit test
+/// without any of them holding the guide itself (which carries a name, and is
+/// not `Copy`).
+#[derive(Copy, Clone)]
+struct Handles {
+    center: Vec2,
+    focal: f32,
+    lens: Lens,
+    /// Horizon `n` is the one that turns about axis `n`, and it is `None`
+    /// where the guide does not draw it — you cannot grab a line that is not
+    /// on the screen ([`PerspectiveGuide::horizons`]).
+    horizons: [Option<PairTrace>; 3],
+}
+
+impl Handles {
+    fn of(g: &PerspectiveGuide) -> Self {
+        Self {
+            center: g.center,
+            focal: g.focal,
+            lens: g.lens,
+            horizons: g.horizons(),
+        }
+    }
+
+    /// What a press at canvas point `p` grabs, with the view at `zoom`.
+    ///
+    /// The crosshair is topmost, as it is drawn; below it the rings and the
+    /// horizons compete on **distance in screen px**, so a press between two
+    /// curves takes the one it is nearer and every handle is equally grabbable
+    /// at any magnification. A tie goes to the ring: under the fisheye a pair
+    /// trace can *be* a ring (in a 1-point pose the 90° ring is the X/Y
+    /// horizon, §20.8), and the lens drag is the older, more-reached-for
+    /// gesture to leave in the artist's hand where the two coincide.
+    fn at(self, p: Vec2, zoom: f32) -> GuideRegion {
+        if (p - self.center).length() * zoom < CENTER_GRAB_PX {
+            return GuideRegion::Center;
+        }
+        let dist = (p - self.center).length();
+        let (r45, r90) = self.lens.ring_factors();
+        let rings = [Some(r45), r90]
+            .into_iter()
+            .flatten()
+            .map(|factor| ((dist - self.focal * factor).abs() * zoom, factor));
+        let horizons = self
+            .horizons
+            .into_iter()
+            .enumerate()
+            .filter_map(|(n, trace)| Some((trace?.distance(p) * zoom, n)));
+        let ring = rings
+            .filter(|(err, _)| *err < LINE_BAND_PX)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let horizon = horizons
+            .filter(|(err, _)| *err < LINE_BAND_PX)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        match (ring, horizon) {
+            (Some((re, _)), Some((he, n))) if he < re => GuideRegion::Horizon(n),
+            (Some((_, factor)), _) => GuideRegion::Focal(factor),
+            (None, Some((_, n))) => GuideRegion::Horizon(n),
+            (None, None) => GuideRegion::Orbit,
+        }
+    }
 }
 
 /// The edit mode's catcher: a full-viewport surface that owns every pointer
@@ -698,33 +776,14 @@ pub fn GuideEditOverlay() -> Element {
     };
     let index = edit.index;
     let locked = edit.locked;
-    // The camera numbers the hit test needs, read out here. Taken as values
-    // rather than off `guide` so the closures below capture nothing that is not
-    // `Copy` — a guide carries a name now, and a handler that captured the whole
-    // guide could not be shared between the move and the release.
-    let (center, focal, lens) = (guide.center, guide.focal, guide.lens);
+    // The grabbable geometry, derived once. Taken as a value rather than off
+    // `guide` so the closures below capture nothing that is not `Copy` — a
+    // guide carries a name now, and a handler that captured the whole guide
+    // could not be shared between the move and the release.
+    let handles = Handles::of(&guide);
 
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
-    let classify = move |pc: Vec2| {
-        let on_screen = view.canvas_to_screen(center);
-        if (on_screen - view.canvas_to_screen(pc)).length() < CENTER_GRAB_PX {
-            return GuideRegion::Center;
-        }
-        // The lens's rings, nearest first: the fisheye shows two (45° and 90°,
-        // §20.8) and a press between them grabs whichever is closer.
-        let dist = (pc - center).length();
-        let (r45, r90) = lens.ring_factors();
-        let grabbed = [Some(r45), r90]
-            .into_iter()
-            .flatten()
-            .map(|factor| ((dist - focal * factor).abs() * view.zoom, factor))
-            .filter(|(err, _)| *err < CIRCLE_BAND_PX)
-            .min_by(|a, b| a.0.total_cmp(&b.0));
-        match grabbed {
-            Some((_, factor)) => GuideRegion::Focal(factor),
-            None => GuideRegion::Orbit,
-        }
-    };
+    let classify = move |pc: Vec2| handles.at(pc, view.zoom);
 
     let mut follow = move |e: &Event<PointerData>| {
         if nav.advance(e) {
@@ -743,14 +802,28 @@ pub fn GuideEditOverlay() -> Element {
                 g.focal =
                     ((pc - d.start.center).length() / factor).clamp(FOCAL_RANGE.0, FOCAL_RANGE.1);
             }),
+            // One drag under two constraints (§20.5). Grabbing a horizon holds
+            // the axis it belongs to for the gesture's duration, and holding an
+            // axis fixed is exactly turning about it — the same thing a lock
+            // chip says, so it arrives as one and there is no third rotation
+            // path to keep in step. Two constraints that cannot both hold —
+            // the Y lock lit and the X horizon grabbed — pin the frame, which
+            // is the standing rule for two locks rather than a new one.
+            //
             // The turn only, rather than the whole guide the drag was started
             // from: a drag is a statement about the camera's orientation, and
             // writing back a snapshot would also write back the name, opacity and
             // lattice as they stood at the press. Assigning the one field the drag
             // computes leaves nothing for a mid-drag edit elsewhere to lose.
-            GuideRegion::Orbit => update_guide(state, index, move |g| {
-                g.rotation = d.start.dragged(d.from, pc, locked).rotation;
-            }),
+            GuideRegion::Orbit | GuideRegion::Horizon(_) => {
+                let mut held = locked;
+                if let GuideRegion::Horizon(n) = d.region {
+                    held[n] = true;
+                }
+                update_guide(state, index, move |g| {
+                    g.rotation = d.start.dragged(d.from, pc, held).rotation;
+                })
+            }
         }
     };
     let mut finish = move |e: &Event<PointerData>| {
@@ -772,7 +845,10 @@ pub fn GuideEditOverlay() -> Element {
             _ => "cursor: grabbing;",
         },
         (_, None, Some(GuideRegion::Center)) => "cursor: move;",
-        (_, None, Some(GuideRegion::Focal(_))) => "cursor: grab;",
+        // A ring and a horizon are both handles lying on the canvas, so both
+        // read as something to take hold of; the free world grab is the one
+        // that is not a handle, and says so.
+        (_, None, Some(GuideRegion::Focal(_) | GuideRegion::Horizon(_))) => "cursor: grab;",
         (_, None, Some(GuideRegion::Orbit)) => "cursor: crosshair;",
         (_, None, None) => "",
     };
@@ -812,6 +888,114 @@ pub fn GuideEditOverlay() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where each of the default guide's horizons sits, as the one coordinate
+    /// it is a level set of.
+    ///
+    /// The default is 2-point at 30° of yaw, centred on the origin at a focal
+    /// length of 900, so all three horizons are canvas-aligned: a vertical
+    /// through each transverse vanishing point, and the level horizon through
+    /// the center of view. That is enough distinct geometry to press against
+    /// and simple enough to write the answers down — and it is asserted rather
+    /// than assumed, so a change to the default pose fails here instead of
+    /// quietly aiming every press below at empty canvas.
+    fn horizons_of(g: &PerspectiveGuide) -> [f32; 3] {
+        std::array::from_fn(|n| match g.horizons()[n] {
+            Some(PairTrace::Line { normal, offset }) => {
+                let axial = normal.x + normal.y;
+                assert!(
+                    (axial.abs() - 1.0).abs() < 1e-4,
+                    "horizon {n} is not canvas-aligned: {normal:?}"
+                );
+                -offset * axial
+            }
+            other => panic!("horizon {n} should be a straight line, got {other:?}"),
+        })
+    }
+
+    /// Grabbing a horizon asks to turn about **its own** axis (§20.5) — the
+    /// line between two axes' vanishing points belongs to the third, and the
+    /// press has to come back with that third one.
+    ///
+    /// The index is the whole risk here: every horizon is a line in the same
+    /// list and picking the wrong one is a gesture that turns the guide about
+    /// an axis the artist did not reach for — which looks like a bug in the
+    /// rotation, not in a subscript.
+    #[test]
+    fn a_press_on_a_horizon_grabs_the_axis_it_turns_about() {
+        let g = PerspectiveGuide::default();
+        let h = Handles::of(&g);
+        let [x_at, y_at, z_at] = horizons_of(&g);
+        // Axis 1's horizon is the level one through the center of view (the
+        // classical horizon); the other two are the verticals through the
+        // transverse vanishing points.
+        assert_eq!(h.at(Vec2::new(x_at, 400.0), 1.0), GuideRegion::Horizon(0));
+        assert_eq!(h.at(Vec2::new(300.0, y_at), 1.0), GuideRegion::Horizon(1));
+        assert_eq!(h.at(Vec2::new(z_at, 500.0), 1.0), GuideRegion::Horizon(2));
+    }
+
+    /// Everything else the press can land on still does, and the band is in
+    /// **screen** px: the same canvas point is a horizon grab zoomed out and
+    /// open world zoomed in, because what the hand can hit is a distance on the
+    /// screen, not on the canvas.
+    #[test]
+    fn the_other_regions_survive_the_horizons() {
+        let g = PerspectiveGuide::default();
+        let h = Handles::of(&g);
+        let [x_at, ..] = horizons_of(&g);
+        assert_eq!(h.at(Vec2::new(4.0, -3.0), 1.0), GuideRegion::Center);
+        assert_eq!(h.at(Vec2::new(0.0, g.focal), 1.0), GuideRegion::Focal(1.0));
+        assert_eq!(h.at(Vec2::new(100.0, 300.0), 1.0), GuideRegion::Orbit);
+
+        let near = Vec2::new(x_at + 50.0, 400.0);
+        assert_eq!(h.at(near, 1.0), GuideRegion::Orbit, "50px is a miss");
+        assert_eq!(
+            h.at(near, 0.1),
+            GuideRegion::Horizon(0),
+            "…and 5 screen px is a hit"
+        );
+    }
+
+    /// Two handles in reach: the nearer one wins, and an exact tie goes to the
+    /// ring. The tie is not hypothetical — a horizon crosses the 45° circle in
+    /// every pose, and under the fisheye a pair trace can *be* a ring (§20.8).
+    #[test]
+    fn the_nearer_handle_wins_and_a_tie_goes_to_the_ring() {
+        let g = PerspectiveGuide::default();
+        let h = Handles::of(&g);
+        let [_, y_at, _] = horizons_of(&g);
+        // Where the level horizon crosses the 45° ring, both errors are zero.
+        assert_eq!(
+            h.at(Vec2::new(g.focal, y_at), 1.0),
+            GuideRegion::Focal(1.0),
+            "a dead tie is the lens"
+        );
+        // 2px off the horizon and 8px outside the ring.
+        assert_eq!(
+            h.at(Vec2::new(g.focal + 8.0, y_at + 2.0), 1.0),
+            GuideRegion::Horizon(1)
+        );
+        // 4px off the horizon, all but on the ring.
+        assert_eq!(
+            h.at(Vec2::new(g.focal, y_at + 4.0), 1.0),
+            GuideRegion::Focal(1.0)
+        );
+    }
+
+    /// A horizon that is not drawn is not grabbable, and the press falls
+    /// through to the free world grab — the rule the guide states
+    /// ([`PerspectiveGuide::horizons`]) carried all the way to the hand.
+    /// Hiding an axis takes the two horizons whose planes it is a side of and
+    /// leaves the one that turns about it.
+    #[test]
+    fn an_undrawn_horizon_cannot_be_grabbed() {
+        let mut g = PerspectiveGuide::default();
+        let [x_at, y_at, _] = horizons_of(&g);
+        g.axes = [true, false, true];
+        let h = Handles::of(&g);
+        assert_eq!(h.at(Vec2::new(x_at, 400.0), 1.0), GuideRegion::Orbit);
+        assert_eq!(h.at(Vec2::new(300.0, y_at), 1.0), GuideRegion::Horizon(1));
+    }
 
     /// [`moved`] must agree with the list surgery it describes, for **every** pair of
     /// positions: take the guide at `from` out, put it back at `to`, and every other
