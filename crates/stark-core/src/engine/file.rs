@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 use super::{Engine, GpuBuild, ROOT_LAYER, build_gpu};
 use crate::assets::AssetId;
 use crate::colorspace::ColorSpaceId;
+use crate::content::AssetNeed;
 use crate::document::{
     Action, ActionKind, ActorId, BrushShape, DocState, LayerId, LinearTimeline, effective_actions,
 };
@@ -77,9 +78,33 @@ impl Engine {
             .collect()
     }
 
-    /// Serialize the document to the compact on-disk container (§8).
+    /// Serialize the document to the compact on-disk container, bundling
+    /// everything it names (§8). A file that needs nothing but itself.
     pub fn save_bytes(&self) -> Result<Vec<u8>> {
         self.document_file().to_bytes()
+    }
+
+    /// The same, leaving out content the opening app can produce itself — the ids
+    /// of the assets it ships with (§8, §12.4).
+    ///
+    /// Worth it because the bundle dominates the file: a log is fitted paths and
+    /// a canvas ground is megabytes, so a doodle on the built-in gesso weighs 2.8
+    /// MB of which almost none is the painting. The id stays in the file either
+    /// way, so what is left out is looked up rather than guessed at, and bytes
+    /// that do not hash to it are refused rather than substituted.
+    ///
+    /// What it costs is self-containment, which is why it is a separate call and
+    /// not a flag on the other one: the result needs an app that still ships the
+    /// content, and [`DocumentFile::unbundled_content`] is what the opener has to
+    /// settle before replaying. Anything not in `resolvable` is bundled as usual,
+    /// so passing an empty slice is [`Engine::save_bytes`].
+    pub fn save_bytes_resolvable(&self, resolvable: &[AssetId]) -> Result<Vec<u8>> {
+        let mut file = self.document_file();
+        let keep = |id: &AssetId| !resolvable.contains(id);
+        file.assets.retain(|(id, _)| keep(id));
+        file.surfaces
+            .retain(|(id, _)| AssetNeed::ground(*id).is_none_or(|n| keep(&n.content())));
+        file.to_bytes()
     }
 
     /// Empty this engine's document and install everything `file` needs **before**
@@ -127,6 +152,18 @@ impl Engine {
             if let Err(e) = self.accept_surface(*id, bytes) {
                 tracing::warn!("skipping a canvas ground this document names: {e}");
             }
+        }
+        // Loud, because the alternative is a picture that is quietly wrong: a
+        // ground that is not registered when its strokes replay deposits them
+        // through the flat stand-in, into stored pixels (§6.4). A caller that
+        // means to open a lean file settles `unresolved_content` first; reaching
+        // here with anything outstanding means nobody did.
+        let missing = self.unresolved_content(file);
+        if !missing.is_empty() {
+            tracing::error!(
+                ?missing,
+                "replaying a document whose content is neither bundled nor loaded;                  strokes made on it will not come back the same"
+            );
         }
         // The empty document is on the log's initial ground, so bind it — a timelapse
         // renders its first frame before any action has moved it.
@@ -192,6 +229,35 @@ impl Engine {
     /// Whether a brush asset is loaded in this engine.
     pub fn has_asset(&self, id: AssetId) -> bool {
         self.apply.assets.contains(id)
+    }
+
+    /// Whether this engine already holds what `need` names, in whichever of the
+    /// two stores it belongs to.
+    pub fn holds(&self, need: AssetNeed) -> bool {
+        match need {
+            AssetNeed::Brush(id) => self.has_asset(id),
+            AssetNeed::Ground(_) => need
+                .surface()
+                .is_some_and(|id| self.surface_bytes(id).is_some()),
+        }
+    }
+
+    /// What `file` needs that neither it bundles nor this engine already holds
+    /// (§8, §12.4).
+    ///
+    /// A lean file leaves out content it expects the opening app to produce — the
+    /// assets that ship with it — so this is the bill, and it has to be settled
+    /// **before** [`Engine::load_document`] replays the log. A `SetSurface` whose
+    /// height map is not registered when its strokes replay deposits them through
+    /// the flat stand-in, and those pixels are stored (§6.4).
+    ///
+    /// Empty for a file that bundles everything, which is what
+    /// [`Engine::save_bytes`] writes.
+    pub fn unresolved_content(&self, file: &DocumentFile) -> Vec<AssetNeed> {
+        file.unbundled_content()
+            .into_iter()
+            .filter(|need| !self.holds(*need))
+            .collect()
     }
 
     /// Start a fresh, empty document in `color_space`, on `surface`.

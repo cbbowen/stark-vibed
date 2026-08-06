@@ -7,6 +7,7 @@
 //! [`request_paint`](crate::state::request_paint)), and calls
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
+use stark_core::AssetNeed;
 use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::Tool;
 use stark_core::geom::Extent2;
@@ -261,14 +262,26 @@ impl Renderer {
         self.engine.scrub_labels()
     }
 
-    /// Serialize the document — the action log, not the pixels (§8).
-    pub fn save_bytes(&self) -> stark_core::Result<Vec<u8>> {
-        self.engine.save_bytes()
+    /// Serialize the document — the action log, not the pixels (§8) — leaving out
+    /// content this build ships with, which it resolves again on open (§8's
+    /// version 6). There is no fat-save wrapper because the frontend has no use
+    /// for one: it is the app that owns the assets it is declining to carry.
+    pub fn save_bytes_resolvable(
+        &self,
+        resolvable: &[stark_core::AssetId],
+    ) -> stark_core::Result<Vec<u8>> {
+        self.engine.save_bytes_resolvable(resolvable)
     }
 
-    /// Replace the document by replaying a saved log (§8).
-    pub fn load_bytes(&mut self, bytes: &[u8]) -> stark_core::Result<()> {
-        self.engine.load_bytes(bytes)
+    /// What `file` names that neither it carries nor this engine already holds —
+    /// settle it before [`Renderer::load_document`].
+    pub fn unresolved_content(&self, file: &stark_core::DocumentFile) -> Vec<AssetNeed> {
+        self.engine.unresolved_content(file)
+    }
+
+    /// Replace the document by replaying a loaded log (§8).
+    pub fn load_document(&mut self, file: &stark_core::DocumentFile) {
+        self.engine.load_document(file);
     }
 
     /// What exporting would produce, without producing it (§15.6).

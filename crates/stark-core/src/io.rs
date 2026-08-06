@@ -75,7 +75,32 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// stopped meaning something just as much as to one that never did. If a tool
 /// ever needs recording, it comes back with whatever distinguishes the tools,
 /// which is not this enum.
-const WIRE_VERSION: u32 = 5;
+/// **6** — the bundle may be incomplete (§8, §12.4). A file may now leave out
+/// content the opening app can produce itself, and the ids of the assets that
+/// ship with the app are exactly that: a document painted on the built-in gesso
+/// ground carried 2.8 MB of a height map every install already had.
+///
+/// Nothing about the *layout* changed, which is why this bump is about meaning
+/// rather than decoding. A version-5 file promises a complete bundle; a
+/// version-6 one does not, and a reader that does not know to resolve the
+/// difference would install what it found, replay, and deposit every stroke made
+/// on that ground through the flat stand-in — silently, into stored pixels
+/// (§6.4). Refusing the file is the only safe thing an older build can do, and
+/// the version is what lets it.
+///
+/// This walks back part of version 4's reasoning, so it is worth saying what has
+/// changed since and what has not. Version 4's problem was that a ground was a
+/// *label*: `Gesso` resolved through a table, and re-authoring `Gesso.png` gave
+/// you different pixels with nothing able to notice. That is not what this is. A
+/// ground is a content id now, the id stays in the file, and content that does
+/// not hash to it is refused rather than substituted — so the failure mode of a
+/// re-authored asset is a document that will not open, not one that opens wrong.
+///
+/// What is genuinely given up is self-containment: a lean file needs the app that
+/// wrote it, where a version-5 file needed nothing. That is a real cost and the
+/// reason `save_bytes` still writes everything unless it is told what may be left
+/// out.
+const WIRE_VERSION: u32 = 6;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

@@ -13,6 +13,7 @@
 //! Naming them apart in the menu matters more than it looks: an artist who
 //! "exports" thinking they saved has lost the painting.
 
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
@@ -25,8 +26,20 @@ use stark_core::{Background, ExportScale, LayerId, Rendered};
 const DOC_EXT: &str = "stark";
 
 /// Write the document — the action log, not the pixels (§8).
+///
+/// Lean: content this build ships with is named but not carried, because the
+/// bundle is what a `.stark` file weighs. A log is fitted paths; a canvas ground
+/// is megabytes, so a doodle on the built-in gesso used to be 2.8 MB of which
+/// almost none was the painting. Opening one resolves those ids out of the app's
+/// own files (`crate::builtin_ids`), and the catalog is append-only so that keeps
+/// working.
 pub fn save_document(state: AppState) {
-    let bytes = state.renderer.read().as_ref().map(|r| r.save_bytes());
+    let resolvable = crate::builtin_ids::resolvable();
+    let bytes = state
+        .renderer
+        .read()
+        .as_ref()
+        .map(|r| r.save_bytes_resolvable(&resolvable));
     match bytes {
         Some(Ok(bytes)) => {
             if let Err(e) = download_bytes(
@@ -52,23 +65,46 @@ pub fn open_document(state: AppState) {
     // so the signals are copied out of the capture on each call rather than
     // mutated in place. `Signal` is `Copy`, which is what makes that free.
     pick_file(&format!(".{DOC_EXT}"), move |_name, bytes| {
-        let (mut renderer, mut obs) = (state.renderer, state.obs);
-        let mut guard = renderer.write();
-        let Some(r) = guard.as_mut() else { return };
-        // One replay, and it is right the first time: the file carries the grounds
-        // it was painted on (§6.4, §8), and `load_document` installs them before
-        // replaying a single action. That is what this used to spend a second full
-        // replay on — fetch the ground the document *ended* on, then run the whole
-        // log again — and it never covered the case of a document that switched
-        // grounds part-way, since it only ever fetched one.
-        match r.load_bytes(&bytes) {
-            Ok(()) => {
-                r.paint();
-                obs.set(Some(r.observe()));
-                tracing::info!(bytes = bytes.len(), "document loaded");
+        let file = match stark_core::DocumentFile::from_bytes(&bytes) {
+            Ok(file) => file,
+            Err(e) => return tracing::error!("could not open that file: {e}"),
+        };
+        // What the file names but does not carry, less whatever this session has
+        // already loaded. Empty for a document saved with everything bundled.
+        let owed = {
+            let renderer = state.renderer;
+            let guard = renderer.read();
+            let Some(r) = guard.as_ref() else { return };
+            r.unresolved_content(&file)
+        };
+        spawn_forever(async move {
+            // Resolved out of this build's own assets, and *before* the replay:
+            // the file carries the grounds it was painted on or names ones this
+            // app ships, and either way they have to be registered before a single
+            // action runs, or every stroke made on one deposits through the flat
+            // stand-in into stored pixels (§6.4, §8).
+            let supplied = crate::builtin_ids::fetch(&owed).await;
+            if supplied.len() != owed.len() {
+                // Refused rather than opened wrong. A file has no peer to fall
+                // back on, so content this build cannot produce is the end of it —
+                // which is the whole reason the shipped catalog is append-only.
+                tracing::error!(
+                    ?owed,
+                    "this painting uses content this version of Stark does not have"
+                );
+                return;
             }
-            Err(e) => tracing::error!("could not open that file: {e}"),
-        }
+            let (mut renderer, mut obs) = (state.renderer, state.obs);
+            let mut guard = renderer.write();
+            let Some(r) = guard.as_mut() else { return };
+            for (need, content) in &supplied {
+                crate::builtin_ids::install(r, *need, content);
+            }
+            r.load_document(&file);
+            r.paint();
+            obs.set(Some(r.observe()));
+            tracing::info!(bytes = bytes.len(), "document loaded");
+        });
     });
 }
 

@@ -12,8 +12,8 @@
 //! only the *bytes* still need fetching.
 //!
 //! **Ids only, never bytes.** Embedding the images would undo the reason they are
-//! fetched at runtime in the first place — Linen alone is 14 MB, and the point of
-//! `asset!` is to keep it out of the wasm binary.
+//! fetched at runtime in the first place — the four bundled assets are 17 MB of
+//! source, and the point of `asset!` is to keep them out of the wasm binary.
 
 use std::path::Path;
 

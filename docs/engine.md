@@ -96,6 +96,25 @@ log names is bundled, not just the one it ends on: the tooth reads whichever was
 in force when a stroke was made, so a document that switched part-way needs both
 to come back the same.
 
+**A bundle may be deliberately incomplete** (format version 6). The log is fitted
+paths and the bundle is megabytes — the built-in grounds canonicalize to 2.0 and
+2.8 MB — so a doodle painted on a ground the app ships with was almost entirely a
+copy of a file the reader already had. `save_bytes_resolvable` leaves out content
+the opening app can produce itself, and `DocumentFile::unbundled_content` is the
+bill: **settle it before replaying**, since a `SetSurface` whose height map is not
+registered when its strokes replay deposits them through the flat stand-in.
+
+This walks back part of the paragraph above, so it is worth being exact about
+what changed. That bug was a ground named by a *label*, resolved against whatever
+table the reader held — re-author `Gesso.png` and the pixels changed with nothing
+able to notice. A lean file still names the ground by the hash of its image;
+content that does not hash to it is refused rather than substituted. So the
+failure mode of a re-authored asset is a document that **will not open**, not one
+that opens wrong, and the frontend's shipped catalog is append-only (a test) so
+that it does not arise. What is genuinely given up is self-containment: a lean
+file needs an app that still ships the content, which is why `save_bytes` still
+writes everything and the lean path is a separate call.
+
 Because every `Action` carries its `ActionId`, a saved file is also a valid
 collaboration log: opening it, painting, and later sharing it with a peer all use
 the same records. A solo file simply has a single actor.

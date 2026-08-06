@@ -15,6 +15,7 @@
 //! local one; nothing here embeds an image.
 
 use stark_assetid::AssetId;
+use stark_net::AssetNeed;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_ids.rs"));
 
@@ -46,6 +47,49 @@ pub fn resolvable() -> Vec<AssetId> {
     BUILTIN_IDS.iter().map(|(_, id)| *id).collect()
 }
 
+/// Read content out of this app's own bundle, by content id (§12.4, §8).
+///
+/// The one place a need becomes bytes without the network: a session settling
+/// what a host left out, a session answering `ResolveLocally` mid-stroke, and a
+/// lean save file being opened all want exactly this.
+///
+/// A local read — same-origin on the web, the file the binary shipped beside
+/// natively. Anything that will not resolve is simply left out of the result, and
+/// what that costs depends on who asked: a session falls back to fetching it off a
+/// peer, while a file has nobody to ask and must refuse to open (§6.4).
+pub async fn fetch(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
+    let mut out = Vec::new();
+    for &need in owed {
+        let Some(asset) = asset_for(need.content()) else {
+            // Not ours to resolve. Either the host omitted something we never
+            // promised, or this build's catalog moved under a document that
+            // referenced the old one.
+            tracing::warn!(?need, "owed content is not in this build's bundle");
+            continue;
+        };
+        match dioxus::asset_resolver::read_asset_bytes(asset).await {
+            Ok(bytes) => out.push((need, bytes)),
+            Err(e) => tracing::warn!(?need, "could not read owed content locally: {e}"),
+        }
+    }
+    out
+}
+
+/// Install one piece of locally-resolved content into the engine, under the id
+/// that asked for it — the same two calls the network path makes for a resolved
+/// asset, because locally-resolved content is not a different kind of content,
+/// only a different way of getting hold of it.
+///
+/// `accept_surface` re-derives the id and refuses bytes that do not match, so a
+/// catalog file that changed out from under a document is caught there rather
+/// than deposited through the wrong weave; both wrappers log their own refusal.
+pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
+    match need.surface() {
+        Some(id) => r.accept_surface(id, bytes),
+        None => r.import_brush(bytes),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +116,50 @@ mod tests {
             assert!(
                 claimed.contains(path),
                 "assets/{path} is bundled and hashed but no catalog row offers it"
+            );
+        }
+    }
+
+    /// **The catalog is append-only.** Every id here has been shipped, so a saved
+    /// document may reference one and rely on this build to supply it (§8's
+    /// version 6). Re-authoring `Gesso.png` or dropping a shape does not break a
+    /// picker — it strands every painting made on it, which will then refuse to
+    /// open rather than open wrong.
+    ///
+    /// Adding a row is free. Changing or removing one is a decision about other
+    /// people's files, so it fails here first: add the new asset alongside, and
+    /// retire the old one only when nothing can still be pointing at it.
+    #[test]
+    fn the_shipped_catalog_is_append_only() {
+        // Shipped ids, oldest first. Append; do not edit.
+        const SHIPPED: &[(&str, &str)] = &[
+            (
+                "shape/Flat.png",
+                "4051f4c5e66e9e7a008a1367d31aaced9e524b06104dd9fc4509abffccd265a1",
+            ),
+            (
+                "shape/Worn_Bristles.png",
+                "62b76803f7c06460854d3268cd41d868f271ba1cf54ecc53b7387cb81d83979e",
+            ),
+            (
+                "surface/Gesso.png",
+                "0b88d740a6b3f35f57b5f1d6e4064ac7b4ace0d2c2abab417bbcce762602deb6",
+            ),
+            (
+                "surface/Linen.png",
+                "9d8105e76895f6e47b456177da890816a2983112548d7d748cd42c5d67cd5dc1",
+            ),
+        ];
+        for (path, want) in SHIPPED {
+            let got = BUILTIN_IDS
+                .iter()
+                .find(|(p, _)| p == path)
+                .unwrap_or_else(|| panic!("{path} has shipped and is no longer bundled"));
+            assert_eq!(
+                got.1.to_hex(),
+                *want,
+                "{path} has shipped and its content changed; documents painted on the \
+                 old one can no longer be opened. Add the new asset as a new row."
             );
         }
     }

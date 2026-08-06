@@ -603,8 +603,9 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
 /// **A joiner that already has a ground is not sent it — and still replays on it.**
 ///
 /// The whole point of the promise (§12.4). Ground bytes are the biggest thing that
-/// moves in this system: the app's own Linen weave is 14 MB, and before this every
-/// join pulled a copy of it over the network into an install that shipped with it.
+/// moves in this system: the app's own grounds canonicalize to 2.0 and 2.8 MB,
+/// against a log that is a handful of fitted paths. Before this, every join pulled
+/// a copy over the network into an install that shipped with it.
 ///
 /// The hazard the omission introduces is *replay*, not live painting. The snapshot
 /// here already contains a toothed stroke made on the gesso ground, so the joiner

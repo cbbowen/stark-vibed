@@ -20,6 +20,22 @@ const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
 const STROKE_A: &[Vec2] = &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, 20.0)];
 const STROKE_B: &[Vec2] = &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)];
 
+/// A dry, toothed stroke: it reaches only for the ground's peaks, so its mark *is*
+/// the ground and a missing height map is visible in the pixels.
+fn paint_toothed(engine: &mut Engine) {
+    stroke_with(
+        engine,
+        stark_core::document::BrushParams {
+            color: RED,
+            radius: 30.0,
+            tooth: 0.55,
+            drain: 0.005,
+            ..Default::default()
+        },
+        &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)],
+    );
+}
+
 fn paint_two(engine: &mut Engine) {
     paint(engine, RED, 30.0, STROKE_A);
     paint(engine, GREEN, 30.0, STROKE_B);
@@ -331,4 +347,97 @@ fn a_ground_that_is_not_what_it_claims_is_refused() {
             .expect("linen's own bytes are accepted under linen's id"),
         linen
     );
+}
+
+/// **A lean file names the ground it was painted on but does not carry it, and
+/// still replays to the same pixels** (§8's version 6, §12.4).
+///
+/// The bundle is what a `.stark` file weighs — a log is fitted paths and a canvas
+/// ground is megabytes — so a document painted on an asset the app ships with
+/// carried a copy of it for nothing. The id stays in the file; only the bytes go.
+///
+/// What has to hold is that resolving the id back and installing it **before the
+/// replay** lands on the identical picture. A toothed brush on the irregular gesso
+/// ground is the only configuration where getting that wrong shows up at all:
+/// without the height map the deposition gate is 1.0 everywhere and the stroke
+/// comes back smooth, into stored pixels that no later arrival un-bakes (§6.4).
+#[test]
+fn a_lean_file_replays_identically_once_its_content_is_resolved() {
+    let Some(mut original) = engine_or_skip_blue() else {
+        return;
+    };
+    let gesso_bytes = stark_testdata::assets::gesso();
+    let gesso = original
+        .import_surface(&gesso_bytes)
+        .expect("import ground");
+    original.process(DocCommand::SetSurface(gesso));
+    paint_toothed(&mut original);
+    let expected = original.render_to_image();
+
+    // Saved twice: once bundling everything, once leaving out the ground on the
+    // promise that whoever opens it can produce that id.
+    let SurfaceId::Image(ground_id) = gesso else {
+        panic!("an imported ground is an image");
+    };
+    let fat = original.save_bytes().expect("serialize");
+    let lean = original
+        .save_bytes_resolvable(&[ground_id])
+        .expect("serialize lean");
+    assert!(
+        lean.len() * 4 < fat.len(),
+        "leaving the ground out should dominate the file: {} vs {} bytes",
+        lean.len(),
+        fat.len()
+    );
+
+    let file = stark_core::DocumentFile::from_bytes(&lean).expect("decode");
+    assert!(
+        file.surfaces.is_empty(),
+        "the ground was promised, so it should not be in the bundle"
+    );
+
+    // Opening it: the bill, settled before a single action replays.
+    let mut loaded = engine_or_skip_blue().expect("adapter");
+    let owed = loaded.unresolved_content(&file);
+    assert_eq!(
+        owed,
+        vec![stark_core::AssetNeed::Ground(ground_id)],
+        "a lean file has to say what it is missing, or the opener replays without it"
+    );
+    for need in &owed {
+        loaded
+            .accept_surface(need.surface().expect("a ground"), &gesso_bytes)
+            .expect("resolve locally");
+    }
+    loaded.load_document(&file);
+
+    assert!(
+        images_match(&loaded.render_to_image(), &expected, 0),
+        "a resolved lean file must replay to the same pixels as the fat one"
+    );
+}
+
+/// The other half: a file that bundles everything owes nothing, so the ordinary
+/// open path is untouched by any of this.
+#[test]
+fn a_complete_file_owes_nothing() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let gesso = engine
+        .import_surface(&stark_testdata::assets::gesso())
+        .expect("import ground");
+    engine.process(DocCommand::SetSurface(gesso));
+    paint_toothed(&mut engine);
+
+    let file = stark_core::DocumentFile::from_bytes(&engine.save_bytes().expect("serialize"))
+        .expect("decode");
+    let mut fresh = engine_or_skip_blue().expect("adapter");
+    assert!(fresh.unresolved_content(&file).is_empty());
+    fresh.load_document(&file);
+    assert!(images_match(
+        &fresh.render_to_image(),
+        &engine.render_to_image(),
+        0
+    ));
 }

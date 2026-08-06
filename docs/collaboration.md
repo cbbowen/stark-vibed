@@ -96,8 +96,9 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   makes provenance irrelevant to correctness, which is what it is for — but it
   also means the app cannot tell that a ground it is being sent is the one it
   ships with. So the joiner *says*: it sends the ids of its bundled assets and the
-  host omits them. The app's own Linen weave is 14 MB, and it was moving into
-  installs that already had it.
+  host omits them. The app's own grounds canonicalize to 2.0 and 2.8 MB — against
+  a log that is a handful of fitted paths — and they were moving into installs that
+  already had them.
 
   The list is a **promise**, not an inventory — "I can get these", not "I have
   these loaded" — and it is knowable ahead of the bytes only because the frontend
