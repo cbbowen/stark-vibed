@@ -76,8 +76,13 @@ pub enum Request {
 pub(crate) fn answer(mirror: &Mutex<Mirror>, req: Request) -> crate::Result<Vec<u8>> {
     Ok(match req {
         Request::Snapshot => {
-            let file = mirror.lock().expect("mirror poisoned").document_file();
-            file.to_bytes()?
+            // Cloned under the lock, materialized and encoded outside it: asset
+            // payloads are refcounted handles in the mirror, so the only real
+            // work the lock covers is the log — and a joiner arriving mid-session
+            // does not stall this peer's receive loop for the size of its own
+            // brush library.
+            let snapshot = mirror.lock().expect("mirror poisoned").snapshot();
+            snapshot.into_file().to_bytes()?
         }
     })
 }

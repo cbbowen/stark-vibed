@@ -16,10 +16,11 @@
 //! direct paths (each new gossip neighbor triggers a channel bootstrap; see
 //! [`transport::direct`](crate::transport)).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use iroh::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_blobs::Hash;
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
@@ -36,12 +37,6 @@ use crate::mirror::Mirror;
 use crate::proto::{Request, Stamped, Wire};
 use crate::ticket::SessionTicket;
 use crate::waitlist::{Admit, Waitlist};
-
-/// [`AssetId`] → the blob hash its canonical bytes transfer under. An asset id
-/// names the *decoded coverage* (encoding-independent), so it is not directly
-/// fetchable over blobs; whoever holds the bytes knows both names and carries
-/// the translation in [`Stamped`].
-type AssetHashes = Arc<Mutex<HashMap<AssetId, Hash>>>;
 
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -91,7 +86,7 @@ pub enum AssetNeed {
 impl AssetNeed {
     /// The id the bytes transfer under. A ground's is the [`AssetId`] inside its
     /// [`SurfaceId`]; `Flat` has none, and never generates a need.
-    fn content(self) -> Option<AssetId> {
+    pub(crate) fn content(self) -> Option<AssetId> {
         match self {
             AssetNeed::Brush(id) => Some(id),
             AssetNeed::Ground(id) => crate::mirror::ground_content_id(id),
@@ -107,7 +102,7 @@ pub enum RemoteEvent {
     /// `need` names before the action that wanted it: a brush image to
     /// [`Engine::import_brush`](stark_core::Engine::import_brush), a canvas ground to
     /// [`Engine::accept_surface`](stark_core::Engine::accept_surface).
-    Asset { need: AssetNeed, bytes: Vec<u8> },
+    Asset { need: AssetNeed, bytes: Bytes },
     /// A committed remote action — feed to
     /// [`Engine::merge_remote`](stark_core::Engine::merge_remote).
     Action(Action),
@@ -178,7 +173,6 @@ pub struct CollabSession {
     dialer: Dialer,
     sender: GossipSender,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
-    asset_hashes: AssetHashes,
     waitlist: Arc<Waitlist>,
     events: Option<mpsc::UnboundedReceiver<RemoteEvent>>,
     ticket_addr: EndpointAddr,
@@ -281,18 +275,13 @@ impl CollabSession {
         let neighbors = Arc::new(Mutex::new(neighbors));
         // Every piece of content already known (the hosted document's, or the
         // joiner's snapshot's) enters the blob store so this peer can serve it, and
-        // the hash map so this peer's own actions referencing it can broadcast the
-        // transfer hash. Brush images and canvas grounds alike — both are content
-        // an action can be waiting on.
-        let asset_hashes: AssetHashes = Arc::new(Mutex::new(
-            mirror
-                .lock()
-                .expect("mirror poisoned")
-                .contents()
-                .into_iter()
-                .map(|(id, bytes)| (id, dialer.add_blob(bytes)))
-                .collect(),
-        ));
+        // its transfer hash is recorded so this peer's own actions referencing it can
+        // broadcast one. Brush images and canvas grounds alike — both are content an
+        // action can be waiting on.
+        mirror
+            .lock()
+            .expect("mirror poisoned")
+            .seed_blobs(|bytes| dialer.add_blob(bytes));
         let (tx, rx) = mpsc::unbounded_channel();
         let waitlist = Arc::new(Waitlist::new(mirror, tx.clone()));
         // The receive loop is the only thing that dials afterwards (to fetch
@@ -301,7 +290,6 @@ impl CollabSession {
             dialer.clone(),
             receiver,
             neighbors.clone(),
-            asset_hashes.clone(),
             waitlist.clone(),
             tx,
         ));
@@ -312,7 +300,6 @@ impl CollabSession {
             dialer,
             sender,
             neighbors,
-            asset_hashes,
             waitlist,
             events: Some(rx),
             ticket_addr,
@@ -346,7 +333,6 @@ impl CollabSession {
             sender: self.sender.clone(),
             dialer: self.dialer.clone(),
             neighbors: self.neighbors.clone(),
-            asset_hashes: self.asset_hashes.clone(),
             waitlist: self.waitlist.clone(),
         }
     }
@@ -365,7 +351,7 @@ impl CollabSession {
     /// Call it *before* committing an action that references the content: the
     /// broadcast attaches a transfer hash looked up here, and an action that goes out
     /// without one leaves receivers unable to fetch what it needs.
-    pub fn add_content(&self, need: AssetNeed, bytes: Vec<u8>) {
+    pub fn add_content(&self, need: AssetNeed, bytes: impl Into<Bytes>) {
         self.broadcaster().add_content(need, bytes);
     }
 
@@ -389,7 +375,6 @@ pub struct Broadcaster {
     sender: GossipSender,
     dialer: Dialer,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
-    asset_hashes: AssetHashes,
     waitlist: Arc<Waitlist>,
 }
 
@@ -417,14 +402,7 @@ impl Broadcaster {
         // it know what to fetch. Registered before the action could have been
         // committed (`add_content` accompanies the import, for a ground as for a
         // brush), so the lookup only misses for a payload that references nothing.
-        let asset = need.and_then(|need| {
-            let id = need.content()?;
-            self.asset_hashes
-                .lock()
-                .expect("asset hashes poisoned")
-                .get(&id)
-                .copied()
-        });
+        let asset = need.and_then(|need| self.waitlist.transfer_hash(need.content()?));
         let stamped = Stamped {
             origin: self.local_id,
             asset,
@@ -438,19 +416,16 @@ impl Broadcaster {
     }
 
     /// See [`CollabSession::add_content`].
-    pub fn add_content(&self, need: AssetNeed, bytes: Vec<u8>) {
-        let Some(id) = need.content() else {
+    pub fn add_content(&self, need: AssetNeed, bytes: impl Into<Bytes>) {
+        if need.content().is_none() {
             return;
-        };
+        }
+        let bytes = bytes.into();
+        let hash = self.dialer.add_blob(bytes.clone());
         // Through the waitlist, not straight into the mirror: a remote action
         // may already be parked on exactly this content, and a local import
         // satisfies it as well as a fetch would.
-        self.waitlist.imported(need, bytes.clone());
-        let hash = self.dialer.add_blob(bytes);
-        self.asset_hashes
-            .lock()
-            .expect("asset hashes poisoned")
-            .insert(id, hash);
+        self.waitlist.imported(need, bytes, hash);
     }
 
     /// How each gossip-neighbor session member is reached right now — direct
@@ -493,7 +468,6 @@ async fn recv_loop(
     dialer: Dialer,
     mut gossip: GossipReceiver,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
-    asset_hashes: AssetHashes,
     waitlist: Arc<Waitlist>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
@@ -559,7 +533,6 @@ async fn recv_loop(
                         asset_sources(origin, from),
                         need,
                         hash,
-                        asset_hashes.clone(),
                         waitlist.clone(),
                     ));
                 }
@@ -596,7 +569,6 @@ async fn recv_loop(
                         asset_sources(origin, from),
                         need,
                         hash,
-                        asset_hashes.clone(),
                         waitlist.clone(),
                     ));
                     continue;
@@ -664,7 +636,6 @@ async fn resolve_asset(
     sources: Vec<EndpointId>,
     need: AssetNeed,
     hash: Hash,
-    asset_hashes: AssetHashes,
     waitlist: Arc<Waitlist>,
 ) {
     let attempts = match need {
@@ -678,14 +649,9 @@ async fn resolve_asset(
         waitlist.abandoned(need);
         return;
     };
-    // Announce it onward: this peer can serve the bytes now.
-    if let Some(id) = need.content() {
-        asset_hashes
-            .lock()
-            .expect("asset hashes poisoned")
-            .insert(id, hash);
-    }
-    waitlist.resolved(need, bytes);
+    // Recording the transfer hash with the bytes is what lets this peer announce
+    // the content onward on its own actions.
+    waitlist.resolved(need, bytes, hash);
 }
 
 /// The content an action depends on, if any: the brush image a stroke stamps with
@@ -720,7 +686,7 @@ async fn fetch_asset(
     hash: Hash,
     attempts: Option<u32>,
     waitlist: &Waitlist,
-) -> Option<Vec<u8>> {
+) -> Option<Bytes> {
     let mut delay = ASSET_RETRY_DELAY;
     let mut round = 0u32;
     loop {

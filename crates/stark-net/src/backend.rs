@@ -156,7 +156,7 @@ mod imp {
         /// Returns immediately with the content hash (computed synchronously —
         /// broadcasts referencing it need not wait); the store insert runs
         /// detached.
-        pub fn add_blob(&self, bytes: Vec<u8>) -> Hash {
+        pub fn add_blob(&self, bytes: bytes::Bytes) -> Hash {
             let hash = Hash::new(&bytes);
             let blobs = self.blobs.clone();
             n0_future::task::spawn(async move {
@@ -169,7 +169,7 @@ mod imp {
 
         /// Fetch one blob from `provider`, hash-verified into the local store
         /// (so this peer can serve it onward), and return its bytes.
-        pub async fn fetch_blob(&self, provider: EndpointId, hash: Hash) -> Result<Vec<u8>> {
+        pub async fn fetch_blob(&self, provider: EndpointId, hash: Hash) -> Result<bytes::Bytes> {
             let net_err = |e: &dyn std::fmt::Display| crate::NetError::Other(e.to_string());
             let conn = self
                 .endpoint
@@ -183,8 +183,7 @@ mod imp {
                 .fetch(conn, hash)
                 .await
                 .map_err(|e| net_err(&e))?;
-            let bytes = self.blobs.get_bytes(hash).await.map_err(|e| net_err(&e))?;
-            Ok(bytes.to_vec())
+            self.blobs.get_bytes(hash).await.map_err(|e| net_err(&e))
         }
 
         /// With public infrastructure, wait (bounded) for the relay handshake so

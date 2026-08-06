@@ -39,6 +39,9 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::{Arc, Mutex};
 
+use bytes::Bytes;
+use iroh_blobs::Hash;
+use stark_core::AssetId;
 use stark_core::document::Action;
 use tokio::sync::mpsc;
 
@@ -119,8 +122,8 @@ impl Waitlist {
 
     /// Content fetched off a peer: hand it to the engine, then release
     /// everything parked behind it — in that order, which is the point.
-    pub fn resolved(&self, need: AssetNeed, bytes: Vec<u8>) {
-        let parked = self.take_parked(need, Some(&bytes));
+    pub fn resolved(&self, need: AssetNeed, bytes: Bytes, hash: Hash) {
+        let parked = self.take_parked(need, Some((bytes.clone(), hash)));
         if self.events.send(RemoteEvent::Asset { need, bytes }).is_ok() {
             self.release(parked);
         }
@@ -129,9 +132,17 @@ impl Waitlist {
     /// Content this client imported locally. The engine already holds it, so
     /// only the parked actions are released — but they *are* released, because a
     /// local import satisfies a remote action's need exactly as a fetch does.
-    pub fn imported(&self, need: AssetNeed, bytes: Vec<u8>) {
-        let parked = self.take_parked(need, Some(&bytes));
+    pub fn imported(&self, need: AssetNeed, bytes: Bytes, hash: Hash) {
+        let parked = self.take_parked(need, Some((bytes, hash)));
         self.release(parked);
+    }
+
+    /// The hash content transfers under, for a broadcast to attach.
+    pub fn transfer_hash(&self, id: AssetId) -> Option<Hash> {
+        self.mirror
+            .lock()
+            .expect("mirror poisoned")
+            .transfer_hash(id)
     }
 
     /// Nothing could be fetched: release the parked actions to whatever fallback
@@ -156,13 +167,13 @@ impl Waitlist {
     }
 
     /// Record content, if any, and detach everything parked behind `need`.
-    fn take_parked(&self, need: AssetNeed, bytes: Option<&[u8]>) -> Vec<Action> {
+    fn take_parked(&self, need: AssetNeed, content: Option<(Bytes, Hash)>) -> Vec<Action> {
         let mut parked = self.parked.lock().expect("waitlist poisoned");
-        if let Some(bytes) = bytes {
+        if let Some((bytes, hash)) = content {
             self.mirror
                 .lock()
                 .expect("mirror poisoned")
-                .insert_content(need, bytes.to_vec());
+                .insert_content(need, bytes, hash);
         }
         parked.remove(&need).unwrap_or_default()
     }

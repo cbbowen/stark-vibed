@@ -6,9 +6,15 @@
 //! The mirror sees every action exactly once — the initial snapshot, local
 //! commits via [`CollabSession::broadcast`](crate::CollabSession::broadcast),
 //! and remote actions from gossip — so any peer can bootstrap any other.
+//!
+//! Content is held as [`Bytes`], which is what lets the mirror's copy, the blob
+//! store's and the one handed to the engine be the same allocation, and what
+//! keeps [`Mirror::snapshot`] off the lock for longer than the log takes.
 
 use std::collections::{BTreeMap, HashMap};
 
+use bytes::Bytes;
+use iroh_blobs::Hash;
 use stark_core::document::{Action, ActionId};
 use stark_core::{AssetId, BuildId, CanvasMeta, DocumentFile, SurfaceId};
 
@@ -20,14 +26,53 @@ pub(crate) struct Mirror {
     canvas: CanvasMeta,
     /// Sorted by [`ActionId`] — iteration yields the total order.
     actions: BTreeMap<ActionId, Action>,
-    assets: HashMap<AssetId, Vec<u8>>,
+    assets: HashMap<AssetId, Bytes>,
     /// The canvas grounds the log names, as canonical height maps (§6.4).
     ///
     /// Kept apart from `assets` for the reason the save file keeps them apart: the
     /// two are both grayscale PNGs and both content-addressed, but a brush mask
     /// decodes as luminance × alpha and a ground as channel 0, so one bag would hand
     /// each store the other's bytes to reinterpret.
-    surfaces: HashMap<SurfaceId, Vec<u8>>,
+    surfaces: HashMap<SurfaceId, Bytes>,
+    /// The blob hash each piece of content transfers under.
+    ///
+    /// An [`AssetId`] names the *decoded coverage* (encoding-independent), so it is
+    /// not itself fetchable over blobs; the transfer hash is the BLAKE3 of the bytes
+    /// as they move. Held beside the content rather than in a map of its own, so
+    /// there is one thing to keep in step with an import instead of two.
+    hashes: HashMap<AssetId, Hash>,
+}
+
+/// A session snapshot's parts, cloned out of the mirror. Every clone here is a
+/// refcount bump or a `BTreeMap` walk, so the caller's lock covers the log and
+/// nothing else; turning it into the save-format container — which copies the
+/// bytes, since [`DocumentFile`] owns its payloads — happens off the lock in
+/// [`Snapshot::into_file`].
+pub(crate) struct Snapshot {
+    build: BuildId,
+    canvas: CanvasMeta,
+    actions: Vec<Action>,
+    assets: Vec<(AssetId, Bytes)>,
+    surfaces: Vec<(SurfaceId, Bytes)>,
+}
+
+impl Snapshot {
+    pub fn into_file(self) -> DocumentFile {
+        let mut file = DocumentFile::new(self.actions);
+        file.app_build = self.build;
+        file.canvas = self.canvas;
+        file.assets = self
+            .assets
+            .into_iter()
+            .map(|(id, b)| (id, b.to_vec()))
+            .collect();
+        file.surfaces = self
+            .surfaces
+            .into_iter()
+            .map(|(id, b)| (id, b.to_vec()))
+            .collect();
+        file
+    }
 }
 
 impl Mirror {
@@ -36,25 +81,34 @@ impl Mirror {
             build: file.app_build.clone(),
             canvas: file.canvas.clone(),
             actions: file.actions.iter().map(|a| (a.id, a.clone())).collect(),
-            assets: file.assets.iter().cloned().collect(),
-            surfaces: file.surfaces.iter().cloned().collect(),
+            assets: file
+                .assets
+                .iter()
+                .map(|(id, b)| (*id, Bytes::from(b.clone())))
+                .collect(),
+            surfaces: file
+                .surfaces
+                .iter()
+                .map(|(id, b)| (*id, Bytes::from(b.clone())))
+                .collect(),
+            hashes: HashMap::new(),
         }
     }
 
-    /// The full session snapshot, as the save-format container (§8 ==
-    /// §12.4's join payload): total-ordered actions + every known brush asset
-    /// and canvas ground.
-    pub fn document_file(&self) -> DocumentFile {
-        let mut file = DocumentFile::new(self.actions.values().cloned().collect());
-        file.app_build = self.build.clone();
-        file.canvas = self.canvas.clone();
-        file.assets = self.assets.iter().map(|(id, b)| (*id, b.clone())).collect();
-        file.surfaces = self
-            .surfaces
-            .iter()
-            .map(|(id, b)| (*id, b.clone()))
-            .collect();
-        file
+    /// The full session snapshot (§8 == §12.4's join payload): total-ordered
+    /// actions + every known brush asset and canvas ground.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            build: self.build.clone(),
+            canvas: self.canvas.clone(),
+            actions: self.actions.values().cloned().collect(),
+            assets: self.assets.iter().map(|(id, b)| (*id, b.clone())).collect(),
+            surfaces: self
+                .surfaces
+                .iter()
+                .map(|(id, b)| (*id, b.clone()))
+                .collect(),
+        }
     }
 
     /// Record an action; returns whether it was new.
@@ -62,8 +116,9 @@ impl Mirror {
         self.actions.insert(action.id, action).is_none()
     }
 
-    /// Record content a peer may ask for, under the id that names it.
-    pub fn insert_content(&mut self, need: AssetNeed, bytes: Vec<u8>) {
+    /// Record content a peer may ask for, under the id that names it and the
+    /// hash it transfers under.
+    pub fn insert_content(&mut self, need: AssetNeed, bytes: Bytes, hash: Hash) {
         match need {
             AssetNeed::Brush(id) => {
                 self.assets.insert(id, bytes);
@@ -71,6 +126,9 @@ impl Mirror {
             AssetNeed::Ground(id) => {
                 self.surfaces.insert(id, bytes);
             }
+        }
+        if let Some(id) = need.content() {
+            self.hashes.insert(id, hash);
         }
     }
 
@@ -83,21 +141,32 @@ impl Mirror {
         }
     }
 
-    /// Every piece of content this peer can serve, paired with the id it transfers
-    /// under — for seeding the blob store at session start.
+    /// The hash content transfers under, for a broadcast to attach so receivers
+    /// that lack it know what to fetch.
+    pub fn transfer_hash(&self, id: AssetId) -> Option<Hash> {
+        self.hashes.get(&id).copied()
+    }
+
+    /// Hand every piece of content this peer already holds to the blob store, and
+    /// record what it transfers under — the session-start seed, from the hosted
+    /// document or a joiner's snapshot alike.
     ///
-    /// Both kinds, keyed by their common content hash: a ground's transfer id is the
-    /// [`AssetId`] inside its [`SurfaceId`], because both are the same BLAKE3 of the
-    /// same canonical bytes. The blob store only ever moves bytes, so it has no need
-    /// to know which kind it is holding — that is the receiver's question, answered
-    /// by the action that referenced them.
-    pub fn contents(&self) -> Vec<(AssetId, Vec<u8>)> {
+    /// Both kinds go in, keyed by their common content hash: a ground's transfer id
+    /// is the [`AssetId`] inside its [`SurfaceId`], because both are the same BLAKE3
+    /// of the same canonical bytes. The blob store only ever moves bytes, so it has
+    /// no need to know which kind it is holding — that is the receiver's question,
+    /// answered by the action that referenced them.
+    pub fn seed_blobs(&mut self, add: impl Fn(Bytes) -> Hash) {
         let assets = self.assets.iter().map(|(id, b)| (*id, b.clone()));
         let grounds = self
             .surfaces
             .iter()
             .filter_map(|(id, b)| Some((ground_content_id(*id)?, b.clone())));
-        assets.chain(grounds).collect()
+        let hashes: Vec<(AssetId, Hash)> = assets
+            .chain(grounds)
+            .map(|(id, bytes)| (id, add(bytes)))
+            .collect();
+        self.hashes.extend(hashes);
     }
 }
 
