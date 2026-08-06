@@ -65,56 +65,25 @@ mirrors_wesl!(SliceUniform, 16);
 /// slice layout declares, taken from the struct rather than written down.
 const SLICE_SLOT: u64 = std::mem::size_of::<SliceUniform>() as u64;
 
-/// Mirrors `Stamp` in `dynamics.wesl` — **exactly**, lane for lane. The shader
-/// names its nine vec4s `a`–`i` and this names its fields the same, so the two can
-/// be read side by side; what each lane holds is documented in both places because
-/// nothing checks the correspondence. A mismatch is a wgpu validation error at
-/// best and a silently misread lane at worst, which is why [`SLOT`] is pinned by a
-/// compile-time assert rather than written out as a number.
-///
-/// Every slot is a pure function of the [`StrokeRecord`] and the piece's own
-/// geometry, computed in plain CPU float math, so replay is deterministic (§12.1).
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct Stamp {
-    /// `a`: the sweep frame — position .xy (region px) + travel tangent .zw (unit).
-    a: [f32; 4],
-    /// `b`: radius (px), travel / radius (0 for a standing tip), λ_lift, λ_deposit.
-    /// λ = ln(1 − axis) ≤ 0, clamped away from −∞.
-    b: [f32; 4],
-    /// `c`: the brush's own colour channels .xyz + per-unit opacity .w.
-    /// **Undrained** — the falloff is applied per fragment from its own arc length,
-    /// never baked in per segment (`dynamics.wesl::stroke_drain`).
-    c: [f32; 4],
-    /// `d`: under-rect origin .xy (region px, integral), orientation .z
-    /// (turns ∈ [0, 1), picks the prefix-τ slice), the `drain` falloff per canvas
-    /// px .w.
-    d: [f32; 4],
-    /// `e`: the `add` rate per unit exposure .x, the segment's signed curvature .y
-    /// (1/region px, 0 = a straight sweep), and the midpoint `exchange` samples the
-    /// canvas at .zw.
-    e: [f32; 4],
-    /// `f`: colour-dynamics frequency per lookup axis (across the stroke, along
-    /// it) .xy, 1/NOISE_TILE_PX .z.
-    f: [f32; 4],
-    /// `g`: per colour-channel noise amplitude .xyz (all 0 = off), arc length at
-    /// this slot's start .w.
-    g: [f32; 4],
-    /// `h`: the per-stroke noise translation .xy; the tooth's **bearing fraction**
-    /// .z — what the tool books its half of the transfer against, having no ground
-    /// of its own (§6.4); λ_bleed .w, nonzero only on a bleed slot.
-    h: [f32; 4],
-    /// `i`: the deposition tooth .x (0 = the ground gates nothing), and the map
-    /// from this dispatch's *region* texel to the weave: `uv = rt·.y + .zw`, with
-    /// the piece's own origin already folded into the bias (§6.4).
-    i: [f32; 4],
-}
+// The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
+// time (`stark-shaders/build/mirror.rs`) — lanes, offsets, and the documentation of
+// what each lane holds, which is now on the generated fields.
+//
+// It used to be written out here as well, nine `[f32; 4]` fields against the shader's
+// nine `vec4`s, with a second copy of the lane map in the doc comments and nothing
+// checking either half. Both halves drifted: this one still described `e.zw` as the
+// midpoint `exchange` samples the canvas at, some time after the shader had stopped
+// reading the lane at all. The shader decides how the lanes are *read*, so it is now
+// the only place they are written down.
+//
+// Every slot is still a pure function of the `StrokeRecord` and the piece's own
+// geometry, computed in plain CPU float math, so replay is deterministic (§12.1).
+use stark_shaders::mirror::Stamp;
 
 /// One slot's window into the stamp buffer, and the `min_binding_size` its layout
-/// declares — both of which have to be `Stamp`'s own size, so they are taken from
-/// it rather than written down. The assert is what pins the shader-side `9 × vec4`.
+/// declares — both of which have to be `Stamp`'s own size, so they are taken from it
+/// rather than written down.
 const SLOT: usize = std::mem::size_of::<Stamp>();
-mirrors_wesl!(Stamp, 144);
 
 /// One slot of the sequential swept-exchange loop (§6.2), and the dispatches it
 /// stands for.
@@ -2430,22 +2399,9 @@ mod tests {
         );
     }
 
-    /// The `Stamp` uniform is nine `vec4`s on both sides of the boundary.
-    ///
-    /// [`SLOT`] pins the Rust struct's size, and the layout's `min_binding_size` is
-    /// taken from it — but nothing on this side can see the WESL declaration, which is
-    /// the half that decides how the lanes are *read*. Appending a tenth lane to one
-    /// side is a wire-format break of exactly the kind §8 warns about for postcard,
-    /// and it would show up as every slot after the first reading its neighbour's tail.
-    #[test]
-    fn the_stamp_struct_has_the_same_nine_lanes_on_both_sides() {
-        let src = stark_shaders::dynamics();
-        let at = src
-            .find("struct Stamp {")
-            .expect("the shader declares Stamp");
-        let body = &src[at..at + src[at..].find('}').expect("Stamp is closed")];
-        let lanes = body.matches("vec4<f32>").count();
-        assert_eq!(lanes, 9, "the shader's Stamp has {lanes} vec4 lanes");
-        assert_eq!(SLOT, lanes * 16, "the Rust Stamp is not those nine lanes");
-    }
+    // `the_stamp_struct_has_the_same_nine_lanes_on_both_sides` stood here, counting
+    // `vec4<f32>` in the shader source and comparing against [`SLOT`]. There is no
+    // longer a second declaration for it to disagree with: `Stamp` is generated from
+    // the WESL, and the generator emits `offset_of` assertions per lane, so a tenth
+    // lane moves both sides at once and a mistake in the layout is a build failure.
 }

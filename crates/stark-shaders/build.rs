@@ -5,8 +5,19 @@
 
 use std::path::{Path, PathBuf};
 
+// `build.rs` is a crate root, so its modules resolve beside it rather than in a
+// directory named for it. The path keeps the generator out of the package root.
+#[path = "build/mirror.rs"]
+mod mirror;
+
 // The one list, shared with `lib.rs` (see there).
 include!("src/entry_points.rs");
+
+/// The WESL structs the host fills in, and which are therefore generated into Rust
+/// rather than transcribed (`build/mirror.rs`).
+///
+/// Grows as each hand-written mirror is retired.
+const MIRRORS: &[(&str, &str)] = &[("dynamics", "Stamp")];
 
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
@@ -25,6 +36,13 @@ fn main() {
     // WESL module so the trained coefficients stay sourced from the licensed
     // submodule rather than copied into this repo (§6.7).
     let gen_dir = generate_mixbox_poly();
+
+    // Mirror the host-shared WESL structs into Rust. Read from the *unlinked*
+    // sources: the linker mangles `Stamp` to `package__1dynamics_Stamp`, emits it
+    // once per artifact that reaches it, and has already stripped whatever no entry
+    // point uses — none of which the declaration in the tree has done.
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    mirror::generate(Path::new(SHADER_DIR), &out_dir.join("mirror.rs"), MIRRORS);
 
     // Generated modules resolve out of `OUT_DIR`; everything else out of the tree.
     //

@@ -7,7 +7,21 @@ publish = false
 
 # WESL sources are linked/compiled in build.rs and embedded via `include_wesl!`.
 [dependencies]
+# For the derives on the generated host mirrors (`src/lib.rs`'s `mirror`).
+bytemuck = { workspace = true }
 wesl = { workspace = true }
 
 [build-dependencies]
-wesl = { workspace = true }
+# `eval` for the type resolver and the WGSL size/alignment tables the mirrors are
+# laid out from. Build-only: the resolver keeps build-dependency features separate,
+# so the library above does not carry it.
+wesl = { workspace = true, features = ["eval"] }
+# Emitting the host mirrors (`build/mirror.rs`). `quote` builds the code as tokens
+# rather than as text, and `prettyplease` renders it readably — which matters here
+# because the lane documentation the generator carries over is meant to be read.
+# `default-features = false` drops the bridge to the compiler's `libproc_macro`,
+# which only exists inside a real macro expansion and is dead weight in a script.
+prettyplease = "0.2"
+proc-macro2 = { version = "1", default-features = false }
+quote = { version = "1", default-features = false }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }

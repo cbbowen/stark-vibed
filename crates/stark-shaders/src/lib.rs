@@ -8,6 +8,16 @@ use wesl::include_wesl;
 mod entry_points;
 pub use entry_points::ENTRY_POINTS;
 
+/// Rust mirrors of the WESL structs the host fills in, generated from the shader
+/// sources at build time (`build/mirror.rs`).
+///
+/// The shader decides how the lanes are read, so the shader's declaration is the
+/// only one: these are not transcriptions to be kept in step, and the lane
+/// documentation on each field is the WESL comment itself.
+pub mod mirror {
+    include!(concat!(env!("OUT_DIR"), "/mirror.rs"));
+}
+
 /// WGSL swept-segment stamp pass (§6.2). Colour-space agnostic — both spaces use
 /// it, since the deposit is the same premultiplied "over" whatever the channels mean.
 pub fn stamp() -> &'static str {
