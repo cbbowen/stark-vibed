@@ -11,7 +11,7 @@ use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::peer::{GestureFrame, PeerFrame, StrokeHead};
 use stark_core::{Engine, RgbaImage, SurfaceId};
-use stark_net::{AssetNeed, CollabSession, Events, NetOptions, RemoteEvent, SessionTicket};
+use stark_net::{AssetNeed, CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 const SIZE: Extent2 = Extent2 {
     width: 256,
@@ -143,10 +143,14 @@ async fn two_peers_converge_over_iroh() {
         .expect("ticket text");
 
     // --- peer side: join, catch up ---
-    let (peer_session, mut peer_events, snapshot) =
-        CollabSession::join(&ticket, NetOptions::local())
-            .await
-            .expect("join session");
+    let Joined {
+        session: peer_session,
+        events: mut peer_events,
+        document: snapshot,
+        ..
+    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+        .await
+        .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // The pre-share stroke arrived via the snapshot.
@@ -238,10 +242,14 @@ async fn custom_shapes_replicate_mid_session() {
         .parse()
         .expect("ticket text");
 
-    let (peer_session, mut peer_events, snapshot) =
-        CollabSession::join(&ticket, NetOptions::local())
-            .await
-            .expect("join session");
+    let Joined {
+        session: peer_session,
+        events: mut peer_events,
+        document: snapshot,
+        ..
+    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+        .await
+        .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // --- live-preview path: a stroke head names a shape the peer lacks ---
@@ -357,10 +365,14 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
         .to_string()
         .parse()
         .expect("ticket text");
-    let (peer_session, mut peer_events, snapshot) =
-        CollabSession::join(&ticket, NetOptions::local())
-            .await
-            .expect("join session");
+    let Joined {
+        session: peer_session,
+        events: mut peer_events,
+        document: snapshot,
+        ..
+    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+        .await
+        .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // The host takes up a ground mid-session. The peer has never held these bytes:
@@ -439,10 +451,14 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
         .to_string()
         .parse()
         .expect("ticket text");
-    let (peer_session, mut peer_events, snapshot) =
-        CollabSession::join(&ticket, NetOptions::local())
-            .await
-            .expect("join session");
+    let Joined {
+        session: peer_session,
+        events: mut peer_events,
+        document: snapshot,
+        ..
+    } = CollabSession::join(&ticket, NetOptions::local(), &[])
+        .await
+        .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // Imported into the engine but deliberately NOT registered with the session:
@@ -503,10 +519,14 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     let ticket = |s: &CollabSession| -> SessionTicket {
         s.ticket().to_string().parse().expect("ticket text")
     };
-    let (middle_session, mut middle_events, middle_doc) =
-        CollabSession::join(&ticket(&host_session), NetOptions::local())
-            .await
-            .expect("middle joins the host");
+    let Joined {
+        session: middle_session,
+        events: mut middle_events,
+        document: middle_doc,
+        ..
+    } = CollabSession::join(&ticket(&host_session), NetOptions::local(), &[])
+        .await
+        .expect("middle joins the host");
     middle.join_collaboration(&middle_doc, middle_session.actor_id());
 
     // The host paints with a shape imported mid-session; `middle` fetches it.
@@ -534,10 +554,14 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
 
     // A newcomer joins through the *intermediary*, whose snapshot must carry the
     // shape it fetched rather than only the ones it was handed at join time.
-    let (far_session, mut far_events, far_doc) =
-        CollabSession::join(&ticket(&middle_session), NetOptions::local())
-            .await
-            .expect("far joins through the intermediary");
+    let Joined {
+        session: far_session,
+        events: mut far_events,
+        document: far_doc,
+        ..
+    } = CollabSession::join(&ticket(&middle_session), NetOptions::local(), &[])
+        .await
+        .expect("far joins through the intermediary");
     far.join_collaboration(&far_doc, far_session.actor_id());
     drain_events(&mut far_events, &mut far);
 
@@ -553,4 +577,101 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     host_session.shutdown().await;
     middle_session.shutdown().await;
     far_session.shutdown().await;
+}
+
+/// **A joiner that already has a ground is not sent it — and still replays on it.**
+///
+/// The whole point of the promise (§12.4). Ground bytes are the biggest thing that
+/// moves in this system: the app's own Linen weave is 14 MB, and before this every
+/// join pulled a copy of it over the network into an install that shipped with it.
+///
+/// The hazard the omission introduces is *replay*, not live painting. The snapshot
+/// here already contains a toothed stroke made on the gesso ground, so the joiner
+/// has to have those bytes registered **before** `join_collaboration` replays the
+/// log — otherwise the stroke re-deposits through the flat stand-in and the result
+/// is stored (§6.4). A toothed brush on an irregular ground is the only
+/// configuration where that shows up in pixels at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_promised_ground_is_left_out_of_the_snapshot_and_still_replays() {
+    let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+
+    // Painted *before* sharing, so the stroke is in the snapshot's log and the
+    // joiner reaches it by replay rather than by gossip.
+    let gesso_bytes = stark_testdata::assets::gesso();
+    let gesso = host.import_surface(&gesso_bytes).expect("import ground");
+    host.process(DocCommand::SetSurface(gesso));
+    paint_with(
+        &mut host,
+        BrushParams {
+            color: [0.85, 0.15, 0.1, 1.0],
+            radius: 30.0,
+            tooth: 0.55,
+            drain: 0.005,
+            ..Default::default()
+        },
+        &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
+    );
+
+    let secret = stark_net::SecretKey::generate();
+    host.start_collaboration(stark_net::actor_from_endpoint_id(secret.public()));
+    let (host_session, _host_events) = CollabSession::host(
+        host.document_file(),
+        NetOptions {
+            secret: Some(secret),
+            local_only: true,
+        },
+    )
+    .await
+    .expect("host session");
+    let ticket: SessionTicket = host_session
+        .ticket()
+        .to_string()
+        .parse()
+        .expect("ticket text");
+
+    // The joiner says it can resolve the gesso ground itself — which, being a
+    // ground that ships with the app, it can.
+    let stark_core::SurfaceId::Image(promised) = gesso else {
+        panic!("an imported ground is an image");
+    };
+    let Joined {
+        session: peer_session,
+        events: _peer_events,
+        document: snapshot,
+        owed,
+    } = CollabSession::join(&ticket, NetOptions::local(), &[promised])
+        .await
+        .expect("join session");
+
+    assert!(
+        snapshot.surfaces.is_empty(),
+        "the host still sent a ground the joiner said it had"
+    );
+    assert!(
+        snapshot.actions.len() >= 2,
+        "the snapshot must carry the stroke, or replay has nothing to get wrong"
+    );
+    assert_eq!(
+        owed,
+        vec![AssetNeed::Ground(promised)],
+        "the omission has to come back as a bill, or the joiner replays without it"
+    );
+
+    // Settle the bill the way the frontend does: install, *then* replay.
+    for need in &owed {
+        let id = need.surface().expect("a ground need names a surface");
+        peer.accept_surface(id, &gesso_bytes)
+            .expect("install the promised ground");
+    }
+    peer.join_collaboration(&snapshot, peer_session.actor_id());
+
+    assert!(
+        identical(&host.render_to_image(), &peer.render_to_image()),
+        "the peer replayed a toothed stroke against a ground it resolved locally and          landed somewhere else — the omission is not sound"
+    );
+
+    host_session.shutdown().await;
+    peer_session.shutdown().await;
 }

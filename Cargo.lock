@@ -6644,6 +6644,7 @@ dependencies = [
  "js-sys",
  "serde",
  "serde_json",
+ "stark-assetid",
  "stark-core",
  "stark-net",
  "tracing",

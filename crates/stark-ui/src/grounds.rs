@@ -44,6 +44,11 @@ pub struct BuiltinGround {
     /// The bundled height map, fetched at runtime. `None` for a ground that is
     /// procedural and needs no image, which is `Smooth` and only ever `Smooth`.
     pub asset: Option<Asset>,
+    /// The same file's path under `assets/`, which is how `crate::builtin_ids`
+    /// knows this ground's content id without fetching it. Spelled twice because
+    /// `asset!` needs a literal and a lookup needs a string; a test checks the two
+    /// agree. `None` exactly when `asset` is.
+    pub path: Option<&'static str>,
     /// The picker's one-line description.
     pub blurb: &'static str,
 }
@@ -57,16 +62,19 @@ pub const GROUNDS: &[BuiltinGround] = &[
     BuiltinGround {
         name: SMOOTH,
         asset: None,
+        path: None,
         blurb: "A perfectly smooth surface — paint lies flat, no canvas texture.",
     },
     BuiltinGround {
         name: LINEN,
         asset: Some(asset!("/assets/surface/Linen.png")),
+        path: Some("surface/Linen.png"),
         blurb: "A regular woven grid — the honest painter's canvas.",
     },
     BuiltinGround {
         name: GESSO,
         asset: Some(asset!("/assets/surface/Gesso.png")),
+        path: Some("surface/Gesso.png"),
         blurb: "Brushed acrylic ground: irregular knife strokes with a fine crackle.",
     },
 ];

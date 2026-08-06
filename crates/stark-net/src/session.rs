@@ -113,7 +113,7 @@ impl AssetNeed {
     }
 
     /// The id the bytes transfer under.
-    pub(crate) fn content(self) -> AssetId {
+    pub fn content(self) -> AssetId {
         match self {
             AssetNeed::Brush(id) | AssetNeed::Ground(id) => id,
         }
@@ -258,6 +258,34 @@ impl NetOptions {
     }
 }
 
+/// What [`CollabSession::join`] hands back.
+///
+/// A struct rather than a tuple because of `owed`: a fourth positional value
+/// that must be acted on *before* the third is replayed is exactly the kind of
+/// thing a caller destructures past.
+pub struct Joined {
+    pub session: CollabSession,
+    pub events: Events,
+    /// The snapshot to load via
+    /// [`Engine::join_collaboration`](stark_core::Engine::join_collaboration) —
+    /// **after** `owed` is settled.
+    pub document: DocumentFile,
+    /// Content `document`'s log names that the host left out, because this client
+    /// said it could resolve it locally (`resolvable`).
+    ///
+    /// **Install every one of these into the engine before replaying the
+    /// document.** Replay reads the ground in force when each stroke was made
+    /// (§6.4), so a `SetSurface` whose height map is not registered yet replays
+    /// against the flat stand-in and bakes a smooth deposit that no later arrival
+    /// un-bakes — the divergence content-addressing exists to prevent, arrived at
+    /// by way of an optimization.
+    ///
+    /// If a promise cannot be kept, do nothing: the log still names the content,
+    /// so the ordinary blob fetch pulls it off a peer exactly as it would have
+    /// without the promise. Being wrong here costs a transfer, not a picture.
+    pub owed: Vec<AssetNeed>,
+}
+
 /// A live shared session: broadcasts local actions, serves joiners and asset
 /// requests, and surfaces remote edits as [`RemoteEvent`]s.
 pub struct CollabSession {
@@ -287,14 +315,21 @@ impl CollabSession {
         Self::finish(bound, topic, sub, mirror, ticket_addr)
     }
 
-    /// Join an existing session from a ticket. Returns the session and the
-    /// snapshot to load via
-    /// [`Engine::join_collaboration`](stark_core::Engine::join_collaboration)
-    /// (with [`CollabSession::actor_id`] as the actor).
+    /// Join an existing session from a ticket.
+    ///
+    /// `resolvable` is the content this client can produce **without asking
+    /// anyone** — the ids of the assets that ship with its build. The host leaves
+    /// those out of the snapshot, which is what stops a joiner pulling megabytes
+    /// of a canvas ground that is already sitting next to its binary (§12.4).
+    ///
+    /// It is a promise, and [`Joined::owed`] is the bill. Pass an empty slice to
+    /// promise nothing and receive everything, which is what the old behaviour
+    /// was.
     pub async fn join(
         ticket: &SessionTicket,
         opts: NetOptions,
-    ) -> Result<(Self, Events, DocumentFile)> {
+        resolvable: &[AssetId],
+    ) -> Result<Joined> {
         let mirror = Arc::new(Mutex::new(Mirror::from_file(
             &DocumentFile::new(Vec::new()),
         )));
@@ -321,14 +356,29 @@ impl CollabSession {
             tracing::warn!("joined without meeting a peer yet; relying on catch-up");
         }
 
-        let snapshot = catchup.request(Request::Snapshot).await?;
+        let request = if resolvable.is_empty() {
+            Request::Snapshot
+        } else {
+            Request::SnapshotWithout(resolvable.to_vec())
+        };
+        let snapshot = catchup.request(request).await?;
         catchup.close().await;
         let file = DocumentFile::from_bytes(&snapshot)?;
+        // What the log names but the bundle no longer carries — the bill for the
+        // promise, worked out here rather than left to the caller to derive,
+        // because deriving it means knowing which action kinds reference content
+        // and that is this crate's question (`referenced_asset`).
+        let owed = owed_content(&file);
         *mirror.lock().expect("mirror poisoned") = Mirror::from_file(&file);
 
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
         let (session, events) = Self::finish(bound, ticket.topic, sub, mirror, ticket_addr)?;
-        Ok((session, events, file))
+        Ok(Joined {
+            session,
+            events,
+            document: file,
+            owed,
+        })
     }
 
     fn finish(
@@ -746,6 +796,36 @@ async fn resolve_asset(
     // Recording the transfer hash with the bytes is what lets this peer announce
     // the content onward on its own actions.
     waitlist.resolved(need, bytes, hash);
+}
+
+/// What a joined document's log names but its bundle does not carry.
+///
+/// Derived from the same [`referenced_asset`] the receive loop uses, so "what an
+/// action needs" has one definition and a new action kind that references content
+/// cannot be added to one of them and forgotten in the other.
+fn owed_content(file: &DocumentFile) -> Vec<AssetNeed> {
+    let bundled: HashSet<AssetId> = file
+        .assets
+        .iter()
+        .map(|(id, _)| *id)
+        .chain(
+            file.surfaces
+                .iter()
+                .filter_map(|(id, _)| crate::mirror::ground_content_id(*id)),
+        )
+        .collect();
+    let mut owed: Vec<AssetNeed> = file
+        .actions
+        .iter()
+        .filter_map(referenced_asset)
+        // The ground the document *starts* on is named by the container, not by
+        // any action, so it would otherwise be owed and never asked for.
+        .chain(AssetNeed::ground(file.canvas.surface))
+        .filter(|need| !bundled.contains(&need.content()))
+        .collect();
+    owed.sort_by_key(|need| need.content().0);
+    owed.dedup();
+    owed
 }
 
 /// The content an action depends on, if any: the brush image a stroke stamps with

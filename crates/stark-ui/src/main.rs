@@ -15,6 +15,7 @@
 #![allow(clippy::useless_format)]
 
 mod brush_editor;
+mod builtin_ids;
 mod builtins;
 mod collab;
 mod components;

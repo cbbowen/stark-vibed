@@ -5,7 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "Dioxus web frontend for Stark (§11): WASM backend + WebGPU surface."
 
+[build-dependencies]
+# Hashing the bundled shapes and grounds into their content ids at build time
+# (build.rs). The whole reason that crate is separate from stark-core: an id has
+# to be computable without linking a GPU renderer.
+stark-assetid = { workspace = true }
+
 [dependencies]
+stark-assetid = { workspace = true }
 stark-core = { path = "../stark-core" }
 # Shared multi-user drawings over iroh (§12.4). In the browser iroh
 # runs over its relay (WebSocket) transport — same code path as native.

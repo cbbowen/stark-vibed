@@ -10,7 +10,7 @@ use std::time::Duration;
 use stark_core::DocumentFile;
 use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_core::peer::PeerFrame;
-use stark_net::{CollabSession, Events, NetOptions, RemoteEvent, SessionTicket};
+use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 fn ticket_of(session: &CollabSession) -> SessionTicket {
     session
@@ -54,7 +54,12 @@ async fn presence_reaches_peers_attributed_to_its_sender() {
         CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
             .await
             .expect("host session");
-    let (_peer, mut events, _doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    let Joined {
+        session: _peer,
+        mut events,
+        document: _doc,
+        ..
+    } = CollabSession::join(&ticket_of(&host), NetOptions::local(), &[])
         .await
         .expect("join session");
 
@@ -98,7 +103,12 @@ async fn presence_never_enters_the_snapshot() {
         tx.publish(frame(seq, "Ada")).await.expect("publish");
     }
 
-    let (_peer, _peer_events, doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    let Joined {
+        session: _peer,
+        events: _peer_events,
+        document: doc,
+        ..
+    } = CollabSession::join(&ticket_of(&host), NetOptions::local(), &[])
         .await
         .expect("join session");
     assert_eq!(

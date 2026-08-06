@@ -34,6 +34,11 @@ pub struct BuiltinShape {
     pub name: &'static str,
     /// The bundled PNG, fetched at runtime.
     pub asset: Asset,
+    /// The same file's path under `assets/`, which is how `crate::builtin_ids`
+    /// knows this shape's content id without fetching it. Spelled twice because
+    /// `asset!` needs a literal and a lookup needs a string; a test checks the two
+    /// agree.
+    pub path: &'static str,
 }
 
 /// The worn bristle stamp: a dry, broken-edged tip.
@@ -47,10 +52,12 @@ pub const SHAPES: &[BuiltinShape] = &[
     BuiltinShape {
         name: BRISTLES,
         asset: asset!("/assets/shape/Worn_Bristles.png"),
+        path: "shape/Worn_Bristles.png",
     },
     BuiltinShape {
         name: FLAT_TIP,
         asset: asset!("/assets/shape/Flat.png"),
+        path: "shape/Flat.png",
     },
 ];
 

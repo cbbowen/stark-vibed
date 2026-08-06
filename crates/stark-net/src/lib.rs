@@ -31,8 +31,8 @@ mod transport;
 mod waitlist;
 
 pub use session::{
-    AssetNeed, Broadcaster, CollabSession, Events, LinkKind, NetOptions, PeerLink, RemoteEvent,
-    actor_from_endpoint_id,
+    AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, PeerLink,
+    RemoteEvent, actor_from_endpoint_id,
 };
 pub use ticket::SessionTicket;
 

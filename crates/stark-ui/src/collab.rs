@@ -27,7 +27,7 @@ use dioxus::prelude::*;
 use stark_core::SurfaceId;
 use stark_core::peer::Identity;
 use stark_net::{
-    AssetNeed, Broadcaster, CollabSession, Events, LinkKind, NetOptions, RemoteEvent,
+    AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
     SessionTicket, actor_from_endpoint_id,
 };
 
@@ -128,8 +128,24 @@ pub fn join(state: AppState, ticket_text: String) {
             secret: Some(id.secret),
             ..Default::default()
         };
-        match CollabSession::join(&ticket, opts).await {
-            Ok((session, events, file)) => {
+        // What this build ships with, offered so the host can leave it out of the
+        // snapshot — Linen alone is 14 MB of weave every install already has
+        // (§12.4). A promise, settled by `fetch_owed` below before anything is
+        // replayed.
+        let resolvable = crate::builtin_ids::resolvable();
+        match CollabSession::join(&ticket, opts, &resolvable).await {
+            Ok(Joined {
+                session,
+                events,
+                document: file,
+                owed,
+            }) => {
+                // Fetched *before* `join_collaboration`, which replays the log: a
+                // ground that is not registered when its `SetSurface` replays
+                // deposits every later stroke against the flat stand-in, and
+                // those pixels are stored (§6.4). Awaited out here because the
+                // renderer guard must not be held across a fetch.
+                let owed_bytes = fetch_owed(&owed).await;
                 let assets = {
                     let mut renderer = state.renderer;
                     let mut obs = state.obs;
@@ -138,6 +154,9 @@ pub fn join(state: AppState, ticket_text: String) {
                         set_phase(state, CollabPhase::Solo);
                         return;
                     };
+                    for (need, bytes) in &owed_bytes {
+                        adopt_owed(r, *need, bytes);
+                    }
                     r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot));
                     r.paint();
                     obs.set(Some(r.observe()));
@@ -154,6 +173,48 @@ pub fn join(state: AppState, ticket_text: String) {
             }
         }
     });
+}
+
+/// Make good on the promise `join` sent: fetch each piece of content the host
+/// left out, from this app's own bundle (§12.4).
+///
+/// A local fetch — same-origin on the web, and the file the binary shipped beside
+/// natively — which is the whole point: these are the bytes that were *not* worth
+/// pulling off a peer. Anything that will not resolve is simply dropped: the log
+/// still names it, so the ordinary blob fetch pulls it off a peer exactly as it
+/// would have without the promise (`Joined::owed`). Being wrong here costs a
+/// transfer, not a picture.
+async fn fetch_owed(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
+    let mut out = Vec::new();
+    for &need in owed {
+        let Some(asset) = crate::builtin_ids::asset_for(need.content()) else {
+            // Not ours to resolve. Either the host omitted something we never
+            // promised, or this build's catalog moved under a document that
+            // referenced the old one.
+            tracing::warn!(?need, "owed content is not in this build's bundle");
+            continue;
+        };
+        match dioxus::asset_resolver::read_asset_bytes(asset).await {
+            Ok(bytes) => out.push((need, bytes)),
+            Err(e) => tracing::warn!(?need, "could not read owed content locally: {e}"),
+        }
+    }
+    out
+}
+
+/// Install one piece of locally-resolved content into the engine, under the id
+/// that asked for it — the same two calls the network path makes for a
+/// [`RemoteEvent::Asset`], because locally-resolved content is not a different
+/// kind of content, only a different way of getting hold of it.
+///
+/// `accept_surface` re-derives the id and refuses bytes that do not match, so a
+/// catalog file that changed out from under a document is caught there rather
+/// than deposited through the wrong weave; both wrappers log their own refusal.
+fn adopt_owed(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
+    match need.surface() {
+        Some(id) => r.accept_surface(id, bytes),
+        None => r.import_brush(bytes),
+    }
 }
 
 /// Leave the session: tear down the network side and keep painting solo on the

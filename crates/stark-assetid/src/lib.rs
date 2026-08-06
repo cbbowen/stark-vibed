@@ -77,6 +77,12 @@ impl AssetId {
     }
 }
 
+impl std::fmt::Display for AssetId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("asset: {0}")]
 pub struct AssetError(String);

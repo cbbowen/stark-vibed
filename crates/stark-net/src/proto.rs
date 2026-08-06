@@ -16,6 +16,7 @@ use std::sync::Mutex;
 
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
+use stark_core::AssetId;
 use stark_core::document::Action;
 use stark_core::peer::PeerFrame;
 
@@ -63,10 +64,23 @@ pub(crate) enum Wire {
 
 /// A request over the collab ALPN (one per bi-stream; the response is the
 /// stream's full contents).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum Request {
     /// The whole session: a [`DocumentFile`](stark_core::DocumentFile) container.
     Snapshot,
+    /// The session, minus the content the joiner says it can resolve without help
+    /// — the ids of the assets that ship with its build (§12.4).
+    ///
+    /// A separate variant rather than a field on [`Request::Snapshot`] because
+    /// postcard encodes enums by index and appending a variant is the safe
+    /// change (§8): an older peer that only knows `Snapshot` keeps working, and a
+    /// newer one asking an older host gets a decode error on a request rather
+    /// than a silently full bundle.
+    ///
+    /// The list is a **promise**, not an inventory — "I can get these", not "I
+    /// have these loaded". The joiner has to make it good before replaying, and
+    /// the blob fetch is what catches it if it cannot.
+    SnapshotWithout(Vec<AssetId>),
 }
 
 /// Answer one request from the shared [`Mirror`] — every peer is a provider, so
@@ -75,16 +89,19 @@ pub(crate) enum Request {
 /// This is the whole protocol; the transports below only move the bytes.
 pub(crate) fn answer(mirror: &Mutex<Mirror>, req: Request) -> crate::Result<Vec<u8>> {
     Ok(match req {
-        Request::Snapshot => {
-            // Cloned under the lock, materialized and encoded outside it: asset
-            // payloads are refcounted handles in the mirror, so the only real
-            // work the lock covers is the log — and a joiner arriving mid-session
-            // does not stall this peer's receive loop for the size of its own
-            // brush library.
-            let snapshot = mirror.lock().expect("mirror poisoned").snapshot();
-            snapshot.into_file().to_bytes()?
-        }
+        Request::Snapshot => snapshot_bytes(mirror, &[])?,
+        Request::SnapshotWithout(have) => snapshot_bytes(mirror, &have)?,
     })
+}
+
+/// Encode the session snapshot, leaving out any content in `have`.
+fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Vec<u8>> {
+    // Cloned under the lock, materialized and encoded outside it: asset payloads
+    // are refcounted handles in the mirror, so the only real work the lock covers
+    // is the log — and a joiner arriving mid-session does not stall this peer's
+    // receive loop for the size of its own brush library.
+    let snapshot = mirror.lock().expect("mirror poisoned").snapshot();
+    Ok(snapshot.without(have).into_file().to_bytes()?)
 }
 
 /// Decode a request received over any transport.
@@ -104,8 +121,12 @@ mod iroh_wire {
     use super::{Request, answer, decode_request};
     use crate::mirror::Mirror;
 
-    /// Upper bound on an encoded request (a variant tag).
-    const MAX_REQUEST: usize = 256;
+    /// Upper bound on an encoded request.
+    ///
+    /// A request used to be a variant tag and 256 bytes was generous. It now
+    /// carries the joiner's list of resolvable content ids, 32 bytes each, so the
+    /// ceiling has to clear a catalog that grows: 64 KiB is two thousand of them.
+    const MAX_REQUEST: usize = 64 * 1024;
     /// Upper bound on a response: a whole session snapshot (log + brush PNGs).
     /// A session that outgrows it stops accepting new members, so crossing most
     /// of the way there is worth saying out loud while joining still works.
@@ -136,7 +157,8 @@ mod iroh_wire {
                     tracing::warn!(
                         bytes = response.len(),
                         limit = MAX_RESPONSE,
-                        "session snapshot is approaching the response ceiling;                          past it no new member can join"
+                        "session snapshot is approaching the response ceiling; past \
+                         it no new member can join"
                     );
                 }
                 send.write_all(&response)

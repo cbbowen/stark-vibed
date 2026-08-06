@@ -57,6 +57,28 @@ pub(crate) struct Snapshot {
 }
 
 impl Snapshot {
+    /// Leave out content the joiner said it can resolve without help — the assets
+    /// that ship with its build (§12.4).
+    ///
+    /// Only the *payloads* go; the log is untouched, so the document still names
+    /// everything it names and a joiner that cannot make its promise good still
+    /// has an id to fetch by. That is what keeps this an optimization: the worst
+    /// case of a wrong claim is the transfer that would have happened anyway.
+    pub fn without(mut self, have: &[AssetId]) -> Self {
+        if have.is_empty() {
+            return self;
+        }
+        let omit = |id: &AssetId| have.contains(id);
+        let before = self.assets.len() + self.surfaces.len();
+        self.assets.retain(|(id, _)| !omit(id));
+        self.surfaces.retain(|(id, _)| !omit(id));
+        let spared: usize = before - (self.assets.len() + self.surfaces.len());
+        if spared > 0 {
+            tracing::debug!(spared, "omitted content the joiner can resolve locally");
+        }
+        self
+    }
+
     pub fn into_file(self) -> DocumentFile {
         let mut file = DocumentFile::new(self.actions);
         file.app_build = self.build;

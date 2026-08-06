@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use stark_core::DocumentFile;
 use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
-use stark_net::{CollabSession, Events, NetOptions, RemoteEvent, SessionTicket};
+use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
 
 /// A cheap, uniquely identifiable action — the content is irrelevant, only that
 /// it propagates.
@@ -52,7 +52,12 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
     host.broadcast(marker.clone()).await.expect("broadcast");
 
     // A second peer joins the founder, the normal way.
-    let (peer, mut peer_events, doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    let Joined {
+        session: peer,
+        events: mut peer_events,
+        document: doc,
+        ..
+    } = CollabSession::join(&ticket_of(&host), NetOptions::local(), &[])
         .await
         .expect("join via founder");
     assert!(
@@ -64,10 +69,14 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
     host.shutdown().await;
 
     // A newcomer arrives with a ticket from the *remaining* member.
-    let (newcomer, _newcomer_events, newcomer_doc) =
-        CollabSession::join(&ticket_of(&peer), NetOptions::local())
-            .await
-            .expect("join via a remaining member after the founder left");
+    let Joined {
+        session: newcomer,
+        events: _newcomer_events,
+        document: newcomer_doc,
+        ..
+    } = CollabSession::join(&ticket_of(&peer), NetOptions::local(), &[])
+        .await
+        .expect("join via a remaining member after the founder left");
     assert!(
         newcomer_doc.actions.iter().any(|a| a.id == marker.id),
         "newcomer should have caught up from the remaining member"
