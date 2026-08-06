@@ -27,6 +27,7 @@ mod proto;
 mod session;
 mod ticket;
 mod transport;
+mod waitlist;
 
 pub use session::{
     AssetNeed, Broadcaster, CollabSession, LinkKind, NetOptions, PeerLink, RemoteEvent,

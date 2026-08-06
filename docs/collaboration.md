@@ -93,26 +93,41 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   sessions survive the original sharer leaving, and any member can mint a **ticket**
   (`stark…` base32: an `EndpointAddr` + the topic).
 - **Assets:** an action referencing content the receiver lacks fetches those
-  bytes over the same ALPN from the peer that delivered it (with retries), and
-  the fetch is *awaited* so the content reaches the engine before the action that
-  needs it. Two kinds ride this path, and the transport says which — the
-  referencing action is the only thing that knows, and the two decode differently
-  at the far end:
+  bytes over the blobs ALPN from its author, falling back to the peer that
+  delivered it, and the action is **parked** on a waitlist until they arrive — so
+  the content reaches the engine before the action that needs it. Parked, not
+  awaited: what an action needs ordering against is the content it names and
+  nothing else, since `merge_remote` is idempotent by id and order-insensitive,
+  and an action landing behind newer ones makes the timeline resync (§12.6).
+  Waiting inside the receive loop instead stalls every *other* peer's actions,
+  every presence frame and the neighbor bookkeeping behind one unreachable blob.
+  The waitlist is also what de-duplicates the fetch, since a live gesture's head
+  and the commit it becomes name the same content.
+
+  Two kinds ride this path, and the transport says which — the referencing action
+  is the only thing that knows, and the two decode differently at the far end.
+  They differ in exactly one thing beyond that, and it is how long the fetch
+  tries:
   - a **brush shape** an unknown `AssetId` names. A miss degrades to the round
-    tip rather than blocking the log, so the ordering here is cosmetic.
+    tip and the stroke is still visibly a stroke, so after a few rounds the fetch
+    gives up and lets the action through.
   - a **canvas ground** a `SetSurface` names (§6.4). A miss is not cosmetic: the
     deposition tooth reads the ground, an absent one falls back to the flat
     stand-in, and the resulting deposit is *stored* — so a peer that applied the
     switch before the height map landed diverged permanently, with nothing on
     either screen to say so. That was the bug that made grounds content-addressed
     in the first place; they were previously labels, and a label cannot be
-    fetched.
+    fetched. So a ground is never given up on: the action waits indefinitely, and
+    the strokes that merged ahead of it are replayed against the real ground when
+    it lands. Parking is what makes that affordable — an unbounded wait costs
+    nothing when nothing waits behind it.
 
   A mid-session import seeds the mirror at import time — before the action goes
-  out, since the broadcast attaches a transfer hash looked up from it — and a
-  *presence* stroke head referencing an unknown shape triggers a detached fetch,
-  so a peer's live preview upgrades from the round-tip fallback without waiting
-  for the commit.
+  out, since the broadcast attaches a transfer hash looked up from it — and
+  releases any remote action parked on that same content, which a local import
+  satisfies as well as a fetch would. A *presence* stroke head referencing an
+  unknown shape starts the fetch without parking anything, so a peer's live
+  preview upgrades from the round-tip fallback without waiting for the commit.
 - **Browser:** iroh runs in wasm over its relay (WebSocket) transport, plus a
   vendored **WebRTC custom transport** on the same endpoint, so the Dioxus UI
   uses the same code path the native loopback tests exercise. The UI glue is two

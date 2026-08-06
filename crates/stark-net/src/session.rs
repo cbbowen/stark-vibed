@@ -35,6 +35,7 @@ use crate::backend::{self, Dialer, Shutdown};
 use crate::mirror::Mirror;
 use crate::proto::{Request, Stamped, Wire};
 use crate::ticket::SessionTicket;
+use crate::waitlist::{Admit, Waitlist};
 
 /// [`AssetId`] → the blob hash its canonical bytes transfer under. An asset id
 /// names the *decoded coverage* (encoding-independent), so it is not directly
@@ -45,10 +46,15 @@ type AssetHashes = Arc<Mutex<HashMap<AssetId, Hash>>>;
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Attempts (with delay) to fetch a brush asset from a peer — it may still be
-/// fetching the blob itself.
-const ASSET_RETRIES: u32 = 5;
+/// Rounds spent fetching a *brush* image before giving up and letting the stroke
+/// draw with the round tip. A ground is never given up on — see
+/// [`resolve_asset`].
+const BRUSH_ATTEMPTS: u32 = 5;
+/// The first delay between fetch rounds — a source may still be fetching the
+/// blob itself. It doubles up to the cap, so an unbounded retry settles into an
+/// occasional poll rather than a busy one.
 const ASSET_RETRY_DELAY: Duration = Duration::from_millis(300);
+const ASSET_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 /// Map an iroh endpoint identity to the engine's author id (§12.4:
 /// "an iroh node id *is* the `ActorId`"). `ActorId` is 8 bytes to keep every
@@ -70,7 +76,7 @@ pub fn actor_from_endpoint_id(id: EndpointId) -> ActorId {
 /// luminance × alpha, a ground is channel 0 — so the receiver has to be told which
 /// it is being handed. It is *told* rather than left to guess, and it is told by the
 /// action that referenced the content, which is the only thing that actually knows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetNeed {
     /// A brush shape a stroke stamps with.
     Brush(AssetId),
@@ -173,7 +179,7 @@ pub struct CollabSession {
     sender: GossipSender,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     asset_hashes: AssetHashes,
-    mirror: Arc<Mutex<Mirror>>,
+    waitlist: Arc<Waitlist>,
     events: Option<mpsc::UnboundedReceiver<RemoteEvent>>,
     ticket_addr: EndpointAddr,
 }
@@ -288,6 +294,7 @@ impl CollabSession {
                 .collect(),
         ));
         let (tx, rx) = mpsc::unbounded_channel();
+        let waitlist = Arc::new(Waitlist::new(mirror, tx.clone()));
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
         task::spawn(recv_loop(
@@ -295,7 +302,7 @@ impl CollabSession {
             receiver,
             neighbors.clone(),
             asset_hashes.clone(),
-            mirror.clone(),
+            waitlist.clone(),
             tx,
         ));
         Ok(Self {
@@ -306,7 +313,7 @@ impl CollabSession {
             sender,
             neighbors,
             asset_hashes,
-            mirror,
+            waitlist,
             events: Some(rx),
             ticket_addr,
         })
@@ -340,7 +347,7 @@ impl CollabSession {
             dialer: self.dialer.clone(),
             neighbors: self.neighbors.clone(),
             asset_hashes: self.asset_hashes.clone(),
-            mirror: self.mirror.clone(),
+            waitlist: self.waitlist.clone(),
         }
     }
 
@@ -383,16 +390,13 @@ pub struct Broadcaster {
     dialer: Dialer,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     asset_hashes: AssetHashes,
-    mirror: Arc<Mutex<Mirror>>,
+    waitlist: Arc<Waitlist>,
 }
 
 impl Broadcaster {
     /// See [`CollabSession::broadcast`].
     pub async fn broadcast(&self, action: Action) -> Result<()> {
-        self.mirror
-            .lock()
-            .expect("mirror poisoned")
-            .insert(action.clone());
+        self.waitlist.published(action.clone());
         let asset = referenced_asset(&action);
         self.publish_wire(Wire::Action(action), asset).await
     }
@@ -438,10 +442,10 @@ impl Broadcaster {
         let Some(id) = need.content() else {
             return;
         };
-        self.mirror
-            .lock()
-            .expect("mirror poisoned")
-            .insert_content(need, bytes.clone());
+        // Through the waitlist, not straight into the mirror: a remote action
+        // may already be parked on exactly this content, and a local import
+        // satisfies it as well as a fetch would.
+        self.waitlist.imported(need, bytes.clone());
         let hash = self.dialer.add_blob(bytes);
         self.asset_hashes
             .lock()
@@ -478,15 +482,19 @@ impl Broadcaster {
     }
 }
 
-/// The gossip receive loop: decode, resolve asset dependencies, mirror,
+/// The gossip receive loop: decode, park what is waiting on content, mirror,
 /// forward to the engine. Also maintains the neighbor set and kicks off the
 /// WebRTC bootstrap for every new neighbor.
+///
+/// The loop itself never waits on the network. An action that references
+/// content this peer lacks is parked on the [`Waitlist`] and released by the
+/// resolver that fetches it; everything else keeps flowing past.
 async fn recv_loop(
     dialer: Dialer,
     mut gossip: GossipReceiver,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     asset_hashes: AssetHashes,
-    mirror: Arc<Mutex<Mirror>>,
+    waitlist: Arc<Waitlist>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
     while let Some(event) = gossip.next().await {
@@ -536,22 +544,23 @@ async fn recv_loop(
             // so it is never served to a joiner and never reaches a file.
             Wire::Presence(frame) => {
                 // A live stroke's head names its brush image just like the
-                // eventual commit will. Resolve it detached — presence must
-                // never wait on a fetch — so the rest of the gesture renders
-                // with the real shape as soon as the bytes land; until then
-                // the receiver's preview degrades to the round tip.
-                if let Some(asset) = referenced_presence_asset(&frame)
-                    && !mirror.lock().expect("mirror poisoned").has(asset)
-                    && let Some(hash) = require_hash(asset, asset_hash)
+                // eventual commit will. Claimed detached — presence must never
+                // wait on a fetch — so the rest of the gesture renders with the
+                // real shape as soon as the bytes land; until then the
+                // receiver's preview degrades to the round tip. The commit that
+                // follows names the same content and parks behind *this*
+                // resolver rather than starting a second one.
+                if let Some(need) = referenced_presence_asset(&frame)
+                    && let Some(hash) = hash_or_warn(need, asset_hash)
+                    && waitlist.claim_detached(need)
                 {
                     task::spawn(resolve_asset(
                         dialer.clone(),
                         asset_sources(origin, from),
-                        asset,
+                        need,
                         hash,
                         asset_hashes.clone(),
-                        mirror.clone(),
-                        tx.clone(),
+                        waitlist.clone(),
                     ));
                 }
                 let event = RemoteEvent::Presence {
@@ -565,36 +574,38 @@ async fn recv_loop(
             }
         };
 
-        // Resolve whatever the action references before surfacing it, so the engine
-        // can apply it faithfully. The origin authored the action and so definitely
-        // holds the content; the neighbour that forwarded it may not.
+        // Whatever the action references has to reach the engine first, so the
+        // engine can apply it faithfully. The action waits for it — parked, not
+        // awaited here, so nothing else in the session waits with it. The origin
+        // authored the action and so definitely holds the content; the neighbour
+        // that forwarded it may not.
+        //
+        // Falling through the `if` applies the action now, which covers both an
+        // action that references nothing and one whose sender attached no
+        // transfer hash: there is nothing to fetch, so parking would be parking
+        // forever, and the kind's fallback is the best that is available.
         if let Some(need) = referenced_asset(&action)
-            && !mirror.lock().expect("mirror poisoned").has(need)
-            && let Some(hash) = require_hash(need, asset_hash)
+            && let Some(hash) = hash_or_warn(need, asset_hash)
         {
-            // Awaited (not spawned): the Asset event must reach the engine
-            // before the Action that references it. For a brush that ordering is
-            // cosmetic — arrive late and the stroke merely drew with the round tip
-            // — but for a ground it is the whole fix: a `SetSurface` applied before
-            // its height map lands leaves every stroke after it deposited on the
-            // flat stand-in, and those pixels are stored (§6.4).
-            resolve_asset(
-                dialer.clone(),
-                asset_sources(origin, from),
-                need,
-                hash,
-                asset_hashes.clone(),
-                mirror.clone(),
-                tx.clone(),
-            )
-            .await;
+            match waitlist.claim(need, &action) {
+                Admit::Ready => {}
+                Admit::Waiting => continue,
+                Admit::Fetch => {
+                    task::spawn(resolve_asset(
+                        dialer.clone(),
+                        asset_sources(origin, from),
+                        need,
+                        hash,
+                        asset_hashes.clone(),
+                        waitlist.clone(),
+                    ));
+                    continue;
+                }
+            }
         }
 
-        let fresh = mirror
-            .lock()
-            .expect("mirror poisoned")
-            .insert(action.clone());
-        if fresh && tx.send(RemoteEvent::Action(action)).is_err() {
+        waitlist.accept(action);
+        if !waitlist.is_live() {
             return;
         }
     }
@@ -610,10 +621,10 @@ fn asset_sources(origin: EndpointId, from: EndpointId) -> Vec<EndpointId> {
     ids
 }
 
-/// The transfer hash for referenced-but-missing content, or a warning: without
-/// it the bytes cannot be fetched (a sender from before its own import
-/// completed — which `add_content` ordering prevents — or a version mismatch).
-fn require_hash(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
+/// The transfer hash for referenced content, or a warning: without it the bytes
+/// cannot be fetched (a sender from before its own import completed — which
+/// `add_content` ordering prevents — or a version mismatch).
+fn hash_or_warn(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
     if hash.is_none() {
         tracing::warn!("missing {need:?} arrived without a transfer hash");
     }
@@ -635,38 +646,46 @@ fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetNeed> {
     }
 }
 
-/// Fetch a missing brush image over blobs, mirror it and record its transfer
-/// hash (so this peer can serve and announce it onward), and surface it to
-/// the engine. The action path awaits this — assets must precede the action
-/// that references them — while the presence path runs it detached. Two
-/// concurrent resolvers are harmless: the blob is content-addressed, so the
-/// second insert and import are idempotent.
+/// Fetch missing content over blobs, mirror it and record its transfer hash (so
+/// this peer can serve and announce it onward), surface it to the engine, and
+/// release every action parked behind it.
+///
+/// How long it tries is the one place the two kinds differ, and the difference
+/// is §6.4's. An unresolved **brush** degrades to the round tip and the stroke
+/// is still visibly a stroke, so after [`BRUSH_ATTEMPTS`] it gives up and lets
+/// the action through. An unresolved **ground** has no acceptable fallback:
+/// applying the `SetSurface` against `Flat` bakes a smooth deposit into stored
+/// tiles that no later arrival un-bakes. So it never gives up — the action
+/// simply waits, and nothing else waits with it. Strokes that merged ahead of it
+/// are replayed against the real ground when it lands, because an action
+/// arriving out of order is exactly what makes the timeline resync (§12.6).
 async fn resolve_asset(
     dialer: Dialer,
     sources: Vec<EndpointId>,
     need: AssetNeed,
     hash: Hash,
     asset_hashes: AssetHashes,
-    mirror: Arc<Mutex<Mirror>>,
-    tx: mpsc::UnboundedSender<RemoteEvent>,
+    waitlist: Arc<Waitlist>,
 ) {
-    let Some(id) = need.content() else {
+    let attempts = match need {
+        AssetNeed::Brush(_) => Some(BRUSH_ATTEMPTS),
+        AssetNeed::Ground(_) => None,
+    };
+    let Some(bytes) = fetch_asset(&dialer, &sources, hash, attempts, &waitlist).await else {
+        // Only a brush gives up (a ground retries until the session ends), so
+        // releasing here is releasing to the round-tip fallback.
+        tracing::warn!("{need:?} unavailable; the stroke will draw with the round tip");
+        waitlist.abandoned(need);
         return;
     };
-    match fetch_asset(&dialer, &sources, hash).await {
-        Some(bytes) => {
-            mirror
-                .lock()
-                .expect("mirror poisoned")
-                .insert_content(need, bytes.clone());
-            asset_hashes
-                .lock()
-                .expect("asset hashes poisoned")
-                .insert(id, hash);
-            let _ = tx.send(RemoteEvent::Asset { need, bytes });
-        }
-        None => tracing::warn!("{need:?} unavailable; the action will fall back"),
+    // Announce it onward: this peer can serve the bytes now.
+    if let Some(id) = need.content() {
+        asset_hashes
+            .lock()
+            .expect("asset hashes poisoned")
+            .insert(id, hash);
     }
+    waitlist.resolved(need, bytes);
 }
 
 /// The content an action depends on, if any: the brush image a stroke stamps with
@@ -691,21 +710,37 @@ fn referenced_asset(action: &Action) -> Option<AssetNeed> {
     }
 }
 
-/// Fetch a brush image blob, trying each source in turn and retrying (a peer
-/// may still be fetching it itself). The transfer is hash-verified by blobs.
-async fn fetch_asset(dialer: &Dialer, sources: &[EndpointId], hash: Hash) -> Option<Vec<u8>> {
-    for attempt in 0..ASSET_RETRIES {
-        if attempt > 0 {
-            n0_future::time::sleep(ASSET_RETRY_DELAY).await;
-        }
+/// Fetch one content blob, trying each source in turn on a widening backoff (a
+/// source may still be fetching it itself). `attempts` caps the rounds; `None`
+/// retries until the content arrives or the session ends. The transfer is
+/// hash-verified by blobs.
+async fn fetch_asset(
+    dialer: &Dialer,
+    sources: &[EndpointId],
+    hash: Hash,
+    attempts: Option<u32>,
+    waitlist: &Waitlist,
+) -> Option<Vec<u8>> {
+    let mut delay = ASSET_RETRY_DELAY;
+    let mut round = 0u32;
+    loop {
         for &source in sources {
             match dialer.fetch_blob(source, hash).await {
                 Ok(bytes) => return Some(bytes),
-                Err(e) => tracing::debug!("asset fetch attempt {attempt} failed: {e}"),
+                Err(e) => tracing::debug!("asset fetch round {round} failed: {e}"),
             }
         }
+        round = round.saturating_add(1);
+        if attempts.is_some_and(|max| round >= max) {
+            return None;
+        }
+        // The engine is gone; an uncapped retry would otherwise outlive it.
+        if !waitlist.is_live() {
+            return None;
+        }
+        n0_future::time::sleep(delay).await;
+        delay = (delay * 2).min(ASSET_RETRY_MAX_DELAY);
     }
-    None
 }
 
 impl std::fmt::Debug for CollabSession {
