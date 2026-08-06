@@ -26,8 +26,8 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_core::peer::Identity;
 use stark_net::{
-    AssetNeed, Broadcaster, CollabSession, LinkKind, NetOptions, RemoteEvent, SessionTicket,
-    actor_from_endpoint_id,
+    AssetNeed, Broadcaster, CollabSession, Events, LinkKind, NetOptions, RemoteEvent,
+    SessionTicket, actor_from_endpoint_id,
 };
 
 use crate::icons::{self, icon};
@@ -86,7 +86,7 @@ pub fn share(state: AppState) {
             ..Default::default()
         };
         match CollabSession::host(doc, opts).await {
-            Ok(session) => {
+            Ok((session, events)) => {
                 // Seed every locally-imported brush so peers can fetch any the
                 // snapshot didn't already bundle (§12.4). The grounds need no
                 // equivalent: the snapshot carries every one the log names, and
@@ -95,7 +95,7 @@ pub fn share(state: AppState) {
                 for (id, bytes) in assets {
                     session.add_content(AssetNeed::Brush(id), bytes);
                 }
-                install(state, session);
+                install(state, session, events);
             }
             Err(e) => {
                 tracing::warn!("share failed: {e}");
@@ -128,7 +128,7 @@ pub fn join(state: AppState, ticket_text: String) {
             ..Default::default()
         };
         match CollabSession::join(&ticket, opts).await {
-            Ok((session, file)) => {
+            Ok((session, events, file)) => {
                 let assets = {
                     let mut renderer = state.renderer;
                     let mut obs = state.obs;
@@ -145,7 +145,7 @@ pub fn join(state: AppState, ticket_text: String) {
                 for (id, bytes) in assets {
                     session.add_content(AssetNeed::Brush(id), bytes);
                 }
-                install(state, session);
+                install(state, session, events);
             }
             Err(e) => {
                 tracing::warn!("join failed: {e}");
@@ -232,7 +232,7 @@ pub fn flush_outbox(state: AppState) {
 }
 
 /// Store the live session and start the incoming pump.
-fn install(state: AppState, mut session: CollabSession) {
+fn install(state: AppState, session: CollabSession, mut events: Events) {
     let ticket_text = session.ticket().to_string();
     // The page URL *is* the invitation: anyone opening it joins this session
     // (via this peer — every member is a valid entry point).
@@ -240,7 +240,6 @@ fn install(state: AppState, mut session: CollabSession) {
     let mut ticket = state.collab.ticket;
     ticket.set(Some(ticket_text));
 
-    let mut events = session.take_events().expect("fresh session events");
     let mut session_sig = state.collab.session;
     session_sig.set(Some(session));
     set_phase(state, CollabPhase::Shared);

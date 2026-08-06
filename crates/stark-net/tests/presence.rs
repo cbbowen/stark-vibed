@@ -10,8 +10,7 @@ use std::time::Duration;
 use stark_core::DocumentFile;
 use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_core::peer::PeerFrame;
-use stark_net::{CollabSession, NetOptions, RemoteEvent, SessionTicket};
-use tokio::sync::mpsc::UnboundedReceiver;
+use stark_net::{CollabSession, Events, NetOptions, RemoteEvent, SessionTicket};
 
 fn ticket_of(session: &CollabSession) -> SessionTicket {
     session
@@ -34,7 +33,7 @@ fn frame(seq: u64, name: &str) -> PeerFrame {
 }
 
 /// Wait (bounded) for one presence frame.
-async fn next_presence(events: &mut UnboundedReceiver<RemoteEvent>) -> (ActorId, PeerFrame) {
+async fn next_presence(events: &mut Events) -> (ActorId, PeerFrame) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
@@ -51,13 +50,13 @@ async fn next_presence(events: &mut UnboundedReceiver<RemoteEvent>) -> (ActorId,
 /// so a peer can publish its own presence and nobody else's.
 #[tokio::test(flavor = "multi_thread")]
 async fn presence_reaches_peers_attributed_to_its_sender() {
-    let host = CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
-        .await
-        .expect("host session");
-    let (mut peer, _doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    let (host, _host_events) =
+        CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
+            .await
+            .expect("host session");
+    let (_peer, mut events, _doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
         .await
         .expect("join session");
-    let mut events = peer.take_events().expect("peer events");
 
     host.broadcaster()
         .publish(frame(1, "Ada"))
@@ -75,9 +74,10 @@ async fn presence_reaches_peers_attributed_to_its_sender() {
 /// the save format and the catch-up protocol needed no changes at all.
 #[tokio::test(flavor = "multi_thread")]
 async fn presence_never_enters_the_snapshot() {
-    let host = CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
-        .await
-        .expect("host session");
+    let (host, _host_events) =
+        CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
+            .await
+            .expect("host session");
 
     // One real action, so the snapshot is demonstrably non-empty — and a burst of
     // presence around it, which must leave no trace.
@@ -98,7 +98,7 @@ async fn presence_never_enters_the_snapshot() {
         tx.publish(frame(seq, "Ada")).await.expect("publish");
     }
 
-    let (_peer, doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    let (_peer, _peer_events, doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
         .await
         .expect("join session");
     assert_eq!(

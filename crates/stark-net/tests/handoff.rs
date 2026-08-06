@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use stark_core::DocumentFile;
 use stark_core::document::{Action, ActionId, ActionKind, ActorId, LayerId};
-use stark_net::{CollabSession, NetOptions, RemoteEvent, SessionTicket};
-use tokio::sync::mpsc::UnboundedReceiver;
+use stark_net::{CollabSession, Events, NetOptions, RemoteEvent, SessionTicket};
 
 /// A cheap, uniquely identifiable action — the content is irrelevant, only that
 /// it propagates.
@@ -29,7 +28,7 @@ fn ticket_of(session: &CollabSession) -> SessionTicket {
 }
 
 /// Wait (bounded) for one remote action to arrive.
-async fn next_action(events: &mut UnboundedReceiver<RemoteEvent>) -> Action {
+async fn next_action(events: &mut Events) -> Action {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
@@ -45,14 +44,15 @@ async fn next_action(events: &mut UnboundedReceiver<RemoteEvent>) -> Action {
 /// through a peer that is still present?
 #[tokio::test(flavor = "multi_thread")]
 async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
-    let host = CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
-        .await
-        .expect("host session");
+    let (host, _host_events) =
+        CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
+            .await
+            .expect("host session");
     let marker = action(host.actor_id(), 1);
     host.broadcast(marker.clone()).await.expect("broadcast");
 
     // A second peer joins the founder, the normal way.
-    let (mut peer, doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
+    let (peer, mut peer_events, doc) = CollabSession::join(&ticket_of(&host), NetOptions::local())
         .await
         .expect("join via founder");
     assert!(
@@ -64,16 +64,16 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
     host.shutdown().await;
 
     // A newcomer arrives with a ticket from the *remaining* member.
-    let (newcomer, newcomer_doc) = CollabSession::join(&ticket_of(&peer), NetOptions::local())
-        .await
-        .expect("join via a remaining member after the founder left");
+    let (newcomer, _newcomer_events, newcomer_doc) =
+        CollabSession::join(&ticket_of(&peer), NetOptions::local())
+            .await
+            .expect("join via a remaining member after the founder left");
     assert!(
         newcomer_doc.actions.iter().any(|a| a.id == marker.id),
         "newcomer should have caught up from the remaining member"
     );
 
     // And the newcomer is a full participant, not just a reader.
-    let mut peer_events = peer.take_events().expect("peer events");
     let fresh = action(newcomer.actor_id(), 2);
     newcomer.broadcast(fresh.clone()).await.expect("broadcast");
     assert_eq!(next_action(&mut peer_events).await.id, fresh.id);

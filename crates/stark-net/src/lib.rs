@@ -17,7 +17,8 @@
 //!   same ALPN on demand (content-addressed, §6.6).
 //!
 //! The UI glue is a small pump: drain [`Engine::take_outbox`](stark_core::Engine::take_outbox)
-//! into [`CollabSession::broadcast`], and feed [`RemoteEvent`]s into
+//! into [`CollabSession::broadcast`], and feed the [`RemoteEvent`]s the session's
+//! [`Events`] stream yields into
 //! [`Engine::merge_remote`](stark_core::Engine::merge_remote) /
 //! [`Engine::import_brush`](stark_core::Engine::import_brush).
 
@@ -30,7 +31,7 @@ mod transport;
 mod waitlist;
 
 pub use session::{
-    AssetNeed, Broadcaster, CollabSession, LinkKind, NetOptions, PeerLink, RemoteEvent,
+    AssetNeed, Broadcaster, CollabSession, Events, LinkKind, NetOptions, PeerLink, RemoteEvent,
     actor_from_endpoint_id,
 };
 pub use ticket::SessionTicket;

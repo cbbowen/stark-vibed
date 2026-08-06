@@ -11,8 +11,7 @@ use stark_core::geom::{Extent2, Vec2};
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::peer::{GestureFrame, PeerFrame, StrokeHead};
 use stark_core::{Engine, RgbaImage};
-use stark_net::{AssetNeed, CollabSession, NetOptions, RemoteEvent, SessionTicket};
-use tokio::sync::mpsc::UnboundedReceiver;
+use stark_net::{AssetNeed, CollabSession, Events, NetOptions, RemoteEvent, SessionTicket};
 
 const SIZE: Extent2 = Extent2 {
     width: 256,
@@ -59,9 +58,9 @@ fn identical(a: &RgbaImage, b: &RgbaImage) -> bool {
 }
 
 /// Apply every queued remote event to the engine (the UI pump, §12.4).
-fn drain_events(events: &mut UnboundedReceiver<RemoteEvent>, engine: &mut Engine) -> usize {
+fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
     let mut applied = 0;
-    while let Ok(event) = events.try_recv() {
+    while let Some(event) = events.try_recv() {
         match event {
             RemoteEvent::Asset { need, bytes } => match need {
                 AssetNeed::Brush(_) => {
@@ -95,11 +94,7 @@ async fn flush_outbox(engine: &mut Engine, session: &CollabSession) {
 }
 
 /// Wait (bounded) until `engine` has applied `n` more remote actions.
-async fn wait_for_actions(
-    events: &mut UnboundedReceiver<RemoteEvent>,
-    engine: &mut Engine,
-    mut n: usize,
-) {
+async fn wait_for_actions(events: &mut Events, engine: &mut Engine, mut n: usize) {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while n > 0 {
         assert!(
@@ -132,7 +127,7 @@ async fn two_peers_converge_over_iroh() {
     let host_actor = stark_net::actor_from_endpoint_id(secret.public());
     host.start_collaboration(host_actor);
 
-    let mut host_session = CollabSession::host(
+    let (host_session, mut host_events) = CollabSession::host(
         host.document_file(),
         NetOptions {
             secret: Some(secret),
@@ -141,7 +136,6 @@ async fn two_peers_converge_over_iroh() {
     )
     .await
     .expect("host session");
-    let mut host_events = host_session.take_events().expect("host events");
     let ticket: SessionTicket = host_session
         .ticket()
         .to_string()
@@ -149,10 +143,10 @@ async fn two_peers_converge_over_iroh() {
         .expect("ticket text");
 
     // --- peer side: join, catch up ---
-    let (mut peer_session, snapshot) = CollabSession::join(&ticket, NetOptions::local())
-        .await
-        .expect("join session");
-    let mut peer_events = peer_session.take_events().expect("peer events");
+    let (peer_session, mut peer_events, snapshot) =
+        CollabSession::join(&ticket, NetOptions::local())
+            .await
+            .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // The pre-share stroke arrived via the snapshot.
@@ -229,7 +223,7 @@ async fn custom_shapes_replicate_mid_session() {
     let secret = stark_net::SecretKey::generate();
     let host_actor = stark_net::actor_from_endpoint_id(secret.public());
     host.start_collaboration(host_actor);
-    let host_session = CollabSession::host(
+    let (host_session, _host_events) = CollabSession::host(
         host.document_file(),
         NetOptions {
             secret: Some(secret),
@@ -244,10 +238,10 @@ async fn custom_shapes_replicate_mid_session() {
         .parse()
         .expect("ticket text");
 
-    let (mut peer_session, snapshot) = CollabSession::join(&ticket, NetOptions::local())
-        .await
-        .expect("join session");
-    let mut peer_events = peer_session.take_events().expect("peer events");
+    let (peer_session, mut peer_events, snapshot) =
+        CollabSession::join(&ticket, NetOptions::local())
+            .await
+            .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // --- live-preview path: a stroke head names a shape the peer lacks ---
@@ -349,7 +343,7 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
     let secret = stark_net::SecretKey::generate();
     let host_actor = stark_net::actor_from_endpoint_id(secret.public());
     host.start_collaboration(host_actor);
-    let host_session = CollabSession::host(
+    let (host_session, _host_events) = CollabSession::host(
         host.document_file(),
         NetOptions {
             secret: Some(secret),
@@ -363,10 +357,10 @@ async fn a_peer_paints_on_a_ground_it_has_never_seen() {
         .to_string()
         .parse()
         .expect("ticket text");
-    let (mut peer_session, snapshot) = CollabSession::join(&ticket, NetOptions::local())
-        .await
-        .expect("join session");
-    let mut peer_events = peer_session.take_events().expect("peer events");
+    let (peer_session, mut peer_events, snapshot) =
+        CollabSession::join(&ticket, NetOptions::local())
+            .await
+            .expect("join session");
     peer.join_collaboration(&snapshot, peer_session.actor_id());
 
     // The host takes up a ground mid-session. The peer has never held these bytes:

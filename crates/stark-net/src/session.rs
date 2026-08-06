@@ -17,6 +17,7 @@
 //! [`transport::direct`](crate::transport)).
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,6 +41,18 @@ use crate::waitlist::{Admit, Waitlist};
 
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many presence frames may sit queued for the engine at once, across all
+/// peers.
+///
+/// Presence is a latch, so a deep queue is not resilience — it is staleness. The
+/// engine drops any frame that does not advance `(boot, seq)` anyway (§17.5), so
+/// everything queued behind the newest is work the UI will do and throw away.
+/// This cap is what stops a UI that has fallen behind from accumulating them
+/// without bound: roughly half a second of five peers stroking at 30 Hz, long
+/// enough to ride out a slow frame and short enough that what does arrive is
+/// still current.
+const PRESENCE_QUEUE: usize = 64;
 
 /// Rounds spent fetching a *brush* image before giving up and letting the stroke
 /// draw with the round tip. A ground is never given up on — see
@@ -114,6 +127,65 @@ pub enum RemoteEvent {
     Presence { actor: ActorId, frame: PeerFrame },
 }
 
+/// The stream of remote edits, handed out once by [`CollabSession::host`] /
+/// [`CollabSession::join`]. Pump it into the engine.
+///
+/// It is a type rather than a bare channel because the presence quota is
+/// accounted here: a slot is taken when a frame is queued and freed when one is
+/// handed over, so "queued presence" means the same number on both ends without
+/// the consumer knowing there is a quota at all.
+#[derive(Debug)]
+pub struct Events {
+    rx: mpsc::UnboundedReceiver<RemoteEvent>,
+    presence: Arc<PresenceQuota>,
+}
+
+impl Events {
+    /// The next remote event, or `None` once the session has ended.
+    pub async fn recv(&mut self) -> Option<RemoteEvent> {
+        let event = self.rx.recv().await?;
+        self.took(&event);
+        Some(event)
+    }
+
+    /// The next remote event if one is already queued — for a pump driven by
+    /// something other than this stream, such as a frame clock.
+    pub fn try_recv(&mut self) -> Option<RemoteEvent> {
+        let event = self.rx.try_recv().ok()?;
+        self.took(&event);
+        Some(event)
+    }
+
+    fn took(&self, event: &RemoteEvent) {
+        if matches!(event, RemoteEvent::Presence { .. }) {
+            self.presence.release();
+        }
+    }
+}
+
+/// Slots for presence frames in flight to the engine (see [`PRESENCE_QUEUE`]).
+#[derive(Debug, Default)]
+struct PresenceQuota(AtomicUsize);
+
+impl PresenceQuota {
+    /// Take a slot, or `false` when the engine is already this far behind — in
+    /// which case the frame is dropped, which is the one thing presence is
+    /// allowed to have happen to it. Nothing in the log refers to it, the newest
+    /// frame supersedes it, and the author re-sends its whole gesture on the
+    /// next resync frame (§17.4, §17.5).
+    fn reserve(&self) -> bool {
+        self.0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+                (queued < PRESENCE_QUEUE).then_some(queued + 1)
+            })
+            .is_ok()
+    }
+
+    fn release(&self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// How a direct connection to a session member currently travels. Gossip
 /// links may migrate (relay first, then direct once hole punching or a WebRTC
 /// bootstrap lands), so this is sampled at query time rather than recorded at
@@ -174,7 +246,6 @@ pub struct CollabSession {
     sender: GossipSender,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     waitlist: Arc<Waitlist>,
-    events: Option<mpsc::UnboundedReceiver<RemoteEvent>>,
     ticket_addr: EndpointAddr,
 }
 
@@ -185,7 +256,7 @@ impl CollabSession {
     /// with [`actor_from_endpoint_id`] of this session's identity — generate a
     /// [`SecretKey`] first and pass it in `opts` so the actor id is known
     /// before binding.
-    pub async fn host(doc: DocumentFile, opts: NetOptions) -> Result<Self> {
+    pub async fn host(doc: DocumentFile, opts: NetOptions) -> Result<(Self, Events)> {
         let mirror = Arc::new(Mutex::new(Mirror::from_file(&doc)));
         let bound = backend::bind(mirror.clone(), &opts).await?;
         // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
@@ -211,7 +282,10 @@ impl CollabSession {
     /// snapshot to load via
     /// [`Engine::join_collaboration`](stark_core::Engine::join_collaboration)
     /// (with [`CollabSession::actor_id`] as the actor).
-    pub async fn join(ticket: &SessionTicket, opts: NetOptions) -> Result<(Self, DocumentFile)> {
+    pub async fn join(
+        ticket: &SessionTicket,
+        opts: NetOptions,
+    ) -> Result<(Self, Events, DocumentFile)> {
         let mirror = Arc::new(Mutex::new(Mirror::from_file(
             &DocumentFile::new(Vec::new()),
         )));
@@ -245,7 +319,7 @@ impl CollabSession {
         *mirror.lock().expect("mirror poisoned") = Mirror::from_file(&file);
 
         let ticket_addr = bound.dialer.ticket_addr(&opts).await?;
-        let session = Self::finish(
+        let (session, events) = Self::finish(
             bound.dialer,
             bound.shutdown,
             ticket.topic,
@@ -253,7 +327,7 @@ impl CollabSession {
             mirror,
             ticket_addr,
         )?;
-        Ok((session, file))
+        Ok((session, events, file))
     }
 
     fn finish(
@@ -263,7 +337,7 @@ impl CollabSession {
         sub: iroh_gossip::api::GossipTopic,
         mirror: Arc<Mutex<Mirror>>,
         ticket_addr: EndpointAddr,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Events)> {
         let local_id = dialer.local_id()?;
         let (sender, receiver) = sub.split();
         // Seed with the neighbors met before the receive loop takes over
@@ -283,6 +357,7 @@ impl CollabSession {
             .expect("mirror poisoned")
             .seed_blobs(|bytes| dialer.add_blob(bytes));
         let (tx, rx) = mpsc::unbounded_channel();
+        let presence = Arc::new(PresenceQuota::default());
         let waitlist = Arc::new(Waitlist::new(mirror, tx.clone()));
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
@@ -291,9 +366,10 @@ impl CollabSession {
             receiver,
             neighbors.clone(),
             waitlist.clone(),
+            presence.clone(),
             tx,
         ));
-        Ok(Self {
+        let session = Self {
             local_id,
             shutdown,
             topic,
@@ -301,9 +377,9 @@ impl CollabSession {
             sender,
             neighbors,
             waitlist,
-            events: Some(rx),
             ticket_addr,
-        })
+        };
+        Ok((session, Events { rx, presence }))
     }
 
     /// The ticket others use to join — every member can hand one out (it
@@ -318,11 +394,6 @@ impl CollabSession {
     /// The author id this session's identity maps to.
     pub fn actor_id(&self) -> ActorId {
         actor_from_endpoint_id(self.local_id)
-    }
-
-    /// The stream of remote edits. Take it once and pump it into the engine.
-    pub fn take_events(&mut self) -> Option<mpsc::UnboundedReceiver<RemoteEvent>> {
-        self.events.take()
     }
 
     /// A cheap, `Clone` handle for feeding the session from elsewhere (e.g. a
@@ -350,7 +421,10 @@ impl CollabSession {
     ///
     /// Call it *before* committing an action that references the content: the
     /// broadcast attaches a transfer hash looked up here, and an action that goes out
-    /// without one leaves receivers unable to fetch what it needs.
+    /// without one leaves receivers unable to fetch what it needs. Getting that order
+    /// wrong logs an error naming the content, from the client that committed it —
+    /// the fault is only visible there, since what it produces at the far end is
+    /// indistinguishable from content that has not arrived yet.
     pub fn add_content(&self, need: AssetNeed, bytes: impl Into<Bytes>) {
         self.broadcaster().add_content(need, bytes);
     }
@@ -399,10 +473,31 @@ impl Broadcaster {
 
     async fn publish_wire(&self, wire: Wire, need: Option<AssetNeed>) -> Result<()> {
         // Attach the blob hash for the referenced content, so receivers that lack
-        // it know what to fetch. Registered before the action could have been
-        // committed (`add_content` accompanies the import, for a ground as for a
-        // brush), so the lookup only misses for a payload that references nothing.
-        let asset = need.and_then(|need| self.waitlist.transfer_hash(need.content()?));
+        // it know what to fetch. `add_content` accompanies the import, for a
+        // ground as for a brush, so a registered lookup is the normal case and a
+        // miss means that ordering was broken.
+        let asset = need.and_then(|need| {
+            // `Flat` names no content; nothing to attach and nothing wrong.
+            let id = need.content()?;
+            let hash = self.waitlist.transfer_hash(id);
+            if hash.is_none() {
+                // What a call site that committed before registering looks like
+                // from here. Reported at the fault rather than left to surface
+                // as a warning on someone else's canvas: with no transfer hash
+                // the receiver cannot fetch the bytes at all, and for a ground
+                // that is a permanent divergence (§6.4).
+                //
+                // Sent anyway. The action is already committed locally, so
+                // withholding it would guarantee the divergence this is warning
+                // about rather than merely risk it — and a peer that gets the
+                // content some other way still converges.
+                tracing::error!(
+                    "broadcasting a payload referencing unregistered {need:?}; \
+                     add_content must precede the commit that references it"
+                );
+            }
+            hash
+        });
         let stamped = Stamped {
             origin: self.local_id,
             asset,
@@ -469,6 +564,7 @@ async fn recv_loop(
     mut gossip: GossipReceiver,
     neighbors: Arc<Mutex<HashSet<EndpointId>>>,
     waitlist: Arc<Waitlist>,
+    presence: Arc<PresenceQuota>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
     while let Some(event) = gossip.next().await {
@@ -535,6 +631,13 @@ async fn recv_loop(
                         hash,
                         waitlist.clone(),
                     ));
+                }
+                // Dropped rather than queued when the engine is already
+                // `PRESENCE_QUEUE` frames behind: a frame the UI would reach
+                // late is one the engine rejects as stale anyway.
+                if !presence.reserve() {
+                    tracing::trace!("presence frame dropped; the engine is behind");
+                    continue;
                 }
                 let event = RemoteEvent::Presence {
                     actor: actor_from_endpoint_id(origin),
