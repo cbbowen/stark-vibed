@@ -63,7 +63,13 @@ hr {
 
 .panel-stack {
   position: absolute;
-  height: 100%;
+  /* The stack is exactly as tall as the panels in it — *not* `height: 100%`. It has no
+     background of its own, so a full-height box is a 300px column of invisible chrome
+     standing over the painting: every press in the empty run below the last panel was
+     taken by a box the user cannot see, and a stroke started there never began. Hugging
+     the content leaves only what is drawn, and `max-height` below still turns the column
+     into a scroller the moment the panels outgrow the window. */
+  height: auto;
   /* Explicit, and matching the rail/bars: without it the stack sits at auto level,
      where *any* positioned sibling with a z-index (the frame overlay) wins over it
      no matter what the DOM order is. */

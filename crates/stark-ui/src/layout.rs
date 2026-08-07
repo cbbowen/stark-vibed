@@ -269,9 +269,10 @@ pub fn chrome_class(state: AppState, base: &str) -> String {
 /// whichever panel leads `PanelId::ALL` rather than the top of the column; `Panel` names
 /// the ends with `.stack-first` / `.stack-last` instead.
 ///
-/// A stack taller than the window scrolls, and that is the stylesheet's job alone
-/// (`.panel-stack`) — no wheel handler here. The canvas's zoom hangs off the `<canvas>`
-/// element, which is this stack's *sibling*, so a wheel spent over a panel is already
+/// A stack no taller than its panels, and a stack taller than the window scrolls: both
+/// are the stylesheet's job alone (`.panel-stack`) — no wheel handler here, and no box
+/// beyond the panels for a canvas press to disappear into. The canvas's zoom hangs off
+/// the `<canvas>` element, which is this stack's *sibling*, so a wheel spent over it is
 /// unable to reach it; adding a handler to suppress a zoom that cannot happen would be
 /// a second, quieter claim about the DOM shape for the first one to fall out of step
 /// with.
@@ -286,6 +287,13 @@ pub fn PanelStack() -> Element {
         .into_iter()
         .filter(|id| !hidden.contains(id))
         .collect();
+    // Every panel closed is no stack at all, not an empty one. An empty stack is still a
+    // box over the canvas — its padding alone is a strip across the top-right corner —
+    // and chrome the user cannot see must not be able to take a press aimed at the
+    // painting. The same reasoning the stylesheet applies to the stack's height.
+    if visible.is_empty() {
+        return rsx! {};
+    }
     let count = visible.len();
     // The drag preview is resolved to a number here, alongside each panel's slot, so a
     // panel is handed its offset rather than reading the gesture itself. Only the panels
