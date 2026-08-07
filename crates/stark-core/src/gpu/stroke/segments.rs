@@ -72,17 +72,61 @@ pub(super) struct Segment {
 // beside the declaration that decides how it is read.
 pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 
-/// Generate the round tip's coverage: a soft disc with `hardness` falloff.
+/// Generate the round tip's coverage: the soft disc whose *swept* profile across the
+/// stroke is `1 − |y|^h`, for `h = 1/(1 − hardness)` and `y` the distance from the
+/// centreline in radii.
+///
+/// The profile is what is being designed here, not the footprint. What `hardness`
+/// names is how the *stroke* falls off from its centreline; the tip that produces it
+/// is whatever it has to be, and it is not the profile's own shape — a swept deposit
+/// composes in **optical depth**, so a full pass lays `1 − exp(−τ(y))` where `τ` is
+/// this mask's `κ = −ln(1 − coverage)` integrated along the travel axis
+/// ([`build_prefix_tau`](crate::assets::build_prefix_tau)). Ask instead for the field
+/// whose row integrals are
+///
+/// ```text
+/// τ(y) = −h·ln|y|        (so 1 − exp(−τ(y)) = 1 − |y|^h, as wanted)
+/// ```
+///
+/// and that is an Abel transform, which inverts in closed form: the radial
+///
+/// ```text
+/// κ(r) = (h/π)·acos(r)/r,   r < 1
+/// ```
+///
+/// has exactly those integrals. So the tip is `1 − exp(−κ(r))` and the profile is
+/// arrived at rather than approached. Rate scales the exponent rather than leaving the
+/// family — a pass at strength `a` lays `1 − |y|^(a·h)`, the same shape at another
+/// hardness — and the field is radially symmetric, as a round tip's ought to be.
+///
+/// What this replaces aimed at the same profile through the *linear* integral: a
+/// `1 − r^h` disc divided by its own chord half-length, `1/√(1 − y²)`. The log in
+/// between is what it did not account for, and it is not a small correction, because
+/// `−ln(1 − c)` weights the high-coverage core far above the rim: the stroke came out
+/// fuller than its hardness named everywhere, by 0.08 in coverage at `hardness = 0`
+/// and by 0.54 at `hardness = 0.9`, with the whole falloff crushed into the last few
+/// texels of the rim — and on a hard tip the flanks left the mask above coverage 1
+/// entirely, where the clamp ate the overshoot.
+///
+/// `κ` diverges at the centre, as it must for a profile that reaches exactly 1 there,
+/// so the core saturates against that same 0.999 clamp and lands a shade under 1
+/// instead. Outside it the profile is exact to a thousandth (`tests`, below).
 pub(super) fn round_coverage(hardness: f32, res: u32) -> Vec<f32> {
     let h = 1.0 / (1.0 - hardness).max(0.01);
     let mut cov = vec![0.0f32; (res * res) as usize];
     for y in 0..res {
+        let fy = (y as f32 + 0.5) / res as f32 * 2.0 - 1.0;
         for x in 0..res {
             let fx = (x as f32 + 0.5) / res as f32 * 2.0 - 1.0;
-            let fy = (y as f32 + 0.5) / res as f32 * 2.0 - 1.0;
-            let r2 = fx * fx + fy * fy;
-            let k = 1.0 / (1.0 - fy * fy).max(1e-5).sqrt();
-            cov[(y * res + x) as usize] = k * (1.0 - r2.min(1.0).powf(0.5 * h)).max(0.0);
+            let r = (fx * fx + fy * fy).sqrt();
+            // Zero outside the disc; `+∞` at a centre exactly hit (`acos(0)/0`), which
+            // is the one place the profile asks for a coverage of exactly 1.
+            let kappa = if r < 1.0 {
+                h * r.acos() / (std::f32::consts::PI * r)
+            } else {
+                0.0
+            };
+            cov[(y * res + x) as usize] = 1.0 - (-kappa).exp();
         }
     }
     cov
@@ -718,6 +762,45 @@ mod tests {
     use super::super::budget::{MAX_TIP_TURN, flatten_tolerance};
     use super::super::safe_frozen;
     use super::*;
+
+    // --- the round tip ---------------------------------------------------
+
+    /// The whole claim [`round_coverage`] makes, checked where it is a claim: a full
+    /// pass of the tip lays `1 − |y|^h` across the stroke.
+    ///
+    /// Swept through the very integral the GPU volume is built from — the row sum
+    /// `assets::build_prefix_tau` does, sharing its `tau_of` so the clamp cannot drift
+    /// between the two — which is what makes this a test of the tip rather than of a
+    /// restatement of it. Inside `|y| < 0.2` the profile is past 0.99 for every
+    /// hardness and the clamped core takes over, so that is where the pin stops; the
+    /// centre's saturation is the tip's one documented departure.
+    #[test]
+    fn the_round_tip_sweeps_to_the_profile_its_hardness_names() {
+        const RES: u32 = super::super::ROUND_RES;
+        for hardness in [0.0, 0.25, 0.5, 0.8, 0.95] {
+            let h = 1.0 / (1.0 - hardness);
+            let cov = round_coverage(hardness, RES);
+            for row in 0..RES {
+                let y = ((row as f32 + 0.5) / RES as f32 * 2.0 - 1.0).abs();
+                if y < 0.2 {
+                    continue;
+                }
+                // The row's optical depth, as the sweep sees it after the tip has
+                // passed over: every column of the mask, in brush-local width.
+                let tau: f32 = (0..RES)
+                    .map(|x| crate::assets::tau_of(cov[(row * RES + x) as usize]))
+                    .sum::<f32>()
+                    * (2.0 / RES as f32);
+                let laid = 1.0 - (-tau).exp();
+                let want = 1.0 - y.powf(h);
+                assert!(
+                    (laid - want).abs() < 2e-3,
+                    "hardness {hardness}: at y = {y:.4} the sweep lays {laid:.5}, \
+                     not the {want:.5} its profile names",
+                );
+            }
+        }
+    }
 
     // --- tapers ----------------------------------------------------------
 

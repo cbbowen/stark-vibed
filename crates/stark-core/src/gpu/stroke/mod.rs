@@ -426,10 +426,10 @@ impl StrokeRenderer {
     /// — which re-renders per pointer move — doesn't rebuild them each frame.
     ///
     /// The pair is built and cached **together**, off a single [`round_coverage`]
-    /// evaluation, because they are two readings of one field: 256² texels of `powf`
-    /// that used to be run twice for the same hardness, once per texture. Cached as
-    /// one entry for a second reason — held apart, the stamp loop could find its
-    /// prefix hot and its coverage cold, and pay the field again anyway.
+    /// evaluation, because they are two readings of one field: 256² texels of
+    /// `acos`/`exp` that used to be run twice for the same hardness, once per texture.
+    /// Cached as one entry for a second reason — held apart, the stamp loop could find
+    /// its prefix hot and its coverage cold, and pay the field again anyway.
     fn round_tip(&self, hardness: f32) -> RoundTip {
         let key = hardness.to_bits();
         let mut cache = self.round_tip.lock().expect("round tip cache poisoned");

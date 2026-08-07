@@ -544,9 +544,9 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 // because the *rate* each cell trades at varies enormously across the tip.
 //
 // `exchange` keys a cell's exposure on its own optical depth, and τ is flat across the
-// interior (the 0.999 coverage clamp caps it) and then falls off a cliff over the few
-// texels of a hard tip's shoulder — at `hardness = 0.95` the shoulder cells exchange
-// some fifty times slower than the interior. So when a stroke's own paint runs out
+// interior (the 0.999 coverage clamp caps it) and then falls away over a hard tip's
+// shoulder — at `hardness = 0.95` the last cells still in contact exchange some twenty
+// times slower than the interior. So when a stroke's own paint runs out
 // (`drain`) and the tip is smearing what it picked up, the interior cells empty in step
 // with the fading trail while the shoulder ring goes on holding paint lifted hundreds
 // of pixels back. Nothing relaxes it, and the deposit lays each lateral row's load back

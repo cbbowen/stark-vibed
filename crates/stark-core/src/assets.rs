@@ -228,6 +228,19 @@ fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<
     out
 }
 
+/// A coverage sample's **optical depth**, `κ = −ln(1 − coverage)` — the currency the
+/// deposit sums (§6.1), and the one conversion between the two.
+///
+/// The clamp is what keeps `κ` finite where a mask reaches 1: full coverage is
+/// infinite depth, and a mask that says so would carry `+∞` into every prefix sum
+/// downstream of it. Capping the *coverage* rather than the depth puts the ceiling
+/// somewhere a reader of the mask can see it. `dynamics.wesl`'s own `tau_of` mirrors
+/// this, clamp included, so the tool side — which has no prefix to difference — agrees
+/// with the volume built here.
+pub(crate) fn tau_of(coverage: f32) -> f32 {
+    -(1.0 - coverage.clamp(0.0, 0.999)).ln()
+}
+
 /// Build a brush's **prefix-τ** volume (§6.2, §6.6): for each orientation
 /// `layer` and each row, the running integral of optical depth `κ = −ln(1−coverage)`
 /// along the travel axis (x), normalized to brush-local units (x spans `[-1, 1]`, width
@@ -258,8 +271,7 @@ pub fn build_prefix_tau(
         // integrates every layer's rows independently.
         let mut acc = 0.0f32;
         for x in 0..w {
-            let m = coverage[y * w + x].clamp(0.0, 0.999);
-            acc += -(1.0 - m).ln() * dx;
+            acc += tau_of(coverage[y * w + x]) * dx;
             prefix[y * w + x] = acc;
         }
     }

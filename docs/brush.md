@@ -370,9 +370,9 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      mid-pass sample — exact for any segment length.
    - **Paint migrates within the tip (`wick`), because the cells trade at wildly
      different rates.** A cell's exposure is keyed on its own optical depth, and τ is
-     flat across the interior (the coverage clamp caps it) then falls off a cliff over
-     the few texels of a hard tip's shoulder — at `hardness = 0.95`, some fifty times
-     slower there than at the centre. Left as isolated cells, that disparity strands
+     flat across the interior (the coverage clamp caps it) then falls away over a hard
+     tip's shoulder — at `hardness = 0.95`, some twenty times slower at the last cells
+     still in contact. Left as isolated cells, that disparity strands
      paint: once a stroke's own source runs dry (`drain`) and the tip is only smearing,
      the interior empties in step with the fading trail while the shoulder ring still
      holds what it lifted hundreds of pixels back. The deposit lays each lateral row's
@@ -854,6 +854,20 @@ tips. A brush shape is a **coverage mask**: a greyscale image where white = full
 deposit and black = none. The mask drives coverage and, scaled, the height
 channel too — so a worn-bristle tip lays down *broken* impasto rather than a
 uniform slab.
+
+**The round tip is specified by the stroke it draws, not by its own silhouette.**
+What `hardness` names is the profile *across the stroke* — a full pass lays
+`1 − |y|^h` at `y` radii off the centreline, for `h = 1/(1 − hardness)` — and the
+footprint is then whatever produces it. The two are not the same shape, because
+the deposit composes in optical depth: what the sweep integrates along the travel
+axis is `κ = −ln(1 − coverage)`, not coverage, so a mask carrying the profile's
+own falloff draws a very different one. Asking instead for the field whose row
+integrals are `τ(y) = −h·ln|y|` is an Abel transform, and it inverts in closed
+form to the radial `κ(r) = (h/π)·acos(r)/r` — so the tip is `1 − exp(−κ(r))` and
+the profile is exact rather than approached. (It was not, before: normalizing a
+`1 − r^h` disc by its chord half-length aimed at the same profile through the
+linear integral, and drew a stroke up to 0.54 in coverage fuller than its
+hardness named, with the falloff crushed into the outermost texels.)
 
 **Brush shapes are content-addressed assets.** An imported image is identified by
 the hash of its bytes; `BrushParams` references that id, never the pixels:

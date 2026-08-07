@@ -22,7 +22,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::DocCommand;
-use stark_core::document::{BlendMode, LayerId};
+use stark_core::document::{BlendMode, BrushParams, BrushShape, LayerId};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
 
@@ -244,6 +244,13 @@ fn blend_only_acts_where_the_layers_meet() {
 /// colour by how much backdrop it found, so which layer is on top is a real
 /// difference. That is Porter-Duff, not the blend mode; `Normal` layers have exactly
 /// the same property, and no derivation could remove it.
+///
+/// Which is why the tip is a hard one rather than the shared `brush()`'s. A round tip
+/// lays `1 − |y|^h` across the stroke (`round_coverage`), so "the interior" is only
+/// opaque to the last bit for a hardness that puts the box inside the flat top: at
+/// `hardness = 0.8` the diagonal stroke arrives at the corner of this box a
+/// thousandth short of opaque, which is enough backdrop for the Porter-Duff term to
+/// see the order — a genuine effect, and not the one being tested.
 #[test]
 fn glow_stacking_is_order_independent() {
     // Three strokes through the origin at different angles: the middle of the canvas
@@ -264,7 +271,11 @@ fn glow_stacking_is_order_independent() {
                     above: None,
                 });
             }
-            paint(&mut engine, colors[i], 44.0, paths[i]);
+            let opaque = BrushParams {
+                shape: BrushShape::Round { hardness: 0.99 },
+                ..brush(colors[i], 44.0)
+            };
+            stroke_with(&mut engine, opaque, paths[i]);
             let id = engine.observe().active_layer;
             engine.process(DocCommand::SetLayerBlend(id, BlendMode::Reinhard));
         }
