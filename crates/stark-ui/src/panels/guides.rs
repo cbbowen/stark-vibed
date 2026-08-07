@@ -48,24 +48,21 @@ use stark_core::command::ViewCommand;
 use stark_core::geom::Vec2;
 use stark_core::{Lens, PairTrace, PerspectiveGuide};
 
-/// The axis hues, as CSS — the same three colours `guides.wesl` draws the fans
-/// in, so a lock chip and the lines it governs read as one thing. Held to that
-/// by [`the_chips_are_painted_in_the_shader_s_own_axis_hues`], since a colour
-/// stated in one space and declared in another cannot be checked by eye.
+/// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
+/// side never learns what they are. The colours belong to the app rather than
+/// to this bar — the guide's own lines are drawn in them too — so they are
+/// stated once, in the stylesheet, in Oklab and at one shared lightness, and
+/// everything that wears one refers to it.
 ///
-/// **In Oklab**, the space the app picks every other colour in (§6.5) — the
-/// same `oklab(L a b)` the Color panel's own ramps are written in. Same
-/// colours, said in coordinates that mean something: `L` is how light the hue
-/// reads, and the three are within 0.05 of each other, which is why no axis
-/// shouts over the others on the bar. It is also what lets a chip's fill be an
-/// **interpolation** — the plane chips run a gradient between two of these, and
-/// `in oklab` keeps the midpoint as light as its ends instead of dipping
-/// through the grey sRGB puts between a red and a blue.
-const AXIS_CSS: [&str; 3] = [
-    "oklab(0.6493 0.1675 0.0664)",
-    "oklab(0.6952 -0.1237 0.0782)",
-    "oklab(0.6564 -0.0143 -0.1553)",
-];
+/// A control that needed to *compute* with a hue would have to be given the
+/// numbers; none does. A chip either wears a hue or interpolates between two,
+/// and CSS does both from the variable — which is also why the plane chip's
+/// gradient can run `in oklab` without this file knowing that word.
+///
+/// `guides.wesl` is the one place that cannot follow, needing shader constants;
+/// [`the_chips_are_painted_in_the_shader_s_own_axis_hues`] parses the
+/// stylesheet and holds the two together.
+const AXIS_CSS: [&str; 3] = ["var(--axis-x)", "var(--axis-y)", "var(--axis-z)"];
 const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
 
 /// The two axes of each pair plane, in the order the chip shows them: XY, YZ,
@@ -932,43 +929,93 @@ pub fn GuideEditOverlay() -> Element {
 mod tests {
     use super::*;
 
+    /// The three axis hues as the shipped stylesheet declares them — parsed out
+    /// of the file itself, so what the tests below hold is what the browser
+    /// gets rather than a copy of it that could drift.
+    fn declared_hues() -> [[f32; 3]; 3] {
+        const CSS: &str = include_str!("../../assets/stark.css");
+        std::array::from_fn(|i| {
+            let decl = format!("--axis-{}: oklab(", ["x", "y", "z"][i]);
+            let at = CSS
+                .find(&decl)
+                .unwrap_or_else(|| panic!("stark.css declares no `{decl}…)`"));
+            let rest = &CSS[at + decl.len()..];
+            let body = &rest[..rest.find(')').expect("an unclosed oklab()")];
+            let lab: Vec<f32> = body
+                .split_whitespace()
+                .map(|n| n.parse().expect("a number"))
+                .collect();
+            assert_eq!(lab.len(), 3, "`{decl}{body})` is not an L, a, b");
+            [lab[0], lab[1], lab[2]]
+        })
+    }
+
     /// The bar is painted in the guide pass's own axis hues (§20.4) — a lock
     /// chip, a plane chip and the lines they govern are one colour, or the
     /// controls stop looking like they belong to what they control.
     ///
     /// The two declarations cannot be merged: `guides.wesl` needs its colours as
-    /// shader constants, the bar needs them as CSS, and the mirror carries
+    /// shader constants and cannot read a stylesheet, and the mirror carries
     /// scalars only (a `vec3` has no host constant). So they are two statements
-    /// of one fact, and this is the thing that notices when they part. It earns
-    /// its keep now that [`AXIS_CSS`] is in **Oklab**: `#e8575c` beside
-    /// `vec3(0.91, 0.34, 0.36)` could be checked by a reader who cared to,
-    /// `oklab(0.6493 0.1675 0.0664)` cannot be checked by anyone.
+    /// of one fact, and this is the thing that notices when they part — which
+    /// matters more than it did, now that one reads
+    /// `oklab(0.667 0.1675 0.0664)` and the other
+    /// `vec3(0.9349, 0.3629, 0.3803)`. `#e8575c` beside
+    /// `vec3(0.91, 0.34, 0.36)` could be checked by a reader who cared to;
+    /// these cannot be checked by anyone.
     ///
-    /// The tolerance is a **quantization step**, not a fudge: the CSS carries
-    /// four decimals of `L`, `a` and `b`, and what has to survive that rounding
-    /// is the 8-bit colour the screen shows. Anything inside 1/255 is the same
-    /// pixel.
+    /// The tolerance is a **quantization step**, not a fudge: what has to
+    /// survive both roundings is the 8-bit colour the screen shows, and
+    /// anything inside 1/255 is the same pixel. It is also why the shader's
+    /// constants carry four decimals — at two, the conversion of a round Oklab
+    /// lightness misses by more than that.
     #[test]
     fn the_chips_are_painted_in_the_shader_s_own_axis_hues() {
         // `guides.wesl`'s AXIS_X / AXIS_Y / AXIS_Z, display sRGB.
-        const SHADER: [[f32; 3]; 3] = [[0.91, 0.34, 0.36], [0.33, 0.71, 0.40], [0.38, 0.55, 0.94]];
-        for (i, want) in SHADER.iter().enumerate() {
-            let lab: Vec<f32> = AXIS_CSS[i]
-                .trim_start_matches("oklab(")
-                .trim_end_matches(')')
-                .split_whitespace()
-                .map(|n| n.parse().expect("a number"))
-                .collect();
-            assert_eq!(lab.len(), 3, "axis {i}: {} is not an oklab()", AXIS_CSS[i]);
+        const SHADER: [[f32; 3]; 3] = [
+            [0.9349, 0.3629, 0.3803],
+            [0.2932, 0.6746, 0.3667],
+            [0.3922, 0.5631, 0.9544],
+        ];
+        for (i, (lab, want)) in declared_hues().iter().zip(&SHADER).enumerate() {
+            // The bar wears the variable rather than a value, so the name has to
+            // be the declared one — a typo'd `var()` is simply no colour.
+            let name = format!("var(--axis-{})", ["x", "y", "z"][i]);
+            assert_eq!(AXIS_CSS[i], name, "the bar points at nothing");
+
             let got = stark_core::color::oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
             for c in 0..3 {
                 assert!(
                     (got[c] - want[c]).abs() < 1.0 / 255.0,
-                    "axis {i}: {} is {got:?}, but the shader draws {want:?}",
-                    AXIS_CSS[i]
+                    "axis {i}: {name} is {:?}, but the shader draws {want:?}",
+                    &got[..3]
                 );
             }
         }
+    }
+
+    /// **No axis reads heavier than the others**: all three hues sit at one
+    /// Oklab lightness, and only the hue tells them apart.
+    ///
+    /// The three are laid side by side on the bar, and two of them are
+    /// interpolated into a plane chip's gradient, so a difference in lightness
+    /// reads as one control being more emphatic than its neighbours — and as a
+    /// gradient with a bright end. Written as hex they had drifted 0.046 of `L`
+    /// apart with the green on top, and nothing in the source could show it.
+    /// That is the argument for stating a colour in a space with a lightness
+    /// axis, and this is the part of it that can be checked.
+    ///
+    /// Exact equality rather than a tolerance: the claim is about how the three
+    /// are *written*, and what it asks is that one number appears in all of
+    /// them.
+    #[test]
+    fn the_axis_hues_carry_equal_weight() {
+        let [x, y, z] = declared_hues();
+        assert_eq!(
+            [x[0], y[0], z[0]],
+            [x[0]; 3],
+            "the axis hues are at different lightnesses"
+        );
     }
 
     /// Where each of the default guide's horizons sits, as the one coordinate

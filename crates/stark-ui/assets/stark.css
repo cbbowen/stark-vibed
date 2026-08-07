@@ -13,6 +13,34 @@
   --panel-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E"), rgba(21, 20, 19, 0.9);
 }
 
+/* --- the world-axis hues (§20.3): the X/Y/Z semantics every 3D tool taught,
+   softened to sit over paint. Named here because they are the app's, not one
+   control's — a lock chip, a plane chip and the perspective guide's own lines
+   are all the same three colours, and one of them moving has to move all of
+   them. The Rust side carries the *names* (`AXIS_CSS`) and never the values.
+
+   Stated **in Oklab**, the space the app picks every colour in (§6.5), and at
+   one shared lightness: `L` is fixed at 0.667 for all three and only the hue
+   changes, so no axis reads heavier than the others — which matters most where
+   the three are laid side by side on the bar, and where two of them are
+   interpolated into a gradient. Written as hex these were L 0.649 / 0.695 /
+   0.656, and the green carried visibly more weight than it was asked to.
+
+   The 0.667 is the three hues' own average, so this evens them out without
+   moving any of them further than it has to. Chroma is left alone (0.180 /
+   0.146 / 0.156): it is what makes a red a red, and the eye reads weight off
+   lightness.
+
+   `guides.wesl` needs the same three as shader constants and cannot read a
+   stylesheet, so it carries them converted to display sRGB. That is the one
+   duplication, and `the_chips_are_painted_in_the_shader_s_own_axis_hues`
+   parses this file to hold the two together. --- */
+:root {
+  --axis-x: oklab(0.667 0.1675 0.0664);
+  --axis-y: oklab(0.667 -0.1237 0.0782);
+  --axis-z: oklab(0.667 -0.0143 -0.1553);
+}
+
 hr {
   border: none;
   border-top: 1px solid #ffffff14;
@@ -2274,8 +2302,9 @@ button.layer-remove:hover {
   height: 12px;
 }
 
-/* An axis chip, tinted the axis's own hue (`--axis`, set inline): the letter
-   is the color of the lines it governs, and a lit chip fills with it. */
+/* An axis chip, tinted the axis's own hue (`--axis`, pointed at one of the
+   `--axis-x/y/z` above from the call site): the letter is the color of the
+   lines it governs, and a lit chip fills with it. */
 .chip.axis-chip {
   color: var(--axis);
   min-width: 30px;
@@ -2287,12 +2316,13 @@ button.layer-remove:hover {
   color: #101014;
 }
 
-/* A plane chip (§20.3), lettered in the two axes' own hues (`--axis-a`,
-   `--axis-b`, set inline): a plane is named by the two families of lines that
-   rule it, so the chip is written in exactly those two colors and needs no
-   third one invented for it. A lit chip fills with the pair as a gradient
-   running the way the letters do, and the letters go dark against it — the same
-   figure/ground swap the axis chip makes with one hue. */
+/* A plane chip (§20.3), lettered in the two axes' own hues (`--axis-a` and
+   `--axis-b`, pointed at two of the `--axis-x/y/z` above from the call site):
+   a plane is named by the two families of lines that rule it, so the chip is
+   written in exactly those two colors and needs no third one invented for it.
+   A lit chip fills with the pair as a gradient running the way the letters do,
+   and the letters go dark against it — the same figure/ground swap the axis
+   chip makes with one hue. */
 .chip.plane-chip {
   min-width: 34px;
   font-weight: 600;

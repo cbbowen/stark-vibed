@@ -64,9 +64,18 @@ struct Guide {
 
 // Axis hues (display sRGB — this pass draws over the already-encoded image):
 // the X/Y/Z semantics every 3D tool taught, softened to sit over paint.
-const AXIS_X: vec3<f32> = vec3<f32>(0.91, 0.34, 0.36);
-const AXIS_Y: vec3<f32> = vec3<f32>(0.33, 0.71, 0.40);
-const AXIS_Z: vec3<f32> = vec3<f32>(0.38, 0.55, 0.94);
+//
+// Declared in Oklab and converted here, which is why they are not round:
+// `stark.css`'s `--axis-x/y/z` are the statement of them, all three at one
+// lightness (L = 0.667) so no axis reads heavier than the others, and the bar's
+// chips wear those variables directly. This pass cannot read a stylesheet, so
+// it carries the conversion — held to it by the frontend's
+// `the_chips_are_painted_in_the_shader_s_own_axis_hues`, which parses the CSS.
+// Four decimals rather than two because the agreement is to within a 1/255
+// step, and two would not make it.
+const AXIS_X: vec3<f32> = vec3<f32>(0.9349, 0.3629, 0.3803);
+const AXIS_Y: vec3<f32> = vec3<f32>(0.2932, 0.6746, 0.3667);
+const AXIS_Z: vec3<f32> = vec3<f32>(0.3922, 0.5631, 0.9544);
 // Neutral chrome (center of view, 45° circle) and the dark halo that keeps it
 // legible over paint of any value.
 const CHROME: vec3<f32> = vec3<f32>(0.96, 0.96, 0.96);
