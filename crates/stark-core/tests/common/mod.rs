@@ -3,6 +3,8 @@
 
 #![allow(dead_code)] // not every test binary uses every helper
 
+pub mod corpus;
+
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -29,8 +31,8 @@ pub const BG: wgpu::Color = wgpu::Color {
 /// A light neutral grey substrate, for color spaces that composite over a light
 /// ground. Matches the engine's `DEFAULT_BACKGROUND`. Neutral on purpose: a warm
 /// paper rendered so red-dominant it defeated channel-dominance checks like `is_red`
-/// (tests asserting "is paint here?" were vacuously true on bare paper). The headless
-/// engine lights with the achromatic `Neutral` environment, so nothing else in the
+/// (tests asserting "is paint here?" were vacuously true on bare paper). Now that
+/// [`engine_or_skip`] leaves the light on `Neutral` as well, nothing anywhere in the
 /// pipeline pushes these toward a hue.
 pub const PAPER: wgpu::Color = wgpu::Color {
     r: 0.85,
@@ -57,7 +59,7 @@ fn env_flag(name: &str) -> bool {
 /// `None` if this machine has no usable adapter *and* [`ALLOW_NO_GPU`] permits the
 /// skip; panics otherwise, so a missing adapter is a failure by default. The engine
 /// comes back on whatever environment it booted with — the procedural `Neutral`.
-fn or_skip_unlit(built: stark_core::Result<Engine>) -> Option<Engine> {
+fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
     match built {
         Ok(e) => Some(e),
         Err(e) if env_flag(ALLOW_NO_GPU) => {
@@ -68,21 +70,18 @@ fn or_skip_unlit(built: stark_core::Result<Engine>) -> Option<Engine> {
     }
 }
 
-/// [`or_skip_unlit`] plus the studio HDR, which is what nearly every test wants.
-fn or_skip(built: stark_core::Result<Engine>) -> Option<Engine> {
-    or_skip_unlit(built).map(with_studio_env)
-}
-
-/// A headless engine left on the procedural `Neutral` environment — the reference
-/// light (§6.3) — instead of the studio HDR every other helper installs.
-/// For the reference-identity tests, which ask what the media pass does when the
-/// lighting is deliberately doing as little as it can.
-pub fn engine_or_skip_neutral() -> Option<Engine> {
-    or_skip_unlit(pollster::block_on(headless_engine(TARGET, SIZE)))
-}
-
 /// Build a headless engine, or `None` if this machine has no usable adapter and
 /// skipping is permitted (see [`or_skip`]).
+///
+/// **On the procedural `Neutral` environment** — the reference light (§6.3), whose
+/// exposure is 1.0 and whose whole purpose is to be the identity a colour can be
+/// judged against. The suite used to install the studio HDR here instead, which meant
+/// every claim it made about a rendered byte was a claim about a *particular decoded
+/// environment map*: a warm tint stood between every test and the paint it was
+/// checking, near-white paper read red-dominant by ~33 levels, and a difference in the
+/// pipeline arrived at the goldens multiplied by whatever the light happened to be
+/// doing there. Under the reference light what a test reads back is what the pipeline
+/// produced. [`engine_or_skip_studio`] keeps the image-based path covered.
 pub fn engine_or_skip() -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine(TARGET, SIZE)))
 }
@@ -98,9 +97,10 @@ pub fn engine_or_skip_sized(size: Extent2) -> Option<Engine> {
 ///
 /// The substrate is document state (§15.5), so choosing it is a
 /// logged edit like any other — which is exactly how a user would do it. Blue is
-/// deliberate for these tests: they ask "is there paint here?" by channel
-/// dominance, and a near-white paper lit by the studio HDR already reads
-/// red-dominant enough to make such a check vacuous.
+/// deliberate for these tests: they ask "is there paint here?" by channel dominance,
+/// and a saturated ground answers in the *other* direction, so `is_blue` reads "bare
+/// canvas" as positively as `is_red` reads "paint". Grey paper can only ever fail
+/// `is_red`, which a black frame would too.
 pub fn engine_or_skip_blue() -> Option<Engine> {
     engine_or_skip().map(on_blue)
 }
@@ -133,18 +133,24 @@ pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
     or_skip(pollster::block_on(headless_engine_with(TARGET, SIZE, id)))
 }
 
-/// Light the test engine with the real studio HDR, so goldens exercise image-based
-/// lighting from an actual decoded environment rather than the procedural one
-/// (§6.3). Not the app's startup default — that is the achromatic
-/// `Neutral` — but the more demanding of the two paths, and one switch away in the
-/// Lighting panel; [`engine_or_skip_neutral`] covers the reference light.
-fn with_studio_env(mut engine: Engine) -> Engine {
-    let hdr = stark_testdata::assets::studio_hdr();
-    engine.register_environment(stark_core::EnvironmentId::Ferndale, hdr);
-    engine.process(ViewCommand::SetEnvironment(
-        stark_core::EnvironmentId::Ferndale,
-    ));
-    engine
+/// A headless engine lit by the real studio HDR: image-based lighting from an
+/// actually-decoded environment map rather than the procedural one (§6.3).
+///
+/// The more demanding of the two paths — a decode, an irradiance convolution and a
+/// prefiltered specular chain, none of which `Neutral` runs — and one switch away in
+/// the Lighting panel, so it needs *some* pixel coverage. It gets exactly as much as
+/// it is worth: one golden ([`golden_studio_environment`](../golden.rs)), rather than
+/// standing behind the whole suite the way it used to. A test about compositing or
+/// about a stroke should not also be a test of a particular sky.
+pub fn engine_or_skip_studio() -> Option<Engine> {
+    engine_or_skip().map(|mut engine| {
+        let hdr = stark_testdata::assets::studio_hdr();
+        engine.register_environment(stark_core::EnvironmentId::Ferndale, hdr);
+        engine.process(ViewCommand::SetEnvironment(
+            stark_core::EnvironmentId::Ferndale,
+        ));
+        engine
+    })
 }
 
 pub fn brush(color: [f32; 4], radius: f32) -> BrushParams {

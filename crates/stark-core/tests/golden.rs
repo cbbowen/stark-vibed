@@ -1,5 +1,13 @@
 //! Step-3 golden-image tests (§9). Render known scripts and compare
 //! against committed reference PNGs. Regenerate by deleting the existing golden image.
+//!
+//! **Scripts, not single strokes.** A golden of one stroke with one brush belongs in
+//! the corpus ([`corpus.rs`](corpus.rs)), where it is also held to every invariant the
+//! battery knows about instead of only to its own pixels; the ones that lived here
+//! moved there. What is left is what the corpus's shape cannot express — a *sequence*
+//! of strokes and undos, a colour space, a lighting environment, a stroke drawn five
+//! times at five lengths — plus the marks that are about the media pass rather than
+//! about the stroke that made them.
 
 mod common;
 
@@ -7,32 +15,54 @@ use common::*;
 
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_core::document::{BrushDynamics, BrushParams, BrushShape, OrientationSource, Tool};
+use stark_core::document::{BrushDynamics, BrushParams, BrushShape, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
-/// The example brush shape, embedded so the test is self-contained.
-
+/// The **image-based** lighting path, on the one golden that runs it (§6.3).
+///
+/// Everything else in the suite paints under the procedural `Neutral` reference light,
+/// so that a rendered byte means what the pipeline produced rather than what a
+/// particular sky did to it. But `Ferndale` is a switch away in the Lighting panel and
+/// it is the *more* demanding path — an HDR decode, an irradiance convolution and a
+/// prefiltered specular chain, none of which `Neutral` runs at all — so it needs
+/// somewhere to show. This is it, and it is deliberately the one place: a decoded
+/// environment map standing behind every other golden is how a change to the *stroke*
+/// path arrives pre-multiplied by a change in the light.
+///
+/// Ridged paint at a glancing hardness, which is what puts the specular chain to work:
+/// a flat patch would come back as little more than the map's average.
 #[test]
-fn golden_single_stroke() {
-    let Some(mut engine) = engine_or_skip() else {
+fn golden_studio_environment() {
+    let Some(mut engine) = engine_or_skip_studio() else {
         return;
     };
-    paint(
-        &mut engine,
-        RED,
-        40.0,
-        &[
-            Vec2::new(-30.0, 0.0),
-            Vec2::new(0.0, 0.0),
-            Vec2::new(30.0, 0.0),
-        ],
-    );
+    engine.process(ViewCommand::SetMediaParams(stark_core::MediaParams {
+        specular: 0.8,
+        height_strength: 1.0,
+        ..Default::default()
+    }));
+    let mut b = brush(RED, 34.0);
+    b.shape = BrushShape::Round { hardness: 0.55 };
+    b.drain = 0.0;
+    b.dynamics.add = 1.2;
+    for (color, y) in [
+        ([1.0, 0.35, 0.2, 1.0], -60.0),
+        ([0.2, 0.4, 0.9, 1.0], 0.0),
+        ([0.9, 0.88, 0.8, 1.0], 60.0),
+    ] {
+        b.color = color;
+        stroke_with(
+            &mut engine,
+            b,
+            &[Vec2::new(-95.0, y - 18.0), Vec2::new(95.0, y + 18.0)],
+        );
+    }
     let img = engine.render_to_image();
-    assert_golden("single_stroke", &img, 6);
+    assert_golden("studio_environment", &img, 6);
 }
 
 #[test]
@@ -91,29 +121,6 @@ fn golden_mixbox_mix() {
 }
 
 #[test]
-fn golden_curved_stroke() {
-    let Some(mut engine) = engine_or_skip() else {
-        return;
-    };
-    // A coarse zigzag of control points; cubic interpolation should render a
-    // smooth curve through them rather than sharp polyline corners.
-    paint(
-        &mut engine,
-        RED,
-        18.0,
-        &[
-            Vec2::new(-90.0, 40.0),
-            Vec2::new(-45.0, -50.0),
-            Vec2::new(0.0, 40.0),
-            Vec2::new(45.0, -50.0),
-            Vec2::new(90.0, 40.0),
-        ],
-    );
-    let img = engine.render_to_image();
-    assert_golden("curved_stroke", &img, 6);
-}
-
-#[test]
 fn golden_bristle_stroke() {
     let Some(mut engine) = engine_or_skip() else {
         return;
@@ -140,50 +147,6 @@ fn golden_bristle_stroke() {
 
     let img = engine.render_to_image();
     assert_golden("bristle_stroke", &img, 6);
-}
-
-#[test]
-fn golden_pen_orientation_stroke() {
-    let Some(mut engine) = engine_or_skip() else {
-        return;
-    };
-    let id = engine
-        .import_brush(&stark_testdata::assets::bristles())
-        .expect("import brush shape");
-
-    // The anisotropic bristle mask in `Pen` orientation: the footprint is pinned to the
-    // pen's tilt azimuth (here a constant 45° in canvas space) instead of tracking the
-    // stroke tangent. So as this stroke changes direction the bristle streaks keep the
-    // *same* world angle — the whole point of arbitrary orientation (§6.6).
-    let mut brush = brush(RED, 60.0);
-    brush.shape = BrushShape::Stamp(id);
-    brush.orientation = OrientationSource::Pen;
-    brush.drain = 0.0;
-    engine.process(ViewCommand::SetBrush(brush));
-
-    // A fixed tilt azimuth (atan2(1, 1) = 45°) on every sample, while the stroke itself
-    // bends from rightward to downward — so travel direction and shape orientation diverge.
-    let tilt = Vec2::new(1.0, 1.0);
-    let sample = |x: f32, y: f32| InputSample {
-        pos: Vec2::new(x, y),
-        pressure: 1.0,
-        tilt,
-        time: 0.0,
-    };
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: sample(-80.0, -50.0),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for &(x, y) in &[(0.0, -50.0), (60.0, -10.0), (60.0, 70.0)] {
-        engine.process(GestureCommand::To {
-            sample: sample(x, y),
-        });
-    }
-    engine.process(GestureCommand::End);
-
-    let img = engine.render_to_image();
-    assert_golden("pen_orientation_stroke", &img, 6);
 }
 
 #[test]

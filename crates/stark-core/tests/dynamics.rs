@@ -695,9 +695,14 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
 /// makes the same argument at `lift = deposit = 0.5`; the rates here are the ones that
 /// made the discrepancy an `O(1)` fraction of the transfer instead of a rounding error.
 ///
-/// The bound has room on both sides: the half-solved exchange lightens the field by 91
-/// levels here and the complementary one by 35, and those 35 are the tool's own load —
-/// what it picked up over its first pass and still holds when the pen comes up (§6.2).
+/// The bound is a **fraction of the field's own contrast** rather than a level count,
+/// and that is not fussiness. It used to be 60 levels, sized against what red paint did
+/// to the green channel under the studio HDR the suite ran on; moving to the reference
+/// light (§6.3) widened the paint-to-ground swing and the *same physical lightening*
+/// read 64 levels instead of 35, failing a test nothing had broken. A bound quoted
+/// against the swing it is a share of cannot be invalidated that way. Room on both
+/// sides: the tool's own load measures a shade under a third of the contrast, and the
+/// half-solved exchange measured 2.6× that.
 #[test]
 fn a_conservative_smear_does_not_destroy_paint_either() {
     let Some(mut engine) = engine_or_skip() else {
@@ -728,16 +733,30 @@ fn a_conservative_smear_does_not_destroy_paint_either() {
     );
     let after = engine.render_to_image();
 
-    // Red paint on the warm ground pulls the green channel down, so paint going
-    // missing shows as green coming back up.
+    // Red paint pulls the green channel down, so paint going missing shows as green
+    // coming back up. The field covers the whole viewport, so the "no paint" end of
+    // the scale comes from the ground itself: under the reference light a bare
+    // substrate renders its own sRGB to within a couple of levels (`reference.rs`),
+    // which is exactly the guarantee that lets this test carry its own scale.
     let y = SIZE.height / 2;
+    let bare = (PAPER.g * 255.0).round() as i32;
+    let swing = bare - before.pixel(SIZE.width / 2, y)[1] as i32;
+    assert!(
+        swing > 100,
+        "the field did not land: only {swing} levels of it"
+    );
+
     let worst = (0..SIZE.width)
         .map(|x| after.pixel(x, y)[1] as i32 - before.pixel(x, y)[1] as i32)
         .max()
         .expect("a row of pixels");
+    let share = worst as f32 / swing as f32;
     assert!(
-        worst < 60,
-        "a conservative smear lightened the field it was smearing by {worst} levels —          the two halves of the exchange are not taking complementary shares of it"
+        share < 0.5,
+        "a conservative smear gave back {:.0}% of the field it was smearing \
+         ({worst} of {swing} levels) — the two halves of the exchange are not taking \
+         complementary shares of it",
+        share * 100.0,
     );
 }
 

@@ -1,5 +1,10 @@
 //! The **reference light** invariant (§6.3).
 //!
+//! `Neutral` is what the whole test suite now paints under ([`engine_or_skip`]), which
+//! makes this file the one that says *why that is worth anything*: every other test
+//! reads a byte back and holds it against an expectation, and this is where the claim
+//! that the byte means what it says is checked.
+//!
 //! Under the procedural `Neutral` environment — whose exposure is 1.0 — with the
 //! relief flattened, the media pass is supposed to be an identity: what you painted is what
 //! you see. That is the whole claim the `Neutral` environment makes — it is the light
@@ -76,7 +81,7 @@ fn assert_reproduces(what: &str, want: [f32; 3], got: [u8; 3]) {
 /// compositing machinery in front of it. If this drifts, the light is at fault.
 #[test]
 fn reference_light_reproduces_the_substrate() {
-    let Some(mut engine) = engine_or_skip_neutral() else {
+    let Some(mut engine) = engine_or_skip() else {
         return;
     };
     engine.process(ViewCommand::SetMediaParams(REFERENCE));
@@ -97,7 +102,7 @@ fn reference_light_reproduces_the_substrate() {
 /// both is what makes this a test of the light rather than of the ground.
 #[test]
 fn reference_light_reproduces_opaque_paint() {
-    let Some(mut engine) = engine_or_skip_neutral() else {
+    let Some(mut engine) = engine_or_skip() else {
         return;
     };
     engine.process(ViewCommand::SetMediaParams(REFERENCE));

@@ -1,5 +1,19 @@
 //! Stroke engine tests: the step-2 MVP (command/action split, copy-on-write tiles,
 //! and history undo/redo — §13 build order, step 2).
+//!
+//! What is left here is what *reads the picture*: tests that measure a stroke's width
+//! off the render, or ask whether there is paint at a point. The claims of the form
+//! "these two renders must agree" — preview against commit, incremental against fresh,
+//! oversized against whole — moved to [`corpus.rs`](corpus.rs), which asks them of
+//! every stroke in the corpus instead of of the one each was written for.
+//!
+//! That move was worth making on its own account. Five of the tests that lived here
+//! passed a recorded stroke straight to the engine, and the recordings carry the
+//! canvas coordinates the pen was actually at — `LOOP_STROKE` sits around `y = 980`,
+//! `C_STROKE` around `x = 1310`, against a viewport showing the 256 px about the
+//! origin. They had been comparing **blank paper against blank paper** for as long as
+//! they had existed, and every one of them passed. The corpus centres its strokes from
+//! the data and `every_case_leaves_a_mark` makes an empty case a failure.
 
 mod common;
 
@@ -11,22 +25,6 @@ use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-
-/// A brush that runs the **sequential stamp loop** rather than the swept fast path:
-/// it lifts paint off the canvas onto the tool and lays it back down, so what it
-/// draws at any point depends on everywhere it has already been (§6.2).
-///
-/// That carried state is the whole reason this path is worth testing separately —
-/// the swept deposit composes freely, so cutting its path anywhere is trivially
-/// safe, while the loop is only cuttable because `gpu::stroke::ToolState` remembers
-/// the reservoir and the pickup cadence across the cut.
-fn smear_brush(color: [f32; 4], radius: f32) -> BrushParams {
-    let mut b = brush(color, radius);
-    b.dynamics.lift = 0.6;
-    b.dynamics.deposit = 0.5;
-    b.dynamics.add = 0.5;
-    b
-}
 
 fn paint_stroke(engine: &mut Engine) {
     paint(
@@ -42,11 +40,13 @@ fn paint_stroke(engine: &mut Engine) {
 }
 
 // Lit paint is never a pure primary, so assert channel *dominance* rather than
-// near-saturation (the image-based-lighting media pass legitimately shades and
-// desaturates color). The margin must exceed the warm studio tint, not just noise:
-// even the neutral near-white PAPER renders red-dominant by ~33 levels under the
-// studio HDR, while actual red paint dominates by ~210 (and blue BG by ~180) — so 60
-// cleanly separates "lit substrate" from "paint". Tests below self-check this.
+// near-saturation (the media pass legitimately shades and desaturates colour). The
+// margin was sized against the warm studio tint these tests used to run under, where
+// even the neutral near-white PAPER read red-dominant by ~33 levels while actual red
+// paint dominated by ~210 (and blue BG by ~180). Under the reference light (§6.3) the
+// substrate is achromatic and the first of those is 0, so 60 is now conservative
+// rather than merely sufficient — kept because the separation it states is the one
+// that matters, not because the number is tight. Tests below self-check this.
 fn is_red(c: [u8; 4]) -> bool {
     c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
 }
@@ -82,58 +82,6 @@ fn live_preview_shows_stroke_before_commit() {
     assert!(engine.observe().is_stroking);
     let preview = engine.render_to_image();
     assert!(is_red(center(&preview)), "preview should show the stroke");
-}
-
-/// The live preview draws a long stroke in two pieces — a frozen head kept from
-/// earlier moves, plus the live tail over it — while the commit draws the whole
-/// thing in one pass (§6.2, `engine::FrozenHead`). Those must agree, or
-/// the stroke would visibly change at the moment the pointer is released.
-///
-/// This is the property that makes cutting the path safe at all: the swept deposit
-/// is a definite integral per segment and composes by summing optical depth, so
-/// where the path is cut cannot matter. A stroke long enough to actually freeze
-/// several times is the point — a short one never exercises the seam.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn a_split_live_preview_matches_the_single_pass_commit() {
-    let Some(mut engine) = engine_or_skip_blue() else {
-        return;
-    };
-    engine.process(ViewCommand::SetBrush(brush(RED, 12.0)));
-    let path: Vec<Vec2> = (0..120)
-        .map(|i| {
-            let t = i as f32 * 0.05;
-            Vec2::new(t * 22.0 - 60.0, (t * 1.1).sin() * 30.0)
-        })
-        .collect();
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for &p in it {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-    }
-
-    let preview = engine.render_to_image();
-    engine.process(GestureCommand::End);
-    let committed = engine.render_to_image();
-
-    // Both paths run the same shaders over the same segments; only the number of
-    // compositing passes differs, so they agree to accumulated float rounding — a
-    // handful of texels at the seam land a level or two apart. What would show if
-    // the split were actually wrong is a *visible* discontinuity, so bound the
-    // magnitude at zero rather than the count: no texel may be off by 11 levels,
-    // however many are off by 2.
-    assert_eq!(
-        frac_exceeding(&preview, &committed, 11),
-        0.0,
-        "split preview visibly differs from the single-pass commit ({:.4}% of px over tol 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
-    );
 }
 
 /// The unfrozen-tail tint is a *view* setting: it must change the live preview and
@@ -176,242 +124,6 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
         is_red(center(&committed)),
         "the tint leaked into the committed stroke"
     );
-}
-
-/// The same seam check as above, but on a stroke captured from the app that
-/// visibly misfits — slow and dense (305 reports over 334px), which is nothing like
-/// the synthetic input the other cases use.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn a_real_captured_stroke_previews_as_it_commits() {
-    let Some(mut engine) = engine_or_skip_blue() else {
-        return;
-    };
-    let path: Vec<Vec2> = stark_testdata::HAIRPIN_STROKE
-        .iter()
-        .map(|&[x, y]| Vec2::new(x, y))
-        .collect();
-    engine.process(ViewCommand::SetBrush(brush(RED, 16.0)));
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for &p in it {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-    }
-    let preview = engine.render_to_image();
-    engine.process(GestureCommand::End);
-    let committed = engine.render_to_image();
-    {
-        let (frac, worst) = diff_fraction(&preview, &committed);
-        eprintln!(
-            "PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
-            frac * 100.0,
-            frac_exceeding(&preview, &committed, 2) * 100.0,
-            frac_exceeding(&preview, &committed, 4) * 100.0,
-            frac_exceeding(&preview, &committed, 8) * 100.0,
-            frac_exceeding(&preview, &committed, 12) * 100.0
-        );
-    }
-    assert_eq!(
-        frac_exceeding(&preview, &committed, 8),
-        0.0,
-        "split preview visibly differs from the single-pass commit ({:.4}% of px over tol 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
-    );
-}
-
-/// At **every point during** a stroke, the incrementally-composited preview must
-/// equal the one a from-scratch render would give.
-///
-/// The other seam test only checks the final frame, which is the one moment the
-/// incremental path is most likely to be right. This walks a real captured stroke
-/// and compares at many points along it, because a frozen head that has gone wrong
-/// stays wrong — it is never redrawn — so a fault introduced at sample 200 would be
-/// invisible in a check at the end if later spans happen to cover it.
-///
-/// Re-setting the brush doubles as the control: every command but `StrokeTo` drops
-/// the frozen head, so the very next refresh renders the whole stroke in one pass.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn the_incremental_preview_matches_a_fresh_one_throughout() {
-    let Some(mut engine) = engine_or_skip_blue() else {
-        return;
-    };
-    let path: Vec<Vec2> = stark_testdata::LOOP_STROKE
-        .iter()
-        .map(|&[x, y]| Vec2::new(x, y))
-        .collect();
-    engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for (i, &p) in it.enumerate() {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-        if i % 40 != 0 {
-            continue;
-        }
-        let incremental = engine.render_to_image();
-        // The brush it is already using, so nothing about the stroke changes — but
-        // the head is dropped, so this repaint is a single whole-stroke pass.
-        engine.process(ViewCommand::SetBrush(brush(RED, 14.0)));
-        let fresh = engine.render_to_image();
-        assert_eq!(
-            frac_exceeding(&incremental, &fresh, 8),
-            0.0,
-            "at sample {i}: incremental preview differs from a fresh render \
-             ({:.4}% of px over tol 2)",
-            frac_exceeding(&incremental, &fresh, 2) * 100.0,
-        );
-    }
-}
-
-/// Lay down something for a smear brush to pick up: two crossing bands of colour,
-/// committed, so the canvas under the test stroke is not blank. A `lift` brush over
-/// bare canvas carries nothing and would exercise none of the reservoir.
-#[cfg(not(feature = "debug-unfrozen"))] // both its callers are seam tests
-fn undercoat(engine: &mut Engine) {
-    paint(
-        engine,
-        [0.1, 0.9, 0.2, 1.0],
-        26.0,
-        &[Vec2::new(-110.0, -40.0), Vec2::new(110.0, -10.0)],
-    );
-    paint(
-        engine,
-        [0.95, 0.85, 0.1, 1.0],
-        26.0,
-        &[Vec2::new(-90.0, 50.0), Vec2::new(100.0, 20.0)],
-    );
-}
-
-/// The seam check for the **stamp loop**: a `lift`/`deposit` stroke drawn as a frozen
-/// head plus a live tail must land the same pixels as the single pass a commit runs.
-///
-/// This is a much stronger claim than the swept case. The swept deposit is a definite
-/// integral per segment that composes by summing optical depth, so where the path is
-/// cut genuinely cannot matter. The loop is *sequential*: each segment reads the
-/// canvas the previous one left and the tool the previous one loaded, so cutting it is
-/// only sound because [`ToolState`](stark_core::gpu::ToolState) carries the
-/// reservoir — and the travel since the last pickup — across the cut. Get either wrong
-/// and the tail draws with a tool that has forgotten where it has been: a visible step
-/// in colour at the freeze boundary, trailing back across the stroke.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn a_smear_stroke_previews_as_it_commits() {
-    let Some(mut engine) = engine_or_skip_blue() else {
-        return;
-    };
-    undercoat(&mut engine);
-
-    engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
-    let path: Vec<Vec2> = (0..140)
-        .map(|i| {
-            let t = i as f32 * 0.045;
-            Vec2::new(t * 20.0 - 62.0, (t * 1.3).sin() * 34.0)
-        })
-        .collect();
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for &p in it {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-    }
-
-    let preview = engine.render_to_image();
-    engine.process(GestureCommand::End);
-    let committed = engine.render_to_image();
-    {
-        let (frac, worst) = diff_fraction(&preview, &committed);
-        eprintln!(
-            "PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
-            frac * 100.0,
-            frac_exceeding(&preview, &committed, 2) * 100.0,
-            frac_exceeding(&preview, &committed, 4) * 100.0,
-            frac_exceeding(&preview, &committed, 8) * 100.0,
-            frac_exceeding(&preview, &committed, 12) * 100.0
-        );
-    }
-    // Not zero-difference: the loop's freeze boundary leaves a small residue either
-    // way (~1.6% of pixels differ by a level or two even when this passes). The bound
-    // is on how *visible* that residue is allowed to be.
-    //
-    // It was 8 when the media pass was a look: the old tonemap subtracted a flat 0.04
-    // and compressed everything above 0.76, which squashed the residue along with the
-    // rest of the image. Now that the pass is a reference (§6.3) it squashes
-    // nothing, and the *same* buffer discrepancy displays about three times larger —
-    // worst pixel 3 before, 9 after. The residue in the composited buffers is
-    // unchanged; only its amplification on the way to the screen is. Hence 12: the old
-    // bound carried through the new display scale, not a loosened claim.
-    const SEAM_TOL: u8 = 12;
-    assert_eq!(
-        frac_exceeding(&preview, &committed, SEAM_TOL),
-        0.0,
-        "split smear preview visibly differs from the single-pass commit \
-         ({:.4}% of px over tol {SEAM_TOL})",
-        frac_exceeding(&preview, &committed, SEAM_TOL) * 100.0,
-    );
-}
-
-/// [`the_incremental_preview_matches_a_fresh_one_throughout`] for the stamp loop.
-///
-/// Checking only the last frame is far too weak here: a frozen head is never redrawn,
-/// so a reservoir handed over wrong at sample 60 stays wrong on the canvas forever,
-/// and later spans painting over the top could hide it from a check at the end. What
-/// this walks is every handover.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn the_incremental_smear_preview_matches_a_fresh_one_throughout() {
-    let Some(mut engine) = engine_or_skip_blue() else {
-        return;
-    };
-    undercoat(&mut engine);
-
-    engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
-    let path: Vec<Vec2> = stark_testdata::C_STROKE
-        .iter()
-        .map(|&[x, y]| Vec2::new(x - 160.0, y - 160.0))
-        .collect();
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for (i, &p) in it.enumerate() {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-        if i % 30 != 0 {
-            continue;
-        }
-        let incremental = engine.render_to_image();
-        // The brush it is already using, so nothing about the stroke changes — but
-        // the head is dropped, so this repaint runs the whole loop in one pass.
-        engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
-        let fresh = engine.render_to_image();
-        assert_eq!(
-            frac_exceeding(&incremental, &fresh, 8),
-            0.0,
-            "at sample {i}: incremental smear preview differs from a fresh render \
-             ({:.4}% of px over tol 2)",
-            frac_exceeding(&incremental, &fresh, 2) * 100.0,
-        );
-    }
 }
 
 /// An undercoat for a stroke measured in thousands of pixels: an ordinary brush with
@@ -463,70 +175,6 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
     assert!(
         is_blue(center(&engine.render_to_image())),
         "a stroke too wide for one region left the paint under it untouched"
-    );
-}
-
-/// [`a_smear_stroke_previews_as_it_commits`] for a stroke that no longer fits one
-/// region — so the commit runs the loop in several pieces while the preview's ranges
-/// each run it in one.
-///
-/// The pieces are cut where the *region* fills up, which has nothing to do with where
-/// the fitter freezes, so the two renders cut the same stroke in different places.
-/// That is what makes this worth running: a piece boundary that dropped the reservoir
-/// — or restarted the pickup cadence — would show as a step in colour under the
-/// commit that the preview never draws.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn an_oversized_smear_stroke_previews_as_it_commits() {
-    // Wide enough to see a piece boundary: the first piece fills its region around
-    // `x = -2000 + MAX_REGION_DIM`, which lands just right of centre.
-    let Some(mut engine) = engine_or_skip_sized_blue(stark_core::geom::Extent2 {
-        width: 1280,
-        height: 256,
-    }) else {
-        return;
-    };
-    let path: Vec<Vec2> = (0..220)
-        .map(|i| {
-            let t = i as f32 / 219.0;
-            Vec2::new(t * 2560.0 - 2000.0, (t * 26.0).sin() * 40.0)
-        })
-        .collect();
-    long_band(&mut engine, &path);
-
-    engine.process(ViewCommand::SetBrush(smear_brush(RED, 15.0)));
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for &p in it {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-    }
-
-    let preview = engine.render_to_image();
-    engine.process(GestureCommand::End);
-    let committed = engine.render_to_image();
-    {
-        let (frac, worst) = diff_fraction(&preview, &committed);
-        eprintln!(
-            "PROBE worst={worst} any_diff={:.4}% t2={:.4}% t4={:.4}% t8={:.4}% t12={:.4}%",
-            frac * 100.0,
-            frac_exceeding(&preview, &committed, 2) * 100.0,
-            frac_exceeding(&preview, &committed, 4) * 100.0,
-            frac_exceeding(&preview, &committed, 8) * 100.0,
-            frac_exceeding(&preview, &committed, 12) * 100.0
-        );
-    }
-    assert_eq!(
-        frac_exceeding(&preview, &committed, 8),
-        0.0,
-        "an oversized smear stroke commits differently than it previewed \
-         ({:.4}% of px over tol 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
     );
 }
 
@@ -630,7 +278,14 @@ fn the_taper_widens_without_a_step() {
     stroke_with(&mut engine, inking_brush(12.5, 0.0), &straight_run());
     let img = engine.render_to_image();
 
-    let widths: Vec<u32> = (30..226).map(|x| painted_height(&img, x)).collect();
+    // Stop a radius short of where the stroke ends (canvas x = 100, column 228). The
+    // last 16 px are the round **cap**, which must narrow — that is what a round tip
+    // is — and narrowing there says nothing about whether the taper has a step in it.
+    // The walk used to run to 226 and pass, because under the studio light the cap's
+    // edge fell below the dominance threshold a column or two sooner; the reference
+    // light renders the same paint against an achromatic ground, the cap reads to its
+    // full extent, and the cap's own curve was suddenly being asked to be monotone.
+    let widths: Vec<u32> = (30..212).map(|x| painted_height(&img, x)).collect();
     // Monotone up to the body (within the ±1 a rasterized edge rounds by), and never
     // jumping more than a couple of px between adjacent columns.
     for (i, w) in widths.windows(2).enumerate() {
@@ -648,68 +303,6 @@ fn the_taper_widens_without_a_step() {
             30 + i
         );
     }
-}
-
-/// A tapered stroke's incremental preview must equal a from-scratch render at
-/// **every point** during the stroke — the §1.3 invariant, on the one parameter that
-/// most invites breaking it.
-///
-/// A taper is measured from the ends of the whole stroke, and while the pointer is
-/// down the far end has not been drawn yet. Bake the trailing taper into a frozen
-/// span too early and the stroke keeps a pinch in its middle that the commit does not
-/// draw — permanently, because a frozen head is never redrawn. So freezing is held
-/// back (`gpu::stroke::safe_frozen`), and this is what checks it: re-setting the
-/// brush drops the head, so the very next repaint renders the whole stroke in one
-/// pass and any prematurely-baked taper shows as a difference.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn the_incremental_tapered_preview_matches_a_fresh_one_throughout() {
-    let Some(mut engine) = engine_or_skip_blue() else {
-        return;
-    };
-    let path: Vec<Vec2> = stark_testdata::LOOP_STROKE
-        .iter()
-        .map(|&[x, y]| Vec2::new(x, y))
-        .collect();
-    // A taper long enough to reach well behind where the fitter would otherwise have
-    // frozen — the case the hold-back exists for.
-    let taper = || inking_brush(4.0, 9.0);
-    engine.process(ViewCommand::SetBrush(taper()));
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for (i, &p) in it.enumerate() {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-        if i % 40 != 0 {
-            continue;
-        }
-        let incremental = engine.render_to_image();
-        engine.process(ViewCommand::SetBrush(taper()));
-        let fresh = engine.render_to_image();
-        assert_eq!(
-            frac_exceeding(&incremental, &fresh, 8),
-            0.0,
-            "at sample {i}: the incremental tapered preview differs from a fresh render \
-             ({:.4}% of px over tol 2)",
-            frac_exceeding(&incremental, &fresh, 2) * 100.0,
-        );
-    }
-
-    // And the release changes nothing either: the last frame previewed is what lands.
-    let preview = engine.render_to_image();
-    engine.process(GestureCommand::End);
-    let committed = engine.render_to_image();
-    assert_eq!(
-        frac_exceeding(&preview, &committed, 8),
-        0.0,
-        "a tapered stroke commits differently than it previewed ({:.4}% of px over tol 2)",
-        frac_exceeding(&preview, &committed, 2) * 100.0,
-    );
 }
 
 /// A tapered brush still **dots**: a click has no length for a taper to run along, so
@@ -810,63 +403,6 @@ fn a_click_dabs_where_it_was_pressed_and_a_nudge_keeps_it() {
         );
         let (w, h) = ((x1 - x0) as f32, (y1 - y0) as f32);
         assert!(w / h < 1.25, "{what} left a {w}x{h} dash rather than a dab");
-    }
-}
-
-/// [`the_incremental_tapered_preview_matches_a_fresh_one_throughout`] for the **stamp
-/// loop**, where the claim is much stronger: that path is sequential, and the taper
-/// reaches it twice over.
-///
-/// The taper cuts flattened edges into finer segments near the ends, and the loop's
-/// reservoir reloads every `RESERVOIR_CADENCE · radius` of travel — a radius the taper
-/// is shrinking — so both *how many* segments the loop walks and *how often* it
-/// exchanges with the canvas change inside a taper. Head and commit must still walk
-/// exactly the same sequence, or the tail resumes with a tool that has picked up a
-/// different amount of paint than the commit's would have.
-#[cfg(not(feature = "debug-unfrozen"))]
-#[test]
-fn the_incremental_tapered_smear_preview_matches_a_fresh_one_throughout() {
-    let Some(mut engine) = engine_or_skip_blue() else {
-        return;
-    };
-    undercoat(&mut engine);
-
-    let taper = || {
-        let mut b = smear_brush(RED, 15.0);
-        b.start_taper_length = 4.0;
-        b.end_taper_length = 9.0;
-        b
-    };
-    let path: Vec<Vec2> = stark_testdata::C_STROKE
-        .iter()
-        .map(|&[x, y]| Vec2::new(x - 160.0, y - 160.0))
-        .collect();
-    engine.process(ViewCommand::SetBrush(taper()));
-    let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-    });
-    for (i, &p) in it.enumerate() {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-        if i % 30 != 0 {
-            continue;
-        }
-        let incremental = engine.render_to_image();
-        // The brush it is already using — but re-setting it drops the frozen head, so
-        // this repaint runs the whole loop in one pass.
-        engine.process(ViewCommand::SetBrush(taper()));
-        let fresh = engine.render_to_image();
-        assert_eq!(
-            frac_exceeding(&incremental, &fresh, 8),
-            0.0,
-            "at sample {i}: the incremental tapered smear preview differs from a fresh \
-             render ({:.4}% of px over tol 2)",
-            frac_exceeding(&incremental, &fresh, 2) * 100.0,
-        );
     }
 }
 
@@ -994,7 +530,7 @@ fn measure_per_move_growth(b: BrushParams) -> (f64, f64) {
 fn per_move_cost_does_not_grow_with_stroke_length() {
     for (what, b) in [
         ("swept", brush(RED, 14.0)),
-        ("stamp loop", smear_brush(RED, 14.0)),
+        ("stamp loop", common::corpus::smear_brush(14.0)),
     ] {
         let (early, late) = measure_per_move_growth(b);
         // Generous, because this is a wall-clock measurement on a shared machine. What

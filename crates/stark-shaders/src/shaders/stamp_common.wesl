@@ -371,7 +371,7 @@ fn stroke_arc(in: VsOut, sw: Sweep) -> f32 {
 // an unbounded falloff hands them more than a full brush, which is not a load at all
 // and puts `op > 1` on the paint it multiplies. Both paths bound it identically, so a
 // drained brush lays the same start cap whichever one draws it
-// (`dynamics.wesl::stroke_drain` states what the march's storage does with the excess).
+// (`dynamics.wesl::stroke_drain` states what the loop's storage does with the excess).
 fn stroke_drain(arc: f32) -> f32 {
     return clamp(1.0 - xf.paint.x * arc, 0.0, 1.0);
 }

@@ -83,9 +83,16 @@ fn picks_the_colour_that_was_painted() {
 /// And it is *not* the lit result. The media pass lights, tonemaps and sRGB-encodes
 /// what it composites, so a screen pixel over the same paint is a different number —
 /// which is the whole reason the eyedropper samples the raw channels instead.
+///
+/// The one place outside `golden.rs` that asks for the studio HDR, and it has to: the
+/// rest of the suite paints under the reference light, whose entire purpose is that
+/// what you painted is what you see (§6.3). Under it the lit pixel *is* the paint to
+/// within a couple of levels, and the second assertion below — which exists to keep
+/// this test from being vacuous — correctly refuses to pass. A test that the picker
+/// bypasses the light needs a light that does something.
 #[test]
 fn picks_the_paint_rather_than_the_lit_pixel() {
-    let Some(mut engine) = engine_or_skip() else {
+    let Some(mut engine) = engine_or_skip_studio() else {
         return;
     };
     paint(&mut engine, RED, 24.0, BAR);
