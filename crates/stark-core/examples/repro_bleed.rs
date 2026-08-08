@@ -15,6 +15,8 @@
 //! `--identity` strips every axis off the final stroke while keeping it on the
 //! stamp-loop path, so any diff is the loop's own rewrite drift.
 
+mod common;
+
 use std::io::BufWriter;
 use std::path::PathBuf;
 
@@ -155,7 +157,9 @@ fn main() {
     let render = |bytes: &[u8]| -> RgbaImage {
         let mut engine = pollster::block_on(headless_engine(wgpu::TextureFormat::Rgba8Unorm, size))
             .expect("headless engine");
-        engine.load_bytes(bytes).expect("load + replay");
+        let file = stark_core::DocumentFile::from_bytes(bytes).expect("decode");
+        common::settle(&mut engine, &file);
+        engine.load_document(&file).expect("load + replay");
         engine.process(ViewCommand::CenterOn(center));
         engine.render_to_image()
     };

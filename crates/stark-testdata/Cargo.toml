@@ -10,3 +10,7 @@ publish = false
 description = "Recorded pen input, captured from the app, for Stark's stroke-fitting tests."
 
 [dependencies]
+# To derive a bundled asset's content id the same way `stark-ui/build.rs` does, so a
+# harness can resolve a lean document's ids out of the app's own assets. No GPU, which
+# is the whole reason the derivation lives in its own crate (§19).
+stark-assetid = { path = "../stark-assetid" }

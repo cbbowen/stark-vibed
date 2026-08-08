@@ -280,8 +280,11 @@ impl Renderer {
     }
 
     /// Replace the document by replaying a loaded log (§8).
-    pub fn load_document(&mut self, file: &stark_core::DocumentFile) {
-        self.engine.load_document(file);
+    ///
+    /// Fails, leaving the open document untouched, if anything the log names is still
+    /// unresolved — so the settle above is not advisory.
+    pub fn load_document(&mut self, file: &stark_core::DocumentFile) -> stark_core::Result<()> {
+        self.engine.load_document(file)
     }
 
     /// What exporting would produce, without producing it (§15.6).

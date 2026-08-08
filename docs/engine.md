@@ -104,6 +104,26 @@ the opening app can produce itself, and `DocumentFile::unbundled_content` is the
 bill: **settle it before replaying**, since a `SetSurface` whose height map is not
 registered when its strokes replay deposits them through the flat stand-in.
 
+**And the replay refuses if it was not settled** —
+`EngineError::MissingContent`, from `load_document`, `load_bytes` and the
+timelapse alike, carrying the outstanding needs. That used to be a log line with
+`Ok(())` behind it, and the difference is not diligence: a missing ground does not
+degrade the *view*, it bakes a smooth deposit into stored tiles, so there is
+nothing left afterwards to notice it by. A dev harness replayed a captured bug
+report perfectly smooth on that path, and the smoothness was the bug being
+hunted. The check runs before the document is adopted, so a refusal leaves
+whatever was open untouched rather than half-replacing it. A collaboration
+**join** is the one caller that legitimately starts short — its blobs arrive over
+the same transport as its actions and the waitlist parks anything that depends on
+one (§12.4) — and it does not come through here.
+
+Which leaves the frontend as the only thing that could ever pay a lean file's
+bill, since only its build script hashes the shipped PNGs into a table
+(`builtin_ids`). `stark-testdata::assets::bundled` is the same table derived at
+*runtime* from the same files, so a test or a repro harness can open a capture the
+way the app opens it. That is a dev-only mirror of a frontend concern, kept in the
+one crate that already reaches into `stark-ui/assets` (§2).
+
 This walks back part of the paragraph above, so it is worth being exact about
 what changed. That bug was a ground named by a *label*, resolved against whatever
 table the reader held — re-author `Gesso.png` and the pixels changed with nothing

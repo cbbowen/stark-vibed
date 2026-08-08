@@ -37,6 +37,23 @@ pub enum EngineError {
     #[error("cannot export: {0}")]
     Export(String),
 
+    /// A document was asked to replay while content its log names is neither bundled
+    /// in the file nor loaded in this engine (§8).
+    ///
+    /// **Refusing is the point.** Replaying anyway is not a degraded open, it is a
+    /// wrong one that persists: a `SetSurface` whose height map is missing deposits
+    /// every stroke made on it through the flat stand-in, and those pixels are stored,
+    /// so no later arrival un-bakes them (§6.4). This used to be a `tracing::error!`
+    /// with `Ok(())` behind it, which is how a captured bug report came to replay
+    /// perfectly smooth and cost an afternoon.
+    ///
+    /// Settle it first — [`Engine::unresolved_content`](crate::Engine::unresolved_content)
+    /// is the bill and names each need, `import_brush`/`accept_surface` pay it. A
+    /// collaboration *join* is the one caller that legitimately starts short and heals,
+    /// and it does not come through here.
+    #[error("this document names content that is neither bundled nor loaded: {0:?}")]
+    MissingContent(Vec<crate::content::AssetNeed>),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

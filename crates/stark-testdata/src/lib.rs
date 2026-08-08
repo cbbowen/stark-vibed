@@ -2405,6 +2405,7 @@ pub const FAST_STROKE: &[[f32; 2]] = &[
 /// every call site. If the frontend reorganizes its assets, this module is the
 /// only thing that breaks.
 pub mod assets {
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn dir() -> PathBuf {
@@ -2441,5 +2442,85 @@ pub mod assets {
     /// discrete levels, so a level-set test on it proves much less.
     pub fn gesso() -> Vec<u8> {
         read("surface/Gesso.png")
+    }
+
+    /// Bytes for any image the app ships, **by content id** — the dev-side of
+    /// `stark-ui::builtin_ids::fetch`, and what lets a headless engine open a lean
+    /// document (§8).
+    ///
+    /// The app saves lean: a `.stark` painted on Linen names the ground's id and
+    /// carries none of its bytes, on the promise that whoever opens it can produce
+    /// that id from its own assets. Only `stark-ui` could keep that promise, because
+    /// only its build script hashes the shipped PNGs into a table. So every other
+    /// opener — a test, a repro harness, a CLI — got a ground that would not resolve
+    /// and a document that replayed through the flat stand-in, silently: no tooth, and
+    /// stored pixels that no later arrival un-bakes (§6.4). A captured bug report was
+    /// unreproducible for exactly this reason.
+    ///
+    /// This is that table, derived at *runtime* from the same files rather than at
+    /// build time — the one thing a dev-only crate can do that a build script cannot,
+    /// which is stay in step with the frontend's assets without being rebuilt when they
+    /// change.
+    ///
+    /// **The lookup needs no kind, and that is a property of the ids rather than a
+    /// convenience.** A shape's id is the hash of its decoded *coverage* and a
+    /// ground's is the hash of its *height*, so one PNG filed under both would earn two
+    /// different ids; an id therefore already names which store it belongs in, and the
+    /// caller — holding an `AssetNeed` — already knows. Kind only comes back at the
+    /// install, where the two stores are different functions.
+    pub fn bundled(id: stark_assetid::AssetId) -> Option<Vec<u8>> {
+        static TABLE: std::sync::OnceLock<HashMap<stark_assetid::AssetId, Vec<u8>>> =
+            std::sync::OnceLock::new();
+        TABLE
+            .get_or_init(|| {
+                let mut table = HashMap::new();
+                // Every PNG under each directory, hashed the way the store that will
+                // hold it hashes: whatever the frontend ships is resolvable here
+                // without a list to keep in step with it.
+                type Derive = fn(&[u8]) -> stark_assetid::Result<stark_assetid::Canonical>;
+                for (sub, derive) in [
+                    ("shape", stark_assetid::coverage as Derive),
+                    ("surface", stark_assetid::height as Derive),
+                ] {
+                    for (path, bytes) in pngs(sub) {
+                        match derive(&bytes) {
+                            Ok(canonical) => {
+                                table.insert(canonical.id(), bytes);
+                            }
+                            // Not fatal: an image that will not decode as this kind is
+                            // simply not one of this kind's assets. A caller that
+                            // needed it gets `None` and says so.
+                            Err(e) => {
+                                eprintln!("stark-testdata: skipping {path} as {sub}: {e}")
+                            }
+                        }
+                    }
+                }
+                table
+            })
+            .get(&id)
+            .cloned()
+    }
+
+    /// Every PNG directly under `assets/<sub>`, as (path, bytes). Empty if the
+    /// directory is missing, which is what a checkout without the frontend's assets
+    /// looks like.
+    fn pngs(sub: &str) -> Vec<(String, Vec<u8>)> {
+        let Ok(entries) = std::fs::read_dir(dir().join(sub)) else {
+            return Vec::new();
+        };
+        let mut out: Vec<_> = entries
+            .filter_map(|e| {
+                let path = e.ok()?.path();
+                if path.extension()? != "png" {
+                    return None;
+                }
+                Some((path.display().to_string(), std::fs::read(&path).ok()?))
+            })
+            .collect();
+        // Sorted, so a duplicate id (two files with identical pixels) resolves to the
+        // same one of them on every machine.
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 }

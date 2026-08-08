@@ -735,7 +735,7 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
 
     // And loading, which throws the whole cache away.
     let file = engine.document_file();
-    engine.load_document(&file);
+    engine.load_document(&file).expect("load");
     moved(&mut engine, e6, "a load");
 }
 

@@ -153,16 +153,17 @@ impl Engine {
                 tracing::warn!("skipping a canvas ground this document names: {e}");
             }
         }
-        // Loud, because the alternative is a picture that is quietly wrong: a
-        // ground that is not registered when its strokes replay deposits them
-        // through the flat stand-in, into stored pixels (§6.4). A caller that
-        // means to open a lean file settles `unresolved_content` first; reaching
-        // here with anything outstanding means nobody did.
+        // Reachable only from a collaboration join now — [`Engine::load_document`] and
+        // the timelapse refuse outright rather than adopt (`EngineError::MissingContent`).
+        // A joiner is the one caller that legitimately starts short: the actions arrive
+        // over the same transport as the blobs, and the waitlist parks a `SetSurface`
+        // until its ground lands (§12.4), so this is a statement about ordering in
+        // flight rather than about a document that cannot be reproduced.
         let missing = self.unresolved_content(file);
         if !missing.is_empty() {
-            tracing::error!(
+            tracing::warn!(
                 ?missing,
-                "replaying a document whose content is neither bundled nor loaded;                  strokes made on it will not come back the same"
+                "joining a session whose content has not arrived yet; the waitlist                  holds anything that depends on it"
             );
         }
         // The empty document is on the log's initial ground, so bind it — a timelapse
@@ -172,7 +173,13 @@ impl Engine {
 
     /// Replace the document by replaying a loaded file's action log. The full
     /// undo timeline is available afterwards — undo-after-load (§8).
-    pub fn load_document(&mut self, file: &DocumentFile) {
+    ///
+    /// **Fails, and changes nothing, if the file's content is not all here**
+    /// ([`EngineError::MissingContent`]). The check is before [`Self::adopt`] rather
+    /// than inside it so a refusal leaves the open document alone: half-replacing a
+    /// painting is worse than declining to.
+    pub fn load_document(&mut self, file: &DocumentFile) -> Result<()> {
+        self.require_content(file)?;
         self.adopt(file);
         // Replay only the *effective* sequence: a file saved from a shared
         // session is the full log, including `Undo` actions and the actions
@@ -183,13 +190,23 @@ impl Engine {
         self.resync_counters(&file.actions);
         // Whatever the replayed log left the document on.
         self.apply_document_surface();
+        Ok(())
     }
 
     /// Decode and load a container produced by [`Engine::save_bytes`].
     pub fn load_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         let file = DocumentFile::from_bytes(bytes)?;
-        self.load_document(&file);
-        Ok(())
+        self.load_document(&file)
+    }
+
+    /// `Err(MissingContent)` if anything `file`'s log names is neither bundled in it
+    /// nor already loaded here — the guard in front of every replay that stores pixels.
+    fn require_content(&self, file: &DocumentFile) -> Result<()> {
+        let missing = self.unresolved_content(file);
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(EngineError::MissingContent(missing))
     }
 
     /// Replay a document, invoking `on_frame` with the rendered image after each
@@ -198,8 +215,17 @@ impl Engine {
     /// Native-only, because it reads each frame back with the blocking path. Making
     /// it web-capable means awaiting the readback per frame — a change to this
     /// signature, not to the replay.
+    ///
+    /// Refuses on unresolved content for the same reason [`Self::load_document`] does,
+    /// and it matters more here rather than less: a timelapse renders every
+    /// intermediate state, so a missing ground is baked into every frame it emits.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn replay_timelapse(&mut self, file: &DocumentFile, mut on_frame: impl FnMut(RgbaImage)) {
+    pub fn replay_timelapse(
+        &mut self,
+        file: &DocumentFile,
+        mut on_frame: impl FnMut(RgbaImage),
+    ) -> Result<()> {
+        self.require_content(file)?;
         self.adopt(file);
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
@@ -211,6 +237,7 @@ impl Engine {
             on_frame(self.render_to_image());
         }
         self.resync_counters(&file.actions);
+        Ok(())
     }
 
     /// Every imported brush asset (id + canonical PNG bytes) — used to seed a

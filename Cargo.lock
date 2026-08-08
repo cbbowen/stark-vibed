@@ -6634,6 +6634,9 @@ dependencies = [
 [[package]]
 name = "stark-testdata"
 version = "0.0.0"
+dependencies = [
+ "stark-assetid",
+]
 
 [[package]]
 name = "stark-ui"

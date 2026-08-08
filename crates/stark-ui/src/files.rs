@@ -100,7 +100,14 @@ pub fn open_document(state: AppState) {
             for (need, content) in &supplied {
                 crate::builtin_ids::install(r, *need, content);
             }
-            r.load_document(&file);
+            // The engine checks the bill again rather than trusting that it was
+            // settled, and refuses without touching the open document. Reaching this
+            // arm means an install above failed — bytes that hash to something other
+            // than the id they were fetched for — so the painting on screen is left
+            // exactly as it was.
+            if let Err(e) = r.load_document(&file) {
+                return tracing::error!("could not open that painting: {e}");
+            }
             r.paint();
             obs.set(Some(r.observe()));
             tracing::info!(bytes = bytes.len(), "document loaded");

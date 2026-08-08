@@ -97,7 +97,9 @@ fn timelapse_yields_one_frame_per_action() {
     let final_image = engine.render_to_image();
 
     let mut frames = Vec::new();
-    engine.replay_timelapse(&file, |frame| frames.push(frame));
+    engine
+        .replay_timelapse(&file, |frame| frames.push(frame))
+        .expect("timelapse");
 
     assert_eq!(frames.len(), file.actions.len(), "one frame per action");
     assert!(
@@ -127,7 +129,7 @@ fn a_timelapse_replays_in_the_documents_color_space() {
     // Two fresh Oklab engines: one loads, one timelapses. Both must land on the
     // Mixbox picture.
     let mut loaded = engine_or_skip_blue().expect("adapter available");
-    loaded.load_document(&file);
+    loaded.load_document(&file).expect("load");
     assert!(
         images_match(&loaded.render_to_image(), &expected, 0),
         "loading already matches the document's colour space"
@@ -135,7 +137,9 @@ fn a_timelapse_replays_in_the_documents_color_space() {
 
     let mut lapsing = engine_or_skip_blue().expect("adapter available");
     let mut frames = Vec::new();
-    lapsing.replay_timelapse(&file, |frame| frames.push(frame));
+    lapsing
+        .replay_timelapse(&file, |frame| frames.push(frame))
+        .expect("timelapse");
     assert!(
         images_match(frames.last().expect("frames"), &expected, 0),
         "and so must a timelapse — same file, same preamble, same pixels"
@@ -409,7 +413,9 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
             .accept_surface(need.surface().expect("a ground"), &gesso_bytes)
             .expect("resolve locally");
     }
-    loaded.load_document(&file);
+    loaded
+        .load_document(&file)
+        .expect("the bill was settled above");
 
     assert!(
         images_match(&loaded.render_to_image(), &expected, 0),
@@ -434,10 +440,111 @@ fn a_complete_file_owes_nothing() {
         .expect("decode");
     let mut fresh = engine_or_skip_blue().expect("adapter");
     assert!(fresh.unresolved_content(&file).is_empty());
-    fresh.load_document(&file);
+    fresh
+        .load_document(&file)
+        .expect("a complete file owes nothing");
     assert!(images_match(
         &fresh.render_to_image(),
         &engine.render_to_image(),
         0
     ));
+}
+
+/// **A lean file whose bill was never settled is refused, and the open document is
+/// left exactly as it was.**
+///
+/// The companion to [`a_lean_file_replays_identically_once_its_content_is_resolved`],
+/// and the reason that test's ordering is a guarantee rather than a convention. This
+/// used to be a `tracing::error!` with `Ok(())` behind it: the load reported success
+/// and replayed every toothed stroke through the flat stand-in, into *stored* pixels
+/// that no later arrival un-bakes (§6.4). A captured bug report replayed perfectly
+/// smooth in a dev harness for exactly that reason, and the smoothness was the bug
+/// being hunted.
+///
+/// Two claims, and the second is the one a log line could not make. It fails — with
+/// the bill in the error, so a caller can act on it — and it fails *before* adopting
+/// anything, so a refused open is not a half-replaced painting.
+#[test]
+fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
+    let Some(mut original) = engine_or_skip_blue() else {
+        return;
+    };
+    let gesso = original
+        .import_surface(&stark_testdata::assets::gesso())
+        .expect("import ground");
+    original.process(DocCommand::SetSurface(gesso));
+    paint_toothed(&mut original);
+    let SurfaceId::Image(ground_id) = gesso else {
+        panic!("an imported ground is an image");
+    };
+    let lean = original
+        .save_bytes_resolvable(&[ground_id])
+        .expect("serialize lean");
+
+    // A second engine with a painting of its own already open, and no gesso.
+    let mut opener = engine_or_skip_blue().expect("adapter");
+    paint(&mut opener, GREEN, 30.0, STROKE_B);
+    let before = opener.render_to_image();
+
+    let err = opener
+        .load_bytes(&lean)
+        .expect_err("an unpaid bill must refuse");
+    match err {
+        stark_core::EngineError::MissingContent(missing) => assert_eq!(
+            missing,
+            vec![stark_core::AssetNeed::Ground(ground_id)],
+            "the refusal has to name what is owed, or the caller cannot settle it"
+        ),
+        other => panic!("expected MissingContent, got {other}"),
+    }
+    assert!(
+        images_match(&opener.render_to_image(), &before, 0),
+        "a refused load must leave the document that was open untouched"
+    );
+}
+
+/// The bundled-asset table `stark-testdata` derives at runtime names the same ids the
+/// engine's own importers do — which is the whole load-bearing claim behind a harness
+/// being able to open a lean capture at all (§8, §19).
+///
+/// Two derivations, deliberately kept apart: a shape is hashed from its decoded
+/// *coverage* and a ground from its *height*, so the same file filed as both earns two
+/// ids. This asserts the round trip in the direction that matters — engine derives the
+/// id, table hands back bytes that install under it — because the failure mode is
+/// silent. A table keyed on the wrong hash resolves nothing, `unresolved_content` stays
+/// non-empty, and the only symptom is a load that refuses.
+#[test]
+fn the_bundled_asset_table_agrees_with_the_engine_on_every_id() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let SurfaceId::Image(ground) = engine
+        .import_surface(&stark_testdata::assets::gesso())
+        .expect("import ground")
+    else {
+        panic!("an imported ground is an image");
+    };
+    let shape = engine
+        .import_brush(&stark_testdata::assets::bristles())
+        .expect("import shape");
+
+    for (what, id) in [("ground", ground), ("shape", shape)] {
+        let bytes = stark_testdata::assets::bundled(id)
+            .unwrap_or_else(|| panic!("the table ships no {what} for the id the engine derived"));
+        // Installing under the id it was looked up by is the check: `accept_surface`
+        // re-derives and refuses a mismatch, and `import_brush` returns the id it
+        // actually computed.
+        let landed = if what == "ground" {
+            match engine.accept_surface(SurfaceId::Image(id), &bytes) {
+                Ok(SurfaceId::Image(back)) => back,
+                other => panic!("installing the {what} did not land on an image: {other:?}"),
+            }
+        } else {
+            engine.import_brush(&bytes).expect("install the shape")
+        };
+        assert_eq!(
+            landed, id,
+            "the table's {what} bytes hash to a different id"
+        );
+    }
 }
