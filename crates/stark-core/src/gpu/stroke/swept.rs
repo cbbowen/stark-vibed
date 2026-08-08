@@ -194,16 +194,29 @@ impl StrokeRenderer {
             }],
         });
 
+        // Footprint → cleared scratch tile: within-stroke accumulation of the parcel
+        // this stroke lays (the color target over-blends the parcel's visible alpha
+        // with the latent premultiplied by it, the aux accumulates its height and
+        // optical mass additively). The scratch aux is the wide format.
+        //
+        // **One pair for the whole stroke, released only after the submit.** Sharing
+        // it across tiles is sound because every sweep pass below clears both targets,
+        // so no tile can see what the tile before it left; what makes it *necessary*
+        // is that nothing in a recorded encoder has run yet. A pair acquired per tile
+        // and dropped at the end of its iteration goes back on the pool's free list
+        // while the passes naming it are still only recorded — and the free list is
+        // where `TilePool::trim` takes from, tail first, on any `acquire_tex` that
+        // happens to end an epoch. Destroying a texture this command buffer names
+        // fails the submit, so every destination tile in it keeps whatever paint the
+        // pool last had there: one frame of other tiles' work, gone on the next
+        // render. Same rule as `transform::Recording`, and for the same reason.
+        let scratch = self.acquire_scratch(pool, AllocSource::StrokeScratch);
+
         let mut new_map = base.clone();
         for (i, coord) in coords.iter().enumerate() {
             let xform_off = (i * UNIFORM_STRIDE) as u32;
 
-            // Footprint → cleared scratch tile: within-stroke accumulation of the
-            // parcel this stroke lays (the color target over-blends the parcel's
-            // visible alpha with the latent premultiplied by it, the aux accumulates
-            // its height and optical mass additively). The scratch aux is the wide
-            // format.
-            let scratch = self.acquire_scratch(pool, AllocSource::StrokeScratch);
+            // This tile's segments into the shared scratch, cleared as it goes.
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
@@ -276,6 +289,10 @@ impl StrokeRenderer {
         // after submit reclaims them at once (WebGPU keeps the memory until the
         // in-flight work that uses them completes).
         drop(scoped);
+        // And the scratch pair after it, for the stronger reason given where it is
+        // acquired: released any earlier it is a *pooled* texture this command buffer
+        // still names, free to be handed out — or destroyed — before the submit.
+        drop(scratch);
         (new_map, carry)
     }
 }
