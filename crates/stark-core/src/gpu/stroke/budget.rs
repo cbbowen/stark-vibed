@@ -128,34 +128,47 @@ const _: () = assert!(
 /// firings — and the windows they sweep — are a pure function of the record,
 /// independent of how the path was cut (§6.2, live == committed). Each firing is a
 /// dedicated **bleed slot** in the dispatch plan (`dynamics::bleed_fires`): a quad
-/// whose sweep *is* the window — bent along the path it stands for, since half a
+/// whose sweep *is* the window — bent along the path it stands for, since a quarter
 /// radius of travel is many tip-widths of it once the pen modulates the radius
 /// down — so its exposure is an ordinary,
-/// well-conditioned prefix difference over half a radius of travel, and one firing
+/// well-conditioned prefix difference over the window's travel, and one firing
 /// moves the paint 176 micro-segments would have tried to move — in one step that
 /// sits far above the f16 noise floor. The painting segments themselves carry
 /// λ_bleed = 0 and take the no-bleed path bit-for-bit.
-pub(super) const BLEED_TRAVEL_QUANTUM: f32 = 0.5;
+///
+/// **A quarter rather than the half it was**, and the reason is the ladder the stencil
+/// became (`dynamics.wesl`, [`BLEED_SHARE_LADDER`](shader::BLEED_SHARE_LADDER)):
+/// spreading a firing's shed evenly over the reach instead of loading it onto the
+/// longest tap costs second moment — `(T+1)(2T+1)/(6T²)` of what the same share
+/// carries out at the reach, 0.40 at eight rungs. Variance adds linearly in the travel,
+/// so buying it back is exactly a cadence this much finer, which is what
+/// [`BLEED_DIFFUSIVITY`] being *derived* through both then re-establishes: the knob's
+/// top is where it was, spent in twice as many, half as long steps. The firings are
+/// cheap next to what they are cut into (measured at radius 500, the whole bleed is
+/// ~2 ms of a ~25 ms replay) and [`MAX_BLEED_FIRES_PER_SEGMENT`] doubles with it, so
+/// no segment is cut shorter than before either.
+pub(super) const BLEED_TRAVEL_QUANTUM: f32 = 0.25;
 /// How many firings one segment may contribute, so a plan's slot count stays bounded
 /// ([`MAX_STAMPS`]).
 ///
 /// A segment crosses the cadence `travel / (BLEED_TRAVEL_QUANTUM · radius)` times, and
 /// those two numbers are priced apart on purpose: [`flatten_tolerance`] buys segment
 /// length off the brush's **nominal** radius while the cadence is the **modulated**
-/// one, so a pen thinning the tip runs the count up without shortening a thing. Eight
-/// covers a tip down to a quarter of its brush — every ordinary stroke, where a
-/// segment at the travel cap crosses twice.
+/// one, so a pen thinning the tip runs the count up without shortening a thing. Sixteen
+/// covers a tip down to a quarter of its brush — every ordinary stroke, where a segment
+/// at the travel cap crosses four times — and is sixteen rather than eight only because
+/// the cadence is twice as fine. What it stands for is unchanged.
 ///
 /// Below that the axis quietly under-delivers, on a tip carrying almost no paint to
 /// spread. The alternative is not "diffuse correctly", it is a plan whose size a
 /// degenerate stroke chooses, and unbounded memory is the worse failure of the two.
-pub(super) const MAX_BLEED_FIRES_PER_SEGMENT: usize = 8;
+pub(super) const MAX_BLEED_FIRES_PER_SEGMENT: usize = 16;
 
 /// The blend one firing aims to move — the fraction of a texel's difference from a
 /// neighbour that crosses at the window's nominal exposure.
 ///
 /// **Not "as much as possible", and that is the point.** The stencil's worst-case
-/// eigenvalue is `1 − 8·Σshare·w = 1 − w` (`dynamics.wesl`, `BLEED_SHARES`), so a
+/// eigenvalue is `1 − 8·Σshare·w = 1 − w` (`dynamics.wesl`, `BLEED_SHARE_NEAR`), so a
 /// firing driven to `w → 1` annihilates its worst mode instead of damping it: the
 /// operator stops being a Laplacian and becomes a hard local average, and consecutive
 /// firings stop composing. Half leaves the margin the diffusion model is written
@@ -188,33 +201,40 @@ const BLEED_REACH_MAX: f32 = 0.5;
 /// cannot drift apart — moving either ceiling moves the top of the knob to match, and
 /// the knob stays linear in `D` all the way to it.
 ///
-/// A pass of the tip at full crank buys `σ = sqrt(2·D) · radius ≈ 0.28 · radius`,
-/// which is about where the old saturating knob topped out. The change is not the
-/// ceiling; it is that the whole travel below it now means something.
+/// A pass of the tip at full crank buys `σ = sqrt(2·D) · radius`, about a fifth of the
+/// radius — where the old saturating knob topped out. The ladder's lower moment and
+/// the finer cadence it bought move the two factors in opposite directions and leave
+/// this within a tenth of where it was, which is the point of deriving it: the look at
+/// the top of the knob is a consequence of the ceilings, not a number to be kept.
 const BLEED_DIFFUSIVITY: f32 =
     2.0 * BLEED_BLEND * STENCIL_MOMENT_PER_REACH2 * BLEED_REACH_MAX * BLEED_REACH_MAX
         / BLEED_TRAVEL_QUANTUM;
-/// `Σ(share·d²)` per unit of reach², in the continuous limit where the middle tap is
-/// exactly `reach / BLEED_MID_DIVISOR` — what [`bleed_stencil`] inverts to get a first
-/// guess at the reach, and what [`BLEED_DIFFUSIVITY`] is calibrated through. The near
-/// tap is a constant and drops out of both.
-const STENCIL_MOMENT_PER_REACH2: f32 = shader::BLEED_SHARE_MID
-    / (shader::BLEED_MID_DIVISOR * shader::BLEED_MID_DIVISOR) as f32
-    + shader::BLEED_SHARE_FAR;
+/// `Σ(share·d²)` per unit of reach², in the continuous limit where the ladder's rungs
+/// sit exactly at `j·reach/TAPS` — what [`bleed_stencil`] inverts to get a first guess
+/// at the reach, and what [`BLEED_DIFFUSIVITY`] is calibrated through. `Σj²/T³` in
+/// closed form; it tends to a third as the ladder fills in, against the 1 a single tap
+/// out at the reach would carry. The near tap is a constant and drops out of both.
+const STENCIL_MOMENT_PER_REACH2: f32 = shader::BLEED_SHARE_LADDER
+    * ((shader::BLEED_LADDER_TAPS + 1) * (2 * shader::BLEED_LADDER_TAPS + 1)) as f32
+    / (6 * shader::BLEED_LADDER_TAPS * shader::BLEED_LADDER_TAPS) as f32;
 
 /// `Σ(share·d²)` in texels², for the stencil the shader will actually build at this
 /// integer reach.
 ///
-/// Exact rather than the continuous form above, down to flooring the middle tap the
-/// way the shader's integer division does — this is the number the delivered
-/// diffusivity is computed against, so an approximation here is a quiet calibration
-/// error rather than a rounding one.
+/// Exact rather than the continuous form above, down to flooring each rung the way the
+/// shader's integer division does — including the rungs that collapse onto one another
+/// (and onto the near tap's 1) once a small tip's reach is only a few texels. This is
+/// the number the delivered diffusivity is computed against, so an approximation here
+/// is a quiet calibration error rather than a rounding one.
 fn stencil_moment(reach: i32) -> f32 {
-    let mid = (reach / shader::BLEED_MID_DIVISOR).max(1) as f32;
-    let far = reach as f32;
-    shader::BLEED_SHARE_NEAR
-        + shader::BLEED_SHARE_MID * mid * mid
-        + shader::BLEED_SHARE_FAR * far * far
+    let per_rung = shader::BLEED_SHARE_LADDER / shader::BLEED_LADDER_TAPS as f32;
+    let mut moment = shader::BLEED_SHARE_NEAR;
+    for k in 1..=shader::BLEED_LADDER_TAPS {
+        let d =
+            ((reach * k + shader::BLEED_LADDER_TAPS / 2) / shader::BLEED_LADDER_TAPS).max(1) as f32;
+        moment += per_rung * d * d;
+    }
+    moment
 }
 
 /// One bleed firing's stencil: the longest tap in texels, and `λ_bleed` — solved from
@@ -488,6 +508,15 @@ mod tests {
     ///
     /// Checked on a tip large enough that the reach is not dominated by its rounding
     /// to a whole texel.
+    ///
+    /// The reach lands on its cap *exactly* — that half of the derivation is algebra,
+    /// and cancels. The blend only lands near its aim, and the slack is the ladder:
+    /// every rung is an integer texel, so the stencil the shader builds has a slightly
+    /// different second moment from the continuous one
+    /// ([`STENCIL_MOMENT_PER_REACH2`]) that sized the reach, and `bleed_stencil`
+    /// re-derives the blend against the *discrete* moment — which is the whole reason
+    /// it re-derives it. A few percent either way is that quantization; a drift of the
+    /// kind this test exists to catch would move the top of the knob, not nudge it.
     #[test]
     fn full_crank_lands_on_both_ceilings_at_once() {
         let (radius, span) = (40.0, BLEED_TRAVEL_QUANTUM * 40.0);
@@ -500,7 +529,7 @@ mod tests {
         let e_nom = TAU_PER_PASS * span / (2.0 * radius);
         let w = 1.0 - (lambda * e_nom).exp();
         assert!(
-            (w - BLEED_BLEND).abs() < 1e-3,
+            (w - BLEED_BLEND).abs() < 0.05,
             "full crank blends {w}, not the {BLEED_BLEND} it aims for",
         );
     }
@@ -553,8 +582,9 @@ mod tests {
     /// stencil and flat in the travel, while what a window asks for grows with it. So
     /// a window merged across N quanta is clamped back towards `1/N` of the axis.
     ///
-    /// Two quanta is not an exotic case — it is a segment at the travel cap against a
-    /// half-radius cadence, i.e. an ordinary fast stroke — which is what makes the
+    /// Two quanta is not an exotic case — it is half a segment at the travel cap
+    /// against a quarter-radius cadence, i.e. an ordinary fast stroke — which is what
+    /// makes the
     /// merged form a shortfall on real input rather than a corner. The clamp itself is
     /// the right behaviour for a solve that cannot be satisfied; this pins that it is
     /// still a clamp and not a NaN, and that the loss is the shape the ceiling implies.

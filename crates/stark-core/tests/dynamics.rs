@@ -1186,6 +1186,94 @@ fn bleed_softens_a_colour_boundary() {
     // and `a_dense_bleed_scribble_over_flat_paint_is_a_no_op`.
 }
 
+/// **A bleed pass across a hard edge leaves a smooth trail, not a stack of slabs.**
+///
+/// Every tap of the stencil lays a *displaced ghost* of what it reads: a tap at `±d`
+/// answers a hard edge with that edge again, `d` away. With the shed loaded onto a
+/// single tap out at the reach, and a texel covered by only a handful of firings, the
+/// ghosts never filled in — dragging a blender across a painted bar printed the bar's
+/// own edge over and over, a reach apart, with steps as sharp as the original
+/// (`dynamics.wesl`'s `BLEED_SHARE_LADDER`, `budget::BLEED_TRAVEL_QUANTUM`).
+///
+/// Measured as the **ripple** of the trail's profile: how far each sample sits from the
+/// mean of its neighbours a tap-scale away, which is zero for any straight or smoothly
+/// curving falloff and is exactly the step height where a ghost lands. Read down the
+/// blender's own centreline, over the stretch of trail past the bar's edge that is all
+/// carried paint, and away from the bar itself, whose real profile has curvature of its
+/// own. The pre-ladder stencil put 15 levels through this; the bound is set between.
+#[test]
+fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
+    let Some(mut engine) = engine_or_skip_sized(stark_core::geom::Extent2 {
+        width: 512,
+        height: 512,
+    }) else {
+        return;
+    };
+    // A hard-edged bar to smear off: the ghosts this is looking for are copies of its
+    // edge, so the edge has to be sharp enough that a copy of it would be obvious.
+    let mut bar = brush(RED, 60.0);
+    bar.shape = BrushShape::Round { hardness: 1.0 };
+    bar.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        bar,
+        &[Vec2::new(-200.0, 0.0), Vec2::new(200.0, 0.0)],
+    );
+
+    // …and a bleed-only pass straight down through it, so the trail runs perpendicular
+    // to the edge it is dragging.
+    let mut blender = dyn_brush(
+        RED,
+        70.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    blender.shape = BrushShape::Round { hardness: 1.0 };
+    blender.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        blender,
+        &[Vec2::new(0.0, -150.0), Vec2::new(0.0, 150.0)],
+    );
+
+    let img = engine.render_to_image();
+    let (cx, cy) = (img.width / 2, img.height / 2);
+    // Green: the paint is red over a light ground, so green is the channel it moves
+    // furthest. Averaged across the blender's middle, since one column of it is noise.
+    let profile: Vec<f64> = (0..img.height)
+        .map(|y| {
+            let lo = cx - 20;
+            (lo..cx + 20)
+                .map(|x| img.pixel(x, y)[1] as f64)
+                .sum::<f64>()
+                / 40.0
+        })
+        .collect();
+    // The trail below the bar: past its edge (60 px of tip) with a margin, out to where
+    // the smear has faded into the ground.
+    let (from, to) = (cy as usize + 75, cy as usize + 150);
+    let step = 8usize; // a tap scale: a ghost of the edge lands as a step this wide
+    let ripple = |i: usize| (profile[i] - 0.5 * (profile[i - step] + profile[i + step])).abs();
+    let worst = (from..to).map(ripple).fold(0.0f64, f64::max);
+    let rms = ((from..to).map(|i| ripple(i).powi(2)).sum::<f64>() / (to - from) as f64).sqrt();
+    eprintln!("bleed trail ripple: worst {worst:.2} levels, {rms:.2} rms");
+    // The trail has to *be* there, or a brush that bled nothing would pass this.
+    let carried = profile[cy as usize + 80] - profile[cy as usize + 150];
+    assert!(
+        carried <= -20.0,
+        "the blender carried almost nothing past the bar ({carried:.1} levels of green \
+         across the trail) — this is not measuring a trail's smoothness"
+    );
+    assert!(
+        worst <= 6.0,
+        "the bleed trail steps by {worst:.1} levels ({rms:.2} rms) over an 8 px scale — \
+         the stencil is printing displaced copies of the bar's edge rather than blurring it"
+    );
+}
+
 /// The property the reach fix exists for: `bleed`'s smoothing distance scales
 /// with the brush, so a big blender softens far from the boundary in one pass —
 /// where a fixed 1-texel stencil tops out near a pixel of σ per pass and cannot

@@ -631,6 +631,21 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   `BLEED_DIFFUSIVITY` is *derived* from the two ceilings (`BLEED_REACH_MAX`,
   `BLEED_BLEND`) rather than chosen, so full crank sits on both at once and the
   three cannot drift apart.
+  **The taps are a ladder up the reach, not a few isolated scales**, and that is
+  what makes one firing read as a blur rather than as a copy. A tap at `±d` lays a
+  *displaced ghost* of the source: against a hard edge — what this axis is most
+  often pointed at — the response is that edge again, `d` away. Loading most of the
+  shed onto a single tap out at the reach printed exactly that, and a texel sees
+  only `2/BLEED_TRAVEL_QUANTUM` firings, so the sum kept the structure instead of
+  filling it in: a bleed-only pass across a painted bar came out as stacked slabs a
+  reach tall with steps as sharp as the bar's own edge. Rungs at `j·reach/T`
+  sharing the shed equally turn that into a staircase of `T` steps of `reach/T`,
+  which consecutive firings — landing at different reaches, since the reach follows
+  the window — fill in. It costs second moment (`(T+1)(2T+1)/(6T²)`, a third in the
+  limit), and since variance adds linearly in travel, buying that back is exactly a
+  cadence finer by the same factor: the ladder and `BLEED_TRAVEL_QUANTUM` moved
+  together, and `BLEED_DIFFUSIVITY`, derived through both, left the top of the knob
+  where it was.
   It runs inside `deposit` in **flux form** (both threads of a neighbour pair
   compute one number from the same `under` snapshot and apply it with opposite
   signs, `min` of the pair's exposures as the mobility, the wick's own scheme), so
@@ -643,7 +658,7 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   strands nothing.
   **It fires on dedicated slots at the wick's kind of cadence, not on the painting
   segments** (`BLEED_TRAVEL_QUANTUM`, `stroke::dynamics::bleed_fires`): one
-  quad per crossing of half a radius of *absolute arc*, whose sweep is exactly one
+  quad per crossing of a quarter radius of *absolute arc*, whose sweep is exactly one
   quantum of path, bent along the crossing segment's own arc, and whose vertical
   rates and source are all zero — so its exposure is an ordinary, well-conditioned
   prefix difference, and the painting segments carry `λ_bleed = 0` and take the
@@ -651,8 +666,8 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   segment**, and that is what keeps the axis a diffusivity: a window asks for
   variance in proportion to its own travel while a firing can only carry
   `2·Σ(share·d²)`, so a window merged across N quanta is clamped back to roughly
-  `1/N` of the axis. A segment at the travel cap crosses a half-radius cadence
-  twice, so that was an ordinary fast stroke diffusing a tenth short, not a corner
+  `1/N` of the axis. A segment at the travel cap crosses this cadence
+  four times, so that was an ordinary fast stroke diffusing a tenth short, not a corner
   case; variance adds linearly in travel across firings, so N of them deliver N
   quanta exactly — more steps, not bigger ones, as in any explicit diffusion
   solver. The count per segment is capped (`MAX_BLEED_FIRES_PER_SEGMENT`) because

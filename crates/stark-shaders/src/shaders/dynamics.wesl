@@ -197,7 +197,7 @@ fn curvature() -> f32 { return st.e.y; }
 
 // The bleed stencil's longest tap, in texels — integral, and 0 on every slot that is
 // not a bleed firing. Solved host-side from the diffusivity the axis asks for; see
-// the note at `BLEED_SHARES`.
+// the note at `BLEED_SHARE_NEAR`.
 fn bleed_reach() -> i32 { return i32(st.e.z); }
 
 // Where this dispatch's footprint rect sits in the region, and the shape's
@@ -1311,30 +1311,51 @@ fn exchange(
 // the long tap is truncated for most of the tip and the delivered `D` falls short of
 // the asked-for one. Past that the honest move is a finer cadence, not a longer tap.
 
-// Three tap scales per direction — 1 px, a `BLEED_MID_DIVISOR`-th of the reach, the
-// reach — because a sparse pair of ±d taps alone decouples the grid into d²
-// sublattices (the wick's parity failure, generalized): sub-d texture would ride
-// through a "blur" untouched. The 1 px taps couple every texel to its actual
-// neighbours, so every non-zero frequency strictly decays; the long taps carry the
-// variance; the middle scale fills the response in between. Shares are per tap, 12
-// taps total. Total shed is bounded by `4·Σshare·w = w/2`: no firing can overshoot,
-// and positivity of height and mass survives any rate.
+// **The taps are a ladder up the reach, not a few isolated scales**, and that is what
+// makes one firing read as a blur rather than as a copy.
 //
-// Declared one scalar apiece because the **host** computes `Σ(share·d²)` to solve for
-// the reach, and a second copy of these three numbers over there is a way for the
-// two sides to disagree about how much a firing diffuses without anything failing.
-// They are generated from these declarations instead (§6.10).
+// A tap at ±d moves a share of each texel's difference from the texel d away, so on
+// its own it lays a *displaced ghost* of the source: against a hard edge — the shape
+// this axis is most often asked to soften — the response is that edge again, d away,
+// at the tap's share. Three scales (1 px, a quarter of the reach, the reach) put 62%
+// of the shed on the longest tap alone, so every firing printed a hard copy of the
+// edge a whole reach out, and a texel is only covered by `2/BLEED_TRAVEL_QUANTUM`
+// firings — a handful — so the sum kept that structure instead of filling in. A
+// bleed-only pass across a painted bar came out as stacked slabs a reach tall, with
+// the step between them as sharp as the bar's own edge.
+//
+// Rungs at `j·reach/BLEED_LADDER_TAPS`, `j = 1..=TAPS`, sharing
+// [`BLEED_SHARE_LADDER`] equally, spread that same shed over the whole interval: one
+// firing's response to an edge is a staircase of `TAPS` steps of `reach/TAPS` rather
+// than one step of `reach`, and consecutive firings — which land at different reaches,
+// since the reach follows the window — fill the treads. It costs taps, which the
+// firing has room for (the pass is a small share of a stroke's frame; measured at
+// radius 500, the whole bleed is ~2 ms of a ~25 ms replay), and it costs *second
+// moment*: a uniform ladder carries `(T+1)(2T+1)/(6T²) → 1/3` of what the same share
+// carries out at the reach, so the cadence is finer by the same factor to keep the
+// diffusivity the knob means (`budget::BLEED_TRAVEL_QUANTUM`).
+//
+// The 1 px near tap survives all of that, for the reason it was introduced: a stencil
+// of ±d taps alone decouples the grid into d² sublattices — the checkerboard
+// generalized, whose eigenvalue such a stencil leaves at 1 — so sub-d texture would
+// ride through a "blur" untouched. The near taps couple every texel to its actual
+// neighbours, so every non-zero frequency strictly decays. Total shed is still bounded
+// by `4·Σshare·w = w/2` (Σshare = 1/8, unchanged): no firing can overshoot, and
+// positivity of height and mass survives any rate.
+//
+// Declared as scalars because the **host** computes `Σ(share·d²)` to solve for the
+// reach, and a second copy of these numbers over there is a way for the two sides to
+// disagree about how much a firing diffuses without anything failing. They are
+// generated from these declarations instead (§6.10).
 const BLEED_SHARE_NEAR: f32 = 1.0 / 64.0;
-const BLEED_SHARE_MID: f32 = 2.0 / 64.0;
-const BLEED_SHARE_FAR: f32 = 5.0 / 64.0;
-const BLEED_SHARES = array<f32, 3>(
-    BLEED_SHARE_NEAR,
-    BLEED_SHARE_MID,
-    BLEED_SHARE_FAR,
-);
-// The middle scale, as a divisor of the reach. Integer division, floored, and at
-// least 1 — the host's `stencil_moment` floors the same way, off this same constant.
-const BLEED_MID_DIVISOR: i32 = 4;
+const BLEED_SHARE_LADDER: f32 = 7.0 / 64.0;
+// Rungs of the ladder. Eight: the ripple a bleed-only pass leaves across a hard edge
+// falls 2.4 → 1.9 → 1.3 → 1.1 → 1.0 levels rms as this goes 3 → 4 → 6 → 8 → 12, so
+// this is where it flattens. Their distances are `j·reach/TAPS` under *integer*
+// division, floored and held at ≥ 1 — the host's `stencil_moment` builds the identical
+// set, including the rungs that collapse onto each other on a tip whose reach is only
+// a few texels.
+const BLEED_LADDER_TAPS: i32 = 8;
 const BLEED_OFFS = array<vec2<i32>, 4>(
     vec2<i32>(1, 0),
     vec2<i32>(-1, 0),
@@ -1446,20 +1467,27 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         var dh = 0.0;
         var dm = 0.0;
         var dlm = vec3<f32>(0.0, 0.0, 0.0);
-        // The tap distances, off the reach the host solved for this firing (see
-        // `BLEED_SHARES` above). Every thread derives the same three integers from the
-        // same uniform, so a pair at any scale still computes one number — the
-        // antisymmetry the conservation rests on.
+        // Rung 0 is the 1 px near tap; rungs 1..=TAPS climb the reach the host solved
+        // for this firing (see `BLEED_SHARE_NEAR` above). Every thread derives the same
+        // integers from the same uniform, so a pair at any rung still computes one
+        // number — the antisymmetry the conservation rests on.
         let reach = max(bleed_reach(), 1);
-        var dists = array<i32, 3>(1, max(reach / BLEED_MID_DIVISOR, 1), reach);
-        for (var k = 0; k < 3; k = k + 1) {
+        let rungs = BLEED_LADDER_TAPS + 1;
+        let per_rung = BLEED_SHARE_LADDER / f32(BLEED_LADDER_TAPS);
+        for (var k = 0; k < rungs; k = k + 1) {
+            var dist = 1;
+            var share = BLEED_SHARE_NEAR;
+            if k > 0 {
+                dist = max((reach * k + BLEED_LADDER_TAPS / 2) / BLEED_LADDER_TAPS, 1);
+                share = per_rung;
+            }
             for (var i = 0; i < 4; i = i + 1) {
                 // Clamped into the snapshot rect. A clamped tap lands on the rect's
                 // border, which the margins put provably outside the sweep, so its
                 // exposure — and with it the flux — is exactly zero: a no-flux
                 // wall, like the wick's rim, at every scale.
                 let tn = clamp(
-                    t + BLEED_OFFS[i] * dists[k],
+                    t + BLEED_OFFS[i] * dist,
                     vec2<i32>(0, 0),
                     vec2<i32>(udim) - vec2<i32>(1, 1),
                 );
@@ -1480,7 +1508,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                     w_n = 1.0 - exp(-kb * dpn * swn.warp);
                 }
                 let seln = load1(sel_mask, rtn).r;
-                let c = BLEED_SHARES[k] * min(w_t, w_n) * seln;
+                let c = share * min(w_t, w_n) * seln;
                 if c > 0.0 {
                     let ucn = textureLoad(under_color, tn, 0);
                     let uan = textureLoad(under_aux, tn, 0);
