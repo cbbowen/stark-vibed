@@ -17,6 +17,9 @@ use stark_core::{EnvironmentId, MediaParams};
 /// a ground is content-addressed and so needs a resolved-id cache that a bare
 /// `Asset` constant has nowhere to keep (§6.4).
 pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
+pub const ENV_BLOEM_HILL: Asset = asset!("/assets/environment/bloem_hill_01_1k.hdr");
+pub const ENV_KLOOFENDAL_OVERCAST: Asset = asset!("/assets/environment/kloofendal_overcast_puresky_1k.hdr");
+pub const ENV_QWANTANI_DUSK: Asset = asset!("/assets/environment/qwantani_dusk_2_puresky_1k.hdr");
 
 /// The selectable lighting environments, in display order (§6.3). One row per
 /// environment, its bytes (if any) resolved by
@@ -25,6 +28,9 @@ pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1
 pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
     (EnvironmentId::Neutral, "Neutral"),
     (EnvironmentId::Ferndale, "Ferndale studio"),
+    (EnvironmentId::BloemHill, "Bloem hill"),
+    (EnvironmentId::KloofendalOvercast, "Kloofendal overcast"),
+    (EnvironmentId::QwantaniDusk, "Qwantani dusk"),
 ];
 
 /// What the app lights the canvas with on startup: the achromatic reference light,
@@ -175,6 +181,9 @@ pub fn environment_asset(id: EnvironmentId) -> Option<Asset> {
     match id {
         EnvironmentId::Neutral => None,
         EnvironmentId::Ferndale => Some(ENV_FERNDALE),
+        EnvironmentId::BloemHill => Some(ENV_BLOEM_HILL),
+        EnvironmentId::KloofendalOvercast => Some(ENV_KLOOFENDAL_OVERCAST),
+        EnvironmentId::QwantaniDusk => Some(ENV_QWANTANI_DUSK),
     }
 }
 

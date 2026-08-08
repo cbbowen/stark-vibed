@@ -86,6 +86,34 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                         description: "Every glyph in Stark's panels, bars and menus.",
                         license: PHOSPHOR_LICENSE,
                     }
+
+                    hr {}
+
+                    div { class: "modal-section-label", "ENVIRONMENTS" }
+                    Credit {
+                        name: "Dimitrios Savva and Greg Zaal",
+                        url: "https://polyhaven.com/a/ferndale_studio_11",
+                        description: "Ferndale lighting environments.",
+                        license: "CC0 1.0 Universal",
+                    }
+                    Credit {
+                        name: "Greg Zaal and Jarod Guest",
+                        url: "https://polyhaven.com/a/qwantani_dusk_2_puresky",
+                        description: "Qwantani lighting environments.",
+                        license: "CC0 1.0 Universal",
+                    }
+                    Credit {
+                        name: "Greg Zaal and Jenelle van Heerden",
+                        url: "https://polyhaven.com/a/bloem_hill_01",
+                        description: "Bloem Hill lighting environments.",
+                        license: "CC0 1.0 Universal",
+                    }
+                    Credit {
+                        name: "Greg Zaal",
+                        url: "https://polyhaven.com/a/kloofendal_overcast_puresky",
+                        description: "Kloofendal lighting environments.",
+                        license: "CC0 1.0 Universal",
+                    }
                 }
 
                 div { class: "modal-actions",

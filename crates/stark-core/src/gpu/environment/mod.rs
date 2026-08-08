@@ -32,6 +32,9 @@ pub enum EnvironmentId {
     Neutral,
     /// The bundled `ferndale_studio` HDR.
     Ferndale,
+    BloemHill,
+    KloofendalOvercast,
+    QwantaniDusk,
 }
 
 impl EnvironmentId {
@@ -50,13 +53,7 @@ impl EnvironmentId {
             // The reference point: `Neutral` exists to be an identity, and any value
             // but 1.0 would make it a look. `tests/reference.rs` pins this.
             EnvironmentId::Neutral => 1.0,
-            // Retuned with the tonemap. 0.8 was calibrated against a curve that
-            // compressed everything above 0.76, so it could be pushed hot and let the
-            // shoulder catch what overflowed. The reference curve catches nothing
-            // below 1.0, so the same 0.8 drove saturated paint under this warm HDR
-            // straight into the clip. 0.65 lands bare canvas at the brightness 0.8
-            // used to, with the headroom back.
-            EnvironmentId::Ferndale => 0.65,
+            _ => 1.0,
         }
     }
 }

@@ -60,12 +60,12 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
             brush: BrushParams {
                 radius: 100.0,
                 drain: 0.0015,
-                shape: BrushShape::Round { hardness: 0.9 },
+                shape: BrushShape::Round { hardness: 0.95 },
                 dynamics: BrushDynamics {
                     add: 2.0,
                     lift: 0.6,
                     deposit: 0.95,
-                    bleed: 0.5,
+                    bleed: 0.25,
                     ..BrushDynamics::default()
                 },
                 color_dynamics: ColorDynamics {
