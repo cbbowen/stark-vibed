@@ -482,22 +482,27 @@ impl PathFitter {
                 .into_iter()
                 .collect();
         }
-        (0..self.geom.nrows())
-            .map(|j| ControlPoint {
-                pos: Vec2::new(self.geom[(j, 0)], self.geom[(j, 1)]),
-                // Clamped to the range a pen can report. The channels are solved the
-                // same way the geometry is, and a control point the data barely
-                // reaches is held only by the ridge, so it can overshoot the values
-                // it was fitted from. For pressure that is a radius, which
-                // `generate_segments` multiplies the brush by with no upper bound.
-                // Clamping the control values bounds the *curve* and not just the
-                // polygon: B-spline bases are non-negative and sum to one, so every
-                // evaluated value is a convex combination of them.
-                pressure: self.attr[(j, 0)].clamp(0.0, 1.0),
-                tilt: clamp_tilt(Vec2::new(self.attr[(j, 1)], self.attr[(j, 2)])),
-                time: self.attr[(j, 3)],
-            })
-            .collect()
+        control_points(&self.geom, &self.attr)
+    }
+
+    /// The path exactly as [`finish`](Self::finish) would leave it, as a pure query:
+    /// the one last solve with the window still free, *not* adopted.
+    ///
+    /// This is what a live preview must render (§1.3): the stroke that would be
+    /// committed if the pen lifted now. The free window's control points sit
+    /// elsewhere under a mid-stroke solve — they are still braced for data that a
+    /// finished stroke never receives — and that gap is a real change of geometry at
+    /// pen-up, sub-pixel but fatal to `preview == committed` wherever a discontinuous
+    /// lookup (the tooth's nearest-sampled ground, §6.4) turns position into a step.
+    /// Rendering the as-finished path instead makes `End` a no-op on the record by
+    /// construction: nothing is pushed between the last preview and the commit, so
+    /// [`finish`](Self::finish) adopts this very solve, bit for bit.
+    pub fn path_as_finished(&self) -> Vec<ControlPoint> {
+        if self.finished || self.geom.nrows() < 2 {
+            return self.path();
+        }
+        let f = self.solve(self.geom.nrows());
+        control_points(&f.geom, &f.attr)
     }
 
     /// How many leading spans of [`path`](Self::path) are settled — their geometry,
@@ -691,6 +696,28 @@ impl PathFitter {
 }
 
 /// One candidate fit, before the growth rule has chosen between two of them.
+/// The control points a `(geom, attr)` pair stands for — one mapping shared by
+/// [`PathFitter::path`] and [`PathFitter::path_as_finished`], so the two cannot
+/// disagree about anything but which solve they read.
+fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
+    (0..geom.nrows())
+        .map(|j| ControlPoint {
+            pos: Vec2::new(geom[(j, 0)], geom[(j, 1)]),
+            // Clamped to the range a pen can report. The channels are solved the
+            // same way the geometry is, and a control point the data barely
+            // reaches is held only by the ridge, so it can overshoot the values
+            // it was fitted from. For pressure that is a radius, which
+            // `generate_segments` multiplies the brush by with no upper bound.
+            // Clamping the control values bounds the *curve* and not just the
+            // polygon: B-spline bases are non-negative and sum to one, so every
+            // evaluated value is a convex combination of them.
+            pressure: attr[(j, 0)].clamp(0.0, 1.0),
+            tilt: clamp_tilt(Vec2::new(attr[(j, 1)], attr[(j, 2)])),
+            time: attr[(j, 3)],
+        })
+        .collect()
+}
+
 struct Fit {
     geom: GeomCtrl,
     attr: ChannelCtrl,

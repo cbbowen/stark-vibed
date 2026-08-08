@@ -694,10 +694,14 @@ impl StrokeBuilder {
     fn path(&self) -> Vec<ControlPoint> {
         match self.assist.as_ref() {
             Some(a) => a.path.clone(),
-            // The fitted control points (§6.2). Mid-stroke this ends in a provisional
-            // knot at the newest sample, so the preview reaches the cursor; the same
-            // fitter produces the committed path, so live == committed.
-            None => self.fitter.path(),
+            // The fitted control points **as `finish` would leave them** (§6.2): the
+            // free window re-solves at pen-up, so rendering the mid-stroke window
+            // would put the preview on a curve the commit is not on — sub-pixel, but
+            // a step wherever a lookup is discontinuous in position (the tooth,
+            // §6.4). As-finished, `End` adopts this very solve and live == committed
+            // holds bit for bit. The last control point is pinned to the newest
+            // sample either way, so the preview still reaches the cursor.
+            None => self.fitter.path_as_finished(),
         }
     }
 
