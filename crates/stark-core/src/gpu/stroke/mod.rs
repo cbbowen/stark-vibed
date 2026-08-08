@@ -35,6 +35,7 @@ use crate::noise::NOISE_TILE_PX;
 mod budget;
 mod dynamics;
 mod incremental;
+mod piecewise;
 mod segments;
 mod swept;
 
