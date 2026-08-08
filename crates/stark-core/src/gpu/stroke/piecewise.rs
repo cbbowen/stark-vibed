@@ -16,10 +16,20 @@
 //! error is not a rounding: it is a straight line drawn across a corner, and it prints
 //! as a facet.
 //!
-//! So the builder describes each quantity as a [`Piecewise`] over arc length, asks for
-//! [`merged_knots`] across all of them at once, and emits a vertex pair per knot. Every
+//! A builder would describe each quantity as a [`Piecewise`] over arc length, ask for
+//! [`merged_knots`] across all of them at once, and emit a vertex pair per knot. Every
 //! interpolant is then exact by construction, and the vertex count follows the stroke's
 //! own complexity rather than a fixed tessellation guess.
+//!
+//! **There is no such builder, and the measurement that stopped it is the reason to
+//! read this module before writing one.** It would have merged a run of segments into
+//! one strip, deleting the overdraw a stroke pays by shading each texel once per
+//! segment covering it — 14× at radius 100 and 72× at radius 500 on a wavy stroke.
+//! That overdraw is real and most of a stroke is mergeable (92% at radius 100; 82% of
+//! a smooth large-brush gesture). It is also **not what the swept path's time is spent
+//! on**: from radius 8 to radius 100 its fragment count grows roughly 150× while
+//! `commit/swept` goes 4.19 → 5.21 ms, so the cost is in the per-tile passes and the
+//! tile churn, and deleting fragments cannot collect what is not being paid.
 //!
 //! # Why min and max in particular
 //!
@@ -36,10 +46,14 @@
 //! but only if the point where the two **cross** becomes a knot — that is the corner,
 //! and it generally falls strictly inside a piece of both operands.
 
-// The strip builder that spends all of this lands next; until it does, the only
-// caller is the test module below. Scoped to this file and temporary on purpose —
-// `clippy -D warnings` is a CI gate, and the alternative to saying so here is a red
-// branch.
+// Kept, and unused, deliberately: the arithmetic is subtle enough to be worth having
+// pinned — the crossing that has to become a knot is the sort of thing a second
+// attempt rediscovers by drawing a facet — and cheap enough that carrying it costs a
+// compile. The `swept-range-strip` branch holds the geometry it was written for.
+//
+// This is a standing exception to "do not add inert scaffolding", not an oversight;
+// `clippy -D warnings` is a CI gate, so the alternative to saying so here is a red
+// build.
 #![allow(dead_code)]
 
 /// A continuous piecewise-linear function of one real variable, held as its knots and
