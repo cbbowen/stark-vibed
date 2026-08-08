@@ -390,9 +390,10 @@ pub const CASES: &[Case] = &[
         name: "stamp_arc",
         what: "An anisotropic stamp around a half turn, orientation following the \
                stroke — so how finely the path is cut *is* how finely the footprint \
-               rotates. With `tooth_arc`, the pair that scopes the dynamics tangent \
-               bound (`budget::MAX_ROUND_TIP_TURN`): letting `position` bind costs a \
-               worst 19 levels here, and the whole suite was blind to it.",
+               rotates. With `tooth_arc`, the pair the suite was completely blind to: \
+               nothing else puts an orientable footprint on the dynamics path around a \
+               curve, and loosening the tangent bound to what `position` allows moves \
+               this by a worst 19 levels with every committed golden bit-identical.",
         view: SIZE,
         prepare: |e| {
             let mut b = bristle_stamp(e, 45.0);
@@ -405,7 +406,11 @@ pub const CASES: &[Case] = &[
         tol: Tol {
             golden: 6,
             seam: 12,
-            refine: 0.05,
+            // The loosest of the arcs, and it is the footprint that spends it: the mask
+            // is rotated once per segment, so a finer cut *re-orients* it rather than
+            // merely re-sampling it, and a hard-edged bristle answers along its whole
+            // rim. `tooth_arc` converges twice as tightly on the same curve with a disc.
+            refine: 0.25,
         },
     },
     Case {
