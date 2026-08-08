@@ -340,7 +340,19 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     // unselected texels; inside a feather ramp they hold to one f16 ulp.
     //
     // Untouched: not under the selection, and no parcel landed here.
-    if m == 0.0 && pc.a == 0.0 && ph == 0.0 {
+    //
+    // **A parcel is what it carries, which is its height.** `fs_parcel` writes the
+    // source's colour through unscaled — coverage scales the height, never the colour
+    // (§16.2) — so a quad rasterizing past the selection it was cut from leaves `pc.a`
+    // set and `ph` at zero, and keying this branch on the colour too sent those texels
+    // down the general path. Nothing there changes what the arithmetic *means*: with
+    // `h₁ = 0` the parcel adds no height and no mass, and `blend_latent` returns the
+    // base's own latent. What it changes is the rounding — the path rebuilds `op` as
+    // `bc.a·h/h` and the colour as `(bc.rgb/bc.a)·op`, and a divide-then-multiply
+    // round trip is not the identity in f32 — so a texel the transform provably could
+    // not touch came back one f16 ulp off, which the lighting's height gradient then
+    // prints (§16.4's byte-exactness, failing on two rim texels of a stroke's cap).
+    if m == 0.0 && ph == 0.0 {
         out.color = bc;
         out.aux = vec4<f32>(ba.x, 0.0, 0.0, 0.0);
         return out;
