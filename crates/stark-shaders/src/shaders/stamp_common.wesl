@@ -80,6 +80,22 @@ struct VsOut {
     // stroke, because the pen can drive it — bearing down presses the tip after the
     // falls it was bridging, so the grain fills in: the charcoal behaviour.
     @location(5) @interpolate(flat) tooth: f32,
+    // **The stretch of the tip's travel this point is swept by**, in radius units:
+    // where the point sits in the tip frame when the segment starts .x, and where when
+    // it ends .y. The deposit is one prefix-τ difference across it (`swept_depth`).
+    //
+    // Carried from the vertices rather than recovered per fragment, and that is the
+    // whole point rather than a saving. A range recovered from the fragment's own
+    // position can only ever be *one segment's*, because it is read out of that
+    // segment's rigid frame; a range that arrives interpolated can be any function the
+    // vertices agree on — including the merged `[min start, max end]` of a whole run of
+    // segments, which is what lets a stroke be drawn as one strip instead of a quad per
+    // cut (§6.2). Nothing merges yet; the mechanism does.
+    @location(6) range: vec2<f32>,
+    // The rest of the point's place in that frame: its lateral offset in radius units
+    // .x, the measure conversion a curved sweep needs .y (`Sweep::warp`), and how far
+    // the tip's heading has turned to reach it .z (`Sweep::turn`).
+    @location(7) frame: vec3<f32>,
 }
 
 struct FsOut {
@@ -265,6 +281,14 @@ fn sweep_vertex(
     let s = xf.params.z;
     let ndc = (canvas - xf.params.xy) * vec2<f32>(s, -s) + vec2<f32>(-1.0, 1.0);
 
+    // The exact frame *at this vertex*, from the same arc arithmetic the fragment used
+    // to run. On a straight sweep every quantity below is affine in canvas position, so
+    // interpolating it across the strip reproduces it exactly and this is a pure move
+    // of the work off the fragment. On a curved one it is a chord across `atan2`, which
+    // is what `SWEEP_SLICES` now buys in *accuracy* as well as in coverage — the strip
+    // is circumscribed either way, so no slice count can clip the stroke.
+    let sw = sweep_at(canvas, start, dir, radius, len, kappa);
+
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.canvas = canvas;
@@ -273,12 +297,24 @@ fn sweep_vertex(
     out.geom = geom;
     out.extra = extra;
     out.tooth = tooth;
+    out.range = vec2<f32>(sw.local.x - sw.lr, sw.local.x);
+    out.frame = vec3<f32>(sw.local.y, sw.warp, sw.turn);
     return out;
 }
 
-// This fragment's place in its segment's travel frame.
+// This fragment's place in its segment's travel frame, as the vertices agreed it.
+//
+// The travel coordinate is the range's *end* — where the point sits when the segment
+// finishes — and the travel it was swept by is the range's own width. Stated that way
+// round because it is the range that is fundamental now: `swept_depth` wants two
+// prefix arguments, and everything else here is a reading of the same pair.
 fn sweep_of(in: VsOut) -> Sweep {
-    return sweep_at(in.canvas, in.start, in.dir, in.geom.x, in.geom.y, in.extra.z);
+    var out: Sweep;
+    out.local = vec2<f32>(in.range.y, in.frame.x);
+    out.lr = in.range.y - in.range.x;
+    out.warp = in.frame.y;
+    out.turn = in.frame.z;
+    return out;
 }
 
 // The brush's colour channels (per the color space) at this fragment: the
