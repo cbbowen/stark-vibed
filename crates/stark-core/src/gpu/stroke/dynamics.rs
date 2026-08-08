@@ -2283,7 +2283,7 @@ mod tests {
         }
 
         let fires = bleed_fires(0.4, &segs);
-        // The cap is what stops this being `len / quantum` = 26 per segment.
+        // The cap is what stops this being `len / quantum` = 53 per segment.
         assert_eq!(fires.len(), 20 * MAX_BLEED_FIRES_PER_SEGMENT);
         for (i, f) in &fires {
             assert_eq!(
@@ -2307,7 +2307,8 @@ mod tests {
             let from_end = s.dist + s.length - f.dist;
             let quanta = from_end / quantum;
             assert!(
-                (quanta - quanta.round()).abs() < 1e-3 && quanta <= 8.0 + 1e-3,
+                (quanta - quanta.round()).abs() < 1e-3
+                    && quanta <= MAX_BLEED_FIRES_PER_SEGMENT as f32 + 1e-3,
                 "a firing sits {quanta} quanta back from its segment's end",
             );
         }
@@ -2320,7 +2321,7 @@ mod tests {
         assert!(bleed_fires(0.0, &run(40, 1.5, 10.0)).is_empty());
     }
 
-    /// **Why the cadence exists at all**: a firing's window is a half-radius of travel
+    /// **Why the cadence exists at all**: a firing's window is a quarter-radius of travel
     /// however finely the path was cut, so its exposure is a well-conditioned prefix
     /// difference rather than the f16 noise a per-segment flux would be.
     ///
@@ -2344,7 +2345,7 @@ mod tests {
                 f.length,
             );
             assert!(
-                f.length > 25.0 * 0.39,
+                f.length > 10.0 * 0.39,
                 "the window is segment-sized, which is the regime the cadence exists \
                  to leave",
             );
