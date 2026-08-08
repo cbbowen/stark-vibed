@@ -366,9 +366,17 @@ fn turning_the_tooth_up_takes_a_level_set_away() {
 /// back a share of the `add` it lays — and the slope gate leaves much of the ground
 /// mid-contact, so any single threshold has a large borderline population that a few
 /// percent flips. A texel one path calls 11 levels and the other 13 is agreement in
-/// substance; what the gate reading *differently* looks like is solid ink on one
-/// path where the other left bare canvas, and a texel dark on one side (> 18) and
-/// blank on the other (< 6) is what counts as that.
+/// substance; what the gate reading *differently* looks like is solid ink on one path
+/// where the other left bare canvas.
+///
+/// **The pair is a fraction of the mark's own contrast, not a level count**, and that
+/// is not fussiness. It used to be 18 and 6, sized against what this stroke did to a
+/// pixel under the studio HDR; painting under the reference light instead (§6.3) opens
+/// the ink-to-ground swing right up — the mark's strong ink runs to 190 levels where
+/// it ran to a few tens — and the same two numbers slid down into the rim, where a
+/// borderline population lives that neither path is claiming anything about. A pair
+/// quoted against the swing it is a share of cannot be moved that way. Half of the
+/// mark's strong ink is solid; a twentieth of it is bare.
 #[test]
 fn the_tooth_reads_the_same_on_both_render_paths() {
     let Some(mut engine) = gesso_engine() else {
@@ -388,23 +396,33 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
     let a = one_run(&mut engine, swept, 1.0);
     let b = one_run(&mut engine, looped, 1.0);
 
+    // The mark's own scale: the 90th percentile of every non-zero delta either path
+    // laid, which is strong ink without being the single darkest texel.
+    let strong = {
+        let mut v: Vec<f64> = a.iter().chain(&b).copied().filter(|d| *d > 0.0).collect();
+        v.sort_by(f64::total_cmp);
+        assert!(!v.is_empty(), "neither path laid anything");
+        v[(v.len() - 1) * 9 / 10]
+    };
+    let (solid, blank) = (0.5 * strong, 0.05 * strong);
     let material = a
         .iter()
         .zip(&b)
-        .filter(|(x, y)| **x > 18.0 || **y > 18.0)
+        .filter(|(x, y)| **x > solid || **y > solid)
         .count();
     let disagree = a
         .iter()
         .zip(&b)
-        .filter(|(x, y)| (**x > 18.0 && **y < 6.0) || (**y > 18.0 && **x < 6.0))
+        .filter(|(x, y)| (**x > solid && **y < blank) || (**y > solid && **x < blank))
         .count();
     assert!(material > 200, "too little mark to compare: {material}");
     // The slack is for the tip's hardness shoulder, where τ falls off a cliff and the
     // two paths' different prefix machinery can land a rim texel a fraction of a texel
     // apart. A path whose gate differed would flip a third of the mark, not a rim.
+    // Measured at 3.4% of 7091 material texels.
     assert!(
         (disagree as f64) < 0.05 * material as f64,
-        "the two paths disagree about the ground on {disagree} of {material} texels"
+        "the two paths disagree about the ground on {disagree} of {material} texels (solid > {solid:.0}, blank < {blank:.0})"
     );
     let (ink_a, ink_b) = (a.iter().sum::<f64>(), b.iter().sum::<f64>());
     let ratio = ink_b / ink_a;
@@ -543,10 +561,16 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
         plain_ink > 0.0 && toothed_ink > 0.0,
         "a glob laid nothing at all"
     );
-    // The un-toothed tool empties inside the first third and never reaches here.
+    // The un-toothed tool empties inside the first third and never really reaches
+    // here — measured at 1.1% of its ink against the toothed one's 15.6%. Quoted
+    // against *that*, not as a level of its own: `far_share` weights each texel by how
+    // far it moved the pixel, so how much of a faint tail registers at all is a
+    // property of the light the suite paints under (§6.3), and this bound was set
+    // under a different one. What the test needs is that the two reaches are not the
+    // same reach.
     assert!(
-        plain < 0.01,
-        "the un-toothed glob was still going past the two-thirds mark ({plain:.3}) —          it is not emptying fast enough for this test to say anything"
+        plain * 4.0 < toothed,
+        "the un-toothed glob was still going past the two-thirds mark ({plain:.3} against the toothed {toothed:.3}) — it is not emptying fast enough for this test to say anything"
     );
     // The toothed one trades at reduced contact, so the same charge lasts longer and
     // some of it is still being laid out there. If the tool drained at the *ungated*
