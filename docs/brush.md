@@ -583,6 +583,16 @@ same settle its commit will.
 earlier segments, so a stroke smears **its own trail** when it crosses it; drag
 falls out naturally; and there is no band, column or stamp structure to alias.
 
+*The run-dry falloff is bounded at a full load, not only at an empty one.*
+`drain` is sampled at each texel's **own** arc length on both paths
+(`stroke_drain`), which is exact for a linear falloff wherever a texel sees the
+whole pass. The texels behind the stroke's *start* never do — the tip's trailing
+half is already over them at pen-down — so their arc is negative, and unbounded
+the falloff hands them more than a full brush. The swept path lays the excess;
+the dynamics loop cannot, because a load over full puts mass above the height
+carrying it and the region stores the quotient `m / h` as a per-unit opacity.
+Clamping the load at 1 is what keeps the two paths drawing the same start cap.
+
 *The axes* (`BrushDynamics` on `BrushParams` — a flat record in the action log):
 
 - `add` — lay the brush's own paint; the only inexhaustible **source**, and the

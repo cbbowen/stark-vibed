@@ -460,8 +460,17 @@ fn exchange_at(e: f32) -> Exchange {
 // in arc length, so sampling it where the paint actually lands is exact, not merely
 // closer; it used to be baked in at the segment midpoint and bought back with a
 // `0.02 / drain` cap on segment length (`gpu::stroke::budget::flatten_tolerance`).
+//
+// **Bounded at a full load, not only at an empty one.** A texel is measured at its own
+// arc, and the texels behind the stroke's *start* sit at a negative one — the tip's
+// trailing half covers them at pen-down — so the unbounded form hands them more than a
+// full brush. That is meaningless on the load, and worse on the per-unit opacity it
+// multiplies: `src_m = brush_op·drain·src_h` lands mass above the height carrying it,
+// and `m ≤ h` is the invariant the region's storage rests on, since what it stores is
+// `m / h`. Both paths bound it identically (`stamp_common.wesl::stroke_drain`), so a
+// drained brush lays the same start cap whichever one draws it.
 fn stroke_drain(arc: f32) -> f32 {
-    return max(1.0 - drain_rate() * arc, 0.0);
+    return clamp(1.0 - drain_rate() * arc, 0.0, 1.0);
 }
 
 // The share of the tip's contact a canvas texel gets from the ground under it (§6.4)
