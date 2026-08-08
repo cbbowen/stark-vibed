@@ -294,3 +294,108 @@ fn golden_drained_brush_length_independent() {
         engine.process(DocCommand::Undo);
     }
 }
+
+#[test]
+fn golden_straight_smear_into_paint() {
+    let Some(mut engine) = engine_or_skip_studio() else {
+        return;
+    };
+    engine.process(ViewCommand::SetMediaParams(stark_core::MediaParams {
+        specular: 0.5,
+        height_strength: 1.0,
+        ..Default::default()
+    }));
+
+    let color = [0.5, 0.0, 0.0, 1.0];
+    let shape = BrushShape::Round { hardness: 0.95 };
+
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            color,
+            radius: 256.0,
+            shape,
+            dynamics: BrushDynamics {
+                add: 2.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &[Vec2::new(-256.0, 0.0), Vec2::new(256.0, 0.0)],
+    );
+
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            color,
+            radius: 64.0,
+            shape,
+            dynamics: BrushDynamics {
+                add: 0.0,
+                lift: 0.5,
+                deposit: 0.95,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &[Vec2::new(-256.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+
+    let img = engine.render_to_image();
+    assert_golden("straight_smear_into_paint", &img, 6);
+}
+
+#[test]
+fn golden_wiggly_smear_into_paint() {
+    let Some(mut engine) = engine_or_skip_studio() else {
+        return;
+    };
+    engine.process(ViewCommand::SetMediaParams(stark_core::MediaParams {
+        specular: 0.5,
+        height_strength: 1.0,
+        ..Default::default()
+    }));
+
+    let color = [0.5, 0.0, 0.0, 1.0];
+    let shape = BrushShape::Round { hardness: 0.95 };
+
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            color,
+            radius: 256.0,
+            shape,
+            dynamics: BrushDynamics {
+                add: 2.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &[Vec2::new(-256.0, 0.0), Vec2::new(256.0, 0.0)],
+    );
+
+    let points: Vec<_> = (0..128).map(|i| {
+        let t = (i as f32) / 128.0;
+        Vec2::new(-256.0, 0.0) + Vec2::new(t * 256.0, 5.0 * (128.0 * t).sin())
+    }).collect();
+
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            color,
+            radius: 64.0,
+            shape,
+            dynamics: BrushDynamics {
+                add: 0.0,
+                lift: 0.5,
+                deposit: 0.95,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &points,
+    );
+
+    let img = engine.render_to_image();
+    assert_golden("wiggly_smear_into_paint", &img, 6);
+}
