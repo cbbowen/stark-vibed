@@ -18,7 +18,8 @@ use stark_core::{EnvironmentId, MediaParams};
 /// `Asset` constant has nowhere to keep (§6.4).
 pub const ENV_FERNDALE: Asset = asset!("/assets/environment/ferndale_studio_11_1k.hdr");
 pub const ENV_BLOEM_HILL: Asset = asset!("/assets/environment/bloem_hill_01_1k.hdr");
-pub const ENV_KLOOFENDAL_OVERCAST: Asset = asset!("/assets/environment/kloofendal_overcast_puresky_1k.hdr");
+pub const ENV_KLOOFENDAL_OVERCAST: Asset =
+    asset!("/assets/environment/kloofendal_overcast_puresky_1k.hdr");
 pub const ENV_QWANTANI_DUSK: Asset = asset!("/assets/environment/qwantani_dusk_2_puresky_1k.hdr");
 
 /// The selectable lighting environments, in display order (§6.3). One row per

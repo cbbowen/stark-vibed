@@ -22,9 +22,7 @@ pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
 ///
 /// The **views** alone, with no texture beside them. A `wgpu::TextureView` holds its
 /// own reference to the texture it was made from, so the texture outlives the view by
-/// construction; the two fields that used to sit here to "keep it alive" were kept
-/// alive by nothing but an `#[allow(dead_code)]`. The round tip already proves it —
-/// `StrokeRenderer` drops both textures on the floor at the same call and renders.
+/// construction. `StrokeRenderer` drops both textures at the same call and renders.
 struct Mask {
     /// Source bytes, retained so the asset can be bundled into the save file.
     bytes: Vec<u8>,
