@@ -518,7 +518,7 @@ So the pen-up settles the pair once, through the same `exchange_at` kernel, over
 an exposure bounded by the pass on **both** sides:
 
 ```
-e = min(owed, received),   owed = prefix(l),  received = rowtotal − prefix(l)
+e = (owed⁻ᵖ + received⁻ᵖ)⁻¹ᐟᵖ,   owed = prefix(l),  received = rowtotal − prefix(l)
 ```
 
 Both bounds are load-bearing, and both are readings of the very prefix-τ volume
@@ -530,8 +530,24 @@ an eraser). `owed` is what it still had to give — a point it had all but finis
 with has nothing left to hand over, and without that bound the settle steps against
 the *trail*, which got no settle at all, right where the two meet. They vanish on
 the footprint's rim (`owed` at the trailing edge, `received` at the leading one,
-the row total itself laterally), so the settle fades to nothing all the way round,
-and they cross at the tip centre where the kernel is already deep in saturation.
+the row total itself laterally), so the settle fades to nothing all the way round.
+
+**They are combined with a soft minimum rather than a `min`, and that is not
+cosmetic.** The two cross at the tip centre, where `owed = received`; a `min` is
+continuous there and its *slope* is not, and everything the settle does is
+exponential in this exposure, so the corner lands in the height field as a corner
+— which is a **step in the surface normal**, and the media pass (§6.3) prints it
+as a hard line straight across the middle of the last footprint, perpendicular to
+the travel. Measured on a smear into thick paint under a structured sky, the
+specular stepped 107 levels across one texel at exactly `l = 0`, against 2
+anywhere along the trail. The p-norm above is `≤ min` everywhere, so both bounds
+keep their ceiling exactly, and it differs from `min` by `(min/max)ᵖ` — nothing
+where one bound is clearly the binding one. `p = 4`
+(`dynamics.wesl::SETTLE_BOUND_SHARPNESS`) is bracketed from both sides: higher and
+the handover, though smooth, packs its curvature into less than a texel and the
+render cannot tell it from the corner; lower and the settle discounts the
+transfer a texel just behind the centre still has in flight, which is the load
+this dispatch exists to deliver.
 
 **The parcel is the remaining pass's delivery, not the cell overhead.** At the end
 of a long smear the reservoir is radially skewed: interior cells trade fast, so
@@ -681,10 +697,26 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   older than the axis — a storage write re-encodes f32→f16, and a backend may
   truncate that conversion toward zero (D3D12 does), so *re-storing an
   algebraically identical texel* walks it down one ULP per rewrite — which is why
-  the `deposit` (and the settle) now end with a **rewrite guard**: when the lift
+  the `deposit` (and the settle) end with a **rewrite guard**: when the lift
   kept everything, the parcel is empty and no flux moved, the texel is not
   re-stored at all. Measured on the repro, the guard alone took a 28-level
-  directional ghost to bit-exact zero.
+  directional ghost to bit-exact zero. **The guard is not the whole answer,
+  though, because it only fires on exactly-zero rates.** A brush that is merely
+  *nearly* inert stores every texel of every segment's footprint, and `h·keep`
+  with `keep` a whisker under 1 is below `h` by far less than an ULP, so
+  truncation takes the whole ULP every single time — a drift with no random half
+  to cancel it. What decides how far it goes is the number of segments whose sweep
+  covers a texel, which is a property of the *path*: a straight 256 px drag lost
+  0.04% of a field's height at rates of `1e−4`, the same span walked as a 20-cycle
+  wiggle lost **3.65%**, and the premultiplied latent walked down with the height,
+  so a stroke that by every term of the model did nothing left a mark that was both
+  thinner and darker than the paint it crossed. So the loop's stores now go through
+  `lib::store::f16_nearest`, which snaps a value onto the binary16 lattice before
+  handing it over: whichever way the backend converts, it converts exactly, an
+  identity pass is an identity store on every adapter, and a real change rounds to
+  nearest instead of down. That is structural rather than a rule each of the nine
+  store sites could forget, and it is what
+  `a_smear_that_transfers_nothing_leaves_the_canvas_alone` states.
   The stencil's taps sit at three scales per direction — 1 px, a
   `BLEED_MID_DIVISOR`-th of the reach, the reach — with the reach solved per
   firing and arriving in the slot, so every thread of a flux pair derives one set

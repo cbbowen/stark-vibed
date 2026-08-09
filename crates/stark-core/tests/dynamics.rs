@@ -1491,3 +1491,175 @@ fn a_bleeding_stroke_previews_as_it_commits() {
         frac_exceeding(&preview, &committed, 2) * 100.0,
     );
 }
+
+/// **A smear whose rates move nothing must leave the canvas bit-for-bit alone, however
+/// many segments the path is cut into.**
+///
+/// The loop is a read-modify-write over `rgba16float` storage textures, and a
+/// `textureStore` to one is not guaranteed to round: D3D12's f32 → binary16 conversion
+/// truncates toward zero (`lib/store.wesl`). Every segment whose sweep reaches a texel
+/// re-stores it, so a store that lands a hair below what is already there drops a whole
+/// f16 ULP — `2⁻¹¹` relative, one-directional, and therefore accumulating instead of
+/// cancelling.
+///
+/// At `lift = deposit = 1e−4` the physics is a no-op to five figures: `keep = exp(−k·e)`
+/// with `k·e ≈ 3e−6` per segment leaves the canvas 99.9997% of its height, and the
+/// deposit hands back what little it took. So everything this measures is arithmetic.
+///
+/// The **wiggly path is the whole point**, and it is why the existing rewrite guard was
+/// not enough: that guard fires only on exactly-zero rates, and what turns a half-ULP
+/// bias into a visible loss is the *number of re-stores a texel sees*, which is the
+/// number of segments whose sweep covers it. A straight 256 px drag is a handful; the
+/// same span walked as a 20-cycle wiggle is a hundred and more. Measured before the
+/// stores were snapped to the f16 lattice: −0.04% of the field's ink for the straight
+/// path, **−3.65%** for the wiggle — paint disappearing out of a stroke that by every
+/// term of the model did nothing at all, and the premultiplied latent walking down with
+/// the height, so the mark read both thinner and darker than the field it crossed.
+///
+/// The field is deliberately faint (`add = 0.02` under a broad tip): height only reaches
+/// the render while the paint is still short of opaque, so a thick coat would hide the
+/// very thing this is weighing.
+#[test]
+fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
+    for wiggle in [0.0f32, 5.0] {
+        let Some(mut engine) = engine_or_skip() else {
+            return;
+        };
+        let mut field = brush(RED, 200.0);
+        field.drain = 0.0;
+        field.dynamics.add = 0.02;
+        stroke_with(
+            &mut engine,
+            field,
+            &[Vec2::new(-260.0, 0.0), Vec2::new(260.0, 0.0)],
+        );
+        let before = engine.render_to_image();
+
+        // Rates far below anything the eye could resolve, but *nonzero* — so the
+        // deposit's rewrite guard does not fire and every segment stores every texel
+        // it covers, which is exactly the traffic the ratchet rode.
+        let smear = dyn_brush(
+            RED,
+            40.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 1e-4,
+                deposit: 1e-4,
+                ..Default::default()
+            },
+        );
+        let path: Vec<Vec2> = (0..128)
+            .map(|i| {
+                let t = i as f32 / 128.0;
+                Vec2::new(t * 200.0 - 100.0, wiggle * (128.0 * t).sin())
+            })
+            .collect();
+        stroke_with(&mut engine, smear, &path);
+        let after = engine.render_to_image();
+
+        let (b, a) = (total_ink(&before), total_ink(&after));
+        let drift = (a / b - 1.0) * 100.0;
+        assert!(
+            drift.abs() < 0.2,
+            "a smear at rates of 1e-4 (wiggle {wiggle}) moved {drift:+.2}% of the \
+             field's ink — the loop is re-encoding f16 state it did not change",
+        );
+    }
+}
+
+/// **The pen-up settle must not leave a crease across the middle of the last stamp.**
+///
+/// The settle's exposure is bounded by the pass on both sides — by what the tip still
+/// owed this texel and by what it had already given it (`dynamics.wesl`'s `settle`) —
+/// and those two bounds cross at the tip centre. Combined with a `min` the exposure is
+/// continuous there but its *slope* is not, and everything downstream is exponential in
+/// it, so the height field turns a corner along the line `xl = 0`. A corner in height is
+/// a step in the surface normal, and the media pass (§6.3) prints that as a hard line
+/// straight across the footprint, perpendicular to the travel — the one place in a
+/// stroke where the mark is not a smooth function of position.
+///
+/// Measured on the **lit** render, because that is the only pass that can see a
+/// derivative: as the worst step between adjacent texels along the travel axis through
+/// the tip centre, scaled against the same reading taken over the trail behind it, which
+/// has no settle in it and stands for what this brush's own texture costs. The `min`
+/// puts 106 levels through the crossover against the trail's 3; the smooth product
+/// combination puts 2.
+///
+/// **On the studio HDR**, and it has to be — this is the second test in the suite to
+/// need it (`golden_studio_environment` is the other), and for the one reason that
+/// justifies the exception. What is defective here is a *surface normal*, and a normal
+/// is only observable in the difference between the directions it can reflect. The
+/// reference light is procedural and near-uniform, so a specular reflection of it is
+/// almost independent of which way the paint faces: the same scene reads 2 levels
+/// against 1 under `Neutral` with the specular cranked to 1.0 — the crease is there,
+/// and the light has nothing to say about it. That is exactly why this hid from a suite
+/// that paints under the reference light, and it is why the bound has to be read under
+/// a sky with structure in it.
+#[test]
+fn the_settle_leaves_no_crease_across_the_last_stamp() {
+    let Some(mut engine) = engine_or_skip_studio() else {
+        return;
+    };
+    // Impasto: `height_strength` at full and a live specular are what turn a kink in
+    // the height field into something a byte can show.
+    engine.process(ViewCommand::SetMediaParams(stark_core::MediaParams {
+        specular: 0.5,
+        height_strength: 1.0,
+        ..Default::default()
+    }));
+    // A thick bed to smear into, then a smaller tool dragged into the middle of it and
+    // lifted — so the last footprint sits well inside the paint, with trail on one side
+    // and untouched bed on the other.
+    //
+    // A **hard** tip (0.95) on both, and a mid-tone paint: the settle's exposure ramps
+    // across the whole radius, so what decides how sharply its corner registers is how
+    // steeply the tip's own optical depth falls at the shoulder.
+    let paint = [0.5, 0.0, 0.0, 1.0];
+    let hard = BrushShape::Round { hardness: 0.95 };
+    let mut bed = brush(paint, 256.0);
+    bed.drain = 0.0;
+    bed.shape = hard;
+    bed.dynamics.add = 2.0;
+    stroke_with(
+        &mut engine,
+        bed,
+        &[Vec2::new(-260.0, 0.0), Vec2::new(260.0, 0.0)],
+    );
+    let mut smear = dyn_brush(
+        paint,
+        64.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.5,
+            deposit: 0.95,
+            ..Default::default()
+        },
+    );
+    smear.drain = 0.0;
+    smear.shape = hard;
+    stroke_with(
+        &mut engine,
+        smear,
+        &[Vec2::new(-256.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+
+    // The stroke ends at canvas x = 0, which is the middle of the viewport.
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    let step = |x0: u32, x1: u32| {
+        (x0..x1)
+            .map(|x| (img.pixel(x + 1, cy)[0] as i32 - img.pixel(x, cy)[0] as i32).abs())
+            .max()
+            .expect("a non-empty span")
+    };
+    // ±12 px about the tip centre, which is where the two bounds cross…
+    let crossover = step(cx - 12, cx + 12);
+    // …against the trail, from a radius behind the last stamp back another two.
+    let trail = step(cx - 100, cx - 40);
+    assert!(
+        crossover <= trail.max(4) * 2,
+        "the last stamp steps {crossover} levels across one texel at its centre, \
+         against {trail} anywhere along the trail — the settle's exposure has a corner \
+         in it and the light is reading it",
+    );
+}

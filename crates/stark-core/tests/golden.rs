@@ -374,10 +374,12 @@ fn golden_wiggly_smear_into_paint() {
         &[Vec2::new(-256.0, 0.0), Vec2::new(256.0, 0.0)],
     );
 
-    let points: Vec<_> = (0..128).map(|i| {
-        let t = (i as f32) / 128.0;
-        Vec2::new(-256.0, 0.0) + Vec2::new(t * 256.0, 5.0 * (128.0 * t).sin())
-    }).collect();
+    let points: Vec<_> = (0..128)
+        .map(|i| {
+            let t = (i as f32) / 128.0;
+            Vec2::new(-256.0, 0.0) + Vec2::new(t * 256.0, 5.0 * (128.0 * t).sin())
+        })
+        .collect();
 
     stroke_with(
         &mut engine,

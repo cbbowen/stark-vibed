@@ -82,6 +82,7 @@ import package::stamp_common::{prefix_at, Sweep, sweep_at, sweep_tangent};
 import package::lib::noise::{color_jitter};
 import package::lib::paint_common::{blend_latent, ground_at, rise_ahead, tooth_gate, PAINT_EPS};
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
+import package::lib::store::{f16_nearest4};
 
 struct Stamp {
     // a: the sweep's start .xy (region px) + its travel tangent .zw (unit vector) —
@@ -808,8 +809,11 @@ fn wick_axis(gid: vec3<u32>, axis: vec2<i32>) {
     if m > PAINT_EPS {
         lat = lm / m;
     }
-    textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, PAINT_EPS)));
-    textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
+    // Snapped to the f16 lattice first (`lib::store`): this pass ping-pongs the
+    // reservoir every wick and every segment, so a store that truncates walks the
+    // tool's carried paint down one ULP per firing.
+    textureStore(brush_dst_color_w, t, f16_nearest4(vec4<f32>(lat, m / max(h, PAINT_EPS))));
+    textureStore(brush_dst_aux_w, t, f16_nearest4(vec4<f32>(h, 0.0, 0.0, 0.0)));
 }
 
 // Along the tip's travel axis — the one a stroke-space row could run internally.
@@ -1227,8 +1231,8 @@ fn exchange(
         m = m + src_m;
     }
 
-    textureStore(brush_dst_color_w, t, vec4<f32>(lat, m / max(h, PAINT_EPS)));
-    textureStore(brush_dst_aux_w, t, vec4<f32>(h, 0.0, 0.0, 0.0));
+    textureStore(brush_dst_color_w, t, f16_nearest4(vec4<f32>(lat, m / max(h, PAINT_EPS))));
+    textureStore(brush_dst_aux_w, t, f16_nearest4(vec4<f32>(h, 0.0, 0.0, 0.0)));
 }
 
 // ---- 4. Deposit: the swept exchange over one segment. ----------------------------
@@ -1596,8 +1600,11 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // the mask's feathered edge the texel receives that fraction of everything this
     // segment did — the lift as well as the deposit — which is exactly the fraction
     // `exchange` scaled its own side of the transfer by.
-    textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
-    textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));
+    // On the f16 lattice before it goes down (`lib::store`). The guard above skips the
+    // stores that change nothing at all; this is what keeps the ones that *do* land
+    // from each shaving a ULP off the region as a segment sweep passes over it.
+    textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(lat * op, op), sel)));
+    textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
 }
 
 // ---- 5. Settle: the transfer the pen-up breaks. ----------------------------------
@@ -1613,11 +1620,9 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 //
 // So the pen-up settles the pair — one dispatch, one thread per canvas texel of the
 // final footprint, the same `exchange_at` kernel as every segment. What it needs is an
-// exposure, and there is exactly one choice that does not simply move the discontinuity
-// somewhere else. **The transfer a break of contact settles is bounded by the pass on
-// both sides:**
+// exposure, and it is bounded by the pass on **both** sides:
 //
-//     e = min(owed, received),   owed = prefix(l),  received = rowtotal − prefix(l)
+//     owed = prefix(l),   received = rowtotal − prefix(l)
 //
 // * `received` is what the tip has already given this texel. A point the tip has
 //   barely reached has no film to break — and without this bound the settle steps
@@ -1637,15 +1642,62 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `add`, which is linear in it, caps smoothly, and the exchange, which saturates
 // exponentially in it, does not.
 //
-// Both bounds vanish on the footprint's rim (`owed` at the trailing edge, `received`
-// at the leading one, and the row total itself laterally), so the settle fades to
-// nothing all the way round and adds no edge of its own. They cross at the tip centre,
-// where the kernel is already deep in saturation and the kink costs nothing.
+// **The two bounds are combined with a soft `min`, not a `min`** (§6.2), because a
+// `min` of two ramps is continuous and its *slope* is not. The two cross at the tip
+// centre, where `owed = received = rowtotal/2`, and the exposure turns a corner there.
+// Everything below is exponential in that exposure, so a corner in it is a corner in
+// the height the settle leaves — and a corner in height is a **step in the surface
+// normal**, which the media pass (§6.3) prints as a hard line straight across the
+// middle of the last footprint, perpendicular to the travel. It is not subtle at any
+// impasto worth the name: on a 64 px smear into thick paint the specular jumped 107
+// levels across one texel at exactly `xl = 0`, against 2 anywhere along the trail. The
+// note that used to stand here reasoned that "the kernel is already deep in saturation
+// and the kink costs nothing" — true of the *value*, and silent about the derivative,
+// which is the thing the light actually reads.
+//
+// So the handover is the **p-norm soft minimum** of the two, `(owed⁻ᵖ + received⁻ᵖ)⁻¹ᐟᵖ`
+// — written below as `min · (1 + (min/max)ᵖ)⁻¹ᐟᵖ`, which is the same number and never
+// divides by the small one. It is smooth in every derivative, it is `≤ min` everywhere
+// (so both bullets above keep their ceiling exactly), and it agrees with `min` to
+// within `(min/max)ᵖ` — so it is indistinguishable from it wherever one bound is
+// clearly the binding one, and only softens where they are comparable.
+//
+// Both bounds vanish on the footprint's rim (`owed` at the trailing edge, `received` at
+// the leading one, and the row total itself laterally), so the settle fades to nothing
+// all the way round and adds no edge of its own.
 //
 // The tool is not written back: nothing reads it after this. A range that does *not*
 // reach the end of the stroke never runs this dispatch — it hands its reservoir on to
 // the range that resumes instead — so the settle happens once, at the pen-up, and a
 // live tail computes the same one its commit will.
+// How sharply the settle's two bounds hand over to each other (see `settle`) — the
+// exponent of the p-norm soft minimum. `∞` is a plain `min`; `1` is their harmonic mean.
+//
+// **Both ends of this are a defect, and they are different defects**, which is what
+// makes 4 an optimum rather than a floor. Push it up and the handover, still smooth in
+// the exact arithmetic, concentrates all of its curvature into a fraction of a texel —
+// and a render that samples a normal at texel centres cannot tell that from the corner
+// it was meant to replace. Push it down and the settle stops settling: a texel just
+// behind the tip centre has all but finished its pass, so what is left in flight there
+// is nearly the whole of what is still owed, and a soft minimum that discounts it too
+// far strands exactly the load this dispatch exists to deliver.
+//
+// Measured on the three tests that read those two failures — the crease under a sky
+// with structure in it (`the_settle_leaves_no_crease_across_the_last_stamp`), and the
+// two that read the pen-up point itself (`an_eraser_takes_the_paint_it_stopped_on`,
+// `a_carrying_stroke_ends_without_breaking_its_own_slope`), in 8-bit levels:
+//
+//     p          1     2     3     4     5     6     ∞ (= min)
+//     crease     2     2     2     3    87   105   107
+//     eraser     —     5     3     2     2     —     0
+//     carry     12     9     8     7     6     6     5
+//
+// 4 is the last value before the crease collapses back, and it buys the two settle
+// readings to within 2 levels of what the bare `min` delivered. Their bounds are 8 and
+// 10 and an un-settled stroke measures 18 and 17, so there is room on that side; the
+// crease has none on the other.
+const SETTLE_BOUND_SHARPNESS: f32 = 4.0;
+
 @compute @workgroup_size(8, 8)
 fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let udim = textureDimensions(under_color);
@@ -1670,10 +1722,16 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let total = prefix_at(1.0, yl, orientation());
     let owed = prefix_at(xl, yl, orientation());
-    let e = min(owed, total - owed);
-    if e <= 0.0 {
+    let received = total - owed;
+    let lo = min(owed, received);
+    let hi = max(owed, received);
+    if lo <= 0.0 {
         return; // the footprint's rim: nothing in flight, nothing to settle
     }
+    // The soft `min` of the two bounds (see above), taken as `lo·(1 + (lo/hi)ᵖ)^(−1/p)`
+    // rather than as `(owed⁻ᵖ + received⁻ᵖ)^(−1/p)`: the same value, with the reciprocal
+    // of the *small* bound — which vanishes at both rims of the footprint — never formed.
+    let e = lo * pow(1.0 + pow(lo / hi, SETTLE_BOUND_SHARPNESS), -1.0 / SETTLE_BOUND_SHARPNESS);
     let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
@@ -1820,6 +1878,6 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     m += par_m;
     let op = m / max(h, PAINT_EPS);
 
-    textureStore(region_color_w, rt, mix(uc, vec4<f32>(lat * op, op), sel));
-    textureStore(region_aux_w, rt, mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel));
+    textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(lat * op, op), sel)));
+    textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
 }
