@@ -242,7 +242,7 @@ impl StrokeRenderer {
 
         // The union over the pieces below, which each enumerate their own subset.
         let dirty: Vec<TileCoord> = affected_tiles(&segments).into_iter().collect();
-        let mut run = DynamicsRun::new(self, scene, rec, tool);
+        let mut run = DynamicsRun::new(self, scene, rec, tol, tool);
         let mut map = scene.base.clone();
         // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
         // and within it to the last piece — which is the same condition that says there
@@ -279,6 +279,9 @@ impl StrokeRenderer {
 struct DynamicsRun<'a> {
     r: &'a StrokeRenderer,
     rec: &'a StrokeRecord,
+    /// The budget the range was flattened at ([`dynamics_setup`]), carried so a plan
+    /// can re-cut a piece of the record the same way — see [`PlanCtx::tol`].
+    tol: crate::path::FlattenTolerance,
     scene: StrokeScene<'a>,
     encoder: wgpu::CommandEncoder,
     /// GPU objects scoped to the whole run — the reservoir and the bake pair, which
@@ -323,6 +326,7 @@ impl<'a> DynamicsRun<'a> {
         r: &'a StrokeRenderer,
         scene: StrokeScene<'a>,
         rec: &'a StrokeRecord,
+        tol: crate::path::FlattenTolerance,
         tool: Option<&ToolState>,
     ) -> Self {
         let device = &r.ctx.device;
@@ -430,6 +434,7 @@ impl<'a> DynamicsRun<'a> {
         Self {
             r,
             rec,
+            tol,
             scene,
             encoder,
             scoped,
@@ -479,6 +484,7 @@ impl<'a> DynamicsRun<'a> {
         // loop reads through dynamic offsets.
         let ctx = PlanCtx {
             rec: self.rec,
+            tol: self.tol,
             region_origin,
             dsize: under.size,
             consts: &self.consts,
@@ -1184,25 +1190,182 @@ struct SlotCommon<'a> {
 }
 
 impl SlotCommon<'_> {
-    /// `i`: how deep this slot's tip bites into the weave, over the shared map.
-    fn weave_at(&self, tooth: f32) -> [f32; 4] {
-        [tooth, self.weave[0], self.weave[1], self.weave[2]]
+    /// The lanes every slot fills the same way — the stroke's colour and the weave
+    /// map — over the neutral value of everything a slot kind may leave alone.
+    ///
+    /// A slot kind then names only what it actually differs by, which is the whole of
+    /// what makes a bleed or settle slot readable against a painting segment.
+    fn slot(&self) -> Slot {
+        Slot {
+            channels: self.k.channels,
+            weave_scale: self.weave[0],
+            weave_bias: Vec2::new(self.weave[1], self.weave[2]),
+            ..Slot::default()
+        }
     }
 
-    /// `f`, `g` and `h` for a slot that lays the brush's own `add` paint: the shared
-    /// field, this slot's arc length, and the bearing fraction it books the tool's
-    /// half of the transfer against.
+    /// [`Self::slot`] plus the colour-dynamics jitter, for a slot that lays the
+    /// brush's own `add` paint: the shared field, this slot's arc length, and the
+    /// bearing fraction it books the tool's half of the transfer against.
     ///
-    /// λ_bleed (`h.w`) comes back 0, which is what every such slot wants: the
-    /// lateral flux runs only on the dedicated bleed slots, so between firings the
-    /// canvas takes the no-bleed path bit-for-bit (§6.2).
-    fn jitter(&self, dist: f32, bearing: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
+    /// `lambda_bleed` stays 0, which is what every such slot wants: the lateral flux
+    /// runs only on the dedicated bleed slots, so between firings the canvas takes the
+    /// no-bleed path bit-for-bit (§6.2).
+    fn painting(&self, dist: f32, bearing: f32) -> Slot {
         let (namp, noff) = (self.k.namp, self.k.noff);
-        (
-            self.k.nfreq,
-            [namp[0], namp[1], namp[2], dist],
-            [noff[0], noff[1], bearing, 0.0],
-        )
+        Slot {
+            noise_freq: self.k.nfreq,
+            noise_amp: [namp[0], namp[1], namp[2]],
+            noise_off: [noff[0], noff[1]],
+            dist,
+            bearing,
+            ..self.slot()
+        }
+    }
+}
+
+/// One dispatch's uniform in **named fields**, packed into [`Stamp`]'s nine `vec4`
+/// lanes by [`Slot::pack`] — the one place on this side of the boundary that knows
+/// which lane is which.
+///
+/// The lanes are `vec4`s because that is what a uniform wants, and `dynamics.wesl`
+/// long ago stopped reading them as such: every consumer there goes through a named
+/// accessor (`radius()`, `travel_px()`, `lift_rate()`), so the shader's lane map lives
+/// beside the declaration that decides it. This is the same move on the host, and it
+/// is overdue for the same reason. Three slot kinds filled nine lanes at three sites
+/// with wholly different meanings per component — 108 positional floats, and nothing
+/// checking one of them. The generated `offset_of` assertions pin where a *lane*
+/// starts, not what lives inside it, so `lambda(lift)` and `lambda(deposit)` written
+/// the wrong way round was a silent wrong picture.
+///
+/// That it drifts is on the record: the note above the `Stamp` import remembers a
+/// host-side copy that "still described `e.zw` as the midpoint `exchange` samples the
+/// canvas at, some time after the shader had stopped reading the lane at all".
+///
+/// [`Default`] is the neutral slot — every rate off, and `bearing` at the 1 that
+/// leaves an exchange alone — so each kind below lists only what it differs by.
+#[derive(Clone, Copy)]
+struct Slot {
+    /// The sweep's start in region px, and the unit travel tangent it leaves along.
+    start: Vec2,
+    dir: Vec2,
+    /// The tip's radius in region px, and its travel as a multiple of that radius —
+    /// 0 on a settle, which is a break of contact rather than a stretch of it.
+    radius: f32,
+    travel_radii: f32,
+    /// `λ = ln(1 − axis) ≤ 0`, clamped away from −∞. Zero is "no transfer".
+    lambda_lift: f32,
+    lambda_deposit: f32,
+    /// The brush's own colour channels + per-unit opacity. **Undrained**.
+    channels: [f32; 4],
+    /// The dispatch rect's top-left in region texels, integral.
+    rect_origin: Vec2,
+    /// Shape orientation in turns ∈ [0, 1) — picks the prefix-τ slice (§6.6).
+    orient: f32,
+    /// The `drain` falloff per canvas px.
+    drain: f32,
+    /// The `add` source rate per unit exposure, **undrained** like the opacity.
+    add: f32,
+    /// Signed curvature of the sweep (1/region px); 0 is a straight one.
+    curvature: f32,
+    /// The bleed stencil's longest tap in texels — nonzero **only** on a bleed slot.
+    bleed_reach: f32,
+    /// The colour-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX,
+    /// per-channel amplitude, and the per-stroke translation. All zero = no jitter.
+    noise_freq: [f32; 4],
+    noise_amp: [f32; 3],
+    noise_off: [f32; 2],
+    /// Arc length at the slot's start (canvas px) — the noise's third axis.
+    dist: f32,
+    /// The tooth's bearing fraction: the share of the ground a tip with this `tooth`,
+    /// going this way, stands on (§6.4). What the *tool* books its half of the
+    /// transfer against, having no ground of its own. 1 where there is nothing to bite.
+    bearing: f32,
+    /// The lateral canvas diffusion rate (≤ 0) — nonzero **only** on a bleed slot.
+    lambda_bleed: f32,
+    /// How little give this slot's tip has (0 = the ground gates nothing), over the
+    /// region texel → weave map `uv = rt · weave_scale + weave_bias` (§6.4).
+    tooth: f32,
+    weave_scale: f32,
+    weave_bias: Vec2,
+}
+
+impl Default for Slot {
+    /// Zero everywhere except `bearing`, whose neutral value is **1** — the share of
+    /// the ground a tip stands on where there is nothing to bite, and what leaves an
+    /// exchange alone if one runs. A zeroed bearing would silently book the tool's
+    /// half of every transfer against no ground at all, which is not "no tooth" but
+    /// "infinite tooth", so it is the one field a derived `Default` would get wrong.
+    fn default() -> Self {
+        Self {
+            start: Vec2::ZERO,
+            dir: Vec2::ZERO,
+            radius: 0.0,
+            travel_radii: 0.0,
+            lambda_lift: 0.0,
+            lambda_deposit: 0.0,
+            channels: [0.0; 4],
+            rect_origin: Vec2::ZERO,
+            orient: 0.0,
+            drain: 0.0,
+            add: 0.0,
+            curvature: 0.0,
+            bleed_reach: 0.0,
+            noise_freq: [0.0; 4],
+            noise_amp: [0.0; 3],
+            noise_off: [0.0; 2],
+            dist: 0.0,
+            bearing: 1.0,
+            lambda_bleed: 0.0,
+            tooth: 0.0,
+            weave_scale: 0.0,
+            weave_bias: Vec2::ZERO,
+        }
+    }
+}
+
+impl Slot {
+    /// The lane packing — `dynamics.wesl`'s `struct Stamp`, read the other way round.
+    /// Every field above lands here exactly once.
+    fn pack(&self) -> Stamp {
+        Stamp {
+            a: [self.start.x, self.start.y, self.dir.x, self.dir.y],
+            b: [
+                self.radius,
+                self.travel_radii,
+                self.lambda_lift,
+                self.lambda_deposit,
+            ],
+            c: self.channels,
+            d: [
+                self.rect_origin.x,
+                self.rect_origin.y,
+                self.orient,
+                self.drain,
+            ],
+            // `.w` is the last of the lane that carried the midpoint `exchange` used
+            // to sample the canvas at; it walks the texel's own track now.
+            e: [self.add, self.curvature, self.bleed_reach, 0.0],
+            f: self.noise_freq,
+            g: [
+                self.noise_amp[0],
+                self.noise_amp[1],
+                self.noise_amp[2],
+                self.dist,
+            ],
+            h: [
+                self.noise_off[0],
+                self.noise_off[1],
+                self.bearing,
+                self.lambda_bleed,
+            ],
+            i: [
+                self.tooth,
+                self.weave_scale,
+                self.weave_bias.x,
+                self.weave_bias.y,
+            ],
+        }
     }
 }
 
@@ -1214,6 +1377,11 @@ impl SlotCommon<'_> {
 /// arithmetic, and because a slot's geometry is only meaningful relative to them.
 struct PlanCtx<'a> {
     rec: &'a StrokeRecord,
+    /// The budget `rec` was flattened at, handed down from [`dynamics_setup`] rather
+    /// than recomputed — one place answers what a stroke's segments are. Only the
+    /// pen-up frame reads it ([`settle_tangent`]), which re-flattens a footprint's
+    /// worth of the record and must cut it exactly as the segments in hand were cut.
+    tol: crate::path::FlattenTolerance,
     /// The region rectangle's top-left in canvas px — what every slot's coordinates
     /// are measured from, since the shader never learns where the piece sits.
     region_origin: Vec2,
@@ -1389,22 +1557,21 @@ fn dynamics_plan(
         // matters.
         let quantum = WICK_TRAVEL_QUANTUM * s.radius;
         let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
-        let (f, g, h) = common.jitter(s.dist, bearing(s.tooth, mid_dir));
         plan.push(LoopDispatch {
             groups: rect.groups,
             kind: SlotKind::Segment {
                 wick_steps: wick_steps.max(0.0) as u32,
             },
-            slot: Stamp {
-                a: [p.x, p.y, s.dir.x, s.dir.y],
-                b: [
-                    s.radius,
-                    s.length / s.radius,
-                    lambda(s.lift),
-                    lambda(s.deposit),
-                ],
-                c: common.k.channels,
-                d: [rect.origin.x, rect.origin.y, s.orient, b.drain],
+            slot: Slot {
+                start: p,
+                dir: s.dir,
+                radius: s.radius,
+                travel_radii: s.length / s.radius,
+                lambda_lift: lambda(s.lift),
+                lambda_deposit: lambda(s.deposit),
+                rect_origin: rect.origin,
+                orient: s.orient,
+                drain: b.drain,
                 // The `add` source rate is passed through **unscaled**, exactly as
                 // `stamp.wesl` takes it. It used to carry a gain of 2 ("tuned so
                 // `add = 1` lays roughly a full-thickness deposit per pass"), which made
@@ -1417,14 +1584,15 @@ fn dynamics_plan(
                 //
                 // Off the segment, since the pen can drive it (§6.2) — the same number
                 // the swept path now reads off its instance.
-                // No bleed reach: the lateral flux runs only on the dedicated firings,
-                // so a painting segment takes the no-bleed path bit-for-bit (§6.2).
-                e: [s.add, s.curvature, 0.0, 0.0],
-                f,
-                g,
-                h,
-                i: common.weave_at(s.tooth),
-            },
+                add: s.add,
+                curvature: s.curvature,
+                tooth: s.tooth,
+                // No `bleed_reach` and no `lambda_bleed`: the lateral flux runs only on
+                // the dedicated firings, so a painting segment takes the no-bleed path
+                // bit-for-bit (§6.2). Both are `Slot::default`'s zero.
+                ..common.painting(s.dist, bearing(s.tooth, mid_dir))
+            }
+            .pack(),
         });
 
         // The bleed slots that fire at this segment's end (§6.2, `bleed_fires`):
@@ -1443,42 +1611,36 @@ fn dynamics_plan(
             plan.push(LoopDispatch {
                 groups: rect.groups,
                 kind: SlotKind::Bleed,
-                slot: Stamp {
-                    a: [p.x, p.y, fire.dir.x, fire.dir.y],
-                    // λ_lift = 0, so the canvas keeps everything; λ_deposit = 0, so the
-                    // (uninvolved) tool lays nothing.
-                    b: [fire.radius, fire.length / fire.radius, 0.0, 0.0],
-                    c: common.k.channels,
-                    // No drain: nothing is laid, so nothing runs dry.
-                    d: [rect.origin.x, rect.origin.y, fire.orient, 0.0],
-                    // No `add` — the slot is not a stretch of painting — but the
-                    // window's own curvature, so the relaxed band follows the paint
-                    // rather than cutting the corner off it (`bleed_fires`), and the
-                    // stencil's longest tap, which is the only slot that carries one.
-                    e: [0.0, fire.curvature, reach, 0.0],
-                    // The colour jitter is zeroed rather than shared, so the deposit
-                    // skips its noise taps entirely.
-                    f: [0.0; 4],
-                    g: [0.0, 0.0, 0.0, fire.dist],
-                    h: [
-                        0.0,
-                        0.0,
-                        // Nothing reads the bearing on a bleed slot; 1 is the value that
-                        // would leave an exchange alone if one ran.
-                        1.0,
-                        // The rate that lands this window's exposure on the blend its
-                        // reach needs — not `lambda(axis)`, which is the vertical
-                        // rates' mapping and would make the axis a rate rather than a
-                        // diffusivity. A firing whose modulated axis has fallen to zero
-                        // still dispatches: λ = 0 makes it the identity, and keeping the
-                        // plan a pure function of the segmentation is worth more than
-                        // the dispatch it would save.
-                        lambda_bleed,
-                    ],
-                    // No tooth: this slot lays no `add`, so there is nothing for the
-                    // ground to gate. The weave map is filled for form.
-                    i: common.weave_at(0.0),
-                },
+                // Everything a painting segment carries and this does not is
+                // `Slot::default`'s zero, which is what the slot *means*: λ_lift = 0 so
+                // the canvas keeps everything, λ_deposit = 0 so the (uninvolved) tool
+                // lays nothing, no drain because nothing is laid, no `add` because this
+                // is not a stretch of painting, no tooth because there is no `add` for
+                // the ground to gate, and no colour jitter — which is zeroed rather
+                // than shared, so the deposit skips its noise taps entirely.
+                slot: Slot {
+                    start: p,
+                    dir: fire.dir,
+                    radius: fire.radius,
+                    travel_radii: fire.length / fire.radius,
+                    rect_origin: rect.origin,
+                    orient: fire.orient,
+                    // The window's own curvature, so the relaxed band follows the paint
+                    // rather than cutting the corner off it (`bleed_fires`).
+                    curvature: fire.curvature,
+                    // The stencil's longest tap — the only slot that carries one.
+                    bleed_reach: reach,
+                    dist: fire.dist,
+                    // The rate that lands this window's exposure on the blend its reach
+                    // needs — not `lambda(axis)`, which is the vertical rates' mapping
+                    // and would make the axis a rate rather than a diffusivity. A firing
+                    // whose modulated axis has fallen to zero still dispatches: λ = 0
+                    // makes it the identity, and keeping the plan a pure function of the
+                    // segmentation is worth more than the dispatch it would save.
+                    lambda_bleed,
+                    ..common.slot()
+                }
+                .pack(),
             });
         }
     }
@@ -1491,48 +1653,53 @@ fn dynamics_plan(
     // so it costs a slot rather than a second uniform.
     if let Some(s) = settle.then(|| segments.last()).flatten() {
         let (end, _) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
-        let tan = settle_tangent(segments, end);
+        // The frame comes off the *record* — see [`settle_tangent`]. `segments` is one
+        // piece of one range, and a lookback that walked it would stop wherever that
+        // cut fell, so a live tail and its commit would settle at different angles.
+        let tan = settle_tangent(rec, ctx.tol, segments);
         let p = end - region_origin;
         // The tip's own square rather than a swept box — a pen-up is a standing tip.
         // It cannot overrun the snapshot scratch: that was sized from coverage boxes,
         // and a segment's box is this square grown by its travel.
         let rect = ctx.rect(end - Vec2::splat(s.radius), end + Vec2::splat(s.radius));
-        let (f, g, h) = common.jitter(s.dist + s.length, 1.0);
         plan.push(LoopDispatch {
             groups: rect.groups,
             kind: SlotKind::Settle,
-            slot: Stamp {
-                a: [p.x, p.y, tan.x, tan.y],
+            slot: Slot {
+                start: p,
+                dir: tan,
                 // No travel: a pen-up is a break of contact, not a stretch of it. The
                 // rates are the *last* segment's, which is where the pen was when it
                 // left the page — the same segment this slot takes its radius and
-                // orientation from.
-                b: [s.radius, 0.0, lambda(s.lift), lambda(s.deposit)],
-                // The settle lays the tool's *carried* paint, which already carries the
-                // opacity it was picked up with, so it reads none of `c`. Filled
-                // consistently with a segment slot rather than left as junk.
-                c: common.k.channels,
-                d: [rect.origin.x, rect.origin.y, s.orient, b.drain],
-                // No `add`: the source is a rate per unit of travel, and there is none.
-                // No curvature, for the same reason — the frame is a standing tip. And
-                // no bleed reach: a settle is not a firing.
-                e: [0.0, 0.0, 0.0, 0.0],
-                // The tool is not written back at pen-up, so nothing reads the bearing;
-                // the settle's own gate is per texel, from `i`. And no λ_bleed either:
-                // that axis carries no reservoir — every firing already applied its
-                // window as the tip passed — so a break of contact strands nothing for
-                // a settle to finish, unlike the vertical transfer whose in-flight half
-                // lives on the tool.
-                f,
-                g,
-                h,
+                // orientation from. (`travel_radii` stays at its default 0.)
+                radius: s.radius,
+                lambda_lift: lambda(s.lift),
+                lambda_deposit: lambda(s.deposit),
+                rect_origin: rect.origin,
+                orient: s.orient,
+                drain: b.drain,
                 // The last segment's tooth: the settle delivers what the pass still
                 // owed, and it owes it through the same ground the pass was laying
                 // through. What the valleys do not take stays on the tool, which is
                 // discarded — a knife lifted off a canvas keeps what it did not
                 // reach (§6.4).
-                i: common.weave_at(s.tooth),
-            },
+                tooth: s.tooth,
+                // No `add`: the source is a rate per unit of travel, and there is none.
+                // No curvature, for the same reason — the frame is a standing tip. No
+                // bleed reach: a settle is not a firing. And no λ_bleed either — that
+                // axis carries no reservoir, every firing having applied its window as
+                // the tip passed, so a break of contact strands nothing for a settle to
+                // finish, unlike the vertical transfer whose in-flight half lives on the
+                // tool. All four are `Slot::default`'s zero.
+                //
+                // The bearing is the neutral 1: the tool is not written back at pen-up,
+                // so nothing reads it — the settle's own gate is per texel, from the
+                // weave. The colour channels are filled consistently with a segment slot
+                // rather than left as junk, though the settle lays the tool's *carried*
+                // paint and so reads none of them.
+                ..common.painting(s.dist + s.length, 1.0)
+            }
+            .pack(),
         });
     }
     plan
@@ -1695,25 +1862,81 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
 /// One radius is the natural window because it is the extent of the thing being
 /// settled — the tip's own footprint — so this is the direction the tip was travelling
 /// over precisely the stretch of canvas the settle acts on, and no new constant.
-fn settle_tangent(segments: &[Segment], end: Vec2) -> Vec2 {
+///
+/// **Measured on the record, not on the segments in hand**, and that is the whole of
+/// why it takes a `rec`. The slice a plan is built from is one *piece* of one *range*
+/// — `chunk_segments`'s cut of what `render_range` was asked for — so a lookback that
+/// walked it stopped at whichever boundary came first. A live tail always starts at a
+/// span boundary while the commit renders the whole stroke from zero, so a tail
+/// carrying less than a radius of travel measured its frame over a shorter window than
+/// the commit measured the same frame over, and on a curving stroke the two came out
+/// pointing different ways: the fade-out cap turned as the pointer came up, which is a
+/// `preview == committed` break (§1.3) in the one place it cannot be repainted.
+///
+/// This is the same defect [`bleed_fires`] was fixed for, and the cure is the same in
+/// spirit — ask the record rather than the range — but not in mechanism. Walking back
+/// along the last segment's own arc, as a firing's window does, is exactly what this
+/// function exists to avoid: the last segments *are* the degenerate ones. So it walks
+/// the curve's own polyline instead, flattening only the trailing spans a radius
+/// reaches back over (`span_end` prices a span boundary without subdividing anything,
+/// so finding them costs no polyline).
+///
+/// `segments` is still read, for the two things only it knows: the radius of the tip
+/// being settled, and a click's frame — a lone control point is not a curve, and
+/// `generate_segments_in` gives its dab a real direction where the path has none.
+fn settle_tangent(
+    rec: &StrokeRecord,
+    tol: crate::path::FlattenTolerance,
+    segments: &[Segment],
+) -> Vec2 {
     let radius = segments.last().map_or(1.0, |s| s.radius);
-    let mut back = end;
-    let mut acc = 0.0;
-    for s in segments.iter().rev() {
-        back = s.start;
-        acc += s.length;
-        if acc >= radius {
+    // A click's frame: the dab's own direction, which is deliberate rather than
+    // fitted. `generate_segments_in` sweeps it symmetrically about the point pressed,
+    // so which direction it is cannot matter — but it has to be *a* direction.
+    let fallback = || segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.dir);
+    let last = crate::path::span_count(rec.path.len());
+    if last == 0 {
+        return fallback();
+    }
+    let tip = crate::path::span_end(&rec.path, last - 1);
+    // The first span boundary a radius or more back from the tip, measured on chords
+    // — which under-estimate arc length, so the span this admits genuinely holds a
+    // footprint's worth of path behind it. Walking boundaries rather than the polyline
+    // is what keeps the flatten below proportional to the *radius* instead of to the
+    // length of the stroke.
+    let mut from = 0;
+    for k in (0..last).rev() {
+        let cut = if k == 0 {
+            rec.path[0].pos
+        } else {
+            crate::path::span_end(&rec.path, k - 1)
+        };
+        if (tip - cut).length() >= radius {
+            from = k;
             break;
         }
     }
-    let v = end - back;
+    let pts = crate::path::flatten_spans(&rec.path, from..last, 0.0, tol);
+    let Some(tail) = pts.last() else {
+        return fallback();
+    };
+    // Back one radius of **travel**, not of displacement — the window is a footprint's
+    // worth of path, and a stroke that curls back on itself still spent that path. The
+    // polyline carries its own arc-length accumulator, so this is a comparison rather
+    // than a second summation.
+    let back = pts
+        .iter()
+        .rev()
+        .find(|p| tail.dist - p.dist >= radius)
+        .unwrap_or(&pts[0]);
+    let v = tail.pos - back.pos;
     let len = v.length();
     if len > 1e-4 {
         v / len
     } else {
-        // A stroke with no travel at all — a click. Its own frame is all there is, and
-        // `generate_segments_in` gives that a real direction rather than a fitted one.
-        segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.dir)
+        // A stroke with no travel at all — every knot on one spot. There is no
+        // direction in the path to find, so the dab's stands.
+        fallback()
     }
 }
 
@@ -2201,6 +2424,107 @@ mod tests {
             .collect()
     }
 
+    // --- the slot's lane packing -------------------------------------------
+
+    /// [`Slot::pack`] is an **ABI**, not a convenience: the lanes it fills are read by
+    /// `dynamics.wesl`'s accessors, which name them from the other side. So every field
+    /// is pinned to the component it lands in, with a value that appears nowhere else —
+    /// a swap of two same-typed neighbours (`lambda_lift` for `lambda_deposit`, `orient`
+    /// for `drain`) is otherwise a silent wrong picture that no golden would attribute
+    /// to the right cause.
+    ///
+    /// The generated `offset_of` assertions pin where a *lane* starts. This is what
+    /// pins what lives inside one.
+    #[test]
+    fn every_slot_field_lands_in_the_lane_the_shader_reads_it_from() {
+        let packed = Slot {
+            start: Vec2::new(1.0, 2.0),
+            dir: Vec2::new(3.0, 4.0),
+            radius: 5.0,
+            travel_radii: 6.0,
+            lambda_lift: 7.0,
+            lambda_deposit: 8.0,
+            channels: [9.0, 10.0, 11.0, 12.0],
+            rect_origin: Vec2::new(13.0, 14.0),
+            orient: 15.0,
+            drain: 16.0,
+            add: 17.0,
+            curvature: 18.0,
+            bleed_reach: 19.0,
+            noise_freq: [20.0, 21.0, 22.0, 23.0],
+            noise_amp: [24.0, 25.0, 26.0],
+            noise_off: [27.0, 28.0],
+            dist: 29.0,
+            bearing: 30.0,
+            lambda_bleed: 31.0,
+            tooth: 32.0,
+            weave_scale: 33.0,
+            weave_bias: Vec2::new(34.0, 35.0),
+        }
+        .pack();
+
+        assert_eq!(packed.a, [1.0, 2.0, 3.0, 4.0], "a: start.xy, dir.zw");
+        assert_eq!(
+            packed.b,
+            [5.0, 6.0, 7.0, 8.0],
+            "b: radius, travel, λ_lift, λ_dep"
+        );
+        assert_eq!(packed.c, [9.0, 10.0, 11.0, 12.0], "c: colour + opacity");
+        assert_eq!(
+            packed.d,
+            [13.0, 14.0, 15.0, 16.0],
+            "d: rect.xy, orient, drain"
+        );
+        assert_eq!(
+            packed.e,
+            [17.0, 18.0, 19.0, 0.0],
+            "e: add, curvature, reach, —"
+        );
+        assert_eq!(packed.f, [20.0, 21.0, 22.0, 23.0], "f: noise frequency");
+        assert_eq!(
+            packed.g,
+            [24.0, 25.0, 26.0, 29.0],
+            "g: noise amplitude, dist"
+        );
+        assert_eq!(
+            packed.h,
+            [27.0, 28.0, 30.0, 31.0],
+            "h: noise off, bearing, λ_bleed"
+        );
+        assert_eq!(
+            packed.i,
+            [32.0, 33.0, 34.0, 35.0],
+            "i: tooth, weave scale + bias"
+        );
+    }
+
+    /// The neutral slot is neutral *in the shader's terms*, which for one field is not
+    /// zero: a `bearing` of 0 books the tool's half of every transfer against no ground
+    /// at all — infinite tooth, not absent tooth — so a derived `Default` would make
+    /// the two slot kinds that leave it alone quietly wrong.
+    #[test]
+    fn the_default_slot_is_neutral_rather_than_zeroed() {
+        let d = Slot::default().pack();
+        assert_eq!(d.h[2], 1.0, "the default bearing must be 1, not 0");
+        for (lane, name) in [
+            (d.a, "a"),
+            (d.b, "b"),
+            (d.c, "c"),
+            (d.d, "d"),
+            (d.e, "e"),
+            (d.f, "f"),
+            (d.g, "g"),
+            (d.i, "i"),
+        ] {
+            assert_eq!(lane, [0.0; 4], "lane {name} is not neutral by default");
+        }
+        assert_eq!(
+            [d.h[0], d.h[1], d.h[3]],
+            [0.0; 3],
+            "lane h beyond the bearing"
+        );
+    }
+
     // --- the bleed cadence -------------------------------------------------
 
     /// **The claim `bleed_fires` is built on**: which windows fire, and what each one
@@ -2354,6 +2678,121 @@ mod tests {
 
     // --- the pen-up frame --------------------------------------------------
 
+    /// A brush that manipulates paint, so a stroke of it settles at all.
+    fn smearing(radius: f32) -> crate::document::BrushParams {
+        crate::document::BrushParams {
+            radius,
+            dynamics: crate::document::BrushDynamics {
+                lift: 0.8,
+                deposit: 0.8,
+                ..crate::document::BrushDynamics::default()
+            },
+            ..crate::document::BrushParams::default()
+        }
+    }
+
+    /// A stroke through `pts` with `brush`, as plain full-pressure knots.
+    fn record(brush: crate::document::BrushParams, pts: &[Vec2]) -> StrokeRecord {
+        StrokeRecord {
+            layer: crate::document::LayerId(0),
+            brush,
+            path: pts
+                .iter()
+                .map(|p| crate::path::ControlPoint::at(*p))
+                .collect(),
+            seed: 0,
+        }
+    }
+
+    /// The segments of `range` of `rec`, at the budget the loop would flatten it with.
+    fn segments_of(rec: &StrokeRecord, range: std::ops::Range<usize>) -> Vec<Segment> {
+        generate_segments_in(
+            rec,
+            flatten_tolerance(&rec.brush),
+            StrokeSpans { range, dist: 0.0 },
+        )
+        .0
+    }
+
+    /// What [`settle_tangent`] used to do: walk back a radius through **the segments in
+    /// hand**. Kept here as the thing the test below measures against — it is the
+    /// behaviour that made a stroke's fade-out cap turn as the pointer came up.
+    fn piece_local_tangent(segments: &[Segment], end: Vec2) -> Vec2 {
+        let radius = segments.last().map_or(1.0, |s| s.radius);
+        let mut back = end;
+        let mut acc = 0.0;
+        for s in segments.iter().rev() {
+            back = s.start;
+            acc += s.length;
+            if acc >= radius {
+                break;
+            }
+        }
+        let v = end - back;
+        let len = v.length();
+        if len > 1e-4 {
+            v / len
+        } else {
+            segments.last().map_or(Vec2::new(1.0, 0.0), |s| s.dir)
+        }
+    }
+
+    /// **The claim [`settle_tangent`] is built on**: the pen-up frame is a function of
+    /// the record, not of where the renderer happened to cut the stroke into ranges and
+    /// pieces.
+    ///
+    /// A live tail starts at a span boundary while the commit renders the whole stroke
+    /// from zero, and both run the settle — the tail's range reaches the stroke's end,
+    /// which is exactly the condition that asks for one. So a frame measured over "the
+    /// segments in hand" came out over a shorter window for the tail than for the
+    /// commit, and on a curving stroke that is a different direction: the settle's
+    /// `min(owed, received)` lens is elongated along it, so the fade-out cap visibly
+    /// turned at pen-up. That is a `preview == committed` break (§1.3) in the one place
+    /// it cannot be repainted — the same one `bleed_fires` was fixed for.
+    ///
+    /// Checked at every cut point, since the interesting ones are those that leave the
+    /// tail shorter than the tip being settled.
+    #[test]
+    fn the_settle_frame_does_not_depend_on_where_the_stroke_was_cut() {
+        // A circle of radius 200 under a 60 px tip: a footprint's worth of path turns
+        // through 60/200 ≈ 17°, so a lookback that comes up short points somewhere
+        // measurably different.
+        let curve: Vec<Vec2> = (0..=16)
+            .map(|i| {
+                let t = i as f32 / 16.0 * 1.2;
+                Vec2::new(200.0 * t.sin(), 200.0 * (1.0 - t.cos()))
+            })
+            .collect();
+        let rec = record(smearing(60.0), &curve);
+        let all = crate::path::span_count(rec.path.len());
+        let whole = segments_of(&rec, 0..all);
+        let want = settle_tangent(&rec, flatten_tolerance(&rec.brush), &whole);
+
+        let mut ever_differed = false;
+        for cut in 1..all {
+            let tail = segments_of(&rec, cut..all);
+            if tail.is_empty() {
+                continue;
+            }
+            let got = settle_tangent(&rec, flatten_tolerance(&rec.brush), &tail);
+            assert!(
+                (got - want).length() < 1e-4,
+                "cutting at span {cut} moved the settle frame from {want:?} to {got:?}",
+            );
+            // And the old piece-local walk really does move on these cuts, so the
+            // assertion above is not passing because the case is uninteresting.
+            let last = whole.last().expect("segments");
+            let end = crate::path::arc_at(last.start, last.dir, last.curvature, last.length).0;
+            let stale = piece_local_tangent(&tail, end);
+            ever_differed |= (stale - piece_local_tangent(&whole, end)).length() > 1e-2;
+        }
+        assert!(
+            ever_differed,
+            "no cut left a tail short enough to move the old frame — the test proves \
+             nothing",
+        );
+    }
+
     /// [`settle_tangent`] must survive the way a real pen-up arrives: a hand pauses
     /// before it lifts, so the last samples cluster at one point and the flattener
     /// turns them into edges whose chord is a rounding error and whose direction is
@@ -2364,44 +2803,40 @@ mod tests {
     /// whole tip's worth of exchange from that one frame, and its `min(owed, received)`
     /// lens is elongated *along* it, so a wrong direction lays a tip-shaped disc across
     /// the stroke instead of along it. That is what a wandering fade-out cap was.
+    ///
+    /// Reading the record's own polyline is what makes this structural rather than a
+    /// rule to remember: knots piled on one spot contribute nothing to the chord over
+    /// the last radius, so they cannot steer it whatever direction the fitter gave the
+    /// edges between them.
     #[test]
     fn the_settle_frame_ignores_a_paused_hands_arbitrary_last_edges() {
-        let radius = 12.0;
-        // A straight drag along +y…
-        let mut segs: Vec<Segment> = (0..20)
-            .map(|i| {
-                let d = i as f32 * 2.0;
-                seg(Vec2::new(0.0, d), Vec2::new(0.0, 1.0), 2.0, radius, d)
-            })
-            .collect();
-        let end = Vec2::new(0.0, 40.0);
-        // …then the pause: four degenerate edges at the stop, pointing the four ways
-        // the fitter actually produced (0°, −90°, 90°, 180°).
-        for dir in [
-            Vec2::new(1.0, 0.0),
-            Vec2::new(0.0, -1.0),
-            Vec2::new(0.0, 1.0),
-            Vec2::new(-1.0, 0.0),
-        ] {
-            segs.push(seg(end, dir, 1e-6, radius, 40.0));
-        }
+        // A straight drag along +y, then the pause: four knots on the stopping point.
+        let mut pts: Vec<Vec2> = (0..20).map(|i| Vec2::new(0.0, i as f32 * 2.0)).collect();
+        let stop = Vec2::new(0.0, 38.0);
+        pts.extend([stop; 4]);
+        let rec = record(smearing(12.0), &pts);
+        let all = crate::path::span_count(rec.path.len());
+        let segs = segments_of(&rec, 0..all);
 
-        let tan = settle_tangent(&segs, end);
+        let tan = settle_tangent(&rec, flatten_tolerance(&rec.brush), &segs);
         assert!(
-            (tan - Vec2::new(0.0, 1.0)).length() < 1e-3,
-            "the settle frame followed a degenerate last edge: {tan:?}"
+            (tan - Vec2::new(0.0, 1.0)).length() < 1e-2,
+            "the settle frame followed the paused hand: {tan:?}"
         );
-        // And the last segment's own direction — what this replaced — really is wrong
-        // here, so the assertion above is not passing by luck.
-        assert_eq!(segs.last().unwrap().dir, Vec2::new(-1.0, 0.0));
     }
 
-    /// A click has no travel to measure a direction over, and still gets a real frame:
-    /// the dab's own, which `generate_segments_in` gave it deliberately.
+    /// A click has no travel to measure a direction over — a lone control point is not
+    /// a curve, so there is no polyline to walk — and still gets a real frame: the
+    /// dab's own, which `generate_segments_in` gave it deliberately.
     #[test]
     fn a_click_settles_along_its_dab() {
-        let dab = seg(Vec2::ZERO, Vec2::new(1.0, 0.0), 6.0, 10.0, 0.0);
-        assert_eq!(settle_tangent(&[dab], Vec2::ZERO), Vec2::new(1.0, 0.0));
+        let rec = record(smearing(10.0), &[Vec2::new(4.0, -7.0)]);
+        let segs = segments_of(&rec, 0..crate::path::span_count(rec.path.len()));
+        assert_eq!(segs.len(), 1, "a click is one swept dab");
+        assert_eq!(
+            settle_tangent(&rec, flatten_tolerance(&rec.brush), &segs),
+            segs[0].dir,
+        );
     }
 
     // --- the dispatch rects fit the scratch --------------------------------
