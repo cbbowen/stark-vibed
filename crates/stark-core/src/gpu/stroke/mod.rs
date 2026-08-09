@@ -39,10 +39,9 @@ mod segments;
 mod swept;
 
 use budget::MAX_REGION_DIM;
-use dynamics::{
-    DynamicsKit, StrokePath, build_dynamics_kit, build_integrate_pipeline, dynamics_setup,
-};
+use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
 use segments::round_coverage;
+use swept::build_integrate_pipeline;
 
 // The module's surface, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not

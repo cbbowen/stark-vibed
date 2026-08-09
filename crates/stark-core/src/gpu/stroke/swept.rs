@@ -5,6 +5,7 @@
 //! Carries no brush state between segments, which is what makes it the fast path —
 //! a range needs nothing from its predecessor but the arc length.
 
+use crate::colorspace::ColorSpace;
 use crate::document::StrokeRecord;
 use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use crate::gpu::desc;
@@ -322,3 +323,43 @@ impl StrokeRenderer {
 // shader states that one for the host's benefit and never computes with it — so the
 // linker stripped it and the check could not see it. Reading the *unlinked* source
 // retires that limitation, and the assertion above holds at compile time.
+
+/// Build the stroke integrate pipeline (`integrate` shader) — §6.2/§6.1. A
+/// fullscreen pass with four sampled tiles (base/scratch color/aux), writing the
+/// color+aux MRT of a fresh tile.
+pub(super) fn build_integrate_pipeline(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("stark integrate"),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate().into()),
+    });
+    let frag = wgpu::ShaderStages::FRAGMENT;
+    let bgl = desc::bind_group_layout(
+        device,
+        "stark integrate bgl",
+        &[
+            desc::load_tex(0, frag), // base color
+            desc::load_tex(1, frag), // base aux
+            desc::load_tex(2, frag), // scratch color
+            desc::load_tex(3, frag), // scratch aux
+            desc::load_tex(4, frag), // selection mask (§6.8) — this tile's, or a 1×1 constant
+        ],
+    );
+    let layout = desc::pipeline_layout(device, "stark integrate layout", &[Some(&bgl)]);
+    // No blend on either target: the shader does the combine and writes straight
+    // through.
+    let pipeline = desc::fullscreen_pipeline(
+        device,
+        "stark integrate pipeline",
+        &layout,
+        &shader,
+        ("vs_main", "fs_main"),
+        &[
+            desc::target(color_space.color_format()),
+            desc::target(color_space.aux_format()),
+        ],
+    );
+    (pipeline, bgl)
+}
