@@ -187,6 +187,7 @@ impl StrokeRenderer {
         // things a renderer is handed.
         let swept = build_swept_kit(&ctx.device, color_space.as_ref());
         let dynamics = build_dynamics_kit(&ctx.device, color_space.as_ref());
+
         Self {
             ctx: ctx.clone(),
             color_space,
@@ -271,6 +272,9 @@ impl StrokeRenderer {
         TilePairHandle::new(
             pool.acquire_tex(self.color_space.color_format(), source),
             pool.acquire_tex(self.color_space.aux_format(), source),
+            self.color_space
+                .resid_format()
+                .map(|f| pool.acquire_tex(f, source)),
         )
     }
 
@@ -281,6 +285,11 @@ impl StrokeRenderer {
         TilePairHandle::new(
             pool.acquire_tex(self.color_space.color_format(), source),
             pool.acquire_tex(SCRATCH_AUX_FORMAT, source),
+            // The scratch carries the stroke's parcel, and a parcel has a residual for
+            // exactly the same reason resident paint does.
+            self.color_space
+                .resid_format()
+                .map(|f| pool.acquire_tex(f, source)),
         )
     }
 
@@ -293,9 +302,11 @@ impl StrokeRenderer {
     ) -> StrokeConstants {
         let rgb = [rec.brush.color[0], rec.brush.color[1], rec.brush.color[2]];
         let ch = self.color_space.rgb_to_channels(rgb);
+        let res = self.color_space.rgb_to_resid(rgb);
         let (nfreq, namp, noff) = noise_uniform(rec);
         StrokeConstants {
             channels: [ch[0], ch[1], ch[2], rec.brush.color[3]],
+            resid: [res[0], res[1], res[2], 0.0],
             grain_uv: surface.relief * crate::gpu::surface::grain_uv_scale(),
             nfreq,
             namp,
@@ -324,6 +335,11 @@ struct StrokeConstants {
     /// **Undrained** — both paths fade it per fragment from the fragment's own arc
     /// length, never per segment.
     channels: [f32; 4],
+    /// The same colour's **residual** (§6.7) in `.xyz`; `.w` unused. Zero in a space
+    /// with no residual, and zero because that space's channels above are already the
+    /// whole colour — both paths write this lane unconditionally, since the uniform it
+    /// lands in is one Rust struct across both shader variants.
+    resid: [f32; 4],
     /// Canvas px → surface-tile uv (§6.4). Zero on a ground with no relief — a `Flat`
     /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
     /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.

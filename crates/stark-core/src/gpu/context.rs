@@ -46,6 +46,31 @@ impl GpuContext {
         required_limits.max_texture_dimension_2d = required_limits
             .max_texture_dimension_2d
             .max(MAX_TEXTURE_DIM_2D);
+        // **The stamp loop's `exchange` writes six storage textures where WebGPU
+        // guarantees four.**
+        //
+        // The four it always wrote — the footprint snapshot's colour and aux, and the
+        // reservoir's colour and aux, since the segment's `snapshot` rides in the tail
+        // of that same dispatch (§6.2) — sit exactly on the downlevel limit, so the
+        // residual channel's two (§6.7) put it over. This is the one limit Stark asks
+        // for above the guaranteed floor for a *feature* rather than for canvas size,
+        // and it is worth saying what that buys and what it costs.
+        //
+        // It is asked of every device, including one that will only ever open Oklab
+        // documents, because limits are settled when the device is created and the
+        // colour space is a property of a document opened long after. Every adapter
+        // Stark targets — D3D12, Vulkan, Metal, and WebGPU in Chrome — reports at
+        // least eight; a conformant device reporting exactly four would fail to start
+        // rather than fail to open a Mixbox file, which is the honest failure but not
+        // a graceful one.
+        //
+        // The way back to four, if such a device ever turns up, is packing rather than
+        // a second code path, and both halves of it are free: `brush_dst_aux_w` and
+        // `under_aux_w` each carry height in `.x` and nothing in `.yzw`, so each one's
+        // residual fits beside the height it belongs to. That is the whole excess —
+        // no other entry point in the module declares more than three.
+        required_limits.max_storage_textures_per_shader_stage =
+            required_limits.max_storage_textures_per_shader_stage.max(6);
         required_limits
     }
 

@@ -180,15 +180,19 @@ impl Engine {
             // flag on the other two: asking one layer for its own colour and asking
             // what the canvas shows are different questions, and only the second one
             // has a substrate in it.
-            let ground = matches!(options.source, PickSource::CompositeOverSubstrate)
-                .then(|| self.color_space.rgb_to_channels(doc.background));
+            let ground = matches!(options.source, PickSource::CompositeOverSubstrate).then(|| {
+                (
+                    self.color_space.rgb_to_channels(doc.background),
+                    self.color_space.rgb_to_resid(doc.background),
+                )
+            });
             (
                 self.composite_groups(doc, only, visible_tiles(view)),
                 ground,
             )
         };
 
-        let (color_format, aux_format) = self.compositor_pipeline.channel_formats();
+        let (color_format, aux_format, resid_format) = self.compositor_pipeline.channel_formats();
         // `read_rgba16f` decodes four halves per texel. Both colour spaces store the
         // colour channels that way (§6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
@@ -199,19 +203,34 @@ impl Engine {
             size,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
-        // Written by pass A and never read: the composite pipeline has two targets,
-        // and the height it accumulates says how *much* paint is there, not what
-        // colour it is.
+        // Written by pass A and never read: the height it accumulates says how *much*
+        // paint is there, not what colour it is.
         let aux = self.offscreen_target(
             "stark pick aux",
             aux_format,
             size,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
+        // The residual, and unlike the aux it **is** read back: in a pigment space it
+        // is half the colour, so an eyedropper that sampled only the concentrations
+        // would report the polynomial's nearest reachable colour — black as `#383838`
+        // — which is precisely the defect this channel exists to fix (§6.7).
+        let resid = resid_format.map(|f| {
+            self.offscreen_target(
+                "stark pick resid",
+                f,
+                size,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            )
+        });
         self.compositor.composite_channels(
             &self.compositor_pipeline,
             &color.create_view(&wgpu::TextureViewDescriptor::default()),
             &aux.create_view(&wgpu::TextureViewDescriptor::default()),
+            resid
+                .as_ref()
+                .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                .as_ref(),
             view,
             &groups,
         );
@@ -223,11 +242,28 @@ impl Engine {
         let color_space = self.color_space.clone();
         async move {
             let texels = crate::gpu::readback::read_rgba16f(&gpu, &color, size).await;
+            // The residual takes the **same** two means, unchanged. It can, because the
+            // residual target's alpha is a duplicate of the colour's: `sum[3]` is the
+            // same coverage sum either way, so the opacity weighting and the
+            // over-substrate blend are already the right ones for it (§6.7).
+            let resid_texels = match &resid {
+                Some(tex) => Some(crate::gpu::readback::read_rgba16f(&gpu, tex, size).await),
+                None => None,
+            };
             let mean = match ground {
-                Some(bg) => mean_over_substrate(&texels, bg),
+                Some((bg, _)) => mean_over_substrate(&texels, bg),
                 None => mean_channels(&texels),
             };
-            mean.map(|c| color_space.channels_to_rgb(c))
+            let mean_resid = resid_texels.as_ref().and_then(|t| match ground {
+                Some((_, bg_resid)) => {
+                    mean_over_substrate(t, [bg_resid[0], bg_resid[1], bg_resid[2], 1.0])
+                }
+                None => mean_channels(t),
+            });
+            mean.map(|c| {
+                let r = mean_resid.unwrap_or([0.0; 4]);
+                color_space.channels_to_rgb(c, [r[0], r[1], r[2]])
+            })
         }
     }
 }

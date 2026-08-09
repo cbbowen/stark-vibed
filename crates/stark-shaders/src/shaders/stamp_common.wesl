@@ -17,6 +17,17 @@ struct TileXform {
     // (.w). Constant across the stroke — colour dynamics (below) jitter the channels
     // per fragment, and `drain` fades the opacity per fragment (see `stroke_drain`).
     color: vec4<f32>,
+    // The brush colour's **residual** (.xyz) — what the space's three channels cannot
+    // express (§6.7). Zero for every space but Mixbox, whose pigment
+    // polynomial reaches neither black nor the saturated corners on its own; .w unused.
+    //
+    // Declared unconditionally, where the target that carries it is `@if(resid)`: a
+    // uniform is mirrored into Rust from the *unlinked* source (§6.10), which has no
+    // feature set to evaluate, so a member that came and went with the variant would
+    // give one Rust struct two layouts. Sixteen bytes of zeroes once per stroke is the
+    // price; the per-texel channel, which is the one that would matter, Oklab still
+    // does not allocate.
+    resid: vec4<f32>,
     // The `drain` falloff per canvas px in .x, and the canvas → surface-tile uv scale
     // (1/SURFACE_TILE_PX, zero when the ground has no relief to gate with) in .y;
     // .zw unused. Both stroke constants in the only sense that matters — each is a
@@ -101,6 +112,10 @@ struct VsOut {
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    // The parcel's residual, premultiplied by the same visible alpha the colour is
+    // and over-blended by the same rule — a residual is not a separate quantity to
+    // combine but the rest of the same colour (§6.7).
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 // A canvas point's place in the frame the sweep is integrated in.

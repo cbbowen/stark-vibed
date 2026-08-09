@@ -29,13 +29,31 @@ import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
-    FsOut, back_color, back_aux, src_color, src_aux, combine, merge,
+    b, back_color, back_aux, src_color, src_aux, combine, merge, merge_triple,
     linear_to_light, light_to_linear,
 };
 
-// Concentrations → normalized XYZ. Mixbox's polynomial answers in sRGB.
-fn conc_to_light(conc: vec3<f32>) -> vec3<f32> {
-    let srgb = clamp(mixbox_eval_polynomial(conc), vec3<f32>(0.0), vec3<f32>(1.0));
+// The residual halves of the two colours (§6.7). **Bindings 7 and 8 of
+// group 0** — `blend_common` owns 0–4 and `mixbox_lut` 5–6, and as that file says,
+// nothing but this comment holds the three apart. Unconditional, with no `@if`: this
+// module is reached only by the space that has a residual.
+@group(0) @binding(7) var back_resid: texture_2d<f32>;
+@group(0) @binding(8) var src_resid: texture_2d<f32>;
+
+// The three targets a pigment document's blend writes. `blend_common::FsOut` is the
+// two an Oklab one writes; this is that plus the residual, and `fs_main` fills the
+// shared pair from `merge` so there is still one definition of the algebra.
+struct FsOut {
+    @location(0) color: vec4<f32>,
+    @location(1) aux: vec4<f32>,
+    @location(2) resid: vec4<f32>,
+}
+
+// A latent (concentrations + residual) → normalized XYZ. Mixbox's `latent_to_rgb` is
+// `poly(c) + r`, and taking the polynomial alone here is what made a black layer go
+// out to light as mid-grey (§6.7).
+fn latent_to_light(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
+    let srgb = clamp(mixbox_eval_polynomial(conc) + res, vec3<f32>(0.0), vec3<f32>(1.0));
     return linear_to_light(srgb_to_linear(srgb));
 }
 
@@ -50,18 +68,45 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     let cb = textureLoad(back_color, p, 0); // (concentrations · coverage, coverage)
     let cs = textureLoad(src_color, p, 0);
+    let rb = textureLoad(back_resid, p, 0); // (residual · coverage, coverage)
+    let rs = textureLoad(src_resid, p, 0);
+    // Both halves un-premultiply by the *colour's* coverage — the residual target's
+    // own alpha is the same number, duplicated only because the fixed-function "over"
+    // that filled these targets reads each one's alpha.
     let chan_b = cb.rgb / max(cb.a, COVERAGE_EPS);
     let chan_s = cs.rgb / max(cs.a, COVERAGE_EPS);
+    let res_b = rb.rgb / max(cb.a, COVERAGE_EPS);
+    let res_s = rs.rgb / max(cs.a, COVERAGE_EPS);
 
-    let light = combine(conc_to_light(chan_b), conc_to_light(chan_s));
+    let light = combine(latent_to_light(chan_b, res_b), latent_to_light(chan_s, res_s));
     // `max(…, 0)` before the sRGB encode: the combination is componentwise in XYZ,
     // which can step just outside the gamut on very saturated pairs, and the LUT is
     // indexed by sRGB. `mixbox_srgb_to_concentrations` clamps the top end itself.
-    let blended = mixbox_srgb_to_concentrations(
-        linear_to_srgb(max(light_to_linear(light), vec3<f32>(0.0)))
+    let srgb = clamp(
+        linear_to_srgb(max(light_to_linear(light), vec3<f32>(0.0))),
+        vec3<f32>(0.0), vec3<f32>(1.0),
     );
+    let blended = mixbox_srgb_to_concentrations(srgb);
+    // The rest of `mixbox_rgb_to_latent`: what the polynomial could not say about the
+    // colour the light works out to. **The trip back from light is now exact** — it
+    // was the LUT's concentrations alone, so a blend that landed on black stored a
+    // mixture the media pass would render `#383838`, and every blend result was pulled
+    // toward the polynomial's reachable set. `tests/blend.rs` carried a 40/255
+    // tolerance for that.
+    let blended_res = srgb - mixbox_eval_polynomial(blended);
 
     let hb = textureLoad(back_aux, p, 0).x;
     let hs = textureLoad(src_aux, p, 0).x;
-    return merge(cb, cs, blended, hb, hs);
+    let base = merge(cb, cs, blended, hb, hs);
+
+    var out: FsOut;
+    out.color = base.color;
+    out.aux = base.aux;
+    // The residual takes the identical three-term merge on the identical weights, and
+    // rides the alpha `merge` already decided (§6.7).
+    out.resid = vec4<f32>(
+        merge_triple(rb.rgb, cb.a, rs.rgb * b.opacity, cs.a * b.opacity, blended_res),
+        base.color.a,
+    );
+    return out;
 }

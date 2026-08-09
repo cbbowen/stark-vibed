@@ -184,12 +184,21 @@ struct DynamicsRun<'a> {
     brush_aux_tex: [wgpu::Texture; 2],
     brush_color: [wgpu::TextureView; 2],
     brush_aux: [wgpu::TextureView; 2],
+    /// The reservoir's **residual** half (§6.7), ping-ponged in step with the colour
+    /// above — the tip carries the rest of the colour it picked up, or a pigment
+    /// space's black would come back off the tool as the grey its concentrations
+    /// alone describe. `None` in a space with no residual, which allocates nothing.
+    brush_resid_tex: Option<[wgpu::Texture; 2]>,
+    brush_resid: Option<[wgpu::TextureView; 2]>,
     cur: usize,
     /// The segment's swept reservoir prefixes (fp32, so the per-fragment difference
     /// keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a single
     /// pair serves the whole stroke: nothing reads the last segment's bake.
     bake_load: wgpu::TextureView,
     bake_latm: wgpu::TextureView,
+    /// The residual's own swept prefix, `∫res·m·dτ` — same format, same differencing,
+    /// and recovered against the very denominator `bake_latm` is.
+    bake_rlm: Option<wgpu::TextureView>,
 }
 
 impl<'a> DynamicsRun<'a> {
@@ -244,6 +253,16 @@ impl<'a> DynamicsRun<'a> {
         let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let brush_color = [view_of(&brush_color_tex[0]), view_of(&brush_color_tex[1])];
         let brush_aux = [view_of(&brush_aux_tex[0]), view_of(&brush_aux_tex[1])];
+        // The residual's half of the ping-pong, allocated only where there is one.
+        let brush_resid_tex = r.color_space.has_resid().then(|| {
+            [
+                brush_tex(&mut scoped, "stark dynamics brush resid a"),
+                brush_tex(&mut scoped, "stark dynamics brush resid b"),
+            ]
+        });
+        let brush_resid = brush_resid_tex
+            .as_ref()
+            .map(|t| [view_of(&t[0]), view_of(&t[1])]);
         if let Some(t) = tool {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
@@ -257,6 +276,13 @@ impl<'a> DynamicsRun<'a> {
                 brush_aux_tex[0].as_image_copy(),
                 RESERVOIR_EXTENT,
             );
+            if let (Some(src), Some(dst)) = (&t.resid, &brush_resid_tex) {
+                encoder.copy_texture_to_texture(
+                    src.as_image_copy(),
+                    dst[0].as_image_copy(),
+                    RESERVOIR_EXTENT,
+                );
+            }
         } else {
             // Init: latent = the brush's own colour, per-unit opacity = its alpha;
             // the carried amount starts at the pre-`charge` glob (0 = empty tool).
@@ -285,7 +311,21 @@ impl<'a> DynamicsRun<'a> {
                             a: 0.0,
                         }),
                     )),
-                ],
+                    // A freshly charged tip holds the brush's own colour, and that
+                    // colour's residual with it — the same clear, off the same
+                    // constants (§6.7).
+                    brush_resid.as_ref().map(|v| {
+                        desc::attach(
+                            &v[0],
+                            desc::clear_to(wgpu::Color {
+                                r: consts.resid[0] as f64,
+                                g: consts.resid[1] as f64,
+                                b: consts.resid[2] as f64,
+                                a: 0.0,
+                            }),
+                        )
+                    }),
+                ][..2 + usize::from(brush_resid.is_some())],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -304,6 +344,10 @@ impl<'a> DynamicsRun<'a> {
         };
         let bake_load = bake("stark dynamics bake load");
         let bake_latm = bake("stark dynamics bake latm");
+        let bake_rlm = r
+            .color_space
+            .has_resid()
+            .then(|| bake("stark dynamics bake rlm"));
         Self {
             r,
             rec,
@@ -322,9 +366,12 @@ impl<'a> DynamicsRun<'a> {
             brush_aux_tex,
             brush_color,
             brush_aux,
+            brush_resid_tex,
+            brush_resid,
             cur: 0,
             bake_load,
             bake_latm,
+            bake_rlm,
         }
     }
 
@@ -407,6 +454,13 @@ impl<'a> DynamicsRun<'a> {
         };
         let color = region_tex("stark dynamics region color");
         let aux = region_tex("stark dynamics region aux");
+        // The region's residual (§6.7), in the same format for the same reason: it is
+        // the rest of the colour beside it, and the loop reads and writes the two at
+        // exactly the same points.
+        let resid = r
+            .color_space
+            .has_resid()
+            .then(|| region_tex("stark dynamics region resid"));
 
         // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
         // own `ViewUniform` — this path binds its own buffer to the very same
@@ -448,13 +502,19 @@ impl<'a> DynamicsRun<'a> {
                     origin: coord.origin().to_array(),
                     opacity: 1.0,
                 });
+                let mut entries = vec![
+                    desc::tex(0, tile.color_view()),
+                    desc::tex(1, tile.aux_view()),
+                ];
+                // Binding 2 is the tile's own residual. A resident tile in a pigment
+                // space always has one, so `Zeroes` never stands in here.
+                if let Some(v) = tile.resid_view() {
+                    entries.push(desc::tex(2, v));
+                }
                 tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark dynamics region tile bg"),
                     layout: &kit.composite_tile_bgl,
-                    entries: &[
-                        desc::tex(0, tile.color_view()),
-                        desc::tex(1, tile.aux_view()),
-                    ],
+                    entries: &entries,
                 }));
             }
         }
@@ -468,12 +528,10 @@ impl<'a> DynamicsRun<'a> {
             )
         });
         {
+            let (att, att_n) = desc::tile_attachments(&color, &aux, resid.as_ref(), desc::CLEAR);
             let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark dynamics region composite"),
-                color_attachments: &[
-                    Some(desc::attach(&color, desc::CLEAR)),
-                    Some(desc::attach(&aux, desc::CLEAR)),
-                ],
+                color_attachments: &att[..att_n],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -514,6 +572,7 @@ impl<'a> DynamicsRun<'a> {
         Region {
             color,
             aux,
+            resid,
             sel_mask,
         }
     }
@@ -546,6 +605,11 @@ impl<'a> DynamicsRun<'a> {
             size,
             color: under_tex("stark dynamics under color"),
             aux: under_tex("stark dynamics under aux"),
+            resid: self
+                .r
+                .color_space
+                .has_resid()
+                .then(|| under_tex("stark dynamics under resid")),
         }
     }
 
@@ -602,91 +666,128 @@ impl<'a> DynamicsRun<'a> {
             }),
         };
         let samp = || desc::samp(5, &kit.exchange_sampler);
+        let mut snapshot_entries = vec![
+            params(),
+            desc::tex(1, &region.color),
+            desc::tex(2, &region.aux),
+            desc::tex(3, &under.color),
+            desc::tex(4, &under.aux),
+        ];
+        push_resid(
+            &mut snapshot_entries,
+            &[(23, region.resid.as_ref()), (26, under.resid.as_ref())],
+        );
         let snapshot = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics snapshot bg"),
             layout: &kit.snapshot_bgl,
-            entries: &[
+            entries: &snapshot_entries,
+        });
+        // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
+        // half and writes the other.
+        let exchange = std::array::from_fn(|i| {
+            let mut entries = vec![
                 params(),
                 desc::tex(1, &region.color),
                 desc::tex(2, &region.aux),
                 desc::tex(3, &under.color),
                 desc::tex(4, &under.aux),
-            ],
-        });
-        // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
-        // half and writes the other.
-        let exchange = std::array::from_fn(|i| {
+                samp(),
+                desc::tex(6, &self.cov),
+                desc::tex(7, &self.brush_color[i]),
+                desc::tex(8, &self.brush_aux[i]),
+                desc::tex(9, &self.brush_color[1 - i]),
+                desc::tex(10, &self.brush_aux[1 - i]),
+                desc::tex(21, &region.sel_mask),
+            ];
+            // The residual ping-pongs on the same phase as the colour: read `i`,
+            // write `1 - i`, or the tool's two halves would drift apart.
+            push_resid(
+                &mut entries,
+                &[
+                    (23, region.resid.as_ref()),
+                    (26, under.resid.as_ref()),
+                    (27, self.brush_resid.as_ref().map(|v| &v[i])),
+                    (28, self.brush_resid.as_ref().map(|v| &v[1 - i])),
+                ],
+            );
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark dynamics exchange bg"),
                 layout: &kit.exchange_bgl,
-                entries: &[
-                    params(),
-                    desc::tex(1, &region.color),
-                    desc::tex(2, &region.aux),
-                    desc::tex(3, &under.color),
-                    desc::tex(4, &under.aux),
-                    samp(),
-                    desc::tex(6, &self.cov),
-                    desc::tex(7, &self.brush_color[i]),
-                    desc::tex(8, &self.brush_aux[i]),
-                    desc::tex(9, &self.brush_color[1 - i]),
-                    desc::tex(10, &self.brush_aux[1 - i]),
-                    desc::tex(21, &region.sel_mask),
-                ],
+                entries: &entries,
             })
         });
         // One bake bind group per reservoir phase; the deposit reads only the baked
         // result, so it no longer needs the ping-pong at all.
         let bake = std::array::from_fn(|i| {
+            let mut entries = vec![
+                params(),
+                samp(),
+                desc::tex(7, &self.brush_color[i]),
+                desc::tex(8, &self.brush_aux[i]),
+                desc::tex(17, &self.bake_load),
+                desc::tex(18, &self.bake_latm),
+            ];
+            push_resid(
+                &mut entries,
+                &[
+                    (27, self.brush_resid.as_ref().map(|v| &v[i])),
+                    (29, self.bake_rlm.as_ref()),
+                ],
+            );
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark dynamics bake bg"),
                 layout: &kit.bake_bgl,
-                entries: &[
-                    params(),
-                    samp(),
-                    desc::tex(7, &self.brush_color[i]),
-                    desc::tex(8, &self.brush_aux[i]),
-                    desc::tex(17, &self.bake_load),
-                    desc::tex(18, &self.bake_latm),
-                ],
+                entries: &entries,
             })
         });
+        // The two passes that lay paint read the residual's baked prefix and its
+        // snapshot, and write the region's residual back — the same three roles the
+        // colour's 19/11/13 play beside them.
+        let resid_write = [
+            (30, self.bake_rlm.as_ref()),
+            (25, under.resid.as_ref()),
+            (24, region.resid.as_ref()),
+        ];
+        let mut deposit_entries = vec![
+            params(),
+            samp(),
+            desc::tex(19, &self.bake_load),
+            desc::tex(20, &self.bake_latm),
+            desc::tex(11, &under.color),
+            desc::tex(12, &under.aux),
+            desc::tex(13, &region.color),
+            desc::tex(14, &region.aux),
+            desc::tex(15, &self.noise),
+            desc::samp(16, &r.tips.noise_sampler),
+            desc::tex(21, &region.sel_mask),
+            desc::tex(22, &self.scene.surface.view),
+        ];
+        push_resid(&mut deposit_entries, &resid_write);
         let deposit = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics deposit bg"),
             layout: &kit.deposit_bgl,
-            entries: &[
-                params(),
-                samp(),
-                desc::tex(19, &self.bake_load),
-                desc::tex(20, &self.bake_latm),
-                desc::tex(11, &under.color),
-                desc::tex(12, &under.aux),
-                desc::tex(13, &region.color),
-                desc::tex(14, &region.aux),
-                desc::tex(15, &self.noise),
-                desc::samp(16, &r.tips.noise_sampler),
-                desc::tex(21, &region.sel_mask),
-                desc::tex(22, &self.scene.surface.view),
-            ],
+            entries: &deposit_entries,
         });
         // The pen-up, which reads the reservoir only through its own `bake` — so unlike
         // `exchange` it needs no bind group per ping-pong half; the bake's does that.
+        let mut settle_entries = vec![
+            params(),
+            desc::tex(19, &self.bake_load),
+            desc::tex(20, &self.bake_latm),
+            desc::tex(11, &under.color),
+            desc::tex(12, &under.aux),
+            desc::tex(13, &region.color),
+            desc::tex(14, &region.aux),
+            desc::tex(21, &region.sel_mask),
+            // The ground: the pen-up delivery is a deposit like any other, and is
+            // gated by the same tooth (§6.4).
+            desc::tex(22, &self.scene.surface.view),
+        ];
+        push_resid(&mut settle_entries, &resid_write);
         let settle = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics settle bg"),
             layout: &kit.settle_bgl,
-            entries: &[
-                params(),
-                desc::tex(19, &self.bake_load),
-                desc::tex(20, &self.bake_latm),
-                desc::tex(11, &under.color),
-                desc::tex(12, &under.aux),
-                desc::tex(13, &region.color),
-                desc::tex(14, &region.aux),
-                desc::tex(21, &region.sel_mask),
-                // The ground: the pen-up delivery is a deposit like any other, and is
-                // gated by the same tooth (§6.4).
-                desc::tex(22, &self.scene.surface.view),
-            ],
+            entries: &settle_entries,
         });
         PieceBindings {
             snapshot,
@@ -867,19 +968,26 @@ impl<'a> DynamicsRun<'a> {
                 },
                 desc::tex(1, &region.color),
                 desc::tex(2, &region.aux),
-            ],
+            ]
+            .into_iter()
+            // The residual slices out with the colour it belongs to (§6.7).
+            .chain(region.resid.as_ref().map(|v| desc::tex(3, v)))
+            .collect::<Vec<_>>(),
         });
 
         let mut new_map = base.clone();
         for (i, coord) in coords.iter().enumerate() {
             let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
             {
+                let (att, att_n) = desc::tile_attachments(
+                    dst.color_view(),
+                    dst.aux_view(),
+                    dst.resid_view(),
+                    desc::CLEAR,
+                );
                 let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark dynamics slice"),
-                    color_attachments: &[
-                        Some(desc::attach(dst.color_view(), desc::CLEAR)),
-                        Some(desc::attach(dst.aux_view(), desc::CLEAR)),
-                    ],
+                    color_attachments: &att[..att_n],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -948,6 +1056,13 @@ impl<'a> DynamicsRun<'a> {
                 &self.brush_aux_tex[self.cur],
                 "stark tool state aux",
             ),
+            // Carried across ranges with the colour, and for the same reason: a tip
+            // that lifted black paint has to still be carrying black when the next
+            // pointer move resumes it (§6.7).
+            resid: self
+                .brush_resid_tex
+                .as_ref()
+                .map(|t| copy_out(&mut self.encoder, &t[self.cur], "stark tool state resid")),
         }
     }
 
@@ -968,6 +1083,9 @@ impl<'a> DynamicsRun<'a> {
 struct Region {
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
+    /// The region's residual (§6.7), in a space that has one — evolved in place by the
+    /// same dispatches that evolve the colour, and sliced back with it.
+    resid: Option<wgpu::TextureView>,
     /// The selection over the region (§6.8) — its own gathered mask, or the 1×1
     /// constant that stands in for an unrestricted selection.
     sel_mask: wgpu::TextureView,
@@ -979,6 +1097,27 @@ struct Snapshot {
     size: u32,
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
+    /// The snapshot's residual half, copied on exactly the texels the colour is.
+    resid: Option<wgpu::TextureView>,
+}
+
+/// Append the residual bindings a layout declares (§6.7) to a bind group's entries.
+///
+/// A tail rather than an interleave: entries are keyed by binding number, so their
+/// order in the slice is free, and keeping the residual out of the plain list is what
+/// leaves that list readable as the thing it still is. Every `Option` handed here is
+/// `Some` exactly when the colour space has a residual, so a group takes its whole
+/// tail or none of it — the same all-or-nothing the `[..n + k]` layout slices in
+/// [`build_dynamics_kit`](super::kit::build_dynamics_kit) express on the other side.
+fn push_resid<'v>(
+    entries: &mut Vec<wgpu::BindGroupEntry<'v>>,
+    want: &[(u32, Option<&'v wgpu::TextureView>)],
+) {
+    for (binding, view) in want {
+        if let Some(v) = view {
+            entries.push(desc::tex(*binding, v));
+        }
+    }
 }
 
 /// The bind groups one piece's dispatches switch between. Built once per piece

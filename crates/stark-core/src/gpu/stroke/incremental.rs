@@ -35,6 +35,11 @@ pub struct ToolState {
     pub(super) color: wgpu::Texture,
     /// Reservoir aux: per texel, the carried amount (height).
     pub(super) aux: wgpu::Texture,
+    /// Reservoir residual (§6.7), in a space that has one: the rest of the
+    /// colour above. Carried across ranges for the same reason the colour is — a tip
+    /// that picked up black paint has to still be carrying black when the next
+    /// pointer move resumes it, and the concentrations alone cannot say so.
+    pub(super) resid: Option<wgpu::Texture>,
 }
 
 impl Drop for ToolState {
@@ -45,6 +50,9 @@ impl Drop for ToolState {
         // them retires.
         self.color.destroy();
         self.aux.destroy();
+        if let Some(r) = &self.resid {
+            r.destroy();
+        }
     }
 }
 

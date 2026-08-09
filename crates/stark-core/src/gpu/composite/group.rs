@@ -17,6 +17,9 @@ pub struct MatteDraw {
     pub rect: [f32; 4],
     /// Fill color in the document's working color space.
     pub channels: [f32; 4],
+    /// The same colour's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a space
+    /// that has none, which is the true value rather than a stand-in.
+    pub resid: [f32; 4],
     /// The layer's opacity.
     pub opacity: f32,
 }

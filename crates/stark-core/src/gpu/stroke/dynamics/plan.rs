@@ -112,6 +112,9 @@ impl SlotCommon<'_> {
     fn slot(&self) -> Slot {
         Slot {
             channels: self.k.channels,
+            // The other half of the same colour (§6.7) — filled wherever `channels` is,
+            // and zero in a space whose three channels already say everything.
+            resid: self.k.resid,
             weave_scale: self.weave[0],
             weave_bias: Vec2::new(self.weave[1], self.weave[2]),
             ..Slot::default()
@@ -172,6 +175,9 @@ struct Slot {
     lambda_deposit: f32,
     /// The brush's own colour channels + per-unit opacity. **Undrained**.
     channels: [f32; 4],
+    /// The same colour's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
+    /// `channels`, and zero in a space that has no residual to carry.
+    resid: [f32; 4],
     /// The dispatch rect's top-left in region texels, integral.
     rect_origin: Vec2,
     /// Shape orientation in turns ∈ [0, 1) — picks the prefix-τ slice (§6.6).
@@ -219,6 +225,7 @@ impl Default for Slot {
             lambda_lift: 0.0,
             lambda_deposit: 0.0,
             channels: [0.0; 4],
+            resid: [0.0; 4],
             rect_origin: Vec2::ZERO,
             orient: 0.0,
             drain: 0.0,
@@ -279,6 +286,7 @@ impl Slot {
                 self.weave_bias.x,
                 self.weave_bias.y,
             ],
+            j: self.resid,
         }
     }
 }
@@ -963,6 +971,7 @@ mod tests {
             tooth: 32.0,
             weave_scale: 33.0,
             weave_bias: Vec2::new(34.0, 35.0),
+            resid: [36.0, 37.0, 38.0, 39.0],
         }
         .pack();
 
@@ -998,6 +1007,11 @@ mod tests {
             packed.i,
             [32.0, 33.0, 34.0, 35.0],
             "i: tooth, weave scale + bias"
+        );
+        assert_eq!(
+            packed.j,
+            [36.0, 37.0, 38.0, 39.0],
+            "j: the colour's residual (§6.7)"
         );
     }
 

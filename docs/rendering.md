@@ -595,17 +595,62 @@ in latent space**, then maps latent → RGB through a trained polynomial. The
 decisive fit: *latents blend linearly*, so the ordinary premultiplied-"over"
 deposit **already performs Mixbox mixing** — no programmable blend, no extra
 pass. The tile layout is **identical to Oklab**: `color = Rgba16Float` holding
-premultiplied `(c0, c1, c2, coverage)`, `aux = R16Float (height)`. The stamp
-shader is reused verbatim; only the **media shader differs** — it un-premultiplies
-the concentrations and evaluates Mixbox's polynomial (`c3 = 1 − (c0+c1+c2)`
-derived) to a base colour before the shared impasto lighting.
+premultiplied `(c0, c1, c2, coverage)` and `aux = R16Float (height)`, **plus a third
+`resid` texture** (below). The stamp law is reused; the **media shader differs** — it
+un-premultiplies the concentrations, evaluates Mixbox's polynomial (`c3 = 1 −
+(c0+c1+c2)` derived), adds the residual back, and hands the base colour to the shared
+impasto lighting.
 
-Mixbox's latent **residual is dropped**: a tile has room for three concentrations
-plus coverage, and the residual would need a fourth over-blended channel (a third
-tile texture). Dropping it keeps zero architecture change and full *mixing*
-fidelity; the only cost is slightly approximate reproduction of very saturated
-colours (the residual ≈ 0 in gamut). Recovering it is a future third-texture
-option.
+Mixbox's latent **residual is carried in a third tile texture** —
+`resid = Rgba16Float` holding premultiplied `(r0, r1, r2, opacity)`, over-blended by
+the colour's own rule. It is not optional and never was:
+
+- Four trained pigments do not span sRGB, so the polynomial alone reaches neither
+  black — whose concentrations render `#383838`, a mid-grey — nor the saturated
+  corners. Over the whole 64³ LUT the residual's mean magnitude is **0.049** and its
+  max **0.389**; it is ≈0 only near white. *(This paragraph previously claimed "the
+  residual ≈ 0 in gamut", which is what made dropping it look free.)*
+- It is **not recoverable from the concentrations**. `rgb → c` is many-to-one: the
+  262144 cube samples collapse to 154391 distinct quantized triples, up to 70 colours
+  to a bucket, spanning 0.38 of the cube. A linear-in-`c` correction — the only form
+  that commutes with mixing — leaves the mean at 0.048; a degree-8 polynomial in `c`
+  leaves 0.027 with black at `#2A281A`. No function of the stored channels could have
+  stood in for the stored value.
+
+A residual is not a second quantity to conserve but **the rest of the same colour**,
+so every pass does to it exactly what it already does to the latent: the same
+premultiply, the same "over", the same parcel law on the same masses, the same
+bilinear taps. The blend pass gains from it too — its trip back from light now stores
+`srgb − poly(blended)` and is exact, where it used to pull every blend result toward
+the polynomial's reachable set (`tests/blend.rs` carried an 8/255 and a 40/255
+tolerance for that; both are 2/255 now, the same as Oklab's).
+
+**Oklab pays nothing.** Its three channels reproduce every sRGB colour, so
+`resid_format()` is `None`, no third texture is allocated, and the eight passes that
+carry a tile's colour are built in a second variant under WESL's `@if(resid)`
+conditional compilation (`RESID_ENTRY_POINTS`). `media_mixbox.wesl` and
+`blend_mixbox.wesl` declare their own residual bindings — past where the shared
+`media_common`/`blend_common` stop — so a colorimetric document gets a shorter bind
+group layout rather than a placeholder to bind. What does reach it is one uniform
+lane per **mirrored** struct (`Media.bg_resid`, `TileXform.resid`, `Stamp.j`,
+`Fill.r`, matte's instance attribute): those cannot be conditional, because the
+mirror generator reads *unlinked* sources (§6.10) and has no feature set to evaluate,
+so a member that came and went with the variant would give one host struct two
+layouts. They are genuinely zero there — `rgb_to_resid` returns `[0.0; 3]` for a
+space whose channels are already the whole colour.
+
+One cost the channel does carry, stated rather than hidden:
+
+- **The device limit.** The stamp loop's `exchange` wrote four storage textures — the
+  footprint snapshot's colour and aux, which ride in the tail of that dispatch (§6.2),
+  and the reservoir's colour and aux — which is exactly WebGPU's guaranteed
+  `maxStorageTexturesPerShaderStage`. The residual's two put it at six, so
+  `minimum_required_limits` now asks for six. See `gpu/context.rs` for what that costs
+  and for the packing that would get back to four if a device ever reports it.
+
+The `bake`'s workgroup scan pays nothing worth quoting: one more `vec4` array a
+column takes it from 9 floats a cell to 13, which is 6.5 KB of the 16 KB downlevel
+budget, so its width is unchanged and no tip size resolves any coarser for it.
 
 Mixbox is **vendored as a git submodule** (`vendor/mixbox`, Mixbox 2.0 ©2022
 Secret Weapons, **CC BY-NC 4.0** — non-commercial; commercial use needs a licence

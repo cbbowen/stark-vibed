@@ -43,10 +43,17 @@ import package::lib::sample::{load1};
 // 1:1 with the destination, apron included — or a 1×1 texture holding the constant
 // coverage outside the mask's tile set; the clamped load below reads both.
 @group(0) @binding(4) var selection: texture_2d<f32>;
+// The residual halves of the two colours above (§6.7) — the layer's resident
+// paint and the stroke's parcel. Bound only by a space that has a residual, and
+// read through the same clamped `load1`/`textureLoad` pair as the latents, so a
+// stroke onto bare canvas reads the 1×1 zero here exactly as it does for `base_color`.
+@if(resid) @group(0) @binding(5) var base_resid: texture_2d<f32>;
+@if(resid) @group(0) @binding(6) var scratch_resid: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 @vertex
@@ -64,6 +71,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // stamp.wesl's fs_main for the channel-by-channel story.
     let s_c = textureLoad(scratch_color, c, 0);
     let s_a = textureLoad(scratch_aux, c, 0);
+    @if(resid) let base_r = load1(base_resid, c);
+    @if(resid) let s_r = textureLoad(scratch_resid, c, 0);
 
     var out: FsOut;
     // The stroke's footprint missed this texel. An exact branch rather than the
@@ -76,6 +85,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     if s_a.x == 0.0 && s_a.y == 0.0 && s_c.a == 0.0 {
         out.color = base_c;
         out.aux = vec4<f32>(base_a.x, 0.0, 0.0, 0.0);
+        // Passed through whole, for the reason above: the residual goes through the
+        // same `m/h` round trip below and would drift by an ulp per stroke too.
+        @if(resid) out.resid = base_r;
         return out;
     }
 
@@ -100,6 +112,12 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let op = mm / max(h, PAINT_EPS);
     let merged_c = vec4<f32>(blend_latent(lat0, m0, lat1, m1) * op, op);
     let merged_a = vec4<f32>(h, 0.0, 0.0, 0.0);
+    // The residual stacks through the *same* law on the *same* masses — it is the
+    // rest of the same colour, so anything that weighted it differently would have
+    // the merged paint reproduce neither of the two colours that made it (§6.7).
+    @if(resid) let res0 = base_r.rgb / max(base_c.a, PAINT_EPS);
+    @if(resid) let res1 = s_r.rgb / max(s_c.a, PAINT_EPS);
+    @if(resid) let merged_r = vec4<f32>(blend_latent(res0, m0, res1, m1) * op, op);
 
     // Gate by the selection: the tile keeps its base value where the mask is 0 and
     // takes the stroke where it is 1 (§6.8). A *lerp of the result*, not a scaling of
@@ -110,5 +128,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
 
     out.color = mix(base_c, merged_c, sel);
     out.aux = mix(vec4<f32>(base_a.x, 0.0, 0.0, 0.0), merged_a, sel);
+    @if(resid) out.resid = mix(base_r, merged_r, sel);
     return out;
 }

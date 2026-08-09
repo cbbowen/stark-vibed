@@ -133,16 +133,19 @@ fn main() {
         wesl::FileResolver::new(&gen_dir),
     );
     router.mount_fallback_resolver(wesl::FileResolver::new(SHADER_DIR));
-    let compiler = wesl::Wesl::new(SHADER_DIR).set_custom_resolver(router);
+    let mut compiler = wesl::Wesl::new(SHADER_DIR).set_custom_resolver(router);
 
+    // Two passes over the tree, differing only in whether the tile's residual channel
+    // exists (§6.7). `Feature::Disable` is `condcomp`'s default, so the first pass is
+    // the build that was here before this channel was added — the `@if(resid)`
+    // declarations simply are not in it.
+    compiler.set_feature(RESID_FEATURE, false);
     for name in ENTRY_POINTS {
-        let module = format!("package::{name}");
-        compiler.build_artifact(
-            &module
-                .parse()
-                .unwrap_or_else(|e| panic!("`{module}` is not a module path: {e}")),
-            name,
-        );
+        build_one(&compiler, name, name);
+    }
+    compiler.set_feature(RESID_FEATURE, true);
+    for name in RESID_ENTRY_POINTS {
+        build_one(&compiler, name, &format!("{name}_resid"));
     }
 
     // Every module by name, not just the directory — a directory's mtime does not
@@ -161,6 +164,22 @@ fn main() {
     }
     println!("cargo::rerun-if-changed=src/entry_points.rs");
     println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
+}
+
+/// Link `module` with its imports and deposit the WGSL under `artifact`.
+///
+/// The two names differ only for a residual variant (`stamp` → `stamp_resid`), which
+/// is the whole reason this is a function: `build_artifact` takes the artifact name
+/// separately, and the loop that used to pass the module name for both had nowhere to
+/// say so.
+fn build_one(compiler: &wesl::Wesl<impl wesl::Resolver>, module: &str, artifact: &str) {
+    let path = format!("package::{module}");
+    compiler.build_artifact(
+        &path
+            .parse()
+            .unwrap_or_else(|e| panic!("`{path}` is not a module path: {e}")),
+        artifact,
+    );
 }
 
 /// Read `mixbox_eval_polynomial` out of the vendored Mixbox GLSL and emit an

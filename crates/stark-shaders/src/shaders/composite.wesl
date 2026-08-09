@@ -43,6 +43,8 @@ struct View {
 @group(0) @binding(1) var samp: sampler;
 @group(1) @binding(0) var tile_color: texture_2d<f32>;
 @group(1) @binding(1) var tile_aux: texture_2d<f32>;
+// The tile's residual channel (§6.7) — bound only by a space that has one.
+@if(resid) @group(1) @binding(2) var tile_resid: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -53,6 +55,10 @@ struct VsOut {
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    // Re-premultiplied by the same coverage as `color` and over-blended by the same
+    // rule, so the accumulator's residual composites through the stack exactly as its
+    // latent does — the two are one colour (§6.7).
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 @vertex
@@ -87,6 +93,12 @@ fn fs_main(in: VsOut) -> FsOut {
     // colour and accumulates the stack's total coverage in alpha.
     out.color = vec4<f32>(c.rgb / max(c.a, PAINT_EPS) * w, w);
     out.aux = h * in.opacity;
+    // Un-premultiplied by the *colour's* alpha, not the residual target's own: that
+    // target's alpha is a duplicate of the same per-unit opacity, carried only because
+    // the fixed-function "over" reads each target's own alpha, and one of the two has
+    // to be the source of truth.
+    @if(resid) let r = textureSample(tile_resid, samp, in.uv);
+    @if(resid) out.resid = vec4<f32>(r.rgb / max(c.a, PAINT_EPS) * w, w);
     return out;
 }
 
@@ -97,5 +109,6 @@ fn fs_raw(in: VsOut) -> FsOut {
     var out: FsOut;
     out.color = textureSample(tile_color, samp, in.uv) * in.opacity;
     out.aux = textureSample(tile_aux, samp, in.uv) * in.opacity;
+    @if(resid) out.resid = textureSample(tile_resid, samp, in.uv) * in.opacity;
     return out;
 }

@@ -287,22 +287,39 @@ fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, hb: f32, hs: f32)
     // `composite.wesl` does to a leaf layer's tiles one at a time.
     let cs = cs_raw * b.opacity;
     let unclipped = b.clip == 0u;
-    // The weight on source that lands where the backdrop is *not*: all of it, or
-    // none of it.
-    let outside = select(0.0, 1.0, unclipped);
     // How much of the source survives overall — 1 unclipped, the backdrop's own
     // coverage when clipped.
     let keep = select(cb.a, 1.0, unclipped);
-    // `B(Cb,Cs)·αs`, premultiplied. For `Normal` that product is `cs.rgb` by
-    // definition, and taking it verbatim rather than dividing by `αs` and
-    // multiplying it back is what makes a **clipped normal layer over opaque
-    // paint** bit-identical to the fixed-function `over` an unclipped one gets.
-    let src_term = select(blended * cs.a, cs.rgb, b.mode == MODE_NORMAL);
     var out: FsOut;
     out.color = vec4<f32>(
-        mix(cs.rgb * outside, src_term, cb.a) + cb.rgb * (1.0 - cs.a),
+        merge_triple(cb.rgb, cb.a, cs.rgb, cs.a, blended),
         cs.a * keep + cb.a * (1.0 - cs.a),
     );
     out.aux = vec4<f32>(hb + hs * keep * b.opacity, 0.0, 0.0, 0.0);
     return out;
+}
+
+/// One premultiplied colour triple through the three-term merge above, given the
+/// backdrop's and (opacity-scaled) source's own alphas.
+///
+/// Split out of [`merge`] because a **pigment** document runs it twice: once on the
+/// concentrations and once on the residual beside them, which is not a second colour
+/// to combine but the rest of the same one (§6.7). The alpha is decided
+/// once, by `merge`, and both triples ride it — so this returns only the triple.
+///
+/// Everything that made the unclipped case exact stays exact here: `outside` and the
+/// `Normal` shortcut are the same expressions in the same order, so `tests/blend.rs`'s
+/// byte-for-byte comparison is unaffected by the extraction.
+fn merge_triple(
+    cb_rgb: vec3<f32>, cb_a: f32, cs_rgb: vec3<f32>, cs_a: f32, blended: vec3<f32>,
+) -> vec3<f32> {
+    // The weight on source that lands where the backdrop is *not*: all of it, or
+    // none of it.
+    let outside = select(0.0, 1.0, b.clip == 0u);
+    // `B(Cb,Cs)·αs`, premultiplied. For `Normal` that product is `cs.rgb` by
+    // definition, and taking it verbatim rather than dividing by `αs` and
+    // multiplying it back is what makes a **clipped normal layer over opaque
+    // paint** bit-identical to the fixed-function `over` an unclipped one gets.
+    let src_term = select(blended * cs_a, cs_rgb, b.mode == MODE_NORMAL);
+    return mix(cs_rgb * outside, src_term, cb_a) + cb_rgb * (1.0 - cs_a);
 }

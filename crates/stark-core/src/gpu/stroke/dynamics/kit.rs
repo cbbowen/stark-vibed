@@ -86,12 +86,17 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // spaces use that tile colour format (§6.7), so the region can hold either.
     debug_assert_eq!(color_space.color_format(), wgpu::TextureFormat::Rgba16Float);
     let frag = wgpu::ShaderStages::FRAGMENT;
+    // Whether this space carries a **residual** (§6.7). It selects the `_resid` build
+    // of every shader here that touches a tile's colour, and adds the bindings and
+    // targets that build declares. Oklab leaves every one of them off, so its layouts
+    // are shorter rather than bound to stand-ins.
+    let resid = color_space.has_resid();
 
     // ---- Region composite: the `composite` shader over region-sized targets
     // (colour + the wide aux, so nothing is narrowed until the write-back).
     let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics composite"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::composite().into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
     });
     let composite_view_bgl = desc::bind_group_layout(
         device,
@@ -118,7 +123,13 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let composite_tile_bgl = desc::bind_group_layout(
         device,
         "stark dynamics composite tile bgl",
-        &[desc::sample_tex(0, frag), desc::sample_tex(1, frag)],
+        // Binding 2 is the tile's residual (§6.7) — the source tiles are composited
+        // into the region whole, so the channel rides in with the colour it belongs to.
+        &[
+            desc::sample_tex(0, frag),
+            desc::sample_tex(1, frag),
+            desc::sample_tex(2, frag),
+        ][..2 + usize::from(resid)],
     );
     let composite_layout = desc::pipeline_layout(
         device,
@@ -144,7 +155,12 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             targets: &[
                 desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
                 desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-            ],
+                // The region's residual, over-blended by the colour's own rule
+                // because it is the rest of the same colour (§6.7).
+                color_space
+                    .resid_format()
+                    .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
+            ][..2 + usize::from(resid)],
         },
     );
     let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -161,7 +177,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // numbers partition the module's group(0) — see dynamics.wesl.
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics().into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(resid).into()),
     });
     // Every layout below is compute-visible and opens with the dynamic-offset stamp
     // slot; the binding numbers partition the module's group(0), so a layout lists
@@ -180,6 +196,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // prefix-τ volume, so f16 would band exactly where the difference is smallest.
     let stor32 = |binding: u32| desc::storage_tex(binding, comp, BAKE_FORMAT);
     let csamp = desc::sampler(5, comp);
+    // The residual bindings (23–30) each sit beside the colour binding they ride with;
+    // a layout that lists one lists the other. See the block at the head of
+    // dynamics.wesl for what each carries.
     let snapshot_bgl = desc::bind_group_layout(
         device,
         "stark dynamics snapshot bgl",
@@ -189,7 +208,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             ctex(2, false),
             stor(3),
             stor(4),
-        ],
+            ctex(23, false), // region_resid
+            stor(26),        // under_resid_w
+        ][..5 + 2 * usize::from(resid)],
     );
     let exchange_bgl = desc::bind_group_layout(
         device,
@@ -213,7 +234,11 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             // The selection mask over the region (§6.8) — sampled bilinearly here,
             // since a reservoir texel sits over an arbitrary sub-pixel spot.
             ctex(21, true),
-        ],
+            ctex(23, true), // region_resid — the same bilinear tap as 1/2
+            stor(26),       // under_resid_w, for the snapshot riding in this grid
+            ctex(27, true), // brush_src_resid
+            stor(28),       // brush_dst_resid_w
+        ][..12 + 4 * usize::from(resid)],
     );
     // `bake` integrates the reservoir along the travel axis for one segment; the
     // deposit then reads the result instead of point-sampling the reservoir.
@@ -227,7 +252,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             ctex(8, true),
             stor32(17),
             stor32(18),
-        ],
+            ctex(27, true), // brush_src_resid
+            stor32(29),     // bake_rlm_w — fp32, differenced like the two beside it
+        ][..6 + 2 * usize::from(resid)],
     );
     // The pen-up settle: the deposit's targets and snapshot, and the deposit's *baked*
     // reservoir reads too — its parcel is the delivery integral of the remaining pass,
@@ -247,7 +274,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             ctex(21, false),
             // The ground (§6.4): the settle lays paint, so it reads the tooth too.
             ctex(22, false),
-        ],
+            ctex(30, false), // bake_rlm
+            ctex(25, false), // under_resid
+            stor(24),        // region_resid_w
+        ][..9 + 3 * usize::from(resid)],
     );
     let deposit_bgl = desc::bind_group_layout(
         device,
@@ -284,7 +314,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             // The canvas surface's height map — the deposition tooth (§6.4). Read
             // nearest, so it needs no sampler and is not filterable.
             ctex(22, false),
-        ],
+            ctex(30, false), // bake_rlm
+            ctex(25, false), // under_resid
+            stor(24),        // region_resid_w
+        ][..12 + 3 * usize::from(resid)],
     );
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
     // prefix binding, but compute-visible.
@@ -370,7 +403,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // ---- Region → tile slice (write-back).
     let slice_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics slice"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::slice().into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::slice(resid).into()),
     });
     // One slot per tile the piece writes back, selected by a dynamic offset: the
     // region bindings beside it are the same for every tile, so the whole group is
@@ -382,7 +415,8 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             desc::uniform_slot(0, frag, SLICE_SLOT),
             desc::load_tex(1, frag),
             desc::load_tex(2, frag),
-        ],
+            desc::load_tex(3, frag), // the region's residual (§6.7)
+        ][..3 + usize::from(resid)],
     );
     let slice_layout =
         desc::pipeline_layout(device, "stark dynamics slice layout", &[Some(&slice_bgl)]);
@@ -395,7 +429,8 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         &[
             desc::target(color_space.color_format()),
             desc::target(color_space.aux_format()),
-        ],
+            color_space.resid_format().and_then(desc::target),
+        ][..2 + usize::from(resid)],
     );
 
     DynamicsKit {

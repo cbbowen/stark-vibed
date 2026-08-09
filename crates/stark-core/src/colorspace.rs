@@ -38,6 +38,28 @@ pub trait ColorSpace {
     fn color_format(&self) -> wgpu::TextureFormat;
     /// Tile auxiliary channel texture format (paint height).
     fn aux_format(&self) -> wgpu::TextureFormat;
+    /// The tile's **residual** channel format, or `None` for a space that has no
+    /// residual (§6.7).
+    ///
+    /// A residual is the part of a colour the space's three channels cannot express.
+    /// A colorimetric space has none — Oklab's `(L, a, b)` reproduces every sRGB
+    /// colour exactly — so it allocates no third texture, and the passes that carry
+    /// tile colour are built in a variant without one (`stark_shaders`'s
+    /// `RESID_ENTRY_POINTS`). A *pigment* space has one necessarily: four trained
+    /// pigments do not span sRGB.
+    ///
+    /// `Some` costs eight bytes a texel and a third render target through every pass
+    /// that writes a tile. `None` is not an optimization but a statement — that this
+    /// space's channels are the whole colour.
+    fn resid_format(&self) -> Option<wgpu::TextureFormat> {
+        None
+    }
+
+    /// Whether this space carries a residual — [`resid_format`](Self::resid_format)
+    /// as the flag the shader variants and bind groups actually branch on.
+    fn has_resid(&self) -> bool {
+        self.resid_format().is_some()
+    }
     /// Blend for the color target when stamping/compositing.
     fn color_blend(&self) -> wgpu::BlendState;
     /// Blend for the aux target.
@@ -45,8 +67,19 @@ pub trait ColorSpace {
 
     /// Straight display RGB → the space's four color channels (pre-coverage).
     fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4];
-    /// The space's color channels → straight display RGB (picker readout/export).
-    fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3];
+    /// Straight display RGB → the **residual** those channels leave behind (§6.7).
+    ///
+    /// Zero for a space with no [`resid_format`](Self::resid_format), and zero
+    /// *exactly*: the default here is not a placeholder for an unimplemented
+    /// conversion but the true answer, since such a space's channels already say the
+    /// whole colour. Callers write it unconditionally into a uniform lane, and for
+    /// Oklab that lane is genuinely zeroes rather than an unread field.
+    fn rgb_to_resid(&self, _rgb: [f32; 3]) -> [f32; 3] {
+        [0.0; 3]
+    }
+    /// The space's color channels **and residual** → straight display RGB (picker
+    /// readout/export). The inverse of the two functions above, taken together.
+    fn channels_to_rgb(&self, channels: [f32; 4], resid: [f32; 3]) -> [f32; 3];
 
     /// WGSL for the stamp deposit pass (color + aux MRT outputs) — §6.2.
     fn stamp_shader(&self) -> &'static str;
@@ -121,7 +154,9 @@ impl ColorSpace for OkLabColorSpace {
         [lab[0], lab[1], lab[2], 1.0]
     }
 
-    fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3] {
+    /// `resid` is ignored, and is always `[0.0; 3]` for this space: Oklab reproduces
+    /// every sRGB colour, so there is nothing left over to add back.
+    fn channels_to_rgb(&self, channels: [f32; 4], _resid: [f32; 3]) -> [f32; 3] {
         let lin = color::oklab_to_linear_srgb([channels[0], channels[1], channels[2]]);
         [
             color::linear_to_srgb(lin[0]),
@@ -131,7 +166,7 @@ impl ColorSpace for OkLabColorSpace {
     }
 
     fn stamp_shader(&self) -> &'static str {
-        stark_shaders::stamp()
+        stark_shaders::stamp(false)
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_oklab()
@@ -141,13 +176,21 @@ impl ColorSpace for OkLabColorSpace {
     }
 }
 
-/// Experimental **Mixbox** pigment-mixing space (§6.7). Colors are
-/// stored as Mixbox latent pigment *concentrations* `(c0, c1, c2)` — the fourth,
-/// `c3 = 1 − (c0+c1+c2)`, is derived, and the latent residual is dropped so the
-/// three concentrations fit alongside coverage. Because the latent mixes linearly,
-/// the ordinary premultiplied-"over" deposit *is* Mixbox mixing (blue over yellow
-/// → green), so the layout, blends, and stamp shader are identical to Oklab; only
-/// the media pass differs (it evaluates Mixbox's pigment polynomial).
+/// **Mixbox** pigment-mixing space (§6.7). Colors are stored as Mixbox
+/// latent pigment *concentrations* `(c0, c1, c2)` — the fourth, `c3 = 1 −
+/// (c0+c1+c2)`, is derived — **plus the latent's residual in a third tile texture**.
+/// Because the latent mixes linearly, the ordinary premultiplied-"over" deposit *is*
+/// Mixbox mixing (blue over yellow → green), so the blends and the stamp law are the
+/// same as Oklab's; what differs is the third channel and the media pass, which
+/// evaluates Mixbox's pigment polynomial and adds the residual back.
+///
+/// **The residual is not optional.** Four trained pigments do not span sRGB, so the
+/// polynomial alone reaches neither black — whose concentrations render as `#383838`
+/// — nor the saturated corners, where it is off by up to 0.39 (mean 0.05 over the
+/// cube). This engine dropped it for as long as a tile held only three concentrations
+/// plus coverage, and no cheaper recovery exists: `rgb → c` is many-to-one, with up
+/// to 70 sRGB colours sharing one quantized triple across 0.38 of the cube, so the
+/// residual is not a function of the channels stored beside it.
 ///
 /// Conversions use the vendored `mixbox` crate (CC BY-NC 4.0; `vendor/mixbox`).
 pub struct MixboxColorSpace;
@@ -163,6 +206,13 @@ impl ColorSpace for MixboxColorSpace {
     fn aux_format(&self) -> wgpu::TextureFormat {
         wgpu::TextureFormat::R16Float
     }
+    /// The residual's three components premultiplied by the same per-unit opacity the
+    /// concentrations are, with that opacity duplicated into the fourth: not
+    /// redundancy for its own sake, but because the fixed-function "over" reads *each*
+    /// target's own alpha, so the target carrying the residual has to hold it too.
+    fn resid_format(&self) -> Option<wgpu::TextureFormat> {
+        Some(wgpu::TextureFormat::Rgba16Float)
+    }
     fn color_blend(&self) -> wgpu::BlendState {
         over()
     }
@@ -176,16 +226,33 @@ impl ColorSpace for MixboxColorSpace {
         [z[0], z[1], z[2], 1.0]
     }
 
-    fn channels_to_rgb(&self, channels: [f32; 4]) -> [f32; 3] {
-        // Rebuild a residual-free latent and evaluate the pigment polynomial.
+    fn rgb_to_resid(&self, rgb: [f32; 3]) -> [f32; 3] {
+        // The other half of the same latent: `rgb − poly(c)`, which is what makes the
+        // round trip below exact rather than approximate.
+        let z = mixbox::float_rgb_to_latent(&rgb);
+        [z[4], z[5], z[6]]
+    }
+
+    fn channels_to_rgb(&self, channels: [f32; 4], resid: [f32; 3]) -> [f32; 3] {
+        // Reassemble the latent and evaluate `poly(c) + r` — Mixbox's own
+        // `latent_to_rgb`, so a colour picked and read back is the colour picked.
         let (c0, c1, c2) = (channels[0], channels[1], channels[2]);
-        let latent = [c0, c1, c2, 1.0 - (c0 + c1 + c2), 0.0, 0.0, 0.0];
+        let latent = [
+            c0,
+            c1,
+            c2,
+            1.0 - (c0 + c1 + c2),
+            resid[0],
+            resid[1],
+            resid[2],
+        ];
         mixbox::latent_to_float_rgb(&latent)
     }
 
     fn stamp_shader(&self) -> &'static str {
-        // Deposit is premultiplied-over of the channels — identical to Oklab.
-        stark_shaders::stamp()
+        // Deposit is premultiplied-over of the channels — the same law as Oklab's,
+        // run over one more target.
+        stark_shaders::stamp(true)
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_mixbox()

@@ -104,6 +104,11 @@ pub struct CompositeScene<'a> {
     /// The substrate colour in the document's working channels — the ground under
     /// the paint (§15.5).
     pub background: [f32; 4],
+    /// The substrate colour's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a
+    /// space that has none — and the reason a *black* ground in a pigment document
+    /// finally reads black, since Mixbox's polynomial renders those concentrations
+    /// `#383838` on their own.
+    pub background_resid: [f32; 4],
     /// The visible layers, bottom-to-top, cut into blend groups.
     pub groups: &'a [CompositeGroup],
     /// Selection outlines to draw over the lit result: the local actor's and each
@@ -149,6 +154,10 @@ pub struct CompositorPipeline {
     // Offscreen channel formats (from the color space).
     color_format: wgpu::TextureFormat,
     aux_format: wgpu::TextureFormat,
+    /// The residual channel's format, or `None` in a space that has none (§6.7).
+    /// Decides the third attachment on every pass A target, and it is the colour
+    /// space's answer rather than a per-target choice.
+    resid_format: Option<wgpu::TextureFormat>,
     /// What passes B–D write, and therefore what the supersampled target carries.
     target_format: wgpu::TextureFormat,
 
@@ -201,6 +210,8 @@ pub struct Compositor {
     size: Extent2,
     comp_color_view: wgpu::TextureView,
     comp_aux_view: wgpu::TextureView,
+    /// The residual accumulator, in a space that has one (§6.7).
+    comp_resid_view: Option<wgpu::TextureView>,
     media_bg: wgpu::BindGroup,
     /// The [`CompositorPipeline::generation`] `media_bg` was built against.
     generation: u64,
@@ -269,6 +280,7 @@ impl CompositorPipeline {
         let device = &ctx.device;
         let color_format = color_space.color_format();
         let aux_format = color_space.aux_format();
+        let resid_format = color_space.resid_format();
         // Passes B–E all write the one target the frame is presented from.
         let screen = [desc::target(target_format)];
 
@@ -284,6 +296,7 @@ impl CompositorPipeline {
             ctx: ctx.clone(),
             color_format,
             aux_format,
+            resid_format,
             target_format,
             surface,
             environment,
@@ -318,19 +331,30 @@ impl CompositorPipeline {
         self.generation = next_generation();
     }
 
-    /// The raw channel formats pass A writes: `(color, aux)`. A caller supplying its
-    /// own targets to [`Compositor::composite_channels`] has to match them.
-    pub fn channel_formats(&self) -> (wgpu::TextureFormat, wgpu::TextureFormat) {
-        (self.color_format, self.aux_format)
+    /// The raw channel formats pass A writes: `(color, aux, resid)`, the last `None`
+    /// in a space with no residual (§6.7). A caller supplying its own targets to
+    /// [`Compositor::composite_channels`] has to match them — **including the
+    /// residual**, since a pigment document's pass A writes three targets and a
+    /// caller that offered two would be missing an attachment, not merely losing a
+    /// channel.
+    pub fn channel_formats(
+        &self,
+    ) -> (
+        wgpu::TextureFormat,
+        wgpu::TextureFormat,
+        Option<wgpu::TextureFormat>,
+    ) {
+        (self.color_format, self.aux_format, self.resid_format)
     }
 
     /// The offscreen pair and the media bind group over it, at `size`.
-    fn offscreen(&self, size: Extent2) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
+    fn offscreen(&self, size: Extent2) -> media::Offscreen {
         media::offscreen(media::OffscreenDesc {
             device: &self.ctx.device,
             size,
             color_format: self.color_format,
             aux_format: self.aux_format,
+            resid_format: self.resid_format,
             media: &self.media,
             surface: &self.surface,
             environment: &self.environment,
@@ -344,12 +368,13 @@ impl Compositor {
     /// layouts, the decoded pigment LUT) lives in the pipeline and is only borrowed.
     pub fn new(pipeline: &CompositorPipeline, size: Extent2) -> Self {
         let device = &pipeline.ctx.device;
-        let (comp_color_view, comp_aux_view, media_bg) = pipeline.offscreen(size);
+        let off = pipeline.offscreen(size);
         Self {
             size,
-            comp_color_view,
-            comp_aux_view,
-            media_bg,
+            comp_color_view: off.color,
+            comp_aux_view: off.aux,
+            comp_resid_view: off.resid,
+            media_bg: off.bg,
             generation: pipeline.generation,
             // 1:1 until a render says otherwise — `ensure_targets` is what decides,
             // because only a render knows the zoom.
@@ -394,10 +419,11 @@ impl Compositor {
         self.ss = ss;
         self.generation = p.generation;
         self.scratch = None;
-        let (c, a, bg) = p.offscreen(self.size);
-        self.comp_color_view = c;
-        self.comp_aux_view = a;
-        self.media_bg = bg;
+        let off = p.offscreen(self.size);
+        self.comp_color_view = off.color;
+        self.comp_aux_view = off.aux;
+        self.comp_resid_view = off.resid;
+        self.media_bg = off.bg;
         // Allocated only where it is written into. A 1:1 view drops it here, which is
         // what returns the memory the moment the artist zooms back in to paint.
         self.ss_target = (ss > 1).then(|| {
@@ -453,19 +479,27 @@ impl Compositor {
                         origin: coord.origin().to_array(),
                         opacity: *opacity,
                     });
+                    let mut entries = vec![
+                        desc::tex(0, handle.color_view()),
+                        desc::tex(1, handle.aux_view()),
+                    ];
+                    // The layout carries slot 2 exactly when the space has a residual
+                    // (§6.7), and every tile of such a document has one — the space
+                    // decides once, at `acquire_tile`.
+                    if let Some(view) = handle.resid_view() {
+                        entries.push(desc::tex(2, view));
+                    }
                     tile_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("stark composite tile bg"),
                         layout: &p.tiles.tile_bgl,
-                        entries: &[
-                            desc::tex(0, handle.color_view()),
-                            desc::tex(1, handle.aux_view()),
-                        ],
+                        entries: &entries,
                     }));
                 }
                 CompositeItem::Matte(m) => mattes.push(MatteInstance {
                     rect: m.rect,
                     channels: m.channels,
                     opacity: m.opacity,
+                    resid: m.resid,
                 }),
             }
         }
@@ -651,12 +685,10 @@ impl Compositor {
             ..
         } = cursors;
         let ops = if clear { desc::CLEAR } else { desc::LOAD };
+        let attachments = into.attachments(ops);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark composite pass"),
-            color_attachments: &[
-                Some(desc::attach(into.0, ops)),
-                Some(desc::attach(into.1, ops)),
-            ],
+            color_attachments: &attachments[..into.count()],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -700,39 +732,43 @@ impl Compositor {
         out: Targets<'_>,
         slot: u32,
     ) {
-        let bg = e
-            .p
-            .ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark blend bg"),
-                layout: &e.p.blend.bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.blend_buf,
-                            offset: 0,
-                            size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
-                        }),
-                    },
-                    desc::tex(1, back.0),
-                    desc::tex(2, back.1),
-                    desc::tex(3, src.0),
-                    desc::tex(4, src.1),
-                    desc::tex(5, &e.p.blend.pigment.view),
-                    desc::samp(6, &e.p.blend.pigment.sampler),
-                ],
-            });
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &self.blend_buf,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
+                }),
+            },
+            desc::tex(1, back.color),
+            desc::tex(2, back.aux),
+            desc::tex(3, src.color),
+            desc::tex(4, src.aux),
+            desc::tex(5, &e.p.blend.pigment.view),
+            desc::samp(6, &e.p.blend.pigment.sampler),
+        ];
+        // Both residuals or neither: `back`, `src` and `out` are all targets of the
+        // same document, so the space that gave one a residual gave all three one.
+        if let (Some(b), Some(s)) = (back.resid, src.resid) {
+            entries.push(desc::tex(7, b));
+            entries.push(desc::tex(8, s));
+        }
+        let bg =
+            e.p.ctx
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark blend bg"),
+                    layout: &e.p.blend.bgl,
+                    entries: &entries,
+                });
+        let attachments = out.attachments(desc::CLEAR);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark blend pass"),
             // The pass covers every texel and reads nothing from `out`, so the load
             // is a don't-care; clearing states that rather than implying the previous
             // contents matter.
-            color_attachments: &[
-                Some(desc::attach(out.0, desc::CLEAR)),
-                Some(desc::attach(out.1, desc::CLEAR)),
-            ],
+            color_attachments: &attachments[..out.count()],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -776,6 +812,7 @@ impl Compositor {
                 levels,
                 p.color_format,
                 p.aux_format,
+                p.resid_format,
             ));
         }
         true
@@ -804,9 +841,18 @@ impl Compositor {
         p: &CompositorPipeline,
         color: &wgpu::TextureView,
         aux: &wgpu::TextureView,
+        // The residual target, which a pigment document's pass A **requires**: it
+        // writes three attachments, and this is also the half of the colour a caller
+        // needs to reconstruct an sRGB answer from what lands here (§6.7).
+        resid: Option<&wgpu::TextureView>,
         view: ViewTransform,
         groups: &[CompositeGroup],
     ) {
+        debug_assert_eq!(
+            resid.is_some(),
+            p.resid_format.is_some(),
+            "pass A's attachment count is the colour space's, not the caller's",
+        );
         let tile_bgs = self.prepare_composite(p, view, groups);
         // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
         // square, so this is a few kilobytes; sharing the render path's cache would
@@ -821,6 +867,7 @@ impl Compositor {
                 levels,
                 p.color_format,
                 p.aux_format,
+                p.resid_format,
             )
         });
         let mut encoder = p
@@ -832,7 +879,7 @@ impl Compositor {
         self.encode_composite(
             p,
             &mut encoder,
-            (color, aux),
+            Targets { color, aux, resid },
             groups,
             &tile_bgs,
             scratch.as_ref(),
@@ -857,6 +904,7 @@ impl Compositor {
     ) {
         let CompositeScene {
             background: bg_channels,
+            background_resid: bg_resid,
             groups,
             outlines,
             transparent,
@@ -887,6 +935,7 @@ impl Compositor {
         };
         let (comp_color_view, comp_aux_view, media_bg) =
             (&self.comp_color_view, &self.comp_aux_view, &self.media_bg);
+        let comp_resid_view = self.comp_resid_view.as_ref();
         // What the lit image, the outlines and the guides are drawn into: the
         // supersampled target when there is one, else the caller's directly. Chrome
         // goes through the same resolve as the paint, so the marching ants and the
@@ -921,6 +970,7 @@ impl Compositor {
             bytemuck::bytes_of(&MediaUniform {
                 light: [0.0, 0.0, 0.0, m.height_strength],
                 bg: bg_channels,
+                bg_resid,
                 shade: [exposure, diffuse_lod, m.specular, 0.0],
                 surf_a: [
                     canvas_origin.x,
@@ -950,7 +1000,11 @@ impl Compositor {
         self.encode_composite(
             p,
             &mut encoder,
-            (comp_color_view, comp_aux_view),
+            Targets {
+                color: comp_color_view,
+                aux: comp_aux_view,
+                resid: comp_resid_view,
+            },
             groups,
             &tile_bgs,
             scratch,

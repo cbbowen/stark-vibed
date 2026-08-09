@@ -141,7 +141,12 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
                 // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
                 // blend across overlapping segments.
                 desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-            ],
+                // The parcel's residual (§6.7), over-blended by the colour's rule
+                // because it is the rest of the same colour.
+                color_space
+                    .resid_format()
+                    .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
+            ][..2 + usize::from(color_space.has_resid())],
         },
     );
 
@@ -298,6 +303,7 @@ impl StrokeRenderer {
                     0.0,
                 ],
                 color: k.channels,
+                resid: k.resid,
                 paint: [rec.brush.drain, k.grain_uv, 0.0, 0.0],
                 noise_freq: k.nfreq,
                 noise_amp: k.namp,
@@ -350,12 +356,15 @@ impl StrokeRenderer {
 
             // This tile's segments into the shared scratch, cleared as it goes.
             {
+                let (sweep_att, sweep_n) = desc::tile_attachments(
+                    scratch.color_view(),
+                    scratch.aux_view(),
+                    scratch.resid_view(),
+                    desc::CLEAR,
+                );
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
-                    color_attachments: &[
-                        Some(desc::attach(scratch.color_view(), desc::CLEAR)),
-                        Some(desc::attach(scratch.aux_view(), desc::CLEAR)),
-                    ],
+                    color_attachments: &sweep_att[..sweep_n],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -385,25 +394,40 @@ impl StrokeRenderer {
                 Some(tile) => (tile.color_view(), tile.aux_view()),
                 None => (&self.zeroes.color, &self.zeroes.aux),
             };
+            // The resident residual, or the 1×1 zero on bare canvas — the same pairing
+            // the colour above makes, since the two are one colour (§6.7).
+            let base_resid = self
+                .zeroes
+                .resid
+                .as_ref()
+                .map(|zero| base.get(coord).and_then(|t| t.resid_view()).unwrap_or(zero));
             let mask_view = self.selection.mask_for(selection, *coord);
+            let mut integrate_entries = vec![
+                desc::tex(0, base_color),
+                desc::tex(1, base_aux),
+                desc::tex(2, scratch.color_view()),
+                desc::tex(3, scratch.aux_view()),
+                desc::tex(4, &mask_view),
+            ];
+            if let (Some(b), Some(s)) = (base_resid, scratch.resid_view()) {
+                integrate_entries.push(desc::tex(5, b));
+                integrate_entries.push(desc::tex(6, s));
+            }
             let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark integrate bg"),
                 layout: &self.swept.integrate_bgl,
-                entries: &[
-                    desc::tex(0, base_color),
-                    desc::tex(1, base_aux),
-                    desc::tex(2, scratch.color_view()),
-                    desc::tex(3, scratch.aux_view()),
-                    desc::tex(4, &mask_view),
-                ],
+                entries: &integrate_entries,
             });
             {
+                let (int_att, int_n) = desc::tile_attachments(
+                    dst.color_view(),
+                    dst.aux_view(),
+                    dst.resid_view(),
+                    desc::CLEAR,
+                );
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark integrate"),
-                    color_attachments: &[
-                        Some(desc::attach(dst.color_view(), desc::CLEAR)),
-                        Some(desc::attach(dst.aux_view(), desc::CLEAR)),
-                    ],
+                    color_attachments: &int_att[..int_n],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -445,9 +469,10 @@ pub(super) fn build_integrate_pipeline(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let resid = color_space.has_resid();
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark integrate"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate().into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate(resid).into()),
     });
     let frag = wgpu::ShaderStages::FRAGMENT;
     let bgl = desc::bind_group_layout(
@@ -459,10 +484,15 @@ pub(super) fn build_integrate_pipeline(
             desc::load_tex(2, frag), // scratch color
             desc::load_tex(3, frag), // scratch aux
             desc::load_tex(4, frag), // selection mask (§6.8) — this tile's, or a 1×1 constant
-        ],
+            // 5 and 6: the base's residual and the scratch parcel's (§6.7). A space
+            // without one declares neither, so Oklab's layout is shorter rather than
+            // bound to a placeholder.
+            desc::load_tex(5, frag),
+            desc::load_tex(6, frag),
+        ][..5 + 2 * usize::from(resid)],
     );
     let layout = desc::pipeline_layout(device, "stark integrate layout", &[Some(&bgl)]);
-    // No blend on either target: the shader does the combine and writes straight
+    // No blend on any target: the shader does the combine and writes straight
     // through.
     let pipeline = desc::fullscreen_pipeline(
         device,
@@ -473,7 +503,8 @@ pub(super) fn build_integrate_pipeline(
         &[
             desc::target(color_space.color_format()),
             desc::target(color_space.aux_format()),
-        ],
+            color_space.resid_format().and_then(desc::target),
+        ][..2 + usize::from(resid)],
     );
     (pipeline, bgl)
 }

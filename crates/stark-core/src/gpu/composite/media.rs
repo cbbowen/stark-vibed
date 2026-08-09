@@ -64,19 +64,22 @@ impl MediaPass {
             label: Some("stark media"),
             source: wgpu::ShaderSource::Wgsl(color_space.media_shader().into()),
         });
-        let bgl = desc::bind_group_layout(
-            device,
-            "stark media bgl",
-            &[
-                desc::uniform(0, frag),
-                desc::load_tex(1, frag),   // comp_color (textureLoad)
-                desc::load_tex(2, frag),   // comp_aux   (textureLoad)
-                desc::sample_tex(3, frag), // surface bump (filtered)
-                desc::sampler(4, frag),
-                desc::sample_tex(5, frag), // environment (filtered, mipped)
-                desc::sampler(6, frag),
-            ],
-        );
+        let mut entries = vec![
+            desc::uniform(0, frag),
+            desc::load_tex(1, frag),   // comp_color (textureLoad)
+            desc::load_tex(2, frag),   // comp_aux   (textureLoad)
+            desc::sample_tex(3, frag), // surface bump (filtered)
+            desc::sampler(4, frag),
+            desc::sample_tex(5, frag), // environment (filtered, mipped)
+            desc::sampler(6, frag),
+        ];
+        // 7, the composited residual — declared by `media_mixbox.wesl` itself rather
+        // than by the shared `media_common`, so a space with no residual gets a layout
+        // without it instead of a placeholder to bind (§6.7).
+        if color_space.has_resid() {
+            entries.push(desc::load_tex(7, frag));
+        }
+        let bgl = desc::bind_group_layout(device, "stark media bgl", &entries);
         let layout = desc::pipeline_layout(device, "stark media layout", &[Some(&bgl)]);
         let pipeline = desc::fullscreen_pipeline(
             device,
@@ -110,42 +113,64 @@ pub(super) struct OffscreenDesc<'a> {
     pub(super) size: Extent2,
     pub(super) color_format: wgpu::TextureFormat,
     pub(super) aux_format: wgpu::TextureFormat,
+    /// `None` in a space with no residual (§6.7), which is also when the media
+    /// layout above has no binding 7 to fill.
+    pub(super) resid_format: Option<wgpu::TextureFormat>,
     pub(super) media: &'a MediaPass,
     pub(super) surface: &'a Surface,
     pub(super) environment: &'a Environment,
 }
 
+/// The offscreen targets pass A writes and the media bind group that reads them.
+pub(super) struct Offscreen {
+    pub(super) color: wgpu::TextureView,
+    pub(super) aux: wgpu::TextureView,
+    /// The residual accumulator, present exactly when the space has a residual — and
+    /// then it is pass A's third attachment as well as the media pass's binding 7.
+    pub(super) resid: Option<wgpu::TextureView>,
+    pub(super) bg: wgpu::BindGroup,
+}
+
 /// (Re)create the offscreen composite targets and the media bind group over them.
-pub(super) fn offscreen(
-    d: OffscreenDesc<'_>,
-) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
+pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
     let OffscreenDesc {
         device,
         size,
         color_format,
         aux_format,
+        resid_format,
         media,
         surface,
         environment,
     } = d;
     let color = super::offscreen_view(device, size, color_format, "stark comp color");
     let aux = super::offscreen_view(device, size, aux_format, "stark comp aux");
+    let resid = resid_format.map(|f| super::offscreen_view(device, size, f, "stark comp resid"));
 
+    let mut entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: media.buf.as_entire_binding(),
+        },
+        desc::tex(1, &color),
+        desc::tex(2, &aux),
+        desc::tex(3, &surface.view),
+        desc::samp(4, &surface.sampler),
+        desc::tex(5, &environment.view),
+        desc::samp(6, &environment.sampler),
+    ];
+    if let Some(view) = &resid {
+        entries.push(desc::tex(7, view));
+    }
     let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("stark media bg"),
         layout: &media.bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: media.buf.as_entire_binding(),
-            },
-            desc::tex(1, &color),
-            desc::tex(2, &aux),
-            desc::tex(3, &surface.view),
-            desc::samp(4, &surface.sampler),
-            desc::tex(5, &environment.view),
-            desc::samp(6, &environment.sampler),
-        ],
+        entries: &entries,
     });
-    (color, aux, bg)
+    Offscreen {
+        color,
+        aux,
+        resid,
+        bg,
+    }
 }

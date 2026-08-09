@@ -18,10 +18,14 @@ struct Params {
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var region_color: texture_2d<f32>;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
+// The region's residual channel (§6.7), sliced out 1:1 like the colour it
+// belongs to.
+@if(resid) @group(0) @binding(3) var region_resid: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 @vertex
@@ -37,5 +41,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // The persistent aux is one channel (height); the extra components are dropped
     // by the single-component target.
     out.aux = vec4<f32>(textureLoad(region_aux, c, 0).x, 0.0, 0.0, 0.0);
+    @if(resid) out.resid = textureLoad(region_resid, c, 0);
     return out;
 }

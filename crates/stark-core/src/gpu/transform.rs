@@ -208,6 +208,12 @@ struct Recording {
     scratch: Vec<TexHandle>,
 }
 
+/// A tile's paint channels as this module passes them around: the moved parcel a
+/// quad pass writes, and the destination a combine writes. `None` in the third slot
+/// is a space with no residual (§6.7) — the same `Option` `TilePairHandle` carries,
+/// before it becomes one.
+type Parcel = (TexHandle, TexHandle, Option<TexHandle>);
+
 impl Recording {
     fn new(device: &wgpu::Device, label: &str) -> Self {
         Self {
@@ -218,10 +224,11 @@ impl Recording {
     }
 
     /// Hold a parcel until this recording is submitted.
-    fn keep(&mut self, parcel: Option<(TexHandle, TexHandle)>) {
-        if let Some((color, aux)) = parcel {
+    fn keep(&mut self, parcel: Option<Parcel>) {
+        if let Some((color, aux, resid)) = parcel {
             self.scratch.push(color);
             self.scratch.push(aux);
+            self.scratch.extend(resid);
         }
     }
 
@@ -236,6 +243,8 @@ pub struct TransformRenderer {
     ctx: GpuContext,
     color_format: wgpu::TextureFormat,
     aux_format: wgpu::TextureFormat,
+    /// The residual channel's format, or `None` in a space that has none (§6.7).
+    resid_format: Option<wgpu::TextureFormat>,
     parcel_pipeline: wgpu::RenderPipeline,
     mask_pipeline: wgpu::RenderPipeline,
     combine_pipeline: wgpu::RenderPipeline,
@@ -266,10 +275,12 @@ impl TransformRenderer {
         let device = &ctx.device;
         let color_format = color_space.color_format();
         let aux_format = color_space.aux_format();
+        let resid_format = color_space.resid_format();
+        let resid = resid_format.is_some();
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark transform"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::transform().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::transform(resid).into()),
         });
 
         let frag = wgpu::ShaderStages::FRAGMENT;
@@ -283,35 +294,41 @@ impl TransformRenderer {
                 desc::sampler(1, frag),
             ],
         );
-        let src_bgl = desc::bind_group_layout(
-            device,
-            "stark transform src bgl",
-            &[
-                desc::sample_tex(0, frag),
-                desc::sample_tex(1, frag),
-                desc::sample_tex(2, frag),
-            ],
-        );
+        let mut src_entries = vec![
+            desc::sample_tex(0, frag),
+            desc::sample_tex(1, frag),
+            desc::sample_tex(2, frag),
+        ];
+        // 3, the source tile's residual (§6.7): carried under the same map and
+        // sampled at the same uv as the colour it belongs to.
+        if resid {
+            src_entries.push(desc::sample_tex(3, frag));
+        }
+        let src_bgl = desc::bind_group_layout(device, "stark transform src bgl", &src_entries);
         // The mask pass reads only the source mask (binding 2).
         let mask_src_bgl = desc::bind_group_layout(
             device,
             "stark transform mask src bgl",
             &[desc::sample_tex(2, frag)],
         );
-        let combine_bgl = desc::bind_group_layout(
-            device,
-            "stark transform combine bgl",
-            &[
-                desc::load_tex(2, frag),
-                desc::load_tex(3, frag),
-                desc::load_tex(4, frag),
-                desc::load_tex(5, frag),
-                desc::load_tex(6, frag),
-                // The gate rect (binding 7): zeroed for the affine's whole-plane cut,
-                // the source rect for perspective/warp.
-                desc::uniform(7, frag),
-            ],
-        );
+        let mut combine_entries = vec![
+            desc::load_tex(2, frag),
+            desc::load_tex(3, frag),
+            desc::load_tex(4, frag),
+            desc::load_tex(5, frag),
+            desc::load_tex(6, frag),
+            // The gate rect (binding 7): zeroed for the affine's whole-plane cut,
+            // the source rect for perspective/warp.
+            desc::uniform(7, frag),
+        ];
+        // 8 and 9, the base's and the parcel's residuals — past the gate rect because
+        // 7 was already taken when they were added, and the shader says the same.
+        if resid {
+            combine_entries.push(desc::load_tex(8, frag));
+            combine_entries.push(desc::load_tex(9, frag));
+        }
+        let combine_bgl =
+            desc::bind_group_layout(device, "stark transform combine bgl", &combine_entries);
 
         let quad_layout = desc::pipeline_layout(
             device,
@@ -335,8 +352,13 @@ impl TransformRenderer {
         // Parcels are disjoint; the combine computes rather than blends.
         let target = desc::target;
 
-        // The paint pair, and the mask alone.
-        let paint = [target(color_format), target(aux_format)];
+        // The paint channels, and the mask alone. Both paint pipelines — the moved
+        // parcel and the combine — write the residual as a third target where the
+        // space has one (§6.7).
+        let mut paint = vec![target(color_format), target(aux_format)];
+        if let Some(f) = resid_format {
+            paint.push(target(f));
+        }
         let mask = [target(MASK_FORMAT)];
         // Moved mask coverage lands with **max** blending over the residue: the soft
         // union of what stayed and what arrived (§16.8), and — unlike the paint
@@ -428,6 +450,7 @@ impl TransformRenderer {
             ctx: ctx.clone(),
             color_format,
             aux_format,
+            resid_format,
             parcel_pipeline,
             mask_pipeline,
             combine_pipeline,
@@ -487,10 +510,12 @@ impl TransformRenderer {
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
+                self.resid_format
+                    .map(|f| pool.acquire_tex(f, AllocSource::TransformDestination)),
             );
             self.combine(&mut rec.encoder, &from, *dest, parcel.as_ref(), &dst, None);
             rec.keep(parcel);
-            tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1));
+            tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1, dst.2));
         }
         for coord in &plan.drops {
             tiles = tiles.remove(coord);
@@ -558,6 +583,8 @@ impl TransformRenderer {
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::TransformDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::TransformDestination),
+                self.resid_format
+                    .map(|f| pool.acquire_tex(f, AllocSource::TransformDestination)),
             );
             self.combine(
                 &mut rec.encoder,
@@ -568,7 +595,7 @@ impl TransformRenderer {
                 Some(rect),
             );
             rec.keep(parcel);
-            tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1));
+            tiles = tiles.insert(*dest, TilePairHandle::new(dst.0, dst.1, dst.2));
         }
         for coord in &plan.drops {
             tiles = tiles.remove(coord);
@@ -616,7 +643,7 @@ impl TransformRenderer {
         g: &Gated<'_>,
         unit_idxs: &[usize],
         dest: TileCoord,
-    ) -> Option<(TexHandle, TexHandle)> {
+    ) -> Option<Parcel> {
         if unit_idxs.is_empty() {
             return None;
         }
@@ -627,6 +654,11 @@ impl TransformRenderer {
         let aux = from
             .pool
             .acquire_tex(self.aux_format, AllocSource::TransformScratch);
+        // The parcel carries the residual it was cut with: the lift scales height
+        // alone, so the colour — both halves of it — rides through unscaled (§16.2).
+        let resid = self
+            .resid_format
+            .map(|f| from.pool.acquire_tex(f, AllocSource::TransformScratch));
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for idx in unit_idxs {
@@ -642,23 +674,32 @@ impl TransformRenderer {
                     device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("stark transform src bg"),
                         layout: &self.src_bgl,
-                        entries: &[
-                            desc::tex(0, tile.color_view()),
-                            desc::tex(1, tile.aux_view()),
-                            desc::tex(2, &mask),
-                        ],
+                        entries: &{
+                            let mut e = vec![
+                                desc::tex(0, tile.color_view()),
+                                desc::tex(1, tile.aux_view()),
+                                desc::tex(2, &mask),
+                            ];
+                            if let Some(view) = tile.resid_view() {
+                                e.push(desc::tex(3, view));
+                            }
+                            e
+                        },
                     })
                 })
                 .clone();
             draws.push((self.gated_bg(unit, g.inv, g.rect, dest), src_bg));
         }
 
+        let (parcel_att, parcel_n) = desc::tile_attachments(
+            color.view(),
+            aux.view(),
+            resid.as_ref().map(TexHandle::view),
+            desc::CLEAR,
+        );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform parcel gated"),
-            color_attachments: &[
-                Some(desc::attach(color.view(), desc::CLEAR)),
-                Some(desc::attach(aux.view(), desc::CLEAR)),
-            ],
+            color_attachments: &parcel_att[..parcel_n],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -671,7 +712,7 @@ impl TransformRenderer {
             pass.draw(0..4, 0..1);
         }
         drop(pass);
-        Some((color, aux))
+        Some((color, aux, resid))
     }
 
     /// One destination mask tile under a rect-scoped map: the residue
@@ -771,7 +812,7 @@ impl TransformRenderer {
         affine: Affine2,
         dest: TileCoord,
         sources: &[TileCoord],
-    ) -> Option<(TexHandle, TexHandle)> {
+    ) -> Option<Parcel> {
         if sources.is_empty() {
             return None;
         }
@@ -782,6 +823,11 @@ impl TransformRenderer {
         let aux = from
             .pool
             .acquire_tex(self.aux_format, AllocSource::TransformScratch);
+        // The parcel carries the residual it was cut with: the lift scales height
+        // alone, so the colour — both halves of it — rides through unscaled (§16.2).
+        let resid = self
+            .resid_format
+            .map(|f| from.pool.acquire_tex(f, AllocSource::TransformScratch));
 
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for src in sources {
@@ -796,23 +842,32 @@ impl TransformRenderer {
                     device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("stark transform src bg"),
                         layout: &self.src_bgl,
-                        entries: &[
-                            desc::tex(0, tile.color_view()),
-                            desc::tex(1, tile.aux_view()),
-                            desc::tex(2, &mask),
-                        ],
+                        entries: &{
+                            let mut e = vec![
+                                desc::tex(0, tile.color_view()),
+                                desc::tex(1, tile.aux_view()),
+                                desc::tex(2, &mask),
+                            ];
+                            if let Some(view) = tile.resid_view() {
+                                e.push(desc::tex(3, view));
+                            }
+                            e
+                        },
                     })
                 })
                 .clone();
             draws.push((self.quad_bg(affine, *src, dest), src_bg));
         }
 
+        let (parcel_att, parcel_n) = desc::tile_attachments(
+            color.view(),
+            aux.view(),
+            resid.as_ref().map(TexHandle::view),
+            desc::CLEAR,
+        );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform parcel"),
-            color_attachments: &[
-                Some(desc::attach(color.view(), desc::CLEAR)),
-                Some(desc::attach(aux.view(), desc::CLEAR)),
-            ],
+            color_attachments: &parcel_att[..parcel_n],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -825,7 +880,7 @@ impl TransformRenderer {
             pass.draw(0..4, 0..1);
         }
         drop(pass);
-        Some((color, aux))
+        Some((color, aux, resid))
     }
 
     /// Cut `dest`'s base by its own mask and stack the parcel over it, into the
@@ -837,8 +892,8 @@ impl TransformRenderer {
         encoder: &mut wgpu::CommandEncoder,
         from: &Source<'_>,
         dest: TileCoord,
-        parcel: Option<&(TexHandle, TexHandle)>,
-        dst: &(TexHandle, TexHandle),
+        parcel: Option<&Parcel>,
+        dst: &Parcel,
         gate: Option<(Vec2, Vec2)>,
     ) {
         let device = &self.ctx.device;
@@ -853,30 +908,58 @@ impl TransformRenderer {
         };
         let base_mask = self.selection.mask_for(from.selection, dest);
         let (parcel_color, parcel_aux) = match parcel {
-            Some((c, a)) => (c.view().clone(), a.view().clone()),
+            Some((c, a, _)) => (c.view().clone(), a.view().clone()),
             None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
         };
+        // A virgin destination and a cut-only tile read the 1×1 zero for the residual
+        // exactly as they do for the colour — the combine is one shader whatever
+        // exists (§6.8's pattern).
+        let (base_resid, parcel_resid) = match &self.zeroes.resid {
+            Some(zero) => (
+                Some(
+                    from.base
+                        .get(&dest)
+                        .and_then(|t| t.resid_view())
+                        .unwrap_or(zero)
+                        .clone(),
+                ),
+                Some(
+                    parcel
+                        .and_then(|(_, _, r)| r.as_ref())
+                        .map_or_else(|| zero.clone(), |r| r.view().clone()),
+                ),
+            ),
+            None => (None, None),
+        };
+        let mut entries = vec![
+            desc::tex(2, &base_color),
+            desc::tex(3, &base_aux),
+            desc::tex(4, &base_mask),
+            desc::tex(5, &parcel_color),
+            desc::tex(6, &parcel_aux),
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: ubuf.as_entire_binding(),
+            },
+        ];
+        if let (Some(b), Some(p)) = (&base_resid, &parcel_resid) {
+            entries.push(desc::tex(8, b));
+            entries.push(desc::tex(9, p));
+        }
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark transform combine bg"),
             layout: &self.combine_bgl,
-            entries: &[
-                desc::tex(2, &base_color),
-                desc::tex(3, &base_aux),
-                desc::tex(4, &base_mask),
-                desc::tex(5, &parcel_color),
-                desc::tex(6, &parcel_aux),
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: ubuf.as_entire_binding(),
-                },
-            ],
+            entries: &entries,
         });
+        let (dst_att, dst_n) = desc::tile_attachments(
+            dst.0.view(),
+            dst.1.view(),
+            dst.2.as_ref().map(TexHandle::view),
+            desc::CLEAR,
+        );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark transform combine"),
-            color_attachments: &[
-                Some(desc::attach(dst.0.view(), desc::CLEAR)),
-                Some(desc::attach(dst.1.view(), desc::CLEAR)),
-            ],
+            color_attachments: &dst_att[..dst_n],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,

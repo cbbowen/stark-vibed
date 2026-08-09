@@ -11,6 +11,15 @@ import package::lib::paint_common::{PAINT_EPS};
 struct Media {
     light: vec4<f32>,  // _, _, _, height_strength (relief slope; xyz unused under IBL)
     bg: vec4<f32>,     // background (substrate) in latent color space
+    // The substrate colour's **residual** (.xyz), the half of it the space's three
+    // channels cannot express (§6.7); .w unused. Zero for every space but
+    // Mixbox — and a black ground is exactly the case that made this channel
+    // necessary, since Mixbox's pigment polynomial renders black as `#383838`.
+    //
+    // Unconditional, like `comp_resid` below and for the same two reasons: a uniform
+    // is mirrored into Rust from the unlinked source (§6.10), which cannot evaluate a
+    // feature, and this pass has one bind group layout across both spaces.
+    bg_resid: vec4<f32>,
     shade: vec4<f32>,  // exposure, diffuse_lod, gloss, _
     surf_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
     surf_b: vec4<f32>, // surface_strength, transparent (0/1), _, _
@@ -32,6 +41,10 @@ struct Media {
 // specular from a gloss-selected mip in the reflection direction.
 @group(0) @binding(5) var env: texture_2d<f32>;
 @group(0) @binding(6) var env_samp: sampler;
+// **Binding 7 is `media_mixbox`'s**, and is declared there: the composited residual
+// (§6.7). It is not here because Oklab has no residual to bind — a
+// declaration in this shared module would put the texture in *both* spaces' layouts
+// and leave the colorimetric one binding a placeholder it never samples.
 
 const PI: f32 = 3.14159265359;
 

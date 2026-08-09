@@ -1099,11 +1099,19 @@ fn build_gpu(
         environment,
         selection,
     } = b;
-    // The colour space's two formats — the only ones this call site knows. The
-    // pool unions in its own (the selection mask, the wide scratch aux), so
-    // neither can be forgotten here (`TilePool::new`).
-    let pool = TilePool::new(gpu.clone(), [cs.color_format(), cs.aux_format()]);
-    let zeroes = Zeroes::new(gpu, cs.color_format(), cs.aux_format());
+    // The colour space's formats — the only ones this call site knows. The pool
+    // unions in its own (the selection mask, the wide scratch aux), so none can be
+    // forgotten here (`TilePool::new`). The residual's is `Rgba16Float`, which every
+    // space's colour already is, but it is passed rather than assumed for the same
+    // reason the aux is: the first space to choose otherwise would meet
+    // `acquire_tex`'s "unsupported format" panic on its first stroke.
+    let pool = TilePool::new(
+        gpu.clone(),
+        [cs.color_format(), cs.aux_format()]
+            .into_iter()
+            .chain(cs.resid_format()),
+    );
+    let zeroes = Zeroes::new(gpu, cs.color_format(), cs.aux_format(), cs.resid_format());
     let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
     let compositor_pipeline = CompositorPipeline::new(
         gpu,

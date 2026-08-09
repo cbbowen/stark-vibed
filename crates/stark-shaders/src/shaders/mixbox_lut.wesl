@@ -21,10 +21,11 @@
 
 // **Bindings 5 and 6 of group 0, which is a claim on someone else's group.** This
 // module has no pipeline of its own — its one caller is `blend_mixbox.wesl`, whose
-// other bindings come from `blend_common.wesl` at 0–4. The two files have to agree on
-// where one stops and the other starts, and nothing but this comment says so. If
-// `blend_common` ever grows a sixth binding, it collides here, and the error will
-// name a mangled identifier rather than either file.
+// other bindings come from `blend_common.wesl` at 0–4 and from itself at 7–8 (the two
+// residual channels, §6.7). The three files have to agree on where each
+// stops and the next starts, and nothing but this comment says so. If `blend_common`
+// ever grows a sixth binding, it collides here, and the error will name a mangled
+// identifier rather than any of the files.
 @group(0) @binding(5) var pigment_lut: texture_2d<f32>;
 @group(0) @binding(6) var pigment_samp: sampler;
 

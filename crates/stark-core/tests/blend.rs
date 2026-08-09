@@ -332,20 +332,19 @@ fn black_is_the_identity_through_the_round_trip() {
         // within the half-float the composite targets carry, whatever the colour.
         (ColorSpaceId::Oklab, MUTED, 2u8),
         (ColorSpaceId::Oklab, WARM, 2u8),
-        // Mixbox's is the trained polynomial and its inverse table. A near-neutral is
-        // a mixture pigment hits almost dead on, so it has to come back almost exact —
-        // this is the case that would catch a LUT read the wrong way round, which
-        // would be wrong by a hundred levels rather than a handful.
-        (ColorSpaceId::Mixbox, MUTED, 8u8),
-        // A saturated orange is not. Three concentrations cannot express it exactly;
-        // Mixbox carries the difference in a *residual* that this engine drops so the
-        // channels fit alongside coverage (§6.7), and the CPU conversion
-        // loses the same ~12 levels of blue on this colour before any of it reaches
-        // the GPU. So the bound here is not slack for a suspect shader — it is the
-        // documented cost of saying "this much light" in pigment, and it is why a
-        // `Radiance` layer in a Mixbox document is a different proposition from one
-        // in an Oklab document.
-        (ColorSpaceId::Mixbox, WARM, 40u8),
+        // Mixbox's is the trained polynomial and its inverse table, and it holds to
+        // the same bound — which it did **not** before the latent's residual was
+        // carried (§6.7). A near-neutral cost 8 levels then and a saturated orange 40,
+        // because three concentrations cannot express either colour exactly and the
+        // difference was dropped on both the CPU and the GPU side of the trip. Now
+        // `rgb_to_resid` keeps it and `blend_mixbox` restores it, so the round trip
+        // out to XYZ and back is faithful in a pigment document too.
+        //
+        // These two are what would catch it going missing again — and a LUT read the
+        // wrong way round would still be wrong by a hundred levels rather than a
+        // handful.
+        (ColorSpaceId::Mixbox, MUTED, 2u8),
+        (ColorSpaceId::Mixbox, WARM, 2u8),
     ];
     for (space, color, tol) in cases {
         for mode in [BlendMode::Reinhard, BlendMode::Drago] {
@@ -394,8 +393,8 @@ fn white_is_the_identity_through_the_round_trip() {
     let cases = [
         (ColorSpaceId::Oklab, MUTED, 2u8),
         (ColorSpaceId::Oklab, WARM, 2u8),
-        (ColorSpaceId::Mixbox, MUTED, 8u8),
-        (ColorSpaceId::Mixbox, WARM, 40u8),
+        (ColorSpaceId::Mixbox, MUTED, 2u8),
+        (ColorSpaceId::Mixbox, WARM, 2u8),
     ];
     for (space, color, tol) in cases {
         let Some(mut engine) = engine_or_skip_with(space) else {
@@ -569,4 +568,138 @@ fn golden_multiply_layer() {
     crossed(&mut engine);
     engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
     assert_golden("blend_multiply", &engine.render_to_image(), 6);
+}
+
+/// **Black is black in a pigment document** — the defect the residual channel exists
+/// for (§6.7).
+///
+/// Mixbox's four trained pigments do not span sRGB, so its polynomial alone renders
+/// pure black's concentrations as `#383838`: a mid-grey, wrong by 56 levels on every
+/// channel, in the one colour a painter is most likely to notice. The engine dropped
+/// the latent's residual for as long as a tile held only three concentrations plus
+/// coverage, and no cheaper recovery exists — `rgb → c` is many-to-one, with up to 70
+/// sRGB colours sharing a quantized triple, so nothing computed from the channels
+/// stored beside it could have stood in.
+///
+/// Asserted **against Oklab** rather than against zero, because the media pass has
+/// its own say: the dielectric sheen and the tonemap leave a black ground a little
+/// above zero in either space, and a test that demanded absolute black would be
+/// testing the lighting. What must agree is the two spaces — whatever the light does
+/// to black, it does the same to both, and the gap between them is the pigment error
+/// this channel removes.
+///
+/// Both halves are checked because they failed differently. A black **ground** goes
+/// through `over_substrate` and the media pass; black **paint** goes through the
+/// stamp, the integrate and the composite first. Either one alone would leave the
+/// other free to regress.
+#[test]
+fn black_is_black_in_the_pigment_space() {
+    let black_in = |space| -> Option<([u8; 4], [u8; 4])> {
+        let mut engine = engine_or_skip_with(space)?;
+        engine.process(DocCommand::SetBackground([0.0, 0.0, 0.0]));
+        let ground = center(&engine.render_to_image());
+        paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
+        Some((ground, center(&engine.render_to_image())))
+    };
+    let (Some((ok_ground, ok_paint)), Some((mix_ground, mix_paint))) = (
+        black_in(ColorSpaceId::Oklab),
+        black_in(ColorSpaceId::Mixbox),
+    ) else {
+        return;
+    };
+
+    // Two levels, the same bound the round-trip cases above hold to. Before the
+    // residual was carried this gap was ~56.
+    for (what, ok, mix) in [
+        ("a black ground", ok_ground, mix_ground),
+        ("black paint", ok_paint, mix_paint),
+    ] {
+        let worst = ok
+            .iter()
+            .zip(&mix)
+            .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            worst <= 2,
+            "{what}: Oklab renders {ok:?} and Mixbox {mix:?} — off by {worst}",
+        );
+    }
+}
+
+/// A band of black paint laid off-centre, and the drag that carries it across the
+/// origin — the geometry [`a_carried_black_stays_black_in_the_pigment_space`] reads.
+const BLACK_BAND: &[Vec2] = &[Vec2::new(-70.0, -60.0), Vec2::new(70.0, -60.0)];
+const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
+
+/// A brush that lays nothing of its own and moves what it finds: `add = 0` and a fully
+/// transparent colour, so anything it deposits it first picked up (§6.2).
+fn carrying_brush() -> BrushParams {
+    let mut b = brush([0.0, 0.0, 0.0, 0.0], 26.0);
+    b.drain = 0.0;
+    b.dynamics.add = 0.0;
+    b.dynamics.lift = 0.9;
+    b.dynamics.deposit = 0.9;
+    b
+}
+
+/// Drag black paint out of a band and across the origin, on a ground of `bg`.
+fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
+    let mut engine = engine_or_skip_with(space)?;
+    engine.process(DocCommand::SetBackground(bg));
+    paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 30.0, BLACK_BAND);
+    stroke_with(&mut engine, carrying_brush(), CARRY_DRAG);
+    Some(center(&engine.render_to_image()))
+}
+
+/// The same claim as [`black_is_black_in_the_pigment_space`], through the **stamp
+/// loop** instead of the swept fast path (§6.2).
+///
+/// That test paints black and reads it straight back, which exercises the stamp, the
+/// integrate and the composite. A *carrying* brush makes a round trip none of those
+/// do: it lifts paint off the region into its own reservoir, wicks it about inside the
+/// tip, bakes it along the travel and lays it down again somewhere else. Each of those
+/// is a separate place the residual has to ride the same masses the latent does, and
+/// the fast-path test cannot see any of them — a loop that carried concentrations
+/// alone would pick up black paint and put down the grey they describe (§6.7).
+///
+/// **Read on a black ground, which is what makes the comparison mean anything.** The
+/// drag delivers a *partial* coverage of black, and a half-covered black is not a
+/// space-independent colour: Mixbox mixing pigment towards a white ground and Oklab
+/// interpolating towards it legitimately disagree by far more than the bound here, so
+/// the same reading over white would be measuring the spaces rather than the channel.
+/// Black paint over a black ground is black at *every* coverage in either space, so a
+/// difference between them can only be the residual — the identical trick
+/// [`black_is_black_in_the_pigment_space`] plays for the same reason.
+#[test]
+fn a_carried_black_stays_black_in_the_pigment_space() {
+    // The drag has to actually deliver paint at the origin, which a black ground
+    // cannot show. Established once over white — and in Oklab, whose three channels
+    // are exact, so this reads the *geometry* and never the channel under test.
+    let Some(over_white) = carried_onto(ColorSpaceId::Oklab, [1.0, 1.0, 1.0]) else {
+        return;
+    };
+    assert!(
+        luma(over_white) < 200.0,
+        "the drag carried no paint to the origin ({over_white:?} on white), \
+         so the comparison below would pass having tested nothing",
+    );
+
+    let (Some(ok), Some(mix)) = (
+        carried_onto(ColorSpaceId::Oklab, [0.0, 0.0, 0.0]),
+        carried_onto(ColorSpaceId::Mixbox, [0.0, 0.0, 0.0]),
+    ) else {
+        return;
+    };
+    // Two levels, the same bound the fast-path case holds to.
+    let worst = ok
+        .iter()
+        .zip(&mix)
+        .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        worst <= 2,
+        "carried black: Oklab renders {ok:?} and Mixbox {mix:?} — off by {worst}",
+    );
 }

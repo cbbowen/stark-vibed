@@ -52,11 +52,13 @@ struct VsOut {
     // view bind group is declared VERTEX-only and this is the matte's only use of
     // it downstream. It is constant across the quad, so a flat varying is exact.
     @location(4) @interpolate(flat) aa: f32,
+    @if(resid) @location(5) @interpolate(flat) resid: vec4<f32>,
 }
 
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 // A fullscreen quad — the region is unbounded, so the draw covers the viewport
@@ -71,6 +73,16 @@ fn vs_main(
     // The fill, in the working colour space.
     @location(1) channels: vec4<f32>,
     @location(2) opacity: f32,
+    // The fill colour's **residual** (.xyz), the half of it the space's three channels
+    // cannot express (§6.7); .w unused. Zero for every space but Mixbox.
+    //
+    // An instance attribute declared unconditionally, where the varying and the target
+    // below are `@if(resid)`: this parameter list is mirrored into Rust from the
+    // unlinked source (§6.10), which has no feature set to evaluate, so a
+    // parameter that came and went with the variant would give `MatteInstance` two
+    // layouts. Sixteen bytes per matte, against a per-texel channel Oklab still does
+    // not allocate.
+    @location(3) resid: vec4<f32>,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let ndc = corner * 2.0 - 1.0;
@@ -93,6 +105,7 @@ fn vs_main(
     // `misc.w` is the zoom (screen px per canvas px), so the edge keeps a constant
     // on-screen softness at any zoom.
     out.aa = 1.0 / max(view.misc.w, 1e-6);
+    @if(resid) out.resid = resid;
     return out;
 }
 
@@ -123,5 +136,8 @@ fn fs_main(in: VsOut) -> FsOut {
     let w = a * (1.0 - exp(-OPACITY_K * MATTE_THICKNESS));
     out.color = vec4<f32>(in.channels.rgb * w, w);
     out.aux = vec4<f32>(MATTE_THICKNESS * a, 0.0, 0.0, a);
+    // The residual rides the same premultiply and the same `over` (§6.7):
+    // a matte is a flat coat of one colour, and a colour is both halves.
+    @if(resid) out.resid = vec4<f32>(in.resid.rgb * w, w);
     return out;
 }

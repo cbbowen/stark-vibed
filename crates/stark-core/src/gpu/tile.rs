@@ -244,10 +244,19 @@ impl TexHandle {
     }
 }
 
-/// A tile's two channels (`color` + `aux`), each a separately pooled texture.
+/// A tile's channels (`color` + `aux`, and a pigment space's `resid`), each a
+/// separately pooled texture.
 struct TilePair {
     color: TexHandle,
     aux: TexHandle,
+    /// The **residual** channel (§6.7) — present exactly when the document's colour
+    /// space declares a `resid_format`, which is a property of the space and so is
+    /// the same for every tile of a document.
+    ///
+    /// `Option` rather than a texture every space allocates: Oklab has no residual,
+    /// and giving it one would be eight bytes a texel of zeroes on the default
+    /// space's tiles, plus a third attachment through every pass that writes one.
+    resid: Option<TexHandle>,
 }
 
 /// A layer's painted tiles: sparse, so only populated ones exist, and persistent,
@@ -268,14 +277,20 @@ pub type MaskMap = rpds::HashTrieMap<crate::geom::TileCoord, MaskHandle>;
 pub struct TilePairHandle(Arc<TilePair>);
 
 impl TilePairHandle {
-    pub fn new(color: TexHandle, aux: TexHandle) -> Self {
-        TilePairHandle(Arc::new(TilePair { color, aux }))
+    pub fn new(color: TexHandle, aux: TexHandle, resid: Option<TexHandle>) -> Self {
+        TilePairHandle(Arc::new(TilePair { color, aux, resid }))
     }
     pub fn color_view(&self) -> &wgpu::TextureView {
         self.0.color.view()
     }
     pub fn aux_view(&self) -> &wgpu::TextureView {
         self.0.aux.view()
+    }
+    /// The residual channel's view, or `None` in a space that has no residual
+    /// (§6.7). A caller in a pigment document may `expect` it: the space decides,
+    /// once, for every tile it ever makes.
+    pub fn resid_view(&self) -> Option<&wgpu::TextureView> {
+        self.0.resid.as_ref().map(TexHandle::view)
     }
 
     /// Whether two handles are the same allocation. A tile's texels are never

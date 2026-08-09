@@ -27,6 +27,11 @@ struct Fill {
     c: vec4<f32>,
     // .x = paint height laid at full coverage; .yzw unused.
     p: vec4<f32>,
+    // The parcel colour's **residual** (.xyz) — the half of it the space's three
+    // channels cannot express (§6.7); .w unused. Zero for every space but
+    // Mixbox. Declared unconditionally: a uniform is mirrored into Rust from the
+    // unlinked source (§6.10), which has no feature set to evaluate.
+    r: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> f: Fill;
@@ -35,6 +40,9 @@ struct Fill {
 // The shape's own coverage, and the author's selection gating it.
 @group(0) @binding(3) var region: texture_2d<f32>;
 @group(0) @binding(4) var gate: texture_2d<f32>;
+// The resident paint's residual channel (§6.7), read through the same
+// clamped `load1` — bare canvas binds the 1×1 zero here as it does for the colour.
+@if(resid) @group(0) @binding(5) var base_resid: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -44,6 +52,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 @fragment
@@ -52,6 +61,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let bc = load1(base_color, c);
     let ba = load1(base_aux, c).x;
     let cov = load1(region, c).r * load1(gate, c).r;
+    @if(resid) let br = load1(base_resid, c);
 
     var out: FsOut;
     // Nothing lands here. An exact branch rather than the general arithmetic: a
@@ -63,6 +73,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     if cov == 0.0 {
         out.color = bc;
         out.aux = vec4<f32>(ba, 0.0, 0.0, 0.0);
+        @if(resid) out.resid = br;
         return out;
     }
 
@@ -82,5 +93,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let lat = blend_latent(lat0, m0, f.c.rgb, m1);
     out.color = vec4<f32>(lat * op, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
+    // The residual stacks through the same law on the same two masses — it is the
+    // rest of the same colour (§6.7).
+    @if(resid) let res0 = br.rgb / max(bc.a, PAINT_EPS);
+    @if(resid) out.resid = vec4<f32>(blend_latent(res0, m0, f.r.rgb, m1) * op, op);
     return out;
 }

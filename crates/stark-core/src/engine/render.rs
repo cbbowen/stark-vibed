@@ -254,6 +254,10 @@ impl Engine {
         // piece was painted on travels with it instead of living in whichever
         // frontend happened to render it.
         let bg_channels = self.color_space.rgb_to_channels(doc.background);
+        let bg_resid = {
+            let r = self.color_space.rgb_to_resid(doc.background);
+            [r[0], r[1], r[2], 0.0]
+        };
         // Chrome never reaches a file: an exported image gets no selection outline
         // (§15.6). Keyed on `chrome`, deliberately *not* on the
         // background — a substrate export is still an export, and tying the two
@@ -288,6 +292,7 @@ impl Engine {
         };
         let scene = CompositeScene {
             background: bg_channels,
+            background_resid: bg_resid,
             groups: &groups,
             outlines: &outlines,
             transparent: background == Background::Transparent,
@@ -610,6 +615,10 @@ impl Engine {
                     // same conversion the brush colour gets, so a matte means
                     // the same colour in an Oklab and a Mixbox document.
                     channels: self.color_space.rgb_to_channels(*color),
+                    resid: {
+                        let r = self.color_space.rgb_to_resid(*color);
+                        [r[0], r[1], r[2], 0.0]
+                    },
                     opacity: layer.opacity,
                 })]
             }

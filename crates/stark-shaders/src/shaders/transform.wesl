@@ -41,7 +41,10 @@
 //   group 0 binding 1  the bilinear clamp sampler, shared by both quad paths
 //   group 0 binding 2–6 combine's base/parcel textures — combine only
 //   group 0 binding 7  `qc`, the combine's gate rect — combine only
+//   group 0 binding 8–9 combine's base/parcel residuals (§6.7) — combine only,
+//                       and only in a space that has a residual
 //   group 1 binding 0–2 the source tile being carried — both quad paths
+//   group 1 binding 3  the source tile's residual — both quad paths, resid only
 
 import package::lib::paint_common::{blend_latent, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
@@ -78,6 +81,9 @@ struct Quad {
 @group(1) @binding(0) var src_color: texture_2d<f32>;
 @group(1) @binding(1) var src_aux: texture_2d<f32>;
 @group(1) @binding(2) var src_mask: texture_2d<f32>;
+// The source tile's residual channel (§6.7), carried under the same map
+// and sampled at the same uv as the colour it belongs to.
+@if(resid) @group(1) @binding(3) var src_resid: texture_2d<f32>;
 
 // Combine inputs (a separate pipeline; these bindings are unused by the quad
 // passes and vice versa). Every input may be a real tile 1:1 with the
@@ -89,6 +95,10 @@ struct Quad {
 @group(0) @binding(4) var base_mask: texture_2d<f32>;
 @group(0) @binding(5) var parcel_color: texture_2d<f32>;
 @group(0) @binding(6) var parcel_aux: texture_2d<f32>;
+// The residual halves of the combine's two colours. Like the five above, either a
+// real tile or a 1×1 constant, read through the same clamped loads.
+@if(resid) @group(0) @binding(8) var base_resid: texture_2d<f32>;
+@if(resid) @group(0) @binding(9) var parcel_resid: texture_2d<f32>;
 
 // One source-tile interior as a transformed quad, placed in the destination
 // tile's texture (origin = interior origin − apron, edge TILE_TEX). The quad
@@ -127,6 +137,9 @@ fn src_uv(frag: vec2<f32>) -> vec2<f32> {
 struct ParcelOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    // The parcel's residual — written through unscaled beside the colour, since it
+    // is the rest of the same colour and the cut scales height alone (§16.2).
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 // The moved parcel: `(latent, op, h·m)` — the cut takes height with it, the
@@ -141,6 +154,7 @@ fn fs_parcel(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     var out: ParcelOut;
     out.color = c;
     out.aux = vec4<f32>(h * m, 0.0, 0.0, 0.0);
+    @if(resid) out.resid = textureSampleLevel(src_resid, samp, uv, 0.0);
     return out;
 }
 
@@ -268,6 +282,7 @@ fn fs_parcel_gated(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     var out: ParcelOut;
     out.color = c;
     out.aux = vec4<f32>(h * m, 0.0, 0.0, 0.0);
+    @if(resid) out.resid = textureSampleLevel(src_resid, samp, uv, 0.0);
     return out;
 }
 
@@ -299,6 +314,7 @@ fn vs_fill(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    @if(resid) @location(2) resid: vec4<f32>,
 }
 
 // The combine's one map-dependent fact: whether the cut is gated by a source
@@ -329,6 +345,8 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     }
     let pc = load1(parcel_color, c);
     let ph = load1(parcel_aux, c).x;
+    @if(resid) let br = load1(base_resid, c);
+    @if(resid) let pr = load1(parcel_resid, c);
 
     var out: FsOut;
     // The two ends of the coverage ramp take **exact** branches rather than the
@@ -355,6 +373,9 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     if m == 0.0 && ph == 0.0 {
         out.color = bc;
         out.aux = vec4<f32>(ba.x, 0.0, 0.0, 0.0);
+        // Passed through whole for the same reason: the residual takes the same
+        // divide-then-multiply round trip below and drifts by the same ulp.
+        @if(resid) out.resid = br;
         return out;
     }
     // Fully selected: the cut leaves nothing (`h₀ = 0`), so the result *is* the
@@ -362,6 +383,7 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     if m == 1.0 {
         out.color = pc;
         out.aux = vec4<f32>(ph, 0.0, 0.0, 0.0);
+        @if(resid) out.resid = pr;
         return out;
     }
 
@@ -381,5 +403,9 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     let lat = blend_latent(lat0, m0, lat1, m1);
     out.color = vec4<f32>(lat * op, op);
     out.aux = vec4<f32>(h, 0.0, 0.0, 0.0);
+    // The residual stacks through the same law on the same two masses (§6.7).
+    @if(resid) let res0 = br.rgb / max(bc.a, PAINT_EPS);
+    @if(resid) let res1 = pr.rgb / max(pc.a, PAINT_EPS);
+    @if(resid) out.resid = vec4<f32>(blend_latent(res0, m0, res1, m1) * op, op);
     return out;
 }

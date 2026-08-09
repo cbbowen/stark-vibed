@@ -39,9 +39,13 @@ impl TilePass {
         aux_format: wgpu::TextureFormat,
     ) -> Self {
         let frag = wgpu::ShaderStages::FRAGMENT;
+        // The residual channel a pigment space carries (§6.7): a third sampled tile
+        // texture and a third target, on the shader variant built for it.
+        let resid_format = color_space.resid_format();
+        let resid = resid_format.is_some();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark composite"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::composite().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
         });
 
         // Vertex-only: the fragment stage gets canvas position as a varying, and the
@@ -54,11 +58,11 @@ impl TilePass {
                 desc::sampler(1, frag),
             ],
         );
-        let tile_bgl = desc::bind_group_layout(
-            device,
-            "stark composite tile bgl",
-            &[desc::sample_tex(0, frag), desc::sample_tex(1, frag)],
-        );
+        let mut tile_entries = vec![desc::sample_tex(0, frag), desc::sample_tex(1, frag)];
+        if resid {
+            tile_entries.push(desc::sample_tex(2, frag));
+        }
+        let tile_bgl = desc::bind_group_layout(device, "stark composite tile bgl", &tile_entries);
         let layout = desc::pipeline_layout(
             device,
             "stark composite layout",
@@ -66,10 +70,16 @@ impl TilePass {
         );
         // Pass A's blends come from the colour space (§6.7): premultiplied `over` on
         // colour, additive on the height aux.
-        let space_targets = [
+        // The residual composites through the *colour's* blend, never the aux's: it is
+        // premultiplied by the same coverage and covers by the same rule, being the
+        // rest of the same colour (§6.7).
+        let mut space_targets = vec![
             desc::blended_target(color_format, Some(color_space.color_blend())),
             desc::blended_target(aux_format, Some(color_space.aux_blend())),
         ];
+        if let Some(f) = resid_format {
+            space_targets.push(desc::blended_target(f, Some(color_space.color_blend())));
+        }
         let pipeline = desc::render_pipeline(
             device,
             RenderPipe {
@@ -89,7 +99,7 @@ impl TilePass {
         // ---- Matte layers, inside pass A (§15.4), on pass A's own view group.
         let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark matte"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(resid).into()),
         });
         let matte_layout = desc::pipeline_layout(device, "stark matte layout", &[Some(&view_bgl)]);
         // Premultiplied `over` on BOTH targets. The aux one is the load-bearing
@@ -99,10 +109,13 @@ impl TilePass {
         // `OneMinusSrcAlpha` is valid on the alpha-less R16Float aux: the factor
         // reads the *source* alpha from the shader's output vec4.
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
-        let matte_targets = [
+        let mut matte_targets = vec![
             desc::blended_target(color_format, over),
             desc::blended_target(aux_format, over),
         ];
+        if let Some(f) = resid_format {
+            matte_targets.push(desc::blended_target(f, over));
+        }
         let matte_pipeline = desc::render_pipeline(
             device,
             RenderPipe {

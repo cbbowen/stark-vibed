@@ -140,5 +140,16 @@ fn fs_main(in: VsOut) -> FsOut {
     // tile keeps: gloss is a uniform property of paint, not a stored channel, so
     // there is nothing here that a brush could source it from.
     out.aux = vec4<f32>(h, m, 0.0, 0.0);
+    // The parcel's residual (§6.7), premultiplied by the same `w` and over-blended by
+    // the same rule as the colour beside it: the pair is one colour, and anything that
+    // treated them as two quantities to combine differently would take the paint off
+    // the sRGB colour it was picked as.
+    //
+    // **Not jittered**, where the latent above is: colour dynamics perturb the
+    // *pigment mixture*, and the residual is the part of the picked colour no mixture
+    // of those pigments reaches. Jittering it would be jittering the correction rather
+    // than the paint — and the correction has no direction in pigment space to be
+    // jittered along.
+    @if(resid) out.resid = vec4<f32>(xf.resid.xyz * w, w);
     return out;
 }

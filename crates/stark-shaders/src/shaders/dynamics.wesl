@@ -147,6 +147,15 @@ struct Stamp {
     //    with no relief, which is what makes a `Flat` canvas render exactly what it
     //    always did.
     i: vec4<f32>,
+    // j: the brush colour's **residual** .xyz — the half of it the space's three
+    //    channels cannot express (§6.7); .w unused. Undrained, like `c`.
+    //    Zero for every space but Mixbox.
+    //
+    //    Declared unconditionally, where every texture that carries it is
+    //    `@if(resid)`: this struct is mirrored into Rust from the *unlinked* source
+    //    (§6.10), which has no feature set to evaluate, so a lane that came
+    //    and went with the variant would give one Rust struct two layouts.
+    j: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
@@ -189,6 +198,10 @@ fn bleed_rate() -> f32 { return -st.h.w; }
 // **undrained** — the falloff is applied per fragment from its own arc (`stroke_drain`).
 fn brush_lat() -> vec3<f32> { return st.c.xyz; }
 fn brush_op() -> f32 { return st.c.w; }
+
+// The brush colour's residual (§6.7), undrained like the latent beside it. Zero in
+// every space that has no residual, and read only by the `@if(resid)` build.
+fn brush_res() -> vec3<f32> { return st.j.xyz; }
 
 // The `add` source rate — height per unit exposure, undrained like `brush_op`.
 fn add_rate() -> f32 { return st.e.x; }
@@ -281,6 +294,38 @@ fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 // a canvas texel sees. Read nearest (`ground_at`), so no sampler. Named
 // by `deposit` and `settle`, the two entry points that put paint on the canvas.
 @group(0) @binding(22) var surface_tex: texture_2d<f32>;
+
+// ---- The residual channel (§6.7) -------------------------------------------------
+//
+// One texture beside each of the colour textures above, carrying the half of the
+// colour the space's three channels cannot express. A residual is not a second
+// quantity to conserve but the rest of the same colour, so each of these is read,
+// written, swept and blended at exactly the point its colour partner is, on the
+// same masses and the same shares — there is no rate, no prefix and no bound here
+// that the latent does not already have.
+//
+// All `@if(resid)`: Oklab reproduces every sRGB colour in three channels, so it
+// declares none of these and its bind group layout is shorter rather than padded
+// with 1×1 stand-ins.
+//
+// The region's residual, premultiplied by the same per-unit opacity `region_color`
+// carries in its `.a` — the alpha is not duplicated here because nothing samples
+// this texture without sampling that one.
+@if(resid) @group(0) @binding(23) var region_resid: texture_2d<f32>;
+@if(resid) @group(0) @binding(24) var region_resid_w: texture_storage_2d<rgba16float, write>;
+// The footprint snapshot's residual (written by `snapshot`, read by `deposit` and
+// `settle`), premultiplied like the region it is copied from.
+@if(resid) @group(0) @binding(25) var under_resid: texture_2d<f32>;
+@if(resid) @group(0) @binding(26) var under_resid_w: texture_storage_2d<rgba16float, write>;
+// The tool reservoir's residual, **straight** (not premultiplied), like the latent
+// in `brush_src_color.rgb` beside it. Ping-ponged by the same host swap.
+@if(resid) @group(0) @binding(27) var brush_src_resid: texture_2d<f32>;
+@if(resid) @group(0) @binding(28) var brush_dst_resid_w: texture_storage_2d<rgba16float, write>;
+// The residual's swept prefix — `∫res·m·dτ`, the same optical-mass weight and the
+// same fp32 differencing as `bake_latm`, so the ratio that recovers it is the ratio
+// that recovers the latent.
+@if(resid) @group(0) @binding(29) var bake_rlm_w: texture_storage_2d<rgba32float, write>;
+@if(resid) @group(0) @binding(30) var bake_rlm: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const TAU: f32 = 6.283185307179586;
@@ -727,6 +772,9 @@ fn wick_pair(
     d.h = f * (n.h * inv_n - self_load.h * inv_t);
     d.m = f * (n.m * inv_n - self_load.m * inv_t);
     d.lm = f * (n.lm * inv_n - self_load.lm * inv_t);
+    // The same share of the same pair's concentration difference: the residual
+    // diffuses with the paint carrying it, never on a mobility of its own.
+    @if(resid) d.rlm = f * (n.rlm * inv_n - self_load.rlm * inv_t);
     return d;
 }
 
@@ -743,6 +791,9 @@ struct Load {
     h: f32,
     m: f32,
     lm: vec3<f32>,
+    // The residual's colour-mass, `res·m` — the same shape and the same weight as
+    // `lm`, because it is the rest of the same colour (§6.7).
+    @if(resid) rlm: vec3<f32>,
 }
 
 fn load_at(t: vec2<i32>, bdim: vec2<u32>) -> Load {
@@ -753,6 +804,7 @@ fn load_at(t: vec2<i32>, bdim: vec2<u32>) -> Load {
     out.h = a.x;
     out.m = c.a * a.x;
     out.lm = c.rgb * out.m;
+    @if(resid) out.rlm = textureLoad(brush_src_resid, tc, 0).rgb * out.m;
     return out;
 }
 
@@ -790,6 +842,7 @@ fn wick_axis(gid: vec3<u32>, axis: vec2<i32>) {
     d.h = 0.0;
     d.m = 0.0;
     d.lm = vec3<f32>(0.0, 0.0, 0.0);
+    @if(resid) d.rlm = vec3<f32>(0.0, 0.0, 0.0);
     for (var k = 1; k <= WICK_HALF; k = k + 1) {
         let w = WICK_KERNEL[k];
         let a = wick_pair(t, axis * k, bdim, cov_t, inv_t, self_load, w);
@@ -797,23 +850,30 @@ fn wick_axis(gid: vec3<u32>, axis: vec2<i32>) {
         d.h += a.h + b.h;
         d.m += a.m + b.m;
         d.lm += a.lm + b.lm;
+        @if(resid) d.rlm += a.rlm + b.rlm;
     }
 
     let h = self_load.h + d.h;
     let m = self_load.m + d.m;
     let lm = self_load.lm + d.lm;
+    @if(resid) let rlm = self_load.rlm + d.rlm;
     // Colour comes back out of the mass weight it travelled as. With no mass there is
     // no colour to recover, so the cell keeps the latent it had rather than a quotient
     // of two vanishing numbers (§6.1).
     var lat = textureLoad(brush_src_color, t, 0).rgb;
+    // The residual is recovered under the *same* guard and the same mass, so the two
+    // halves of a cell's colour can never be taken from different states.
+    @if(resid) var res = textureLoad(brush_src_resid, t, 0).rgb;
     if m > PAINT_EPS {
         lat = lm / m;
+        @if(resid) res = rlm / m;
     }
     // Snapped to the f16 lattice first (`lib::store`): this pass ping-pongs the
     // reservoir every wick and every segment, so a store that truncates walks the
     // tool's carried paint down one ULP per firing.
     textureStore(brush_dst_color_w, t, f16_nearest4(vec4<f32>(lat, m / max(h, PAINT_EPS))));
     textureStore(brush_dst_aux_w, t, f16_nearest4(vec4<f32>(h, 0.0, 0.0, 0.0)));
+    @if(resid) textureStore(brush_dst_resid_w, t, f16_nearest4(vec4<f32>(res, 0.0)));
 }
 
 // Along the tip's travel axis — the one a stroke-space row could run internally.
@@ -864,6 +924,10 @@ const BAKE_RES: u32 = 128u;
 var<workgroup> ws_e: array<f32, BAKE_RES>;
 var<workgroup> ws_load: array<vec4<f32>, BAKE_RES>;
 var<workgroup> ws_latm: array<vec4<f32>, BAKE_RES>;
+// The residual's own prefix, scanned in the same sweep. One more `vec4` per column —
+// 2 KB at BAKE_RES = 128, taking this pass from 4.5 KB of the 16 KB downlevel
+// workgroup budget to 6.5 KB, so the channel costs the scan no width.
+@if(resid) var<workgroup> ws_rlm: array<vec4<f32>, BAKE_RES>;
 
 @compute @workgroup_size(128) // = BAKE_RES: thread i scans column i of its row
 fn bake(
@@ -906,19 +970,26 @@ fn bake(
     let m = b_c.a * b_a.x;
     ws_load[i] = vec4<f32>(b_a.x, m, 1.0, 0.0) * de;
     ws_latm[i] = vec4<f32>(b_c.rgb * m, 0.0) * de;
+    // The residual rides the identical mass and the identical exposure weight, so a
+    // ratio against `bake_latm`'s own denominator recovers it (§6.7).
+    @if(resid) let b_r = textureSampleLevel(brush_src_resid, samp, buv, 0.0);
+    @if(resid) ws_rlm[i] = vec4<f32>(b_r.rgb * m, 0.0) * de;
     workgroupBarrier();
 
-    // Inclusive scan over both accumulators together.
+    // Inclusive scan over the accumulators together.
     for (var off = 1u; off < BAKE_RES; off = off << 1u) {
         var v_load = ws_load[i];
         var v_latm = ws_latm[i];
+        @if(resid) var v_rlm = ws_rlm[i];
         if i >= off {
             v_load += ws_load[i - off];
             v_latm += ws_latm[i - off];
+            @if(resid) v_rlm += ws_rlm[i - off];
         }
         workgroupBarrier();
         ws_load[i] = v_load;
         ws_latm[i] = v_latm;
+        @if(resid) ws_rlm[i] = v_rlm;
         workgroupBarrier();
     }
 
@@ -926,6 +997,7 @@ fn bake(
     let t = vec2<i32>(i32(i), i32(row));
     textureStore(bake_load_w, t, ws_load[i]);
     textureStore(bake_latm_w, t, ws_latm[i]);
+    @if(resid) textureStore(bake_rlm_w, t, ws_rlm[i]);
 }
 
 // ---- 2. Snapshot the region under the segment's footprint rect. -----------------
@@ -974,12 +1046,15 @@ fn snapshot_at(gx: u32, gy: u32) {
     let rdim = vec2<i32>(textureDimensions(region_color));
     var c = vec4<f32>(0.0);
     var a = vec4<f32>(0.0);
+    @if(resid) var r = vec4<f32>(0.0);
     if rt.x >= 0 && rt.y >= 0 && rt.x < rdim.x && rt.y < rdim.y {
         c = textureLoad(region_color, rt, 0);
         a = textureLoad(region_aux, rt, 0);
+        @if(resid) r = textureLoad(region_resid, rt, 0);
     }
     textureStore(under_color_w, t, c);
     textureStore(under_aux_w, t, a);
+    @if(resid) textureStore(under_resid_w, t, r);
 }
 
 // The standalone pass, which only the pen-up now dispatches: the `settle` reads the
@@ -1130,6 +1205,7 @@ fn exchange(
     var h = b_a.x;
     var m = b_c.a * h;
     var lat = b_c.rgb;
+    @if(resid) var res = textureLoad(brush_src_resid, t, 0).rgb; // straight, like `lat`
 
     // This texel's exposure to the whole segment: its own optical depth × the travel
     // (radius units). In τ, like the canvas side — the canvas gives up
@@ -1173,6 +1249,9 @@ fn exchange(
         let sel = textureSampleLevel(sel_mask, samp, uv, 0.0).r;
         let rc = textureSampleLevel(region_color, samp, uv, 0.0);
         let ra = textureSampleLevel(region_aux, samp, uv, 0.0);
+        // The identical bilinear tap at the identical uv — the residual rides the
+        // colour it belongs to and never its own weights.
+        @if(resid) let rr = textureSampleLevel(region_resid, samp, uv, 0.0);
 
         // What it keeps of its own load. Exactly the complement of the fraction the
         // `deposit` after us lays from it, over the very exposure it lays over — so
@@ -1209,6 +1288,10 @@ fn exchange(
         // ends as well, where the canvas is emptiest, and eight times as often.
         if take_m > PAINT_EPS {
             lat = blend_latent(lat, m, rc.rgb / rc.a, take_m);
+            // The same stack, on the same two masses, against the *entering* `m` —
+            // `blend_latent`'s weights are a function of `m0` and `m1` alone, so
+            // calling it again with the residual is the identical blend (§6.7).
+            @if(resid) res = blend_latent(res, m, rr.rgb / rc.a, take_m);
         }
         m = m + take_m;
 
@@ -1227,12 +1310,17 @@ fn exchange(
         let src_h = add_rate() * drain * ex.src_w * sel;
         let src_m = brush_op() * drain * src_h;
         lat = blend_latent(lat, m, brush_lat(), src_m);
+        // The brush's own residual is **not** jittered, for the reason `stamp.wesl`
+        // gives: colour dynamics perturb the pigment mixture, and the residual is
+        // precisely what no mixture of those pigments reaches.
+        @if(resid) res = blend_latent(res, m, brush_res(), src_m);
         h = h + src_h;
         m = m + src_m;
     }
 
     textureStore(brush_dst_color_w, t, f16_nearest4(vec4<f32>(lat, m / max(h, PAINT_EPS))));
     textureStore(brush_dst_aux_w, t, f16_nearest4(vec4<f32>(h, 0.0, 0.0, 0.0)));
+    @if(resid) textureStore(brush_dst_resid_w, t, f16_nearest4(vec4<f32>(res, 0.0)));
 }
 
 // ---- 4. Deposit: the swept exchange over one segment. ----------------------------
@@ -1448,6 +1536,12 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let latm = d_latm.xyz;
     let tool_op = tool_m / max(tool_h, PAINT_EPS);
     let tool_lat = latm * inv_pre / max(tool_m, PAINT_EPS);
+    // The residual's mean over the same pass, recovered against the same mass and the
+    // same measure — unclamped like the latent, and for the same reason: a residual is
+    // signed (`rgb − poly(c)` is negative on all three channels at black, §6.7), so
+    // clamping its prefix difference would shear the colour it exists to carry.
+    @if(resid) let d_rlm = bake_at(bake_rlm, xl, yl) - bake_at(bake_rlm, xl - sw.lr, yl);
+    @if(resid) let tool_res = d_rlm.xyz * inv_pre / max(tool_m, PAINT_EPS);
 
     // The canvas as this segment found it — or, when the brush bleeds, that state
     // relaxed towards its neighbours first (see `BLEED_REACH` above). Ahead of the
@@ -1459,6 +1553,8 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var h0 = ua.x;
     var op0 = uc.a;
     var lat0 = uc.rgb / max(uc.a, PAINT_EPS);
+    @if(resid) let ur = textureLoad(under_resid, t, 0);
+    @if(resid) var res0 = ur.rgb / max(uc.a, PAINT_EPS);
     var bled = false;
     let kb = bleed_rate(); // the bleed rate; nonzero only on a dedicated bleed slot
     if kb > 0.0 {
@@ -1468,9 +1564,11 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         // pair evaluate, which is what makes the flux antisymmetric.
         let m0 = uc.a * ua.x;
         let lm0 = uc.rgb * ua.x;
+        @if(resid) let rlm0 = ur.rgb * ua.x;
         var dh = 0.0;
         var dm = 0.0;
         var dlm = vec3<f32>(0.0, 0.0, 0.0);
+        @if(resid) var drlm = vec3<f32>(0.0, 0.0, 0.0);
         // Rung 0 is the 1 px near tap; rungs 1..=TAPS climb the reach the host solved
         // for this firing (see `BLEED_SHARE_NEAR` above). Every thread derives the same
         // integers from the same uniform, so a pair at any rung still computes one
@@ -1519,14 +1617,23 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                     dh += c * (uan.x - ua.x);
                     dm += c * (ucn.a * uan.x - m0);
                     dlm += c * (ucn.rgb * uan.x - lm0);
+                    // The same share of the same pair's difference: the residual
+                    // diffuses with the paint that carries it, not on a rate of its own.
+                    @if(resid) drlm += c * (textureLoad(under_resid, tn, 0).rgb * uan.x - rlm0);
                 }
             }
         }
         bled = dh != 0.0 || dm != 0.0 || any(dlm != vec3<f32>(0.0, 0.0, 0.0));
+        // The residual joins the verdict rather than riding on the colour's: a flux
+        // that moved residual and no latent is possible — two colours with equal
+        // concentrations and different residuals is exactly what this channel exists
+        // to tell apart — and calling that texel unbled would drop the transfer.
+        @if(resid) bled = bled || any(drlm != vec3<f32>(0.0, 0.0, 0.0));
         h0 = ua.x + dh;
         let m1 = m0 + dm;
         op0 = m1 / max(h0, PAINT_EPS);
         lat0 = (lm0 + dlm) / max(m1, PAINT_EPS);
+        @if(resid) res0 = (rlm0 + drlm) / max(m1, PAINT_EPS);
     }
 
     // The lift's removal: height leaves; the remaining paint's latent and per-unit
@@ -1535,6 +1642,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     var h = h0 * ex.keep;
     var m = op0 * h;
     let canvas_lat = lat0;
+    @if(resid) let canvas_res = res0;
 
     // The brush's own colour at this texel: the stroke colour offset by the
     // colour-dynamics field, sampled at the same stroke-local (lateral, arc)
@@ -1587,11 +1695,18 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     var par_lat = own_lat;
+    // The brush's own residual, unjittered (see `exchange`).
+    @if(resid) var par_res = brush_res();
     if par_m > PAINT_EPS {
         par_lat = (tool_lat * (tool_op * dep_h) + own_lat * (own_op * add_h)) / par_m;
+        // The same two masses weight the residual's mixture, so the parcel's two
+        // halves are one colour rather than two independently averaged ones.
+        @if(resid) par_res =
+            (tool_res * (tool_op * dep_h) + brush_res() * (own_op * add_h)) / par_m;
     }
 
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
+    @if(resid) let res = blend_latent(canvas_res, m, par_res, par_m);
     h += par_h;
     m += par_m;
     let op = m / max(h, PAINT_EPS);
@@ -1605,6 +1720,11 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // from each shaving a ULP off the region as a segment sweep passes over it.
     textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(lat * op, op), sel)));
     textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
+    // Premultiplied by the same `op` and lerped by the same `sel` — the residual is
+    // stored exactly as the colour beside it is.
+    @if(resid) textureStore(
+        region_resid_w, rt, f16_nearest4(mix(ur, vec4<f32>(res * op, 0.0), sel)),
+    );
 }
 
 // ---- 5. Settle: the transfer the pen-up breaks. ----------------------------------
@@ -1803,9 +1923,11 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dx = 2.0 / bdimf.x; // one bake column, radius units
     var prev = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     var prev_lm = vec3<f32>(0.0, 0.0, 0.0);
+    @if(resid) var prev_rlm = vec3<f32>(0.0, 0.0, 0.0);
     var par_h = 0.0;
     var par_m = 0.0;
     var par_lm = vec3<f32>(0.0, 0.0, 0.0);
+    @if(resid) var par_rlm = vec3<f32>(0.0, 0.0, 0.0);
     for (var i = 0; i < i32(BAKE_RES); i = i + 1) {
         let xr = (f32(i) + 1.0) / bdimf.x * 2.0 - 1.0;
         // The fraction of this column that lies below the point — columns ascend, so
@@ -1824,15 +1946,22 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
             textureLoad(bake_latm, vec2<i32>(i, yi1), 0),
             fy,
         ).xyz;
+        @if(resid) let cur_rlm = mix(
+            textureLoad(bake_rlm, vec2<i32>(i, yi0), 0),
+            textureLoad(bake_rlm, vec2<i32>(i, yi1), 0),
+            fy,
+        ).xyz;
         // Height and mass prefixes are monotone, so a negative difference is
         // rounding; the latent's is not (Oklab a/b are signed) and stays unclamped.
         let d_h = max(cur.x - prev.x, 0.0);
         let d_m = max(cur.y - prev.y, 0.0);
         let d_e = max(cur.z - prev.z, 0.0);
         let d_lm = cur_lm - prev_lm;
+        @if(resid) let d_rlm = cur_rlm - prev_rlm;
         let pr = cur.z;
         prev = cur;
         prev_lm = cur_lm;
+        @if(resid) prev_rlm = cur_rlm;
         if d_e <= 0.0 {
             continue; // outside the footprint: nothing carried, nothing served
         }
@@ -1844,12 +1973,16 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
         par_h += d_h * c;
         par_m += d_m * c;
         par_lm += d_lm * c;
+        // The same delivery coefficient — en-route spend-down and survival both act
+        // on the parcel, and the residual is part of the parcel, not a passenger.
+        @if(resid) par_rlm += d_rlm * c;
     }
     // The `min(owed, received)` bound, as the smooth share it lands as (see above).
     let share = ex.dep / max(1.0 - exp(-kd * owed), 1e-6);
     par_h *= share;
     par_m *= share;
     par_lm *= share;
+    @if(resid) par_rlm *= share;
 
     // The deposit's rewrite guard, for the same reason (see there): a settle whose
     // rates are all zero settles nothing, and must not re-round the texel.
@@ -1859,6 +1992,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let uc = textureLoad(under_color, t, 0);
     let ua = textureLoad(under_aux, t, 0);
+    @if(resid) let ur = textureLoad(under_resid, t, 0);
 
     // The same parcel stacking as the deposit, with the delivery integral as the
     // parcel: no `add` source, because a settle is a break of contact and not a
@@ -1869,15 +2003,22 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     var h = ua.x * ex.keep;
     var m = uc.a * h;
     let canvas_lat = uc.rgb / max(uc.a, PAINT_EPS);
+    @if(resid) let canvas_res = ur.rgb / max(uc.a, PAINT_EPS);
     var par_lat = canvas_lat;
+    @if(resid) var par_res = canvas_res;
     if par_m > PAINT_EPS {
         par_lat = par_lm / par_m;
+        @if(resid) par_res = par_rlm / par_m;
     }
     let lat = blend_latent(canvas_lat, m, par_lat, par_m);
+    @if(resid) let res = blend_latent(canvas_res, m, par_res, par_m);
     h += par_h;
     m += par_m;
     let op = m / max(h, PAINT_EPS);
 
     textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(lat * op, op), sel)));
     textureStore(region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, 0.0, 0.0, 0.0), sel)));
+    @if(resid) textureStore(
+        region_resid_w, rt, f16_nearest4(mix(ur, vec4<f32>(res * op, 0.0), sel)),
+    );
 }

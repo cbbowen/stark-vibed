@@ -6,7 +6,7 @@
 use wesl::include_wesl;
 
 mod entry_points;
-pub use entry_points::ENTRY_POINTS;
+pub use entry_points::{ENTRY_POINTS, RESID_ENTRY_POINTS, RESID_FEATURE};
 
 /// Rust mirrors of the WESL structs the host fills in, generated from the shader
 /// sources at build time (`build/mirror.rs`).
@@ -20,19 +20,43 @@ pub mod mirror {
 
 /// WGSL swept-segment stamp pass (§6.2). Colour-space agnostic — both spaces use
 /// it, since the deposit is the same premultiplied "over" whatever the channels mean.
-pub fn stamp() -> &'static str {
-    include_wesl!("stamp")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn stamp(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("stamp_resid")
+    } else {
+        include_wesl!("stamp")
+    }
 }
 
 /// WGSL source for the tile compositing pass (§6.3, pass A).
-pub fn composite() -> &'static str {
-    include_wesl!("composite")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn composite(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("composite_resid")
+    } else {
+        include_wesl!("composite")
+    }
 }
 
 /// WGSL matte-layer fill, drawn inside pass A at the matte's place in the layer
 /// stack — §15.4.
-pub fn matte() -> &'static str {
-    include_wesl!("matte")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn matte(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("matte_resid")
+    } else {
+        include_wesl!("matte")
+    }
 }
 
 /// WGSL media/lighting pass for the Oklab color space (§6.3, pass B).
@@ -66,31 +90,71 @@ pub fn blend_mixbox() -> &'static str {
 
 /// WGSL stroke integrate pass: merge a stroke's scratch slab into the layer over
 /// the base — §6.2/§6.1.
-pub fn integrate() -> &'static str {
-    include_wesl!("integrate")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn integrate(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("integrate_resid")
+    } else {
+        include_wesl!("integrate")
+    }
 }
 
 /// WGSL compute shader for the brush-dynamics **sequential stamp loop**
 /// (snapshot / pickup / deposit entry points) — §6.2.
-pub fn dynamics() -> &'static str {
-    include_wesl!("dynamics")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn dynamics(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("dynamics_resid")
+    } else {
+        include_wesl!("dynamics")
+    }
 }
 
 /// WGSL region→tile write-back for the stamp loop — §6.2/§6.4.
-pub fn slice() -> &'static str {
-    include_wesl!("slice")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn slice(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("slice_resid")
+    } else {
+        include_wesl!("slice")
+    }
 }
 
 /// WGSL affine-transform passes: the moved parcel, the cut+stack combine, and
 /// the carried selection mask — §16.
-pub fn transform() -> &'static str {
-    include_wesl!("transform")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn transform(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("transform_resid")
+    } else {
+        include_wesl!("transform")
+    }
 }
 
 /// WGSL region fill: a parcel of paint laid through a coverage mask, stacked by
 /// the shared parcel law — §18.0.4.
-pub fn fill() -> &'static str {
-    include_wesl!("fill")
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn fill(resid: bool) -> &'static str {
+    if resid {
+        include_wesl!("fill_resid")
+    } else {
+        include_wesl!("fill")
+    }
 }
 
 /// WGSL selection-mask rasterization: one op's shape combined into a mask tile —
@@ -137,26 +201,31 @@ mod tests {
     /// One accessor, paired with the [`ENTRY_POINTS`] name it must correspond to.
     type Accessor = (&'static str, fn() -> &'static str);
 
+    /// One flagged accessor, paired with its [`RESID_ENTRY_POINTS`] name — the same
+    /// correspondence [`Accessor`] states for the plain builds, for the eight passes
+    /// that take a `resid` bool.
+    type ResidAccessor = (&'static str, fn(bool) -> &'static str);
+
     #[test]
     fn the_entry_point_list_and_the_accessors_are_the_same_set() {
         let accessors: &[Accessor] = &[
             ("blend_mixbox", blend_mixbox),
             ("blend_oklab", blend_oklab),
-            ("composite", composite),
-            ("dynamics", dynamics),
-            ("fill", fill),
+            ("composite", || composite(false)),
+            ("dynamics", || dynamics(false)),
+            ("fill", || fill(false)),
             ("guides", guides),
-            ("integrate", integrate),
+            ("integrate", || integrate(false)),
             ("mask_region", mask_region),
-            ("matte", matte),
+            ("matte", || matte(false)),
             ("media_mixbox", media_mixbox),
             ("media_oklab", media_oklab),
             ("overlay", overlay),
             ("resolve", resolve),
             ("selection", selection),
-            ("slice", slice),
-            ("stamp", stamp),
-            ("transform", transform),
+            ("slice", || slice(false)),
+            ("stamp", || stamp(false)),
+            ("transform", || transform(false)),
         ];
 
         let mut names: Vec<&str> = accessors.iter().map(|(n, _)| *n).collect();
@@ -175,6 +244,49 @@ mod tests {
             assert!(
                 !accessor().is_empty(),
                 "`{name}` linked to an empty artifact",
+            );
+        }
+    }
+
+    /// Every module in [`RESID_ENTRY_POINTS`] is also in [`ENTRY_POINTS`], and its
+    /// residual variant links to something *different* from its plain one.
+    ///
+    /// The second half is what makes this worth a test. `build.rs` sets the feature
+    /// and then calls `build_artifact` twice; if the flag failed to take — a renamed
+    /// feature, a `@if` spelt wrong — both passes would deposit the same WGSL, every
+    /// pipeline would build, and a Mixbox document would simply go on dropping its
+    /// residual with no target to write it to.
+    #[test]
+    fn every_residual_variant_differs_from_its_plain_build() {
+        let resid: &[ResidAccessor] = &[
+            ("composite", composite),
+            ("dynamics", dynamics),
+            ("fill", fill),
+            ("integrate", integrate),
+            ("matte", matte),
+            ("slice", slice),
+            ("stamp", stamp),
+            ("transform", transform),
+        ];
+
+        let mut names: Vec<&str> = resid.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        let mut listed = RESID_ENTRY_POINTS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(
+            names, listed,
+            "`RESID_ENTRY_POINTS` and the flagged accessors have diverged"
+        );
+
+        for (name, accessor) in resid {
+            assert!(
+                ENTRY_POINTS.contains(name),
+                "`{name}` has a residual variant but no plain build to vary from",
+            );
+            assert_ne!(
+                accessor(true),
+                accessor(false),
+                "`{name}_resid` is byte-identical to `{name}` — the `{RESID_FEATURE}`                  feature did not reach it",
             );
         }
     }
