@@ -8,18 +8,39 @@ rests on reasoning rather than a run, it says so.
 Cited by item name rather than line number throughout, since the line numbers will
 drift out from under this file long before the items do.
 
-| # | Item | Kind | Take first? |
+| # | Item | Kind | Status |
 |---|---|---|---|
-| 1 | `settle_tangent` is piece-local | correctness | ✔ |
-| 2 | `dispatch_rect` clips silently in release | correctness | |
-| 3 | Two stale figures from the bleed retuning | docs | |
-| 4 | The swept path is O(segments × tiles) | performance | ✔ |
-| 5 | Bind-group churn in the swept per-tile loop | performance | |
-| 6 | `affected_tiles` computed twice | performance | |
-| 7 | `Stamp`'s nine anonymous lanes | architecture | ✔ |
-| 8 | `dynamics.rs` is five modules | architecture | |
-| 9 | A `DynamicsKit` but no `SweptKit` | architecture | |
-| 10 | Minor | | |
+| 1 | `settle_tangent` is piece-local | correctness | **done** — `d5eb89a` |
+| 2 | `dispatch_rect` clips silently in release | correctness | **done** — `907a92b` |
+| 3 | Two stale figures from the bleed retuning | docs | **done** — `93c0285` |
+| 4 | The swept path is O(segments × tiles) | performance | **done** — `93c0285` |
+| 5 | Bind-group churn in the swept per-tile loop | performance | **deferred** (see below) |
+| 6 | `affected_tiles` computed twice | performance | **done** — `93c0285` |
+| 7 | `Stamp`'s nine anonymous lanes | architecture | **done** — `d5eb89a` |
+| 8 | `dynamics.rs` is five modules | architecture | **done** — `907a92b` |
+| 9 | A `DynamicsKit` but no `SweptKit` | architecture | **done** — `8745a11` |
+| 10 | Minor | | **done** — `93c0285` |
+
+Nine of ten landed on `stroke-cleanup`. The item bodies below are kept as written —
+they are the reasoning each change rests on, and the commits cite them.
+
+**Verification.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+-D warnings`, and the wasm build are clean; `cargo test --workspace` is 646 passing,
+including all 24 goldens compared against real pixels (not `STARK_SKIP_GOLDEN`, and no
+adapter was skipped). **No golden moved**, which is the claim the whole set needed: the
+per-tile grouping in #4 and the lane repacking in #7 are meant to be bit-identical, and
+#1 changes a frame that no golden's stroke apparently exercises differently.
+
+Three tests were added for properties that had none:
+`the_settle_frame_does_not_depend_on_where_the_stroke_was_cut` (which carries its own
+non-vacuity check — it keeps the old piece-local walk beside it and asserts *that* one
+moves), `every_slot_field_lands_in_the_lane_the_shader_reads_it_from`, and
+`the_per_tile_lists_hold_exactly_the_segments_that_reach_each_tile`.
+
+**What #5 still wants.** It was the one item marked "measure before touching", and it
+still is: the fix is not cheap (a bindless-style array, or compositing the base into
+the scratch so the integrate reads one pair), and nothing here established that the
+churn is actually the cost. The asymmetry is on the record; the measurement is not.
 
 ---
 
@@ -265,16 +286,39 @@ out to the renderer. The renderer is now where all of it has piled up.
 
 ---
 
-## Suggested order
+## What the module looks like now
 
-1. **#1** — a live-invariant break (§1.3) in the one place that cannot be repainted.
-   Write the failing head-vs-whole test first.
-2. **#7** — the highest-leverage prevention in the module, and a prerequisite for
-   reading #8's plan split comfortably.
-3. **#4** — the only asymptotic problem here.
-4. **#3**, **#6**, **#10** — cheap, independent, no behaviour change.
-5. **#2**, **#8**, **#9** — structural; each is a self-contained commit.
-6. **#5** — measure before touching.
+```
+stroke/
+  mod.rs           375   composition: the two kits, the tip cache, the entry points
+  budget.rs        613   what a stroke may cost (unchanged)
+  incremental.rs   152   drawing a stroke in pieces (unchanged)
+  segments.rs     1988   path -> segments, and the tile inversion #4 added
+  swept.rs         479   the fast path, its kit, and the integrate that was misfiled
+  tips.rs          173   what a brush resolves to, and the bakes behind it
+  dynamics/
+    mod.rs          92   which path a stroke takes at all
+    plan.rs       1426   what to dispatch — names no wgpu, and its tests
+    kit.rs         422   the objects it is dispatched with
+    run.rs        1050   recording: regions, the ping-pong, the write-back
+```
 
-None of these should move a golden. If #1's fix does, that *is* the bug: bless with
-the reason recorded (**fix the model and re-bless**, never a compensating constant).
+The 2967-line `dynamics.rs` is gone, and `mod.rs` is down from 585. What moved is
+where a maintainer reads, not what the engine depends on — the module's public surface
+is unchanged, and `plan.rs` is the one that earns its own file twice over, being both
+the hardest half to reason about and the only one testable on any machine.
+
+## If these are picked up again
+
+Beyond #5, two things this pass noticed and did not act on:
+
+* **`segments.rs` is 1988 lines**, over half of it tests, and it now holds three
+  separable things: the round tip's coverage field, the path → segment generator with
+  its taper and dab, and the region/tile measurements. The same argument as #8 applies,
+  with less force — nothing in it is misfiled, it is just large.
+* **`Stamp`'s `e.w` is still spare.** The WESL comment has said so through two rounds
+  of edits now. Worth either spending or deleting the lane the next time the struct is
+  touched, since a lane documented as free is one nobody checks.
+
+The rule the whole set was held to: **fix the model and re-bless**, never a
+compensating constant. Nothing needed re-blessing.
