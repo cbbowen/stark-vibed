@@ -59,12 +59,12 @@ fn default_presets(state: AppState) -> (Vec<PresetEntry>, bool) {
             name: "Hard Round".to_string(),
             brush: BrushParams {
                 radius: 100.0,
-                drain: 0.0015,
+                drain: 0.001,
                 shape: BrushShape::Round { hardness: 0.95 },
                 dynamics: BrushDynamics {
                     add: 2.0,
-                    lift: 0.6,
-                    deposit: 0.95,
+                    lift: 0.25,
+                    deposit: 0.75,
                     bleed: 0.25,
                     ..BrushDynamics::default()
                 },
