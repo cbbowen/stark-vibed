@@ -271,7 +271,6 @@ pub fn LayerPanel() -> Element {
         div { class: "layer-header",
             // A frame is a layer, so making one belongs here rather than in a
             // panel of its own (§15.7).
-            AddFrameButton {}
             button {
                 class: "layer-add",
                 title: "Add a paint layer above the selected one",
@@ -285,6 +284,7 @@ pub fn LayerPanel() -> Element {
                 {icon(icons::ADD_LAYER)}
                 {label("Layer")}
             }
+            AddFrameButton {}
         }
 
         // Top of the document first, which is what a stack looks like from in front
