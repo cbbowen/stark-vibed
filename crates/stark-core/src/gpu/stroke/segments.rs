@@ -815,7 +815,7 @@ mod tests {
     /// centre's saturation is the tip's one documented departure.
     #[test]
     fn the_round_tip_sweeps_to_the_profile_its_hardness_names() {
-        const RES: u32 = super::super::ROUND_RES;
+        const RES: u32 = crate::gpu::stroke::tips::ROUND_RES;
         for hardness in [0.0, 0.25, 0.5, 0.8, 0.95] {
             let h = 1.0 / (1.0 - hardness);
             let cov = round_coverage(hardness, RES);

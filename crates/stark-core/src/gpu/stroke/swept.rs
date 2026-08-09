@@ -9,7 +9,7 @@ use crate::colorspace::ColorSpace;
 use crate::document::StrokeRecord;
 use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use crate::gpu::desc;
-use crate::gpu::tile::{AllocSource, TileMap};
+use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
 use super::segments::{SegmentInstance, generate_segments_in, tiles_with_segments};
 use super::{
@@ -40,7 +40,121 @@ use stark_shaders::mirror::stamp_common::TileXform;
 
 /// One tile's window into the stroke's transform buffer — the `min_binding_size` the
 /// sweep's layout declares, taken from the struct rather than written down.
-pub(super) const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
+const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
+
+/// The swept fast path's GPU objects, built once (§6.2) — the sweep that accumulates
+/// a stroke's footprint into a scratch tile, and the integrate that stacks that
+/// scratch over the base into a fresh CoW tile.
+///
+/// A kit for the same reason [`DynamicsKit`](super::DynamicsKit) is one, and it is
+/// overdue: these five sat loose on [`StrokeRenderer`] among the caches, so a struct
+/// documented as holding "only immutable GPU objects" held one path's pipelines by
+/// name and the other's behind a type. Both are behind a type now, and the renderer is
+/// composition rather than storage.
+///
+/// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
+#[derive(Clone)]
+pub(super) struct SweptKit {
+    /// The sweep: one instanced quad strip per segment, over-blended into the scratch
+    /// pair, with the per-tile transform at group 0, the prefix-τ volume at group 1
+    /// and the noise + ground fields at group 2.
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) uniform_bgl: wgpu::BindGroupLayout,
+    pub(super) prefix_bgl: wgpu::BindGroupLayout,
+    pub(super) noise_bgl: wgpu::BindGroupLayout,
+    /// The integrate (§6.2/§6.1): a fullscreen pass reading the base tile + the
+    /// stroke's footprint scratch and writing `new = f(base, scratch)` into a fresh CoW
+    /// tile's colour+aux MRT — the scratch's accumulated parcel stacked on the base
+    /// through the shared law in `paint_common.wesl`, the same one a fill lands through
+    /// and the stamp loop's `deposit` uses.
+    pub(super) integrate_pipeline: wgpu::RenderPipeline,
+    pub(super) integrate_bgl: wgpu::BindGroupLayout,
+}
+
+/// Build the swept fast path's kit (§6.2): the sweep pipeline over its three bind
+/// group layouts, and the integrate that lands its scratch on the base.
+pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpace) -> SweptKit {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("stark sweep"),
+        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
+    });
+
+    let frag = wgpu::ShaderStages::FRAGMENT;
+    // One slot per affected tile, selected by a dynamic offset
+    // ([`UNIFORM_STRIDE`](super::UNIFORM_STRIDE)) — so a stroke crossing many tiles
+    // binds one buffer rather than building one per tile on every pointer move.
+    let uniform_bgl = desc::bind_group_layout(
+        device,
+        "stark sweep uniform bgl",
+        &[desc::uniform_slot(
+            0,
+            wgpu::ShaderStages::VERTEX_FRAGMENT,
+            XFORM_SLOT,
+        )],
+    );
+
+    // The prefix-τ texture is a R32Float 2D-array (x, y, + orientation layers), sampled
+    // via textureLoad (not filterable), so the shader does its own trilinear lookup.
+    let prefix_bgl = desc::bind_group_layout(
+        device,
+        "stark sweep prefix bgl",
+        &[desc::load_tex_array(0, frag)],
+    );
+
+    // Group 2: the colour-dynamics noise field (a tileable 3-D volume) + its
+    // repeat sampler (§6.2), and beside it the canvas surface's ground (height +
+    // the rise ahead) + its own repeat sampler — the deposition tooth (§6.4). In
+    // this group rather than one of its own because it is the same kind of thing
+    // as the noise: a tileable field the deposit samples per fragment, resolved
+    // per stroke.
+    let noise_bgl = desc::bind_group_layout(
+        device,
+        "stark sweep noise bgl",
+        &[
+            desc::sample_tex(0, frag),
+            desc::sampler(1, frag),
+            desc::sample_tex(2, frag),
+            desc::sampler(3, frag),
+        ],
+    );
+
+    let layout = desc::pipeline_layout(
+        device,
+        "stark sweep layout",
+        &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&noise_bgl)],
+    );
+    let pipeline = desc::render_pipeline(
+        device,
+        desc::RenderPipe {
+            label: "stark sweep pipeline",
+            layout: &layout,
+            module: &shader,
+            vs: "vs_main",
+            fs: "fs_main",
+            primitive: desc::QUAD_STRIP,
+            buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
+                wgpu::VertexStepMode::Instance,
+            ))],
+            targets: &[
+                desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
+                // The stamp renders into a *scratch* tile, whose aux is the wide
+                // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
+                // blend across overlapping segments.
+                desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
+            ],
+        },
+    );
+
+    let (integrate_pipeline, integrate_bgl) = build_integrate_pipeline(device, color_space);
+    SweptKit {
+        pipeline,
+        uniform_bgl,
+        prefix_bgl,
+        noise_bgl,
+        integrate_pipeline,
+        integrate_bgl,
+    }
+}
 
 impl StrokeRenderer {
     /// [`Self::render_range`] through the plain swept fast path: no carried brush
@@ -84,12 +198,12 @@ impl StrokeRenderer {
 
         // Resolve the brush's prefix-τ texture: image brushes from the asset
         // store; the round tip generated (and cached) from its hardness.
-        let prefix_view = self.prefix_view(assets, &rec.brush);
+        let prefix_view = self.tips.prefix_view(assets, &rec.brush);
 
         let device = &self.ctx.device;
         let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep prefix bg"),
-            layout: &self.prefix_bgl,
+            layout: &self.swept.prefix_bgl,
             entries: &[desc::tex(0, &prefix_view)],
         });
 
@@ -97,16 +211,16 @@ impl StrokeRenderer {
         // the stroke's lookup parameters. An inactive brush binds the zero
         // tile with zero amplitudes — the deposit is exactly the constant
         // colour.
-        let noise_view = self.noise_view(&rec.brush.color_dynamics);
+        let noise_view = self.tips.noise_view(&rec.brush.color_dynamics);
         // The canvas ground beside it (§6.4): the deposition tooth's height and the
         // rise ahead of it, in the same group because it is the same kind of thing —
         // a field the deposit samples per fragment.
         let noise_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep noise bg"),
-            layout: &self.noise_bgl,
+            layout: &self.swept.noise_bgl,
             entries: &[
                 desc::tex(0, &noise_view),
-                desc::samp(1, &self.noise_sampler),
+                desc::samp(1, &self.tips.noise_sampler),
                 desc::tex(2, &surface.view),
                 desc::samp(3, &surface.sampler),
             ],
@@ -201,7 +315,7 @@ impl StrokeRenderer {
         self.ctx.queue.write_buffer(&xform_buf, 0, &xform_data);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark sweep bg"),
-            layout: &self.uniform_bgl,
+            layout: &self.swept.uniform_bgl,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -247,7 +361,7 @@ impl StrokeRenderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.pipeline);
+                pass.set_pipeline(&self.swept.pipeline);
                 pass.set_bind_group(0, &bind_group, &[xform_off]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &noise_bg, &[]);
@@ -274,7 +388,7 @@ impl StrokeRenderer {
             let mask_view = self.selection.mask_for(selection, *coord);
             let integrate_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark integrate bg"),
-                layout: &self.integrate_bgl,
+                layout: &self.swept.integrate_bgl,
                 entries: &[
                     desc::tex(0, base_color),
                     desc::tex(1, base_aux),
@@ -295,7 +409,7 @@ impl StrokeRenderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.integrate_pipeline);
+                pass.set_pipeline(&self.swept.integrate_pipeline);
                 pass.set_bind_group(0, &integrate_bg, &[]);
                 pass.draw(0..3, 0..1);
             }

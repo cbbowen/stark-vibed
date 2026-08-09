@@ -211,16 +211,16 @@ impl<'a> DynamicsRun<'a> {
 
         // The brush's swept-footprint prefix-τ (shared with the fast path) and its
         // plain coverage mask (the reservoir texels' own footprint weights).
-        let prefix_view = r.prefix_view(scene.assets, &rec.brush);
+        let prefix_view = r.tips.prefix_view(scene.assets, &rec.brush);
         let prefix_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics prefix bg"),
             layout: &r.dynamics.prefix_bgl,
             entries: &[desc::tex(0, &prefix_view)],
         });
-        let cov = r.coverage_view(scene.assets, &rec.brush);
+        let cov = r.tips.coverage_view(scene.assets, &rec.brush);
         // Colour dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
-        let noise = r.noise_view(&rec.brush.color_dynamics);
+        let noise = r.tips.noise_view(&rec.brush.color_dynamics);
 
         // A stroke that starts fresh initializes its first reservoir by a render clear
         // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
@@ -664,7 +664,7 @@ impl<'a> DynamicsRun<'a> {
                 desc::tex(13, &region.color),
                 desc::tex(14, &region.aux),
                 desc::tex(15, &self.noise),
-                desc::samp(16, &r.noise_sampler),
+                desc::samp(16, &r.tips.noise_sampler),
                 desc::tex(21, &region.sel_mask),
                 desc::tex(22, &self.scene.surface.view),
             ],

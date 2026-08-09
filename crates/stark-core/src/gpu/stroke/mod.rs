@@ -20,14 +20,14 @@
 //! mapping, shader). It holds only immutable GPU objects plus `Arc`-backed
 //! handles, so it is cheap to `Clone` and can live in the `Action::Context` (§5).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::assets::{AssetStore, build_coverage_r8, build_prefix_tau};
+use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
+use crate::document::StrokeRecord;
 use crate::document::selection::Selection;
-use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind, StrokeRecord};
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Zeroes};
+use crate::gpu::desc::Zeroes;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
@@ -37,11 +37,12 @@ mod dynamics;
 mod incremental;
 mod segments;
 mod swept;
+mod tips;
 
 use budget::MAX_REGION_DIM;
 use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
-use segments::round_coverage;
-use swept::build_integrate_pipeline;
+use swept::{SweptKit, build_swept_kit};
+use tips::TipCache;
 
 // The module's surface, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not
@@ -51,27 +52,6 @@ pub use incremental::{StrokeCarry, StrokeSpans, ToolState};
 // crate does, and keeping it crate-visible is what lets its doc comment point at the
 // `segments` internals the rule is actually about.
 pub(crate) use incremental::safe_frozen;
-
-/// Resolution of the generated round-tip prefix texture.
-const ROUND_RES: u32 = 256;
-
-/// Take a lock whose only contents are a **cache**, poisoned or not.
-///
-/// Both caches here hold the output of a pure bake — a coverage field, a noise
-/// volume — keyed by what produced it. A panic while one is held cannot leave a torn
-/// value in it, because the value is moved in whole after the bake has finished; all
-/// poisoning tells us is that some *other* thread panicked while it happened to be
-/// looking something up. Propagating that as a panic of our own turns one thread's
-/// failure into a dead renderer, which is a worse answer than re-baking a texture.
-fn unpoisoned<'a, T>(
-    lock: Result<
-        std::sync::MutexGuard<'a, T>,
-        std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
-    >,
-) -> std::sync::MutexGuard<'a, T> {
-    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// Stride between the slots of a uniform buffer read through **dynamic offsets**,
 /// which is how both render paths vary a uniform across the draws or dispatches of
 /// one pass. A dynamic offset must be a multiple of the device's
@@ -90,39 +70,23 @@ const UNIFORM_STRIDE: usize = 256;
 pub struct StrokeRenderer {
     ctx: GpuContext,
     color_space: Arc<dyn ColorSpace>,
-    pipeline: wgpu::RenderPipeline,
-    uniform_bgl: wgpu::BindGroupLayout,
-    prefix_bgl: wgpu::BindGroupLayout,
-    /// The round tip's baked textures, keyed by `hardness.to_bits()` (§6.6).
-    ///
-    /// **One entry, replaced rather than accumulated** — and that is a fact about the
-    /// key, not caution. Hardness is a continuous slider, so a live preview walks it
-    /// through a fresh value per frame while the user drags one: keeping every
-    /// position would bank ~320 KB of GPU texture apiece and never hand it back, while
-    /// keeping the last is exactly the working set of *adjust the knob and look*.
-    /// [`noise_cache`](Self::noise_cache) below grows without bound for the opposite
-    /// reason — its key is a small enum, so the whole domain fits and nothing evicts.
-    round_tip: Arc<Mutex<Option<(u32, RoundTip)>>>,
-    /// Colour dynamics (§6.2): the sweep's noise bind group layout
-    /// (group 2), the shared wrap/linear sampler, the 1×1×1 zero volume bound
-    /// when a brush's jitter is off, and the lazily-baked per-kind fields.
-    noise_bgl: wgpu::BindGroupLayout,
-    noise_sampler: wgpu::Sampler,
-    dummy_noise: wgpu::TextureView,
-    noise_cache: Arc<Mutex<Vec<(NoiseKind, wgpu::TextureView)>>>,
 
-    // Stroke integrate (§6.2/§6.1): a fullscreen pass reads the base tile +
-    // the stroke's footprint scratch and writes `new = f(base, scratch)` into a fresh
-    // CoW tile's color+aux MRT — the scratch's accumulated parcel stacked on the base
-    // through the shared law in `paint_common.wesl`, the same one a fill lands through
-    // and the stamp loop's `deposit` uses.
-    integrate_pipeline: wgpu::RenderPipeline,
-    integrate_bgl: wgpu::BindGroupLayout,
-
-    // Brush dynamics: the sequential stamp loop (§6.2), used when the
-    // brush manipulates existing paint (`lift` / `deposit` / `charge` / `bleed` —
-    // the four axes `dynamics_setup` gates on).
+    /// The two render paths' GPU objects, each built by the module that dispatches
+    /// them. Symmetric on purpose: the swept path's pipelines used to sit loose here
+    /// among the caches while the loop's lived behind a type, which made a struct
+    /// documented as holding "only immutable GPU objects" hold one path by name.
+    swept: SweptKit,
+    /// The sequential stamp loop (§6.2), used when the brush manipulates existing
+    /// paint (`lift` / `deposit` / `charge` / `bleed` — the four axes `dynamics_setup`
+    /// gates on).
     dynamics: DynamicsKit,
+
+    /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
+    /// prefix-τ volume both paths integrate against, the coverage mask the reservoir
+    /// weights by, and the colour-dynamics field. **The one mutable thing here**, which
+    /// is why it is a type of its own rather than five fields: the sentence above about
+    /// immutable objects is then true of everything else without qualification.
+    tips: TipCache,
 
     /// The base bound where a stroke reaches a tile the layer does not have yet
     /// (§6.8's pattern). The integrate reads it through clamped loads, so bare
@@ -217,110 +181,18 @@ impl StrokeRenderer {
         selection: SelectionRenderer,
         zeroes: Zeroes,
     ) -> Self {
-        let device = &ctx.device;
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark sweep"),
-            source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
-        });
-
-        let frag = wgpu::ShaderStages::FRAGMENT;
-        // One slot per affected tile, selected by a dynamic offset ([`UNIFORM_STRIDE`])
-        // — so a stroke crossing many tiles binds one buffer rather than building one
-        // per tile on every pointer move.
-        let uniform_bgl = desc::bind_group_layout(
-            device,
-            "stark sweep uniform bgl",
-            &[desc::uniform_slot(
-                0,
-                wgpu::ShaderStages::VERTEX_FRAGMENT,
-                swept::XFORM_SLOT,
-            )],
-        );
-
-        // The prefix-τ texture is a R32Float 2D-array (x, y, + orientation layers), sampled
-        // via textureLoad (not filterable), so the shader does its own trilinear lookup.
-        let prefix_bgl = desc::bind_group_layout(
-            device,
-            "stark sweep prefix bgl",
-            &[desc::load_tex_array(0, frag)],
-        );
-
-        // Group 2: the colour-dynamics noise field (a tileable 3-D volume) + its
-        // repeat sampler (§6.2), and beside it the canvas surface's ground (height +
-        // the rise ahead) + its own repeat sampler — the deposition tooth (§6.4). In
-        // this group rather than one of its own because it is the same kind of thing
-        // as the noise: a tileable field the deposit samples per fragment, resolved
-        // per stroke.
-        let noise_bgl = desc::bind_group_layout(
-            device,
-            "stark sweep noise bgl",
-            &[
-                desc::sample_tex(0, frag),
-                desc::sampler(1, frag),
-                desc::sample_tex(2, frag),
-                desc::sampler(3, frag),
-            ],
-        );
-        // Wrapping on both axes — the noise tile tiles (that's the whole point).
-        let noise_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("stark noise sampler"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let (_dummy_tex, dummy_noise) = crate::noise::dummy_noise_texture(ctx);
-
-        let layout = desc::pipeline_layout(
-            device,
-            "stark sweep layout",
-            &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&noise_bgl)],
-        );
-        let pipeline = desc::render_pipeline(
-            device,
-            desc::RenderPipe {
-                label: "stark sweep pipeline",
-                layout: &layout,
-                module: &shader,
-                vs: "vs_main",
-                fs: "fs_main",
-                primitive: desc::QUAD_STRIP,
-                buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
-                    wgpu::VertexStepMode::Instance,
-                ))],
-                targets: &[
-                    desc::blended_target(
-                        color_space.color_format(),
-                        Some(color_space.color_blend()),
-                    ),
-                    // The stamp renders into a *scratch* tile, whose aux is the wide
-                    // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
-                    // blend across overlapping segments.
-                    desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-                ],
-            },
-        );
-
-        let (integrate_pipeline, integrate_bgl) =
-            build_integrate_pipeline(device, color_space.as_ref());
-        let dynamics = build_dynamics_kit(device, color_space.as_ref());
-
+        // Composition, not construction: each path's objects are built by the module
+        // that uses them, and the brush textures both paths resolve live with their
+        // caches. What is left here is the pair of them plus the scene-independent
+        // things a renderer is handed.
+        let swept = build_swept_kit(&ctx.device, color_space.as_ref());
+        let dynamics = build_dynamics_kit(&ctx.device, color_space.as_ref());
         Self {
             ctx: ctx.clone(),
             color_space,
-            pipeline,
-            uniform_bgl,
-            prefix_bgl,
-            round_tip: Arc::new(Mutex::new(None)),
-            noise_bgl,
-            noise_sampler,
-            dummy_noise,
-            noise_cache: Arc::new(Mutex::new(Vec::new())),
-            integrate_pipeline,
-            integrate_bgl,
+            swept,
             dynamics,
+            tips: TipCache::new(ctx),
             zeroes,
             selection,
         }
@@ -412,59 +284,6 @@ impl StrokeRenderer {
         )
     }
 
-    /// The brush's swept-footprint prefix-τ texture: an image brush's from the asset
-    /// store, the round tip's generated (and cached) from its hardness.
-    ///
-    /// Both render paths resolve it the same way — they differ in which bind-group
-    /// layout they hang it off, not in how the texture is chosen.
-    fn prefix_view(&self, assets: &AssetStore, brush: &BrushParams) -> wgpu::TextureView {
-        match brush.shape {
-            BrushShape::Stamp(id) => assets
-                .prefix_view(id)
-                .unwrap_or_else(|| self.round_tip(BrushShape::DEFAULT_HARDNESS).prefix),
-            BrushShape::Round { hardness } => self.round_tip(hardness).prefix,
-        }
-    }
-
-    /// The brush's plain coverage mask — the weights a reservoir texel carries
-    /// (§6.2). Resolved exactly as [`Self::prefix_view`] is, from the same two
-    /// sources; only the stamp loop asks for it.
-    fn coverage_view(&self, assets: &AssetStore, brush: &BrushParams) -> wgpu::TextureView {
-        match brush.shape {
-            BrushShape::Stamp(id) => assets
-                .coverage_view(id)
-                .unwrap_or_else(|| self.round_tip(BrushShape::DEFAULT_HARDNESS).coverage),
-            BrushShape::Round { hardness } => self.round_tip(hardness).coverage,
-        }
-    }
-
-    /// The round tip's baked textures for a given `hardness`, cached so live preview
-    /// — which re-renders per pointer move — doesn't rebuild them each frame.
-    ///
-    /// The pair is built and cached **together**, off a single [`round_coverage`]
-    /// evaluation, because they are two readings of one field: 256² texels of
-    /// `acos`/`exp` that used to be run twice for the same hardness, once per texture.
-    /// Cached as one entry for a second reason — held apart, the stamp loop could find
-    /// its prefix hot and its coverage cold, and pay the field again anyway.
-    fn round_tip(&self, hardness: f32) -> RoundTip {
-        let key = hardness.to_bits();
-        let mut cache = unpoisoned(self.round_tip.lock());
-        if let Some((k, tip)) = cache.as_ref()
-            && *k == key
-        {
-            return tip.clone();
-        }
-        let cov = round_coverage(hardness, ROUND_RES);
-        // The round tip is rotation-invariant, so a single orientation layer suffices —
-        // the shader's wrapping lookup reads it for every orientation (§6.6).
-        let prefix = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
-        let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
-        let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
-        let tip = RoundTip { prefix, coverage };
-        *cache = Some((key, tip.clone()));
-        tip
-    }
-
     /// Resolve the constants both render paths read for one stroke — see
     /// [`StrokeConstants`] for why they are resolved here rather than at each path.
     fn stroke_constants(
@@ -482,23 +301,6 @@ impl StrokeRenderer {
             namp,
             noff,
         }
-    }
-
-    /// The colour-dynamics noise tile for a brush: the baked field for its
-    /// kind (built once, cached — the bake is a fixed pure function, so at most
-    /// one texture per [`NoiseKind`] ever exists), or the 1×1 zero tile when
-    /// the jitter is off (amplitudes all 0 ⇒ the shader adds exactly nothing).
-    fn noise_view(&self, cd: &ColorDynamics) -> wgpu::TextureView {
-        if !cd.is_active() {
-            return self.dummy_noise.clone();
-        }
-        let mut cache = unpoisoned(self.noise_cache.lock());
-        if let Some((_, view)) = cache.iter().find(|(k, _)| *k == cd.noise) {
-            return view.clone();
-        }
-        let (_tex, view) = crate::noise::build_noise_texture(&self.ctx, cd.noise);
-        cache.push((cd.noise, view.clone()));
-        view
     }
 }
 
@@ -570,16 +372,4 @@ fn noise_offset(seed: u64) -> [f32; 2] {
         // Top 24 bits → [0, 1): exact in f32, uniform.
         (z >> 40) as f32 / (1u64 << 24) as f32
     })
-}
-/// The two textures a round tip bakes to (§6.6): the swept-footprint prefix-τ both
-/// render paths integrate against, and the plain coverage mask the stamp loop's
-/// reservoir texels weight by.
-///
-/// One type because they are one thing — the same coverage field, read two ways —
-/// and keeping them so is what makes a cache entry able to say it holds *the tip*
-/// rather than a texture that happens to be a tip's.
-#[derive(Clone)]
-struct RoundTip {
-    prefix: wgpu::TextureView,
-    coverage: wgpu::TextureView,
 }
