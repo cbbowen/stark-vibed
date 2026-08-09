@@ -836,7 +836,12 @@ fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 
                 div { class: "modal-section-label", "COLOR SPACE" }
                 {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
-                {card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media.")}
+                // Offered only where the engine carries it. `ColorSpaceId::Mixbox` is
+                // a variant in every build — the save format's enum indices cannot
+                // depend on a feature (§8) — so the id below still compiles; what a
+                // build without the `mixbox` feature lacks is the space behind it, and
+                // `ColorSpaceId::available` is the same question this asks.
+                {cfg!(feature = "mixbox").then(|| card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media."))}
 
                 div { class: "modal-section-label", "SURFACE" }
                 for g in grounds::GROUNDS.iter() {

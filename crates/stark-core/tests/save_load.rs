@@ -7,6 +7,7 @@
 mod common;
 
 use common::*;
+#[cfg(feature = "mixbox")]
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushShape, Tool};
@@ -117,6 +118,10 @@ fn timelapse_yields_one_frame_per_action() {
 /// space first; the timelapse had the preamble written out separately and did not, so
 /// the two are driven from the same fresh Oklab engine here — a timelapse that agrees
 /// with the load is one that adopted the file rather than approximated it.
+/// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.
+/// `ColorSpaceId::Mixbox` still *names* a space there — the save format's enum
+/// indices cannot depend on a feature (§8) — but nothing can open one.
+#[cfg(feature = "mixbox")]
 #[test]
 fn a_timelapse_replays_in_the_documents_color_space() {
     let Some(mut original) = engine_or_skip_with(ColorSpaceId::Mixbox).map(on_blue) else {

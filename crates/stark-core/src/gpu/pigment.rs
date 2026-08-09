@@ -20,9 +20,18 @@
 use crate::gpu::context::GpuContext;
 
 /// The vendored LUT image (git submodule; CC BY-NC 4.0).
+///
+/// Behind the `mixbox` feature because `include_bytes!` is resolved at *compile*
+/// time: an unconditional one would keep the submodule a hard build requirement even
+/// in a build that can never decode it, which is precisely what the feature exists to
+/// avoid. [`PigmentLut::placeholder`] stays unconditional — the blend pass has one
+/// bind group layout in either space, so something must always be bindable there.
+#[cfg(feature = "mixbox")]
 const LUT_PNG: &[u8] = include_bytes!("../../../../vendor/mixbox/shaders/mixbox_lut.png");
 
-/// Edge of the unrolled LUT image, in texels.
+/// Edge of the unrolled LUT image, in texels. Read only by [`PigmentLut::load`], so
+/// it goes with it — the stand-in is 1×1 and has no cube to unroll.
+#[cfg(feature = "mixbox")]
 const LUT_DIM: u32 = 512;
 
 /// The pigment LUT bound to the blend pass: a texture plus the sampler that reads
@@ -38,6 +47,7 @@ impl PigmentLut {
     /// The texture is **`Rgba8Unorm`, not sRGB**: these texels are polynomial
     /// coefficients that happen to be stored in an image, and letting the hardware
     /// apply a transfer curve to them would silently corrupt every mixture.
+    #[cfg(feature = "mixbox")]
     pub fn load(ctx: &GpuContext) -> Self {
         let decoder = png::Decoder::new(std::io::Cursor::new(LUT_PNG));
         let mut reader = decoder.read_info().expect("pigment lut: read png info");

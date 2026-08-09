@@ -6,7 +6,47 @@
 use wesl::include_wesl;
 
 mod entry_points;
-pub use entry_points::{ENTRY_POINTS, RESID_ENTRY_POINTS, RESID_FEATURE};
+pub use entry_points::{
+    ENTRY_POINTS, MIXBOX_ENTRY_POINTS, RESID_ENTRY_POINTS, RESID_FEATURE, entry_point_enabled,
+};
+
+/// One pass's two builds, chosen by whether the document's colour space carries a
+/// residual (§6.7).
+///
+/// Defined twice under a `cfg` rather than written as one `if`, because without the
+/// `mixbox` feature the `_resid` artifact **does not exist**: a residual is something
+/// a pigment space has, Mixbox is the only one, and `build.rs` skips that whole pass.
+/// `include_wesl!` of an artifact that was never deposited is a *compile* error, so
+/// the arm has to disappear with the pass rather than merely go untaken.
+///
+/// The `debug_assert!` in that build is the honest statement of what is left: `resid`
+/// can only be `true` if some space returned a `resid_format`, and none can.
+#[cfg(feature = "mixbox")]
+macro_rules! resid_variant {
+    ($flag:expr, $plain:literal, $resid:literal) => {
+        if $flag {
+            include_wesl!($resid)
+        } else {
+            include_wesl!($plain)
+        }
+    };
+}
+
+#[cfg(not(feature = "mixbox"))]
+macro_rules! resid_variant {
+    ($flag:expr, $plain:literal, $resid:literal) => {{
+        debug_assert!(
+            !$flag,
+            concat!(
+                "`",
+                $resid,
+                "` is not built without the `mixbox` feature, and no \
+                 colour space in this build declares a `resid_format`",
+            ),
+        );
+        include_wesl!($plain)
+    }};
+}
 
 /// Rust mirrors of the WESL structs the host fills in, generated from the shader
 /// sources at build time (`build/mirror.rs`).
@@ -25,11 +65,7 @@ pub mod mirror {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn stamp(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("stamp_resid")
-    } else {
-        include_wesl!("stamp")
-    }
+    resid_variant!(resid, "stamp", "stamp_resid")
 }
 
 /// WGSL source for the tile compositing pass (§6.3, pass A).
@@ -38,11 +74,7 @@ pub fn stamp(resid: bool) -> &'static str {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn composite(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("composite_resid")
-    } else {
-        include_wesl!("composite")
-    }
+    resid_variant!(resid, "composite", "composite_resid")
 }
 
 /// WGSL matte-layer fill, drawn inside pass A at the matte's place in the layer
@@ -52,11 +84,7 @@ pub fn composite(resid: bool) -> &'static str {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn matte(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("matte_resid")
-    } else {
-        include_wesl!("matte")
-    }
+    resid_variant!(resid, "matte", "matte_resid")
 }
 
 /// WGSL media/lighting pass for the Oklab color space (§6.3, pass B).
@@ -71,6 +99,11 @@ pub fn resolve() -> &'static str {
 }
 
 /// WGSL media pass for the Mixbox color space (pigment polynomial) — §6.7.
+///
+/// Only in a build carrying the `mixbox` feature: this is one of the two shaders
+/// that import the polynomial transpiled from the vendored CC BY-NC 4.0 submodule
+/// (see [`MIXBOX_ENTRY_POINTS`]), so without it there is no artifact to embed.
+#[cfg(feature = "mixbox")]
 pub fn media_mixbox() -> &'static str {
     include_wesl!("media_mixbox")
 }
@@ -84,6 +117,9 @@ pub fn blend_oklab() -> &'static str {
 /// WGSL layer-blend pass for the Mixbox color space — §18.0.4. Same
 /// light algebra as [`blend_oklab`]; the round trip runs through Mixbox's pigment
 /// polynomial and its inverse LUT.
+///
+/// Only in a build carrying the `mixbox` feature, like [`media_mixbox`].
+#[cfg(feature = "mixbox")]
 pub fn blend_mixbox() -> &'static str {
     include_wesl!("blend_mixbox")
 }
@@ -95,11 +131,7 @@ pub fn blend_mixbox() -> &'static str {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn integrate(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("integrate_resid")
-    } else {
-        include_wesl!("integrate")
-    }
+    resid_variant!(resid, "integrate", "integrate_resid")
 }
 
 /// WGSL compute shader for the brush-dynamics **sequential stamp loop**
@@ -109,11 +141,7 @@ pub fn integrate(resid: bool) -> &'static str {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn dynamics(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("dynamics_resid")
-    } else {
-        include_wesl!("dynamics")
-    }
+    resid_variant!(resid, "dynamics", "dynamics_resid")
 }
 
 /// WGSL region→tile write-back for the stamp loop — §6.2/§6.4.
@@ -122,11 +150,7 @@ pub fn dynamics(resid: bool) -> &'static str {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn slice(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("slice_resid")
-    } else {
-        include_wesl!("slice")
-    }
+    resid_variant!(resid, "slice", "slice_resid")
 }
 
 /// WGSL affine-transform passes: the moved parcel, the cut+stack combine, and
@@ -136,11 +160,7 @@ pub fn slice(resid: bool) -> &'static str {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn transform(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("transform_resid")
-    } else {
-        include_wesl!("transform")
-    }
+    resid_variant!(resid, "transform", "transform_resid")
 }
 
 /// WGSL region fill: a parcel of paint laid through a coverage mask, stacked by
@@ -150,11 +170,7 @@ pub fn transform(resid: bool) -> &'static str {
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
 /// needs (§6.7), and without it.
 pub fn fill(resid: bool) -> &'static str {
-    if resid {
-        include_wesl!("fill_resid")
-    } else {
-        include_wesl!("fill")
-    }
+    resid_variant!(resid, "fill", "fill_resid")
 }
 
 /// WGSL selection-mask rasterization: one op's shape combined into a mask tile —
@@ -203,12 +219,15 @@ mod tests {
 
     /// One flagged accessor, paired with its [`RESID_ENTRY_POINTS`] name — the same
     /// correspondence [`Accessor`] states for the plain builds, for the eight passes
-    /// that take a `resid` bool.
+    /// that take a `resid` bool. With the test that uses it: without `mixbox` there
+    /// are no residual variants to pair up.
+    #[cfg(feature = "mixbox")]
     type ResidAccessor = (&'static str, fn(bool) -> &'static str);
 
     #[test]
     fn the_entry_point_list_and_the_accessors_are_the_same_set() {
         let accessors: &[Accessor] = &[
+            #[cfg(feature = "mixbox")]
             ("blend_mixbox", blend_mixbox),
             ("blend_oklab", blend_oklab),
             ("composite", || composite(false)),
@@ -218,6 +237,7 @@ mod tests {
             ("integrate", || integrate(false)),
             ("mask_region", mask_region),
             ("matte", || matte(false)),
+            #[cfg(feature = "mixbox")]
             ("media_mixbox", media_mixbox),
             ("media_oklab", media_oklab),
             ("overlay", overlay),
@@ -230,7 +250,15 @@ mod tests {
 
         let mut names: Vec<&str> = accessors.iter().map(|(n, _)| *n).collect();
         names.sort_unstable();
-        let mut listed = ENTRY_POINTS.to_vec();
+        // Filtered by the same predicate `build.rs` filters by, so this checks the
+        // *third* way the set can be stated as well: an accessor that survived the
+        // cargo feature while its artifact did not — or the reverse — is a link error
+        // this catches by name instead.
+        let mut listed: Vec<&str> = ENTRY_POINTS
+            .iter()
+            .copied()
+            .filter(|n| entry_point_enabled(n, cfg!(feature = "mixbox")))
+            .collect();
         listed.sort_unstable();
         assert_eq!(
             names, listed,
@@ -256,6 +284,11 @@ mod tests {
     /// feature, a `@if` spelt wrong — both passes would deposit the same WGSL, every
     /// pipeline would build, and a Mixbox document would simply go on dropping its
     /// residual with no target to write it to.
+    ///
+    /// Only meaningful with the `mixbox` feature: without it `build.rs` skips the
+    /// residual pass outright, so there is no second artifact to differ — which the
+    /// set check above already states, since neither list carries one.
+    #[cfg(feature = "mixbox")]
     #[test]
     fn every_residual_variant_differs_from_its_plain_build() {
         let resid: &[ResidAccessor] = &[

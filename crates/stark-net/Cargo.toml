@@ -18,10 +18,14 @@ publish = false
 # identically on native (str0m) and wasm (RTCPeerConnection), so the whole
 # flow is testable in `cargo test`.
 webrtc = ["dep:iroh-webrtc-transport", "dep:iroh-base", "dep:anyhow", "iroh/unstable-custom-transports"]
-default = ["webrtc"]
+# Pure forwarding: this crate has no Mixbox code of its own, but it depends on the
+# engine with `default-features = false`, so without this it would pin the engine's
+# Mixbox space *off* for every frontend — including one that wants it.
+mixbox = ["stark-core/mixbox"]
+default = ["webrtc", "mixbox"]
 
 [dependencies]
-stark-core = { path = "../stark-core" }
+stark-core = { path = "../stark-core", default-features = false }
 iroh = "1"
 # The live-edit wire: epidemic broadcast on the session topic. Rides the same
 # endpoint as everything else — which is what the WebRTC custom-transport

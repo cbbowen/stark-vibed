@@ -89,6 +89,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo check -p stark-ui --target wasm32-unknown-unknown
+# the second configuration (§6.7): no Mixbox, and so no CC BY-NC 4.0 code at all
+cargo clippy --workspace --all-targets --no-default-features \
+  --features stark-net/webrtc -- -D warnings
 dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
 cargo bench -p stark-core --bench stroke    # criterion; the dynamics perf gate
 ```

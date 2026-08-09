@@ -94,10 +94,22 @@ const SHADER_DIR: &str = "src/shaders";
 const GEN_PREFIX: &str = "package::gen";
 
 fn main() {
+    // A build script is compiled *without* the crate's features, so `cfg(feature =
+    // ..)` is not available here — cargo passes the answer in the environment
+    // instead. `entry_points.rs` owns what this then means (`entry_point_enabled`),
+    // so the two sides cannot drift.
+    let mixbox = std::env::var_os("CARGO_FEATURE_MIXBOX").is_some();
+
     // Transpile Mixbox's `mixbox_eval_polynomial` from the vendored GLSL into a
     // WESL module so the trained coefficients stay sourced from the licensed
     // submodule rather than copied into this repo (§6.7).
-    let gen_dir = generate_mixbox_poly();
+    //
+    // Skipped entirely without the feature, which is the point of it: the two
+    // shaders that import the generated module are the two this build then leaves
+    // out, so nothing resolves `package::gen::mixbox_poly` and the submodule need
+    // not be checked out at all. A `Router` with nothing mounted under the prefix is
+    // exactly right — an import of it would be a resolve error, and there is none.
+    let gen_dir = mixbox.then(generate_mixbox_poly);
 
     // Mirror the host-shared WESL structs into Rust. Read from the *unlinked*
     // sources: the linker mangles `Stamp` to `package__1dynamics_Stamp`, emits it
@@ -128,10 +140,12 @@ fn main() {
     // mtime guard that mitigated it, and the `.gitignore` entry for a generated file
     // sitting in the source tree.
     let mut router = wesl::Router::new();
-    router.mount_resolver(
-        GEN_PREFIX.parse().expect("the gen prefix is a module path"),
-        wesl::FileResolver::new(&gen_dir),
-    );
+    if let Some(dir) = &gen_dir {
+        router.mount_resolver(
+            GEN_PREFIX.parse().expect("the gen prefix is a module path"),
+            wesl::FileResolver::new(dir),
+        );
+    }
     router.mount_fallback_resolver(wesl::FileResolver::new(SHADER_DIR));
     let mut compiler = wesl::Wesl::new(SHADER_DIR).set_custom_resolver(router);
 
@@ -141,11 +155,18 @@ fn main() {
     // declarations simply are not in it.
     compiler.set_feature(RESID_FEATURE, false);
     for name in ENTRY_POINTS {
-        build_one(&compiler, name, name);
+        if entry_point_enabled(name, mixbox) {
+            build_one(&compiler, name, name);
+        }
     }
-    compiler.set_feature(RESID_FEATURE, true);
-    for name in RESID_ENTRY_POINTS {
-        build_one(&compiler, name, &format!("{name}_resid"));
+    // The residual pass belongs to the pigment space, so it goes with it: without
+    // `mixbox` no space in the build declares a `resid_format`, and these would be
+    // eight artifacts nothing could select.
+    if mixbox {
+        compiler.set_feature(RESID_FEATURE, true);
+        for name in RESID_ENTRY_POINTS {
+            build_one(&compiler, name, &format!("{name}_resid"));
+        }
     }
 
     // Every module by name, not just the directory — a directory's mtime does not
@@ -163,7 +184,12 @@ fn main() {
         println!("cargo::rerun-if-changed={dir}");
     }
     println!("cargo::rerun-if-changed=src/entry_points.rs");
-    println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
+    // Only when it is actually read: naming a path that need not exist would make
+    // cargo re-run this script on every build in a configuration without the
+    // submodule checked out.
+    if mixbox {
+        println!("cargo::rerun-if-changed={MIXBOX_GLSL}");
+    }
 }
 
 /// Link `module` with its imports and deposit the WGSL under `artifact`.

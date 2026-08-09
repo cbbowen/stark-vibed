@@ -58,12 +58,20 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                         description: "Oklab color space.",
                         license: "Public domain",
                     }
-                    Credit {
-                        name: "Secret Weapons",
-                        url: "https://scrtwpns.com/mixbox",
-                        description: "Mixbox color mixing.",
-                        license: "Creative Commons Attribution-NonCommercial 4.0 International Public License",
-                    }
+                    // Only where the code it attributes is actually in the build.
+                    // This is the credit that has to track the `mixbox` feature most
+                    // exactly of the three places that mention it: a build compiled
+                    // without it contains no Mixbox code, and claiming a
+                    // non-commercial licence it is not bound by would be its own kind
+                    // of wrong.
+                    {cfg!(feature = "mixbox").then(|| rsx! {
+                        Credit {
+                            name: "Secret Weapons",
+                            url: "https://scrtwpns.com/mixbox",
+                            description: "Mixbox color mixing.",
+                            license: "Creative Commons Attribution-NonCommercial 4.0 International Public License",
+                        }
+                    })}
                     Credit {
                         name: "N0",
                         url: "https://www.iroh.computer",

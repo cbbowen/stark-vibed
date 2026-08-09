@@ -221,10 +221,12 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
 /// belonging to a pipeline that is gone, and a fresh one never can.
 #[test]
 fn a_kept_offscreen_renders_what_a_fresh_one_would() {
+    #[cfg(feature = "mixbox")]
+    use stark_core::ColorSpaceId;
     use stark_core::command::ViewCommand;
     use stark_core::document::MatteRegion;
     use stark_core::geom::Extent2;
-    use stark_core::{Background, ColorSpaceId, EnvironmentId, ExportScale, Offscreen, Rendered};
+    use stark_core::{Background, EnvironmentId, ExportScale, Offscreen, Rendered};
 
     let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
         return;
@@ -313,12 +315,21 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
 
     // And a new document in the other colour space, which rebuilds the pipeline the
     // slot's attachments belong to. Same surface, so nothing else moves with it.
-    let surface = engine.surface();
-    engine.new_document(ColorSpaceId::Mixbox, surface);
-    framed(&mut engine);
-    same(
-        &shot(&mut engine, &mut kept, 1.0),
-        &shot(&mut engine, &mut Offscreen::default(), 1.0),
-        "after a colour-space rebuild",
-    );
+    //
+    // Only where there *is* another one: without the `mixbox` feature Oklab is the
+    // whole set, and "switching" to the space already open would rebuild nothing, so
+    // the claim has nothing left to make rather than a weaker version of itself.
+    #[cfg(feature = "mixbox")]
+    {
+        let surface = engine.surface();
+        engine
+            .new_document(ColorSpaceId::Mixbox, surface)
+            .expect("the `mixbox` feature is on in this build");
+        framed(&mut engine);
+        same(
+            &shot(&mut engine, &mut kept, 1.0),
+            &shot(&mut engine, &mut Offscreen::default(), 1.0),
+            "after a colour-space rebuild",
+        );
+    }
 }

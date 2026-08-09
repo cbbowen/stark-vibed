@@ -13,6 +13,7 @@ mod common;
 
 use common::*;
 
+#[cfg(feature = "mixbox")]
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_core::document::{BrushDynamics, BrushParams, BrushShape, Tool};
@@ -86,6 +87,10 @@ fn golden_two_strokes_cross() {
     assert_golden("two_strokes_cross", &img, 6);
 }
 
+/// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.
+/// `ColorSpaceId::Mixbox` still *names* a space there — the save format's enum
+/// indices cannot depend on a feature (§8) — but nothing can open one.
+#[cfg(feature = "mixbox")]
 #[test]
 fn golden_mixbox_mix() {
     let Some(mut engine) = engine_or_skip_with(ColorSpaceId::Mixbox) else {

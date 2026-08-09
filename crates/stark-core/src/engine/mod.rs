@@ -43,6 +43,7 @@ use crate::document::{
     Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, CanvasBounds, DocState,
     LayerContent, LayerId, LinearTimeline, ShapeAction, Timeline, Tool,
 };
+use crate::error::EngineError;
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
@@ -325,17 +326,28 @@ impl Engine {
     /// test target), in the default Oklab color space. Takes wgpu handles from
     /// the frontend (CLAUDE.md).
     pub fn new(gpu: GpuContext, target_format: wgpu::TextureFormat, viewport: Extent2) -> Self {
+        // Oklab is in every build by construction — it is the space with no optional
+        // dependency behind it — so the only fallible case cannot arise here.
         Self::new_with_color_space(gpu, target_format, viewport, ColorSpaceId::Oklab)
+            .expect("Oklab is unconditional")
     }
 
     /// Build an engine in a chosen color space (§6.7).
+    ///
+    /// Fails with [`EngineError::UnsupportedColorSpace`] if this build does not carry
+    /// the space — today only `Mixbox` without the `mixbox` feature. A frontend that
+    /// builds its picker from
+    /// [`ColorSpaceId::all_available`](crate::colorspace::ColorSpaceId::all_available)
+    /// never sees it.
     pub fn new_with_color_space(
         gpu: GpuContext,
         target_format: wgpu::TextureFormat,
         viewport: Extent2,
         color_space: ColorSpaceId,
-    ) -> Self {
-        let color_space = color_space.make();
+    ) -> Result<Self> {
+        let color_space = color_space
+            .make()
+            .ok_or(EngineError::UnsupportedColorSpace(color_space))?;
         // The registry starts on the builtin flat ground — it is all that can be
         // built before any bytes exist, and it is also what a fresh document is on
         // (`DEFAULT_SURFACE`). The two agree now, where they used to have to be
@@ -400,7 +412,7 @@ impl Engine {
         // document (both are `Flat`), and not for one seeded by `new_document`,
         // where it parks the registry on the id so the ground actually renders.
         engine.apply_document_surface();
-        engine
+        Ok(engine)
     }
 
     /// Apply one input command (§4).
@@ -1148,10 +1160,5 @@ pub async fn headless_engine_with(
     color_space: ColorSpaceId,
 ) -> Result<Engine> {
     let gpu = GpuContext::headless().await?;
-    Ok(Engine::new_with_color_space(
-        gpu,
-        target_format,
-        viewport,
-        color_space,
-    ))
+    Engine::new_with_color_space(gpu, target_format, viewport, color_space)
 }

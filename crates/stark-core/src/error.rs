@@ -26,6 +26,22 @@ pub enum EngineError {
     #[error("unsupported document version {0}")]
     UnsupportedVersion(u32),
 
+    /// The document names a colour space this build does not carry — today only
+    /// [`ColorSpaceId::Mixbox`](crate::colorspace::ColorSpaceId::Mixbox) in a build
+    /// without the `mixbox` cargo feature.
+    ///
+    /// A sibling of [`Self::UnsupportedVersion`] rather than a decode error, and for
+    /// the same reason: the bytes are perfectly well-formed and perfectly well
+    /// understood — the id is a variant every build has, because the save format's
+    /// enum indices cannot depend on a feature (§8, §19) — and what is missing is the
+    /// implementation behind it. That distinction is what lets a frontend say "this
+    /// document needs a Mixbox build" instead of "this file is corrupt".
+    #[error(
+        "this build does not support the {0:?} color space; \
+         it was compiled without the `mixbox` feature"
+    )]
+    UnsupportedColorSpace(crate::colorspace::ColorSpaceId),
+
     #[error("asset decode failed: {0}")]
     Asset(String),
     /// A content id could not be derived — an image that would not decode. Its own

@@ -12,10 +12,11 @@
 //! than asserted alongside them, so a wrong binding cannot be expressed.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use super::{Engine, GpuBuild, ROOT_LAYER, build_gpu};
 use crate::assets::AssetId;
-use crate::colorspace::ColorSpaceId;
+use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::content::AssetNeed;
 use crate::document::{
     Action, ActionKind, ActorId, BrushShape, DocState, LayerId, LinearTimeline, effective_actions,
@@ -141,7 +142,18 @@ impl Engine {
         self.initial_surface = file.canvas.surface;
         self.reset_document();
         if file.canvas.color_space != self.color_space.id() {
-            self.rebuild_gpu_for(file.canvas.color_space);
+            // A `DocumentFile` reaches here from exactly two places, and both have
+            // already settled this: one decoded from bytes was refused by
+            // [`DocumentFile::from_bytes`] if this build cannot honour its space, and
+            // one built in memory came from a live `Engine` in this same build, whose
+            // space therefore resolves by construction. So the `None` arm is not a
+            // case this function declines to handle — it is one that cannot arrive.
+            let cs = file
+                .canvas
+                .color_space
+                .make()
+                .expect("`from_bytes` refuses a document whose space this build lacks");
+            self.rebuild_gpu_for(cs);
         }
         for (_, bytes) in &file.assets {
             if let Err(e) = self.apply.assets.insert_bytes(bytes) {
@@ -298,11 +310,25 @@ impl Engine {
     /// frontend-provided *resources* survive: imported brush assets, and the
     /// registered surface and environment bytes. Those belong to the app, not to
     /// the document, and re-fetching them on every New would be gratuitous.
-    pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SurfaceId) {
+    /// Fails with [`EngineError::UnsupportedColorSpace`] if this build does not carry
+    /// `color_space`, **before** anything is reset — so a refusal leaves the open
+    /// document alone, the same bargain [`Self::load_document`] makes. A frontend
+    /// whose picker comes from
+    /// [`ColorSpaceId::all_available`](crate::colorspace::ColorSpaceId::all_available)
+    /// never sees it.
+    pub fn new_document(
+        &mut self,
+        color_space: ColorSpaceId,
+        surface: SurfaceId,
+    ) -> crate::error::Result<()> {
+        let cs = color_space
+            .make()
+            .ok_or(EngineError::UnsupportedColorSpace(color_space))?;
         self.initial_surface = surface;
         self.reset_document();
-        self.rebuild_gpu_for(color_space);
+        self.rebuild_gpu_for(cs);
         self.apply_document_surface();
+        Ok(())
     }
 
     /// The document's current surface (§6.4). Change it with
@@ -448,8 +474,10 @@ impl Engine {
 
     /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
     /// document is already empty (no tiles of the old format are referenced).
-    fn rebuild_gpu_for(&mut self, id: ColorSpaceId) {
-        let cs = id.make();
+    /// Takes the *resolved* space rather than an id, which is what keeps this
+    /// infallible: every caller has already had to obtain one, so there is no
+    /// "unsupported space" case left to handle here or to forget.
+    fn rebuild_gpu_for(&mut self, cs: Arc<dyn ColorSpace>) {
         // Cloned out before the rebuild: the registry lives on `self.apply`, whose
         // fields are reassigned below, and a `Surface` is two reference-counted wgpu
         // handles.

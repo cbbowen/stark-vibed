@@ -24,9 +24,33 @@ stark-assetid = { workspace = true }
 nalgebra = { workspace = true }
 # Vendored as a git submodule (CC BY-NC 4.0); see vendor/mixbox/LICENSE. Pure
 # no_std + libm, so it builds for wasm. Backs the Mixbox color space (§6.7).
-mixbox = { path = "../../vendor/mixbox/rust" }
+# Optional, and the reason the `mixbox` feature exists: without it this is not
+# compiled and the submodule need not be checked out.
+mixbox = { path = "../../vendor/mixbox/rust", optional = true }
 
 [features]
+default = ["mixbox"]
+# The Mixbox pigment colour space (§6.7). On by default.
+#
+# Off, the build carries **no CC BY-NC 4.0 code at all**: the vendored crate is not
+# compiled, `stark-shaders` skips transpiling the polynomial out of the submodule and
+# does not build the two shaders that import it, and `vendor/mixbox` need not exist.
+# That is the point of the flag — the licence is non-commercial, so a commercial
+# build has to be able to leave it out entirely rather than merely not reach it.
+#
+# `ColorSpaceId::Mixbox` is **still a variant** in such a build, deliberately.
+# Postcard encodes enums by index (§8), so dropping it would renumber every variant
+# appended after it and two builds would disagree about the save format — the class
+# of silent divergence §19 exists to prevent. The id stays nameable and
+# serializable; what goes away is the implementation, and
+# `ColorSpaceId::make` returns `None` so opening such a document is a clean
+# `EngineError::UnsupportedColorSpace` rather than a decode failure.
+#
+# The residual channel goes with it, because a residual is something a *pigment*
+# space has and this is the only one: no space declares a `resid_format`, the eight
+# `_resid` shader variants are not built, and the loop's storage-texture requirement
+# drops back to WebGPU's guaranteed four.
+mixbox = ["dep:mixbox", "stark-shaders/mixbox"]
 # Stroke-fitting debug aids. Build-time only: there is no command and no UI toggle
 # for these, so a build without the feature has no code path that reaches them.
 # Turn it on (`--features debug-unfrozen`) while working on the fit.

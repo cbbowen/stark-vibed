@@ -14,6 +14,7 @@ mod common;
 
 use common::*;
 use stark_core::RgbaImage;
+#[cfg(feature = "mixbox")]
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::DocCommand;
 use stark_core::document::{
@@ -158,6 +159,10 @@ fn identity_transform_is_a_noop_at_a_feathered_edge() {
     );
 }
 
+/// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.
+/// `ColorSpaceId::Mixbox` still *names* a space there — the save format's enum
+/// indices cannot depend on a feature (§8) — but nothing can open one.
+#[cfg(feature = "mixbox")]
 #[test]
 fn identity_transform_is_a_noop_in_mixbox() {
     let Some(mut engine) = engine_or_skip_with(ColorSpaceId::Mixbox) else {

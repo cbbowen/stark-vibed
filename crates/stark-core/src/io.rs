@@ -216,7 +216,23 @@ impl DocumentFile {
 
         let mut body = Vec::new();
         DeflateDecoder::new(&bytes[header..]).read_to_end(&mut body)?;
-        postcard::from_bytes(&body).map_err(|e| EngineError::Deserialize(e.to_string()))
+        let file: Self =
+            postcard::from_bytes(&body).map_err(|e| EngineError::Deserialize(e.to_string()))?;
+
+        // **The one place an untrusted colour space enters.** Checked here rather than
+        // where the document is adopted, for the reason the magic and the version are:
+        // this is the boundary between bytes someone else wrote and a value the engine
+        // treats as its own, and a refusal here leaves whatever is open alone.
+        //
+        // Every `ColorSpaceId` decodes — the enum is unconditional so the save format's
+        // indices cannot shift with a build's features (§8, §19) — and what a build may
+        // lack is the *implementation*. So this is not a decode failure, and saying so
+        // is what lets a frontend offer "this document needs a Mixbox build" instead of
+        // "this file is corrupt".
+        if !file.canvas.color_space.available() {
+            return Err(EngineError::UnsupportedColorSpace(file.canvas.color_space));
+        }
+        Ok(file)
     }
 }
 

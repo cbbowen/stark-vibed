@@ -58,7 +58,12 @@ tracing = { version = "0.1", features = ["release_max_level_info"] }
 
 # stark-shaders is consumed by stark-core.
 stark-assetid = { path = "crates/stark-assetid" }
-stark-shaders = { path = "crates/stark-shaders" }
+# `default-features = false` is load-bearing: `stark-shaders`'s own default turns its
+# `mixbox` feature on, and cargo unifies features across the graph — so without this,
+# a `--no-default-features` workspace build would still compile the two Mixbox
+# shaders and transpile the vendored GLSL, because stark-core would go on asking for
+# them regardless of its own feature. `stark-core/mixbox` forwards it instead.
+stark-shaders = { path = "crates/stark-shaders", default-features = false }
 nalgebra = "0.35"
 
 

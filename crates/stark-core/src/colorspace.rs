@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 use crate::color;
 
 /// Identifies a color space; serialized in the save format (`CanvasMeta`, §8).
+///
+/// **Every variant is unconditional, including one whose implementation a build may
+/// not carry** (`Mixbox`, behind the `mixbox` cargo feature). Postcard encodes enums
+/// by index (§8): a build that `cfg`'d a variant away would renumber every variant
+/// appended after it, so the same bytes would name different spaces in two builds of
+/// the same version — a wire-format break that nothing would report, which is the
+/// class §19 exists to rule out. An id is therefore always nameable and always
+/// serializable, and whether it can be *honoured* is [`Self::make`]'s answer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColorSpaceId {
     Oklab,
@@ -21,12 +29,38 @@ pub enum ColorSpaceId {
 }
 
 impl ColorSpaceId {
-    /// Construct the color space implementation for this id.
-    pub fn make(self) -> Arc<dyn ColorSpace> {
+    /// Construct the color space implementation for this id, or `None` when this
+    /// build does not carry it.
+    ///
+    /// `None` is reachable only for [`ColorSpaceId::Mixbox`] without the `mixbox`
+    /// feature. It is deliberately not a fallback to Oklab: the two spaces read the
+    /// same tile bytes as different colours, so opening a pigment document through a
+    /// colorimetric space would render every pixel wrong while looking like it
+    /// worked. Failing is the honest answer, and
+    /// [`EngineError::UnsupportedColorSpace`](crate::error::EngineError::UnsupportedColorSpace)
+    /// is where it lands.
+    pub fn make(self) -> Option<Arc<dyn ColorSpace>> {
         match self {
-            ColorSpaceId::Oklab => Arc::new(OkLabColorSpace),
-            ColorSpaceId::Mixbox => Arc::new(MixboxColorSpace),
+            ColorSpaceId::Oklab => Some(Arc::new(OkLabColorSpace)),
+            #[cfg(feature = "mixbox")]
+            ColorSpaceId::Mixbox => Some(Arc::new(MixboxColorSpace)),
+            #[cfg(not(feature = "mixbox"))]
+            ColorSpaceId::Mixbox => None,
         }
+    }
+
+    /// Whether this build can open a document in this space — [`Self::make`] without
+    /// building anything. What a frontend asks to decide which spaces to offer.
+    pub fn available(self) -> bool {
+        self.make().is_some()
+    }
+
+    /// Every id this build can actually open, in a stable order — the list a "new
+    /// document" picker is built from.
+    pub fn all_available() -> impl Iterator<Item = ColorSpaceId> {
+        [ColorSpaceId::Oklab, ColorSpaceId::Mixbox]
+            .into_iter()
+            .filter(|id| id.available())
     }
 }
 
@@ -192,9 +226,16 @@ impl ColorSpace for OkLabColorSpace {
 /// to 70 sRGB colours sharing one quantized triple across 0.38 of the cube, so the
 /// residual is not a function of the channels stored beside it.
 ///
-/// Conversions use the vendored `mixbox` crate (CC BY-NC 4.0; `vendor/mixbox`).
+/// Conversions use the vendored `mixbox` crate (CC BY-NC 4.0; `vendor/mixbox`),
+/// which is why this whole space is behind the `mixbox` cargo feature: the licence is
+/// non-commercial, so a build has to be able to leave it out entirely rather than
+/// merely not reach it. [`ColorSpaceId::Mixbox`] still exists there — see
+/// [`ColorSpaceId::make`] for why the *id* cannot be gated even though the
+/// implementation can.
+#[cfg(feature = "mixbox")]
 pub struct MixboxColorSpace;
 
+#[cfg(feature = "mixbox")]
 impl ColorSpace for MixboxColorSpace {
     fn id(&self) -> ColorSpaceId {
         ColorSpaceId::Mixbox

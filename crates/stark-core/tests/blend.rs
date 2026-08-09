@@ -346,7 +346,9 @@ fn black_is_the_identity_through_the_round_trip() {
         (ColorSpaceId::Mixbox, MUTED, 2u8),
         (ColorSpaceId::Mixbox, WARM, 2u8),
     ];
-    for (space, color, tol) in cases {
+    // Skipping any space this build does not carry, which keeps the table a
+    // statement about the *spaces* rather than about the feature set.
+    for (space, color, tol) in cases.into_iter().filter(|(s, _, _)| s.available()) {
         for mode in [BlendMode::Reinhard, BlendMode::Drago] {
             let Some(mut engine) = engine_or_skip_with(space) else {
                 return;
@@ -396,7 +398,7 @@ fn white_is_the_identity_through_the_round_trip() {
         (ColorSpaceId::Mixbox, MUTED, 2u8),
         (ColorSpaceId::Mixbox, WARM, 2u8),
     ];
-    for (space, color, tol) in cases {
+    for (space, color, tol) in cases.into_iter().filter(|(s, _, _)| s.available()) {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };
@@ -510,6 +512,10 @@ fn glow_leaves_headroom_where_radiance_does_not() {
 /// lookup rather than a matrix (`mixbox_lut.wesl`) — a different shader, a different
 /// binding, and the only place in the engine that inverts the pigment polynomial on
 /// the GPU. Same two claims: identity over nothing, brighter at the overlap.
+/// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.
+/// `ColorSpaceId::Mixbox` still *names* a space there — the save format's enum
+/// indices cannot depend on a feature (§8) — but nothing can open one.
+#[cfg(feature = "mixbox")]
 #[test]
 fn blend_works_in_the_pigment_space() {
     let Some(mut engine) = engine_or_skip_with(ColorSpaceId::Mixbox) else {
@@ -592,6 +598,10 @@ fn golden_multiply_layer() {
 /// through `over_substrate` and the media pass; black **paint** goes through the
 /// stamp, the integrate and the composite first. Either one alone would leave the
 /// other free to regress.
+/// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.
+/// `ColorSpaceId::Mixbox` still *names* a space there — the save format's enum
+/// indices cannot depend on a feature (§8) — but nothing can open one.
+#[cfg(feature = "mixbox")]
 #[test]
 fn black_is_black_in_the_pigment_space() {
     let black_in = |space| -> Option<([u8; 4], [u8; 4])> {
@@ -629,11 +639,15 @@ fn black_is_black_in_the_pigment_space() {
 
 /// A band of black paint laid off-centre, and the drag that carries it across the
 /// origin — the geometry [`a_carried_black_stays_black_in_the_pigment_space`] reads.
+/// With the rest of that test's apparatus, only where the space it reads exists.
+#[cfg(feature = "mixbox")]
 const BLACK_BAND: &[Vec2] = &[Vec2::new(-70.0, -60.0), Vec2::new(70.0, -60.0)];
+#[cfg(feature = "mixbox")]
 const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
 
 /// A brush that lays nothing of its own and moves what it finds: `add = 0` and a fully
 /// transparent colour, so anything it deposits it first picked up (§6.2).
+#[cfg(feature = "mixbox")]
 fn carrying_brush() -> BrushParams {
     let mut b = brush([0.0, 0.0, 0.0, 0.0], 26.0);
     b.drain = 0.0;
@@ -644,6 +658,7 @@ fn carrying_brush() -> BrushParams {
 }
 
 /// Drag black paint out of a band and across the origin, on a ground of `bg`.
+#[cfg(feature = "mixbox")]
 fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
     let mut engine = engine_or_skip_with(space)?;
     engine.process(DocCommand::SetBackground(bg));
@@ -671,6 +686,10 @@ fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
 /// Black paint over a black ground is black at *every* coverage in either space, so a
 /// difference between them can only be the residual — the identical trick
 /// [`black_is_black_in_the_pigment_space`] plays for the same reason.
+/// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.
+/// `ColorSpaceId::Mixbox` still *names* a space there — the save format's enum
+/// indices cannot depend on a feature (§8) — but nothing can open one.
+#[cfg(feature = "mixbox")]
 #[test]
 fn a_carried_black_stays_black_in_the_pigment_space() {
     // The drag has to actually deliver paint at the origin, which a black ground

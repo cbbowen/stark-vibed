@@ -5,6 +5,18 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["mixbox"]
+# The Mixbox pigment space (§6.7). On by default; turning it off drops
+# `blend_mixbox`/`media_mixbox` from [`ENTRY_POINTS`], skips the transpile of the
+# vendored GLSL polynomial, and skips the whole `_resid` build pass — because the
+# residual channel exists only for a pigment space, and Mixbox is the only one.
+#
+# `build.rs` cannot read `cfg(feature = ...)` — a build script is compiled without
+# the crate's features — so it reads `CARGO_FEATURE_MIXBOX` instead. The two must
+# agree, and `entry_points.rs` is the one place that decides for both.
+mixbox = []
+
 # WESL sources are linked/compiled in build.rs and embedded via `include_wesl!`.
 [dependencies]
 # Both for the generated host mirrors (`src/lib.rs`'s `mirror`): `bytemuck` for the

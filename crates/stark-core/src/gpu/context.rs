@@ -69,8 +69,16 @@ impl GpuContext {
         // `under_aux_w` each carry height in `.x` and nothing in `.yzw`, so each one's
         // residual fits beside the height it belongs to. That is the whole excess —
         // no other entry point in the module declares more than three.
-        required_limits.max_storage_textures_per_shader_stage =
-            required_limits.max_storage_textures_per_shader_stage.max(6);
+        //
+        // Asked for only with the `mixbox` feature, which is the other way back under
+        // four and the one that already exists: the residual belongs to a pigment
+        // space, so a build without one declares no residual textures anywhere and
+        // runs on WebGPU's guaranteed floor.
+        #[cfg(feature = "mixbox")]
+        {
+            required_limits.max_storage_textures_per_shader_stage =
+                required_limits.max_storage_textures_per_shader_stage.max(6);
+        }
         required_limits
     }
 

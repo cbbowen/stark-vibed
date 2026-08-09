@@ -144,10 +144,22 @@ impl BlendPass {
             &targets,
         );
         // Decoded only where it is read from: an Oklab document gets a 1×1 stand-in
-        // so the one bind group layout still has something to bind.
+        // so the one bind group layout still has something to bind. Without the
+        // `mixbox` feature no space asks for the real table, and there is none to
+        // decode — `needs_pigment_lut` is then false for every space in the build, so
+        // this is the stand-in unconditionally.
+        #[cfg(feature = "mixbox")]
         let pigment = if color_space.needs_pigment_lut() {
             PigmentLut::load(ctx)
         } else {
+            PigmentLut::placeholder(ctx)
+        };
+        #[cfg(not(feature = "mixbox"))]
+        let pigment = {
+            debug_assert!(
+                !color_space.needs_pigment_lut(),
+                "no colour space in this build has a pigment LUT to bind",
+            );
             PigmentLut::placeholder(ctx)
         };
         Self {

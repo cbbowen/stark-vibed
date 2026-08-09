@@ -36,6 +36,27 @@ pub const ENTRY_POINTS: &[&str] = &[
     "transform",
 ];
 
+/// The entries of [`ENTRY_POINTS`] that exist only in a build carrying the `mixbox`
+/// cargo feature — the two shaders that evaluate the pigment polynomial (§6.7).
+///
+/// They are the only importers of `package::gen::mixbox_poly` and
+/// `package::mixbox_lut`, so leaving them unbuilt is what unlinks the vendored
+/// CC BY-NC 4.0 code entirely rather than merely leaving it unreachable.
+pub const MIXBOX_ENTRY_POINTS: &[&str] = &["blend_mixbox", "media_mixbox"];
+
+/// Whether `name` is built in a configuration whose `mixbox` feature is `mixbox`.
+///
+/// One predicate with two callers, because the two sides of this crate learn about
+/// the feature differently and **must not** be allowed to disagree: `lib.rs` reads
+/// `cfg(feature = "mixbox")`, while `build.rs` — a build script is compiled without
+/// the crate's own features, so it has no such cfg — reads the `CARGO_FEATURE_MIXBOX`
+/// environment variable cargo sets when it runs. A second list on either side would
+/// be a way for an accessor to exist with no artifact behind it, which is exactly the
+/// link-time failure [`ENTRY_POINTS`] is one list to prevent.
+pub fn entry_point_enabled(name: &str, mixbox: bool) -> bool {
+    mixbox || !MIXBOX_ENTRY_POINTS.contains(&name)
+}
+
 /// The WESL conditional-compilation feature that turns on a tile's **residual**
 /// channel — the third colour texture a pigment space needs (§6.7).
 pub const RESID_FEATURE: &str = "resid";
@@ -53,9 +74,18 @@ pub const RESID_FEATURE: &str = "resid";
 /// on the default space's hot path. `@if(resid)` is what keeps the two laws in one
 /// file instead of a `*_resid.wesl` beside each of these.
 ///
-/// `blend_mixbox` and `media_mixbox` are **not** here and need no feature: they are
-/// reached only by the space that has a residual, so they declare the extra binding
-/// unconditionally — the trick `mixbox_lut.wesl` already plays on the blend group.
+/// `blend_mixbox` and `media_mixbox` are **not** here and need no WESL feature: they
+/// are reached only by the space that has a residual, so they declare the extra
+/// binding unconditionally — the trick `mixbox_lut.wesl` already plays on the blend
+/// group. They are gated by the *cargo* feature instead
+/// ([`MIXBOX_ENTRY_POINTS`]), which is a different question: whether the shader is
+/// built at all, rather than which of its two variants this is.
+///
+/// **This whole pass is skipped without the `mixbox` cargo feature.** A residual is
+/// something a *pigment* space has, Mixbox is the only one, and `resid_format()` is
+/// then `None` for every space in the build — so the variants would be eight artifacts
+/// nothing could ever select. `build.rs` skips the pass and `lib.rs` compiles the
+/// `resid`-taking accessors down to their plain arm.
 ///
 /// Kept sorted, like [`ENTRY_POINTS`] and for the same reason.
 pub const RESID_ENTRY_POINTS: &[&str] = &[

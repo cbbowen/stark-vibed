@@ -661,6 +661,47 @@ vendored GLSL (`stark-shaders/build.rs` transpiles `mixbox_eval_polynomial` into
 a WESL module), so the trained coefficients stay sourced from the licensed
 submodule rather than copied into this repo.
 
+### The `mixbox` cargo feature
+
+Because that licence is non-commercial, the whole space is behind a **default-on
+`mixbox` feature**, and turning it off means *not built* rather than merely
+*unreached*: the vendored crate leaves the dependency graph, `build.rs` does not
+transpile the polynomial, `blend_mixbox`/`media_mixbox` leave `ENTRY_POINTS`, and
+`pigment.rs` does not `include_bytes!` the LUT. Nothing under `vendor/mixbox`
+reaches the binary.
+
+**The submodule still has to be checked out, and that is cargo rather than a
+leak.** A `path` dependency's manifest is read while the dependency *graph* is
+resolved, and that happens before features select anything — so `vendor/mixbox/rust`
+must exist for cargo to get as far as deciding not to compile it. `optional = true`
+governs compilation, not resolution. CI's `no-mixbox` job therefore checks the claim
+where it is actually observable, against the build graph
+(`cargo tree --no-default-features | grep mixbox` must find nothing), rather than by
+deleting the directory. Making the checkout itself optional would mean severing the
+path dependency — a shim crate that `#[path]`-includes the vendored source, resolved
+at compile time rather than at resolve time — which is a larger change than the
+licence question needs.
+
+Three consequences worth stating, because each is a place the obvious move is wrong:
+
+- **`ColorSpaceId::Mixbox` is still a variant.** Postcard encodes enums by index (§8),
+  so a build that dropped it would renumber every variant appended after it, and two
+  builds of the same version would disagree about the save format — §19's whole
+  subject. The id stays nameable and serializable; `ColorSpaceId::make` returns `None`
+  instead, and `DocumentFile::from_bytes` turns that into
+  `EngineError::UnsupportedColorSpace` at the one boundary an untrusted space id
+  crosses. A frontend builds its picker from `ColorSpaceId::all_available`.
+- **Falling back to Oklab would be worse than failing.** The two spaces read the same
+  tile bytes as different colours, so opening a pigment document through a
+  colorimetric one renders every pixel wrong while looking like it worked.
+- **The residual goes with it.** A residual is what a *pigment* space needs and this
+  is the only one, so without the feature no space declares a `resid_format`: the
+  eight `_resid` variants are not built, and the loop's storage-texture requirement
+  drops from six back to WebGPU's guaranteed four. What stays unconditional is the
+  handful of mirrored uniform lanes — one host struct layout in both configurations,
+  16 bytes each, which is the same reason they are unconditional across the *WESL*
+  feature (§6.10).
+
 ## 6.10 The CPU↔shader boundary: generated mirrors
 
 Every uniform is one half of a pair the compiler cannot see across. The shader

@@ -66,7 +66,7 @@ fn assert_near(got: Option<[f32; 3]>, want: [f32; 4], tol: f32, what: &str) {
 /// right in one and wildly wrong in the other.
 #[test]
 fn picks_the_colour_that_was_painted() {
-    for space in [ColorSpaceId::Oklab, ColorSpaceId::Mixbox] {
+    for space in ColorSpaceId::all_available() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };
