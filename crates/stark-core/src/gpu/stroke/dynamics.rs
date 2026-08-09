@@ -240,8 +240,6 @@ impl StrokeRenderer {
             );
         }
 
-        // The union over the pieces below, which each enumerate their own subset.
-        let dirty: Vec<TileCoord> = affected_tiles(&segments).into_iter().collect();
         let mut run = DynamicsRun::new(self, scene, rec, tol, tool);
         let mut map = scene.base.clone();
         // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
@@ -255,6 +253,11 @@ impl StrokeRenderer {
             map = run.draw(&map, &segments[piece], !capture && i == last);
         }
         let tool_out = capture.then(|| run.capture_tool());
+        // The pieces partition the segments, so the union of what each one enumerated
+        // for itself *is* what the whole range touched — accumulated as they went
+        // rather than walked a second time over every (segment, tile) pair, which is
+        // the very cost `region_of` exists to keep off a long stroke.
+        let dirty = std::mem::take(&mut run.dirty).into_iter().collect();
         run.submit();
         (
             map,
@@ -296,6 +299,10 @@ struct DynamicsRun<'a> {
     /// submit. Said outright rather than inferred from `piece` being non-empty, which
     /// is a coincidence of the two rather than the question being asked.
     piece_open: bool,
+    /// Every tile the run has rewritten, accumulated as each piece enumerates its own.
+    /// The pieces partition the range's segments, so this ends up the set a second
+    /// walk over the whole stroke would have built — for none of the cost.
+    dirty: BTreeSet<TileCoord>,
     /// Everything both render paths read off the record and the scene, resolved once
     /// (see [`StrokeConstants`](super::StrokeConstants)).
     consts: super::StrokeConstants,
@@ -440,6 +447,7 @@ impl<'a> DynamicsRun<'a> {
             scoped,
             piece: ScopedResources::default(),
             piece_open: false,
+            dirty: BTreeSet::new(),
             consts,
             prefix_bg,
             cov,
@@ -470,6 +478,9 @@ impl<'a> DynamicsRun<'a> {
         let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
             return base.clone();
         };
+        // The run's dirty set is the union of the pieces', which is why no caller has
+        // to enumerate the whole range's tiles a second time.
+        self.dirty.extend(coords.iter().copied());
         self.piece_open = true;
         let region = self.composite_region(base, &halo, region_origin, w, h);
 
@@ -1751,18 +1762,24 @@ fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segment)> {
     }
     for (i, s) in segments.iter().enumerate() {
         let bq = BLEED_TRAVEL_QUANTUM * s.radius;
+        // Before the division, not after it. A tip with no width sweeps nothing and has
+        // nothing to relax, and asking how many quanta fit in it first made `crossings`
+        // a NaN that only fell through by the grace of `NaN < 1.0` being false.
+        // `generate_segments_in` floors the radius at 0.5, so no real segment reaches
+        // here — which is the reason to state the guard plainly rather than lean on the
+        // ordering of two comparisons.
+        if bq <= 1e-3 {
+            continue;
+        }
         let crossings = ((s.dist + s.length) / bq).floor() - (s.dist / bq).floor();
         if crossings < 1.0 {
             continue;
-        }
-        if bq <= 1e-3 {
-            continue; // a tip with no width: nothing swept, nothing to relax
         }
         // Capped so a plan stays bounded. `crossings` is the segment's travel over its
         // *own* radius' quantum, and those two are priced apart: the flattener buys
         // segment length off the brush's nominal radius while the cadence is the
         // modulated one, so a pen thinning the tip drives the count up without
-        // shortening anything. Eight covers a tip down to a quarter of the brush;
+        // shortening anything. Sixteen covers a tip down to a quarter of the brush;
         // under that the axis under-delivers, on a tip carrying almost no paint to
         // spread. Without a cap this is a memory blow-up on a degenerate stroke, which
         // is a worse failure than a gentle one.

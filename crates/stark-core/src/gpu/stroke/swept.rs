@@ -6,11 +6,11 @@
 //! a range needs nothing from its predecessor but the arc length.
 
 use crate::document::StrokeRecord;
-use crate::geom::{TILE_APRON, TILE_TEX};
+use crate::geom::{TILE_APRON, TILE_TEX, TileCoord};
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
 
-use super::segments::{SegmentInstance, affected_tiles, generate_segments_in};
+use super::segments::{SegmentInstance, generate_segments_in, tiles_with_segments};
 use super::{
     ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE,
 };
@@ -110,16 +110,34 @@ impl StrokeRenderer {
                 desc::samp(3, &surface.sampler),
             ],
         });
-        let instances: Vec<SegmentInstance> = segments
-            .iter()
-            .map(|s| SegmentInstance {
-                start: s.start.to_array(),
-                dir: s.dir.to_array(),
-                geom: [s.radius, s.length],
-                extra: [s.orient, s.dist, s.curvature, s.add],
-                tooth: s.tooth,
-            })
-            .collect();
+        // Which segments reach which tile, and the instance buffer laid out to match:
+        // each tile's segments contiguous, so its draw is one instance *range* rather
+        // than the whole stroke. A segment writes exactly zero outside the tiles it is
+        // listed under, and zero is an exact identity through both blends, so this is
+        // the same picture as drawing everything everywhere — for
+        // `Σ tiles-per-segment` instances instead of `segments × tiles`
+        // ([`tiles_with_segments`]).
+        //
+        // The duplication is real but small: a segment is at most a tip wide, so it
+        // appears under a handful of tiles. What it replaces grew with the *stroke*.
+        let touched = tiles_with_segments(&segments);
+        let coords: Vec<TileCoord> = touched.keys().copied().collect();
+        let mut instances: Vec<SegmentInstance> = Vec::new();
+        let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(touched.len());
+        for idx in touched.values() {
+            let from = instances.len() as u32;
+            instances.extend(idx.iter().map(|&i| {
+                let s = &segments[i as usize];
+                SegmentInstance {
+                    start: s.start.to_array(),
+                    dir: s.dir.to_array(),
+                    geom: [s.radius, s.length],
+                    extra: [s.orient, s.dist, s.curvature, s.add],
+                    tooth: s.tooth,
+                }
+            }));
+            runs.push(from..instances.len() as u32);
+        }
         // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
         // a long stroke makes this buffer large, and Chrome/Dawn caps map-at-creation
         // buffers well below the normal `maxBufferSize`, so a long stroke would panic
@@ -135,11 +153,10 @@ impl StrokeRenderer {
             .queue
             .write_buffer(&instance_buf, 0, instance_bytes);
 
-        let coords = affected_tiles(&segments);
         let carry = StrokeCarry {
             dist: end_dist,
             tool: None,
-            dirty: coords.iter().copied().collect(),
+            dirty: coords.clone(),
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark stroke commit"),
@@ -234,7 +251,10 @@ impl StrokeRenderer {
                 pass.set_bind_group(1, &prefix_bg, &[]);
                 pass.set_bind_group(2, &noise_bg, &[]);
                 pass.set_vertex_buffer(0, instance_buf.slice(..));
-                pass.draw(0..SWEEP_VERTS, 0..instances.len() as u32);
+                // Just this tile's segments. Every other one differences its prefix-τ
+                // taps to zero here anyway, so what is skipped is the shading, not a
+                // contribution.
+                pass.draw(0..SWEEP_VERTS, runs[i].clone());
             }
 
             // Integrate the scratch slab over the base into a fresh CoW tile, gated

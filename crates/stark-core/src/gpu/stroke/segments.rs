@@ -5,7 +5,7 @@
 //! same record — which is what lets a live tail and the commit that replaces it
 //! agree pixel for pixel.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
@@ -584,24 +584,63 @@ pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2
     }
 }
 
-/// Tiles whose *texture* (interior + apron) any segment's swept capsule overlaps.
-/// The apron is included in `reach` so a stroke landing within a tile's interior
-/// but inside a neighbor's apron band re-renders that neighbor too, keeping the
+/// Call `f(segment index, tile)` for every tile whose *texture* (interior + apron) a
+/// segment's swept capsule overlaps, in segment order.
+///
+/// The apron is included in the reach so a stroke landing within a tile's interior
+/// but inside a neighbour's apron band re-renders that neighbour too, keeping the
 /// shared apron/interior overlap bit-identical (§6.4).
-pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
+///
+/// **A segment writes exactly zero outside the tiles this names**, which is what lets
+/// [`tiles_with_segments`] hand each tile a subset rather than the whole stroke. The
+/// rasterized geometry does reach further — the shaders sweep a generous angular
+/// margin so a round cap is never clipped — but out there a fragment differences two
+/// prefix-τ taps that are equal and writes nothing at all (see [`coverage_bounds`]).
+/// Zero through the `over` blend and zero through the additive one are both exact
+/// identities, so which segments a tile is handed cannot change what lands in it.
+fn for_each_touched(segments: &[Segment], mut f: impl FnMut(usize, TileCoord)) {
     let tile = TILE_SIZE as f32;
-    let mut coords = BTreeSet::new();
-    for s in segments {
+    for (i, s) in segments.iter().enumerate() {
         let (lo, hi) = segment_bounds(s);
         let (x0, x1) = ((lo.x / tile).floor() as i32, (hi.x / tile).floor() as i32);
         let (y0, y1) = ((lo.y / tile).floor() as i32, (hi.y / tile).floor() as i32);
         for y in y0..=y1 {
             for x in x0..=x1 {
-                coords.insert(TileCoord::new(x, y));
+                f(i, TileCoord::new(x, y));
             }
         }
     }
+}
+
+/// Tiles whose texture any segment's swept capsule overlaps — [`for_each_touched`]
+/// with the segments forgotten. What the dynamics path wants, which sizes a region
+/// from the tiles alone.
+pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
+    let mut coords = BTreeSet::new();
+    for_each_touched(segments, |_, c| {
+        coords.insert(c);
+    });
     coords
+}
+
+/// The same walk, keeping **which** segments reach each tile.
+///
+/// This is what the swept path draws from. Drawing every segment into every tile made
+/// a stroke cost `segments × tiles` vertex invocations, nearly all of them on quads
+/// that fall outside the tile being rendered and are discarded after being shaded —
+/// and a tapered brush spends ~211 segments on a straight line, so a long stroke
+/// crossing a document's worth of tiles paid for the product of two large numbers. Per
+/// tile the cost is now the segments that actually reach it, and over a stroke the
+/// total is `Σ tiles-per-segment`: the segment count times a small constant, since a
+/// segment is at most a tip wide.
+///
+/// The indices come out ascending, because the walk is in segment order — which
+/// matters, since the colour target's blend is `over` and therefore ordered. Each tile
+/// sees the stroke's own order over the subset that reaches it.
+pub(super) fn tiles_with_segments(segments: &[Segment]) -> BTreeMap<TileCoord, Vec<u32>> {
+    let mut map: BTreeMap<TileCoord, Vec<u32>> = BTreeMap::new();
+    for_each_touched(segments, |i, c| map.entry(c).or_default().push(i as u32));
+    map
 }
 
 /// Where a segment's centreline ends — along the arc, not along the chord.
@@ -1781,6 +1820,68 @@ mod tests {
             (lo, hi) = (lo.min(slo), hi.max(shi));
         }
         lo.x.is_finite().then(|| region_of(lo, hi))
+    }
+
+    /// The per-tile segment lists cover exactly the tiles [`affected_tiles`] names, and
+    /// a tile's list holds exactly the segments whose bounds reach it — in stroke
+    /// order, which the `over` blend on the colour target makes load-bearing.
+    ///
+    /// The swept path draws from these lists instead of drawing every segment into
+    /// every tile, so an omission here is missing paint and a re-ordering is a
+    /// different picture. Both are the kind of thing a golden would show as "the stroke
+    /// looks a bit wrong" without saying why.
+    #[test]
+    fn the_per_tile_lists_hold_exactly_the_segments_that_reach_each_tile() {
+        let tile = TILE_SIZE as f32;
+        let segments: Vec<Segment> = (0..40)
+            .map(|i| {
+                let t = i as f32;
+                seg(
+                    Vec2::new(t * 31.0 - 200.0, (t * 0.4).sin() * 300.0),
+                    Vec2::new((t + 1.0) * 31.0 - 200.0, ((t + 1.0) * 0.4).sin() * 300.0),
+                    4.0 + (i % 5) as f32 * 9.0,
+                )
+            })
+            .collect();
+
+        let map = tiles_with_segments(&segments);
+        assert_eq!(
+            map.keys().copied().collect::<BTreeSet<_>>(),
+            affected_tiles(&segments),
+            "the two walks disagree on which tiles a stroke touches",
+        );
+        assert!(map.len() > 4, "not enough tiles to be an interesting case");
+
+        for (coord, idx) in &map {
+            assert!(
+                idx.windows(2).all(|w| w[0] < w[1]),
+                "tile {coord:?}'s segments are not in stroke order",
+            );
+            // The list against the membership test itself, segment by segment: a tile
+            // is in a segment's block exactly when the segment is in the tile's list.
+            for (i, s) in segments.iter().enumerate() {
+                let (lo, hi) = segment_bounds(s);
+                let inside = (lo.x / tile).floor() <= coord.x as f32
+                    && coord.x as f32 <= (hi.x / tile).floor()
+                    && (lo.y / tile).floor() <= coord.y as f32
+                    && coord.y as f32 <= (hi.y / tile).floor();
+                assert_eq!(
+                    idx.contains(&(i as u32)),
+                    inside,
+                    "tile {coord:?} and segment {i} disagree about reaching one another",
+                );
+            }
+        }
+
+        // And the whole point: the listed pairs are far fewer than the product the
+        // swept path used to shade.
+        let listed: usize = map.values().map(Vec::len).sum();
+        assert!(
+            listed < map.len() * segments.len() / 4,
+            "{listed} listed pairs against a {} product — the grouping is not buying \
+             anything on this case",
+            map.len() * segments.len(),
+        );
     }
 
     /// [`chunk_segments`] decides where to cut a stroke by measuring the region a run

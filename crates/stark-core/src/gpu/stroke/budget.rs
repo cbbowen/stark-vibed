@@ -47,11 +47,15 @@ pub(super) const MAX_REGION_DIM: u32 = 2048;
 /// also emits a bleed slot per crossing of the bleed cadence — up to
 /// [`MAX_BLEED_FIRES_PER_SEGMENT`] of them — and the pen-up settle, so a piece plans
 /// at most `(1 + MAX_BLEED_FIRES_PER_SEGMENT) · MAX_STAMPS + 1` slots. At
-/// [`UNIFORM_STRIDE`](super::UNIFORM_STRIDE) apiece that is ~9.4 MB, which is why the
+/// [`UNIFORM_STRIDE`](super::UNIFORM_STRIDE) apiece that is ~17.8 MB, which is why the
 /// factor is worth stating and not worth chunking around: making the cut count planned
 /// slots would couple `chunk_segments` to the bleed cadence to save a few megabytes it
 /// does not need. Only a bleeding brush pays any of it, and only one whose segments
 /// outrun its own cadence pays more than double.
+///
+/// The figure moved with the cadence: it was ~9.4 MB when a firing carried half a
+/// radius, and halving [`BLEED_TRAVEL_QUANTUM`] doubled the fires a segment may
+/// contribute and so this bound with it.
 pub(super) const MAX_STAMPS: usize = 4096;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
 /// (§6.2) — which, since the tool exchanges once per *segment*, is simply a cap on the

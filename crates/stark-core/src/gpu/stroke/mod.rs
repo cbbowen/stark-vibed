@@ -56,6 +56,23 @@ pub(crate) use incremental::safe_frozen;
 /// Resolution of the generated round-tip prefix texture.
 const ROUND_RES: u32 = 256;
 
+/// Take a lock whose only contents are a **cache**, poisoned or not.
+///
+/// Both caches here hold the output of a pure bake — a coverage field, a noise
+/// volume — keyed by what produced it. A panic while one is held cannot leave a torn
+/// value in it, because the value is moved in whole after the bake has finished; all
+/// poisoning tells us is that some *other* thread panicked while it happened to be
+/// looking something up. Propagating that as a panic of our own turns one thread's
+/// failure into a dead renderer, which is a worse answer than re-baking a texture.
+fn unpoisoned<'a, T>(
+    lock: Result<
+        std::sync::MutexGuard<'a, T>,
+        std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
+    >,
+) -> std::sync::MutexGuard<'a, T> {
+    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Stride between the slots of a uniform buffer read through **dynamic offsets**,
 /// which is how both render paths vary a uniform across the draws or dispatches of
 /// one pass. A dynamic offset must be a multiple of the device's
@@ -432,7 +449,7 @@ impl StrokeRenderer {
     /// its prefix hot and its coverage cold, and pay the field again anyway.
     fn round_tip(&self, hardness: f32) -> RoundTip {
         let key = hardness.to_bits();
-        let mut cache = self.round_tip.lock().expect("round tip cache poisoned");
+        let mut cache = unpoisoned(self.round_tip.lock());
         if let Some((k, tip)) = cache.as_ref()
             && *k == key
         {
@@ -476,7 +493,7 @@ impl StrokeRenderer {
         if !cd.is_active() {
             return self.dummy_noise.clone();
         }
-        let mut cache = self.noise_cache.lock().expect("noise cache poisoned");
+        let mut cache = unpoisoned(self.noise_cache.lock());
         if let Some((_, view)) = cache.iter().find(|(k, _)| *k == cd.noise) {
             return view.clone();
         }
