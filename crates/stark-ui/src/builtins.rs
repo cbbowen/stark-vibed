@@ -9,8 +9,8 @@
 //! stamp is: by content id, with no notion of "built-in" anywhere downstream.
 //!
 //! The catch is *when*: an id is only knowable once the bytes have arrived, so
-//! nothing that runs before the fetch can name one. The default brush presets
-//! are exactly that case, which is why `crate::presets` seeds them after
+//! nothing that runs before the fetch can name one. The app's own brush presets
+//! are exactly that case, which is why `crate::presets` installs them after
 //! startup rather than at load.
 //!
 //! Unlike the user's imported shapes (`crate::shapes`) a built-in is not in the

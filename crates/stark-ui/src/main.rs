@@ -169,17 +169,18 @@ fn app() -> Element {
             obs.set(Some(r.observe()));
             renderer.set(Some(r));
 
-            // A browser that has never stored a preset library gets the built-in
-            // one now rather than at `presets::load`: its presets name bundled
-            // brush shapes, and a stamp is named by content id — which the
-            // imports just above are what produce.
-            presets::seed_defaults(state);
+            // The app's own presets join the library now rather than at
+            // `presets::load`: they name bundled brush shapes, and a stamp is
+            // named by content id — which the imports just above are what
+            // produce. Every start, not only a first one, so an improved default
+            // reaches a browser that has been running Stark for months.
+            presets::install_builtins(state);
 
             // And the rack under the number keys, from that library — after it,
-            // because it copies what the library has rather than restating it,
-            // and a browser with its own presets gets its own first four on the
-            // digits (§18.1.8). A browser that has already set a slot keeps what
-            // it set; only a rack nobody has touched is filled in.
+            // because it takes each preset to the digit that preset declares
+            // rather than restating the list here (§18.1.8). A browser that has
+            // already set a slot keeps what it set; only an untouched rack is
+            // filled in.
             slots::seed_defaults(state);
 
             // The brush this app start begins on: the library's first preset (an

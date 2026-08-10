@@ -199,19 +199,38 @@ fn PresetSection() -> Element {
                                 class: if active { "preset-row active" } else { "preset-row" },
                                 onclick: move |_| presets::apply(state, &apply_name),
                                 span { class: "preset-row-name", title: "{entry.name}", "{entry.name}" }
-                                // The same trash the Layers and Guides rows wear
-                                // (`icons::REMOVE`): a third roster, and removing a
-                                // row from it is the same control, so it is the same
-                                // mark. The × it replaces was a character standing in
-                                // for a glyph the set already had.
-                                button {
-                                    class: "preset-remove",
-                                    title: "Remove preset",
-                                    onclick: move |e| {
-                                        e.stop_propagation();
-                                        presets::remove(state, &remove_name);
-                                    },
-                                    {icon(icons::REMOVE)}
+                                if entry.builtin {
+                                    // The app's own, and the row says so where the
+                                    // user's rows offer to remove: a lock instead
+                                    // of a trash (`icons::BUILTIN`), in the same
+                                    // column, so the two kinds are told apart by
+                                    // the one thing that differs between them.
+                                    //
+                                    // Always on, unlike the hover-revealed trash —
+                                    // it is a state rather than an act, and a mark
+                                    // that only appeared under the pointer would
+                                    // distinguish nothing at rest. The eye in the
+                                    // layer rows is the same argument.
+                                    span {
+                                        class: "preset-lock",
+                                        title: "Built in \u{2014} kept up to date with the app",
+                                        {icon(icons::BUILTIN)}
+                                    }
+                                } else {
+                                    // The same trash the Layers and Guides rows wear
+                                    // (`icons::REMOVE`): a third roster, and removing a
+                                    // row from it is the same control, so it is the same
+                                    // mark. The × it replaces was a character standing in
+                                    // for a glyph the set already had.
+                                    button {
+                                        class: "preset-remove",
+                                        title: "Remove preset",
+                                        onclick: move |e| {
+                                            e.stop_propagation();
+                                            presets::remove(state, &remove_name);
+                                        },
+                                        {icon(icons::REMOVE)}
+                                    }
                                 }
                             }
                         }
@@ -232,6 +251,14 @@ fn PresetSection() -> Element {
 /// "Replace" and a line underneath says what will be replaced. Blank is the one thing
 /// it will not take (there is no such preset to click), so Save goes dead rather than
 /// inventing a name behind the user's back.
+///
+/// A name one of the **app's own** presets holds is the second thing it will not take,
+/// and it is a different refusal: not "you have not said enough" but "that one is not
+/// yours". Overwriting is not on offer — the next start rebuilds a built-in from its
+/// definition, so the work would go — and a second row under the same name would make
+/// "the preset called Pen" two brushes to every lookup in `crate::presets`. So the
+/// hint says which it is and Save goes dead, in the same line that would otherwise
+/// have offered to replace.
 #[component]
 pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
@@ -240,7 +267,10 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
     let mut name = use_signal(|| presets::next_name(&state.presets.peek()));
 
     let trimmed = name().trim().to_string();
-    let replaces = !trimmed.is_empty() && state.presets.read().iter().any(|e| e.name == trimmed);
+    let taken = !trimmed.is_empty() && state.presets.read().iter().any(|e| e.name == trimmed);
+    let builtin = !trimmed.is_empty() && presets::is_builtin(&state.presets.read(), &trimmed);
+    // Taken by one of the user's own, which is the case Save offers to replace.
+    let replaces = taken && !builtin;
 
     let save = move || {
         let name = name().trim().to_string();
@@ -288,8 +318,10 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
                 }
                 // Always mounted, so the dialog does not change height under the hand
                 // the moment the typed name lands on one the library already has.
-                div { class: "modal-hint",
-                    if replaces {
+                div { class: if builtin { "modal-hint refused" } else { "modal-hint" },
+                    if builtin {
+                        "\u{201C}{trimmed}\u{201D} is one of the app's own presets, which it keeps up to date. Pick another name."
+                    } else if replaces {
                         "Replaces the preset already called \u{201C}{trimmed}\u{201D}."
                     }
                 }
@@ -302,7 +334,7 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
                     }
                     button {
                         class: "btn btn-primary",
-                        disabled: trimmed.is_empty(),
+                        disabled: trimmed.is_empty() || builtin,
                         onclick: move |_| save(),
                         if replaces { "Replace" } else { "Save" }
                     }

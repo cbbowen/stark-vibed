@@ -426,10 +426,36 @@ a tap and a hold are one keystroke told apart by how long it lasted, and binding
 them to different outcomes would make every hold a race against the user's own
 reflexes.
 
-A browser that has never set a slot is seeded from its own preset library, in
-memory and unpersisted — so storage is written only by the user's act, the seed
-stays live as the library grows, and a start whose bundled shapes failed to fetch
-cannot freeze a degraded preset into a slot.
+A browser that has never set a slot is seeded from the preset library: each
+shipped preset declares the digit it **ships on** (`PresetEntry::slot`), and the
+rack is filled from those. So a tool reaches the keyboard under the same name and
+with the same parameters the panel lists it by, adding one is a field rather than
+a second table, and the two orders stay free of each other — the eraser is last
+in the list and first on the keyboard, because a list is read top-down and a rack
+is reached by the digit under the finger. It is also why `slots.rs` defines no
+brush of its own: what a slot starts as is a question about the app's tools, and
+those live in one place.
+
+The seed is in memory and unpersisted, so storage is written only by the user's
+act, an improved default reaches the rack on the next start exactly as it reaches
+the list, and a start whose bundled shapes failed to fetch cannot freeze a
+degraded preset into a slot.
+
+**The app's own presets are code, not data** — built fresh every start and never
+written to storage (`presets::default_presets`). That is what makes them
+*updatable*: while the engine's own parameters are still moving under them, a
+default that cannot be improved for a browser that already ran Stark is a fossil
+of whichever version got there first. A stored preset whose name collides with a
+shipped one is dropped on the merge, which is where the old scheme's persisted
+copies go.
+
+It also settles what the rows show. The user's carry a trash; the app's carry a
+lock — not a rule the panel enforces but a fact it reports, since there is
+nothing stored behind a built-in to remove and the next start would rebuild it
+regardless. Saving under a shipped name is refused for the same reason rather
+than offered as a replace: the work would not survive the next start, and a
+second row of that name would make "the preset called Pen" two brushes to every
+lookup by name.
 
 **Not built**: a second row (Shift+digit) for twenty, dragging a preset onto a
 chip to assign it without the keyboard, and clearing a slot back to empty — a

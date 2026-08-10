@@ -44,9 +44,7 @@
 
 use dioxus::prelude::*;
 
-use stark_core::document::{
-    BrushDynamics, BrushParams, BrushShape, ModSource, Modulation, Modulations,
-};
+use stark_core::document::BrushParams;
 
 use crate::platform::{base64_decode, base64_encode};
 use crate::presets;
@@ -245,69 +243,38 @@ pub fn load(state: AppState) {
     }
 }
 
-/// Fill a rack that has never been set with something worth pressing: the
-/// library's own presets on the digits, and a real eraser on [`ERASER`].
+/// Fill a rack that has never been set from the library: every preset that
+/// declares a home digit goes to it ([`PresetEntry::slot`]).
 ///
-/// Called after `presets::seed_defaults`, and reading *from* the library rather
-/// than restating it — so the four built-in tools reach the numbers under the
-/// same names the panel lists them by, and a browser that has been using Stark
-/// for a while gets its own first four presets instead of ours.
+/// Called after `presets::install_builtins`, and reading *from* the library
+/// rather than restating it — so a tool reaches the keyboard under the same name
+/// and with the same parameters the panel lists it by, and adding a shipped
+/// preset puts it on a digit by writing one field instead of by editing a second
+/// table here. The rack is why this module holds no brush of its own: what a
+/// slot starts as is a question about the app's tools, and `crate::presets` is
+/// where those are defined.
 ///
 /// **Seeded in memory and not persisted.** Storage is written only by the user's
 /// own act ([`assign`]), which is what `read_storage().is_some()` then means: not
 /// "this browser has run Stark before" but "this browser has set a slot". That
-/// keeps the seed *live* — a preset library that grows reaches the rack on the
-/// next start — and it is the same hazard `presets::seed_defaults` spends a
-/// completeness flag on, ruled out here instead: a start whose bundled shapes
-/// failed to fetch cannot freeze a degraded pencil into slot 3, because it writes
-/// nothing at all.
+/// keeps the seed live — an improved default reaches the rack on the next start,
+/// exactly as it reaches the preset list — and it means a start whose bundled
+/// shapes failed to fetch cannot freeze a degraded pencil into slot 3, because
+/// it writes nothing at all.
 pub fn seed_defaults(state: AppState) {
     if read_storage().is_some() {
         return;
     }
     let mut rack: Rack = [None; COUNT];
-    rack[ERASER] = Some(default_eraser());
-    // `1..` — the digits, skipping the eraser's own slot, which the library has
-    // no entry for and should not: an eraser is not a brush anybody saves.
-    for (slot, entry) in (1..COUNT).zip(state.presets.peek().iter()) {
-        rack[slot] = Some(entry.brush);
+    for entry in state.presets.peek().iter() {
+        // A slot past the rack is a definition to fix, not a panic to take: the
+        // preset is still perfectly usable from the list.
+        if let Some(slot) = entry.slot.filter(|s| *s < COUNT) {
+            rack[slot] = Some(entry.brush);
+        }
     }
     let mut brushes = state.slots.brushes;
     brushes.set(rack);
-}
-
-/// The eraser the pen's other end starts life holding.
-///
-/// `lift` alone, with `add` at zero — which *is* an eraser here (§6.2): the tool
-/// takes canvas paint up onto itself and never lays any back, so height leaves
-/// the canvas and nothing arrives. Not a mode, not a blend flag, not a second
-/// tool with its own code path; a point in the same space as every other brush,
-/// which is the whole reason this rack can hold it in the first place.
-///
-/// Pressure drives the lift as well as the size, with a floor under it so a
-/// digitizer that reports no pressure still erases. Bearing down scrubs harder,
-/// which is what a hand expects of the back of a pencil — and it is a mapping
-/// (§6.2), so it is the user's to change from the brush editor like any other.
-fn default_eraser() -> BrushParams {
-    BrushParams {
-        radius: 40.0,
-        shape: BrushShape::Round { hardness: 0.9 },
-        dynamics: BrushDynamics {
-            add: 0.0,
-            lift: 1.0,
-            ..BrushDynamics::default()
-        },
-        modulation: Modulations {
-            size: Some(Modulation::linear(ModSource::Pressure)),
-            lift: Some(Modulation {
-                source: ModSource::Pressure,
-                floor: 0.35,
-                curve: 0.0,
-            }),
-            ..Modulations::default()
-        },
-        ..BrushParams::default()
-    }
 }
 
 // --- persistence ----------------------------------------------------------
@@ -444,13 +411,5 @@ mod tests {
         assert_eq!(of_code("Digit"), None);
         assert_eq!(of_code("NumpadAdd"), None);
         assert_eq!(of_code("Numpad10"), None);
-    }
-
-    #[test]
-    fn the_default_eraser_takes_paint_and_gives_none_back() {
-        let e = default_eraser();
-        assert_eq!(e.dynamics.add, 0.0, "an eraser lays no paint of its own");
-        assert!(e.dynamics.lift > 0.0, "an eraser lifts");
-        assert_eq!(e.dynamics.deposit, 0.0, "and never lays it back");
     }
 }

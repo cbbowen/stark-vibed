@@ -231,6 +231,17 @@ icons! {
     // with the tool it arms — which is the whole discoverability argument that bar is
     // built on, made in a picture as well as a word.
     EYEDROPPER => "eyedropper-bold",
+    // A preset row that is the app's rather than the user's, standing where the
+    // user's rows carry their trash ([`REMOVE`]). The same file as [`LOCK`], and a
+    // second name because the *control* is a different one — the perspective bar's
+    // locks are chips that toggle an axis, this is a state a row is in. (The same
+    // argument [`DONE`] and [`CHECK`] are two names for one tick.)
+    //
+    // A padlock rather than, say, a badge, because what it has to say is not "this
+    // one is special" but "this one is not yours to remove" — and the reason it is
+    // not is that there is nothing stored behind it: it is rebuilt from the app on
+    // every start, which is also what keeps it current (`crate::presets`).
+    BUILTIN => "lock-bold",
     // The quick-brush rack's tenth chip (§18.1.8). The one slot in the row that
     // wears a picture instead of its digit, because it is the one whose binding is
     // not the digit: it is what the pen's other end reaches, and a `0` would say

@@ -861,6 +861,36 @@ hr {
   opacity: 1;
 }
 
+/* The app's own presets, in the column the user's rows put their trash in. Sized to
+   the trash exactly, so the rows line up whichever mark they carry.
+
+   Always visible, where the trash appears on hover: this is a *state*, and one that
+   only showed itself under the pointer would leave the list looking uniform at rest
+   — which is the one thing it must not do. Dim, though, because it is a fact about
+   the row rather than something to reach for; the lit row's white-on-blue lifts it
+   with everything else, from the same file (`fill: currentColor`). */
+.preset-lock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: #e8e8ea;
+  opacity: 0.35;
+}
+
+.preset-lock .icon svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* A hint that is a refusal rather than a warning about what will happen. Amber, not
+   red: nothing is broken and nothing will be destroyed — the name is simply spoken
+   for, and the fix is to type another. */
+.modal-hint.refused {
+  color: #e8b45a;
+}
+
 /* Rows of chips in the Select panel (tool, combine mode). */
 .tool-row {
   display: flex;
