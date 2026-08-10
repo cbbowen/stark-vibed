@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::InputSample;
 use crate::geom::Vec2;
-use crate::spline::CubicBSpline;
+use crate::spline::{CubicBSpline, Observations};
 
 /// Control points solved for at the live end of the stroke. Everything behind them
 /// is frozen; the pinned endpoint sits inside the window on top of these.
@@ -120,6 +120,11 @@ const SMOOTHING: f32 = 0.02;
 
 /// Per-point channels carried alongside the geometry: pressure, tilt x/y, time.
 const CHANNELS: usize = 4;
+
+/// Which of [`CHANNELS`] is the clock. The odd one out: the other three are pen state,
+/// which the tip's shape follows, while this one is only a stamp on the report — which
+/// is why [`PathFitter::solve`] treats the stroke's last one differently.
+const TIME_CHANNEL: usize = 3;
 
 type ChannelCtrl = OMatrix<f32, Dyn, Const<CHANNELS>>;
 type GeomCtrl = OMatrix<f32, Dyn, Const<2>>;
@@ -574,7 +579,31 @@ impl PathFitter {
         set_row(&mut geom, 0, [first.pos.x, first.pos.y]);
         set_row(&mut geom, m - 1, [last.pos.x, last.pos.y]);
         set_row(&mut attr, 0, first.channels);
-        set_row(&mut attr, m - 1, last.channels);
+        // **The attribute end is held at its neighbour, not pinned to the last report.**
+        //
+        // The geometry's endpoint has to be the last report — the mark must end where
+        // the hand did, and the eye sees that directly. The channels have no such claim
+        // on it: nobody can see where a pressure "ends", only the width it produces over
+        // the last stretch of stroke. And the last control point is the least-constrained
+        // row in the whole polygon, supported on the final span alone, so whatever sits
+        // in the last sliver of the domain decides it outright — which is the pen coming
+        // off the tablet, the least trustworthy report on the stroke (see
+        // [`arc_weights`], which lightens that report's vote everywhere but here, where
+        // it is the only vote there is).
+        //
+        // So the attribute curve leaves the stroke flat: the end continues its
+        // neighbour rather than diving for a pressure the hand reported while no longer
+        // painting. The neighbour is read from the prior, so it lags the solve by one
+        // report and catches up on the next — including at [`Self::finish`], whose last
+        // solve is the one [`Self::path_as_finished`] mirrors, so preview and commit see
+        // the same lag and agree to the bit (§1.3).
+        let held: [f32; CHANNELS] = std::array::from_fn(|d| attr[(m - 2, d)]);
+        set_row(&mut attr, m - 1, held);
+        // …except the clock, which is not a pen attribute at all. `time` is what the
+        // report was stamped with, and the release genuinely happened then; carrying the
+        // neighbour's instead would shorten every stroke's recorded duration by a span
+        // and quietly skew the timelapse (§8).
+        attr[(m - 1, TIME_CHANNEL)] = last.channels[TIME_CHANNEL];
 
         let spline: CubicBSpline<2> =
             CubicBSpline::from_control_points(geom.clone()).expect("at least two control points");
@@ -608,13 +637,37 @@ impl PathFitter {
         // never overtake its neighbours — the reordering that makes a searched
         // correspondence dangerous is ruled out by construction.
         let ts: Vec<f32> = live.iter().map(|s| param(s.arc)).collect();
-        let geom = spline.fit_channels(&ts, &pos, frozen, 1, &geom, self.smoothing);
+        // What each report stands for, so the solve minimizes over the *stroke* rather
+        // than over the reporting clock ([`arc_weights`]).
+        let qs = arc_weights(&self.pts, lo);
+        let geom = spline.fit_channels(
+            Observations {
+                ts: &ts,
+                values: &pos,
+                weights: &qs,
+            },
+            frozen,
+            1,
+            &geom,
+            self.smoothing,
+        );
 
         // The pen channels ride the same knots at the same parameters, so they are
         // the same solve with a different payload — unsmoothed, since a pressure ramp
-        // is not a shape and has no curvature to penalize.
+        // is not a shape and has no curvature to penalize. Its end is held (the `1`)
+        // for the reason set out where that row is written, above.
         let vals: Vec<[f32; CHANNELS]> = live.iter().map(|s| s.channels).collect();
-        let attr = spline.fit_channels(&ts, &vals, frozen, 0, &attr, 0.0);
+        let attr = spline.fit_channels(
+            Observations {
+                ts: &ts,
+                values: &vals,
+                weights: &qs,
+            },
+            frozen,
+            1,
+            &attr,
+            0.0,
+        );
         Fit {
             geom,
             attr,
@@ -623,7 +676,8 @@ impl PathFitter {
         }
     }
 
-    /// Mean squared distance from the samples at and after `lo` to `fit`'s curve.
+    /// Mean **arc-weighted** squared distance from the samples at and after `lo` to
+    /// `fit`'s curve.
     ///
     /// Both candidates must be scored over the **same** samples. Each solve drops
     /// the ones its own frozen prefix has swallowed, and the larger polygon freezes
@@ -638,7 +692,8 @@ impl PathFitter {
             .expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc.max(1e-6);
-        let live = &self.pts[lo.min(self.pts.len() - 1)..];
+        let lo = lo.min(self.pts.len() - 1);
+        let live = &self.pts[lo..];
         if live.is_empty() {
             return 0.0;
         }
@@ -648,14 +703,21 @@ impl PathFitter {
         // 4-15px on recorded strokes against 0.6-1.6px when they agree. Consistency
         // between the two matters more than accuracy in either.
         let profile = arc_profile(&spline, &self.settled_profile);
+        // Weighted exactly as the solve weights them ([`arc_weights`]), which is the
+        // same argument as the paragraph above carried one step further: the two must
+        // agree about *which samples matter* as well as about where they sit, or the
+        // price is charged for an error the solve was never trying to remove — and a
+        // dwell would buy control points to trace itself.
+        let qs = arc_weights(&self.pts, lo);
         let sum: f32 = live
             .iter()
-            .map(|s| {
+            .zip(&qs)
+            .map(|(s, q)| {
                 let c = spline.evaluate(param_at(&profile, spans, s.arc / total));
-                (c[0] - s.pos.x).powi(2) + (c[1] - s.pos.y).powi(2)
+                q * ((c[0] - s.pos.x).powi(2) + (c[1] - s.pos.y).powi(2))
             })
             .sum();
-        sum / live.len() as f32
+        sum / qs.iter().sum::<f32>().max(1e-6)
     }
 
     fn adopt(&mut self, f: Fit) {
@@ -693,6 +755,80 @@ impl PathFitter {
     fn rel_time(&self, t: f64) -> f32 {
         (t - self.t0) as f32
     }
+}
+
+/// **How much stroke each report speaks for**: the arc from halfway back to its
+/// predecessor to halfway on to its successor, normalized so the weights average one.
+///
+/// A pointer reports on a clock, not on a ruler. The same stretch of curve therefore
+/// carries as many reports as the hand took time over it, and a least-squares sum over
+/// reports is not a fit to the *stroke* — it is a fit to the hand's dwell, which wins
+/// wherever the two disagree by sheer count.
+///
+/// That has a name: **the pen leaving the tablet**. A tablet keeps sampling through the
+/// release, so a stroke ends with a run of reports carrying the pressure to zero across
+/// a fraction of a pixel of nib drift. They land at the very end of the parameter
+/// domain, and unweighted they outvote the whole last span of real curve — measured
+/// before this weight existed, the fitted pressure came down over 88 px of a 563 px
+/// `LOOP_STROKE` and 134 px of an 838 px `FAST_STROKE`, reaching the tip at 0.80 and
+/// 0.52 instead of the 1.0 the hand actually drew. §6.2 says a piece of path with no
+/// length deposits nothing, and the renderer honours that to the bit; this is where the
+/// claim was being lost. The same effect in miniature is every mid-stroke pause pulling
+/// the curve into the jitter it sat in.
+///
+/// The weight is the trapezoid rule's, which is exactly what turns `Σ residual²` over
+/// reports into `∫ residual² ds` over the stroke — the quantity that was meant all
+/// along, and one that cannot be shouted down, because a report standing on no path
+/// carries no weight however many of it arrive.
+///
+/// **Rejecting such reports instead does not work, and not for want of a threshold.**
+/// A release drifts, so its reports accumulate past any fixed bar and the one that gets
+/// through arrives part-decayed; the bar decides *which* release report contaminates
+/// the fit, not whether one does. Swept over ×0…×1 of the input tolerance the reach was
+/// non-monotone — `C_STROKE` was worse at half a tolerance (19.6 px) than at a quarter
+/// (3.3 px) — and at ×1 it also decimated real input, taking `HAIRPIN_STROKE` from 22
+/// knots to 15.
+///
+/// Weighting is not the whole cure by itself either, because at the extreme end of the
+/// domain the release is the *only* evidence and a local fit follows the only evidence
+/// it has, however light. What closes that is holding the attribute endpoint — see
+/// [`PathFitter::solve`].
+///
+/// Normalized to average one so that the two knobs `m_step` scales by the weight sum —
+/// the smoothing's data pull and the ridge's floor — keep the meanings they were tuned
+/// with. Input with no arc at all comes back all ones, which is the unweighted fit
+/// exactly.
+///
+/// Returns the weights for `pts[lo..]` — the solve's window — but measures every one of
+/// them against its **true** neighbours, which is why it takes the whole run and an
+/// offset rather than a slice. Only the stroke's own first and last reports get a
+/// half-interval; the window's leading report has a predecessor and is entitled to it.
+/// Reading the slice instead put a half-interval wherever the window happened to begin,
+/// which is a fact about the solve's bookkeeping and not about the stroke — enough, on
+/// its own, to move `fit_collapses_pixel_staircase` by a control point.
+fn arc_weights(pts: &[Accepted], lo: usize) -> Vec<f32> {
+    let n = pts.len();
+    if n < 2 || lo >= n {
+        return vec![1.0; n.saturating_sub(lo)];
+    }
+    let mut q: Vec<f32> = (lo..n)
+        .map(|i| {
+            let hi = pts[(i + 1).min(n - 1)].arc;
+            let low = pts[i.saturating_sub(1)].arc;
+            // Halved because an interior report spans two half-intervals. An end report
+            // has only the one, and `hi == low` on that side already halves it.
+            (hi - low) * 0.5
+        })
+        .collect();
+    let total: f32 = q.iter().sum();
+    if total <= 1e-6 {
+        return vec![1.0; q.len()];
+    }
+    let k = q.len() as f32 / total;
+    for w in &mut q {
+        *w *= k;
+    }
+    q
 }
 
 /// One candidate fit, before the growth rule has chosen between two of them.

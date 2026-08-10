@@ -93,18 +93,49 @@ the fit becomes invariant to zoom. This is a *fitting* knob and reaches nothing
 else — flattening's budget is an error against the curve, in the canvas px it
 will actually be drawn in.
 
-Both **ends are pinned**: a least-squares fit does not hold them, because a
-stretch of parameter with no sample assigned costs nothing, so the curve
-otherwise starts before the stroke and stops short of the pointer. The start is
-set and frozen at the first sample; the live end moves to the newest sample each
-update (and freezes there on release), which also keeps the preview under the
-cursor.
+Both **geometric ends are pinned**: a least-squares fit does not hold them,
+because a stretch of parameter with no sample assigned costs nothing, so the
+curve otherwise starts before the stroke and stops short of the pointer. The
+start is set and frozen at the first sample; the live end moves to the newest
+sample each update (and freezes there on release), which also keeps the preview
+under the cursor.
+
+Every report is weighted by **the arc it stands for** (`arc_weights`), which is
+what makes the solve a fit to the stroke rather than to the hand. A pointer
+reports on a clock, not on a ruler, so the same stretch of curve carries as many
+reports as the hand took time over it; summed unweighted, a stretch the hand
+dawdled on outvotes the rest by count. The trapezoid weight turns
+`Σ residual²` over reports into `∫ residual² ds` over the stroke, and the growth
+rule is scored the same way so that the price of a control point is charged
+against the error the solve is actually minimizing.
+
+**The pen leaving the tablet is what forced it.** A tablet keeps sampling through
+the release, so a stroke ends with a run of reports carrying the pressure to zero
+across a fraction of a pixel of nib drift. §6.2 says a piece of path with no
+length deposits nothing — a segment's contribution is a definite integral over
+travel, and the flattener discards a degenerate edge before any shader sees it —
+but unweighted, those reports outvoted the whole last span of real curve: the
+fitted pressure came down over 88 px of a 563 px stroke, 134 px of an 838 px one,
+reaching the tip at half the weight the hand actually drew. It printed as a
+blunted, thinned end whose size tracked how fast the pen was released. *Rejecting*
+such reports does not work at any threshold: a release drifts, so its reports
+accumulate past any fixed bar and the one that gets through arrives part-decayed.
 
 Pen attributes ride along as **passenger channels**: pressure, tilt and time are
 solved against the geometry's own assignment rather than fitted jointly with it,
 so a pressure ramp cannot stretch the parameterization the way a longer path
 does, and no weighting is needed to reconcile pixels with whatever units they are
-in.
+in. Their **end is held at its neighbour rather than pinned to the last report**,
+which is the other half of the release fix and the one thing that closes it: the
+last control point is supported on the final span alone, so whatever sits in the
+last sliver of the domain decides it outright, however light its weight — and
+that is the least trustworthy report on the stroke. Geometry has an independent
+claim on its endpoint (the mark must end where the hand did, and the eye checks
+it); an attribute has none, since nobody sees where a pressure *ends*, only the
+width it produces. So the attribute curve leaves the stroke flat. The cost is the
+last sliver of a deliberate ramp, which no longer completes; `time` is exempt,
+being a stamp on the report rather than pen state, and keeps the clock the
+release really happened at (§8).
 
 Rendering expands those control points through the same B-spline — converted per
 span to cubic Bézier form, so the derivative is closed-form — into a polyline,

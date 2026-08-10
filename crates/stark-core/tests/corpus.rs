@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::corpus::{CASES, Case};
+use common::corpus::{CASES, Case, held_down, lifted};
 use common::*;
 
 use stark_core::RgbaImage;
@@ -82,11 +82,10 @@ const CHECKPOINTS: usize = 5;
 /// How much finer the refinement check fits the same path. See [`check_refinement`].
 const REFINEMENT: f32 = 4.0;
 
-/// What counts as *visibly* moved under refinement: twelve levels out of 255, a
-/// difference nobody has to squint at. Fixed globally rather than per case so that
-/// every case's `Tol::refine` is the same measurement and the corpus reads as one
-/// table of convergence.
-const REFINE_LEVELS: u8 = 12;
+/// What counts as *visibly* moved: twelve levels out of 255, a difference nobody has
+/// to squint at. Fixed globally rather than per case so that every case's `Tol::refine`
+/// and `Tol::lift` are the same measurement and the corpus reads as one table.
+const VISIBLE_LEVELS: u8 = 12;
 
 fn run(name: &str) {
     let case = CASES
@@ -103,6 +102,7 @@ fn run(name: &str) {
     check_undo_redo(&mut engine, &committed, &mut report);
     check_save_load(case, &engine, &committed, &mut report);
     check_refinement(case, brush, &committed, &mut report);
+    check_lift_off(case, brush, &mut report);
 
     report.finish();
 
@@ -295,12 +295,62 @@ fn check_refinement(case: &Case, brush: BrushParams, committed: &RgbaImage, repo
     };
     case.paint(&mut fine, brush, DEFAULT_TOLERANCE / REFINEMENT);
     let refined = fine.render_to_image();
-    let moved = frac_exceeding(committed, &refined, REFINE_LEVELS) * 100.0;
+    let moved = frac_exceeding(committed, &refined, VISIBLE_LEVELS) * 100.0;
     if moved > case.tol.refine {
         report.note(&format!(
             "fitted {REFINEMENT}× finer: {moved:.3}% of the viewport moved past \
-             {REFINE_LEVELS} levels, allowed {:.3}%",
+             {VISIBLE_LEVELS} levels, allowed {:.3}%",
             case.tol.refine,
+        ));
+    }
+}
+
+/// **The pen coming off the tablet must not redraw the stroke it is leaving.**
+///
+/// A tablet keeps reporting through the release: the last handful of samples carry the
+/// pressure down to nothing across a fraction of a pixel of nib travel
+/// ([`lifted`]). Every one of them is a piece of path with no length, and §6.2 says
+/// what a piece of path with no length deposits — a segment's contribution is a
+/// definite integral over travel, so it is exactly zero, whatever the pen was doing
+/// while it happened. Appending the release to a gesture must therefore draw the same
+/// mark as not appending it, for **every** stroke in the corpus.
+///
+/// It is worth stating as an invariant rather than as one case's golden because the
+/// release is not a kind of stroke — it is the last inch of *every* stroke a tablet
+/// ever draws, and what it costs depends on what it is appended to. A swept line pays
+/// for it in a blunted end; a stamp brush pays again through the reservoir, whose
+/// exchange cadence is quoted in a radius the release is shrinking; a tapered brush
+/// pays a third time, since the taper is measured from the stroke's ends and the
+/// release moves one of them.
+///
+/// Measured by area rather than by worst texel, for the same reason as
+/// [`check_refinement`]: a release does not put a step in one pixel, it quietly
+/// changes the width of the last stretch of the mark.
+///
+/// **Against [`held_down`] rather than against the committed stroke**, which is what
+/// makes it a check about the release and not about the six-tenths of a pixel the nib
+/// slides while it happens. That travel is real, the fit is entitled to answer it, and
+/// on the cases described by three or four reports its answer is most of the viewport —
+/// so the control carries the same tail with the nib still down, and the difference is
+/// the release alone. The committed render is not the reference here for the same
+/// reason it *is* the reference everywhere else: this is the one check whose input is
+/// not the case's own.
+fn check_lift_off(case: &Case, brush: BrushParams, report: &mut Report) {
+    let samples = case.samples();
+    let draw = |input: &[InputSample]| {
+        let (mut engine, _) = case.open()?;
+        case.paint_input(&mut engine, brush, DEFAULT_TOLERANCE, input);
+        Some(engine.render_to_image())
+    };
+    let (Some(released), Some(down)) = (draw(&lifted(&samples)), draw(&held_down(&samples))) else {
+        return;
+    };
+    let moved = frac_exceeding(&down, &released, VISIBLE_LEVELS) * 100.0;
+    if moved > case.tol.lift {
+        report.note(&format!(
+            "the pen lifted off the tablet: {moved:.3}% of the viewport moved past \
+             {VISIBLE_LEVELS} levels, allowed {:.3}%",
+            case.tol.lift,
         ));
     }
 }

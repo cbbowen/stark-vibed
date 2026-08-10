@@ -44,7 +44,7 @@ use nalgebra::{Const, Dyn, OMatrix};
 use crate::geom::{Ellipse, Vec2, principal_axis};
 use crate::guides::{AxisPencil, AxisPlane, Scaffold};
 use crate::path::{ControlPoint, FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
-use crate::spline::CubicBSpline;
+use crate::spline::{CubicBSpline, Observations};
 
 /// Reports below this many are not a shape, whatever they look like: a click, a
 /// twitch, or a two-sample flick has no trace to recognize and would snap to noise.
@@ -634,7 +634,7 @@ fn realize(
 
     let geom = if fit_geometry {
         let values: Vec<[f32; 2]> = targets.iter().map(|p| [p.x, p.y]).collect();
-        spline.fit_channels(&ts, &values, 0, 0, &geom_seed, 0.0)
+        spline.fit_channels(Observations::even(&ts, &values), 0, 0, &geom_seed, 0.0)
     } else {
         geom_seed
     };
@@ -647,7 +647,7 @@ fn realize(
             pen.sample(j as f32 / (m - 1).max(1) as f32)[d]
         });
     let values: Vec<[f32; CHANNELS]> = fractions.iter().map(|&f| pen.sample(f)).collect();
-    let attr = spline.fit_channels(&ts, &values, 0, 0, &attr_seed, 0.0);
+    let attr = spline.fit_channels(Observations::even(&ts, &values), 0, 0, &attr_seed, 0.0);
 
     (0..m)
         .map(|j| ControlPoint {

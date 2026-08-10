@@ -47,11 +47,33 @@ pub struct Tol {
     /// path is refitted four times finer.
     ///
     /// Unlike its two neighbours this is an area, not a level: the level is fixed
-    /// globally at the battery's `REFINE_LEVELS`, so the numbers below are directly
+    /// globally at the battery's `VISIBLE_LEVELS`, so the numbers below are directly
     /// comparable and read as one table — *how much of this stroke is still moving when
     /// you stop asking for it more finely*. See the battery's refinement check for why
     /// area is the right instrument here and the worst texel is not.
     pub refine: f64,
+    /// Share of the viewport (in **percent**) allowed to move visibly when the pen is
+    /// **lifted off the tablet** at the end of the same gesture (see [`lifted`]).
+    ///
+    /// The same instrument as `refine` and for the same reason — what a release does to
+    /// a stroke is not a step at one texel, it is the last stretch of the mark quietly
+    /// changing width — so the two are directly comparable and the corpus reads as one
+    /// table of *how much of this stroke the hand coming off it moves*.
+    ///
+    /// **Thirteen of the fourteen are 0, exactly, and that is the claim.** A release
+    /// carries no arc length, so by §6.2 it deposits nothing — the swept integral is a
+    /// definite integral over travel, and `generate_segments_in` drops any edge shorter
+    /// than `1e-5` before the question reaches a shader at all.
+    ///
+    /// The renderer always honoured that; the **fit** did not, and this column is what
+    /// caught it. `PathFitter`'s least squares summed over *reports*, and a pen reports
+    /// on a clock rather than on a ruler, so the eight reports a release spends crossing
+    /// half a pixel outvoted the whole last span of real curve: measured before the fix,
+    /// the fitted pressure came down over 88 px of a 563 px `LOOP_STROKE` and 134 px of
+    /// an 838 px `FAST_STROKE`, reaching the tip at 0.80 and 0.52 instead of 1.0, and
+    /// every case here moved — `line` by 22% of the viewport. What closed it is
+    /// `path::arc_weights` and the attribute end condition beside it.
+    pub lift: f64,
 }
 
 /// One stroke worth drawing, and everything needed to draw it.
@@ -91,8 +113,20 @@ impl Case {
 
     /// Paint the whole stroke and commit it, at a chosen input tolerance.
     pub fn paint(&self, engine: &mut Engine, b: BrushParams, tolerance: f32) {
+        self.paint_input(engine, b, tolerance, &self.samples());
+    }
+
+    /// [`paint`](Self::paint) with the pointer reports supplied rather than taken from
+    /// the case — for the checks that ask what a *different delivery* of the same
+    /// gesture draws (see [`lifted`]).
+    pub fn paint_input(
+        &self,
+        engine: &mut Engine,
+        b: BrushParams,
+        tolerance: f32,
+        samples: &[InputSample],
+    ) {
         engine.process(ViewCommand::SetBrush(b));
-        let samples = self.samples();
         let (first, rest) = samples.split_first().expect("a case draws something");
         engine.process(GestureCommand::Start {
             tool: Tool::Brush,
@@ -199,6 +233,79 @@ fn centred(pts: &[[f32; 2]]) -> Vec<InputSample> {
         .collect()
 }
 
+/// How many pointer reports a pen leaving the tablet is modelled as, and how far the
+/// nib slides across the glass while it happens.
+///
+/// Both are what a tablet actually delivers rather than a worst case picked to fail:
+/// a pen at 133 Hz spends 40-60 ms coming out of range, and the hand rolls the nib a
+/// fraction of a pixel over that. **Under one canvas px of travel carrying the whole
+/// pressure range** is the shape of the thing, and it is the shape rather than either
+/// number that matters — a release is an attribute change with no path under it.
+const LIFT_REPORTS: usize = 8;
+const LIFT_DRIFT: f32 = 0.6;
+
+/// The same gesture, with the **pen lifted off the tablet at the end of it**.
+///
+/// A tablet does not stop reporting when the hand starts to leave: it keeps sampling
+/// through the release, and those last reports carry the pressure down to zero across
+/// [`LIFT_DRIFT`] px of nib travel. So they are, in the engine's own terms, a run of
+/// segments the swept integral must integrate over nothing — §6.2's deposit is a
+/// definite integral over travel, and there is none here.
+///
+/// The tail continues in the direction the nib was last moving, because that is what a
+/// hand coming off does; a click has no such direction and gets `+x`, which cannot
+/// matter for the same reason `gpu::stroke::segments::sample_at` gives — there is
+/// nothing to lead in.
+pub fn lifted(samples: &[InputSample]) -> Vec<InputSample> {
+    lift_tail(samples, true)
+}
+
+/// **The control for [`lifted`]**: the identical tail, with the nib still down.
+///
+/// Six-tenths of a pixel is not nothing, and the fit is entitled to notice it — the arc
+/// length it divides by grows, the endpoint it pins moves, and on a path described by
+/// three or four reports that re-fits the whole curve by a fraction of a pixel, which a
+/// hard-edged stroke answers with more than the battery's twelve levels along its whole
+/// length. Measured on `curve`, that alone is 10.3% of the viewport, and on `wide_smear`
+/// 9.6%. It is also not the defect: what is being claimed is about a **release**, not
+/// about travel, and the two are only separable by holding one of them still.
+///
+/// So the battery compares a release against this rather than against the untailed
+/// stroke, and what survives the comparison is exactly what the pen letting go cost.
+pub fn held_down(samples: &[InputSample]) -> Vec<InputSample> {
+    lift_tail(samples, false)
+}
+
+fn lift_tail(samples: &[InputSample], release: bool) -> Vec<InputSample> {
+    let mut out = samples.to_vec();
+    let last = *out.last().expect("a case draws something");
+    let dir = out
+        .iter()
+        .rev()
+        .find_map(|s| {
+            let v = last.pos - s.pos;
+            let len = v.length();
+            (len > 1e-3).then(|| v / len)
+        })
+        .unwrap_or(Vec2::new(1.0, 0.0));
+    for k in 1..=LIFT_REPORTS {
+        let f = k as f32 / LIFT_REPORTS as f32;
+        out.push(InputSample {
+            pos: last.pos + dir * (LIFT_DRIFT * f),
+            pressure: if release {
+                last.pressure * (1.0 - f)
+            } else {
+                last.pressure
+            },
+            // Held, not faded: a pen's tilt is where the hand is holding it and does
+            // not go anywhere as the nib comes off. Only the pressure is leaving.
+            tilt: last.tilt,
+            time: last.time + f as f64 * 0.05,
+        });
+    }
+    out
+}
+
 /// A half-turn arc: the tangent sweeps 180°, so how finely the path is cut *is* how
 /// finely an oriented footprint rotates. Shared by the two cases that care which way
 /// the tip is pointing.
@@ -251,6 +358,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 4,
             refine: 0.0,
+            lift: 0.0,
         },
     },
     Case {
@@ -277,6 +385,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 4,
             refine: 0.0,
+            lift: 0.0,
         },
     },
     Case {
@@ -295,7 +404,13 @@ pub const CASES: &[Case] = &[
         tol: Tol {
             golden: 6,
             seam: 8,
-            refine: 0.8,
+            // The loosest of the swept cases, and the reason is this case's whole
+            // point: its spacing runs from 0.37 px to over 1 px, so it is the stroke
+            // where `arc_weights` does the most work, and which samples fall in the
+            // solve window — and therefore what the weights normalize against — moves
+            // with the tolerance. 0.8 before the weights existed, 1.36 measured after.
+            refine: 1.5,
+            lift: 0.0,
         },
     },
     Case {
@@ -320,14 +435,13 @@ pub const CASES: &[Case] = &[
                         // Straight, and **linear** in pressure, so the fit is exact in
                         // both channels at any tolerance: a cubic B-spline reproduces
                         // a line, and the curvature penalty has nothing to pull on.
-                        // That is what lets the refinement bound below be zero and
-                        // mean it. A sine ramp was tried first and moves 5% of the
-                        // viewport under a finer fit — all of it the fitted *pressure
-                        // curve* shifting, none of it about the attribute budget,
-                        // which is the thing this case is here for. What covers the
-                        // budget is the golden: relax it and the ramp draws as a
-                        // staircase of radii, and until this case existed no golden
-                        // in the suite had a pressure ramp in it to notice.
+                        // A sine ramp was tried first and moves 5% of the viewport
+                        // under a finer fit — all of it the fitted *pressure curve*
+                        // shifting, none of it about the attribute budget, which is
+                        // the thing this case is here for. What covers the budget is
+                        // the golden: relax it and the ramp draws as a staircase of
+                        // radii, and until this case existed no golden in the suite
+                        // had a pressure ramp in it to notice.
                         pressure: 0.1 + 0.9 * t,
                         ..InputSample::default()
                     }
@@ -337,7 +451,16 @@ pub const CASES: &[Case] = &[
         tol: Tol {
             golden: 6,
             seam: 6,
-            refine: 0.0,
+            // Not zero, and it was — this is the one bound the attribute end condition
+            // costs (`PathFitter::solve`). The curve's last control value is held at
+            // its neighbour rather than pinned to the last report, so the final span
+            // does not complete the ramp; where that neighbour sits depends on the knot
+            // count, and the knot count moves with the tolerance. That is the whole
+            // 0.067% of it. A linear ramp is still fitted exactly everywhere the end
+            // condition does not reach, and giving up the last sliver of one is what
+            // buys a stroke that survives the pen coming off it (`Tol::lift`).
+            refine: 0.1,
+            lift: 0.0,
         },
     },
     Case {
@@ -362,6 +485,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 8,
             refine: 4.0,
+            lift: 0.0,
         },
     },
     Case {
@@ -384,6 +508,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 2,
             refine: 0.0,
+            lift: 0.0,
         },
     },
     Case {
@@ -411,6 +536,7 @@ pub const CASES: &[Case] = &[
             // merely re-sampling it, and a hard-edged bristle answers along its whole
             // rim. `tooth_arc` converges twice as tightly on the same curve with a disc.
             refine: 0.25,
+            lift: 0.0,
         },
     },
     Case {
@@ -441,6 +567,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 6,
             refine: 0.0,
+            lift: 0.0,
         },
     },
     Case {
@@ -465,6 +592,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 0.10,
+            lift: 0.0,
         },
     },
     Case {
@@ -484,6 +612,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 0.06,
+            lift: 0.0,
         },
     },
     Case {
@@ -507,6 +636,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 2.0,
+            lift: 0.0,
         },
     },
     Case {
@@ -529,6 +659,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 0.0,
+            lift: 0.0,
         },
     },
     Case {
@@ -562,6 +693,16 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 0.0,
+            // **The only case the release still moves**, and it is the arithmetic of a
+            // three-report path rather than anything about tablets. Eight release
+            // reports against three real ones leaves the solve one free row with the
+            // release as the nearest data to it, so the weight that protects every
+            // other case has nothing to outvote it *with*; and at a 250 px tip the
+            // sliver of radius that buys shows up along the whole rim. Real pen input
+            // does not arrive three reports at a time — every recorded stroke in
+            // `stark_testdata` is cured to the bit — and a mouse, which does, reports
+            // no pressure to release.
+            lift: 0.7,
         },
     },
     Case {
@@ -599,6 +740,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 0.12,
+            lift: 0.0,
         },
     },
 ];

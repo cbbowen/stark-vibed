@@ -34,6 +34,34 @@ pub struct CubicBSpline<const D: usize> {
     control_points: OMatrix<f32, Dyn, Const<D>>,
 }
 
+/// What one [`CubicBSpline::fit_channels`] is solved against: where each value sits on
+/// the curve, what it is, and how much of the subject it stands for.
+#[derive(Copy, Clone)]
+pub struct Observations<'a, const E: usize> {
+    /// Curve parameter each value is assigned to. The caller declares the
+    /// correspondence; nothing here searches for it.
+    pub ts: &'a [f32],
+    pub values: &'a [[f32; E]],
+    /// **How much of the thing being fitted each value stands for** — see
+    /// `CubicBSpline::m_step` for why a fit over sampled values needs one at all.
+    ///
+    /// Empty means one each, which is the plain sum-over-values fit and what a caller
+    /// whose values are already an even sampling of its subject wants. Otherwise the
+    /// same length as `values`.
+    pub weights: &'a [f32],
+}
+
+impl<'a, const E: usize> Observations<'a, E> {
+    /// Values with no measure of their own — an even sampling, weighted one each.
+    pub fn even(ts: &'a [f32], values: &'a [[f32; E]]) -> Self {
+        Self {
+            ts,
+            values,
+            weights: &[],
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("a B-spline needs at least 2 control points (got {0})")]
 pub struct NotEnoughControlPoints(pub usize);
@@ -175,12 +203,12 @@ impl<const D: usize> CubicBSpline<D> {
     ///
     /// # Panics
     ///
-    /// Panics if `prior` has more rows than there are control points, if `ts` and
-    /// `values` differ in length, or if `frozen` exceeds the control-point count.
+    /// Panics if `prior` has more rows than there are control points, if `obs`'s
+    /// parameters and values differ in length, if a non-empty set of weights is not
+    /// that same length, or if `frozen` exceeds the control-point count.
     pub fn fit_channels<const E: usize>(
         &self,
-        ts: &[f32],
-        values: &[[f32; E]],
+        obs: Observations<'_, E>,
         frozen: usize,
         tail: usize,
         prior: &OMatrix<f32, Dyn, Const<E>>,
@@ -194,9 +222,15 @@ impl<const D: usize> CubicBSpline<D> {
         );
         assert!(frozen <= m, "cannot freeze {frozen} of {m} channel rows");
         assert_eq!(
-            ts.len(),
-            values.len(),
+            obs.ts.len(),
+            obs.values.len(),
             "every assigned parameter needs a value"
+        );
+        assert!(
+            obs.weights.is_empty() || obs.weights.len() == obs.values.len(),
+            "{} weights for {} values",
+            obs.weights.len(),
+            obs.values.len()
         );
         let have = prior.nrows();
         let grown =
@@ -207,24 +241,44 @@ impl<const D: usize> CubicBSpline<D> {
                     (false, h) => prior[(h - 1, d)],
                 }
             });
-        self.m_step(ts, &grown, values, frozen, tail, smoothing)
+        self.m_step(obs, &grown, frozen, tail, smoothing)
     }
 
     /// The least-squares solve itself: normal equations over the free window, ridge-
     /// regularized towards `prior`, solved by Cholesky.
+    ///
+    /// **Every value carries a weight, and one each is a claim rather than a neutral
+    /// default.** A plain sum minimizes the error *per value supplied*, which is the
+    /// right objective only where the values are an even sampling of whatever is being
+    /// fitted. Where they are not, the fit is to the sampling and not to the subject,
+    /// and wherever the two disagree the sampling wins on sheer count. `weights` is how
+    /// a caller states what each value stands for — see
+    /// `path::arc_weights` for the case that forced it — and `n`
+    /// becomes their sum, so the two knobs scaled by it below (the smoothing's average
+    /// data pull, the ridge's floor) go on meaning what they meant.
     fn m_step<const E: usize>(
         &self,
-        ts: &[f32],
+        obs: Observations<'_, E>,
         prior: &OMatrix<f32, Dyn, Const<E>>,
-        points: &[[f32; E]],
         frozen: usize,
         tail: usize,
         smoothing: f32,
     ) -> OMatrix<f32, Dyn, Const<E>> {
+        let Observations {
+            ts,
+            values: points,
+            weights,
+        } = obs;
         let basis = Self::basis_matrix();
         let m = prior.nrows();
-        let n = points.len();
-        if frozen + tail >= m || n == 0 {
+        // The weight the system carries, which is the point count exactly when the
+        // weights are the implicit ones.
+        let n: f32 = if weights.is_empty() {
+            points.len() as f32
+        } else {
+            weights.iter().sum()
+        };
+        if frozen + tail >= m || points.is_empty() {
             // Nothing left to solve for, or nothing to solve against. With no points
             // the normal equations are all ridge, whose solution is `prior` exactly —
             // and taking that here also keeps `lambda` (scaled by `n`) off zero, which
@@ -245,20 +299,23 @@ impl<const D: usize> CubicBSpline<D> {
         let w = m - base;
         let mut btb = OMatrix::<f32, Dyn, Dyn>::zeros(w, w);
         let mut btp = OMatrix::<f32, Dyn, Const<E>>::zeros_generic(Dyn(w), Const::<E>);
-        for (&t, p) in ts.iter().zip(points) {
+        for (i, (&t, p)) in ts.iter().zip(points).enumerate() {
             let (k, u) = self.span_and_local(t);
             // Cannot reach a free row, so contributes nothing to what is solved.
             if self.knot_row(k + ORDER - 1) < frozen {
                 continue;
             }
+            // Scales this value's whole row of the design matrix, which is what a
+            // weighted least squares is: `Σ qᵢ‖residualᵢ‖²`.
+            let q = weights.get(i).copied().unwrap_or(1.0);
             let wts = basis * Self::u_powers(u);
             for a in 0..ORDER {
                 let ra = self.knot_row(k + a) - base;
                 for b in 0..ORDER {
-                    btb[(ra, self.knot_row(k + b) - base)] += wts[a] * wts[b];
+                    btb[(ra, self.knot_row(k + b) - base)] += q * wts[a] * wts[b];
                 }
                 for d in 0..E {
-                    btp[(ra, d)] += wts[a] * p[d];
+                    btp[(ra, d)] += q * wts[a] * p[d];
                 }
             }
         }
@@ -291,7 +348,7 @@ impl<const D: usize> CubicBSpline<D> {
         // The free block of the system, with the frozen rows' contribution moved to
         // the right-hand side. With `frozen == 0` this is the whole system, unchanged.
         let free = m - frozen - tail;
-        let mut lambda = n as f32 * f32::EPSILON.sqrt();
+        let mut lambda = n * f32::EPSILON.sqrt();
         for _ in 0..64 {
             let f0 = frozen - base;
             let mut lhs = btb.view((f0, f0), (free, free)).into_owned();
@@ -452,7 +509,7 @@ mod tests {
         let values: Vec<[f32; 1]> = ts.iter().map(|&t| [channel_at(t)]).collect();
 
         let empty = OMatrix::<f32, Dyn, Const<1>>::zeros_generic(Dyn(0), Const::<1>);
-        let got = s.fit_channels(&ts, &values, 0, 0, &empty, 0.0);
+        let got = s.fit_channels(Observations::even(&ts, &values), 0, 0, &empty, 0.0);
         assert_eq!(got.nrows(), m);
         for j in 0..m {
             assert_close(got[(j, 0)], truth[(j, 0)], 1e-2);
@@ -470,7 +527,7 @@ mod tests {
         let prior = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
             (j * 2 + d) as f32
         });
-        let got = s.fit_channels(&[], &[], 0, 0, &prior, 0.0);
+        let got = s.fit_channels(Observations::even(&[], &[]), 0, 0, &prior, 0.0);
         assert_eq!(got, prior);
     }
 
@@ -491,7 +548,7 @@ mod tests {
                 (j + d) as f32 * 0.25
             });
         let frozen = 3;
-        let got = s.fit_channels(&ts, &values, frozen, 0, &short, 0.0);
+        let got = s.fit_channels(Observations::even(&ts, &values), frozen, 0, &short, 0.0);
         assert_eq!(got.nrows(), m);
         for j in 0..frozen {
             for d in 0..2 {
@@ -514,7 +571,7 @@ mod tests {
         let prior = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
             (j + d) as f32
         });
-        let got = s.fit_channels(&ts, &values, 1, 1, &prior, 0.0);
+        let got = s.fit_channels(Observations::even(&ts, &values), 1, 1, &prior, 0.0);
         for d in 0..2 {
             assert_eq!(got[(0, d)], prior[(0, d)], "frozen head moved");
             assert_eq!(got[(m - 1, d)], prior[(m - 1, d)], "held tail moved");
