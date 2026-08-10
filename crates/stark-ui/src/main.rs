@@ -48,8 +48,8 @@ use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, Men
 use credits::CreditsModal;
 use icons::{icon, icon_large};
 use input::{
-    Nav, abandon_gesture, bind_shortcuts, elem_xy, end_interaction, input_tolerance, pick_color,
-    pointer_moved, sample, watch_for_hold,
+    Nav, abandon_gesture, bind_pen, bind_shortcuts, elem_xy, end_interaction, input_tolerance,
+    pick_color, pointer_moved, sample, watch_for_hold,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
@@ -106,6 +106,9 @@ fn app() -> Element {
     // they answer whatever has focus — including `document.body`, where the browser
     // leaves it after a clicked button unmounts itself (see `platform::on_window_key`).
     use_hook(|| bind_shortcuts(state));
+    // And the pen's other end, on the window for the same reason: it is a hold
+    // like a number key's, so it belongs to no one surface (§18.1.8).
+    use_hook(|| bind_pen(state));
 
     // The shape library follows the browser, not the document — load it before
     // the renderer exists so the gallery is populated on first open. The brush
@@ -451,19 +454,13 @@ fn Canvas() -> Element {
                     if let Some(sample) = sample(state, &e)
                         && let Some(tolerance) = input_tolerance(state, &e)
                     {
-                        // Flipping the pen over holds the eraser slot for as long
-                        // as its tail is on the glass — the same hold a number key
-                        // makes, so the eraser is assigned and tuned by the same
-                        // gestures as every other slot (§18.1.8). Before `Start`,
-                        // because that is where the stroke takes its copy of the
-                        // brush; released by `end_interaction` after the commit.
-                        //
-                        // Not over a selection tool, where the brush decides
-                        // nothing about what a marquee cuts and a swap would be a
-                        // change the user could not see the point of.
-                        if !tool.is_selection() && input::is_eraser(&e) {
-                            slots::hold(state, slots::ERASER, slots::Grip::Eraser);
-                        }
+                        // The eraser end's brush is already in force by now — it
+                        // holds its slot from a window-level binding that runs
+                        // ahead of every handler in the tree (`input::bind_pen`,
+                        // §18.1.8). This press only has to *draw*, with whatever
+                        // brush the engine is holding, which is what it always
+                        // did.
+
                         // The marquee modifiers override the *combine mode*, so
                         // they apply only while the panel's action is a selecting
                         // one: under Fill there is nothing to combine, and letting

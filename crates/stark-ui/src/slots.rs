@@ -26,8 +26,12 @@
 //!   panel needs to know nothing about any of this: it shows the live brush, and
 //!   the live brush is the slot's.
 //! - **Flip the pen over** — the eraser end holds [`ERASER`] for as long as it is
-//!   on the glass. It is the same hold, made by hardware instead of by a key, so
-//!   the eraser is assigned and tuned by the same gestures as every other slot.
+//!   on the glass, whatever it is pressed against. It is the same hold, made by
+//!   hardware instead of by a key, and being bound at the window rather than by
+//!   any one surface (`input::bind_pen`) it earns the three lines above rather
+//!   than only the first: erasing with the tail is one gesture, tuning the
+//!   eraser's Size or Flow with it is another, and eraser-clicking a preset
+//!   assigns that preset to the tail. A key and a hand do the same thing here.
 //!
 //! What the rule deliberately does *not* carry is the painting **colour**, which
 //! is [`presets::wear`]'s rule and is applied in both directions: a slot never

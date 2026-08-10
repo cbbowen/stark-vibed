@@ -374,9 +374,25 @@ engine learn nothing:
   the live brush is that number's, so it shows and edits the slot without a line
   of code that knows about slots.
 - **Flip the pen over** and the eraser end holds slot 0 for as long as its tail
-  is on the glass. The same hold, made by hardware rather than by a key, so the
-  eraser is assigned and tuned by the same gestures as every other slot — and,
-  being a brush, it can be replaced with any other.
+  is on the glass — *whatever it is pressed against*. The same hold, made by
+  hardware rather than by a key, and bound at the window rather than by any one
+  surface (`input::bind_pen`), so it earns all three of the lines above rather
+  than only the first: erasing with the tail is one gesture, dragging Size or
+  Flow with it tunes the eraser, and eraser-clicking a preset assigns that
+  preset to the tail. A key and a hand do the same thing. The eraser is
+  therefore a brush like any other and can be replaced with any other.
+
+  Bound in the **capture** phase, which is load-bearing on the press: the swap
+  has to be in force before the surface's own handler runs, or the canvas would
+  open its stroke on the brush the eraser displaced. Capture runs window-inward,
+  so it is ahead of every handler in the tree, and it cannot be silenced by a
+  `stopPropagation` downstream — which matters most on the release, where a
+  listener that could be skipped would strand the brush swapped. The press is
+  tested strictly (it must really be the eraser, or the tip would erase); the
+  release is any **pen** leaving the glass, since a stylus has one contact and a
+  driver that reports the release without the eraser bit still has to end the
+  hold. A finger's release is left alone, so a palm settling mid-erase does not
+  hand the brush back under a pen that never moved.
 
 Three things the rule has to get right, each a place a looser design goes wrong:
 

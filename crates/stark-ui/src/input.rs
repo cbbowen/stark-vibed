@@ -11,7 +11,9 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
-use crate::platform::{capture_pointer, on_window_blur, on_window_key, sleep_ms};
+use crate::platform::{
+    capture_pointer, on_window_blur, on_window_key, on_window_pointer, sleep_ms,
+};
 use crate::slots::{self, Grip};
 use crate::state::{AppState, Dwell, PickScope, dispatch, update_brush};
 use stark_core::InputSample;
@@ -128,10 +130,9 @@ impl Nav {
     /// gesture, and abandon any gesture already in flight.
     ///
     /// A *contact* rather than the primary button ([`is_contact`]), so the pen's
-    /// eraser end pans under space like its tip does. It has to: the canvas arms
-    /// the eraser's brush slot on a press this one declined (§18.1.8), so a
-    /// space-drag that was not taken here would hand the eraser over for the
-    /// length of the pan.
+    /// eraser end pans under space exactly as its tip does (§18.1.8). Space held
+    /// means "this press moves the canvas" whichever end of the stylus is against
+    /// it — the alternative is a pan that works one way up and paints the other.
     pub fn begin(self, e: &Event<PointerData>) -> bool {
         if is_finger(e) {
             return self.finger_down(e);
@@ -355,20 +356,27 @@ pub fn is_contact(e: &Event<PointerData>) -> bool {
 /// and it is already in the tree; off-wasm the downcast simply finds nothing,
 /// which is the right answer on a platform with no pens.
 ///
-/// Both fields, because the two halves of the gesture report differently: the
-/// press and the release name the button that changed (`button`), while every
+pub fn is_eraser(e: &Event<PointerData>) -> bool {
+    e.downcast::<web_sys::PointerEvent>()
+        .is_some_and(is_eraser_event)
+}
+
+/// [`is_eraser`] against a raw web event — what the window-level binding sees
+/// ([`bind_pen`]), where there is no dioxus event to unwrap.
+///
+/// Both button fields, because the two halves of a press report differently: the
+/// press and the release name the button that *changed* (`button`), while every
 /// move between them names only what is still down (`buttons`, with `button` at
 /// −1). A test on either alone would arm on the press and then, one move later,
 /// disagree with itself.
-pub fn is_eraser(e: &Event<PointerData>) -> bool {
+fn is_eraser_event(raw: &web_sys::PointerEvent) -> bool {
     /// `button` for the eraser end, per Pointer Events.
     const ERASER_BUTTON: i16 = 5;
     /// The same, as its bit in `buttons`.
     const ERASER_BUTTONS: u16 = 32;
 
-    e.pointer_type() == "pen"
-        && e.downcast::<web_sys::PointerEvent>()
-            .is_some_and(|raw| raw.button() == ERASER_BUTTON || raw.buttons() & ERASER_BUTTONS != 0)
+    raw.pointer_type() == "pen"
+        && (raw.button() == ERASER_BUTTON || raw.buttons() & ERASER_BUTTONS != 0)
 }
 
 /// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
@@ -419,6 +427,49 @@ pub fn bind_shortcuts(state: AppState) {
     // its brush for the rest of the session, with the key that ends it now
     // belonging to another window (`slots::release_all`).
     on_window_blur(move || slots::release_all(state));
+}
+
+/// Bind the pen's eraser end to its brush slot, once, for the life of the page
+/// (§18.1.8).
+///
+/// The pointer half of [`bind_shortcuts`], and deliberately shaped like it: the
+/// tail of the stylus is a **hold**, exactly as a number key is, so it is bound
+/// once at the window rather than being armed by whichever surface happens to be
+/// pressed. That is what lets it reach past the canvas — dragging Size or Flow
+/// with the eraser tunes *the eraser*, and eraser-clicking a preset assigns it to
+/// the eraser — for the same reason holding `3` while dragging Size tunes slot 3.
+/// Armed by each surface instead, it would work on the surfaces somebody
+/// remembered, and the list of the ones they did not is the kind nobody keeps
+/// complete.
+///
+/// The two tests are deliberately **not** the same one:
+///
+/// - The **press** has to really be the eraser ([`is_eraser_event`]), or the tip
+///   would arm the eraser's slot and every ordinary stroke would erase.
+/// - The **release** is any pen leaving the glass. A stylus has one contact, so a
+///   tip release cannot coexist with the tail being down, and a driver that
+///   reports the release without the eraser bit still ends the hold — where the
+///   stricter test would leave the brush swapped with nothing left to swap it
+///   back. [`slots::release`] is a no-op unless an eraser hold is in flight, so
+///   asking too often costs nothing where asking too rarely costs the session.
+///
+/// A *finger's* release is left alone on purpose: a palm settling on the glass
+/// mid-erase would otherwise hand the brush back under a pen that never moved.
+pub fn bind_pen(state: AppState) {
+    on_window_pointer("pointerdown", move |e| {
+        if is_eraser_event(&e) {
+            slots::hold(state, slots::ERASER, Grip::Eraser);
+        }
+    });
+    // Both edges, because a cancel is a release the browser made on your behalf —
+    // a gesture the system took over, a tab switched away from mid-stroke.
+    for kind in ["pointerup", "pointercancel"] {
+        on_window_pointer(kind, move |e| {
+            if e.pointer_type() == "pen" {
+                slots::release(state, slots::ERASER, Grip::Eraser);
+            }
+        });
+    }
 }
 
 /// Whether `e` was typed into a control that owns its own keystrokes — a text
@@ -819,11 +870,6 @@ pub fn end_interaction(
         dispatch(state, GestureCommand::End);
         drawing.set(false);
     }
-    // After the commit, never before: the release puts the displaced brush back,
-    // and the stroke that just ended has to be committed with the one it was
-    // drawn with. (A stroke snapshots its brush at `Start`, so this is belt and
-    // braces — but the order is the part that would be silently wrong.)
-    slots::release(state, slots::ERASER, Grip::Eraser);
     restore_action(state, action_restore);
     stop_watching(state);
     nav.stop();

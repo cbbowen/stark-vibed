@@ -120,6 +120,41 @@ pub fn on_window_key(kind: &str, handler: impl FnMut(web_sys::KeyboardEvent) + '
 #[cfg(not(target_arch = "wasm32"))]
 pub fn on_window_key(_kind: &str, _handler: impl FnMut(web_sys::KeyboardEvent) + 'static) {}
 
+/// Route the window's `kind` pointer events ("pointerdown", "pointerup", …) to
+/// `handler`, in the **capture** phase.
+///
+/// The pointer counterpart to [`on_window_key`], and it exists for the same
+/// reason: what it binds is not any one surface's business. The pen's eraser end
+/// holds a brush slot for as long as it is down (§18.1.8) whatever it is pressed
+/// against — the canvas, a slider, a preset row — exactly as a held number key
+/// does, and a listener per surface would be a list nobody could keep complete.
+///
+/// **Capture, not bubble**, and that is load-bearing on the press: the swap has
+/// to be in force before the surface's own handler runs, or the canvas would open
+/// its stroke on the brush the eraser displaced. Capture runs window-inward, so
+/// this is ahead of every handler in the tree; bubble would be behind all of them.
+/// It also cannot be silenced — `stopPropagation` downstream is too late to
+/// prevent something that has already run, which matters most for the release,
+/// where a listener that could be skipped would leave the brush swapped.
+#[cfg(target_arch = "wasm32")]
+pub fn on_window_pointer(kind: &str, handler: impl FnMut(web_sys::PointerEvent) + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(handler);
+    let _ = window.add_event_listener_with_callback_and_bool(
+        kind,
+        cb.as_ref().unchecked_ref(),
+        true, // useCapture
+    );
+    cb.forget();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_window_pointer(_kind: &str, _handler: impl FnMut(web_sys::PointerEvent) + 'static) {}
+
 /// Call `handler` whenever the window loses focus.
 ///
 /// The counterpart to [`on_window_key`], and it exists because keyup is not the
