@@ -208,6 +208,13 @@ fn app() -> Element {
                 tracing::info!("joining shared session from URL fragment");
                 collab::join(state, ticket);
             }
+
+            // And the other thing a launch can carry: a `.stark` the OS was asked
+            // to open in this app (§11). Bound *here*, at the end of startup,
+            // rather than in the root's body — setting the consumer is what
+            // delivers a queued launch, and a document has nowhere to load until
+            // the renderer above exists.
+            files::bind_file_launch(state);
         });
     });
 

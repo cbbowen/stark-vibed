@@ -347,6 +347,95 @@ pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pick_file(_accept: &str, _on_file: impl Fn(String, Vec<u8>) + 'static) {}
 
+/// Hand `on_file` whatever file the OS launched the app with — the other end of
+/// the manifest's `file_handlers` (§11, [`crate::files::bind_file_launch`]).
+///
+/// Reflection rather than typed bindings, unlike everything else in this module:
+/// neither `launchQueue` nor the `FileSystemFileHandle` it yields is in `web-sys`
+/// (the handle is, but behind the `web_sys_unstable_apis` cfg, which is a
+/// `RUSTFLAGS` change for the whole build). A browser without the API leaves the
+/// lookup undefined and this returns having promised nothing, which is the same
+/// shape as a browser that simply never launches with a file.
+///
+/// Setting the consumer is what *delivers* a launch: the browser queues the
+/// params from before the page had any say, so this must not be called until the
+/// handler can act on them. The closure is `forget`ten for the same reason
+/// [`pick_file`]'s are — it outlives this call by design, and may fire more than
+/// once (`focus-existing`).
+#[cfg(target_arch = "wasm32")]
+pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen::closure::Closure;
+
+    /// `obj.name` as a callable, or `None` if it is missing or not one.
+    fn method(obj: &JsValue, name: &str) -> Option<js_sys::Function> {
+        js_sys::Reflect::get(obj, &JsValue::from_str(name))
+            .ok()?
+            .dyn_into()
+            .ok()
+    }
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(queue) = js_sys::Reflect::get(&window, &JsValue::from_str("launchQueue")) else {
+        return;
+    };
+    let Some(set_consumer) = method(&queue, "setConsumer") else {
+        return;
+    };
+
+    // Shared, not moved: the consumer may be re-entered per launch, and each of
+    // those spawns a task that needs its own handle.
+    let on_file = std::rc::Rc::new(on_file);
+    let consumer = Closure::<dyn FnMut(JsValue)>::new(move |params: JsValue| {
+        let files = js_sys::Reflect::get(&params, &JsValue::from_str("files"))
+            .unwrap_or(JsValue::UNDEFINED);
+        let Ok(files) = files.dyn_into::<js_sys::Array>() else {
+            return;
+        };
+        // The first only. Opening a document *replaces* the canvas (§8), so a
+        // second file would be a painting nobody ever sees — which is why the
+        // manifest asks for `single-client` rather than a window per file.
+        let Some(handle) = files.iter().next() else {
+            return;
+        };
+        let on_file = on_file.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let Some(get_file) = method(&handle, "getFile") else {
+                return;
+            };
+            let Ok(promise) = get_file.call0(&handle) else {
+                return tracing::error!("could not read the launched file");
+            };
+            let Ok(promise) = promise.dyn_into::<js_sys::Promise>() else {
+                return;
+            };
+            let Ok(file) = wasm_bindgen_futures::JsFuture::from(promise).await else {
+                // Permission for the handle is the usual reason: a launch grants
+                // read access, but a stale handle replayed later may not have it.
+                return tracing::error!("the launched file could not be opened");
+            };
+            let Ok(file) = file.dyn_into::<web_sys::File>() else {
+                return;
+            };
+            let name = file.name();
+            let Ok(buffer) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await else {
+                return tracing::error!(name, "the launched file could not be read");
+            };
+            let Some(buffer) = buffer.dyn_ref::<js_sys::ArrayBuffer>() else {
+                return;
+            };
+            on_file(name, js_sys::Uint8Array::new(buffer).to_vec());
+        });
+    });
+    let _ = set_consumer.call1(&queue, consumer.as_ref().unchecked_ref());
+    consumer.forget();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_file_launch(_on_file: impl Fn(String, Vec<u8>) + 'static) {}
+
 /// Normalize an image into a brush-shape PNG, using the browser as the decoder —
 /// any format the browser can display can be imported (JPEG, WebP, GIF, …).
 ///

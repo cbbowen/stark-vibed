@@ -109,7 +109,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
     let shipped = |name: &str, slot: Option<usize>, brush: BrushParams| PresetEntry {
         name: name.to_string(),
         brush,
-        slot: slot,
+        slot,
         builtin: true,
     };
     vec![

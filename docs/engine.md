@@ -370,6 +370,18 @@ which the engine draws into directly. DOM chrome surrounds it.
     which lives in the CLI's dev shell. Hot reload itself rides the wasm glue and
     is unaffected. Note also that the CLI resolves its placeholders by literal
     text match over the whole file, comments included.
+  - **A `.stark` opens in it.** The manifest declares a `file_handlers` entry for
+    the extension, and `files::bind_file_launch` takes the other end: the
+    browser's `launchQueue`, reached by reflection because neither it nor the
+    `FileSystemFileHandle` it yields is in stable `web-sys`. Setting the consumer
+    is what *delivers* a queued launch, so it is bound at the end of the startup
+    task — a document has nowhere to load until the renderer exists. The manifest
+    asks for `focus-existing` rather than `navigate-existing`, so a second launch
+    reaches the *running* app: a reload would throw the open painting away before
+    the new file had even been read, whereas this path refuses a bad file with
+    the current one still on screen. Only the first file of a launch is taken —
+    opening a document replaces the canvas (§8), so a second would be a painting
+    nobody ever sees, which is what `single-client` says too.
   - The icons are painted with Stark's own bristle stamp by
     `stark-ui/tools/make-icons.py`, run by hand; the PNGs are checked in. Not a
     build step — a logo is not a build product, and nothing keys off its bytes

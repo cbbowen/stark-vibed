@@ -10,7 +10,14 @@
   "dir": "ltr",
   "display": "standalone",
   "orientation": "any",
-  "launch_handler": { "client_mode": "navigate-existing" },
+  "launch_handler": { "client_mode": "focus-existing" },
+  "file_handlers": [
+    {
+      "action": "./",
+      "launch_type": "single-client",
+      "accept": { "application/x-stark": [".stark"] }
+    }
+  ],
   "theme_color": "#151413",
   "background_color": "#d8d8da",
   "icons": [

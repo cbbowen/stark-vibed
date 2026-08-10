@@ -65,53 +65,81 @@ pub fn open_document(state: AppState) {
     // so the signals are copied out of the capture on each call rather than
     // mutated in place. `Signal` is `Copy`, which is what makes that free.
     pick_file(&format!(".{DOC_EXT}"), move |_name, bytes| {
-        let file = match stark_core::DocumentFile::from_bytes(&bytes) {
-            Ok(file) => file,
-            Err(e) => return tracing::error!("could not open that file: {e}"),
-        };
-        // What the file names but does not carry, less whatever this session has
-        // already loaded. Empty for a document saved with everything bundled.
-        let owed = {
-            let renderer = state.renderer;
-            let guard = renderer.read();
-            let Some(r) = guard.as_ref() else { return };
-            r.unresolved_content(&file)
-        };
-        spawn_forever(async move {
-            // Resolved out of this build's own assets, and *before* the replay:
-            // the file carries the grounds it was painted on or names ones this
-            // app ships, and either way they have to be registered before a single
-            // action runs, or every stroke made on one deposits through the flat
-            // stand-in into stored pixels (§6.4, §8).
-            let supplied = crate::builtin_ids::fetch(&owed).await;
-            if supplied.len() != owed.len() {
-                // Refused rather than opened wrong. A file has no peer to fall
-                // back on, so content this build cannot produce is the end of it —
-                // which is the whole reason the shipped catalog is append-only.
-                tracing::error!(
-                    ?owed,
-                    "this painting uses content this version of Stark does not have"
-                );
-                return;
-            }
-            let (mut renderer, mut obs) = (state.renderer, state.obs);
-            let mut guard = renderer.write();
-            let Some(r) = guard.as_mut() else { return };
-            for (need, content) in &supplied {
-                crate::builtin_ids::install(r, *need, content);
-            }
-            // The engine checks the bill again rather than trusting that it was
-            // settled, and refuses without touching the open document. Reaching this
-            // arm means an install above failed — bytes that hash to something other
-            // than the id they were fetched for — so the painting on screen is left
-            // exactly as it was.
-            if let Err(e) = r.load_document(&file) {
-                return tracing::error!("could not open that painting: {e}");
-            }
-            r.paint();
-            obs.set(Some(r.observe()));
-            tracing::info!(bytes = bytes.len(), "document loaded");
-        });
+        open_bytes(state, bytes)
+    });
+}
+
+/// Take the app's second way in: the file the OS launched it with (§11).
+///
+/// Registered on the browser's `launchQueue`, which the manifest's `file_handlers`
+/// entry is what fills — double-clicking a `.stark` in a file manager, once the
+/// app is installed. Two things about *when* this may be called:
+///
+/// - **After the renderer exists.** A queued launch is delivered the moment a
+///   consumer is set, and [`open_bytes`] needs an engine to load into — with none
+///   it would return having silently dropped the file. So `main` binds this at the
+///   end of its startup task rather than in the root's body.
+/// - **Possibly more than once.** The manifest asks for `focus-existing`, so a
+///   second launch reaches the *running* app instead of reloading it. That is the
+///   least destructive of the choices on offer: a reload would throw the open
+///   painting away before the new file had even been read, whereas this path
+///   refuses a bad file with the current one still on screen.
+pub fn bind_file_launch(state: AppState) {
+    crate::platform::on_file_launch(move |name, bytes| {
+        tracing::info!(name, bytes = bytes.len(), "opening a launched file");
+        open_bytes(state, bytes);
+    });
+}
+
+/// Replace the document with one decoded from `bytes` — the half of [`open_document`]
+/// after the file is in hand, shared with [`bind_file_launch`].
+fn open_bytes(state: AppState, bytes: Vec<u8>) {
+    let file = match stark_core::DocumentFile::from_bytes(&bytes) {
+        Ok(file) => file,
+        Err(e) => return tracing::error!("could not open that file: {e}"),
+    };
+    // What the file names but does not carry, less whatever this session has
+    // already loaded. Empty for a document saved with everything bundled.
+    let owed = {
+        let renderer = state.renderer;
+        let guard = renderer.read();
+        let Some(r) = guard.as_ref() else { return };
+        r.unresolved_content(&file)
+    };
+    spawn_forever(async move {
+        // Resolved out of this build's own assets, and *before* the replay:
+        // the file carries the grounds it was painted on or names ones this
+        // app ships, and either way they have to be registered before a single
+        // action runs, or every stroke made on one deposits through the flat
+        // stand-in into stored pixels (§6.4, §8).
+        let supplied = crate::builtin_ids::fetch(&owed).await;
+        if supplied.len() != owed.len() {
+            // Refused rather than opened wrong. A file has no peer to fall
+            // back on, so content this build cannot produce is the end of it —
+            // which is the whole reason the shipped catalog is append-only.
+            tracing::error!(
+                ?owed,
+                "this painting uses content this version of Stark does not have"
+            );
+            return;
+        }
+        let (mut renderer, mut obs) = (state.renderer, state.obs);
+        let mut guard = renderer.write();
+        let Some(r) = guard.as_mut() else { return };
+        for (need, content) in &supplied {
+            crate::builtin_ids::install(r, *need, content);
+        }
+        // The engine checks the bill again rather than trusting that it was
+        // settled, and refuses without touching the open document. Reaching this
+        // arm means an install above failed — bytes that hash to something other
+        // than the id they were fetched for — so the painting on screen is left
+        // exactly as it was.
+        if let Err(e) = r.load_document(&file) {
+            return tracing::error!("could not open that painting: {e}");
+        }
+        r.paint();
+        obs.set(Some(r.observe()));
+        tracing::info!(bytes = bytes.len(), "document loaded");
     });
 }
 
