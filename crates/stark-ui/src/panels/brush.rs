@@ -11,8 +11,21 @@ use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
 use stark_core::document::{BrushShape, OrientationSource};
 
+/// The smallest brush radius (`BrushParams::radius`). A tip finer than a canvas
+/// pixel has nothing left to narrow.
+pub const MIN_RADIUS: f32 = 1.0;
+
 /// The maximum brush radius (`BrushParams::radius`).
 pub const MAX_RADIUS: f32 = 500.0;
+
+/// The most flow the sliders offer (`BrushDynamics::add`). Three, not one, because
+/// `add` is a rate rather than a fraction — the everyday brush sits near 1 and a
+/// loaded one that buries what is under it wants more.
+///
+/// Named beside the radius bounds because the *drag* bindings clamp against the same
+/// three figures (`input::Tune`, §18.1.9): a knob reachable two ways must have one
+/// range, or the drag would quietly go somewhere the slider cannot show.
+pub const MAX_FLOW: f32 = 3.0;
 
 /// The longest taper the editor offers, in brush radii
 /// (`BrushParams::start_taper_length`). Twenty radii is ten stroke widths of run-in
@@ -40,9 +53,9 @@ pub fn BrushPanel() -> Element {
 
         // The panel's two sliders are the two knobs a hand reaches for without looking
         // away from the canvas, which is what earns them their marks (`icons::SIZE`).
-        Slider { label: "Size", glyph: icons::SIZE, min: 1.0, max: MAX_RADIUS, value: brush.radius,
+        Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: brush.radius,
             oninput: move |v| update_brush(state, move |b| b.radius = v) }
-        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: 3.0, value: brush.dynamics.add,
+        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.dynamics.add,
             oninput: move |v| update_brush(state, move |b| b.dynamics.add = v) }
         // A wrench, not a brush: the panel this button sits in is already the brush,
         // and what the dialog opens is the place it gets adjusted (`icons::EDIT_BRUSH`).

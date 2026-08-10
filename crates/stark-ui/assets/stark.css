@@ -3088,6 +3088,39 @@ button.layer-remove:hover {
   white-space: nowrap;
 }
 
+/* --- the brush-tuning drag's size ring (§18.1.9) ---
+   Same layer as the peer cursors, over the canvas and under every panel, and it must
+   never swallow a pointer event either: the drag that draws it holds the pointer
+   capture, so an event cannot actually reach here, but a hairline the user can see is
+   a thing they will eventually try to grab. */
+.brush-ring {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Legible on bare canvas and on ink alike, which no single colour is: a dark hairline
+   with a light one just outside it, so whichever the paint matches, the other one
+   reads. `box-shadow` for the second ring rather than a second element — it follows
+   the border radius for free and costs no layout. */
+.brush-ring-circle {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid #000000a6;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #ffffff8c;
+}
+
+/* The size the drag started from: present as a reference, not as the answer, so it is
+   dashed and quieter — and it drops the outer ring, which at two circles would read
+   as four. */
+.brush-ring-circle.was {
+  border-style: dashed;
+  border-color: #00000073;
+  box-shadow: none;
+}
+
 /* --- settings dialog (settings.rs) --- */
 
 /* One setting: the box, then a stacked label / description / note beside it.

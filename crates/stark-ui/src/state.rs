@@ -75,6 +75,14 @@ pub struct AppState {
     pub color_epoch: Signal<u64>,
     /// The eyedropper (§18.0.2).
     pub pick: PickState,
+    /// The size ring a brush-tuning drag draws over the canvas (§18.1.9), or `None`
+    /// when no size drag is in flight.
+    ///
+    /// Shared state rather than the gesture's own, for [`PickState::dragging`]'s
+    /// reason: the drag is the canvas's, but the ring is a sibling overlay of it — a
+    /// `<div>` cannot be drawn from inside a `<canvas>`'s handler without somewhere
+    /// for both to read.
+    pub brush_ring: Signal<Option<BrushRing>>,
     /// The drag-and-hold drawing assist (§6.9; `crate::input`).
     pub assist: AssistState,
     /// Minimal mode: the chrome over the canvas drops its words and keeps its marks
@@ -196,6 +204,31 @@ pub struct Dwell {
     pub fired: bool,
 }
 
+/// What a brush-tuning drag's size indicator draws (§18.1.9): the size being asked
+/// for, and the size the drag started from, about the point it pressed on.
+///
+/// **Screen px, not canvas px** — deliberately a drawing instruction rather than a
+/// statement about the brush. The gesture holds the one zoom it measures against
+/// (`input::TuneDrag::zoom`), so converting there means the ring and the radius it
+/// reports cannot be scaled by two different numbers; and it leaves the overlay pure
+/// layout, with no view to read and nothing to re-render it when the engine writes.
+///
+/// A circle in canvas space is still a circle on screen at any angle or handedness, so
+/// a radius through the zoom is the whole of the transform: this needs no matrix, which
+/// is the one thing that makes a `<div>` a fair way to draw it.
+#[derive(Copy, Clone, PartialEq)]
+pub struct BrushRing {
+    /// The press position in page px — where the ring is centred, and the one point a
+    /// gesture agrees on however far it has wandered since.
+    pub at: Vec2,
+    /// The radius the brush had when the drag began, screen px. The reference: without
+    /// it the ring says how big the brush is about to be and nothing about whether that
+    /// is bigger or smaller than what the last stroke was made with.
+    pub was: f32,
+    /// The radius being asked for now, screen px.
+    pub now: f32,
+}
+
 /// The custom brush-shape library's signals (`crate::shapes`). Root-owned:
 /// imports are started from the brush editor's modal scope but must survive
 /// its close.
@@ -226,6 +259,7 @@ impl AppState {
                 alt_down: root_signal(|| false),
                 dragging: root_signal(|| false),
             },
+            brush_ring: root_signal(|| None),
             assist: AssistState {
                 enabled: root_signal(|| Prefs::default().assist),
                 dwell: root_signal(|| None),

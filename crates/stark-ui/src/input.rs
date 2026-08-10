@@ -11,11 +11,12 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
+use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use crate::platform::{
     capture_pointer, on_window_blur, on_window_key, on_window_pointer, sleep_ms,
 };
 use crate::slots::{self, Grip};
-use crate::state::{AppState, Dwell, PickScope, dispatch, update_brush};
+use crate::state::{AppState, BrushRing, Dwell, PickScope, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_core::document::SelectionOp;
@@ -52,11 +53,21 @@ const TWIST_DEADZONE: f32 = 0.10;
 /// what two fingers on the same spot deserve.
 const MIN_SPAN: f32 = 8.0;
 
+/// How far the accelerator+space drag has to travel to **double** the zoom, in page
+/// px (§18.1.9).
+///
+/// Set from the range it has to cover rather than by taste: the view's whole zoom
+/// range is about ten doublings (`ViewTransform::MIN_ZOOM`..`MAX_ZOOM`), so at this
+/// rate a sweep of roughly one screen width takes the canvas from as far out as it
+/// goes to as far in — reachable in one gesture, without a short drag overshooting
+/// the picture.
+const ZOOM_DRAG_DOUBLE: f32 = 180.0;
+
 /// The view-navigation bindings — two-finger pan/zoom/turn, middle-drag and
-/// space-drag pan, cursor-anchored wheel zoom — shared by every surface that sits
-/// over the canvas: the canvas itself and the transform mode's catcher, box and
-/// handles. One implementation, so what "the pan bindings" and "the zoom rate" mean
-/// cannot drift between surfaces.
+/// space-drag pan, space+accelerator scrubby zoom, cursor-anchored wheel zoom —
+/// shared by every surface that sits over the canvas: the canvas itself and the
+/// transform mode's catcher, box and handles. One implementation, so what "the pan
+/// bindings" and "the zoom rate" mean cannot drift between surfaces.
 ///
 /// Each surface makes its own with [`Nav::use_nav`]; the pointer capture on the
 /// pressed element keeps two instances from ever navigating at once. Policy stays
@@ -72,13 +83,44 @@ const MIN_SPAN: f32 = 8.0;
 #[derive(Clone, Copy)]
 pub struct Nav {
     state: AppState,
-    /// The button-drag pan in flight: the pointer's last position in **page px**
-    /// (the one frame every surface reports in, whatever its own origin), or `None`.
-    last: Signal<Option<Vec2>>,
-    /// The fingers on this surface (§18.1.7). Separate from `last` because a
+    /// The one-pointer drag in flight, or `None`.
+    drag: Signal<Option<Drag>>,
+    /// The fingers on this surface (§18.1.7). Separate from `drag` because a
     /// finger is identified by its id rather than by being *the* pointer — that is
     /// the whole difference touch makes.
     touch: Signal<Touch>,
+}
+
+/// A one-pointer view drag — a middle-drag or a space-drag — and what it does with
+/// the motion.
+#[derive(Copy, Clone)]
+struct Drag {
+    /// The pointer's last position in **page px** (the one frame every surface
+    /// reports in, whatever its own origin).
+    last: Vec2,
+    /// What the motion means. Decided at the press and kept for the whole gesture: a
+    /// drag is what it was begun as, so letting go of the accelerator halfway through
+    /// a zoom does not hand the canvas to the pan mid-motion, under a hand that is
+    /// still making one gesture.
+    mode: Mode,
+}
+
+/// What a one-pointer view drag does.
+#[derive(Copy, Clone)]
+enum Mode {
+    /// Move the canvas with the pointer.
+    Pan,
+    /// Scale the canvas about the **press** position (page px) as the pointer is
+    /// dragged right or up — the scrubby zoom of every raster editor, for the hand
+    /// that is already holding space (§18.1.9). Rebelle's two directions, taken
+    /// together rather than one or the other, so the hand does not have to know which
+    /// axis this app chose.
+    ///
+    /// The anchor is fixed for the gesture rather than following the pointer, because
+    /// a zoom is a scale *about a point*: re-anchoring each move would slide the
+    /// canvas out from under the hand while it scaled, and the point the drag started
+    /// on is the one the user aimed at.
+    Zoom { anchor: Vec2 },
 }
 
 /// The fingers on one surface, and the two-finger gesture they are making
@@ -118,7 +160,7 @@ impl Nav {
     pub fn use_nav(state: AppState) -> Self {
         Self {
             state,
-            last: use_signal(|| None),
+            drag: use_signal(|| None),
             touch: use_signal(Touch::default),
         }
     }
@@ -129,6 +171,11 @@ impl Nav {
     /// is navigation, not yours"; callers check it before starting their own
     /// gesture, and abandon any gesture already in flight.
     ///
+    /// Space with the accelerator held is the same press asking to *zoom* rather than
+    /// to pan ([`Mode::Zoom`], §18.1.9), so it answers `true` for exactly the presses
+    /// it did before: the modifier chooses between two navigations rather than
+    /// deciding whether this is one.
+    ///
     /// A *contact* rather than the primary button ([`is_contact`]), so the pen's
     /// eraser end pans under space exactly as its tip does (§18.1.8). Space held
     /// means "this press moves the canvas" whichever end of the stylus is against
@@ -137,18 +184,28 @@ impl Nav {
         if is_finger(e) {
             return self.finger_down(e);
         }
-        let pan = match e.trigger_button() {
-            Some(MouseButton::Auxiliary) => true,
-            _ => is_contact(e) && *self.state.space_down.peek(),
+        let mode = match e.trigger_button() {
+            // The middle button is the pan whatever is held down with it: it is the
+            // binding for a hand already on the mouse, and there is no second gesture
+            // there for a modifier to pick out.
+            Some(MouseButton::Auxiliary) => Some(Mode::Pan),
+            _ if is_contact(e) && *self.state.space_down.peek() => Some(if accel(e.modifiers()) {
+                Mode::Zoom { anchor: page_xy(e) }
+            } else {
+                Mode::Pan
+            }),
+            _ => None,
         };
-        if pan {
-            e.prevent_default(); // suppress middle-click autoscroll
-            e.stop_propagation();
-            capture_pointer(e);
-            let mut last = self.last;
-            last.set(Some(page_xy(e)));
-        }
-        pan
+        let Some(mode) = mode else { return false };
+        e.prevent_default(); // suppress middle-click autoscroll
+        e.stop_propagation();
+        capture_pointer(e);
+        let mut drag = self.drag;
+        drag.set(Some(Drag {
+            last: page_xy(e),
+            mode,
+        }));
+        true
     }
 
     /// Advance the navigation in flight, if any. `true` means the move was
@@ -163,12 +220,46 @@ impl Nav {
         if is_finger(e) {
             return self.finger_move(e);
         }
-        let mut last = self.last;
-        let Some(prev) = last() else { return false };
+        let mut drag = self.drag;
+        let Some(in_flight) = drag() else {
+            return false;
+        };
         let p = page_xy(e);
-        // `Pan` is incremental, so the anchor is re-set each move.
-        dispatch(self.state, ViewCommand::Pan { delta: p - prev });
-        last.set(Some(p));
+        let command = match in_flight.mode {
+            // `Pan` is incremental, so the anchor is re-set each move.
+            Mode::Pan => Some(ViewCommand::Pan {
+                delta: p - in_flight.last,
+            }),
+            Mode::Zoom { anchor } => {
+                // Right and up both zoom in — page y grows downward, which is the whole
+                // of why the second term is subtracted. **Summed** rather than
+                // projected onto the diagonal, so a drag along either axis alone runs
+                // at exactly the documented rate and one that asks for both gets both;
+                // either way this is linear in the pointer's position, so the zoom is a
+                // function of where the pointer *is* and a drag that wanders out and
+                // back leaves the canvas where it found it.
+                //
+                // Exponential in that distance, which is what makes the gesture feel
+                // the same at every zoom level: adding a fixed step to a multiplicative
+                // quantity instead would crawl when zoomed out and leap when zoomed in.
+                let step = p - in_flight.last;
+                let travel = step.x - step.y;
+                // A pointer that has not moved along the gesture's axis is not asking
+                // for a zoom of 1.0, it is not asking for a zoom at all — dispatching
+                // one would repaint the canvas to leave it exactly as it was.
+                (travel != 0.0).then(|| ViewCommand::Zoom {
+                    anchor,
+                    factor: (travel / ZOOM_DRAG_DOUBLE).exp2(),
+                })
+            }
+        };
+        drag.set(Some(Drag {
+            last: p,
+            ..in_flight
+        }));
+        if let Some(command) = command {
+            dispatch(self.state, command);
+        }
         true
     }
 
@@ -194,9 +285,9 @@ impl Nav {
 
     /// End the navigation in flight, whatever it was. Harmless when there is none.
     pub fn stop(self) {
-        let mut last = self.last;
-        if last.peek().is_some() {
-            last.set(None);
+        let mut drag = self.drag;
+        if drag.peek().is_some() {
+            drag.set(None);
         }
         let mut touch = self.touch;
         if !touch.peek().down.is_empty() {
@@ -346,6 +437,16 @@ pub fn is_contact(e: &Event<PointerData>) -> bool {
     e.trigger_button() == Some(MouseButton::Primary) || is_eraser(e)
 }
 
+/// Whether `m` holds the platform's **accelerator** — Ctrl, or Command on a Mac.
+///
+/// Either, everywhere, rather than asking which platform this is: the keyboard
+/// shortcuts have always accepted both, and a binding that insisted on Ctrl would be
+/// unreachable on the one platform where Ctrl+drag is how the browser reports a
+/// secondary click in the first place.
+fn accel(m: Modifiers) -> bool {
+    m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)
+}
+
 /// Whether `e` is the pen's **eraser end** — the tail of the stylus, reported as
 /// a pen contact carrying the eraser button (§18.1.8).
 ///
@@ -377,6 +478,254 @@ fn is_eraser_event(raw: &web_sys::PointerEvent) -> bool {
 
     raw.pointer_type() == "pen"
         && (raw.button() == ERASER_BUTTON || raw.buttons() & ERASER_BUTTONS != 0)
+}
+
+/// How far a tuning drag must travel before it commits to a knob, in page px
+/// (§18.1.9).
+///
+/// [`MIN_SPAN`]'s reasoning applied to one pointer instead of two: below this the
+/// drag's *direction* is noise, and the direction is the whole of what picks the
+/// parameter. A press meant for Size that happens to leave the glass two pixels high
+/// must not arrive as Flow.
+const AXIS_DEADZONE: f32 = 8.0;
+
+/// The radius a tuning drag asks for, as a fraction of how far it has been dragged
+/// sideways **from the press** — in canvas px, so the answer is a size for the brush
+/// and not for the screen it is being set on.
+///
+/// Absolute rather than a rate, which is what makes the gesture legible: the drag does
+/// not *nudge* the size, it states it, and the ring drawn at the press point
+/// ([`BrushRing`]) is the picture of that statement. Left and right are the same
+/// gesture (the travel is taken as a magnitude) because the hand is describing a
+/// circle's size, and a circle has no side.
+///
+/// A quarter, so the **diameter is half the drag**: the ring always fits inside the
+/// gesture that made it, and the cursor stays outside the circle it is describing
+/// instead of sitting in the middle of it. Since the canvas radius is the screen
+/// travel divided by the zoom, the ring's radius on screen is a quarter of the drag at
+/// *any* zoom — the gesture measures the same in the hand, and what changes with the
+/// zoom is the size in canvas px, which is the thing being set.
+const RADIUS_PER_DRAG: f32 = 0.25;
+
+/// How far a tuning drag has to travel vertically to sweep the **whole** flow range,
+/// in page px.
+///
+/// A *rate* where the radius is stated outright ([`RADIUS_PER_DRAG`]), because there
+/// is nothing for flow to be a picture of: a size drag can be shown as the circle it
+/// asks for, while flow has no length on screen to be measured against, so the honest
+/// mapping is the one every slider has — move the hand, move the number. Wider than a
+/// screen is tall on purpose: the everyday range is the narrow band around 1, and this
+/// is what makes a tenth of it a visible movement of the hand.
+const FLOW_DRAG_SPAN: f32 = 800.0;
+
+/// The brush-tuning drag: accelerator+drag over the canvas, sideways for **Size** and
+/// up-and-down for **Flow** — the Brush panel's two knobs, under the hand that is
+/// already on the painting (§18.1.9).
+///
+/// A hook shaped like [`Nav`] and driven the same way — [`begin`](Self::begin) on
+/// press, [`advance`](Self::advance) on move, [`stop`](Self::stop) on release or
+/// cancel — and deliberately *not* part of it: this moves the brush rather than the
+/// view, so it belongs to the surfaces that paint and not to the transform overlay or
+/// the guide editor, which have no brush and no use for one.
+///
+/// It writes through [`update_brush`] like the sliders do, which is what earns it the
+/// quick-brush rack for free: while a number is held the live brush *is* that slot's,
+/// so the drag tunes the slot, and the tail of the pen tunes the eraser (§18.1.8).
+///
+/// A size drag also draws itself, in [`BrushRing`] — which is not decoration but the
+/// readout: the size is stated as a distance from the press, so the circle at the press
+/// point *is* what the gesture means, with the size it started from behind it.
+#[derive(Clone, Copy)]
+pub struct Tune {
+    state: AppState,
+    /// The tuning drag in flight, or `None`.
+    drag: Signal<Option<TuneDrag>>,
+}
+
+/// A tuning drag in flight.
+#[derive(Copy, Clone)]
+struct TuneDrag {
+    /// The pointer's last position, page px — what a *step* is measured from, which is
+    /// what Flow moves by.
+    last: Vec2,
+    /// Where the press was, page px. Both the axis and the **size** are measured from
+    /// here rather than from the last move: which knob this gesture is about is a fact
+    /// about the whole gesture, and so is the radius it is asking for
+    /// ([`RADIUS_PER_DRAG`]).
+    from: Vec2,
+    /// The radius the brush had at the press, canvas px — the ring's reference.
+    ///
+    /// Kept here rather than read back off the ring so that every write to
+    /// [`AppState::brush_ring`] is a write and never a read-modify-write: the drag holds
+    /// everything the indicator shows, which is what keeps the picture from drifting
+    /// out of step with the gesture (and what keeps a `peek` out of an `if`).
+    was: f32,
+    /// The view's zoom when the drag began — what turns its travel into canvas px.
+    ///
+    /// Latched rather than read each move, so the gesture measures against the view it
+    /// started in. A wheel notch mid-drag (the pointer is captured, but the wheel is
+    /// not) would otherwise move the scale under a hand that is holding still, and the
+    /// size would jump without the pointer going anywhere.
+    zoom: f32,
+    /// The knob this drag has committed to, once it has travelled far enough to say
+    /// ([`AXIS_DEADZONE`]); `None` until then.
+    ///
+    /// One knob per gesture, and that is the point of locking it. Both at once would
+    /// read better on paper and be worse in the hand: flow's useful range is narrow
+    /// enough that the incidental drift of a long sideways drag would empty or bury
+    /// the brush, and the user would have no way to ask for size *alone*. The travel
+    /// spent earning the lock is spent — a deadband, not a jump.
+    knob: Option<Knob>,
+}
+
+/// The two parameters a tuning drag can reach, and the axis each is on.
+#[derive(Copy, Clone)]
+enum Knob {
+    /// Sideways: the brush radius.
+    Size,
+    /// Up and down: how much paint the brush lays (`BrushDynamics::add`).
+    Flow,
+}
+
+impl Tune {
+    /// A hook: call unconditionally, like any `use_*`.
+    pub fn use_tune(state: AppState) -> Self {
+        Self {
+            state,
+            drag: use_signal(|| None),
+        }
+    }
+
+    /// Whether `e` is a press this takes as brush tuning — a contact with the
+    /// accelerator held — and if so, begin: capture the pointer and swallow the
+    /// event. `true` means "this press tunes the brush, it does not paint".
+    ///
+    /// Asked *after* [`Nav::begin`], which is what leaves space+accelerator a zoom
+    /// rather than a size drag.
+    ///
+    /// A [`is_contact`] rather than the primary button, and no test on the tool: the
+    /// eraser end tunes the eraser for the reason it erases (§18.1.8), and Size and
+    /// Flow are the live brush's whatever the canvas is set to do with it — a marquee
+    /// tool's Fill spends `add` as its opacity.
+    ///
+    /// Declines before the engine exists, where there is neither a brush to tune nor a
+    /// zoom to measure the drag against. The press then falls through to the paint
+    /// path, which does nothing with it for the same reason.
+    pub fn begin(self, e: &Event<PointerData>) -> bool {
+        if !(is_contact(e) && accel(e.modifiers())) {
+            return false;
+        }
+        let Some(view) = view_of(self.state) else {
+            return false;
+        };
+        let Some(radius) = self.state.obs.peek().as_ref().map(|o| o.brush.radius) else {
+            return false;
+        };
+        e.prevent_default();
+        e.stop_propagation();
+        capture_pointer(e);
+        let at = page_xy(e);
+        let in_flight = TuneDrag {
+            last: at,
+            from: at,
+            was: radius,
+            zoom: view.zoom,
+            knob: None,
+        };
+        let mut drag = self.drag;
+        drag.set(Some(in_flight));
+        // Up from the press, before the drag has said what it is about, showing the brush
+        // at the size it already is. That is the reference the new size will be judged
+        // against, and it is also the one thing that makes this binding discoverable:
+        // press with the accelerator held and the brush draws itself.
+        self.show_ring(&in_flight, radius);
+        true
+    }
+
+    /// Advance the tuning drag in flight, if any. `true` means the move was tuning and
+    /// the caller's own gesture logic should not see it — including the moves before
+    /// the knob is chosen, which are this gesture's even though they change nothing.
+    pub fn advance(self, e: &Event<PointerData>) -> bool {
+        let mut drag = self.drag;
+        let Some(mut in_flight) = drag() else {
+            return false;
+        };
+        let p = page_xy(e);
+        let step = p - in_flight.last;
+        in_flight.last = p;
+        if in_flight.knob.is_none() {
+            let travel = p - in_flight.from;
+            if travel.length() >= AXIS_DEADZONE {
+                in_flight.knob = Some(if travel.x.abs() >= travel.y.abs() {
+                    Knob::Size
+                } else {
+                    Knob::Flow
+                });
+            }
+        }
+        let knob = in_flight.knob;
+        drag.set(Some(in_flight));
+        // Clamped to the sliders' own bounds (`panels::brush`), so the drag cannot put
+        // the brush somewhere the panel is unable to show or take back.
+        match knob {
+            Some(Knob::Size) => {
+                // Set, not nudged: the radius is a function of where the pointer *is*,
+                // so it cannot drift over a long gesture, and dragging back to the press
+                // asks for the finest brush rather than for the one it started on.
+                let reach = (p.x - in_flight.from.x).abs();
+                let radius =
+                    (RADIUS_PER_DRAG * reach / in_flight.zoom).clamp(MIN_RADIUS, MAX_RADIUS);
+                update_brush(self.state, |b| b.radius = radius);
+                // The ring follows the *clamp* rather than the pointer, so a drag that
+                // has run past the largest brush stops growing where the brush did.
+                self.show_ring(&in_flight, radius);
+            }
+            // Up is more, because up is more on every slider in the app — and page y
+            // grows downward, which is the whole of why this reads as a subtraction.
+            Some(Knob::Flow) => {
+                update_brush(self.state, |b| {
+                    b.dynamics.add =
+                        (b.dynamics.add - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
+                });
+                // The ring is the *size* drag's readout. Once this gesture has turned out
+                // to be about flow, leaving it up would advertise a number that is not
+                // moving, so it goes.
+                self.hide_ring();
+            }
+            None => {}
+        }
+        true
+    }
+
+    /// End the tuning drag in flight. Harmless when there is none.
+    pub fn stop(self) {
+        let mut drag = self.drag;
+        if drag.peek().is_some() {
+            drag.set(None);
+        }
+        self.hide_ring();
+    }
+
+    /// Draw the indicator for `drag`, asking for `radius` (canvas px). Converted to
+    /// screen px here, which is the one place that knows both numbers — see
+    /// [`BrushRing`].
+    fn show_ring(self, drag: &TuneDrag, radius: f32) {
+        let mut ring = self.state.brush_ring;
+        ring.set(Some(BrushRing {
+            at: drag.from,
+            was: drag.was * drag.zoom,
+            now: radius * drag.zoom,
+        }));
+    }
+
+    /// Take the size ring down. Harmless when it is already down, and written only on a
+    /// change, since every write re-renders the overlay.
+    fn hide_ring(self) {
+        let mut ring = self.state.brush_ring;
+        if ring.peek().is_some() {
+            ring.set(None);
+        }
+    }
 }
 
 /// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
@@ -552,7 +901,7 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
 
     let m = modifiers_of(e);
     track_alt(state, m);
-    if !(m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)) {
+    if !accel(m) {
         // Unmodified keys: the view bindings and the quick-brush rack. Checked
         // here, after the modifier set is known, so `Ctrl+H` stays the browser's
         // and only a bare press is ours.
@@ -856,14 +1205,15 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
     })
 }
 
-/// End any in-progress stroke, shape gesture, pan, or eyedropper drag, and put back
-/// the shape action a modifier key overrode for the gesture (§6.8). The
-/// canvas is no longer in hand once this returns, so the floating chrome fades back
-/// in.
+/// End any in-progress stroke, shape gesture, pan, brush-tuning drag or eyedropper
+/// drag, and put back the shape action a modifier key overrode for the gesture
+/// (§6.8). The canvas is no longer in hand once this returns, so the floating chrome
+/// fades back in.
 pub fn end_interaction(
     mut state: AppState,
     drawing: &mut Signal<bool>,
     nav: Nav,
+    tune: Tune,
     action_restore: &mut Signal<Option<ShapeAction>>,
 ) {
     if drawing() {
@@ -873,6 +1223,7 @@ pub fn end_interaction(
     restore_action(state, action_restore);
     stop_watching(state);
     nav.stop();
+    tune.stop();
     // Not a parameter like the two above because the eyedropper's drag flag is shared
     // state, not the canvas's own — the options bar reads it (see `PickState`).
     // Nothing to undo, either: a sample already in flight is left to land, since it

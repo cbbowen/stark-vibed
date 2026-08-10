@@ -41,6 +41,7 @@ Status lives here and nowhere else.
 | — | Filter layers (§21) | done — the architecture and the colour filter; the rest of the kinds (§21.9) remain |
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/lift/deposit/bleed; more sources and targets are variants away |
+| — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring; a flow readout is not |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
 
 Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
@@ -460,6 +461,96 @@ lookup by name.
 **Not built**: a second row (Shift+digit) for twenty, dragging a preset onto a
 chip to assign it without the keyboard, and clearing a slot back to empty — a
 slot is overwritten today, which is the only operation the rack has needed.
+
+#### 18.1.9 Modifier drags — zoom, size and flow under the hand — built
+
+The gestures every raster editor binds to a modifier plus a drag, because the
+alternative is crossing the screen to a slider between strokes. Both are
+*bindings*, not features: each is a few lines over machinery that already
+existed, and neither the engine nor the panels learn anything.
+
+- **Space + accelerator + drag zooms**, where space alone pans — the scrubby
+  zoom (`input::Nav`, `Mode::Zoom`). **Right and up both zoom in**, Rebelle's two
+  directions taken together rather than one or the other, so the hand does not
+  have to know which axis this app picked; summed rather than projected onto the
+  diagonal, so a drag along either axis alone runs at exactly the stated rate.
+  **Exponential** in that distance (~180 page px per doubling), which is what
+  makes the gesture feel the same at every scale — a fixed step per pixel added to
+  a multiplicative quantity crawls when zoomed out and leaps when zoomed in. The
+  rate is set from the range it has to cover rather than by taste: the view's
+  whole zoom range is about ten doublings, so one screen width of drag takes the
+  canvas from one end of it to the other. Being linear in the pointer's position,
+  the zoom is a function of where the pointer *is*, so a drag that wanders out and
+  back leaves the canvas where it found it. The anchor is the **press** position
+  and stays there for the whole gesture — a zoom is a scale about a point, and
+  re-anchoring it each move would slide the canvas out from under a hand that is
+  still scaling.
+- **Accelerator + drag tunes the brush**: sideways is **Size**, up and down is
+  **Flow** (`input::Tune`) — the Brush panel's own two knobs, which is what earns
+  them the binding.
+- **The size is stated, not nudged.** The radius is a **quarter of how far the
+  drag has reached from the press**, in canvas px — so the gesture does not adjust
+  the size, it *describes* it, and the ring drawn at the press point is the picture
+  of what it says. Left and right are the same gesture, because the hand is
+  describing a circle and a circle has no side. A quarter, so the diameter is half
+  the drag: the cursor stays outside the circle it is drawing instead of sitting
+  in the middle of it. Since the canvas radius is the screen travel over the zoom,
+  the ring is a quarter of the drag *on screen at any zoom* — the gesture measures
+  the same in the hand, and what the zoom changes is the size in canvas px, which
+  is the thing being set. Being a function of where the pointer *is*, it cannot
+  drift over a long gesture, and it needs no read-modify-write of the brush.
+  The zoom is latched at the press, so a wheel notch mid-drag (the pointer is
+  captured; the wheel is not) cannot move the scale under a hand that is holding
+  still.
+- **Flow stays a rate** — linear, the whole 0..3 range over ~800 px — because
+  there is nothing for it to be a picture *of*: a size drag can be shown as the
+  circle it asks for, while flow has no length on screen to be measured against,
+  so the honest mapping is every slider's. Its zero is also a value it must be
+  able to reach, and no number of halvings gets there.
+- **One knob per gesture.** The drag commits to an axis once it has travelled
+  8 px — far enough for its direction to mean something — and keeps it. Both at
+  once reads better on paper and is worse in the hand: flow's useful band is
+  narrow enough that the incidental drift of a long sideways drag would empty or
+  bury the brush, and there would be no way to ask for size *alone*.
+- **The size drag draws itself** (`state::BrushRing`, `BrushSizeRing`): a ring at
+  the radius being asked for, with the radius it started from dashed behind it, at
+  the press point. Not decoration — the size is *defined* as a distance from that
+  point, so the circle is the readout, and the old size beside it is what turns "it
+  will be this big" into "it will be bigger than the last stroke". It comes up on
+  the press, before the drag has said which knob it is about, which is also the one
+  thing that makes the binding discoverable: press with the accelerator held and
+  the brush draws itself. It goes again the moment the gesture turns out to be
+  about flow, rather than sitting there advertising a number that is not moving.
+  A `<div>` like the peer cursors and for their reason — it is chrome, and must
+  never reach an export — which is affordable because a circle in canvas space is
+  still a circle on screen at any angle or handedness, so a radius through the zoom
+  is the whole of the transform. A **circle**, for now, though the brush may be any
+  shape (§6.6): what the drag sets is one number, and a ring is the honest picture
+  of one number, where an outline of the real tip would be a picture of the *shape*
+  — which this gesture cannot change — and would claim a soft brush's mark is that
+  crisp.
+- **The rack and the pen's tail come for free**, and that is the test of where
+  this was put: it writes through the same `update_brush` the sliders do, so
+  while a number is held the live brush is that slot's and the drag tunes the
+  slot (§18.1.8), and the same drag made with the eraser end tunes the eraser.
+  It clamps to the sliders' own bounds (`panels::brush::MIN_RADIUS`,
+  `MAX_RADIUS`, `MAX_FLOW` — now named once for both readers), so a drag cannot
+  put the brush somewhere the panel is unable to show or take back.
+- **The chrome does *not* fade** while tuning, unlike every other canvas
+  gesture, for the eyedropper's reason (§18.0.2): the Brush panel is where this
+  gesture's answer is read, and fading it out would hide the one thing the drag
+  is for. The sliders move under the hand, which is the whole readout.
+- Both accept **Ctrl or Command**, everywhere, rather than asking which platform
+  this is (`input::accel`, already what the keyboard shortcuts did) — a binding
+  that insisted on Ctrl would be unreachable on the one platform where Ctrl+drag
+  is how the browser reports a secondary click.
+
+**Still missing**: the number beside the ring, an indicator for flow (which is why
+its drag is the one whose only readout is the panel), and a ring under the resting
+cursor rather than only during a drag. Deliberately *no* cursor change while the
+accelerator is merely held, unlike Alt and the eyedropper: Ctrl is also the front
+half of Ctrl+Z, and flashing a resize cursor over the artwork on every undo would
+cost more than the hint is worth — the press is early enough to say it.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

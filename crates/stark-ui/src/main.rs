@@ -48,8 +48,8 @@ use components::menubar::{Menubar, MenubarContent, MenubarItem, MenubarMenu, Men
 use credits::CreditsModal;
 use icons::{icon, icon_large};
 use input::{
-    Nav, abandon_gesture, bind_pen, bind_shortcuts, elem_xy, end_interaction, input_tolerance,
-    pick_color, pointer_moved, sample, watch_for_hold,
+    Nav, Tune, abandon_gesture, bind_pen, bind_shortcuts, elem_xy, end_interaction,
+    input_tolerance, pick_color, pointer_moved, sample, watch_for_hold,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
@@ -276,6 +276,10 @@ fn app() -> Element {
             // (§17.4). Empty and free when solo.
             PeerCursors {}
 
+            // The brush-tuning drag's size ring, in the same layer and mounted for
+            // the same reason (§18.1.9). Empty and free unless one is in flight.
+            BrushSizeRing {}
+
             // Left command rail: rarely-used document commands, tucked away.
             CommandRail {}
 
@@ -354,6 +358,10 @@ fn Canvas() -> Element {
     // The shared pan/zoom bindings (`input::Nav`) — the same instance the
     // transform overlay makes for itself, so navigation means one thing.
     let nav = Nav::use_nav(state);
+    // Accelerator+drag tunes Size and Flow instead of painting (`input::Tune`,
+    // §18.1.9). The canvas's own, unlike `nav`: it moves the brush, and the
+    // overlays that navigate have no brush.
+    let tune = Tune::use_tune(state);
     // Whether an Alt+drag is sampling colour off the canvas rather than painting on
     // it (§18.0.2). Shared rather than local, unlike the two above,
     // because the options bar is mounted on *armed but not dragging*.
@@ -416,6 +424,21 @@ fn Canvas() -> Element {
                     // than committed, so reaching for the canvas leaves no mark.
                     abandon_gesture(state, &mut drawing, &mut action_restore);
                     canvas_active.set(true);
+                    return;
+                }
+                // Ctrl+drag tunes the brush rather than painting with it — Size
+                // sideways, Flow up and down (§18.1.9). Below `nav`, which is
+                // what leaves Ctrl+space a zoom; above the playback guard, because
+                // the brush is view state and tuning it commits nothing.
+                //
+                // Deliberately *not* `canvas_active`, for the eyedropper's reason
+                // below: the Brush panel is where this gesture's answer is read,
+                // so fading the chrome would hide the one thing it is for.
+                if tune.begin(&e) {
+                    // A stroke was in flight only if some *other* pointer opened
+                    // one; it can no longer be finished by this press, and a
+                    // gesture the hand has walked away from must leave no mark.
+                    abandon_gesture(state, &mut drawing, &mut action_restore);
                     return;
                 }
                 // Nothing may be *committed* while the playhead is moving: a
@@ -514,6 +537,12 @@ fn Canvas() -> Element {
                     // as a cursor anyway.
                     return;
                 }
+                // The brush moved rather than the pointer's meaning on the canvas
+                // (§18.1.9): nothing below applies, since this press was never
+                // painting and a peer has no use for a cursor being used as a knob.
+                if tune.advance(&e) {
+                    return;
+                }
                 // The canvas takes pointer events from the first frame, while the
                 // engine is still being built asynchronously — so there may be no
                 // view to map through yet, and a move with nowhere to land simply
@@ -545,12 +574,12 @@ fn Canvas() -> Element {
             // finger the hand happened to raise first (§18.1.7).
             onpointerup: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, &mut drawing, nav, &mut action_restore);
+                    end_interaction(state, &mut drawing, nav, tune, &mut action_restore);
                 }
             },
             onpointercancel: move |e| {
                 if !nav.release(&e) {
-                    end_interaction(state, &mut drawing, nav, &mut action_restore);
+                    end_interaction(state, &mut drawing, nav, tune, &mut action_restore);
                 }
             },
             onwheel: move |e| nav.wheel(e),
@@ -596,6 +625,43 @@ fn PeerCursors() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The brush-tuning drag's size indicator (§18.1.9): a ring at the radius being asked
+/// for, with the radius it started from behind it.
+///
+/// DOM rather than a compositor pass, for [`PeerCursors`]'s reason — it is chrome, and
+/// the one thing it must never do is reach an export. It is also pure layout: the
+/// gesture converts to screen px on its way in (`state::BrushRing`), so this reads no
+/// view and re-renders on nothing but the ring itself.
+///
+/// A circle, though the brush may be any shape (§6.6). Deliberately, for now: what the
+/// drag sets is one number, and a ring is the honest picture of one number — an outline
+/// of the actual tip would be a picture of the *shape*, which this gesture cannot
+/// change, and would say the mark is that crisp when a soft brush's is not.
+#[component]
+fn BrushSizeRing() -> Element {
+    let state = use_context::<AppState>();
+    let Some(ring) = (state.brush_ring)() else {
+        return rsx! {};
+    };
+    // Both circles are laid out the same way: a box of the diameter, pulled back onto
+    // the centre. `left`/`top` rather than a transform, like the peer cursors.
+    let circle = |class: &'static str, r: f32| {
+        rsx! {
+            div {
+                class: class,
+                style: "left:{ring.at.x - r}px; top:{ring.at.y - r}px; width:{2.0 * r}px; height:{2.0 * r}px",
+            }
+        }
+    };
+    rsx! {
+        div { class: "brush-ring",
+            // The old size first, so the one being asked for draws over it.
+            {circle("brush-ring-circle was", ring.was)}
+            {circle("brush-ring-circle", ring.now)}
         }
     }
 }

@@ -40,7 +40,9 @@ use stark_core::{ColorSpaceId, InputSample, SurfaceId};
 use dioxus::html::HasFileData;
 
 use crate::icons::{self, icon};
-use crate::panels::brush::{MAX_RADIUS, MAX_TAPER, set_orientation, set_shape};
+use crate::panels::brush::{
+    MAX_FLOW, MAX_RADIUS, MAX_TAPER, MIN_RADIUS, set_orientation, set_shape,
+};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::render::{self, Renderer};
 use crate::state::{AppState, update_brush};
@@ -110,8 +112,8 @@ impl ModRow {
     /// they always did — λ diverges at 1 (§6.2).
     fn range(self) -> (f32, f32) {
         match self {
-            Self::Size => (1.0, MAX_RADIUS),
-            Self::Flow => (0.0, 3.0),
+            Self::Size => (MIN_RADIUS, MAX_RADIUS),
+            Self::Flow => (0.0, MAX_FLOW),
             Self::Tooth => (0.0, 1.0),
             Self::Lift | Self::Deposit | Self::Bleed => (0.0, 0.95),
         }
