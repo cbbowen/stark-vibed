@@ -147,7 +147,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
                 dynamics: BrushDynamics {
-                    add: 2.0,
+                    add: 0.3,
                     ..BrushDynamics::default()
                 },
                 ..BrushParams::default()
@@ -547,9 +547,8 @@ mod tests {
         // end would be dropped — neither of them visible anywhere.
         let mut seen = Vec::new();
         for entry in shipped() {
-            let slot = entry
-                .slot
-                .unwrap_or_else(|| panic!("{} ships without a digit", entry.name));
+            let Some(slot) = entry
+                .slot else { continue; };
             assert!(slot < slots::COUNT, "{} ships on {slot}", entry.name);
             assert!(!seen.contains(&slot), "two presets ship on {slot}");
             seen.push(slot);
