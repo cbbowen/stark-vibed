@@ -15,22 +15,37 @@
 //! a mask, or a group the layer has to be dragged into. Here the answer is where the
 //! row sits: at the root it grades the painting, carried onto a layer it grades that
 //! layer. So the control already exists and it is the Layers panel — which is why
-//! this file has a slider per parameter and nothing else.
+//! this file has the filter's own numbers and nothing else.
 //!
 //! With more than one *kind* of filter (§21.10), "+ Filter" grew the one thing it
 //! was always going to need: a picker over [`Filter::ALL`], which is the core's own
 //! list in the core's own order. The bar itself keys everything per-kind off the
 //! selected filter — its knob table, its label, its neutral — so a new kind is a
 //! new table here and nothing else.
+//!
+//! **The colour filter is the one kind that is not only sliders**, and the reason is
+//! that three of its numbers are not three things. `hue`, `saturation` and `tint` are
+//! a rotation, a scale and a translation of one Oklab `(a, b)` plane, so what they
+//! are between them is a single affine map — and the honest picture of an affine map
+//! of a plane is the image of a circle. [`chroma_dial`] draws exactly that, over the
+//! same Oklab slice the colour picker shows, and every part of it is a fact rather
+//! than a metaphor: the rim is where a colour of chroma [`DIAL_CHROMA`] ends up, the
+//! centre is where a grey ends up, and the arm is where red ends up. Three tracks
+//! could say the same thing, but only one at a time, and none of them could say what
+//! the picture says at rest — *this is what the filter will do to a colour*.
+
+use std::sync::LazyLock;
 
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
+use crate::panels::color::ab_field_data_url;
+use crate::platform::capture_pointer;
 use crate::state::{AppState, dispatch};
 use crate::widgets::settle;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_core::document::{ChromaticAberration, ColorAdjust, Filter};
+use stark_core::document::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 use stark_core::{LayerId, LayerInfo};
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
@@ -74,11 +89,18 @@ struct Knob<F: 'static> {
 const DEG: f32 = 180.0 / std::f32::consts::PI;
 
 /// A whole number of degrees — an angle's readout to anyone dragging it; decimals
-/// of a degree are noise. Shared by the two angle knobs so they cannot drift apart.
+/// of a degree are noise. Shared by the chromatic filter's Angle knob and the dial's
+/// hue readout, so the two ways this application shows an angle cannot drift apart.
 fn fmt_degrees(v: f32) -> String {
     format!("{}\u{00B0}", v.round() as i32)
 }
 
+/// The colour filter's **lightness** knobs — the two the dial has nothing to say
+/// about, because they act on Oklab `L` and the dial is one slice of constant `L`.
+///
+/// That split is the whole reason the bar is a dial *and* two tracks rather than one
+/// or the other: a plane picture cannot show a move along the axis it is
+/// perpendicular to, and a track cannot show three coupled numbers at once.
 const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
     Knob {
         name: "Exposure",
@@ -103,26 +125,6 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         get: |c| c.contrast,
         set: |c, v| ColorAdjust { contrast: v, ..c },
         fmt: |v| format!("{v:.2}"),
-    },
-    Knob {
-        name: "Saturation",
-        hint: "How far the colours sit from grey. 0 is a greyscale that keeps every \
-               lightness exactly where it was, which a luminance average does not.",
-        range: ColorAdjust::SATURATION,
-        scale: 1.0,
-        get: |c| c.saturation,
-        set: |c, v| ColorAdjust { saturation: v, ..c },
-        fmt: |v| format!("{v:.2}"),
-    },
-    Knob {
-        name: "Hue",
-        hint: "Turn every colour around the wheel, in degrees. Lightness and \
-               saturation are held, so a hue shift is a hue shift.",
-        range: (ColorAdjust::HUE.0 * DEG, ColorAdjust::HUE.1 * DEG),
-        scale: 1.0 / DEG,
-        get: |c| c.hue,
-        set: |c, v| ColorAdjust { hue: v, ..c },
-        fmt: fmt_degrees,
     },
 ];
 
@@ -323,6 +325,316 @@ fn knob_rows<F: Copy + 'static>(
     }
 }
 
+// —— the chroma dial ————————————————————————————————————————————————————————
+
+/// The dial's field, on screen (px) — square, like the picker's.
+const DIAL_PX: f32 = 116.0;
+
+/// The Oklab chroma the rim stands for: the reference colour whose whole hue circle
+/// the dial tracks, so a point of the drawn ring is *where a colour of this chroma
+/// ends up*.
+///
+/// A moderately saturated colour rather than the gamut's edge, so the ring at rest
+/// sits well inside the plane and has somewhere to grow when saturation is pushed
+/// past 1.
+const DIAL_CHROMA: f32 = 0.12;
+
+/// Half-extent of the `(a, b)` plane the dial draws, per axis.
+///
+/// Derived rather than chosen: as far as the centre can travel, plus as wide as the
+/// rim can get. That is what makes the box big enough to hold **every reachable
+/// setting**, and so what makes the rim handle always inside the element that
+/// receives the pointer — no combination of a strong cast and a strong saturation can
+/// carry a handle somewhere it cannot be grabbed back from. A hand-picked extent
+/// would be a bound that has to be re-checked every time the core's are edited.
+const DIAL_AB: f32 = ColorAdjust::TINT.1 + ColorAdjust::SATURATION.1 * DIAL_CHROMA;
+
+/// The Oklab lightness the dial's plane is drawn at: mid-grey, the very lightness the
+/// contrast knob pivots about.
+///
+/// One slice, and one is enough — what the dial shows is a map of `(a, b)` alone,
+/// identical at every `L`, so a second slice would draw the same circle over a
+/// different backdrop. Hence no slice control: it could not change a pixel.
+const DIAL_L: f32 = CONTRAST_PIVOT;
+
+/// px per unit of `a`/`b` in the box above — the one conversion every drawn radius
+/// goes through.
+const DIAL_SCALE: f32 = DIAL_PX * 0.5 / DIAL_AB;
+
+/// How near the pointer must come to the rim handle to take it rather than the centre
+/// (px). Wider than the drawn dot, as a pointer target should be, and small enough
+/// that the rest of the field — which is all the centre's — stays a big target.
+const DIAL_GRAB: f32 = 10.0;
+
+/// What Shift steps each axis by. Their whole job is to make the round numbers
+/// reachable by hand: 0°, a saturation of exactly 1, and a tint of exactly nothing
+/// are single points in a continuum a pointer will not land on twice.
+const HUE_STEP: f32 = std::f32::consts::PI / 12.0; // 15°
+const SATURATION_STEP: f32 = 0.05;
+const TINT_STEP: f32 = 0.01;
+
+/// The plane itself, rendered once for the process. Unlike the picker's field there is
+/// nothing to invalidate — [`DIAL_L`] and [`DIAL_AB`] are constants — so this is a
+/// `LazyLock` rather than a memo per mount, and selecting a filter costs no BMP.
+static DIAL_FIELD: LazyLock<String> = LazyLock::new(|| ab_field_data_url(DIAL_L, DIAL_AB));
+
+/// Which of the dial's two handles a drag has hold of.
+///
+/// Decided once, on pointer-down, and held for the whole gesture — so a rotation
+/// swung in past the centre does not become a translation halfway through, which is
+/// the one way a live hit test could rewrite a number the hand was not on.
+#[derive(Copy, Clone, PartialEq)]
+enum Grab {
+    /// The rim handle: its direction and its distance from the centre, which are the
+    /// hue and the saturation. Taken when the pointer comes down within [`DIAL_GRAB`]
+    /// of it — including when saturation is 0 and it sits *on* the centre, because
+    /// then it is the only way back out and the centre is still reachable everywhere
+    /// else in the field.
+    ///
+    /// `hold` is where the handle sat relative to the pointer that took it, carried
+    /// for the gesture so the first sample is the setting already held. Without it a
+    /// grab at the edge of [`DIAL_GRAB`] would fling the saturation by half a unit
+    /// before the hand had moved — a target has to be wider than the dot it takes,
+    /// and everything inside it has to mean *this one*, not *this position*.
+    Rim { hold: [f32; 2] },
+    /// Anywhere else in the field: the centre, which is the tint. Absolute rather than
+    /// held, and that is the difference in kind: the rim is a handle to grab, the
+    /// field is a place to put the grey.
+    Centre,
+}
+
+/// Where an Oklab `(a, b)` lands in the dial's box, in px from its top-left. `a` runs
+/// left→right and `b` bottom→top — the picker's own orientation, warm at the top,
+/// because they are two pictures of the same plane.
+fn dial_xy(ab: [f32; 2]) -> (f32, f32) {
+    (
+        (ab[0] / DIAL_AB * 0.5 + 0.5) * DIAL_PX,
+        (0.5 - ab[1] / DIAL_AB * 0.5) * DIAL_PX,
+    )
+}
+
+/// The inverse: the `(a, b)` under a pointer at `(x, y)` in the box.
+///
+/// Unclamped, deliberately — [`Filter::sanitized`] is the single place a number is
+/// held to its range, and it is on the path every edit takes. A clamp here would be a
+/// second opinion about the stops, which is exactly how a slider comes to disagree
+/// with the value it displays.
+fn dial_ab(x: f32, y: f32) -> [f32; 2] {
+    [
+        (x / DIAL_PX * 2.0 - 1.0) * DIAL_AB,
+        (1.0 - y / DIAL_PX * 2.0) * DIAL_AB,
+    ]
+}
+
+/// `v` to the nearest multiple of `step` — see the `*_STEP` constants.
+fn snapped(v: f32, step: f32) -> f32 {
+    (v / step).round() * step
+}
+
+/// One pointer sample on the dial: the filter that sample means, previewed to the
+/// canvas and stashed for the settle — the same live-preview/log-once bargain the
+/// sliders make (§21.6), through the same [`settle`].
+fn drag_dial(
+    state: AppState,
+    id: LayerId,
+    c: ColorAdjust,
+    mut tuning: Signal<Option<Filter>>,
+    grab: Grab,
+    e: &Event<PointerData>,
+) {
+    let p = e.element_coordinates();
+    let at = dial_ab(p.x as f32, p.y as f32);
+    let step = e.modifiers().contains(Modifiers::SHIFT);
+    let next = match grab {
+        // Absolute, not by delta: the pointer *is* where the grey goes. Which also
+        // makes a single click on the field a complete edit, the way a grading wheel
+        // behaves — and a click that lands on the setting already held is refused
+        // engine-side, so it costs no undo step (§21.6).
+        Grab::Centre => ColorAdjust {
+            tint: if step {
+                [snapped(at[0], TINT_STEP), snapped(at[1], TINT_STEP)]
+            } else {
+                at
+            },
+            ..c
+        },
+        Grab::Rim { hold } => {
+            let (dx, dy) = (at[0] + hold[0] - c.tint[0], at[1] + hold[1] - c.tint[1]);
+            let r = dx.hypot(dy);
+            // At the centre a direction does not exist and `atan2` would answer 0 —
+            // which would fling the hue back to red every time a drag crossed the
+            // middle on its way somewhere. Keep the angle the gesture already had and
+            // move the radius alone.
+            let hue = if r > 1e-4 { dy.atan2(dx) } else { c.hue };
+            let saturation = r / DIAL_CHROMA;
+            ColorAdjust {
+                hue: if step { snapped(hue, HUE_STEP) } else { hue },
+                saturation: if step {
+                    snapped(saturation, SATURATION_STEP)
+                } else {
+                    saturation
+                },
+                ..c
+            }
+        }
+    };
+    // Through the core's own funnel *before* it is shown, so the pointer cannot
+    // preview a setting the commit would then clamp: at the stops the canvas, the
+    // readout and the log all say the same number.
+    let next = Filter::Color(next).sanitized();
+    tuning.set(Some(next));
+    dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
+}
+
+/// The colour filter's `hue`, `saturation` and `tint` as the one thing they are: the
+/// image of a circle of the Oklab plane under the map they make (see the module docs).
+///
+/// Everything drawn is a claim about a colour, and each is checkable by eye against
+/// the plane it sits on:
+///
+/// - the **dashed circle** is where the reference colours are — chroma
+///   [`DIAL_CHROMA`], every hue — untouched;
+/// - the **solid circle** is where the filter sends them;
+/// - the **arm and its dot** are where it sends red, which is what makes the circle
+///   *directed* and a rotation visible at all;
+/// - the **centre** is where it sends grey, which is the tint.
+///
+/// So the picture at rest already answers "what will this do to a colour", which is
+/// the question three tracks can only answer one number at a time.
+fn chroma_dial(
+    state: AppState,
+    id: LayerId,
+    c: ColorAdjust,
+    tuning: Signal<Option<Filter>>,
+    mut grabbed: Signal<Option<Grab>>,
+) -> Element {
+    let (ox, oy) = dial_xy([0.0, 0.0]);
+    let (cx, cy) = dial_xy(c.tint);
+    let ring = c.saturation * DIAL_CHROMA * DIAL_SCALE;
+    let (hx, hy) = dial_xy([
+        c.tint[0] + c.saturation * DIAL_CHROMA * c.hue.cos(),
+        c.tint[1] + c.saturation * DIAL_CHROMA * c.hue.sin(),
+    ]);
+    // How far the centre may travel — a good deal less than the plane is drawn, since
+    // the plane is drawn wide enough to hold the *rim* as well (see `DIAL_AB`). Shown
+    // only while the centre is the thing being dragged: the rest of the time it is one
+    // more line over a picture that is already saying something, and while the tint is
+    // in hand it is the difference between a control with a stop and one that has
+    // stopped responding.
+    let (tx, ty) = dial_xy([ColorAdjust::TINT.0, ColorAdjust::TINT.1]);
+    let tspan = (ColorAdjust::TINT.1 - ColorAdjust::TINT.0) * DIAL_SCALE;
+    let bounding = grabbed() == Some(Grab::Centre);
+    // Which handle a pointer-down takes, decided against where the handle *is* on this
+    // render — the closure is over this render's `c`, which is what makes the answer a
+    // fact about the picture the user is looking at.
+    let take = move |e: &Event<PointerData>| {
+        let p = e.element_coordinates();
+        let (px, py) = (p.x as f32, p.y as f32);
+        if (px - hx).hypot(py - hy) > DIAL_GRAB {
+            return Grab::Centre;
+        }
+        let at = dial_ab(px, py);
+        Grab::Rim {
+            hold: [
+                c.tint[0] + c.saturation * DIAL_CHROMA * c.hue.cos() - at[0],
+                c.tint[1] + c.saturation * DIAL_CHROMA * c.hue.sin() - at[1],
+            ],
+        }
+    };
+    let commit = move |_| settle(state, tuning, move |f| DocCommand::SetFilter(id, f));
+
+    rsx! {
+        div { class: "filter-dial",
+            div {
+                class: "dial-field",
+                style: "background-image: {*DIAL_FIELD};",
+                title: "The Oklab plane at mid-grey, and what this filter does to it. \
+                        Drag the dot on the rim to turn the hue and pull the \
+                        saturation out; drag anywhere else to tint \u{2014} the centre \
+                        is the colour a grey becomes. Hold Shift for round steps.",
+                // Pointer capture, as the colour picker's field takes: the drag keeps
+                // reporting once it leaves the box, and what it reports is clamped by
+                // the sanitizer rather than by the element's edge.
+                onpointerdown: move |e| {
+                    capture_pointer(&e);
+                    let grab = take(&e);
+                    grabbed.set(Some(grab));
+                    drag_dial(state, id, c, tuning, grab, &e);
+                },
+                onpointermove: move |e| {
+                    if let Some(grab) = grabbed() {
+                        drag_dial(state, id, c, tuning, grab, &e);
+                    }
+                },
+                // Three ways to end, for `widgets::settle`'s reasons; clearing the grab
+                // is what makes a stray move afterwards not a drag.
+                onpointerup: move |e| { grabbed.set(None); commit(e); },
+                onpointercancel: move |e| { grabbed.set(None); commit(e); },
+                svg {
+                    class: "dial-svg",
+                    width: "{DIAL_PX}",
+                    height: "{DIAL_PX}",
+                    view_box: "0 0 {DIAL_PX} {DIAL_PX}",
+                    if bounding {
+                        rect {
+                            class: "dial-bound",
+                            x: "{tx}", y: "{ty}",
+                            width: "{tspan}", height: "{tspan}",
+                        }
+                    }
+                    circle {
+                        class: "dial-rest",
+                        cx: "{ox}", cy: "{oy}",
+                        r: "{DIAL_CHROMA * DIAL_SCALE}",
+                    }
+                    line { class: "dial-arm", x1: "{cx}", y1: "{cy}", x2: "{hx}", y2: "{hy}" }
+                    circle { class: "dial-ring", cx: "{cx}", cy: "{cy}", r: "{ring}" }
+                    circle { class: "dial-centre", cx: "{cx}", cy: "{cy}", r: "3" }
+                    circle { class: "dial-handle", cx: "{hx}", cy: "{hy}", r: "5" }
+                }
+            }
+            div { class: "dial-readout",
+                DialRow {
+                    name: "Saturation",
+                    value: format!("{:.2}", c.saturation),
+                    hint: "How far the ring sits from the centre. 0 is a greyscale that \
+                           keeps every lightness exactly where it was, which a luminance \
+                           average does not.",
+                }
+                DialRow {
+                    name: "Hue",
+                    value: fmt_degrees(c.hue * DEG),
+                    hint: "How far the ring is turned. Lightness and saturation are \
+                           held, so a hue shift is a hue shift.",
+                }
+                DialRow {
+                    name: "Tint a",
+                    value: format!("{:+.3}", c.tint[0]),
+                    hint: "Where the centre sits along green \u{2192} red \u{2014} half \
+                           of the colour a grey becomes.",
+                }
+                DialRow {
+                    name: "Tint b",
+                    value: format!("{:+.3}", c.tint[1]),
+                    hint: "Where the centre sits along blue \u{2192} yellow \u{2014} the \
+                           other half of the colour a grey becomes.",
+                }
+            }
+        }
+    }
+}
+
+/// One line of the dial's readout, in the knobs' own label/value pair — the dial
+/// replaced two tracks, and the numbers they showed should not have been replaced
+/// with them. Shown rather than typed into: the dial is where these are set.
+#[component]
+fn DialRow(name: &'static str, value: String, hint: &'static str) -> Element {
+    rsx! {
+        span { class: "filter-knob-label", title: hint, "{name}" }
+        span { class: "filter-knob-value", title: hint, "{value}" }
+    }
+}
+
 /// The selected filter's controls, in a bar at the bottom of the screen. Mounted
 /// only while a filter layer is selected — see the module docs for why that is the
 /// whole interaction model rather than a panel with an empty state.
@@ -338,6 +650,11 @@ pub fn FilterBar() -> Element {
     // **Before** the early return, because a hook that runs only when a filter is
     // selected is a hook that runs sometimes.
     let tuning = use_signal(|| None::<Filter>);
+    // The dial's half of the same story: which handle a drag has hold of, `None`
+    // between drags. Here rather than inside [`chroma_dial`] for the reason above —
+    // the dial is mounted for one kind of filter, and a hook that runs for one kind
+    // of filter is a hook that runs sometimes.
+    let grabbed = use_signal(|| None::<Grab>);
     let Some((info, filter)) = selected_filter(state) else {
         return rsx! {};
     };
@@ -347,9 +664,15 @@ pub fn FilterBar() -> Element {
     // which would each have to explain the same thing.
     let inert = !info.has_underlay;
 
-    // The one place the bar knows the kinds apart: which table its rows come from.
+    // The one place the bar knows the kinds apart: which controls it puts up. Still a
+    // knob table each, and the colour filter's dial ahead of its two — the plane's
+    // three numbers first, then the two that move along the axis the plane has none of.
     let rows = match filter {
-        Filter::Color(c) => knob_rows(state, info.id, c, COLOR_KNOBS, Filter::Color, tuning),
+        Filter::Color(c) => rsx! {
+            {chroma_dial(state, info.id, c, tuning, grabbed)}
+            span { class: "bar-sep" }
+            {knob_rows(state, info.id, c, COLOR_KNOBS, Filter::Color, tuning)}
+        },
         Filter::Chromatic(c) => knob_rows(
             state,
             info.id,

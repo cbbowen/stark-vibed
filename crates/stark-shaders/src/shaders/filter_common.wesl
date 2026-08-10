@@ -86,6 +86,15 @@ struct Filter {
     // filter's to say: the next kind reads these four floats as its own four, and
     // neither the host struct nor the bind group layout has to learn about it.
     params: vec4<f32>,
+    // A second lane, on the same terms as the first. For `FILTER_COLOR` (§21.5):
+    // `.xy` the **tint**, the offset added to Oklab `(a, b)` after the rotation and
+    // the chroma gain — which is what makes it exactly the colour a grey becomes.
+    // Zero for every other kind, as `params.zw` already are for the chromatic one.
+    //
+    // Four floats rather than the two the colour filter spends, because the struct
+    // rounds up to the same 48 bytes either way and a lane the next kind can read as
+    // its own is the whole point of the first one.
+    params2: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> f: Filter;
@@ -116,7 +125,7 @@ const CONTRAST_PIVOT: f32 = 0.5981;
 // In and out in Oklab so the colour spaces share it — and so the space the knobs
 // are defined in is the interface, rather than a light interface whose first and
 // last steps here would cancel a caller's own conversions.
-fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>) -> vec3<f32> {
+fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
     // Exposure, in stops, on the light itself rather than on `L` — see the header.
     // The trip stops at linear sRGB because a scalar gain commutes with the fixed
     // matrix between it and XYZ. `max(…, 0)` because the accumulator can hold a
@@ -129,12 +138,22 @@ fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>) -> vec3<f32> {
     // Contrast: a gain on lightness about mid-grey.
     lab.x = CONTRAST_PIVOT + (lab.x - CONTRAST_PIVOT) * p.y;
 
-    // Hue, then chroma — one rotation and one scale of the same `(a, b)` plane, so
-    // the order between them cannot matter, and doing the rotation first keeps the
+    // Hue, chroma, tint — one rotation, one scale and one translation of the same
+    // `(a, b)` plane, in that order.
+    //
+    // The rotation and the scale commute, and doing the rotation first keeps the
     // scale reading as "how far from grey" rather than "how far from grey, turned".
+    // The translation does *not* commute with either, and it goes last on the
+    // panel's own argument (§21.6): what the dial draws is the image of a circle of
+    // this plane, so the rotation and the gain carry its rim and the tint carries
+    // its centre. Translating first would make the centre the image of the tint
+    // rather than the tint, and the number under the pointer would stop being the
+    // number in the log. Last is also what makes the tint exactly *the colour a grey
+    // becomes*: an achromatic texel arrives at `(0, 0)`, and nothing before this
+    // moves it.
     let c = cos(p.w);
     let s = sin(p.w);
-    let ab = vec2<f32>(lab.y * c - lab.z * s, lab.y * s + lab.z * c) * p.z;
+    let ab = vec2<f32>(lab.y * c - lab.z * s, lab.y * s + lab.z * c) * p.z + q.xy;
     lab = vec3<f32>(lab.x, ab.x, ab.y);
 
     return lab;
@@ -155,7 +174,7 @@ fn filtered(lab: vec3<f32>) -> vec3<f32> {
     // rather than as the body, because the next filter is an arm above it and the
     // fallthrough has to be somebody's.
     if f.kind == FILTER_COLOR {
-        return adjust_color(lab, f.params);
+        return adjust_color(lab, f.params, f.params2);
     }
     return lab;
 }

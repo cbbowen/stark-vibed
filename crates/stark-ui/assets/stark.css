@@ -2673,8 +2673,8 @@ button.layer-remove:hover {
 
 /* The filter bar: the selected filter's own numbers, mounted only while a filter
    layer is selected (§21.6). Same surface as the frame bar — they are the same kind
-   of thing, and stack in the same column — but wider, because it carries four tracks
-   rather than a row of chips. */
+   of thing, and stack in the same column — but bigger, because the colour filter
+   carries a picture of its own `(a, b)` plane and not only tracks. */
 .filter-bar {
   display: flex;
   align-items: center;
@@ -2722,6 +2722,97 @@ button.layer-remove:hover {
 
 .filter-knob .slider {
   grid-column: 1 / -1;
+}
+
+/* The chroma dial (§21.6): the colour filter's hue, saturation and tint as the one
+   affine map of the Oklab plane they are. The plane and its readout side by side. */
+.filter-dial {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* The Oklab plane at mid-grey, the same BMP-into-a-background the picker's field uses
+   and at the same smooth upscale — it is the same picture of the same plane. */
+.dial-field {
+  position: relative;
+  width: 116px; /* mirrors DIAL_PX in panels/filter.rs */
+  height: 116px;
+  border-radius: 6px;
+  cursor: crosshair;
+  background-size: 100% 100%;
+  touch-action: none;
+}
+
+/* The circle over it. `pointer-events: none` so the field below is always the event
+   target — the drag reads its own element coordinates, and a shape under the cursor
+   retargeting the event would make them coordinates in a circle. Which handle a
+   pointer-down takes is decided by distance in the code, not by hit testing, so
+   nothing here needs to be hittable.
+
+   `overflow: visible` because the ring can legitimately be drawn past the plane's
+   edge (a strong cast and a strong saturation together); the two *handles* cannot,
+   which is what DIAL_AB is derived to guarantee. The shadow is what keeps a white
+   stroke legible over the pale corner of the plane as well as the deep one. */
+.dial-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 1.5px #000c);
+}
+
+/* Where the reference colours are untouched: the ring's own resting place, so the
+   solid circle is read against it rather than against a remembered size. Dashed and
+   faint — it is a datum, not a control. */
+.dial-rest {
+  fill: none;
+  stroke: #ffffff59;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+/* How far the centre may travel, up only while it is being dragged: the plane is drawn
+   wider than that, because it has to hold the rim too. Fainter than the datum above —
+   it is a stop, and a stop should be visible without being read. */
+.dial-bound {
+  fill: none;
+  stroke: #ffffff40;
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+
+.dial-ring {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+/* What makes the circle *directed*: without it a rotation of a circle is invisible. */
+.dial-arm {
+  stroke: #ffffffb3;
+  stroke-width: 1;
+}
+
+.dial-centre {
+  fill: #fff;
+}
+
+.dial-handle {
+  fill: #fff;
+  stroke: #0009;
+  stroke-width: 1;
+}
+
+/* The three numbers the dial sets, in the knobs' own label/value pair. Fixed width for
+   the reason the knobs have one: they change under the pointer, and a column that
+   resizes as a sign appears drags the controls beside it. */
+.dial-readout {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 8px;
+  width: 108px;
 }
 
 /* Said once when the filter has nothing composited beneath it in its own stack

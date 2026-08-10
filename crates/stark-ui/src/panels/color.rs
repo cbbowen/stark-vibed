@@ -108,7 +108,7 @@ pub fn OklabPicker(
 
     // The a/b field is the colour plane at the current `L`; it only depends on `L`, so
     // memoize it (no rebuild while dragging in the field, which moves only `a`/`b`).
-    let field = use_memo(move || ab_field_data_url(l()));
+    let field = use_memo(move || ab_field_data_url(l(), AB));
 
     let ax = (a() / AB * 0.5 + 0.5) * FIELD_PX; // a: −AB→left, +AB→right
     let by = (0.5 - b() / AB * 0.5) * FIELD_PX; // b: +AB→top (warm), −AB→bottom (cool)
@@ -210,10 +210,15 @@ fn pick_l(
 }
 
 /// Render the Oklab `a`/`b` colour plane at lightness `l` as a small 24-bit BMP
-/// `data:` URL (CSS scales it up). `a` runs left→right (−AB→+AB), `b` runs top→bottom
-/// (+AB→−AB), so warm colours sit at the top and cool at the bottom. Out-of-gamut
-/// colours clamp to sRGB. Cheap enough to recompute whenever `L` changes.
-fn ab_field_data_url(l: f32) -> String {
+/// `data:` URL (CSS scales it up). `a` runs left→right (−`ab`→+`ab`), `b` runs
+/// top→bottom (+`ab`→−`ab`), so warm colours sit at the top and cool at the bottom.
+/// Out-of-gamut colours clamp to sRGB. Cheap enough to recompute whenever `L` changes.
+///
+/// The half-extent is a parameter rather than [`AB`] because the filter bar's chroma
+/// dial draws the same plane over a different span (`panels::filter`) — one function,
+/// so the two pictures of the Oklab plane in this application cannot disagree about
+/// which way `b` points.
+pub(super) fn ab_field_data_url(l: f32, ab: f32) -> String {
     let n = FIELD_N;
     let pixels = n * n * 3;
     let mut bmp = Vec::with_capacity(54 + pixels);
@@ -236,9 +241,9 @@ fn ab_field_data_url(l: f32) -> String {
     let last = (n - 1) as f32;
     for row in 0..n {
         let y = n - 1 - row; // BMP rows are bottom-up; `y` is from the top
-        let bb = AB * (1.0 - 2.0 * y as f32 / last); // top → +AB (warm)
+        let bb = ab * (1.0 - 2.0 * y as f32 / last); // top → +ab (warm)
         for x in 0..n {
-            let aa = AB * (2.0 * x as f32 / last - 1.0); // left → −AB
+            let aa = ab * (2.0 * x as f32 / last - 1.0); // left → −ab
             let rgb = oklab_to_srgb([l, aa, bb, 1.0]);
             let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             bmp.push(q(rgb[2])); // B

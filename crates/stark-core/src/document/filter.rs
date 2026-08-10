@@ -105,14 +105,22 @@ impl Filter {
     }
 }
 
-/// A colour adjustment: the four knobs that between them cover "make this read
-/// warmer / flatter / stronger" (§21.5).
+/// A colour adjustment: the knobs that between them cover "make this read warmer /
+/// flatter / stronger" (§21.5).
 ///
-/// All four are applied in **Oklab**, which is the whole reason they are these four
+/// All of them are applied in **Oklab**, which is the whole reason they are these
 /// and not the seven a levels dialog would offer: in a perceptual space, lightness,
 /// chroma and hue are separable, so moving one leaves the other two where they were.
 /// Saturation in sRGB shifts hue; contrast in sRGB shifts saturation. Here neither
 /// does, and that is what makes a slider mean one thing.
+///
+/// **Three of them are one gesture.** [`hue`](Self::hue),
+/// [`saturation`](Self::saturation) and [`tint`](Self::tint) are a rotation, a scale
+/// and a translation of the same `(a, b)` plane — between them the whole affine map
+/// `ab' = tint + saturation · R(hue) · ab` — which is why the panel shows them as one
+/// directed circle rather than as three tracks (§21.6). The order is fixed and it is
+/// the order they are listed in: rotate, scale, then translate. Nothing here depends
+/// on that being *presented* as a circle; the circle depends on it.
 ///
 /// [`NEUTRAL`](Self::NEUTRAL) is the identity, and it is the value a filter layer is
 /// created holding — a new filter changes nothing until it is dialled, which is what
@@ -151,15 +159,32 @@ pub struct ColorAdjust {
     /// ([`ViewCommand::SetRotation`](crate::command::ViewCommand::SetRotation)); the
     /// frontend offers degrees, which is a way of *presenting* an angle.
     pub hue: f32,
+    /// A colour cast: `(a, b)` added to Oklab **after** the rotation and the chroma
+    /// gain. `[0, 0]` is the identity.
+    ///
+    /// Which makes it exactly **the colour a grey becomes**: an achromatic texel
+    /// arrives at the origin of the `(a, b)` plane and nothing before this moves it,
+    /// so the pair is the chroma the whole picture is pushed toward. That is the one
+    /// thing the other three cannot do — a gain and a rotation both fix the
+    /// achromatic axis, so no setting of them tones a grey — and it is what makes
+    /// `saturation: 0` plus a tint a duotone rather than only a greyscale.
+    ///
+    /// Added last for the reason [the struct docs](Self) give, and stated as the
+    /// plane's own two axes rather than as a chroma and an angle, because that is
+    /// what the shader adds and what the panel drags: a polar spelling would need a
+    /// convention for the angle at zero chroma, and would be a second place for an
+    /// angle to disagree with [`hue`](Self::hue).
+    pub tint: [f32; 2],
 }
 
 impl ColorAdjust {
-    /// The identity: no exposure, unity gains, no rotation.
+    /// The identity: no exposure, unity gains, no rotation, no cast.
     pub const NEUTRAL: Self = Self {
         exposure: 0.0,
         contrast: 1.0,
         saturation: 1.0,
         hue: 0.0,
+        tint: [0.0, 0.0],
     };
 
     /// The widest each knob may be dialled — the range a frontend's slider spans and
@@ -174,6 +199,16 @@ impl ColorAdjust {
     /// A full turn either way, so every rotation is reachable and none is reachable
     /// twice by more than a lap.
     pub const HUE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+    /// Per component, on each axis of the `(a, b)` plane.
+    ///
+    /// `0.16` is about as far from the achromatic axis as the sRGB gamut itself
+    /// reaches at mid-grey, so it is the point at which a cast has stopped being a
+    /// cast and become a colour: past it every texel in the picture is out of gamut
+    /// on the same side, and the pass returns a flat wash whatever was underneath.
+    /// A square bound rather than a disc for the reason the pair is Cartesian at all
+    /// — it is what the shader adds — and the corners it admits are reachable
+    /// settings rather than a region needing its own rule.
+    pub const TINT: (f32, f32) = (-0.16, 0.16);
 
     /// Every knob finite and in range — see [`Filter::sanitized`].
     ///
@@ -193,6 +228,12 @@ impl ColorAdjust {
             contrast: clamp(self.contrast, 1.0, Self::CONTRAST),
             saturation: clamp(self.saturation, 1.0, Self::SATURATION),
             hue: clamp(self.hue, 0.0, Self::HUE),
+            // Per component, so one unusable axis of a cast does not throw away the
+            // other — the same reason each scalar knob falls back on its own.
+            tint: [
+                clamp(self.tint[0], 0.0, Self::TINT),
+                clamp(self.tint[1], 0.0, Self::TINT),
+            ],
         }
     }
 }
@@ -319,6 +360,7 @@ mod tests {
                 contrast: bad,
                 saturation: bad,
                 hue: bad,
+                tint: [bad, bad],
             });
             assert_eq!(wild.sanitized(), Filter::Color(ColorAdjust::NEUTRAL));
             let wild = Filter::Chromatic(ChromaticAberration {
@@ -335,6 +377,7 @@ mod tests {
         let hot = Filter::Color(ColorAdjust {
             exposure: 40.0,
             saturation: -3.0,
+            tint: [5.0, -5.0],
             ..ColorAdjust::NEUTRAL
         });
         assert_eq!(
@@ -342,6 +385,20 @@ mod tests {
             Filter::Color(ColorAdjust {
                 exposure: ColorAdjust::EXPOSURE.1,
                 saturation: ColorAdjust::SATURATION.0,
+                tint: [ColorAdjust::TINT.1, ColorAdjust::TINT.0],
+                ..ColorAdjust::NEUTRAL
+            }),
+        );
+        // …and one unusable axis of a cast does not take the other with it: the pair
+        // is two numbers the shader adds, not one quantity.
+        let half = Filter::Color(ColorAdjust {
+            tint: [f32::NAN, 0.08],
+            ..ColorAdjust::NEUTRAL
+        });
+        assert_eq!(
+            half.sanitized(),
+            Filter::Color(ColorAdjust {
+                tint: [0.0, 0.08],
                 ..ColorAdjust::NEUTRAL
             }),
         );

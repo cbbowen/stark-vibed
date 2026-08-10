@@ -37,6 +37,16 @@ const GREY: Filter = Filter::Color(ColorAdjust {
     ..ColorAdjust::NEUTRAL
 });
 
+/// The colour drained away and one put back: a greyscale **toned** to a single
+/// colour, which is the tint's own defining claim (§21.5). Asymmetric on purpose —
+/// `a` and `b` different, and of different signs — so the direction it produces
+/// cannot be reached by swapping the two axes or by flipping either.
+const TONED: Filter = Filter::Color(ColorAdjust {
+    saturation: 0.0,
+    tint: [0.10, -0.05],
+    ..ColorAdjust::NEUTRAL
+});
+
 /// A hard chromatic dispersion along the suite's stroke: wide enough that the
 /// fringes span several rendered pixels, aimed down the axis the stroke runs
 /// (§21.10), so a scan of the stroke's own row crosses both of them.
@@ -75,6 +85,15 @@ fn is_grey(c: [u8; 4]) -> bool {
         c[0].max(c[1]).max(c[2]) as i32,
     );
     hi - lo <= 3
+}
+
+/// A rendered pixel's Oklab chroma, as the `(a, b)` pair the filter's own knobs
+/// move — the space the claim is made in, so the assertion is about the adjustment
+/// rather than about how sRGB happens to encode it.
+fn chroma_ab(c: [u8; 4]) -> [f32; 2] {
+    let lin = |i: usize| stark_core::color::srgb_to_linear(c[i] as f32 / 255.0);
+    let lab = stark_core::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)]);
+    [lab[1], lab[2]]
 }
 
 /// Add a filter into `carrier`'s stack (the document's own when `None`) and hand
@@ -153,6 +172,65 @@ fn desaturating_keeps_the_lightness_it_found() {
         (was - now).abs() < 0.04,
         "desaturation moved Oklab L from {was:.3} to {now:.3} \
          (before {before:?}, after {after:?})",
+    );
+}
+
+/// **The tint is the colour a grey becomes.** That sentence is the whole definition
+/// of the knob (§21.5), and it is a claim about *where in the adjustment the offset
+/// lands*: last, after the rotation and the gain, so that an achromatic texel — which
+/// arrives at the origin of the `(a, b)` plane and is left there by both — comes out
+/// holding the tint itself.
+///
+/// Worth a render rather than a unit test on the struct, because the ordering the
+/// claim rests on exists only in the shader, and the pair of knobs that would break
+/// it are exactly the two the panel draws around it: hue and saturation are a
+/// rotation and a scale, and *either* applied after the tint would turn the colour
+/// under the pointer into some other colour. Checked as a direction in Oklab and not
+/// as an RGB triple: the media pass's tonemap moves the magnitude and must be allowed
+/// to, while the hue it lands on is the filter's alone.
+#[test]
+fn a_tint_is_the_colour_a_grey_becomes() {
+    let Some(mut engine) = painted() else { return };
+    add_filter(&mut engine, None, GREY);
+    let grey = center(&engine.render_to_image());
+    assert!(is_grey(grey), "the setup should be achromatic: {grey:?}");
+
+    let toned = add_filter(&mut engine, None, TONED);
+    let got = center(&engine.render_to_image());
+    assert!(
+        !is_grey(got),
+        "a tint over a greyscale should put a colour back: {got:?}",
+    );
+
+    let Filter::Color(c) = TONED else {
+        unreachable!("TONED is a colour filter")
+    };
+    let ab = chroma_ab(got);
+    let want = c.tint;
+    let mag = |v: [f32; 2]| v[0].hypot(v[1]);
+    // The direction, as the cosine between the two — one number that catches an axis
+    // swap, a sign flip on either axis, and a rotation applied on the wrong side of
+    // the offset, none of which a per-component tolerance would.
+    let cos = (ab[0] * want[0] + ab[1] * want[1]) / (mag(ab) * mag(want)).max(1e-6);
+    assert!(
+        cos > 0.9,
+        "the toned grey points at {ab:?}, not at the tint {want:?} (cos {cos:.3})",
+    );
+    // And it arrived at roughly the strength asked for — loose in both directions,
+    // because the trip out through the media pass is not an identity, but tight
+    // enough to rule out a tint that reached the frame scaled by the saturation gain
+    // (which is 0 here) or doubled by being applied twice.
+    let (got_c, want_c) = (mag(ab), mag(want));
+    assert!(
+        got_c > want_c * 0.4 && got_c < want_c * 1.6,
+        "the toned grey has chroma {got_c:.3}, the tint {want_c:.3}",
+    );
+
+    // And it is the filter's, not the painting's: dropped, the grey comes back.
+    engine.process(DocCommand::RemoveLayer(toned));
+    assert!(
+        is_grey(center(&engine.render_to_image())),
+        "removing the tint should leave the greyscale it found",
     );
 }
 
@@ -605,11 +683,16 @@ fn a_filter_survives_save_and_load() {
     // new actions are in the log this saves.
     engine.process(DocCommand::SetFilter(
         id,
+        // Every field distinct, and the tint's two distinct from each other: postcard
+        // writes no names, so a pair read in the wrong order — or read off the end of
+        // the struct it was appended to — decodes as a different adjustment rather
+        // than as an error.
         Filter::Color(ColorAdjust {
             exposure: 0.75,
             contrast: 1.4,
             saturation: 0.35,
             hue: 0.6,
+            tint: [0.09, -0.04],
         }),
     ));
     // A second filter of the **other kind** rides the same log: `Chromatic` is an

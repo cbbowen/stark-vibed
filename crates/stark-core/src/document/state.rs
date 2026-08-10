@@ -962,6 +962,7 @@ mod tests {
             contrast: f32::INFINITY,
             saturation: -5.0,
             hue: f32::NEG_INFINITY,
+            tint: [9.0, f32::NAN],
         });
         let expect = wild.sanitized();
         assert_ne!(wild, expect, "the wild filter must need sanitizing");

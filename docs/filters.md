@@ -161,7 +161,7 @@ that the filter is half transparent, when what it is is half applied.
 
 ### 21.5 The colour filter
 
-The first filter, and the one the architecture was built against. Four numbers, all
+The first filter, and the one the architecture was built against. Five numbers, all
 applied in **Oklab**:
 
 ```rust
@@ -170,15 +170,48 @@ pub struct ColorAdjust {
     pub contrast: f32,    // gain on Oklab L about mid-grey; 1 is the identity
     pub saturation: f32,  // gain on Oklab chroma; 1 the identity, 0 a true greyscale
     pub hue: f32,         // rotation of the Oklab (a, b) plane, radians
+    pub tint: [f32; 2],   // offset added to Oklab (a, b) last; [0, 0] the identity
 }
 ```
 
-**Why Oklab, and why it is four and not seven.** In a perceptual space lightness,
+**Why Oklab, and why it is five and not seven.** In a perceptual space lightness,
 chroma and hue are separable, and that separability is the whole promise a colour
 slider makes. Saturation in sRGB shifts hue. Contrast in sRGB shifts saturation. A
 "greyscale" that is a luminance-weighted RGB average moves lightness around — visibly,
-on a saturated red, by about 0.1 in `L`. Here a chroma gain is a chroma gain, so four
+on a saturated red, by about 0.1 in `L`. Here a chroma gain is a chroma gain, so these
 controls cover what a levels dialog needs seven to approximate.
+
+**Three of the five are one gesture.** `hue`, `saturation` and `tint` are a rotation,
+a scale and a translation of the same `(a, b)` plane — between them the affine map
+
+```
+ab' = tint + saturation · R(hue) · ab
+```
+
+— and the order is fixed: rotate, scale, then translate. Rotation and scale commute,
+so between *those* two the order is free and rotating first is chosen only because it
+keeps "how far from grey" reading as a distance rather than as a distance turned. The
+translation commutes with neither, and it goes last for two reasons that turn out to
+be the same one. It is what makes the tint **the colour a grey becomes** — an
+achromatic texel arrives at the origin and is fixed by both the rotation and the gain,
+so it comes out holding the tint itself. And it is what lets §21.6 draw the three as
+one circle: the rotation and the gain carry the circle's rim, the tint carries its
+centre, and translating first would make the centre the image of the tint rather than
+the tint, so the number under the pointer would stop being the number in the log.
+
+**Why a tint at all**, when three knobs already covered the plane: because a gain and
+a rotation both fix the achromatic axis, so no setting of them can put colour into a
+grey. Every cast, every duotone and every "warm the shadows" is a translation, and
+until there was one the filter could take colour out of a picture but never give a
+picture a colour of its own. `saturation: 0` with a tint is a toned monochrome — which
+is the same operation, not a second one.
+
+**Its bound is the gamut's.** `TINT` is `±0.16` per axis, which is about as far from
+the achromatic axis as sRGB itself reaches at mid-grey: past it every texel in the
+picture is out of gamut on the same side and the pass returns a flat wash whatever was
+underneath. A square bound rather than a disc, because the pair is Cartesian for the
+reason the shader adds it that way, and the corners a square admits are reachable
+settings rather than a region needing a rule of its own.
 
 **Exposure is the exception, and it is one on purpose.** It is applied to *light* —
 before the trip into Oklab. Doubling light is what an exposure *is*; `L` is roughly
@@ -236,9 +269,42 @@ filter layer is **selected**.
   An unnamed filter row shows the *filter's* name ("Colour") rather than the word
   "Filter", because a stack of three rows all reading "Filter" would say nothing.
 - **A filter that reaches nothing says so** (§21.2), once, in the bar — rather than
-  greying out four sliders that would each have to explain the same thing.
+  greying out every control, which would each have to explain the same thing.
 
-**The sliders preview live and log once.** Each pointer move sends
+**The colour filter's plane is a picture, not three tracks.** `hue`, `saturation` and
+`tint` are one affine map of the Oklab `(a, b)` plane (§21.5), and the honest picture
+of an affine map of a plane is *the image of a circle*. So the bar draws one, over the
+same Oklab slice the colour picker shows, and every part of it is a fact rather than a
+decoration:
+
+| what is drawn | what it is |
+|---|---|
+| the dashed circle | where the reference colours are — one moderate chroma, every hue — untouched |
+| the solid circle | where the filter sends them |
+| the arm and its dot | where it sends **red**, which is what makes the circle *directed* and a rotation visible at all |
+| the centre | where it sends **grey**, which is the tint |
+
+Which makes the three drags the three parts of the map: **expand** the circle and that
+is saturation, **turn** it and that is hue, **move** it and that is the tint. A circle
+without the arm would be the wrong picture — a rotation of a circle is invisible — and
+that is the whole reason the reference locus is drawn *directed*.
+
+The plane is one fixed slice, at the mid-grey the contrast knob already pivots about,
+and there is no slice control: the map is a map of `(a, b)` alone and is identical at
+every `L`, so a second slice would show the same circle over a different backdrop and a
+control for it would be a control that cannot change a pixel (§1). By the same
+division, `exposure` and `contrast` keep their tracks — they move along the one axis a
+slice of constant lightness has nothing to say about.
+
+Two geometric details are load-bearing rather than cosmetic. The plane is drawn as far
+as *the farthest the centre can travel plus the widest the rim can get*, derived from
+the core's own bounds rather than picked, so no combination of a strong cast and a
+strong saturation can carry a handle outside the element that receives the pointer.
+And which handle a drag has hold of is decided once, on pointer-down, and held for the
+gesture — a live hit test would turn a rotation swung in past the centre into a
+translation halfway through.
+
+**The controls preview live and log once.** Each pointer move sends
 `ViewCommand::PreviewFilter` (view state, never logged) and the settled drag commits a
 single `DocCommand::SetFilter`. This is the bargain the frame drag (§15.7), the canvas
 colour (§15.5) and the opacity slider (§14.6) already make, and it is the one this
@@ -284,9 +350,11 @@ right shape.
   two passes work in light now, and importing the pair out of `blend_common` would have
   dragged that file's bindings along with it.
 - **The uniform.** `Filter` in `filter_common.wesl`, mirrored into Rust by the
-  generator (§6.10). Its parameters are one `vec4` lane read according to `kind`, so
-  the next filter reads those four floats as its own and neither the host struct nor
-  the bind group layout learns about it.
+  generator (§6.10). Its parameters are two `vec4` lanes read according to `kind`, so
+  the next filter reads those eight floats as its own and neither the host struct nor
+  the bind group layout learns about it. (One lane until the colour filter grew its
+  tint; the second costs nothing, since the struct rounds up to the same 48 bytes
+  either way.)
 - **Bind group.** The blend pass's numbering with the source's two slots simply not
   declared: `filter_common` owns 0–2 where `blend_common` owns 0–4, and the pigment LUT
   keeps 5–6 because `mixbox_lut.wesl` hard-codes them for whoever imports it. The LUT
@@ -294,7 +362,7 @@ right shape.
 
 ### 21.8 Invariants worth a test (`tests/filter.rs`)
 
-Three of the eight are about a filter doing **nothing**, and that is deliberate: a pass
+Three of these are about a filter doing **nothing**, and that is deliberate: a pass
 that runs over every texel has no coverage to hide behind, so the cases where it must
 be the exact identity are the ones where a mistake is a whole-picture change with
 nothing on screen to say where it came from.
@@ -304,37 +372,48 @@ nothing on screen to say where it came from.
    test rather than a detail of it: a saturated red and its correct grey have very
    different *luminance*, so an assertion on luminance would fail on the right answer
    and pass on `dot(rgb, luma)`.
-3. A **neutral** filter changes no pixel, to the byte.
-4. A **hidden** filter, and one at zero **strength**, each change no pixel.
-5. A **carried** filter reaches only its own group — the layer above the group is
+3. **The tint is the colour a grey becomes** — a toned greyscale points at the tint's
+   own direction in Oklab, at roughly its strength. That sentence is the definition
+   (§21.5), and what it actually tests is *where in the adjustment the offset lands*:
+   the ordering exists only in the shader, and the two knobs that would break it are
+   exactly the two the panel draws around it — a rotation or a gain applied after the
+   offset would turn the colour under the pointer into some other colour. A direction
+   and not an RGB triple, because the media pass's tonemap moves the magnitude and
+   must be allowed to.
+4. A **neutral** filter changes no pixel, to the byte.
+5. A **hidden** filter, and one at zero **strength**, each change no pixel.
+6. A **carried** filter reaches only its own group — the layer above the group is
    untouched. This is §21.1's whole claim, drawn.
-6. A filter with **nothing beneath it in its own stack** changes no pixel, in both
+7. A filter with **nothing beneath it in its own stack** changes no pixel, in both
    forms: at the foot of the document, and above nothing but a hidden layer.
-7. A filter **refuses carried layers** — the drop and the add alike — and the
+8. A filter **refuses carried layers** — the drop and the add alike — and the
    refusal is the state's, so replay and peers agree (§21.2). And the panel's
    "nothing below it" note agrees with the renderer: a filter carried onto painted
    content reaches it; one above only a hidden layer does not.
-8. A filter can be **selected** but takes no paint, and the refusal is the engine's.
-9. A filter **undoes** — the adjustment, and the add behind it.
-10. A slider drag **previews without logging**, and the commit renders what the
-    preview showed.
-11. A filter **survives save and load** — pixel-identical and setting-identical.
+9. A filter can be **selected** but takes no paint, and the refusal is the engine's.
+10. A filter **undoes** — the adjustment, and the add behind it.
+11. A drag — a track or the dial, they go through the same funnel — **previews
+    without logging**, and the commit renders what the preview showed.
+12. A filter **survives save and load** — pixel-identical and setting-identical.
     `AddFilter` and `SetFilter` are the first actions to carry a `Filter`, and
     postcard writes no field names and no lengths, so a layout mistake decodes into a
-    *different adjustment* rather than into an error (§8).
-12. A filter works in a **pigment** document — the road out through Mixbox's
+    *different adjustment* rather than into an error (§8). The colour filter's every
+    field distinct on the way in, and the tint's two distinct from each other, since
+    an appended pair read in the wrong order or off the end of the struct is exactly
+    that mistake.
+13. A filter works in a **pigment** document — the road out through Mixbox's
     polynomial and back through its inverse LUT, with the latent residual carried on
     both legs (§6.7). Nothing in an Oklab test touches that half.
-13. Chromatic aberration **parts the spectrum, both ways** (§21.10): across a
+14. Chromatic aberration **parts the spectrum, both ways** (§21.10): across a
     stroke, the red-versus-blue separation the filter adds has opposite signs on
     the two sides of the dispersion axis — the claim that distinguishes a spectrum
     pulled apart from a picture merely smeared, checked without pinning any pixel's
     exact hue.
-14. **Deep inside flat paint the gather is the identity** — the partition of unity,
+15. **Deep inside flat paint the gather is the identity** — the partition of unity,
     §21.10's load-bearing normalization, measured where every tap lands on the same
     paint. A tolerance rather than bytes: the identity is exact in the linear-light
     algebra, and the trip out and back is not.
-15. The chromatic filter **works in a pigment document** — per-tap decodes through
+16. The chromatic filter **works in a pigment document** — per-tap decodes through
     the polynomial, one re-entry through the inverse LUT, the residual recomputed
     for the arrived-at colour (§6.7).
 
@@ -448,7 +527,8 @@ because the taps stay bilinear and the partition of unity still normalizes whate
 count ran.
 
 In the bar (§21.6) the filter is two sliders, Spread and Angle, through the same
-preview-per-sample / commit-once funnel as the colour filter's four; `+ Filter`
+preview-per-sample / commit-once funnel the colour filter's dial and tracks use;
+`+ Filter`
 grew the picker `Filter::ALL` always promised, each kind landing neutral. Zero
 spread is neutral **at any angle** — an angle dialled before its spread is not yet
 an edit, so the draw list stays free to drop the pass and

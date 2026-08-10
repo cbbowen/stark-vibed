@@ -42,8 +42,8 @@ pub enum CompositeItem {
 
 /// A filter layer's pass parameters (§21).
 ///
-/// Deliberately **not** a `Filter`: what the shader reads is a code and four floats
-/// in a uniform lane, and which code a filter is numbered is a fact about
+/// Deliberately **not** a `Filter`: what the shader reads is a code and two uniform
+/// lanes of floats, and which code a filter is numbered is a fact about
 /// `filter_common.wesl` rather than about the document (the same split
 /// [`blend_code`](super::blend::blend_code) makes for a blend mode). Flattening it
 /// here also puts the layer's opacity where the pass wants it — as a strength — so
@@ -54,8 +54,11 @@ pub struct FilterDraw {
     pub kind: u32,
     /// How much of the adjustment lands: the layer's opacity (§21.4).
     pub strength: f32,
-    /// The filter's own four numbers, read according to `kind`.
+    /// The filter's own numbers, read according to `kind` — two lanes of four, so a
+    /// kind with more than four has somewhere to put them without the bind group
+    /// layout learning anything (`filter_common.wesl`).
     pub params: [f32; 4],
+    pub params2: [f32; 4],
 }
 
 impl FilterDraw {
@@ -75,6 +78,7 @@ impl FilterDraw {
                 kind: stark_shaders::mirror::filter_common::FILTER_COLOR,
                 strength,
                 params: [c.exposure, c.contrast, c.saturation, c.hue],
+                params2: [c.tint[0], c.tint[1], 0.0, 0.0],
             },
             // The spread and angle stay in canvas terms here: which *texels* they
             // become depends on the view, and this description deliberately has
@@ -84,6 +88,7 @@ impl FilterDraw {
                 kind: stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
                 strength,
                 params: [c.spread, c.angle, 0.0, 0.0],
+                params2: [0.0; 4],
             },
         }
     }

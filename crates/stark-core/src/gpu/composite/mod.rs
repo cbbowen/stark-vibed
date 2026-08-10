@@ -563,6 +563,7 @@ impl Compositor {
                         strength: f.strength,
                         disp: chromatic_disp(f, view),
                         params: f.params,
+                        params2: f.params2,
                     });
                     continue;
                 }
