@@ -185,6 +185,34 @@ pub fn on_window_blur(mut handler: impl FnMut() + 'static) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn on_window_blur(_handler: impl FnMut() + 'static) {}
 
+/// Run `handler` **inside** the next animation-frame callback.
+///
+/// This is not the same as a task awaiting a promise the rAF resolves
+/// ([`crate::render::next_frame`]): a woken task only resumes in the microtask
+/// drain, behind the scheduler's other work — for a dioxus task that includes a
+/// VDOM render of whatever scopes are dirty by then. The callback itself runs in
+/// the frame's animation phase, ahead of the browser's rendering steps by
+/// definition, so work that must land in the frame that woke it belongs here.
+///
+/// One-shot: the closure frees itself after the call, so a registration per
+/// frame leaks nothing (unlike the `forget`ten window listeners above, which
+/// are bound once for the life of the page).
+#[cfg(target_arch = "wasm32")]
+pub fn on_animation_frame(handler: impl FnOnce() + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    // The callback's DOMHighResTimeStamp argument is dropped: callers time
+    // nothing off it today, and the engine keeps its own clock.
+    let cb = Closure::once_into_js(move |_: f64| handler());
+    let _ = window.request_animation_frame(cb.unchecked_ref());
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_animation_frame(_handler: impl FnOnce() + 'static) {}
+
 /// Capture the pointer for the element under `e`, so the in-progress drag keeps
 /// streaming move/up events to it while the button is held — even after the pointer
 /// leaves the element. The capture releases automatically on pointer-up, which is

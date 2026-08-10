@@ -4,7 +4,7 @@
 //! goes through it, so repaint, observable refresh and collaboration broadcast
 //! happen in one place rather than at each call site (§4).
 
-use dioxus::dioxus_core::{Task, spawn_forever};
+use dioxus::dioxus_core::Task;
 use dioxus::prelude::*;
 
 use crate::collab;
@@ -1247,6 +1247,15 @@ pub struct CollabState {
     pub presence: Signal<Option<Task>>,
 }
 
+impl CollabState {
+    /// Whether a live session exists — i.e. whether anyone is on the other end
+    /// of presence-only commands. `peek`: asked from event handlers at pointer
+    /// rate, and nothing there should subscribe.
+    pub fn active(&self) -> bool {
+        self.session.peek().is_some()
+    }
+}
+
 /// Repaint the canvas surface on the **next animation frame**, coalescing however
 /// many requests land before it into one paint.
 ///
@@ -1265,11 +1274,17 @@ pub fn request_paint(state: AppState) {
         return;
     }
     queued.set(true);
-    // `spawn_forever`: requests originate in component event handlers and in the
-    // collab pump alike, and a paint owed must not die with whichever scope asked
-    // for it (see the module note on `root_signal`).
-    spawn_forever(async move {
-        crate::render::next_frame().await;
+    // Directly in the rAF callback, not a task the rAF wakes. A woken task
+    // resumes in the microtask drain, two scheduler hops after the callback —
+    // and a *dioxus* task further waits out a VDOM render of whatever scopes
+    // are dirty by then, since the scheduler polls tasks only once no scope is.
+    // Any of that slipping past the frame's rendering steps shows the previous
+    // frame's canvas for a whole display interval. The callback itself runs in
+    // the animation phase, ahead of the rendering steps by definition, so the
+    // frame that fires it is the frame that shows it. The closure is a plain
+    // move of root-owned signals, so no component scope is involved and there
+    // is nothing here to die with one (see the module note on `root_signal`).
+    crate::platform::on_animation_frame(move || {
         let mut queued = state.paint_queued;
         queued.set(false);
         let mut renderer = state.renderer;
@@ -1293,6 +1308,26 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
     }
     request_paint(state);
     collab::flush_outbox(state);
+}
+
+/// Apply a pointer-rate sample of an in-flight gesture: integrate and repaint,
+/// skipping the observable refresh and the outbox flush [`dispatch`] does.
+///
+/// A mid-gesture sample changes what the canvas shows but nothing the chrome
+/// reads: the committed document, the layer list and the undo flags all stand
+/// until the gesture ends, so `Engine::observe` would walk the layer tree to
+/// produce the same answer — and `obs.set` marks every subscriber dirty
+/// regardless, which puts a full VDOM diff of the chrome *ahead* of the rAF
+/// registration on every sample (the scheduler polls tasks only once no scope
+/// is dirty). Nothing commits mid-gesture either, so there is no outbox to
+/// flush; the gesture's End goes through [`dispatch`], which refreshes the
+/// observable and broadcasts whatever the commit banked.
+pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
+    let mut renderer = state.renderer;
+    if let Some(r) = renderer.write().as_mut() {
+        r.process(command);
+    }
+    request_paint(state);
 }
 
 /// Apply a command **without** repainting, refreshing the observable, or

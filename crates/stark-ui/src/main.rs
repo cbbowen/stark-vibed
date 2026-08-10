@@ -65,7 +65,7 @@ use settings::SettingsModal;
 use stark_core::ColorSpaceId;
 use stark_core::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use stark_core::document::{SelectionOp, ShapeAction};
-use state::{AppState, dispatch, dispatch_quiet, resize, update_brush};
+use state::{AppState, dispatch, dispatch_quiet, dispatch_sample, resize, update_brush};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by [`app`] so the rsx!
@@ -558,17 +558,28 @@ fn Canvas() -> Element {
                         // (§6.9). Once the stroke has snapped this stops
                         // watching and the same `To` steers the shape instead.
                         pointer_moved(state, elem_xy(&e));
-                        dispatch(state, GestureCommand::To { sample: s });
+                        // `dispatch_sample`, not `dispatch`: a sample changes
+                        // pixels, not chrome, and the full dispatch's observable
+                        // refresh re-diffs the chrome per pointer move.
+                        dispatch_sample(state, GestureCommand::To { sample: s });
                     }
                     // Where collaborators see this client's pointer
                     // (§17.4). Quiet: it changes nothing *this* client renders — the
                     // browser draws our own cursor — so repainting the canvas at
                     // pointer rate to show ourselves nothing would be pure waste.
                     // The presence pump reads it off the engine on its own cadence.
-                    dispatch_quiet(state, PeerCommand::SetCursor(Some(s.pos)));
+                    // Solo, not even that: with no session the value has no reader
+                    // at all, so the engine borrow it costs is skipped entirely.
+                    if state.collab.active() {
+                        dispatch_quiet(state, PeerCommand::SetCursor(Some(s.pos)));
+                    }
                 }
             },
-            onpointerleave: move |_| dispatch_quiet(state, PeerCommand::SetCursor(None)),
+            onpointerleave: move |_| {
+                if state.collab.active() {
+                    dispatch_quiet(state, PeerCommand::SetCursor(None));
+                }
+            },
             // One finger of several lifting ends nothing — the rest are still
             // navigating, and tearing down here would end the gesture on whichever
             // finger the hand happened to raise first (§18.1.7).
