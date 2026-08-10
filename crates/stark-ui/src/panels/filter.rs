@@ -59,16 +59,22 @@ use stark_core::{LayerId, LayerInfo};
 /// parameter struct so each filter kind is one more `const` table and no more
 /// bar code.
 ///
-/// **No glyphs, deliberately unmarked.** The icon set has a mark for exactly one of
-/// the colour knobs (a tonal ramp for contrast), and a bar where one slider is
-/// marked and the rest are not reads worse than one where none is — so these keep
-/// their words, and keep them in minimal mode too, which is the rule an unmarked
-/// control already carries (`widgets::Slider`). A to-do rather than a decision: the
-/// day there is a mark per knob, this grows a `glyph` and the words become hideable
-/// together.
+/// `glyph` is an `Option` on [`widgets::Slider`](crate::widgets::Slider)'s exact
+/// terms, and the same fact is read off it twice: a knob that has a mark wraps its
+/// word as hideable, and a knob that has none keeps it, because a row with neither
+/// would be an anonymous track. Reading the two off one field is what makes the wrong
+/// pair unrepresentable rather than merely unlikely.
+///
+/// The chromatic filter's two are the `None`s — a to-do, not a decision. The rule
+/// that used to keep *all* of these unmarked was about a bar, not about the set: one
+/// marked slider among unmarked ones reads worse than none marked. That still holds
+/// and is still satisfied, because each bar draws one kind's table and the colour
+/// filter's is now marked throughout.
 struct Knob<F: 'static> {
     name: &'static str,
     hint: &'static str,
+    /// The mark this knob wears, and — see above — whether its word may be hidden.
+    glyph: Option<&'static str>,
     /// The slider's span, in display units — derived from the core's own bounds
     /// (`ColorAdjust::EXPOSURE` and friends) so the track and the sanitizer cannot
     /// disagree about how far a knob goes.
@@ -107,6 +113,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         hint: "Stops of light. +1 is twice as much, \u{2212}1 is half \u{2014} applied \
                to the light itself, so it brightens the way an exposure does rather \
                than the way a brightness slider does.",
+        glyph: Some(icons::EXPOSURE),
         range: ColorAdjust::EXPOSURE,
         scale: 1.0,
         get: |c| c.exposure,
@@ -120,6 +127,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         hint: "Spread about mid-grey. 1 leaves it alone, 0 flattens the picture to \
                one tone. It moves lightness only \u{2014} the colours keep their \
                saturation, which is not true of a contrast curve in sRGB.",
+        glyph: Some(icons::CONTRAST),
         range: ColorAdjust::CONTRAST,
         scale: 1.0,
         get: |c| c.contrast,
@@ -135,6 +143,7 @@ const CHROMATIC_KNOBS: &[Knob<ChromaticAberration>] = &[
                width of the fringe every edge grows. The whole rainbow is in \
                between, not three offset copies: the effect is the lens's own \
                dispersion, integrated (\u{a7}21.10).",
+        glyph: None,
         range: ChromaticAberration::SPREAD,
         scale: 1.0,
         get: |c| c.spread,
@@ -146,6 +155,7 @@ const CHROMATIC_KNOBS: &[Knob<ChromaticAberration>] = &[
         hint: "The axis the colours part along, in degrees \u{2014} the way the blue \
                end of the spectrum is carried, with the red end opposite. Stated on \
                the canvas, so it turns with the painting rather than the window.",
+        glyph: None,
         range: (
             ChromaticAberration::ANGLE.0 * DEG,
             ChromaticAberration::ANGLE.1 * DEG,
@@ -295,7 +305,15 @@ fn knob_rows<F: Copy + 'static>(
                 key: "{knob.name}",
                 class: "filter-knob",
                 title: "{knob.hint}",
-                span { class: "filter-knob-label", "{knob.name}" }
+                span { class: "filter-knob-label",
+                    // Mark then word, and the word hideable only because the mark is
+                    // there to survive it — the pair `widgets::Slider` reads off one
+                    // `Option`, for the reason on [`Knob::glyph`].
+                    match knob.glyph {
+                        Some(glyph) => rsx! { {icon(glyph)} {label(knob.name)} },
+                        None => rsx! { "{knob.name}" },
+                    }
+                }
                 span { class: "filter-knob-value", "{readout(knob, &current)}" }
                 input {
                     class: "slider",
@@ -671,7 +689,14 @@ pub fn FilterBar() -> Element {
         Filter::Color(c) => rsx! {
             {chroma_dial(state, info.id, c, tuning, grabbed)}
             span { class: "bar-sep" }
-            {knob_rows(state, info.id, c, COLOR_KNOBS, Filter::Color, tuning)}
+            // Stacked rather than side by side, which is the dial's doing: beside a
+            // 116px square, two tracks in a row make a bar half again as wide as it
+            // is tall for no reason, and stacking spends height the dial has already
+            // bought. They are also a pair — the two ways to move Oklab `L` — so a
+            // column reads as one group where a row read as the tail of the dial's.
+            div { class: "filter-knob-stack",
+                {knob_rows(state, info.id, c, COLOR_KNOBS, Filter::Color, tuning)}
+            }
         },
         Filter::Chromatic(c) => knob_rows(
             state,

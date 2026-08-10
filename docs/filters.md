@@ -294,7 +294,13 @@ and there is no slice control: the map is a map of `(a, b)` alone and is identic
 every `L`, so a second slice would show the same circle over a different backdrop and a
 control for it would be a control that cannot change a pixel (§1). By the same
 division, `exposure` and `contrast` keep their tracks — they move along the one axis a
-slice of constant lightness has nothing to say about.
+slice of constant lightness has nothing to say about. They stack in a column beside the
+dial rather than trailing off it in a row: the dial has already bought that height, two
+tracks laid end to end would make the bar half again as wide as it is tall for nothing,
+and they are a pair — the two ways to move `L` — so a column reads as one group. Each
+wears a mark, a sun and a half-lit disc, which is what lets their words go in minimal
+mode; the dial's three numbers wear none and want none, since the dial is a picture of
+all three at once and a glyph beside it would be a second, worse one.
 
 Two geometric details are load-bearing rather than cosmetic. The plane is drawn as far
 as *the farthest the centre can travel plus the widest the rim can get*, derived from

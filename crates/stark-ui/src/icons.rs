@@ -91,6 +91,15 @@ icons! {
     // shared between its bar and its row: a layer kind and the bar that tunes it are
     // one subject, so they are one mark.
     FILTER => "funnel-bold",
+    // The colour filter's two lightness knobs (§21.6). Both are drawn as the *quantity*
+    // rather than as a control for it, which is what lets the words go in minimal mode:
+    // a sun is the light an exposure counts stops of, and a disc lit on one side and
+    // dark on the other is the spread about mid-grey a contrast gain widens — the
+    // slider at 0 flattening that disc to one tone is the picture the glyph already
+    // shows. The filter's other three numbers get no mark and want none: the dial is a
+    // picture of all three at once, and a mark beside it would be a second, worse one.
+    EXPOSURE => "sun-bold",
+    CONTRAST => "circle-half-bold",
     // Grouping, drawn as the move itself rather than as a picture of a group. The pair
     // has to read as one gesture and its undo, which is why it is one glyph mirrored
     // rather than two pictures — the same argument the stack pair above is built on.

@@ -2694,7 +2694,7 @@ button.layer-remove:hover {
 }
 
 /* One knob: its word and its readout on one row, the track under them spanning both
-   columns. Fixed width, so dragging one slider does not shift the three beside it —
+   columns. Fixed width, so dragging one slider does not shift the ones beside it —
    the numbers change width as they cross a sign or a digit. */
 .filter-knob {
   display: grid;
@@ -2704,7 +2704,23 @@ button.layer-remove:hover {
   width: 132px;
 }
 
+/* The colour filter's two, in a column beside the dial rather than a row after it
+   (§21.6) — see the call site for why. A gap rather than none: they are two controls,
+   and the dial next to them is already one continuous picture. */
+.filter-knob-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Mark then word, on one line. `inline-flex` rather than the block it was, because a
+   knob that has a glyph puts two things here and they have to sit on a baseline
+   together; a knob that has none puts one, and inline-flex leaves that exactly where
+   it was. */
 .filter-knob-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   color: #ffffff8c;
   white-space: nowrap;
