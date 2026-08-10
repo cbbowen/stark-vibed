@@ -212,7 +212,7 @@ pub fn FrameBar() -> Element {
             }
 
             span { class: "bar-sep" }
-            
+
             span { class: "frame-dim",
                 "{w.round() as i64} \u{00D7} {h.round() as i64}"
                 span { class: "frame-unit", " px" }

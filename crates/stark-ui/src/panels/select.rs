@@ -189,7 +189,7 @@ pub fn SelectionBar() -> Element {
                 }
 
                 span { class: "bar-sep" }
-                
+
                 // Arrows out of a centre, not a box of grips: the widget this opens is
                 // an ellipse and has no handles to promise (see `icons::TRANSFORM`).
                 button {

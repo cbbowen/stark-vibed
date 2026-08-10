@@ -559,7 +559,7 @@ pub fn PerspectiveGuideBar() -> Element {
                 {icon(icons::PERSPECTIVE_GRID)}
                 {name}
             }
-            
+
             span { class: "bar-sep" }
 
             // Locks: hold a world axis fixed, constraining the canvas drag to

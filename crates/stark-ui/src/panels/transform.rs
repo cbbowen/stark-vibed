@@ -257,7 +257,7 @@ pub fn TransformBar() -> Element {
                 {icon(icons::TRANSFORM)}
                 {label("Transform")}
             }
-            
+
             span { class: "bar-sep" }
 
             // The three families. Switching carries the deformation when the new

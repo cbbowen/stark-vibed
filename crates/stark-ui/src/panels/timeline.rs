@@ -229,7 +229,7 @@ pub fn TimelineBar() -> Element {
                     {icon(icons::TIMELINE)}
                     {label("Timeline")}
                 }
-                
+
                 span { class: "bar-sep" }
 
                 span { class: "timeline-note",

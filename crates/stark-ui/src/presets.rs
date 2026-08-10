@@ -547,8 +547,9 @@ mod tests {
         // end would be dropped — neither of them visible anywhere.
         let mut seen = Vec::new();
         for entry in shipped() {
-            let Some(slot) = entry
-                .slot else { continue; };
+            let Some(slot) = entry.slot else {
+                continue;
+            };
             assert!(slot < slots::COUNT, "{} ships on {slot}", entry.name);
             assert!(!seen.contains(&slot), "two presets ship on {slot}");
             seen.push(slot);
