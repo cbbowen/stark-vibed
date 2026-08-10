@@ -53,10 +53,6 @@ fn is_red(c: [u8; 4]) -> bool {
 fn is_blue(c: [u8; 4]) -> bool {
     c[2] as i32 > c[0] as i32 + 60 && c[2] as i32 > c[1] as i32 + 60
 }
-fn center(img: &stark_core::RgbaImage) -> [u8; 4] {
-    img.pixel(img.width / 2, img.height / 2)
-}
-
 // Every test that reads the live preview's *colour* — either directly, or by holding
 // it against what commits — is gated off under `debug-unfrozen`, which repaints the
 // live tail magenta by design (see this crate's `Cargo.toml`). The tint has its own

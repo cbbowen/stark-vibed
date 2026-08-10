@@ -63,13 +63,17 @@ impl Filter {
     }
 
     /// The same filter with every parameter finite and in range — the funnel every
-    /// filter passes through on its way into the log.
+    /// filter passes through on its way into the document.
     ///
-    /// Applied where the action is minted rather than where it is used, exactly as a
-    /// layer name is normalized (`Engine::process`): replay then puts back what was
-    /// recorded instead of re-deriving it from rules that may have moved since. The
-    /// bounds matter more than they look — a `NaN` saturation reaches a fullscreen
-    /// pass and poisons every texel of the frame, and nothing downstream can notice.
+    /// Applied in two places, and both matter. Where the action is **minted**
+    /// (`Engine::process`), so the log records what was actually applied and replay
+    /// puts it back rather than re-deriving it. And where a filter **enters state**
+    /// (`DocState::set_filter` / `insert_filter`), because a loaded file or a
+    /// remote peer reaches state without ever passing through `process` —
+    /// idempotent for any log this engine wrote, and the only line of defence
+    /// against one it did not. The bounds matter more than they look: a `NaN`
+    /// saturation reaches a fullscreen pass and poisons every texel of the frame,
+    /// and nothing downstream can notice.
     pub fn sanitized(self) -> Self {
         match self {
             Filter::Color(c) => Filter::Color(c.sanitized()),
@@ -178,20 +182,21 @@ impl Default for ColorAdjust {
 /// Oklab `L` of mid-grey — sRGB `0.5` — which is what [`ColorAdjust::contrast`]
 /// pivots about.
 ///
-/// Written down rather than computed at each use, and worth stating why the number
-/// is what it is: sRGB `0.5` is linear `0.2140`, the Oklab matrix rows sum to one so
-/// a neutral's `l = m = s = 0.2140`, and `L` is the cube root of that. Mirrored in
-/// `filter_common.wesl`, which is the copy that actually runs — the host side exists
-/// so a test can predict a texel without a shader.
-pub const CONTRAST_PIVOT: f32 = 0.5981;
+/// **Generated from `filter_common.wesl`'s own declaration** (§6.10), which is the
+/// copy that actually runs — the host side exists so a test can predict a texel
+/// without a shader, and taking it through the mirror is what makes the two copies
+/// unable to drift (`stark-shaders/build.rs`, `CONSTS`). Worth stating why the
+/// number is what it is: sRGB `0.5` is linear `0.2140`, the Oklab matrix rows sum
+/// to one so a neutral's `l = m = s = 0.2140`, and `L` is the cube root of that.
+pub const CONTRAST_PIVOT: f32 = stark_shaders::mirror::filter_common::CONTRAST_PIVOT;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The pivot is the Oklab lightness of mid-grey, and it is written down in two
-    /// places (here and `filter_common.wesl`). Deriving it here is what says the
-    /// literal is the number it claims to be rather than one somebody typed.
+    /// The pivot is declared once, in `filter_common.wesl`, and arrives here through
+    /// the build-time mirror (§6.10). Deriving it is what says the *shader's* literal
+    /// is the number it claims to be rather than one somebody typed.
     #[test]
     fn the_contrast_pivot_is_mid_greys_lightness() {
         let lin = crate::color::srgb_to_linear(0.5);

@@ -46,6 +46,7 @@ use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch};
+use crate::widgets::settle;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{BlendMode, Place};
 use stark_core::{LayerId, LayerInfo};
@@ -163,7 +164,12 @@ fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
     let above = gap.checked_sub(1).map(|k| &display[rest[k]]);
     let below = rest.get(gap).map(|&k| &display[k]);
     let low = above.map_or(0, |r| r.info.depth);
-    let high = below.map_or(0, |r| r.info.depth + 1).max(low);
+    // One past the row below is that row *carrying* the drop — unless the row below
+    // is a filter, which never carries (§21.2): the engine would refuse the move, so
+    // the panel does not draw a place it cannot drop into.
+    let high = below
+        .map_or(0, |r| r.info.depth + usize::from(r.info.filter.is_none()))
+        .max(low);
     // Relative to the depth it was grabbed at, so a straight-down drag keeps the
     // nesting it had wherever that is still legal, and only a sideways one changes it.
     let want = (deep as f32 + dx / INDENT as f32).round().max(0.0) as usize;
@@ -405,15 +411,12 @@ pub fn LayerPanel() -> Element {
                             dispatch(state, ViewCommand::PreviewLayerOpacity(Some((l.id, opacity))));
                         }
                     },
-                    // Three ways to end, because a range control has three: `change`
-                    // is the one a *keyboard* adjustment sends and the pointer sends
-                    // on release, and the two pointer edges are here because `change`
-                    // is not sent at all when the drag ends on the value it started
-                    // on — which would strand a preview with no commit to supersede
-                    // it. `settle_opacity` is idempotent, so arriving twice is free.
-                    onchange: move |_| settle_opacity(state, l.id, fading),
-                    onpointerup: move |_| settle_opacity(state, l.id, fading),
-                    onpointercancel: move |_| settle_opacity(state, l.id, fading),
+                    // Three ways to end, because a range control has three — see
+                    // `widgets::settle`, which holds the why (and is idempotent, so
+                    // arriving twice is free).
+                    onchange: move |_| settle(state, fading, |v| DocCommand::SetLayerOpacity(l.id, v)),
+                    onpointerup: move |_| settle(state, fading, |v| DocCommand::SetLayerOpacity(l.id, v)),
+                    onpointercancel: move |_| settle(state, fading, |v| DocCommand::SetLayerOpacity(l.id, v)),
                 }
             }
             div { class: "slider-row marked",
@@ -497,8 +500,10 @@ pub fn LayerPanel() -> Element {
 fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
     let mut out = Vec::with_capacity(layers.len());
     let mut shut_at: Option<usize> = None;
-    // The topmost layer seen so far in each stack.
-    let mut top_of: HashMap<Option<LayerId>, LayerId> = HashMap::new();
+    // The topmost layer seen so far in each stack, and whether it is a filter —
+    // which the Carry answer below has to know, since a filter never carries
+    // (§21.2) and a button that spelled a move the engine refuses would be a lie.
+    let mut top_of: HashMap<Option<LayerId>, (LayerId, bool)> = HashMap::new();
     // What carries each layer, for the rows that will ask about their group.
     let mut outer_of: HashMap<LayerId, Option<LayerId>> = HashMap::new();
     for info in layers {
@@ -510,13 +515,15 @@ fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
         if !hidden && collapsed && info.is_group {
             shut_at = Some(info.depth);
         }
-        let carry_onto = top_of.get(&info.carrier).copied();
+        let carry_onto = top_of
+            .get(&info.carrier)
+            .and_then(|&(id, filter)| (!filter).then_some(id));
         let release_to = info
             .carrier
             .map(|group| (group, outer_of.get(&group).copied().flatten()));
         // After the reads, so neither answer is the layer itself. A collapsed group's
         // members are still in their stack, so this happens for hidden rows too.
-        top_of.insert(info.carrier, info.id);
+        top_of.insert(info.carrier, (info.id, info.filter.is_some()));
         outer_of.insert(info.id, info.carrier);
         out.push(Row {
             info: info.clone(),
@@ -579,21 +586,6 @@ fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
             "Takes light away instead of adding it, the way stacked glazes do \u{2014} \
              white leaves the layer below alone, black hides it. For shadows and tinting."
         }
-    }
-}
-
-/// End an opacity drag: commit the value the previews have been showing, once, and
-/// disarm — the release half of the bargain `oninput` makes above (§14.6).
-///
-/// A no-op when nothing is pending, which is what lets the row wire it to all three
-/// of the events that can end a drag without spending an undo step per event. The
-/// commit supersedes the preview engine-side, so nothing has to drop it here — and a
-/// commit to the value the layer already holds is refused there too, so a drag that
-/// travelled out and came back logs nothing.
-fn settle_opacity(state: AppState, id: LayerId, mut pending: Signal<Option<f32>>) {
-    let settled = pending.write().take();
-    if let Some(opacity) = settled {
-        dispatch(state, DocCommand::SetLayerOpacity(id, opacity));
     }
 }
 
@@ -1099,7 +1091,7 @@ mod tests {
             name: None,
             matte: None,
             filter: None,
-            has_lower_sibling: true,
+            has_underlay: true,
         }
     }
 
@@ -1203,6 +1195,27 @@ mod tests {
             (over.carrier, over.at),
             (Some(LayerId(3)), Place::Bottom),
             "one indent right of the same seam, layer 3 carries it"
+        );
+    }
+
+    /// The seam directly over a **filter** row never means "carried by the filter":
+    /// a filter never carries (§21.2) and the engine refuses the move, so the panel
+    /// must not draw a place it cannot drop into. The same rightward travel that
+    /// nests into an ordinary row (the test above) lands beside a filter instead.
+    #[test]
+    fn a_filter_row_offers_no_carry_depth() {
+        use stark_core::document::{ColorAdjust, Filter};
+        let mut rows = flat();
+        rows.iter_mut()
+            .find(|r| r.info.id == LayerId(3))
+            .expect("row 3 is displayed")
+            .info
+            .filter = Some(Filter::Color(ColorAdjust::NEUTRAL));
+        let over = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
+        assert_eq!(
+            (over.depth, over.carrier, over.at),
+            (0, None, Place::Above(LayerId(3))),
+            "an indent right of the seam over a filter stays in the filter's stack"
         );
     }
 

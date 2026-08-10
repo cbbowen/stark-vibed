@@ -8,10 +8,13 @@
 // what a blended layer costs and reuses the very same scratch (`composite/blend.rs`).
 //
 // Everything here is space-independent: the bindings, the adjustment, and the
-// strength mix. Each colour space supplies only `to_light` / `from_light` — its
-// channels ↔ *normalized CIE XYZ* — and calls `adjust`. That is the split
+// strength mix. Each colour space supplies only its channels ↔ **Oklab** — the
+// space the knobs are defined in (§21.5) — and calls `filtered`. That is the split
 // `blend_common.wesl` and `media_common.wesl` already make, and for the same reason:
-// there is one filter model, not one per colour space.
+// there is one filter model, not one per colour space. Oklab rather than light as
+// the interface because it is where the adjustment happens anyway: an Oklab
+// document then passes its channels straight in, instead of a trip out to XYZ that
+// the first thing inside would exactly undo.
 //
 //
 // WHY THE ACCUMULATOR IS NOT A COLOUR
@@ -42,15 +45,17 @@
 // Exposure is the exception, and it is one on purpose: it is applied to **light**,
 // before the trip into Oklab. Doubling light is what an exposure *is* — a stop is a
 // factor of two on the photons — and Oklab's `L` is the cube root of roughly that,
-// so scaling `L` by `2^n` would be a number with no referent.
+// so scaling `L` by `2^n` would be a number with no referent. It is computed on
+// linear sRGB rather than on XYZ, and that is the same operation: the two encodings
+// differ by a fixed linear matrix, and a scalar gain commutes with it.
 
-import package::lib::color::{
-    oklab_to_linear_srgb, linear_srgb_to_oklab, linear_to_light, light_to_linear,
-};
+import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab};
 
-// Filter codes. Mirrored by `filter_code` in `gpu/composite/filter.rs` — this is the
-// shader ABI for `document::Filter`, so it lives next to the shader rather than on
-// the enum, which has no business knowing a `u32`.
+// Filter codes — the shader ABI for `document::Filter`, so they live next to the
+// shader rather than on the enum, which has no business knowing a `u32`. Mirrored
+// into the host by the generator (§6.10, `build.rs` `CONSTS`); `FilterDraw::new`
+// (`gpu/composite/group.rs`) maps each `Filter` variant through the mirror, so an
+// unmirrored kind cannot compile host-side.
 const FILTER_COLOR: u32 = 0u;
 
 struct Filter {
@@ -89,17 +94,20 @@ struct FsOut {
 // it changed, which is not what a contrast control is.
 const CONTRAST_PIVOT: f32 = 0.5981;
 
-// The colour adjustment (§21.5), in light.
+// The colour adjustment (§21.5), in Oklab.
 //
-// In and out in normalized XYZ so the colour spaces share it: the trip to Oklab and
-// back happens here, once, rather than in each space's own file.
-fn adjust_color(light: vec3<f32>, p: vec4<f32>) -> vec3<f32> {
-    // Exposure, in stops, on the light itself — see the header. `max(…, 0)` because
-    // the accumulator is a half-float target that a Drago overshoot or an
-    // out-of-gamut mixture can push a component of just below zero, and Oklab's
-    // signed cube root would happily carry that through into a hue no colour has.
-    let exposed = max(light * exp2(p.x), vec3<f32>(0.0));
-    var lab = linear_srgb_to_oklab(light_to_linear(exposed));
+// In and out in Oklab so the colour spaces share it — and so the space the knobs
+// are defined in is the interface, rather than a light interface whose first and
+// last steps here would cancel a caller's own conversions.
+fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>) -> vec3<f32> {
+    // Exposure, in stops, on the light itself rather than on `L` — see the header.
+    // The trip stops at linear sRGB because a scalar gain commutes with the fixed
+    // matrix between it and XYZ. `max(…, 0)` because the accumulator can hold a
+    // Drago overshoot or an out-of-gamut mixture whose linear form dips below zero,
+    // and Oklab's signed cube root would happily carry that through into a hue no
+    // colour has.
+    let exposed = max(oklab_to_linear_srgb(lab_in) * exp2(p.x), vec3<f32>(0.0));
+    var lab = linear_srgb_to_oklab(exposed);
 
     // Contrast: a gain on lightness about mid-grey.
     lab.x = CONTRAST_PIVOT + (lab.x - CONTRAST_PIVOT) * p.y;
@@ -112,22 +120,22 @@ fn adjust_color(light: vec3<f32>, p: vec4<f32>) -> vec3<f32> {
     let ab = vec2<f32>(lab.y * c - lab.z * s, lab.y * s + lab.z * c) * p.z;
     lab = vec3<f32>(lab.x, ab.x, ab.y);
 
-    return linear_to_light(oklab_to_linear_srgb(lab));
+    return lab;
 }
 
-// One texel's worth of the filter: the backdrop's light in, the filtered light out.
+// One texel's worth of the filter: the backdrop in Oklab, the filtered Oklab out.
 //
 // The dispatch on `kind` is here rather than in each space's `fs_main` so that
 // adding a filter is adding an arm to *one* function — the same reason `combine`
 // holds all four blend modes rather than one per shader.
-fn filtered(light: vec3<f32>) -> vec3<f32> {
+fn filtered(lab: vec3<f32>) -> vec3<f32> {
     // One arm, so this is a `return` and not a chain — but it is written as a guard
     // rather than as the body, because the next filter is an arm above it and the
     // fallthrough has to be somebody's.
     if f.kind == FILTER_COLOR {
-        return adjust_color(light, f.params);
+        return adjust_color(lab, f.params);
     }
-    return light;
+    return lab;
 }
 
 // How much of the adjustment lands: the layer's opacity, as a mix from what was

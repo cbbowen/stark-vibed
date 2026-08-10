@@ -61,14 +61,18 @@ pub struct FilterDraw {
 impl FilterDraw {
     /// The draw parameters for `filter` applied at `strength`.
     ///
-    /// The one place a `Filter` becomes numbers, so the ABI is stated once. A filter
-    /// kind that is added to the document and not to `filter_common.wesl` fails to
-    /// compile here rather than rendering as whichever kind happens to share its
-    /// index.
+    /// The one place a `Filter` becomes numbers, so the ABI is stated once — and
+    /// each arm's code is the **mirrored** `FILTER_*` constant from
+    /// `filter_common.wesl` (§6.10), never a literal. That is what makes the claim
+    /// structural: a filter kind added to the document without a declaration in the
+    /// shader has no constant to name here, so this match fails to compile rather
+    /// than rendering as whichever kind happens to share its index. (The shader's
+    /// `filtered()` still needs its arm; what cannot happen is the two agreeing on
+    /// the *wrong* number.)
     pub fn new(filter: Filter, strength: f32) -> Self {
         match filter {
             Filter::Color(c) => Self {
-                kind: 0,
+                kind: stark_shaders::mirror::filter_common::FILTER_COLOR,
                 strength,
                 params: [c.exposure, c.contrast, c.saturation, c.hue],
             },
@@ -237,21 +241,6 @@ impl CompositeGroup {
         self.blend.is_normal() && !self.clip && self.opacity >= 1.0
     }
 
-    /// How deep the isolation nests below this group: 0 for a `Run`, one more
-    /// than its deepest member for a `Stack`. The scratch stack is sized by this
-    /// (§14.7).
-    ///
-    /// 0 for a `Filter` too, and for the same reason a `Run` is 0: it nests nothing
-    /// below it. It still needs a level's `swap` to ping-pong through, which it gets
-    /// from the stack it is a member of — [`scratch_levels`] counts it because
-    /// [`as_direct_run`](Self::as_direct_run) does not claim it.
-    fn depth(&self) -> usize {
-        match &self.content {
-            GroupContent::Run(_) | GroupContent::Filter(_) => 0,
-            GroupContent::Stack(members) => 1 + members.iter().map(Self::depth).max().unwrap_or(0),
-        }
-    }
-
     /// Every drawable in this group, in composite order — the flat streams pass A
     /// uploads (the draw loop walks the tree, but the instance buffers do not
     /// need to).
@@ -271,12 +260,42 @@ impl CompositeGroup {
     }
 }
 
-/// How many scratch levels compositing `members` as one stack takes: none if every
-/// member draws straight into the accumulator, else one for this stack plus however
-/// many the deepest nested group below it needs.
-pub(super) fn scratch_levels(members: &[CompositeGroup]) -> usize {
-    if members.iter().all(|m| m.as_direct_run().is_some()) {
-        return 0;
+/// What scratch compositing `members` as one stack takes, one entry per level the
+/// encoding recursion actually reaches: `needs[l]` says whether level `l` isolates
+/// anything — a merge composites its group alone into the level's `iso` — or only
+/// ping-pongs, which is all a **filter** does (§21.3) and costs the level its
+/// `swap` pair alone. Empty when every member draws straight into the accumulator,
+/// which is the common document and allocates nothing.
+///
+/// A stack consumes a level exactly when it holds a non-direct member — the same
+/// test `encode_stack` makes — so the entries here line up one-for-one with the
+/// levels the encoder will ask for, and a nested stack whose members all draw
+/// directly consumes none.
+pub(super) fn scratch_needs(members: &[CompositeGroup]) -> Vec<bool> {
+    fn walk(members: &[CompositeGroup], level: usize, needs: &mut Vec<bool>) {
+        if members.iter().all(|m| m.as_direct_run().is_some()) {
+            return;
+        }
+        if needs.len() <= level {
+            needs.resize(level + 1, false);
+        }
+        for m in members {
+            if m.as_direct_run().is_some() {
+                continue;
+            }
+            match &m.content {
+                // A filter reads the accumulator and writes the other half of the
+                // ping-pong: swap only, never iso.
+                GroupContent::Filter(_) => {}
+                GroupContent::Run(_) => needs[level] = true,
+                GroupContent::Stack(inner) => {
+                    needs[level] = true;
+                    walk(inner, level + 1, needs);
+                }
+            }
+        }
     }
-    1 + members.iter().map(CompositeGroup::depth).max().unwrap_or(0)
+    let mut needs = Vec::new();
+    walk(members, 0, &mut needs);
+    needs
 }

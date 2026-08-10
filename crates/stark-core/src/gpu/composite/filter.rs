@@ -6,10 +6,11 @@
 //! [`blend`](super::blend) binds a backdrop *and* an isolated layer, this binds only
 //! the backdrop. Everything else is shared: the same ping-pong (a texture cannot be
 //! both read and written), the same [`ScratchLevel`] to bounce through, the same
-//! `min_uniform_buffer_offset_alignment` slot per pass, and the same "no
-//! fixed-function blend, the pass computes the whole result" pipeline.
+//! [`UniformSlots`] mechanism for a slot per pass, and the same "no fixed-function
+//! blend, the pass computes the whole result" pipeline.
 //!
 //! [`ScratchLevel`]: super::blend::ScratchLevel
+//! [`UniformSlots`]: super::blend::UniformSlots
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
@@ -17,18 +18,6 @@ use crate::gpu::desc;
 
 // Generated from `filter_common.wesl`'s own declaration (§6.10).
 pub(super) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
-
-/// One dynamic-offset slot of the filter uniform, on the alignment every backend
-/// accepts — the same argument, and the same number, as [`BLEND_SLOT`].
-///
-/// A slot per filter layer rather than one buffer rewritten per pass: `write_buffer`
-/// is a *queue* operation, so N rewrites before a single submit would leave every
-/// pass reading the last filter written. Two filter layers in one document is not an
-/// edge case — a grade at the top of the stack over a tint inside a group is the
-/// ordinary use — so the buffer holds them all and each pass binds its own offset.
-///
-/// [`BLEND_SLOT`]: super::blend::BLEND_SLOT
-pub(super) const FILTER_SLOT: u64 = super::blend::BLEND_SLOT;
 
 /// The filter pass: one fullscreen draw rewriting the accumulator.
 pub(super) struct FilterPass {
@@ -89,13 +78,4 @@ impl FilterPass {
         );
         Self { pipeline, bgl }
     }
-}
-
-pub(super) fn alloc_filter(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark filter uniform"),
-        size: FILTER_SLOT * count.max(1) as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }

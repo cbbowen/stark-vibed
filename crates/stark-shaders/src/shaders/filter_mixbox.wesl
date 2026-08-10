@@ -1,8 +1,8 @@
 // Filter layers for the **Mixbox** pigment colour space (§21, §6.7). Same
 // adjustment as every other space; what differs is that a channel triple here is a
-// mixture of pigments rather than a colour, so the trip out to light is Mixbox's
-// polynomial and the trip back is its LUT — exactly as `blend_mixbox.wesl` does it,
-// and for the same reason.
+// mixture of pigments rather than a colour, so the trip out to Oklab is Mixbox's
+// polynomial and the trip back is its LUT — exactly as `blend_mixbox.wesl` reaches
+// light, and for the same reason.
 //
 // One consequence worth naming, because it is the same one the blend pass carries:
 // pigment cannot be brighter than the light falling on it, and the LUT is defined on
@@ -11,7 +11,9 @@
 // Oklab document. That is not a limitation being tolerated; a pigment document says
 // what a pigment can be, and paint does not glow.
 
-import package::lib::color::{srgb_to_linear, linear_to_srgb, linear_to_light, light_to_linear};
+import package::lib::color::{
+    srgb_to_linear, linear_to_srgb, linear_srgb_to_oklab, oklab_to_linear_srgb,
+};
 import package::gen::mixbox_poly::{mixbox_eval_polynomial};
 import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
@@ -34,12 +36,12 @@ struct FsOut {
     @location(2) resid: vec4<f32>,
 }
 
-// A latent (concentrations + residual) → normalized XYZ. Mixbox's `latent_to_rgb` is
-// `poly(c) + r`, and taking the polynomial alone is what makes a black backdrop go
-// out to light as mid-grey (§6.7).
-fn latent_to_light(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
+// A latent (concentrations + residual) → Oklab, `filter_common`'s interface.
+// Mixbox's `latent_to_rgb` is `poly(c) + r`, and taking the polynomial alone is
+// what makes a black backdrop go out as mid-grey (§6.7).
+fn latent_to_lab(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
     let srgb = clamp(mixbox_eval_polynomial(conc) + res, vec3<f32>(0.0), vec3<f32>(1.0));
-    return linear_to_light(srgb_to_linear(srgb));
+    return linear_srgb_to_oklab(srgb_to_linear(srgb));
 }
 
 @vertex
@@ -59,11 +61,11 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let chan = cb.rgb / max(cb.a, COVERAGE_EPS);
     let res = rb.rgb / max(cb.a, COVERAGE_EPS);
 
-    let light = filtered(latent_to_light(chan, res));
-    // `max(…, 0)` before the sRGB encode, then a clamp: the adjustment is done in
-    // XYZ and can step outside the gamut, and the LUT is indexed by sRGB.
+    let lab = filtered(latent_to_lab(chan, res));
+    // `max(…, 0)` before the sRGB encode, then a clamp: the adjustment can step
+    // outside the gamut, and the LUT is indexed by sRGB.
     let srgb = clamp(
-        linear_to_srgb(max(light_to_linear(light), vec3<f32>(0.0))),
+        linear_to_srgb(max(oklab_to_linear_srgb(lab), vec3<f32>(0.0))),
         vec3<f32>(0.0), vec3<f32>(1.0),
     );
     let out_chan = mixbox_srgb_to_concentrations(srgb);

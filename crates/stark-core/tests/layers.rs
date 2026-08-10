@@ -4,10 +4,10 @@
 mod common;
 
 use common::*;
+use stark_core::Engine;
 use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::{LayerId, Place};
 use stark_core::geom::Vec2;
-use stark_core::{Engine, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
@@ -18,12 +18,6 @@ const TOP: LayerId = LayerId(1);
 const H_STROKE: &[Vec2] = &[Vec2::new(-25.0, 0.0), Vec2::new(25.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -25.0), Vec2::new(0.0, 25.0)];
 
-fn center(img: &RgbaImage) -> [u8; 4] {
-    img.pixel(img.width / 2, img.height / 2)
-}
-fn red_dominant(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 30 && c[0] as i32 > c[2] as i32 + 30
-}
 fn green_dominant(c: [u8; 4]) -> bool {
     c[1] as i32 > c[0] as i32 + 30 && c[1] as i32 > c[2] as i32 + 30
 }

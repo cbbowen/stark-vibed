@@ -41,9 +41,6 @@ fn add_frame(engine: &mut Engine) -> LayerId {
 fn is_dark(c: [u8; 4]) -> bool {
     c[0] < 60 && c[1] < 60 && c[2] < 60
 }
-fn red_dominant(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 30 && c[0] as i32 > c[2] as i32 + 30
-}
 fn corners(img: &RgbaImage) -> [[u8; 4]; 4] {
     let (w, h) = (img.width - 1, img.height - 1);
     [

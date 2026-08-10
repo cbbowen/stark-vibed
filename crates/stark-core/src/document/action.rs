@@ -502,6 +502,9 @@ impl history::Action for Action {
                 region,
                 color,
             } => state.insert_matte(*id, *carrier, *above, *region, *color),
+            // The payload is sanitized inside `insert_filter`/`set_filter` — the
+            // funnel sits in state, where replayed files and remote peers land too,
+            // not only where a local command is minted (§21.5).
             ActionKind::AddFilter {
                 id,
                 carrier,

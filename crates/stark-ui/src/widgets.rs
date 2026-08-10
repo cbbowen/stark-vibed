@@ -54,3 +54,29 @@ pub fn Slider(
 }
 
 // --- command dispatch ---
+
+/// End a preview drag: commit the value the previews have been showing, once, and
+/// disarm — the release half of the preview-per-sample, commit-once bargain the
+/// opacity slider (§14.6), the filter bar (§21.6) and the frame drag all make.
+///
+/// A no-op when nothing is pending, which is what lets a control wire it to all
+/// three of the events that can end a drag (`change`, `pointerup`, `pointercancel`)
+/// without spending an undo step per event — `change` alone is not enough, because
+/// it is not sent when a drag ends on the value it started on, which would strand a
+/// preview with no commit to supersede it. The commit supersedes the preview
+/// engine-side, so nothing has to drop it here; and a commit to the value the
+/// document already holds is refused there too, so a drag that travelled out and
+/// came back logs nothing.
+///
+/// One function rather than a copy per slider, because the subtleties above are the
+/// kind that get re-learned wrong: the next drag control gets them by calling this.
+pub fn settle<T: 'static>(
+    state: crate::state::AppState,
+    mut pending: Signal<Option<T>>,
+    commit: impl FnOnce(T) -> stark_core::command::DocCommand,
+) {
+    let settled = pending.write().take();
+    if let Some(value) = settled {
+        crate::state::dispatch(state, commit(value));
+    }
+}

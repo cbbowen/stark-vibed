@@ -16,10 +16,10 @@
 mod common;
 
 use common::*;
+use stark_core::Engine;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{ColorAdjust, Filter, LayerId, Place};
 use stark_core::geom::Vec2;
-use stark_core::{Engine, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const STROKE: &[Vec2] = &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
@@ -37,15 +37,6 @@ const GREY: Filter = Filter::Color(ColorAdjust {
     ..ColorAdjust::NEUTRAL
 });
 
-fn center(img: &RgbaImage) -> [u8; 4] {
-    img.pixel(img.width / 2, img.height / 2)
-}
-
-/// Whether a pixel reads as paint rather than as bare canvas.
-fn red_dominant(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 30 && c[0] as i32 > c[2] as i32 + 30
-}
-
 /// Whether a pixel is achromatic — the three channels within a level or two of one
 /// another, which is what a saturation of zero has to produce.
 fn is_grey(c: [u8; 4]) -> bool {
@@ -57,9 +48,12 @@ fn is_grey(c: [u8; 4]) -> bool {
 }
 
 /// Add a filter into `carrier`'s stack (the document's own when `None`) and hand
-/// back its id. The engine mints it, so the new filter is the topmost one in the
-/// layer stack that came back.
+/// back its id. The engine mints the id, so the new filter is the layer the
+/// projection *gained* — found by diffing against the ids that existed before,
+/// because "the topmost filter" is somebody else's filter the moment a document
+/// holds two (the trap the AddFilterButton fell into once).
 fn add_filter(engine: &mut Engine, carrier: Option<LayerId>, filter: Filter) -> LayerId {
+    let before: Vec<LayerId> = engine.observe().layers.iter().map(|l| l.id).collect();
     engine.process(DocCommand::AddFilter {
         carrier,
         above: None,
@@ -69,8 +63,7 @@ fn add_filter(engine: &mut Engine, carrier: Option<LayerId>, filter: Filter) -> 
         .observe()
         .layers
         .iter()
-        .rev()
-        .find(|l| l.filter.is_some())
+        .find(|l| l.filter.is_some() && !before.contains(&l.id))
         .map(|l| l.id)
         .expect("the filter landed")
 }
@@ -232,10 +225,9 @@ fn a_carried_filter_reaches_only_its_own_group() {
     );
 }
 
-/// A filter with nothing beneath it **in its own stack** is the identity, and the
-/// case that is easy to miss is the second one: a filter at the foot of the document
-/// has an empty backdrop, and so does a filter used as a *group base*, because what
-/// a group carries composites over its base rather than under it (§21.2).
+/// A filter with nothing beneath it **in its own stack** is the identity: at the
+/// foot of the document there is nothing composited yet, and a stack whose lower
+/// layers are all hidden reaches the filter with an empty accumulator (§21.2).
 #[test]
 fn a_filter_with_nothing_beneath_it_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
@@ -254,15 +246,127 @@ fn a_filter_with_nothing_beneath_it_changes_no_pixel() {
         "a filter under everything still changed the picture",
     );
 
-    // …and as a group base, with the painted layer carried onto it.
+    // …and above nothing but a hidden layer, which the draw list culls exactly as
+    // it culls an empty one.
+    engine.process(DocCommand::MoveLayer {
+        id,
+        carrier: None,
+        at: Place::Top,
+    });
+    engine.process(DocCommand::SetLayerVisible(paint_layer, false));
+    let hidden = engine.render_to_image();
+    engine.process(DocCommand::SetLayerVisible(paint_layer, true));
+    let shown = engine.render_to_image();
+    assert!(
+        !images_match(&hidden, &shown, 0),
+        "hiding the only painted layer has to change the picture",
+    );
+    // What matters: with the paint hidden, the grade must not spring onto the
+    // bare canvas — the canvas with everything hidden reads the same whether the
+    // grey filter is above it or removed.
+    engine.process(DocCommand::SetLayerVisible(paint_layer, false));
+    let with_filter = engine.render_to_image();
+    engine.process(DocCommand::RemoveLayer(id));
+    assert!(
+        images_match(&with_filter, &engine.render_to_image(), 0),
+        "a filter above nothing but a hidden layer still changed the picture",
+    );
+}
+
+/// A filter never carries (§21.2): dropping a layer onto one — and adding a layer
+/// into one — is refused **by the engine**, deterministically, so no document can
+/// hold the arrangement in which a filter's reach would be an empty group. The
+/// refusal is state's, not a frontend rule, so replay and peers agree.
+#[test]
+fn a_filter_refuses_carried_layers() {
+    let Some(mut engine) = painted() else { return };
+    let paint_layer = engine.observe().active_layer;
+    let before = engine.render_to_image();
+    let id = add_filter(&mut engine, None, NEUTRAL);
+
+    // A move onto the filter is declined outright…
     engine.process(DocCommand::MoveLayer {
         id: paint_layer,
         carrier: Some(id),
         at: Place::Top,
     });
+    let obs = engine.observe();
+    let carrier_of = |target: LayerId| {
+        obs.layers
+            .iter()
+            .find(|l| l.id == target)
+            .expect("layer projected")
+            .carrier
+    };
+    assert_eq!(
+        carrier_of(paint_layer),
+        None,
+        "a filter accepted a carried layer",
+    );
+    drop(obs);
+
+    // …and so is adding a new layer into the filter's (nonexistent) group.
+    engine.process(DocCommand::AddLayer {
+        carrier: Some(id),
+        above: None,
+    });
+    assert!(
+        engine
+            .observe()
+            .layers
+            .iter()
+            .all(|l| l.carrier != Some(id)),
+        "AddLayer attached a child to a filter",
+    );
+
+    // The declined gestures changed nothing on screen either.
     assert!(
         images_match(&before, &engine.render_to_image(), 0),
-        "a filter used as a group base still changed the picture",
+        "a refused carry still changed the picture",
+    );
+}
+
+/// The bar's "nothing below it" note reads `has_underlay`, and that answer has to
+/// agree with the renderer (§21.2): a filter carried onto a painted layer *is*
+/// reaching that layer's paint — the "filter just this layer" gesture — and a
+/// filter above nothing but a hidden layer is reaching nothing, whatever the row
+/// order says.
+#[test]
+fn the_reach_note_agrees_with_the_renderer() {
+    let Some(mut engine) = painted() else { return };
+    let paint_layer = engine.observe().active_layer;
+
+    let underlay_of = |engine: &Engine, id: LayerId| {
+        engine
+            .observe()
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .expect("filter projected")
+            .has_underlay
+    };
+
+    // Carried onto a painted layer: the carrier's own content is beneath it.
+    let carried = add_filter(&mut engine, Some(paint_layer), GREY);
+    assert!(
+        underlay_of(&engine, carried),
+        "a filter carried onto painted content reaches it (its bar must not say \
+         'nothing below it' while the canvas is visibly graded)",
+    );
+    engine.process(DocCommand::RemoveLayer(carried));
+
+    // Above the paint in the root stack: reaches it. Hide the paint: reaches
+    // nothing, exactly as the draw list culls it.
+    let top = add_filter(&mut engine, None, GREY);
+    assert!(
+        underlay_of(&engine, top),
+        "paint beneath, in the same stack"
+    );
+    engine.process(DocCommand::SetLayerVisible(paint_layer, false));
+    assert!(
+        !underlay_of(&engine, top),
+        "a hidden layer fills nothing beneath a filter — the sliders would change \
+         no pixel, and the bar has to say why",
     );
 }
 

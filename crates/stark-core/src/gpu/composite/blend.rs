@@ -68,14 +68,83 @@ pub(super) fn blend_code(mode: BlendMode) -> u32 {
     }
 }
 
-/// One dynamic-offset slot of the blend uniform, padded to the alignment every
-/// backend accepts (`min_uniform_buffer_offset_alignment` is 256 on the strictest).
+/// One dynamic-offset uniform slot, padded to the alignment every backend accepts
+/// (`min_uniform_buffer_offset_alignment` is 256 on the strictest). The blend and
+/// filter passes share the number because they share the law behind it.
 ///
-/// A slot per blend group rather than one buffer rewritten per pass: `write_buffer`
+/// A slot per pass rather than one buffer rewritten between passes: `write_buffer`
 /// is a *queue* operation, so N rewrites before a single submit would leave every
-/// pass reading the last mode written. Two blend layers in one document is not an
-/// edge case, so the buffer holds them all and each pass binds its own offset.
-pub(super) const BLEND_SLOT: u64 = 256;
+/// pass reading the last value written. Two blend groups — or two filters — in one
+/// document is not an edge case, so a buffer holds them all and each pass binds its
+/// own offset.
+pub(super) const UNIFORM_SLOT: u64 = 256;
+
+/// A grow-on-demand buffer of [`UNIFORM_SLOT`]-sized uniform slots — the one
+/// mechanism behind the blend pass's per-merge uniforms and the filter pass's
+/// per-layer ones, so the slot law above lives in one place rather than once per
+/// pass that needs it.
+///
+/// The buffers themselves stay separate per pass (the two uniforms are different
+/// shapes, and a document with three filters and no blend modes should not have to
+/// reason about which slots the other pass skipped); what is shared is the
+/// allocation, the growth policy, and the write-every-slot-before-the-submit rule.
+pub(super) struct UniformSlots {
+    buf: wgpu::Buffer,
+    slots: usize,
+    label: &'static str,
+}
+
+impl UniformSlots {
+    pub(super) fn new(device: &wgpu::Device, label: &'static str, count: usize) -> Self {
+        Self {
+            buf: alloc_slots(device, label, count),
+            slots: count.max(1),
+            label,
+        }
+    }
+
+    /// Write one uniform per slot, growing the buffer first if this frame has more
+    /// of them than any before it. Every slot is written before the frame's single
+    /// submit, which is the whole reason slots exist — see [`UNIFORM_SLOT`].
+    pub(super) fn write<T: bytemuck::Pod>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uniforms: &[T],
+    ) {
+        debug_assert!(
+            std::mem::size_of::<T>() as u64 <= UNIFORM_SLOT,
+            "a pass uniform must fit its slot",
+        );
+        if uniforms.is_empty() {
+            return;
+        }
+        if uniforms.len() > self.slots {
+            self.buf = alloc_slots(device, self.label, uniforms.len());
+            self.slots = uniforms.len();
+        }
+        for (i, uniform) in uniforms.iter().enumerate() {
+            queue.write_buffer(
+                &self.buf,
+                i as u64 * UNIFORM_SLOT,
+                bytemuck::bytes_of(uniform),
+            );
+        }
+    }
+
+    pub(super) fn buffer(&self) -> &wgpu::Buffer {
+        &self.buf
+    }
+}
+
+fn alloc_slots(device: &wgpu::Device, label: &'static str, count: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: UNIFORM_SLOT * count.max(1) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
 
 /// The blend pass: one fullscreen draw merging an isolated group into the
 /// accumulator.
@@ -170,67 +239,99 @@ impl BlendPass {
     }
 }
 
-pub(super) fn alloc_blend(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark blend uniform"),
-        size: BLEND_SLOT * count.max(1) as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+/// One set of channel targets — colour, aux, and (in a space that has one) the
+/// residual — owned rather than borrowed, as [`Targets`] is the borrowed view of.
+struct Trio {
+    color: wgpu::TextureView,
+    aux: wgpu::TextureView,
+    resid: Option<wgpu::TextureView>,
 }
 
-/// The extra viewport-sized targets **one level** of isolation needs
-/// (§18.0.4).
-///
-/// Two pairs, not one. `iso` is where a group composites alone; `swap` is the other
-/// half of a ping-pong, because the blend pass reads the accumulator and writes the
-/// merged result and a texture cannot be both.
-pub(super) struct ScratchLevel {
-    swap_color: wgpu::TextureView,
-    swap_aux: wgpu::TextureView,
-    swap_resid: Option<wgpu::TextureView>,
-    iso_color: wgpu::TextureView,
-    iso_aux: wgpu::TextureView,
-    iso_resid: Option<wgpu::TextureView>,
-}
-
-impl ScratchLevel {
+impl Trio {
     fn new(
         device: &wgpu::Device,
         size: Extent2,
+        labels: (&str, &str, &str),
         color_format: wgpu::TextureFormat,
         aux_format: wgpu::TextureFormat,
         resid_format: Option<wgpu::TextureFormat>,
     ) -> Self {
         let make = |format, label| super::offscreen_view(device, size, format, label);
         Self {
-            swap_color: make(color_format, "stark blend swap color"),
-            swap_aux: make(aux_format, "stark blend swap aux"),
+            color: make(color_format, labels.0),
+            aux: make(aux_format, labels.1),
             // A pigment document isolates its residual alongside its concentrations:
             // the blend reads both to work out what light the layer carried
             // (§6.7), so a level that isolated only the colour would hand the pass
             // a mixture and none of the correction that makes it a colour.
-            swap_resid: resid_format.map(|f| make(f, "stark blend swap resid")),
-            iso_color: make(color_format, "stark blend iso color"),
-            iso_aux: make(aux_format, "stark blend iso aux"),
-            iso_resid: resid_format.map(|f| make(f, "stark blend iso resid")),
+            resid: resid_format.map(|f| make(f, labels.2)),
+        }
+    }
+
+    fn targets(&self) -> Targets<'_> {
+        Targets {
+            color: &self.color,
+            aux: &self.aux,
+            resid: self.resid.as_ref(),
+        }
+    }
+}
+
+/// The extra viewport-sized targets **one level** of isolation needs
+/// (§18.0.4).
+///
+/// `swap` is the other half of a ping-pong, because a merge — and a filter pass —
+/// reads the accumulator and writes the result and a texture cannot be both; every
+/// level has one. `iso`, where a group composites alone, exists only on a level
+/// whose stack actually isolates something: a level that only ping-pongs (a stack
+/// whose sole non-direct members are filters, §21.3) never allocates the trio it
+/// provably cannot bind.
+pub(super) struct ScratchLevel {
+    swap: Trio,
+    iso: Option<Trio>,
+}
+
+impl ScratchLevel {
+    fn new(
+        device: &wgpu::Device,
+        size: Extent2,
+        iso: bool,
+        color_format: wgpu::TextureFormat,
+        aux_format: wgpu::TextureFormat,
+        resid_format: Option<wgpu::TextureFormat>,
+    ) -> Self {
+        let trio = |labels| Trio::new(device, size, labels, color_format, aux_format, resid_format);
+        Self {
+            swap: trio((
+                "stark blend swap color",
+                "stark blend swap aux",
+                "stark blend swap resid",
+            )),
+            iso: iso.then(|| {
+                trio((
+                    "stark blend iso color",
+                    "stark blend iso aux",
+                    "stark blend iso resid",
+                ))
+            }),
         }
     }
 
     pub(super) fn swap(&self) -> Targets<'_> {
-        Targets {
-            color: &self.swap_color,
-            aux: &self.swap_aux,
-            resid: self.swap_resid.as_ref(),
-        }
+        self.swap.targets()
+    }
+
+    /// Whether this level was allocated with an isolation trio — what
+    /// `ensure_scratch` checks a cached level against the frame's needs with.
+    pub(super) fn has_iso(&self) -> bool {
+        self.iso.is_some()
     }
 
     pub(super) fn iso(&self) -> Targets<'_> {
-        Targets {
-            color: &self.iso_color,
-            aux: &self.iso_aux,
-            resid: self.iso_resid.as_ref(),
-        }
+        self.iso
+            .as_ref()
+            .expect("a merge at a level allocated without iso scratch (scratch_needs)")
+            .targets()
     }
 }
 
@@ -240,8 +341,10 @@ impl ScratchLevel {
 /// A group's members isolate into *its* level's `iso`, which is the target the
 /// next level down composites into — so nesting costs one of these per level and
 /// not one per group. Allocated only when a document contains something that has
-/// to be isolated at all: an ordinary painting never pays the ~40 MB, and one
-/// that uses blend modes without groups pays for exactly the one level it uses.
+/// to be isolated at all — an ordinary painting never pays the ~40 MB — and each
+/// level allocates only the half its stack uses (`needs`, from
+/// [`scratch_needs`](super::group::scratch_needs)): a document whose only
+/// non-`Normal` thing is a filter pays for the ping-pong pair alone.
 pub(super) struct ScratchTargets {
     pub(super) size: Extent2,
     pub(super) levels: Vec<ScratchLevel>,
@@ -251,15 +354,18 @@ impl ScratchTargets {
     pub(super) fn new(
         device: &wgpu::Device,
         size: Extent2,
-        levels: usize,
+        needs: &[bool],
         color_format: wgpu::TextureFormat,
         aux_format: wgpu::TextureFormat,
         resid_format: Option<wgpu::TextureFormat>,
     ) -> Self {
         Self {
             size,
-            levels: (0..levels)
-                .map(|_| ScratchLevel::new(device, size, color_format, aux_format, resid_format))
+            levels: needs
+                .iter()
+                .map(|&iso| {
+                    ScratchLevel::new(device, size, iso, color_format, aux_format, resid_format)
+                })
                 .collect(),
         }
     }

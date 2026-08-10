@@ -37,15 +37,9 @@ const WIDE_STROKE: &[Vec2] = &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)];
 fn at(img: &RgbaImage, x: u32, y: u32) -> [u8; 4] {
     img.pixel(x, y)
 }
-fn center(img: &RgbaImage) -> [u8; 4] {
-    at(img, img.width / 2, img.height / 2)
-}
 /// Well outside the 100×100 hole, but still on the stroke.
 fn outside(img: &RgbaImage) -> [u8; 4] {
     at(img, 12, img.height / 2)
-}
-fn red_dominant(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 30 && c[0] as i32 > c[2] as i32 + 30
 }
 fn is_dark(c: [u8; 4]) -> bool {
     c[0] < 60 && c[1] < 60 && c[2] < 60

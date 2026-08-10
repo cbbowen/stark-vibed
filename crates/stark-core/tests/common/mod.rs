@@ -186,6 +186,22 @@ pub fn paint(engine: &mut Engine, color: [f32; 4], radius: f32, points: &[Vec2])
     stroke_with(engine, brush(color, radius), points);
 }
 
+/// The centre pixel — where the suites' standard stroke crosses.
+pub fn center(img: &RgbaImage) -> [u8; 4] {
+    img.pixel(img.width / 2, img.height / 2)
+}
+
+/// Whether a pixel reads as (red) paint rather than bare canvas: the red channel
+/// clear of both others by a margin no substrate or light in the suite produces
+/// (see [`PAPER`] and the `Neutral` reference light in [`engine_or_skip`]).
+///
+/// One copy with one margin, shared by every suite that asks "is there paint
+/// here?" — so a render change that shifts channel separation moves every test the
+/// same distance instead of being patched file by file.
+pub fn red_dominant(c: [u8; 4]) -> bool {
+    c[0] as i32 > c[1] as i32 + 30 && c[0] as i32 > c[2] as i32 + 30
+}
+
 /// Fraction of pixels whose maximum per-channel difference exceeds `tol`.
 pub fn diff_fraction(a: &RgbaImage, b: &RgbaImage) -> (f64, u8) {
     assert_eq!(

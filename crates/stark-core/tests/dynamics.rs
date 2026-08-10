@@ -30,10 +30,6 @@ fn is_red(c: [u8; 4]) -> bool {
 fn is_green(c: [u8; 4]) -> bool {
     c[1] as i32 > c[0] as i32 + 60 && c[1] as i32 > c[2] as i32 + 60
 }
-fn center(img: &stark_core::RgbaImage) -> [u8; 4] {
-    img.pixel(img.width / 2, img.height / 2)
-}
-
 #[test]
 fn conservative_smear_preserves_uniform_field() {
     // With `add = 0` the tool only *moves* paint between canvas and reservoir.

@@ -37,10 +37,6 @@ const COOL: [f32; 4] = [0.10, 0.30, 0.85, 1.0];
 const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
 
-fn center(img: &RgbaImage) -> [u8; 4] {
-    img.pixel(img.width / 2, img.height / 2)
-}
-
 /// Perceived brightness, for "did combining light make it brighter?" — the one
 /// question every mode here has to answer yes to.
 fn luma(c: [u8; 4]) -> f64 {

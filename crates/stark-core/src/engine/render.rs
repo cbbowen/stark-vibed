@@ -544,28 +544,31 @@ impl Engine {
             if !layer.visible || layer.opacity <= 0.0 {
                 continue;
             }
-            let own = self.layer_items(layer, visible);
-            let carried = self.composite_stack(layer.carries.iter(), visible, !own.is_empty());
             // A **filter layer** rewrites what is already composited beneath it *in
             // its own stack* (§21.2) — the same set a clip reads, which is what makes
             // "filter just this layer" the single gesture of carrying it onto that
-            // layer rather than a scoping mode of its own.
+            // layer rather than a scoping mode of its own. It never carries anything
+            // itself: the state refuses to attach children to one
+            // (`DocState::cannot_carry`), so this branch is the whole of what a
+            // filter can be.
             //
             // Two ways it reaches nothing, and both drop it from the draw list rather
             // than encoding a pass that provably cannot change a texel: **nothing is
-            // beneath it here** (the foot of a stack — and a filter that carries
-            // layers, whose own content is the bottom of its group with the members
-            // composited *over* it, so there is nothing under it there either), or the
-            // filter is at its **neutral** setting, which is what a freshly added one
-            // holds (§21.3).
-            if let Some(f) = layer.filter()
-                && carried.is_empty()
-            {
+            // beneath it here** (the foot of a stack, or a stack whose lower members
+            // were all culled), or the filter is at its **neutral** setting, which is
+            // what a freshly added one holds (§21.3).
+            if let Some(f) = layer.filter() {
+                debug_assert!(
+                    layer.carries.is_empty(),
+                    "a filter never carries (§21.2) — the state refuses the arrangement",
+                );
                 if (under || !groups.is_empty()) && !f.is_neutral() {
                     groups.push(CompositeGroup::filter(FilterDraw::new(f, layer.opacity)));
                 }
                 continue;
             }
+            let own = self.layer_items(layer, visible);
+            let carried = self.composite_stack(layer.carries.iter(), visible, !own.is_empty());
             // An empty layer is dropped rather than given a group. For `Normal`
             // that only saves a loop; for a blend mode or a clip it saves two
             // render passes that provably compute the identity, which is what

@@ -40,7 +40,7 @@ use crate::assets::{AssetId, AssetStore};
 use crate::colorspace::{ColorSpace, ColorSpaceId};
 use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, ViewCommand};
 use crate::document::{
-    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, CanvasBounds, DocState,
+    Action, ActionId, ActionKind, ActorId, ApplyCtx, BrushParams, CanvasBounds, DocState, Layer,
     LayerContent, LayerId, LinearTimeline, ShapeAction, Timeline, Tool,
 };
 use crate::error::EngineError;
@@ -134,17 +134,21 @@ pub struct LayerInfo {
     /// current values off this and send the adjusted filter straight back, so a
     /// filter that grows a knob costs the projection nothing (§21.6).
     pub filter: Option<crate::document::Filter>,
-    /// Whether anything composites beneath this layer **within its own stack** —
-    /// which is exactly what a filter layer rewrites (§21.2).
+    /// Whether the compositor would draw anything beneath this layer **within its
+    /// own stack** — which is exactly what a filter layer rewrites (§21.2).
     ///
-    /// Not the same question as [`has_backdrop`](Self::has_backdrop), and the two
-    /// differ on precisely one kind of row: the **base of a group**, which has a
-    /// backdrop (what lies under the group) but nothing under it inside the group,
-    /// because what it carries composites *over* it. A blend mode and a clip point
-    /// outward from there and are live; a filter points at its own stack and is
-    /// inert. So a panel that showed one answer for both would tell a filter used as
-    /// a group base that it was doing something.
-    pub has_lower_sibling: bool,
+    /// Not the same question as [`has_backdrop`](Self::has_backdrop), in two ways
+    /// that both matter to the one consumer (the filter bar's "nothing below it"
+    /// notice). It counts the **carrier's own content**: a group's base composites
+    /// at the bottom of the group, so a filter carried onto a painted layer — the
+    /// "filter just this layer" gesture — has that paint beneath it even as the
+    /// first carried row. And it counts only what would actually **draw**: a
+    /// hidden, fully transparent or never-painted layer is culled from the draw
+    /// list (`render.rs`), so a filter above nothing but those reaches nothing,
+    /// whatever the row order says. `has_backdrop` stays positional because blend
+    /// and clip are defined against position (§14.4.3); this one follows the
+    /// renderer because a filter's reach *is* the renderer's accumulator.
+    pub has_underlay: bool,
 }
 
 impl LayerInfo {
@@ -862,8 +866,10 @@ impl Engine {
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewFilter(set) => {
-                let preview = set
-                    .map(|(id, filter)| self.timeline.current().set_filter(id, filter.sanitized()));
+                // `set_filter` sanitizes on the way into state (§21.5), so the
+                // preview cannot show numbers the commit would then refuse.
+                let preview =
+                    set.map(|(id, filter)| self.timeline.current().set_filter(id, filter));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewTransform(t) => {
@@ -914,6 +920,23 @@ impl Engine {
 
     /// A snapshot of UI-facing state (§7).
     pub fn observe(&self) -> ObservableState {
+        /// Whether `l`'s **own content** puts anything into the accumulator: a
+        /// matte always covers, paint only once painted, a filter never — it
+        /// rewrites what is there and adds nothing (§21.3).
+        fn draws_content(l: &Layer) -> bool {
+            match &l.content {
+                LayerContent::Matte { .. } => true,
+                LayerContent::Paint(_) => l.tiles().is_some_and(|t| !t.is_empty()),
+                LayerContent::Filter(_) => false,
+            }
+        }
+        /// Whether the compositor would draw anything at all for `l` — the same
+        /// culls `render.rs` applies (visibility, opacity, emptiness), asked of the
+        /// document rather than of a viewport, so the answer does not change when
+        /// the artist scrolls.
+        fn contributes(l: &Layer) -> bool {
+            l.visible && l.opacity > 0.0 && (draws_content(l) || l.carries.iter().any(contributes))
+        }
         let doc = self.timeline.current();
         // The layers and the substrate colour are read from the *previewed*
         // document when one is in flight, so the frame's handles track a drag and
@@ -934,29 +957,37 @@ impl Engine {
         // is the order a panel draws in and the order the compositor draws in, and
         // one list that means both is one thing to keep in agreement.
         let mut layers: Vec<LayerInfo> = Vec::new();
-        let mut carriers: Vec<LayerId> = Vec::new();
-        // Whether each depth's *current* stack has yielded a layer yet — the walk's
-        // own answer to "is there a sibling below me here", which is what a filter
-        // reads (§21.2). Truncating on the way back up is what makes it per-stack
-        // rather than per-depth: re-entering depth `d` from deeper is the same stack
-        // and keeps its flag, while descending to a new `d` starts it false.
+        // The carrier chain down to the current row: the id (what `LayerInfo::carrier`
+        // reports) and whether that carrier's own content draws anything — the seed
+        // for the stack its carries open, since a base composites at the bottom of
+        // its group (§14.1).
+        let mut carriers: Vec<(LayerId, bool)> = Vec::new();
+        // Whether each depth's *current* stack has anything drawable beneath the row
+        // being visited — the walk's own answer to "would a filter here reach
+        // something" (§21.2), kept in agreement with the draw list's culls
+        // (`render.rs`) rather than with row order: a hidden, transparent or empty
+        // sibling fills nothing. Truncating on the way back up is what makes it
+        // per-stack rather than per-depth: re-entering depth `d` from deeper is the
+        // same stack and keeps its flag, while descending to a new `d` starts it at
+        // the carrier's own content.
         let mut filled: Vec<bool> = Vec::new();
         shown.visit(&mut |l, depth| {
             carriers.truncate(depth);
             if filled.len() > depth {
                 filled.truncate(depth + 1);
             } else {
-                filled.resize(depth + 1, false);
+                let seed = carriers.last().is_some_and(|&(_, draws)| draws);
+                filled.resize(depth + 1, seed);
             }
-            let has_lower_sibling = filled[depth];
-            filled[depth] = true;
+            let has_underlay = filled[depth];
+            filled[depth] = filled[depth] || contributes(l);
             layers.push(LayerInfo {
                 id: l.id,
                 blend: l.blend,
                 clip: l.clip,
                 opacity: l.opacity,
                 visible: l.visible,
-                carrier: carriers.last().copied(),
+                carrier: carriers.last().map(|&(id, _)| id),
                 depth,
                 is_group: l.is_group(),
                 // Read straight off the traversal: composite order visits the
@@ -979,9 +1010,9 @@ impl Engine {
                     LayerContent::Paint(_) | LayerContent::Filter(_) => None,
                 },
                 filter: l.filter(),
-                has_lower_sibling,
+                has_underlay,
             });
-            carriers.push(l.id);
+            carriers.push((l.id, draws_content(l)));
         });
         ObservableState {
             can_undo: self.timeline.can_undo(),

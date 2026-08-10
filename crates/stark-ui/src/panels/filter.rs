@@ -22,9 +22,10 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::state::{AppState, dispatch};
-use stark_core::LayerInfo;
+use crate::widgets::settle;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{ColorAdjust, Filter};
+use stark_core::{LayerId, LayerInfo};
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
 /// round trip through [`ColorAdjust`].
@@ -44,6 +45,9 @@ use stark_core::document::{ColorAdjust, Filter};
 struct Knob {
     name: &'static str,
     hint: &'static str,
+    /// The slider's span, in display units — derived from the core's own bounds
+    /// (`ColorAdjust::EXPOSURE` and friends) so the track and the sanitizer cannot
+    /// disagree about how far a knob goes.
     range: (f32, f32),
     /// What the slider shows, in the unit the *hand* thinks in — degrees for the
     /// hue, the number itself for the rest. The engine's unit is radians (§21.5),
@@ -51,7 +55,14 @@ struct Knob {
     scale: f32,
     get: fn(&ColorAdjust) -> f32,
     set: fn(ColorAdjust, f32) -> ColorAdjust,
+    /// How the number beside the track reads, in the slider's own unit — in the
+    /// table with everything else per-knob, so renaming a knob cannot silently
+    /// change how its value prints.
+    fmt: fn(f32) -> String,
 }
+
+/// Degrees per radian, for the one knob whose display unit is not the engine's.
+const DEG: f32 = 180.0 / std::f32::consts::PI;
 
 const KNOBS: &[Knob] = &[
     Knob {
@@ -63,6 +74,9 @@ const KNOBS: &[Knob] = &[
         scale: 1.0,
         get: |c| c.exposure,
         set: |c, v| ColorAdjust { exposure: v, ..c },
+        // The `+` is worth the arm: a stop is a signed quantity centred on zero,
+        // and "0.50" and "+0.50" say different things.
+        fmt: |v| format!("{v:+.2}"),
     },
     Knob {
         name: "Contrast",
@@ -73,6 +87,7 @@ const KNOBS: &[Knob] = &[
         scale: 1.0,
         get: |c| c.contrast,
         set: |c, v| ColorAdjust { contrast: v, ..c },
+        fmt: |v| format!("{v:.2}"),
     },
     Knob {
         name: "Saturation",
@@ -82,15 +97,19 @@ const KNOBS: &[Knob] = &[
         scale: 1.0,
         get: |c| c.saturation,
         set: |c, v| ColorAdjust { saturation: v, ..c },
+        fmt: |v| format!("{v:.2}"),
     },
     Knob {
         name: "Hue",
         hint: "Turn every colour around the wheel, in degrees. Lightness and \
                saturation are held, so a hue shift is a hue shift.",
-        range: (-180.0, 180.0),
-        scale: std::f32::consts::PI / 180.0,
+        range: (ColorAdjust::HUE.0 * DEG, ColorAdjust::HUE.1 * DEG),
+        scale: 1.0 / DEG,
         get: |c| c.hue,
         set: |c, v| ColorAdjust { hue: v, ..c },
+        // A hue is a whole number of degrees to anyone reading it; decimals of a
+        // degree are noise.
+        fmt: |v| format!("{}\u{00B0}", v.round() as i32),
     },
 ];
 
@@ -143,17 +162,29 @@ pub fn AddFilterButton() -> Element {
                     inside one",
             onclick: move |_| {
                 let (carrier, above) = at.unwrap_or((None, None));
+                // The ids that already exist, taken before the dispatch: `AddFilter`
+                // mints the new id engine-side, so the new layer is the one the
+                // projection gains — not "the topmost filter", which is somebody
+                // else's filter the moment one already sits above the insertion
+                // point.
+                let before: Vec<LayerId> = state
+                    .obs
+                    .read()
+                    .as_ref()
+                    .map(|o| o.layers.iter().map(|l| l.id).collect())
+                    .unwrap_or_default();
                 dispatch(state, DocCommand::AddFilter {
                     carrier,
                     above,
                     // Neutral, so adding one changes nothing until it is dialled.
                     filter: Filter::Color(ColorAdjust::NEUTRAL),
                 });
-                // Select it, so its bar comes up without a second click. `AddFilter`
-                // mints the id engine-side, so the new one is the topmost filter in
-                // the layer stack that came back.
+                // Select it, so its bar comes up without a second click.
                 let new_id = state.obs.read().as_ref().and_then(|o| {
-                    o.layers.iter().rev().find(|l| l.filter.is_some()).map(|l| l.id)
+                    o.layers
+                        .iter()
+                        .find(|l| l.filter.is_some() && !before.contains(&l.id))
+                        .map(|l| l.id)
                 });
                 if let Some(id) = new_id {
                     dispatch(state, PeerCommand::SetActiveLayer(id));
@@ -185,10 +216,10 @@ pub fn FilterBar() -> Element {
     };
     let Filter::Color(adjust) = filter;
     // A filter with nothing composited beneath it in its own stack does nothing at
-    // all (§21.2) — the foot of a stack, or a filter something has been dropped onto,
-    // where what it carries composites *over* it. Said once, in the bar, rather than
-    // greying out four sliders that would each have to explain the same thing.
-    let inert = !info.has_lower_sibling;
+    // all (§21.2) — the foot of a stack, or a stack whose lower layers are all
+    // hidden or empty. Said once, in the bar, rather than greying out four sliders
+    // that would each have to explain the same thing.
+    let inert = !info.has_underlay;
 
     rsx! {
         div { class: chrome_class(state, "filter-bar"),
@@ -204,8 +235,8 @@ pub fn FilterBar() -> Element {
                 span {
                     class: "filter-inert",
                     title: "A filter adjusts what is composited below it in its own \
-                            stack. Move it above a layer, or drop a layer onto it, \
-                            and it will have something to work on.",
+                            stack. Move it above a layer with something visible on \
+                            it and it will have something to work on.",
                     "nothing below it"
                 }
             }
@@ -235,16 +266,12 @@ pub fn FilterBar() -> Element {
                                 dispatch(state, ViewCommand::PreviewFilter(Some((info.id, next))));
                             }
                         },
-                        // Three ways to end, for the reason the opacity slider has
-                        // three (`panels::layer`): `change` is what a *keyboard*
-                        // adjustment sends and what the pointer sends on release, and
-                        // the two pointer edges are here because `change` is not sent
-                        // at all when a drag ends on the value it started on — which
-                        // would strand a preview with no commit to supersede it.
-                        // `settle` is idempotent, so arriving twice is free.
-                        onchange: move |_| settle(state, info.id, tuning),
-                        onpointerup: move |_| settle(state, info.id, tuning),
-                        onpointercancel: move |_| settle(state, info.id, tuning),
+                        // Three ways to end, because a range control has three — see
+                        // `widgets::settle`, which holds the why (and is idempotent,
+                        // so arriving twice is free).
+                        onchange: move |_| settle(state, tuning, |f| DocCommand::SetFilter(info.id, f)),
+                        onpointerup: move |_| settle(state, tuning, |f| DocCommand::SetFilter(info.id, f)),
+                        onpointercancel: move |_| settle(state, tuning, |f| DocCommand::SetFilter(info.id, f)),
                     }
                 }
             }
@@ -275,32 +302,9 @@ pub fn FilterBar() -> Element {
     }
 }
 
-/// What the number reads as beside its track, in the unit the slider is in.
-///
-/// Two decimals for the gains and none for the two that are already coarse: a hue is
-/// a whole number of degrees to anyone reading it, and a stop past two decimals is
-/// noise. The `+` on a positive exposure is worth the branch — it is a signed
-/// quantity centred on zero, and "0.50" and "+0.50" say different things.
+/// What the number reads as beside its track: the knob's own `fmt`, on the value in
+/// the slider's unit — per-knob in the table, so a label edit cannot change how a
+/// value prints.
 fn readout(knob: &Knob, adjust: &ColorAdjust) -> String {
-    let v = (knob.get)(adjust) / knob.scale;
-    match knob.name {
-        "Exposure" => format!("{v:+.2}"),
-        "Hue" => format!("{}\u{00B0}", v.round() as i32),
-        _ => format!("{v:.2}"),
-    }
-}
-
-/// End a slider drag: commit the filter the previews have been showing, once, and
-/// disarm — the release half of the bargain `oninput` makes above (§21.6).
-///
-/// A no-op when nothing is pending, which is what lets all three of the events that
-/// can end a drag be wired to it without spending an undo step per event. The commit
-/// supersedes the preview engine-side, so nothing has to drop it here — and a commit
-/// to the filter the layer already holds is refused there too, so a drag that
-/// travelled out and came back logs nothing.
-fn settle(state: AppState, id: stark_core::LayerId, mut pending: Signal<Option<Filter>>) {
-    let settled = pending.write().take();
-    if let Some(filter) = settled {
-        dispatch(state, DocCommand::SetFilter(id, filter));
-    }
+    (knob.fmt)((knob.get)(adjust) / knob.scale)
 }

@@ -45,27 +45,30 @@ Two consequences worth stating because they are load-bearing later:
   reordering, removal, duplication, undo, save, replay, collaboration — §5, §8, §12
   and §14 need no new argument, exactly as §15.3 argues for the matte.
 
-### 21.2 Reach, and the two places it is empty
+### 21.2 Reach, where it is empty, and the arrangement that cannot exist
 
 "Beneath it in its own stack" is the accumulator that stack has built so far, and the
 compositor gives that meaning for free: a filter inside a group reads the group's
 isolated accumulator, and a filter at the root reads the document's.
 
-It reaches nothing in exactly two situations, and both are the *same* situation seen
-twice:
+It reaches nothing at **the foot of a stack** — nothing has been composited yet — and
+above nothing but layers the draw list culls: hidden, fully transparent, never
+painted. In both, the filter is the identity, and the draw list leaves it out rather
+than encoding a pass that provably cannot change a texel (§21.3). The panel says so:
+`LayerInfo::has_underlay` is the projected predicate, and it is deliberately **not**
+`has_backdrop`. It counts the *carrier's own content* — a base composites at the
+bottom of its group (§14.1), so a filter carried onto a painted layer has that paint
+beneath it even as the first carried row — and it counts only what would actually
+draw, because it exists to answer for the renderer, not for the row order.
 
-- **The foot of a stack.** Nothing has been composited yet.
-- **The base of a group.** A group's members composite *over* its base (§14.1), so a
-  filter that has had a layer dropped onto it has nothing under it inside its own
-  group. The layers it carries are above it, not below.
-
-In both, the filter is the identity, and the draw list leaves it out rather than
-encoding a pass that provably cannot change a texel (§21.3). The panel says so:
-`LayerInfo::has_lower_sibling` is the projected predicate, and it is deliberately
-**not** `has_backdrop`. The two differ on precisely the group-base row — which has a
-backdrop (what lies under the group) but no lower sibling — and that is the one row
-where a blend mode and a clip are live while a filter is not, because those point
-outward (§14.4.3) and a filter points at its own stack.
+One arrangement is ruled out rather than special-cased: **a filter never carries.**
+A group's members composite *over* their base (§14.1), so a filter that had layers
+dropped onto it could reach none of them — an arrangement that means nothing, and
+whose every consumer would have needed a rule for it. `DocState` refuses to build it
+(every carrier-attachment path declines a filter carrier, deterministically), so no
+local gesture, no replayed file and no peer can create it; the panel's drag never
+offers the inside of a filter row as a drop target, on its own rule that it draws no
+place it cannot drop into.
 
 ### 21.3 Compositing: the blend pass with the source removed
 
@@ -86,17 +89,20 @@ pub enum GroupContent {
   parity trick that lands the final result in the caller's own targets (§6.3) counts a
   filter as one flip like any merge. `scratch_levels` already counts it, because
   `as_direct_run()` does not claim it.
-- **The same scratch.** A filter needs a level's `swap` and does not use its `iso`.
-  That is one viewport pair of waste in a document whose *only* non-`Normal` thing is
-  a filter, and it buys one allocation path rather than two.
+- **The same scratch.** A filter needs a level's `swap` and does not use its `iso` —
+  and a level allocates only the half its stack actually uses (`scratch_needs`), so a
+  document whose *only* non-`Normal` thing is a filter pays for the ping-pong pair
+  alone.
 - **No effect on a document without one.** Every existing golden is unchanged, which
   is the evidence: adding a variant to `GroupContent` changed no draw a paint-only
   document issues.
 
 `FilterDraw` is deliberately not a `Filter`: which `u32` a filter kind is numbered is
 a fact about `filter_common.wesl`, the split `blend_code` already makes for a blend
-mode. Flattening the layer's opacity into it as a *strength* at the same time is what
-leaves the encoder one thing to write rather than two to remember to combine.
+mode — and the `FILTER_*` codes are **mirrored** into the host by the generator
+(§6.10), so `FilterDraw::new` names the shader's own constant and the two sides
+cannot drift. Flattening the layer's opacity into it as a *strength* at the same time
+is what leaves the encoder one thing to write rather than two to remember to combine.
 
 Two things are dropped from the draw list rather than drawn, and both are exactness
 requirements rather than optimizations:
@@ -129,16 +135,17 @@ amount of paint (§6.1). A filter has an opinion about neither:
 | `opacity` | the filter's **strength** | a mix from the untouched backdrop to the filtered result — which is what fading a layer already means |
 | `visible` | on/off | as everywhere |
 | `name`, position, removal, duplication | as everywhere | it is a layer |
-| `blend` | **inert** | a mode describes how a *source* meets a backdrop; a filter has no source, it *is* the backdrop |
-| `clip` | **inert** | same reason, and there is nothing to clip: a filter already writes only where the backdrop is |
+| `blend` | **refused** | a mode describes how a *source* meets a backdrop; a filter has no source, it *is* the backdrop — and it can never be a group's base (§21.2), so no outward-pointing merge exists either. State declines to store one, like paint on a matte, rather than holding a value nothing can ever read |
+| `clip` | **refused** | same reason, and there is nothing to clip: a filter already writes only where the backdrop is |
+| carried layers | **refused** | a filter never carries — see §21.2; the state declines the attachment itself |
 | paint | **refused** | no tile map — the same refusal a matte gives (§15.7), in `apply` and in the preview path alike, so replay and peers agree |
 
 Strength is mixed in the **working space** rather than in light, which is what makes
 strength 0 the *exact* identity rather than the identity plus a round trip's rounding.
 
-The panel shows blend and clip inert on a filter row for the reason §14.4.3 shows them
-inert on the bottom row: a control that cannot express anything here should say so
-rather than accept a value nothing reads. The opacity slider is relabelled
+The panel shows blend and clip disabled on a filter row for the reason §14.4.3 shows
+them inert on the bottom row: a control that cannot express anything here should say
+so rather than accept a value nothing reads. The opacity slider is relabelled
 **Strength** on a filter row — "50% opacity" on a colour adjustment invites the reading
 that the filter is half transparent, when what it is is half applied.
 
@@ -163,19 +170,22 @@ slider makes. Saturation in sRGB shifts hue. Contrast in sRGB shifts saturation.
 on a saturated red, by about 0.1 in `L`. Here a chroma gain is a chroma gain, so four
 controls cover what a levels dialog needs seven to approximate.
 
-**Exposure is the exception, and it is one on purpose.** It is applied to *light* — the
-same normalized XYZ the blend modes combine in (§18.0.4) — before the trip into Oklab.
-Doubling light is what an exposure *is*; `L` is roughly the cube root of that, so
-scaling `L` by `2^n` would be a number with no referent. It is also the reason the
-pass is bracketed per colour space exactly as the blend pass is: `filter_oklab.wesl`
-and `filter_mixbox.wesl` supply only channels ↔ light, and `filter_common.wesl` holds
-the adjustment.
+**Exposure is the exception, and it is one on purpose.** It is applied to *light* —
+before the trip into Oklab. Doubling light is what an exposure *is*; `L` is roughly
+the cube root of that, so scaling `L` by `2^n` would be a number with no referent.
+(The shader computes the gain on linear sRGB, which is the same operation: the two
+encodings differ by a fixed linear matrix, and a scalar commutes with it.) The pass
+is bracketed per colour space exactly as the blend pass is — `filter_oklab.wesl` and
+`filter_mixbox.wesl` supply only channels ↔ **Oklab**, and `filter_common.wesl` holds
+the adjustment; Oklab rather than light as the interface because it is where the
+adjustment happens anyway, so an Oklab document passes its channels straight in
+instead of paying a conversion the first thing inside would exactly undo.
 
 **Contrast pivots on mid-grey, not on the picture's own mean.** A pivot that depends on
 what is underneath would make the slider do something different every time a layer
-below it changed, which is not what a contrast control is. The constant is
-`document::CONTRAST_PIVOT`, mirrored in the shader and derived rather than trusted by
-a unit test.
+below it changed, which is not what a contrast control is. The constant is declared
+once, in `filter_common.wesl`, mirrored into the host as `document::CONTRAST_PIVOT`
+by the generator (§6.10), and derived rather than trusted by a unit test.
 
 **One honest consequence in a pigment document.** Pigment cannot be brighter than the
 light falling on it and Mixbox's inverse LUT is defined on `[0,1]` sRGB, so a positive
@@ -183,14 +193,17 @@ exposure saturates at white there instead of pushing past it into the media pass
 highlight roll-off the way it does in an Oklab document. That is the same thing
 `blend_mixbox.wesl` says about `Radiance`, and for the same reason: paint does not glow.
 
-**Every parameter is bounded and sanitized on the way into the log.** A fullscreen pass
+**Every parameter is bounded and sanitized on the way in — twice.** A fullscreen pass
 has no coverage to hide behind — a `NaN` saturation from a file or a peer reaches every
 texel of the frame, and nothing downstream can notice. `Filter::sanitized` clamps to
 the documented ranges and replaces a non-finite value with the *neutral* setting for
 that knob, because `NaN` says nothing about which end was meant and the identity is the
 one answer that cannot make a picture worse. It runs where the action is minted, so
 replay puts back what was applied rather than re-deriving it (the funnel `SetLayerName`
-already goes through).
+already goes through) — and again where a filter **enters state**
+(`DocState::set_filter` / `insert_filter`), because a loaded file's replay and a
+remote peer's action never pass through the mint. Idempotent on any log this engine
+wrote; the only line of defence against one it did not.
 
 ### 21.6 Interaction
 
@@ -286,16 +299,20 @@ nothing on screen to say where it came from.
 5. A **carried** filter reaches only its own group — the layer above the group is
    untouched. This is §21.1's whole claim, drawn.
 6. A filter with **nothing beneath it in its own stack** changes no pixel, in both
-   forms: at the foot of the document, and as a group base.
-7. A filter can be **selected** but takes no paint, and the refusal is the engine's.
-8. A filter **undoes** — the adjustment, and the add behind it.
-9. A slider drag **previews without logging**, and the commit renders what the preview
-   showed.
-10. A filter **survives save and load** — pixel-identical and setting-identical.
+   forms: at the foot of the document, and above nothing but a hidden layer.
+7. A filter **refuses carried layers** — the drop and the add alike — and the
+   refusal is the state's, so replay and peers agree (§21.2). And the panel's
+   "nothing below it" note agrees with the renderer: a filter carried onto painted
+   content reaches it; one above only a hidden layer does not.
+8. A filter can be **selected** but takes no paint, and the refusal is the engine's.
+9. A filter **undoes** — the adjustment, and the add behind it.
+10. A slider drag **previews without logging**, and the commit renders what the
+    preview showed.
+11. A filter **survives save and load** — pixel-identical and setting-identical.
     `AddFilter` and `SetFilter` are the first actions to carry a `Filter`, and
     postcard writes no field names and no lengths, so a layout mistake decodes into a
     *different adjustment* rather than into an error (§8).
-11. A filter works in a **pigment** document — the road out through Mixbox's
+12. A filter works in a **pigment** document — the road out through Mixbox's
     polynomial and back through its inverse LUT, with the latent residual carried on
     both legs (§6.7). Nothing in an Oklab test touches that half.
 

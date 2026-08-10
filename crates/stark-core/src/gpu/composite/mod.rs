@@ -51,9 +51,11 @@ use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 
-use blend::{BLEND_SLOT, BlendPass, BlendUniform, ScratchLevel, ScratchTargets, Targets};
-use filter::{FILTER_SLOT, FilterPass, FilterUniform, alloc_filter};
-use group::scratch_levels;
+use blend::{
+    BlendPass, BlendUniform, ScratchLevel, ScratchTargets, Targets, UNIFORM_SLOT, UniformSlots,
+};
+use filter::{FilterPass, FilterUniform};
+use group::scratch_needs;
 // The free items are imported by name rather than qualified, because `render`'s own
 // `guides` binding (the scene's list) would otherwise shadow the module in a reader's
 // eye — `alloc_guides(device, guides.len())` resolves fine and reads badly.
@@ -241,15 +243,11 @@ pub struct Compositor {
     instance_cap: usize,
     matte_instances: wgpu::Buffer,
     matte_cap: usize,
-    // One dynamic-offset slot per blend group in the frame.
-    blend_buf: wgpu::Buffer,
-    blend_slots: usize,
-    // …and one per filter layer (§21). A separate buffer rather than a shared one:
-    // the two uniforms are different shapes, and a document with three filters and
-    // no blend modes should not have to reason about which slots the other pass
-    // skipped.
-    filter_buf: wgpu::Buffer,
-    filter_slots: usize,
+    // One dynamic-offset slot per blend group in the frame, and one per filter
+    // layer (§21). Separate buffers, one mechanism — see [`UniformSlots`] for both
+    // the sharing and the separation.
+    blend_uniforms: UniformSlots,
+    filter_uniforms: UniformSlots,
     // Pass C's, grown to the outlined mask-tile count.
     overlay_instances: wgpu::Buffer,
     overlay_cap: usize,
@@ -399,10 +397,8 @@ impl Compositor {
             instance_cap: 1,
             matte_instances: alloc_mattes(device, 1),
             matte_cap: 1,
-            blend_buf: blend::alloc_blend(device, 1),
-            blend_slots: 1,
-            filter_buf: alloc_filter(device, 1),
-            filter_slots: 1,
+            blend_uniforms: UniformSlots::new(device, "stark blend uniform", 1),
+            filter_uniforms: UniformSlots::new(device, "stark filter uniform", 1),
             overlay_instances: alloc_overlay(device, 1),
             overlay_cap: 1,
             guide_buf: alloc_guides(device, 1),
@@ -539,7 +535,7 @@ impl Compositor {
         }
 
         // One uniform slot per merge and one per filter layer, all written before the
-        // single submit — see `BLEND_SLOT` for why they cannot share one.
+        // single submit — see `UNIFORM_SLOT` for why they cannot share one.
         //
         // Collected by the **same recursion the encoder consumes them with**, so
         // slot `n` is the `n`th merge (or the `n`th filter) either walk reaches. That
@@ -578,32 +574,8 @@ impl Compositor {
         }
         let (mut blends, mut filters) = (Vec::new(), Vec::new());
         collect(groups, &mut blends, &mut filters);
-        if !blends.is_empty() {
-            if blends.len() > self.blend_slots {
-                self.blend_buf = blend::alloc_blend(device, blends.len());
-                self.blend_slots = blends.len();
-            }
-            for (i, uniform) in blends.iter().enumerate() {
-                p.ctx.queue.write_buffer(
-                    &self.blend_buf,
-                    i as u64 * BLEND_SLOT,
-                    bytemuck::bytes_of(uniform),
-                );
-            }
-        }
-        if !filters.is_empty() {
-            if filters.len() > self.filter_slots {
-                self.filter_buf = alloc_filter(device, filters.len());
-                self.filter_slots = filters.len();
-            }
-            for (i, uniform) in filters.iter().enumerate() {
-                p.ctx.queue.write_buffer(
-                    &self.filter_buf,
-                    i as u64 * FILTER_SLOT,
-                    bytemuck::bytes_of(uniform),
-                );
-            }
-        }
+        self.blend_uniforms.write(device, &p.ctx.queue, &blends);
+        self.filter_uniforms.write(device, &p.ctx.queue, &filters);
         tile_bgs
     }
 
@@ -793,7 +765,7 @@ impl Compositor {
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &self.blend_buf,
+                    buffer: self.blend_uniforms.buffer(),
                     offset: 0,
                     size: wgpu::BufferSize::new(std::mem::size_of::<BlendUniform>() as u64),
                 }),
@@ -832,7 +804,7 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&e.p.blend.pipeline);
-        pass.set_bind_group(0, &bg, &[slot * BLEND_SLOT as u32]);
+        pass.set_bind_group(0, &bg, &[slot * UNIFORM_SLOT as u32]);
         pass.draw(0..3, 0..1);
     }
 
@@ -857,7 +829,7 @@ impl Compositor {
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &self.filter_buf,
+                    buffer: self.filter_uniforms.buffer(),
                     offset: 0,
                     size: wgpu::BufferSize::new(std::mem::size_of::<FilterUniform>() as u64),
                 }),
@@ -891,7 +863,7 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&e.p.filter.pipeline);
-        pass.set_bind_group(0, &bg, &[slot * FILTER_SLOT as u32]);
+        pass.set_bind_group(0, &bg, &[slot * UNIFORM_SLOT as u32]);
         pass.draw(0..3, 0..1);
     }
 
@@ -910,27 +882,36 @@ impl Compositor {
         size: Extent2,
         groups: &[CompositeGroup],
     ) -> bool {
-        let levels = scratch_levels(groups);
-        if levels == 0 {
+        let mut needs = scratch_needs(groups);
+        if needs.is_empty() {
             return false;
         }
-        // Grown to the deepest nesting the document has *reached*, and never
-        // shrunk within a size: a group opened and closed again over and over
-        // would otherwise reallocate two viewport-sized pairs each time.
-        if self
-            .scratch
-            .as_ref()
-            .is_none_or(|s| s.size != size || s.levels.len() < levels)
-        {
-            self.scratch = Some(ScratchTargets::new(
-                &p.ctx.device,
-                size,
-                levels,
-                p.color_format,
-                p.aux_format,
-                p.resid_format,
-            ));
+        // Grown to the most the document has *reached* — depth and per-level iso
+        // alike — and never shrunk within a size: a group opened and closed again
+        // over and over would otherwise reallocate viewport-sized targets each
+        // time. The union with what the cache already holds is what makes "never
+        // shrunk" one rule for both axes.
+        if let Some(s) = self.scratch.as_ref().filter(|s| s.size == size) {
+            if needs.len() < s.levels.len() {
+                needs.resize(s.levels.len(), false);
+            }
+            for (need, level) in needs.iter_mut().zip(&s.levels) {
+                *need |= level.has_iso();
+            }
+            let sufficient = s.levels.len() == needs.len()
+                && s.levels.iter().zip(&needs).all(|(l, &n)| l.has_iso() || !n);
+            if sufficient {
+                return true;
+            }
         }
+        self.scratch = Some(ScratchTargets::new(
+            &p.ctx.device,
+            size,
+            &needs,
+            p.color_format,
+            p.aux_format,
+            p.resid_format,
+        ));
         true
     }
 
@@ -975,12 +956,12 @@ impl Compositor {
         // trade that for reallocating the *window* twice a frame (see
         // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
         // eyedropper would report a colour the screen never showed.
-        let levels = scratch_levels(groups);
-        let scratch = (levels > 0).then(|| {
+        let needs = scratch_needs(groups);
+        let scratch = (!needs.is_empty()).then(|| {
             ScratchTargets::new(
                 &p.ctx.device,
                 view.viewport,
-                levels,
+                &needs,
                 p.color_format,
                 p.aux_format,
                 p.resid_format,

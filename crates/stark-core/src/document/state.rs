@@ -333,6 +333,19 @@ impl DocState {
         self.locate(id).map(|(_, site)| site)
     }
 
+    /// Whether `carrier` names a layer that may not carry: a **filter** (§21.2).
+    ///
+    /// A group's members composite *over* its base, and a filter rewrites only what
+    /// is *beneath* it in its own stack — so a filter that carried layers could
+    /// never reach them, and every consumer (the draw list, the projection, the
+    /// panel) would need a rule for an arrangement that means nothing. The rule is
+    /// ruled out as a class instead: the state refuses to hold it, here and in
+    /// [`Self::move_layer`], so no action can create it and nothing downstream has
+    /// to ask.
+    fn cannot_carry(&self, carrier: Option<LayerId>) -> bool {
+        carrier.is_some_and(|c| self.layer(c).is_some_and(|l| l.filter().is_some()))
+    }
+
     /// Insert a new empty paint layer into the stack carried by `carrier` (the
     /// root stack when `None`), directly above `above` — or on top of that stack
     /// when `above` is absent or lives somewhere else.
@@ -360,6 +373,8 @@ impl DocState {
 
     /// Insert a **filter** layer the same way — §21. It rewrites whatever is
     /// composited beneath it in the stack it lands in.
+    ///
+    /// Sanitized on the way in, as [`set_filter`](Self::set_filter) is — see there.
     pub fn insert_filter(
         &self,
         id: LayerId,
@@ -367,10 +382,16 @@ impl DocState {
         above: Option<LayerId>,
         filter: Filter,
     ) -> Self {
-        self.insert(Layer::filter_layer(id, filter), carrier, above)
+        self.insert(Layer::filter_layer(id, filter.sanitized()), carrier, above)
     }
 
     fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Option<LayerId>) -> Self {
+        // A filter never carries (§21.2): what a group carries composites *over*
+        // its base, so a filter base could reach none of it — declined here, in
+        // state, so replay and peers agree and no path can build the arrangement.
+        if self.cannot_carry(carrier) {
+            return self.clone();
+        }
         // A new layer goes above a named sibling or on top; it has no reason to
         // ask for the foot of a stack, so insertion keeps the two-state anchor and
         // widens it here (`Place::from`).
@@ -432,6 +453,12 @@ impl DocState {
         let at = |stack: &Vector<Layer>| site.index.min(stack.len());
         let layers = match site.carrier {
             None => Some(insert_at(&self.layers, at(&self.layers), &layer)),
+            // A site whose carrier has become a filter (a crafted log — no action
+            // this engine mints can produce one, see `cannot_carry`) falls back
+            // exactly as a removed carrier does: restored rather than lost.
+            Some(_) if self.cannot_carry(site.carrier) => {
+                Some(insert_at(&self.layers, self.layers.len(), &layer))
+            }
             Some(c) => map_in(&self.layers, c, &mut |l: &Layer| {
                 l.with_carries(insert_at(&l.carries, at(&l.carries), &layer))
             })
@@ -478,10 +505,18 @@ impl DocState {
     /// frontend reads the current settings off the projection, moves one of them, and
     /// sends the value back, so a filter that grows a parameter needs no command of
     /// its own — and neither does the next filter kind.
+    ///
+    /// **Sanitized here**, where every filter enters state — not only where a local
+    /// command is minted (§21.5). A loaded file's replay and a remote peer's action
+    /// reach this through `ActionKind::apply` without ever passing
+    /// `Engine::process`, and a fullscreen pass has no coverage to hide behind: a
+    /// NaN smuggled in by a crafted or corrupted log would poison every texel of
+    /// the frame. Idempotent for any log this engine wrote, so replay still puts
+    /// back exactly what was applied.
     pub fn set_filter(&self, id: LayerId, filter: Filter) -> Self {
         self.map_layer(id, |l| match &l.content {
             LayerContent::Filter(_) => Layer {
-                content: LayerContent::Filter(filter),
+                content: LayerContent::Filter(filter.sanitized()),
                 ..l.clone()
             },
             LayerContent::Paint(_) | LayerContent::Matte { .. } => l.clone(),
@@ -505,14 +540,26 @@ impl DocState {
     }
 
     /// Set the blend mode of a layer (no-op if absent).
+    ///
+    /// A no-op on a **filter** too, like paint on a matte (§15.7): a filter has no
+    /// source to meet a backdrop, and — since a filter never carries (§21.2) — no
+    /// group whose merge the mode could describe either. Refusing here rather than
+    /// in a frontend rule is what keeps a stored-but-unreadable mode out of every
+    /// replayed and replicated document.
     pub fn set_layer_blend(&self, id: LayerId, blend: BlendMode) -> Self {
-        self.map_layer(id, |l| Layer { blend, ..l.clone() })
+        self.map_layer(id, |l| match &l.content {
+            LayerContent::Filter(_) => l.clone(),
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer { blend, ..l.clone() },
+        })
     }
 
     /// Set whether a layer clips to the paint beneath it (no-op if absent) —
-    /// §14.4.
+    /// §14.4. A no-op on a filter, for [`Self::set_layer_blend`]'s reason.
     pub fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
-        self.map_layer(id, |l| Layer { clip, ..l.clone() })
+        self.map_layer(id, |l| match &l.content {
+            LayerContent::Filter(_) => l.clone(),
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer { clip, ..l.clone() },
+        })
     }
 
     /// Set a layer's opacity, clamped to [0, 1] (no-op if absent).
@@ -566,6 +613,11 @@ impl DocState {
     ///   refuses, so no tree-CRDT cycle machinery is needed (§17.9).
     /// - **An unknown carrier**, for the reason [`Self::insert`] gives.
     pub fn move_layer(&self, id: LayerId, carrier: Option<LayerId>, at: Place) -> Self {
+        // Declined before anything is taken apart: a filter never carries (§21.2)
+        // — see `insert`, which refuses the same carrier for the same reason.
+        if self.cannot_carry(carrier) {
+            return self.clone();
+        }
         // Taken out first, so the cycle check below reads the subtree the
         // removal already had to find — rather than searching for it again, and
         // then searching for it again to remove it.
@@ -813,6 +865,119 @@ mod tests {
         assert_eq!(
             ab.tile_range(),
             span(&[at(0, 0), at(2, 1), at(-4, 5)]).tile_range(),
+        );
+    }
+
+    use crate::document::ColorAdjust;
+
+    const BASE: LayerId = LayerId(0);
+    const FILTER: LayerId = LayerId(1);
+    const OTHER: LayerId = LayerId(2);
+
+    /// A document with one paint layer and one filter above it in the root stack.
+    fn with_filter() -> DocState {
+        DocState::with_layer(BASE).insert_filter(
+            FILTER,
+            None,
+            None,
+            Filter::Color(ColorAdjust::NEUTRAL),
+        )
+    }
+
+    /// A filter never carries (§21.2): every way a layer can be attached under a
+    /// carrier declines a filter carrier, deterministically, so no log can build
+    /// the arrangement — which is what lets the renderer and the projection treat
+    /// "filter" and "plain member of a stack" as the same thing.
+    #[test]
+    fn a_filter_refuses_to_carry() {
+        let state = with_filter();
+
+        let inserted = state.insert_layer(OTHER, Some(FILTER), None);
+        assert!(
+            inserted
+                .layer(FILTER)
+                .expect("filter exists")
+                .carries
+                .is_empty(),
+            "insert_layer attached a child to a filter",
+        );
+        assert!(
+            inserted.layer(OTHER).is_none(),
+            "the refused insert should add nothing anywhere",
+        );
+
+        let moved = state.move_layer(BASE, Some(FILTER), Place::Top);
+        assert!(
+            moved
+                .layer(FILTER)
+                .expect("filter exists")
+                .carries
+                .is_empty(),
+            "move_layer attached a child to a filter",
+        );
+        assert!(
+            moved.layer(BASE).is_some(),
+            "the refused move must not lose the layer",
+        );
+        assert_eq!(
+            moved.carrier_of(BASE),
+            None,
+            "the refused move must leave the layer where it was",
+        );
+    }
+
+    /// Blend and clip are structurally inert on a filter — no source, and (per the
+    /// test above) never a group — so state refuses to store them, exactly as a
+    /// matte refuses paint (§21.4, §15.7). Refused in state so replayed and
+    /// replicated documents agree with local ones.
+    #[test]
+    fn blend_and_clip_are_refused_on_a_filter() {
+        let state = with_filter()
+            .set_layer_blend(FILTER, BlendMode::Multiply)
+            .set_layer_clip(FILTER, true);
+        let filter = state.layer(FILTER).expect("filter exists");
+        assert_eq!(
+            filter.blend,
+            BlendMode::Normal,
+            "a filter stored a blend mode"
+        );
+        assert!(!filter.clip, "a filter stored a clip");
+        // …while a paint layer beside it still takes both.
+        let state = state
+            .set_layer_blend(BASE, BlendMode::Multiply)
+            .set_layer_clip(BASE, true);
+        let base = state.layer(BASE).expect("base exists");
+        assert_eq!(base.blend, BlendMode::Multiply);
+        assert!(base.clip);
+    }
+
+    /// Every filter is sanitized where it **enters state**, not only where a local
+    /// command is minted — the path a crafted or corrupted file's replay and a
+    /// nonconforming peer's action take (§21.5). A NaN that got through would reach
+    /// every texel of the frame with nothing able to say why.
+    #[test]
+    fn a_filter_is_sanitized_wherever_it_enters_state() {
+        let wild = Filter::Color(ColorAdjust {
+            exposure: f32::NAN,
+            contrast: f32::INFINITY,
+            saturation: -5.0,
+            hue: f32::NEG_INFINITY,
+        });
+        let expect = wild.sanitized();
+        assert_ne!(wild, expect, "the wild filter must need sanitizing");
+
+        let inserted = DocState::with_layer(BASE).insert_filter(FILTER, None, None, wild);
+        assert_eq!(
+            inserted.layer(FILTER).and_then(Layer::filter),
+            Some(expect),
+            "insert_filter installed an unsanitized filter",
+        );
+
+        let set = with_filter().set_filter(FILTER, wild);
+        assert_eq!(
+            set.layer(FILTER).and_then(Layer::filter),
+            Some(expect),
+            "set_filter installed an unsanitized filter",
         );
     }
 }
