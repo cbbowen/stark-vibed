@@ -97,11 +97,17 @@ the browser's own compositor depth.
 
 ### Tier 2 — align engine work with frames; stop discarding input
 
-- [ ] Decouple ingestion from preview: keep pushing every sample into the
-  fitter per event (µs), rebuild the live preview once per rAF just before
-  paint. Halves live GPU work for input above display rate and makes
-  coalesced events natural.
-- [ ] `getCoalescedEvents()` + real `event.timeStamp` into `InputSample.time`.
+- [x] Decouple ingestion from preview: every mutation that used to rebuild the
+  fold (`Engine::refresh_live`) now marks it stale (`mark_live_stale`), and
+  the read services it (`flush_live`) — once per frame painted, in
+  `render_view`/`pick_color`/`live_head_count`. Every sample still reaches
+  the fitter per event; only the fold is per-frame. Peer gesture frames off
+  the collab pump coalesce the same way.
+- [x] `getCoalescedEvents()` + real `event.timeStamp`: `input::samples` reads
+  the coalesced list (client coords through the target rect, per-entry
+  pressure/tilt/timestamp) and `input::sample` stamps `event.timeStamp` on
+  every sample, so the Start sample seeds the fitter's `t0` with the same
+  clock.
 - [ ] Then `getPredictedEvents()` (preview tail only — prediction never enters
   the fitter, so `preview == committed` is untouched) to cover the browser
   compositor's untunable 1–2 frames.

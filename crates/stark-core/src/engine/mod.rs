@@ -476,7 +476,7 @@ impl Engine {
                         self.debug_samples.push(sample);
                     }
                 }
-                self.refresh_live();
+                self.mark_live_stale();
             }
             GestureCommand::To { sample } => {
                 if self.session.is_selecting() {
@@ -487,7 +487,7 @@ impl Engine {
                         self.debug_samples.push(sample);
                     }
                 }
-                self.refresh_live();
+                self.mark_live_stale();
             }
             // A held pointer: snap the stroke to the shape it resembles (§6.9). Nothing
             // is committed and nothing is decided about the gesture's end — a snap
@@ -495,7 +495,7 @@ impl Engine {
             // stroke either way.
             GestureCommand::Hold => {
                 if self.session.assist_stroke() {
-                    self.refresh_live();
+                    self.mark_live_stale();
                 }
             }
             // The one edge that produces document state.
@@ -515,11 +515,11 @@ impl Engine {
                     self.log_debug_samples();
                     self.commit(ActionKind::CommitStroke(rec));
                 }
-                self.refresh_live();
+                self.mark_live_stale();
             }
             GestureCommand::Cancel => {
                 self.session.cancel_stroke();
-                self.refresh_live();
+                self.mark_live_stale();
             }
         }
     }
@@ -553,7 +553,7 @@ impl Engine {
         // the fold is rebuilt once, here, rather than at each of a dozen call sites.
         // Cheap when nothing is in flight (there is nothing to fold) and correct when
         // a peer is mid-stroke while this client edits.
-        self.refresh_live();
+        self.mark_live_stale();
     }
 
     fn process_doc_inner(&mut self, command: DocCommand) {
@@ -800,11 +800,11 @@ impl Engine {
                 // half-dragged marquee.
                 self.session.cancel_stroke();
                 self.session.tool = tool;
-                self.refresh_live();
+                self.mark_live_stale();
             }
             ViewCommand::SetBrush(brush) => {
                 self.session.brush = brush;
-                self.refresh_live();
+                self.mark_live_stale();
             }
             ViewCommand::Pan { delta } => {
                 // Grab-and-drag: content follows the cursor, so the view center moves
@@ -882,11 +882,12 @@ impl Engine {
     }
 
     /// Replay a whole recorded stroke as a single commit: start → samples →
-    /// end, skipping the per-sample live-preview refresh. `refresh_preview`
-    /// re-renders the entire in-flight stroke after every sample — right for
-    /// interactive drawing (the user must see each move), but O(n²) across a
-    /// replay where nothing is presented in between. This renders the stroke
-    /// exactly once, at commit. Used by the brush editor's test-stroke replay.
+    /// end, without the per-sample staleness marks. Interactive samples go
+    /// through `GestureCommand::To`, whose marks a frame's `flush_live` services
+    /// by rendering the in-flight tail — right for drawing (the user must see
+    /// each frame's moves), pointless across a replay where nothing is presented
+    /// in between. This renders the stroke exactly once, at commit. Used by the
+    /// brush editor's test-stroke replay.
     pub fn replay_stroke(&mut self, tool: Tool, samples: &[crate::command::InputSample]) {
         self.replay_stroke_seeded(tool, samples, self.clock);
     }
@@ -915,7 +916,7 @@ impl Engine {
         if let Some(rec) = self.session.end_stroke() {
             self.commit(ActionKind::CommitStroke(rec));
         }
-        self.refresh_live();
+        self.mark_live_stale();
     }
 
     /// A snapshot of UI-facing state (§7).

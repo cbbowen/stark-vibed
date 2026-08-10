@@ -61,6 +61,12 @@ pub(super) struct Preview {
     /// Bumped whenever the document the previews are composited onto changes. A
     /// [`FrozenHead`] stamped with an older epoch is stale and discarded.
     epoch: u64,
+    /// Whether the fold no longer reflects the gestures and document it folds —
+    /// set by [`Engine::mark_live_stale`], cleared by the [`Engine::flush_live`]
+    /// that services it. The deferral is what turns N mutations per frame (every
+    /// pointer sample, every peer gesture frame) into one fold per frame actually
+    /// painted.
+    stale: bool,
 }
 
 impl Preview {
@@ -385,12 +391,32 @@ impl Engine {
     /// shared tail of every `Preview*` command.
     pub(super) fn set_doc_preview(&mut self, preview: Option<DocState>) {
         self.preview.set_doc(preview);
-        self.refresh_live();
+        self.mark_live_stale();
     }
 
-    /// Rebuild the fold and refresh the caches — the one call every mutation that can
-    /// change what is on screen ends with.
-    pub(super) fn refresh_live(&mut self) {
+    /// Note that the fold no longer shows what is there — the one call every
+    /// mutation that can change what is on screen ends with.
+    ///
+    /// A note, not a rebuild: mutations arrive at input rate (every pointer
+    /// sample; every peer's gesture frame off the pump), while presentation is one
+    /// frame per rAF — so the fold is rebuilt by [`flush_live`](Self::flush_live)
+    /// at the read, once per frame actually shown, rather than here, once per
+    /// event whose intermediate picture nobody sees. Painting the latest state
+    /// once shows exactly what folding it per event would have.
+    pub(super) fn mark_live_stale(&mut self) {
+        self.preview.stale = true;
+    }
+
+    /// Service a pending [`mark_live_stale`](Self::mark_live_stale): rebuild the
+    /// fold if anything has changed since it was last built. Every reader of
+    /// [`presented`](Self::presented) reaches it through an entry point that
+    /// flushes first — the render, the eyedropper, the head-count diagnostic — so
+    /// a stale fold is never observable, only never-shown intermediate ones.
+    pub(super) fn flush_live(&mut self) {
+        if !self.preview.stale {
+            return;
+        }
+        self.preview.stale = false;
         let gestures = self.live_gestures();
         // Disjoint fields, so the fold reads the context and the committed document
         // while holding the preview mutably.

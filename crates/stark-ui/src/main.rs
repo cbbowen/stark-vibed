@@ -49,7 +49,7 @@ use credits::CreditsModal;
 use icons::{icon, icon_large};
 use input::{
     Nav, Tune, abandon_gesture, bind_pen, bind_shortcuts, elem_xy, end_interaction,
-    input_tolerance, pick_color, pointer_moved, sample, watch_for_hold,
+    input_tolerance, pick_color, pointer_moved, sample, samples, watch_for_hold,
 };
 use layout::{PanelId, PanelLayout, PanelStack, chrome_class, resize_end, resize_move};
 use panels::brush::PresetSaveModal;
@@ -558,10 +558,17 @@ fn Canvas() -> Element {
                         // (§6.9). Once the stroke has snapped this stops
                         // watching and the same `To` steers the shape instead.
                         pointer_moved(state, elem_xy(&e));
-                        // `dispatch_sample`, not `dispatch`: a sample changes
-                        // pixels, not chrome, and the full dispatch's observable
-                        // refresh re-diffs the chrome per pointer move.
-                        dispatch_sample(state, GestureCommand::To { sample: s });
+                        // Every report the browser folded into this event reaches
+                        // the fitter (`input::samples`), not just the one it chose
+                        // to deliver. `dispatch_sample`, not `dispatch`: a sample
+                        // changes pixels, not chrome, and the full dispatch's
+                        // observable refresh re-diffs the chrome per pointer move.
+                        // The preview fold is rebuilt once per painted frame
+                        // either way, so extra samples cost a fit push each, not
+                        // a render.
+                        for s in samples(state, &e).unwrap_or_default() {
+                            dispatch_sample(state, GestureCommand::To { sample: s });
+                        }
                     }
                     // Where collaborators see this client's pointer
                     // (§17.4). Quiet: it changes nothing *this* client renders — the

@@ -242,6 +242,11 @@ impl Engine {
         content: Rendered,
         attachments: Attachments,
     ) {
+        // The fold is rebuilt lazily (`Engine::mark_live_stale`), and this is the
+        // read that services it: once per frame painted, whatever arrived since.
+        if matches!(content, Rendered::Live) {
+            self.flush_live();
+        }
         let doc = match content {
             Rendered::Live => self.presented(),
             Rendered::Committed => self.timeline.current(),

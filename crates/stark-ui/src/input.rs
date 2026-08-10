@@ -1201,8 +1201,66 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
         // palette knife's deposit reads its component along the stroke direction
         // (§6.2); a mouse reports (0, 0), so the deposit falls back to its constant rate.
         tilt: Vec2::new(e.tilt_x() as f32, e.tilt_y() as f32) / 90.0,
-        ..Default::default()
+        time: event_time(e),
     })
+}
+
+/// The event's own timestamp in seconds — `performance.now()`'s clock, monotonic
+/// and shared by every event on the page, which is what [`InputSample::time`]
+/// ("for velocity and timelapse") needs. The fitter keys its time channel to the
+/// *first* sample it sees, so only differences matter and the origin is free.
+/// Zero when the raw event is out of reach (off-wasm), matching the field's
+/// default.
+fn event_time(e: &Event<PointerData>) -> f64 {
+    e.downcast::<web_sys::PointerEvent>()
+        .map(|raw| raw.time_stamp() / 1000.0)
+        .unwrap_or(0.0)
+}
+
+/// Every canvas-space sample a `pointermove` carries, oldest first.
+///
+/// The browser delivers roughly one `pointermove` per animation frame and folds
+/// the reports it withheld — most of what a 120–240 Hz pen produces — into the
+/// delivered event's *coalesced* list. Reading that list is what gets the full
+/// input rate to the fitter; reading only the event caps every stroke at display
+/// rate, whatever the device resolved. Each entry carries its own position,
+/// pressure, tilt and timestamp, so the samples land as the hand made them
+/// rather than as delivery batched them.
+///
+/// Coalesced entries are mapped through the target's bounding rect (measured
+/// once per delivered event) because their client coordinates are the ones the
+/// spec guarantees; the delivered event's own data equals the list's last entry,
+/// so nothing is dispatched twice. Falls back to the event itself when there is
+/// no list (off-wasm, a synthetic event); `None` before the engine exists, like
+/// [`sample`].
+pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSample>> {
+    let view = view_of(state)?;
+    let coalesced = e.downcast::<web_sys::PointerEvent>().and_then(|raw| {
+        use wasm_bindgen::JsCast;
+        let rect = raw
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?
+            .get_bounding_client_rect();
+        let list = raw.get_coalesced_events();
+        (list.length() > 0).then(|| {
+            list.iter()
+                .filter_map(|v| v.dyn_into::<web_sys::PointerEvent>().ok())
+                .map(|c| InputSample {
+                    pos: view.screen_to_canvas(Vec2::new(
+                        (c.client_x() as f64 - rect.left()) as f32,
+                        (c.client_y() as f64 - rect.top()) as f32,
+                    )),
+                    pressure: c.pressure(),
+                    tilt: Vec2::new(c.tilt_x() as f32, c.tilt_y() as f32) / 90.0,
+                    time: c.time_stamp() / 1000.0,
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    match coalesced {
+        Some(list) if !list.is_empty() => Some(list),
+        _ => sample(state, e).map(|s| vec![s]),
+    }
 }
 
 /// End any in-progress stroke, shape gesture, pan, brush-tuning drag or eyedropper

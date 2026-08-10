@@ -273,7 +273,7 @@ impl GestureRx {
                     // path's prefix is exactly the frozen points already held — a
                     // frozen control point never moves, and a resync says nothing new
                     // about freezing. Reset to zero here, every resync frame
-                    // discarded the renderer's cached head (`Engine::refresh_live`
+                    // discarded the renderer's cached head (`Engine::flush_live`
                     // keys on `frozen_spans`) and redrew the whole stroke from
                     // scratch — once a second, per stroking peer.
                     let frozen = match self.stroke.as_ref() {

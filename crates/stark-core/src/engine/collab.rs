@@ -76,7 +76,7 @@ impl Engine {
         // New actor, new layer-id space: this client's counter restarts, and the
         // pre-share layers keep the `SOLO` ids they were minted with.
         self.next_layer = 1;
-        self.refresh_live();
+        self.mark_live_stale();
     }
 
     /// Join a shared session (the peer side): replace the document with the
@@ -105,7 +105,7 @@ impl Engine {
         // Whatever the replayed log left the document on.
         self.apply_document_surface();
         self.committed_changed();
-        self.refresh_live();
+        self.mark_live_stale();
     }
 
     /// Leave a shared session: stop queueing broadcasts and forget everyone who was
@@ -120,7 +120,7 @@ impl Engine {
         self.outbox.clear();
         self.outbox_enabled = false;
         self.peers.clear();
-        self.refresh_live();
+        self.mark_live_stale();
     }
 
     /// Integrate an action authored by a peer (§12.1). Idempotent —
@@ -149,7 +149,7 @@ impl Engine {
                 // explain it (§17.9).
                 self.repoint_active_layer();
             }
-            self.refresh_live();
+            self.mark_live_stale();
         }
         // A peer may have switched the surface (§6.4).
         self.apply_document_surface();
@@ -176,7 +176,11 @@ impl Engine {
     /// held. What they also cannot show is a head held for a gesture that has *ended*,
     /// which is not a wrong picture but a `DocState`'s worth of tile handles the pool
     /// cannot reclaim — invisible until the GPU runs out. Countable here instead.
-    pub fn live_head_count(&self) -> usize {
+    /// `&mut`, because the fold it counts within is rebuilt lazily: the count is
+    /// only meaningful of a serviced fold, so this flushes first — the same
+    /// picture the next paint would build.
+    pub fn live_head_count(&mut self) -> usize {
+        self.flush_live();
         self.preview.head_count()
     }
 
@@ -236,7 +240,7 @@ impl Engine {
         self.now = now.max(self.now);
         let repaint = self.peers.tick(self.now).canvas;
         if repaint {
-            self.refresh_live();
+            self.mark_live_stale();
         }
         let frame = self
             .outbox_enabled
@@ -283,7 +287,7 @@ impl Engine {
         }
         let change = self.peers.merge(actor, frame, now);
         if change.canvas {
-            self.refresh_live();
+            self.mark_live_stale();
         }
         change.canvas
     }

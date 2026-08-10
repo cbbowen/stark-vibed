@@ -148,6 +148,9 @@ impl Engine {
         at: crate::geom::Vec2,
         options: PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
+        // The pick samples `presented`, whose fold is rebuilt lazily — flush, so a
+        // sample mid-stroke agrees with what the next paint would show.
+        self.flush_live();
         let radius = options.radius.min(MAX_PICK_RADIUS);
         let size = Extent2::new(2 * radius + 1, 2 * radius + 1);
         // Centred on the canvas *pixel* the point falls in rather than on the point
