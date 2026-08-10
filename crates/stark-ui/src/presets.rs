@@ -132,6 +132,15 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
                     frequency: [0.05, 0.1],
                     amplitude: [0.0, 0.025, 0.05],
                 },
+                modulation: Modulations {
+                    size: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.8,
+                        curve: 0.0,
+                    }),
+                    flow: Some(Modulation::linear(ModSource::Pressure)),
+                    ..Modulations::default()
+                },
                 ..BrushParams::default()
             },
         ),
