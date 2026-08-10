@@ -1,0 +1,101 @@
+//! Filter layers: the pass that reads the accumulator and writes it back adjusted
+//! (§21).
+//!
+//! **The blend pass with the source removed.** A filter layer has no content to
+//! isolate — it is a function of what its stack has already composited — so where
+//! [`blend`](super::blend) binds a backdrop *and* an isolated layer, this binds only
+//! the backdrop. Everything else is shared: the same ping-pong (a texture cannot be
+//! both read and written), the same [`ScratchLevel`] to bounce through, the same
+//! `min_uniform_buffer_offset_alignment` slot per pass, and the same "no
+//! fixed-function blend, the pass computes the whole result" pipeline.
+//!
+//! [`ScratchLevel`]: super::blend::ScratchLevel
+
+use crate::colorspace::ColorSpace;
+use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
+
+// Generated from `filter_common.wesl`'s own declaration (§6.10).
+pub(super) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
+
+/// One dynamic-offset slot of the filter uniform, on the alignment every backend
+/// accepts — the same argument, and the same number, as [`BLEND_SLOT`].
+///
+/// A slot per filter layer rather than one buffer rewritten per pass: `write_buffer`
+/// is a *queue* operation, so N rewrites before a single submit would leave every
+/// pass reading the last filter written. Two filter layers in one document is not an
+/// edge case — a grade at the top of the stack over a tint inside a group is the
+/// ordinary use — so the buffer holds them all and each pass binds its own offset.
+///
+/// [`BLEND_SLOT`]: super::blend::BLEND_SLOT
+pub(super) const FILTER_SLOT: u64 = super::blend::BLEND_SLOT;
+
+/// The filter pass: one fullscreen draw rewriting the accumulator.
+pub(super) struct FilterPass {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) bgl: wgpu::BindGroupLayout,
+}
+
+impl FilterPass {
+    pub(super) fn new(
+        ctx: &GpuContext,
+        color_space: &dyn ColorSpace,
+        color_format: wgpu::TextureFormat,
+        aux_format: wgpu::TextureFormat,
+    ) -> Self {
+        let device = &ctx.device;
+        let frag = wgpu::ShaderStages::FRAGMENT;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stark filter"),
+            source: wgpu::ShaderSource::Wgsl(color_space.filter_shader().into()),
+        });
+        let resid_format = color_space.resid_format();
+        // The binding numbers are the blend pass's, gaps and all: `filter_common`
+        // owns 0–2 where `blend_common` owns 0–4, and `mixbox_lut.wesl` hard-codes
+        // the LUT at 5–6 for whoever imports it (see the note in that file). So 3
+        // and 4 are simply not declared here — the two the source layer would have
+        // occupied — and everything after them keeps the number it has in the pass
+        // this one is a narrowing of.
+        let mut entries = vec![
+            desc::uniform_slot(0, frag, std::mem::size_of::<FilterUniform>() as u64),
+            desc::load_tex(1, frag),   // accumulator color
+            desc::load_tex(2, frag),   // accumulator aux
+            desc::sample_tex(5, frag), // pigment LUT (filtered)
+            desc::sampler(6, frag),
+        ];
+        if let Some(f) = resid_format {
+            debug_assert_eq!(
+                f, color_format,
+                "the filter pass loads the residual target with the colour's decode",
+            );
+            entries.push(desc::load_tex(7, frag)); // accumulator residual
+        }
+        let bgl = desc::bind_group_layout(device, "stark filter bgl", &entries);
+        let layout = desc::pipeline_layout(device, "stark filter layout", &[Some(&bgl)]);
+        // No fixed-function blend: the pass computes the whole texel — including the
+        // height it copies straight across — and *replaces* what it writes. That is
+        // what the ping-pong is for.
+        let mut targets = vec![desc::target(color_format), desc::target(aux_format)];
+        if let Some(f) = resid_format {
+            targets.push(desc::target(f));
+        }
+        let pipeline = desc::fullscreen_pipeline(
+            device,
+            "stark filter pipeline",
+            &layout,
+            &shader,
+            ("vs_main", "fs_main"),
+            &targets,
+        );
+        Self { pipeline, bgl }
+    }
+}
+
+pub(super) fn alloc_filter(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark filter uniform"),
+        size: FILTER_SLOT * count.max(1) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}

@@ -623,6 +623,7 @@ hr {
    text-era side padding taken back. */
 .app-root.minimal .selection-bar .chip,
 .app-root.minimal .frame-bar .chip,
+.app-root.minimal .filter-bar .chip,
 .app-root.minimal .transform-bar .chip,
 .app-root.minimal .guide-bar .chip,
 .app-root.minimal .pick-bar .chip {
@@ -1067,6 +1068,23 @@ hr {
 /* The frame's dashed border already claims the whole edge, so a clipped matte gets
    the rail's colour on its existing border rather than a second one beside it. */
 .layer-row.matte.clipped {
+  border-left: 3px solid #6f8fd0;
+}
+
+/* A filter layer's row (§21.6). The same muted ground a frame's row gets, because it
+   is the same fact — the brush has nowhere to go here — but a *solid* rule rather
+   than a dashed one: a frame bounds the piece, and a filter runs across everything
+   under it. Never "active" for the same reason a matte never is. */
+.layer-row.filter {
+  background: #2b2b33;
+  border: 1px solid #ffffff26;
+  padding: 5px;
+}
+
+/* Its clip and blend controls are inert (§21.4), so a filter row never wears the
+   clipping rail; if one is ever set on it from a file, the border says so the way a
+   matte's does rather than growing a second edge beside it. */
+.layer-row.filter.clipped {
   border-left: 3px solid #6f8fd0;
 }
 
@@ -2127,11 +2145,13 @@ button.layer-remove:hover {
   padding: 5px;
 }
 
-/* A frame's row leads with the crop marks the frame bar wears (`icons::FRAME`), so
-   this one name in the panel is a glyph and a word. Only the button gets the flex —
-   the rename field that stands in for it carries `.layer-name` alone, and a field's
+/* A frame's row leads with the crop marks the frame bar wears (`icons::FRAME`) and a
+   filter's with its funnel (`icons::FILTER`), so these two names in the panel are a
+   glyph and a word. One class for both: they are the same fact drawn the same way —
+   this row is a *what*, not a place to paint. Only the button gets the flex — the
+   rename field that stands in for it carries `.layer-name` alone, and a field's
    placeholder is text, not a mark. */
-.layer-name-matte {
+.layer-name-kind {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -2608,6 +2628,68 @@ button.layer-remove:hover {
   box-shadow: var(--panel-shadow);
   backdrop-filter: blur(8px);
   color: #e8e8ea;
+}
+
+/* The filter bar: the selected filter's own numbers, mounted only while a filter
+   layer is selected (§21.6). Same surface as the frame bar — they are the same kind
+   of thing, and stack in the same column — but wider, because it carries four tracks
+   rather than a row of chips. */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--panel-background);
+  box-shadow: var(--panel-shadow);
+  backdrop-filter: blur(8px);
+  color: #e8e8ea;
+}
+
+.filter-bar .chip {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+/* One knob: its word and its readout on one row, the track under them spanning both
+   columns. Fixed width, so dragging one slider does not shift the three beside it —
+   the numbers change width as they cross a sign or a digit. */
+.filter-knob {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0 8px;
+  width: 132px;
+}
+
+.filter-knob-label {
+  font-size: 11px;
+  color: #ffffff8c;
+  white-space: nowrap;
+}
+
+/* Tabular figures for the same reason the frame's dimensions have them: the readout
+   moves while a slider is dragged, and a proportional digit makes it jitter. */
+.filter-knob-value {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #ffffffa6;
+  text-align: right;
+  min-width: 40px;
+}
+
+.filter-knob .slider {
+  grid-column: 1 / -1;
+}
+
+/* Said once when the filter has nothing composited beneath it in its own stack
+   (§21.2). A statement rather than a warning colour: the filter is not broken, it is
+   somewhere it cannot reach, and the fix is to move it. */
+.filter-inert {
+  font-size: 12px;
+  color: #e0b070;
+  white-space: nowrap;
 }
 
 /* Hairline groupings, so a wide bar reads as a few clusters rather than a run of

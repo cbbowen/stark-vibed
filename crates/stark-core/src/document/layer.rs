@@ -1,7 +1,8 @@
-//! Layers (§5.1, §15.2, §14). A layer is
-//! either a sparse, persistent map of painted tiles or a **matte** — a
-//! procedural region filled with a flat colour — plus its presentation
-//! properties, plus the layers it **carries**.
+//! Layers (§5.1, §15.2, §14, §21). A layer is a sparse, persistent map of painted
+//! tiles, a **matte** — a procedural region filled with a flat colour — or a
+//! **filter**, which is a function of what is composited beneath it rather than
+//! content of its own; plus its presentation properties, plus the layers it
+//! **carries**.
 //!
 //! A layer stacks with premultiplied "over" unless its [`BlendMode`] says
 //! otherwise or it is [`clip`](Layer::clip)ped, in which case the compositor
@@ -15,6 +16,7 @@ use rpds::{HashTrieMap, Vector};
 use serde::{Deserialize, Serialize};
 
 use super::action::ActorId;
+use super::filter::Filter;
 use super::state::CanvasBounds;
 use crate::geom::Vec2;
 use crate::gpu::tile::TileMap;
@@ -388,6 +390,21 @@ pub enum LayerContent {
         region: MatteRegion,
         color: [f32; 3],
     },
+    /// A **function of what is composited beneath it** in its own stack (§21).
+    ///
+    /// The one content that is not content: a filter layer holds no tiles and no
+    /// region, and its whole effect is one fullscreen pass at composite time that
+    /// reads the accumulator and writes it back adjusted. So it costs no GPU memory,
+    /// it is free to re-tune, and — because the accumulator it reads is *its own
+    /// stack's* — how far it reaches is decided by where it sits in the tree rather
+    /// than by a mode of its own (§21.2).
+    ///
+    /// Its layer opacity is the filter's **strength**, mixed against the untouched
+    /// backdrop, so fading a filter layer means what fading any other layer means
+    /// (§21.4). Its blend mode and clip, by contrast, have nothing to say: both
+    /// describe how a *source* meets a backdrop, and a filter has no source — it
+    /// *is* the backdrop, rewritten (§21.4).
+    Filter(Filter),
 }
 
 /// A single layer: its content, what it carries, and its presentation
@@ -486,14 +503,22 @@ impl Layer {
         }
     }
 
-    /// This layer's painted tiles, or `None` if it is a matte. Deliberately an
+    /// A filter layer running `filter` over the stack beneath it (§21).
+    pub fn filter_layer(id: LayerId, filter: Filter) -> Self {
+        Self {
+            content: LayerContent::Filter(filter),
+            ..Self::new(id)
+        }
+    }
+
+    /// This layer's painted tiles, or `None` if it holds none. Deliberately an
     /// `Option` rather than an empty map: "this layer has no tiles" is a real
     /// fact about it, and making callers say what they do about it is what keeps
-    /// a matte from silently reading as an empty paint layer.
+    /// a matte or a filter from silently reading as an empty paint layer.
     pub fn tiles(&self) -> Option<&TileMap> {
         match &self.content {
             LayerContent::Paint(tiles) => Some(tiles.map()),
-            LayerContent::Matte { .. } => None,
+            LayerContent::Matte { .. } | LayerContent::Filter(_) => None,
         }
     }
 
@@ -508,7 +533,7 @@ impl Layer {
     pub fn bounds(&self) -> CanvasBounds {
         match &self.content {
             LayerContent::Paint(tiles) => tiles.bounds,
-            LayerContent::Matte { .. } => CanvasBounds::default(),
+            LayerContent::Matte { .. } | LayerContent::Filter(_) => CanvasBounds::default(),
         }
     }
 
@@ -516,25 +541,34 @@ impl Layer {
     pub fn matte_region(&self) -> Option<MatteRegion> {
         match &self.content {
             LayerContent::Matte { region, .. } => Some(*region),
-            LayerContent::Paint(_) => None,
+            LayerContent::Paint(_) | LayerContent::Filter(_) => None,
         }
     }
 
-    /// Whether strokes may be painted onto this layer. A matte has no tile map,
-    /// so a stroke targeting one is refused rather than silently swallowed or
-    /// magically rasterized (§15.7).
+    /// The filter this layer runs over the stack beneath it, if it is one (§21).
+    pub fn filter(&self) -> Option<Filter> {
+        match &self.content {
+            LayerContent::Filter(f) => Some(*f),
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => None,
+        }
+    }
+
+    /// Whether strokes may be painted onto this layer. Neither a matte nor a filter
+    /// has a tile map, so a stroke targeting one is refused rather than silently
+    /// swallowed or magically rasterized (§15.7, §21.4).
     pub fn is_paintable(&self) -> bool {
         matches!(self.content, LayerContent::Paint(_))
     }
 
-    /// The same layer with its painted tiles replaced. A no-op on a matte.
+    /// The same layer with its painted tiles replaced. A no-op on anything with no
+    /// tiles to replace.
     pub fn with_tiles(&self, tiles: TileMap) -> Self {
         match &self.content {
             LayerContent::Paint(_) => Self {
                 content: LayerContent::Paint(PaintTiles::new(tiles)),
                 ..self.clone()
             },
-            LayerContent::Matte { .. } => self.clone(),
+            LayerContent::Matte { .. } | LayerContent::Filter(_) => self.clone(),
         }
     }
 

@@ -56,8 +56,8 @@ use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{
-    FrameBar, FrameOverlay, GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar,
-    TimelineBar, TransformBar, TransformOverlay,
+    FilterBar, FrameBar, FrameOverlay, GuideEditOverlay, PerspectiveGuideBar, PickBar,
+    SelectionBar, TimelineBar, TransformBar, TransformOverlay,
 };
 use platform::capture_pointer;
 use render::CANVAS_ID;
@@ -278,6 +278,11 @@ fn app() -> Element {
                 // The frame's composition controls, present only while a frame is
                 // selected for composing (§15.7).
                 FrameBar {}
+                // The selected filter layer's own numbers, present only while one is
+                // selected (§21.6) — the same bargain as the frame bar, and mutually
+                // exclusive with it by construction, since both key off the single
+                // selected layer being of their kind.
+                FilterBar {}
                 // The eyedropper's options, present only while Alt arms it
                 // (§18.0.2). Last in the column, so it comes up
                 // nearest the canvas — it is the most transient of the three.

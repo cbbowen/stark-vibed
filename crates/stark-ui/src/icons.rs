@@ -61,6 +61,16 @@ icons! {
     // a frame is (§15.7), and why it is a square rather than a stack.
     ADD_LAYER => "stack-plus-bold",
     ADD_FRAME => "plus-square-bold",
+    // The third "add" in that header (§21). A funnel, because a filter layer is a
+    // thing the stack beneath it is *seen through* — and because "filter" has been
+    // drawn as a funnel for long enough that nobody has to be told. The plus is
+    // [`ADD_LAYER`]'s own, dropped into the corner the funnel leaves free, so the
+    // three buttons read as one family: a mark for the kind, a plus for the act.
+    //
+    // Composed here rather than downloaded, like `fisheye-bold`: the set has the
+    // funnel and the plus but not the pair, and inventing a *different* picture for
+    // the button than for the bar would have cost the family the row is built on.
+    ADD_FILTER => "funnel-plus-bold",
     // Take this one away, drawn in the row it would take: a layer in the Layers panel,
     // a perspective in the Guides panel. One glyph for both, because it is one control
     // — the two rosters differ in what they list, not in what removing means.
@@ -76,6 +86,11 @@ icons! {
     // is not *about* the rectangle — it is about deciding what the piece is, which is
     // the one job a frame does and the reason it clips nothing.
     FRAME => "crop-bold",
+    // The filter bar's mark, and the filter row's (§21) — the same funnel
+    // [`ADD_FILTER`] is built from, on the argument the frame's crop marks are
+    // shared between its bar and its row: a layer kind and the bar that tunes it are
+    // one subject, so they are one mark.
+    FILTER => "funnel-bold",
     // Grouping, drawn as the move itself rather than as a picture of a group. The pair
     // has to read as one gesture and its undo, which is why it is one glyph mirrored
     // rather than two pictures — the same argument the stack pair above is built on.

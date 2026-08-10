@@ -14,7 +14,7 @@ use super::Engine;
 use crate::document::{BlendMode, DocState, Layer, LayerContent, LayerId};
 use crate::geom::{Extent2, TileRect, ViewTransform};
 use crate::gpu::{
-    CompositeGroup, CompositeItem, CompositeScene, GpuContext, MatteDraw, Offscreen,
+    CompositeGroup, CompositeItem, CompositeScene, FilterDraw, GpuContext, MatteDraw, Offscreen,
     SelectionOutline,
 };
 use crate::image::RgbaImage;
@@ -514,14 +514,28 @@ impl Engine {
                 vec![CompositeGroup::run(BlendMode::Normal, false, items)]
             };
         }
-        self.composite_stack(doc.root().iter(), visible)
+        // The root stack has nothing under its first member, by definition — see
+        // `composite_stack`'s `under`.
+        self.composite_stack(doc.root().iter(), visible, false)
     }
 
     /// One stack's worth of groups — the root's, or a layer's carried stack.
+    ///
+    /// `under` says whether something already composites beneath this stack's first
+    /// member: false for the document's own stack, and for a carried stack whether
+    /// the **base's own content** draws anything. That is §14.1's algorithm read
+    /// back — a group's members composite over the base's content, so inside a group
+    /// the base is what lies beneath the bottom member.
+    ///
+    /// Only a **filter** asks (§21.2), which is why this is a `bool` handed down
+    /// rather than the base's items handed down: everything else in this walk is
+    /// defined against what it is drawn *into*, and a filter is the one thing
+    /// defined against what has already been drawn.
     fn composite_stack<'a>(
         &self,
         layers: impl Iterator<Item = &'a Layer>,
         visible: Option<TileRect>,
+        under: bool,
     ) -> Vec<CompositeGroup> {
         let mut groups: Vec<CompositeGroup> = Vec::new();
         for layer in layers {
@@ -531,7 +545,27 @@ impl Engine {
                 continue;
             }
             let own = self.layer_items(layer, visible);
-            let carried = self.composite_stack(layer.carries.iter(), visible);
+            let carried = self.composite_stack(layer.carries.iter(), visible, !own.is_empty());
+            // A **filter layer** rewrites what is already composited beneath it *in
+            // its own stack* (§21.2) — the same set a clip reads, which is what makes
+            // "filter just this layer" the single gesture of carrying it onto that
+            // layer rather than a scoping mode of its own.
+            //
+            // Two ways it reaches nothing, and both drop it from the draw list rather
+            // than encoding a pass that provably cannot change a texel: **nothing is
+            // beneath it here** (the foot of a stack — and a filter that carries
+            // layers, whose own content is the bottom of its group with the members
+            // composited *over* it, so there is nothing under it there either), or the
+            // filter is at its **neutral** setting, which is what a freshly added one
+            // holds (§21.3).
+            if let Some(f) = layer.filter()
+                && carried.is_empty()
+            {
+                if (under || !groups.is_empty()) && !f.is_neutral() {
+                    groups.push(CompositeGroup::filter(FilterDraw::new(f, layer.opacity)));
+                }
+                continue;
+            }
             // An empty layer is dropped rather than given a group. For `Normal`
             // that only saves a loop; for a blend mode or a clip it saves two
             // render passes that provably compute the identity, which is what
@@ -622,6 +656,13 @@ impl Engine {
                     opacity: layer.opacity,
                 })]
             }
+            // A filter draws no items at all: it is a pass over what the *stack* has
+            // built, not content of its own, so `composite_stack` gives it a group
+            // rather than asking here. That is also what the eyedropper's
+            // sample-one-layer option reads (§18.0.2) — a filter layer's own content
+            // is nothing, and sampling it reports nothing rather than reporting the
+            // picture it happens to be sitting over.
+            LayerContent::Filter(_) => Vec::new(),
         }
     }
 

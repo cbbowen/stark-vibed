@@ -5,6 +5,11 @@ One mechanism for groups and clipping; the matte layer that answers "what rectan
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
 
+The third kind of layer content — the **filter**, which is a function of what is
+composited beneath it — is [filters.md](filters.md), §21. It leans on §14 rather than
+extending it: where a filter sits in the tree *is* what it acts on, so the group
+mechanism below is the whole of its scope control.
+
 ## 14. Groups and clipping
 
 Two features every drawing app has, and neither is well modelled anywhere:
@@ -540,6 +545,12 @@ pub enum MatteRegion {
     OutsideRect { min: Vec2, max: Vec2 },
 }
 ```
+
+`LayerContent` has a third variant beside `Paint` and `Matte` — `Filter`, §21 — and it
+is worth reading the two together, because the matte is the argument this model is
+built on: making a *thing that is not paint* a layer is what buys visibility,
+opacity, ordering, naming, undo, save and collaboration for nothing (§15.3). A filter
+makes the same trade for a different kind of not-paint.
 
 `color` (in `LayerContent::Matte`, §5.1) is **straight sRGB**, like
 `BrushParams::color`, converted to working-space channels at composite time — so

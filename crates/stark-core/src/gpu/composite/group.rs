@@ -5,7 +5,7 @@
 //! decided by the document, and the only judgement it makes is [`CompositeGroup::stack`]'s:
 //! whether a group can tell itself apart from no group at all.
 
-use crate::document::BlendMode;
+use crate::document::{BlendMode, Filter};
 use crate::geom::TileCoord;
 use crate::gpu::tile::TilePairHandle;
 
@@ -38,6 +38,42 @@ pub enum CompositeItem {
         opacity: f32,
     },
     Matte(MatteDraw),
+}
+
+/// A filter layer's pass parameters (§21).
+///
+/// Deliberately **not** a `Filter`: what the shader reads is a code and four floats
+/// in a uniform lane, and which code a filter is numbered is a fact about
+/// `filter_common.wesl` rather than about the document (the same split
+/// [`blend_code`](super::blend::blend_code) makes for a blend mode). Flattening it
+/// here also puts the layer's opacity where the pass wants it — as a strength — so
+/// the encoder has one thing to write rather than two to remember to combine.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct FilterDraw {
+    /// The filter's shader code — see `filter_common.wesl`.
+    pub kind: u32,
+    /// How much of the adjustment lands: the layer's opacity (§21.4).
+    pub strength: f32,
+    /// The filter's own four numbers, read according to `kind`.
+    pub params: [f32; 4],
+}
+
+impl FilterDraw {
+    /// The draw parameters for `filter` applied at `strength`.
+    ///
+    /// The one place a `Filter` becomes numbers, so the ABI is stated once. A filter
+    /// kind that is added to the document and not to `filter_common.wesl` fails to
+    /// compile here rather than rendering as whichever kind happens to share its
+    /// index.
+    pub fn new(filter: Filter, strength: f32) -> Self {
+        match filter {
+            Filter::Color(c) => Self {
+                kind: 0,
+                strength,
+                params: [c.exposure, c.contrast, c.saturation, c.hue],
+            },
+        }
+    }
 }
 
 /// One **blend group** of pass A: something that composites on its own, and how
@@ -86,6 +122,21 @@ pub enum GroupContent {
     /// `Run` into one, which is what makes "organization is free" structural
     /// rather than a promise (§14.7 rule 2).
     Stack(Vec<CompositeGroup>),
+    /// A **filter layer**: no content of its own, one pass that reads the
+    /// accumulator this stack has built so far and writes it back adjusted (§21).
+    ///
+    /// The odd member of this enum, and the shape says why: a `Run` and a `Stack`
+    /// are both *things to composite*, which a filter is not — it is a function of
+    /// what has been composited already. That is exactly the blend pass's own
+    /// relationship to the accumulator with the isolated source removed, so it takes
+    /// the same ping-pong and the same scratch and costs the same one pass
+    /// (`composite/filter.rs`).
+    ///
+    /// Its enclosing [`CompositeGroup`]'s `blend`, `clip` and `opacity` are
+    /// `Normal`, `false` and `1.0`, always: a filter has no source to merge, so
+    /// there is nothing for them to describe, and its opacity is already inside the
+    /// draw as the filter's strength (§21.4).
+    Filter(FilterDraw),
 }
 
 impl CompositeGroup {
@@ -96,6 +147,18 @@ impl CompositeGroup {
             clip,
             opacity: 1.0,
             content: GroupContent::Run(items),
+        }
+    }
+
+    /// A filter layer's pass, which merges nothing and is merged through nothing
+    /// (§21) — see [`GroupContent::Filter`] for why the three relational fields are
+    /// fixed rather than taken from the layer.
+    pub fn filter(draw: FilterDraw) -> Self {
+        Self {
+            blend: BlendMode::Normal,
+            clip: false,
+            opacity: 1.0,
+            content: GroupContent::Filter(draw),
         }
     }
 
@@ -126,7 +189,7 @@ impl CompositeGroup {
                     // group is a `Run`. It is the one place the implication is
                     // still asserted rather than carried by a return type, because
                     // this consumes the members and `as_direct_run` borrows them.
-                    GroupContent::Stack(_) => {
+                    GroupContent::Stack(_) | GroupContent::Filter(_) => {
                         unreachable!("a direct group is a Run by construction")
                     }
                 })
@@ -177,9 +240,14 @@ impl CompositeGroup {
     /// How deep the isolation nests below this group: 0 for a `Run`, one more
     /// than its deepest member for a `Stack`. The scratch stack is sized by this
     /// (§14.7).
+    ///
+    /// 0 for a `Filter` too, and for the same reason a `Run` is 0: it nests nothing
+    /// below it. It still needs a level's `swap` to ping-pong through, which it gets
+    /// from the stack it is a member of — [`scratch_levels`] counts it because
+    /// [`as_direct_run`](Self::as_direct_run) does not claim it.
     fn depth(&self) -> usize {
         match &self.content {
-            GroupContent::Run(_) => 0,
+            GroupContent::Run(_) | GroupContent::Filter(_) => 0,
             GroupContent::Stack(members) => 1 + members.iter().map(Self::depth).max().unwrap_or(0),
         }
     }
@@ -193,6 +261,9 @@ impl CompositeGroup {
             match &g.content {
                 GroupContent::Run(items) => out.extend(items.iter()),
                 GroupContent::Stack(members) => members.iter().for_each(|m| walk(m, out)),
+                // Nothing to instance: a filter draws one fullscreen triangle off
+                // its uniform slot, with no per-item stream behind it.
+                GroupContent::Filter(_) => {}
             }
         }
         walk(self, &mut out);

@@ -77,7 +77,7 @@ fn shape(state: &DocState) -> Vec<(LayerId, usize)> {
 fn matte_of(l: &Layer) -> Option<(MatteRegion, [f32; 3])> {
     match &l.content {
         LayerContent::Matte { region, color } => Some((*region, *color)),
-        LayerContent::Paint(_) => None,
+        LayerContent::Paint(_) | LayerContent::Filter(_) => None,
     }
 }
 
@@ -102,6 +102,9 @@ fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
     }
     if matte_of(a) != matte_of(b) {
         out.push(Prop::Matte);
+    }
+    if a.filter() != b.filter() {
+        out.push(Prop::Filter);
     }
     out
 }

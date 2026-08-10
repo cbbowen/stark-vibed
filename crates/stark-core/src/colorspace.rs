@@ -126,6 +126,15 @@ pub trait ColorSpace {
     /// CIE XYZ) while the targets hold channels, so the pass is bracketed by this
     /// space's conversion out and back. The algebra between them is shared.
     fn blend_shader(&self) -> &'static str;
+    /// WGSL for the **filter layer** pass — §21. The accumulator beneath a filter
+    /// layer, read and rewritten.
+    ///
+    /// A space needs its own variant for the reason
+    /// [`blend_shader`](Self::blend_shader) does, and it is the same reason twice: a
+    /// colour adjustment is a statement about light and about perceived colour,
+    /// while the targets hold channels, so the pass is bracketed by this space's
+    /// conversion out and back. The adjustment between them is shared.
+    fn filter_shader(&self) -> &'static str;
 
     /// Whether [`blend_shader`](Self::blend_shader) needs Mixbox's pigment LUT bound
     /// (`mixbox_lut.wesl`).
@@ -207,6 +216,9 @@ impl ColorSpace for OkLabColorSpace {
     }
     fn blend_shader(&self) -> &'static str {
         stark_shaders::blend_oklab()
+    }
+    fn filter_shader(&self) -> &'static str {
+        stark_shaders::filter_oklab()
     }
 }
 
@@ -301,9 +313,12 @@ impl ColorSpace for MixboxColorSpace {
     fn blend_shader(&self) -> &'static str {
         stark_shaders::blend_mixbox()
     }
-    /// The one space that needs it: expressing combined *light* back as a pigment
-    /// mixture is Mixbox's LUT, the inverse of the polynomial the media pass runs
-    /// forward (§18.0.4).
+    fn filter_shader(&self) -> &'static str {
+        stark_shaders::filter_mixbox()
+    }
+    /// The one space that needs it: expressing combined or adjusted *light* back as
+    /// a pigment mixture is Mixbox's LUT, the inverse of the polynomial the media
+    /// pass runs forward (§18.0.4, §21).
     fn needs_pigment_lut(&self) -> bool {
         true
     }

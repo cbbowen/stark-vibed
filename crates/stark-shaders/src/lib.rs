@@ -124,6 +124,22 @@ pub fn blend_mixbox() -> &'static str {
     include_wesl!("blend_mixbox")
 }
 
+/// WGSL **filter layer** pass for the Oklab color space: the accumulator beneath a
+/// filter layer, read and rewritten — §21.
+pub fn filter_oklab() -> &'static str {
+    include_wesl!("filter_oklab")
+}
+
+/// WGSL filter-layer pass for the Mixbox color space — §21. Same adjustment as
+/// [`filter_oklab`]; the round trip runs through Mixbox's pigment polynomial and its
+/// inverse LUT.
+///
+/// Only in a build carrying the `mixbox` feature, like [`media_mixbox`].
+#[cfg(feature = "mixbox")]
+pub fn filter_mixbox() -> &'static str {
+    include_wesl!("filter_mixbox")
+}
+
 /// WGSL stroke integrate pass: merge a stroke's scratch slab into the layer over
 /// the base — §6.2/§6.1.
 ///
@@ -233,6 +249,9 @@ mod tests {
             ("composite", || composite(false)),
             ("dynamics", || dynamics(false)),
             ("fill", || fill(false)),
+            #[cfg(feature = "mixbox")]
+            ("filter_mixbox", filter_mixbox),
+            ("filter_oklab", filter_oklab),
             ("guides", guides),
             ("integrate", || integrate(false)),
             ("mask_region", mask_region),

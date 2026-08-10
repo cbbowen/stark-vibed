@@ -127,14 +127,32 @@ pub struct LayerInfo {
     /// brush has nowhere to go while it is selected — all without reaching past
     /// `observe()` into `DocState`.
     pub matte: Option<MatteInfo>,
+    /// Set when this layer is a **filter** (§21) — a function of what is composited
+    /// beneath it rather than content of its own. `None` for anything else.
+    ///
+    /// The whole filter, not a name for it: the filter bar's sliders read their
+    /// current values off this and send the adjusted filter straight back, so a
+    /// filter that grows a knob costs the projection nothing (§21.6).
+    pub filter: Option<crate::document::Filter>,
+    /// Whether anything composites beneath this layer **within its own stack** —
+    /// which is exactly what a filter layer rewrites (§21.2).
+    ///
+    /// Not the same question as [`has_backdrop`](Self::has_backdrop), and the two
+    /// differ on precisely one kind of row: the **base of a group**, which has a
+    /// backdrop (what lies under the group) but nothing under it inside the group,
+    /// because what it carries composites *over* it. A blend mode and a clip point
+    /// outward from there and are live; a filter points at its own stack and is
+    /// inert. So a panel that showed one answer for both would tell a filter used as
+    /// a group base that it was doing something.
+    pub has_lower_sibling: bool,
 }
 
 impl LayerInfo {
-    /// Whether a stroke aimed at this layer would draw anything. A matte has no
-    /// tile map, so selecting one is legal but painting on it does nothing
-    /// (§15.7).
+    /// Whether a stroke aimed at this layer would draw anything. Neither a matte nor
+    /// a filter has a tile map, so selecting one is legal but painting on it does
+    /// nothing (§15.7, §21.4).
     pub fn is_paintable(&self) -> bool {
-        self.matte.is_none()
+        self.matte.is_none() && self.filter.is_none()
     }
 }
 
@@ -619,6 +637,47 @@ impl Engine {
                 // (§15.7) and arming it as the target would just
                 // swallow the user's next stroke.
             }
+            DocCommand::AddFilter {
+                carrier,
+                above,
+                filter,
+            } => {
+                let id = self.mint_layer();
+                self.commit(ActionKind::AddFilter {
+                    id,
+                    carrier,
+                    above,
+                    filter: filter.sanitized(),
+                });
+                // Deliberately *not* made the active layer, for the reason
+                // `AddMatte` is not: a filter has no tile map, so arming it as the
+                // paint target would swallow the next stroke (§21.4). The frontend
+                // selects it, which is what raises its bar.
+            }
+            DocCommand::SetFilter(id, filter) => {
+                // Drops the preview whether or not the commit below happens, for the
+                // reason `SetMatteColor` drops it: a drag that settles on the value
+                // it opened at must still supersede what it was showing.
+                self.preview.set_doc(None);
+                // Normalized here, where the action is minted, so replay puts back
+                // what was applied rather than re-deriving it from rules that may
+                // have moved (§21.5) — the same funnel `SetLayerName` goes through.
+                let filter = filter.sanitized();
+                // Refused when it would change nothing, as `SetLayerOpacity` and
+                // `SetMatteColor` are, and asked of the layer's *content* for the
+                // same reason: only a filter layer has a filter to compare. A
+                // non-filter layer still commits an action `apply` will no-op,
+                // rather than growing a second rule about what a filter is somewhere
+                // `apply` cannot see.
+                let unchanged = self
+                    .document()
+                    .layer(id)
+                    .and_then(|l| l.filter())
+                    .is_some_and(|current| current == filter);
+                if !unchanged {
+                    self.commit(ActionKind::SetFilter(id, filter));
+                }
+            }
             DocCommand::SetMatteRect(id, min, max) => {
                 // The committed rect supersedes whatever the drag was previewing;
                 // leaving the preview up would pin the canvas to the last dragged
@@ -802,6 +861,11 @@ impl Engine {
                     set.map(|(id, opacity)| self.timeline.current().set_layer_opacity(id, opacity));
                 self.set_doc_preview(preview);
             }
+            ViewCommand::PreviewFilter(set) => {
+                let preview = set
+                    .map(|(id, filter)| self.timeline.current().set_filter(id, filter.sanitized()));
+                self.set_doc_preview(preview);
+            }
             ViewCommand::PreviewTransform(t) => {
                 let preview = t.and_then(|(layer, map)| self.preview_transform(layer, &map));
                 self.set_doc_preview(preview);
@@ -871,8 +935,21 @@ impl Engine {
         // one list that means both is one thing to keep in agreement.
         let mut layers: Vec<LayerInfo> = Vec::new();
         let mut carriers: Vec<LayerId> = Vec::new();
+        // Whether each depth's *current* stack has yielded a layer yet — the walk's
+        // own answer to "is there a sibling below me here", which is what a filter
+        // reads (§21.2). Truncating on the way back up is what makes it per-stack
+        // rather than per-depth: re-entering depth `d` from deeper is the same stack
+        // and keeps its flag, while descending to a new `d` starts it false.
+        let mut filled: Vec<bool> = Vec::new();
         shown.visit(&mut |l, depth| {
             carriers.truncate(depth);
+            if filled.len() > depth {
+                filled.truncate(depth + 1);
+            } else {
+                filled.resize(depth + 1, false);
+            }
+            let has_lower_sibling = filled[depth];
+            filled[depth] = true;
             layers.push(LayerInfo {
                 id: l.id,
                 blend: l.blend,
@@ -899,8 +976,10 @@ impl Engine {
                             color: *color,
                         })
                     }
-                    LayerContent::Paint(_) => None,
+                    LayerContent::Paint(_) | LayerContent::Filter(_) => None,
                 },
+                filter: l.filter(),
+                has_lower_sibling,
             });
             carriers.push(l.id);
         });

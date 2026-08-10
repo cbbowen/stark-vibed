@@ -7,6 +7,7 @@
 //! |---|---|---|
 //! | A | [`tiles`] | every visible tile's channels into the offscreen accumulator, mattes interleaved (§15.4) |
 //! | — | [`blend`] | a group with a mode of its own, isolated and merged back (§18.0.4) |
+//! | — | [`filter`] | a filter layer: the accumulator beneath it, read and rewritten (§21) |
 //! | B | [`media`] | normals off the height field, lit, tonemapped, over the substrate (§6.3) |
 //! | C | [`overlay`] | selection outlines over the lit result (§6.8, §17.3) |
 //! | D | [`guides`] | the perspective grid over everything (§20.4) |
@@ -33,6 +34,7 @@
 //! pipeline behind a generation counter that each `Compositor` notices.
 
 mod blend;
+mod filter;
 mod group;
 mod guides;
 mod media;
@@ -50,6 +52,7 @@ use crate::gpu::environment::Environment;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 
 use blend::{BLEND_SLOT, BlendPass, BlendUniform, ScratchLevel, ScratchTargets, Targets};
+use filter::{FILTER_SLOT, FilterPass, FilterUniform, alloc_filter};
 use group::scratch_levels;
 // The free items are imported by name rather than qualified, because `render`'s own
 // `guides` binding (the scene's list) would otherwise shadow the module in a reader's
@@ -61,7 +64,7 @@ use resolve::{ResolvePass, ResolveUniform, supersample};
 use tiles::{Instance, MatteInstance, TilePass, alloc_instances, alloc_mattes};
 use view::View;
 
-pub use group::{CompositeGroup, CompositeItem, GroupContent, MatteDraw};
+pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
 pub use media::MediaParams;
 pub use overlay::SelectionOutline;
 pub(crate) use view::view_uniform;
@@ -91,6 +94,7 @@ struct Cursors {
     tile: u32,
     matte: u32,
     blend: u32,
+    filter: u32,
 }
 
 /// What one render draws, as against *where and how* it draws it (the target and the
@@ -146,6 +150,9 @@ pub struct CompositorPipeline {
     view: View,
     tiles: TilePass,
     blend: BlendPass,
+    /// Filter layers (§21) — the blend pass with the isolated source removed, so
+    /// close to it that the two share the scratch and the pigment LUT.
+    filter: FilterPass,
     overlay: OverlayPass,
     guides: GuidePass,
     media: MediaPass,
@@ -237,6 +244,12 @@ pub struct Compositor {
     // One dynamic-offset slot per blend group in the frame.
     blend_buf: wgpu::Buffer,
     blend_slots: usize,
+    // …and one per filter layer (§21). A separate buffer rather than a shared one:
+    // the two uniforms are different shapes, and a document with three filters and
+    // no blend modes should not have to reason about which slots the other pass
+    // skipped.
+    filter_buf: wgpu::Buffer,
+    filter_slots: usize,
     // Pass C's, grown to the outlined mask-tile count.
     overlay_instances: wgpu::Buffer,
     overlay_cap: usize,
@@ -288,6 +301,7 @@ impl CompositorPipeline {
         Self {
             tiles: TilePass::new(device, &view, color_space, color_format, aux_format),
             blend: BlendPass::new(ctx, color_space, color_format, aux_format),
+            filter: FilterPass::new(ctx, color_space, color_format, aux_format),
             overlay: OverlayPass::new(device, &view, target_format),
             guides: GuidePass::new(device, target_format),
             media: MediaPass::new(device, color_space, &screen),
@@ -387,6 +401,8 @@ impl Compositor {
             matte_cap: 1,
             blend_buf: blend::alloc_blend(device, 1),
             blend_slots: 1,
+            filter_buf: alloc_filter(device, 1),
+            filter_slots: 1,
             overlay_instances: alloc_overlay(device, 1),
             overlay_cap: 1,
             guide_buf: alloc_guides(device, 1),
@@ -522,22 +538,37 @@ impl Compositor {
                 .write_buffer(&self.matte_instances, 0, bytemuck::cast_slice(&mattes));
         }
 
-        // One uniform slot per merge, all written before the single submit — see
-        // `BLEND_SLOT` for why they cannot share one.
+        // One uniform slot per merge and one per filter layer, all written before the
+        // single submit — see `BLEND_SLOT` for why they cannot share one.
         //
         // Collected by the **same recursion the encoder consumes them with**, so
-        // slot `n` is the `n`th merge either walk reaches. That is a post-order
-        // DFS: a group's members merge before the group itself does, because the
-        // group cannot be merged until it has been composited.
-        fn collect(members: &[CompositeGroup], out: &mut Vec<BlendUniform>) {
+        // slot `n` is the `n`th merge (or the `n`th filter) either walk reaches. That
+        // is a post-order DFS: a group's members merge before the group itself does,
+        // because the group cannot be merged until it has been composited. The two
+        // cursors run independently, which is what lets a filter and a blend group
+        // sit side by side in a stack without either counting the other's slots.
+        fn collect(
+            members: &[CompositeGroup],
+            blends: &mut Vec<BlendUniform>,
+            filters: &mut Vec<FilterUniform>,
+        ) {
             for m in members {
                 if m.as_direct_run().is_some() {
                     continue;
                 }
-                if let GroupContent::Stack(inner) = &m.content {
-                    collect(inner, out);
+                if let GroupContent::Filter(f) = &m.content {
+                    filters.push(FilterUniform {
+                        kind: f.kind,
+                        strength: f.strength,
+                        params: f.params,
+                        ..Default::default()
+                    });
+                    continue;
                 }
-                out.push(BlendUniform {
+                if let GroupContent::Stack(inner) = &m.content {
+                    collect(inner, blends, filters);
+                }
+                blends.push(BlendUniform {
                     mode: blend::blend_code(m.blend),
                     k: DRAGO_K,
                     clip: u32::from(m.clip),
@@ -545,8 +576,8 @@ impl Compositor {
                 });
             }
         }
-        let mut blends = Vec::new();
-        collect(groups, &mut blends);
+        let (mut blends, mut filters) = (Vec::new(), Vec::new());
+        collect(groups, &mut blends, &mut filters);
         if !blends.is_empty() {
             if blends.len() > self.blend_slots {
                 self.blend_buf = blend::alloc_blend(device, blends.len());
@@ -556,6 +587,19 @@ impl Compositor {
                 p.ctx.queue.write_buffer(
                     &self.blend_buf,
                     i as u64 * BLEND_SLOT,
+                    bytemuck::bytes_of(uniform),
+                );
+            }
+        }
+        if !filters.is_empty() {
+            if filters.len() > self.filter_slots {
+                self.filter_buf = alloc_filter(device, filters.len());
+                self.filter_slots = filters.len();
+            }
+            for (i, uniform) in filters.iter().enumerate() {
+                p.ctx.queue.write_buffer(
+                    &self.filter_buf,
+                    i as u64 * FILTER_SLOT,
                     bytemuck::bytes_of(uniform),
                 );
             }
@@ -641,6 +685,18 @@ impl Compositor {
                 blend::clear_targets(encoder, cur);
                 written = true;
             }
+            // A **filter layer** takes the same ping-pong with nothing isolated into
+            // it: there is no source, so it reads `cur` and writes the adjusted
+            // result to `alt` directly (§21.3). The bounce is what it shares with a
+            // merge, and it is the reason both are counted by `merges` above — the
+            // parity that lands the final result in the caller's own targets is a
+            // count of *flips*, not of blend modes.
+            if let GroupContent::Filter(_) = &member.content {
+                self.encode_filter(e, encoder, cur, alt, cursors.filter);
+                cursors.filter += 1;
+                std::mem::swap(&mut cur, &mut alt);
+                continue;
+            }
             // The group, alone on nothing — the isolation its mode and its clip are
             // both defined against.
             let iso = scratch.iso();
@@ -651,6 +707,7 @@ impl Compositor {
                 GroupContent::Stack(inner) => {
                     self.encode_stack(e, encoder, iso, inner, cursors, level + 1)
                 }
+                GroupContent::Filter(_) => unreachable!("handled above"),
             }
             self.encode_blend(e, encoder, cur, iso, alt, cursors.blend);
             cursors.blend += 1;
@@ -776,6 +833,65 @@ impl Compositor {
         });
         pass.set_pipeline(&e.p.blend.pipeline);
         pass.set_bind_group(0, &bg, &[slot * BLEND_SLOT as u32]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Run filter slot `slot` over the accumulator `back`, writing the adjusted
+    /// result to `out` (§21.3).
+    ///
+    /// [`Self::encode_blend`] with the source dropped, down to the bind group's
+    /// numbering: `filter_common.wesl` declares 0–2 where `blend_common.wesl`
+    /// declares 0–4, and the pigment LUT keeps 5–6 because `mixbox_lut.wesl`
+    /// hard-codes them for whoever imports it. The LUT itself is the blend pass's —
+    /// both passes ask it the same question, and an Oklab document binds the same
+    /// 1×1 stand-in so there is one layout per space rather than one per pass.
+    fn encode_filter(
+        &self,
+        e: &Encode<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        back: Targets<'_>,
+        out: Targets<'_>,
+        slot: u32,
+    ) {
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &self.filter_buf,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<FilterUniform>() as u64),
+                }),
+            },
+            desc::tex(1, back.color),
+            desc::tex(2, back.aux),
+            desc::tex(5, &e.p.blend.pigment.view),
+            desc::samp(6, &e.p.blend.pigment.sampler),
+        ];
+        if let Some(r) = back.resid {
+            entries.push(desc::tex(7, r));
+        }
+        let bg =
+            e.p.ctx
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark filter bg"),
+                    layout: &e.p.filter.bgl,
+                    entries: &entries,
+                });
+        let attachments = out.attachments(desc::CLEAR);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stark filter pass"),
+            // Covers every texel and reads nothing from `out` — including the aux,
+            // which it copies across from `back` rather than leaving to a load op,
+            // since `out` is the other half of a ping-pong and holds a stale bounce.
+            color_attachments: &attachments[..out.count()],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&e.p.filter.pipeline);
+        pass.set_bind_group(0, &bg, &[slot * FILTER_SLOT as u32]);
         pass.draw(0..3, 0..1);
     }
 

@@ -1,0 +1,252 @@
+//! Filter layers (§21): a layer whose content is a **function of what is
+//! composited beneath it** rather than paint of its own.
+//!
+//! A paint layer adds light to the stack and a matte covers it; a filter *rewrites*
+//! it. That is one more thing a layer can be, and — as with the matte (§15.3) —
+//! making it a layer is what buys visibility, opacity, ordering, naming, removal,
+//! undo, save, replay and collaboration without a single new concept.
+//!
+//! Two properties fall out of the stack rather than being designed, and both are
+//! worth knowing before reading [`Filter`]:
+//!
+//! - **A filter reaches exactly as far as its own stack.** It reads the accumulator
+//!   its stack has built so far, so at the root it filters the whole painting and
+//!   inside a group it filters that group — which means "filter just this layer" is
+//!   that layer carrying the filter, the same single gesture §14.4 spends on
+//!   clipping. There is no clip-to-layer-below mode to invent.
+//! - **Layer opacity is filter strength.** The pass mixes its result against the
+//!   untouched backdrop by the layer's opacity, so a half-opacity filter is half the
+//!   adjustment and a zero-opacity one is the identity — which is what fading a
+//!   layer already means everywhere else (§21.4).
+//!
+//! What a filter is *not* is a brush. Nothing here touches a tile: the whole of a
+//! filter's effect is one fullscreen pass at composite time, so it costs no GPU
+//! memory, is free to re-tune, and is undone by dropping one action.
+
+use serde::{Deserialize, Serialize};
+
+/// What a filter layer does to the stack beneath it (§21.2).
+///
+/// One variant, because one is built. The enum is the seam the rest of §21.7 lands
+/// on — motion blur, chromatic aberration, outline — and per this codebase's own
+/// precedent (§1) no variant appears here before it does something to a pixel.
+///
+/// `Copy` on purpose: a filter is a handful of numbers, it is read once per render
+/// and once per projection, and a `Clone` would be a promise that some future
+/// variant may carry a mask or a kernel. If one ever does, that is the day to pay
+/// for it.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Filter {
+    /// Exposure, contrast, saturation and hue, applied in Oklab (§21.5).
+    Color(ColorAdjust),
+}
+
+impl Filter {
+    /// Every filter this build offers, at its neutral setting — the list a "new
+    /// filter" picker is built from, in the order it should offer them.
+    pub const ALL: [Filter; 1] = [Filter::Color(ColorAdjust::NEUTRAL)];
+
+    /// What this filter is called, in the panel and in the layer row.
+    pub fn label(self) -> &'static str {
+        match self {
+            Filter::Color(_) => "Colour",
+        }
+    }
+
+    /// Whether this filter changes anything at all. A neutral filter still costs its
+    /// pass — the compositor cannot know that `1.0` is the identity of a gain — so
+    /// this is what lets the draw list leave it out (§21.3).
+    pub fn is_neutral(self) -> bool {
+        match self {
+            Filter::Color(c) => c == ColorAdjust::NEUTRAL,
+        }
+    }
+
+    /// The same filter with every parameter finite and in range — the funnel every
+    /// filter passes through on its way into the log.
+    ///
+    /// Applied where the action is minted rather than where it is used, exactly as a
+    /// layer name is normalized (`Engine::process`): replay then puts back what was
+    /// recorded instead of re-deriving it from rules that may have moved since. The
+    /// bounds matter more than they look — a `NaN` saturation reaches a fullscreen
+    /// pass and poisons every texel of the frame, and nothing downstream can notice.
+    pub fn sanitized(self) -> Self {
+        match self {
+            Filter::Color(c) => Filter::Color(c.sanitized()),
+        }
+    }
+}
+
+/// A colour adjustment: the four knobs that between them cover "make this read
+/// warmer / flatter / stronger" (§21.5).
+///
+/// All four are applied in **Oklab**, which is the whole reason they are these four
+/// and not the seven a levels dialog would offer: in a perceptual space, lightness,
+/// chroma and hue are separable, so moving one leaves the other two where they were.
+/// Saturation in sRGB shifts hue; contrast in sRGB shifts saturation. Here neither
+/// does, and that is what makes a slider mean one thing.
+///
+/// [`NEUTRAL`](Self::NEUTRAL) is the identity, and it is the value a filter layer is
+/// created holding — a new filter changes nothing until it is dialled, which is what
+/// keeps "add a filter" from being a destructive act.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColorAdjust {
+    /// Exposure, in **stops**: the light beneath is scaled by `2^exposure`, so `+1`
+    /// is twice the light and `-1` is half.
+    ///
+    /// Stops rather than a percentage because that is the unit the quantity is
+    /// linear in — a stop is the same change everywhere in the range, where "+20%
+    /// brightness" is a different change in the shadows than in the highlights. It
+    /// is applied to *light* (the same normalized XYZ the blend modes combine in,
+    /// §18.0.4) rather than to Oklab's `L`, because doubling light is what an
+    /// exposure is and cube-rooting it first would make the number mean nothing.
+    pub exposure: f32,
+    /// Contrast: a gain on Oklab `L` about mid-grey. `1` is the identity, `0`
+    /// flattens the picture to mid-grey, `2` doubles the spread.
+    ///
+    /// About mid-grey rather than about the picture's own mean, which is the other
+    /// thing this could have meant: a pivot that depends on the image makes the
+    /// adjustment depend on what is underneath the filter, so moving a layer below
+    /// it would change what the slider does. See [`CONTRAST_PIVOT`].
+    pub contrast: f32,
+    /// Saturation: a gain on Oklab chroma — the distance of `(a, b)` from the
+    /// achromatic axis. `1` is the identity, `0` is a greyscale conversion that
+    /// keeps every lightness exactly where it was, and past `1` is a boost.
+    ///
+    /// A greyscale at `0` for free, and *correctly*: dropping chroma in Oklab is the
+    /// desaturation a luminance-weighted RGB average only approximates.
+    pub saturation: f32,
+    /// Hue rotation of the Oklab `(a, b)` plane, in **radians**, clockwise from
+    /// red toward yellow.
+    ///
+    /// Radians because that is the unit the engine states angles in
+    /// ([`ViewCommand::SetRotation`](crate::command::ViewCommand::SetRotation)); the
+    /// frontend offers degrees, which is a way of *presenting* an angle.
+    pub hue: f32,
+}
+
+impl ColorAdjust {
+    /// The identity: no exposure, unity gains, no rotation.
+    pub const NEUTRAL: Self = Self {
+        exposure: 0.0,
+        contrast: 1.0,
+        saturation: 1.0,
+        hue: 0.0,
+    };
+
+    /// The widest each knob may be dialled — the range a frontend's slider spans and
+    /// the range [`sanitized`](Self::sanitized) holds a log entry to.
+    ///
+    /// Bounded at all because a fullscreen pass has no coverage to hide behind: a
+    /// value from a file or a peer reaches every texel of the frame, so the numbers
+    /// that reach the shader have to be numbers.
+    pub const EXPOSURE: (f32, f32) = (-4.0, 4.0);
+    pub const CONTRAST: (f32, f32) = (0.0, 2.0);
+    pub const SATURATION: (f32, f32) = (0.0, 2.0);
+    /// A full turn either way, so every rotation is reachable and none is reachable
+    /// twice by more than a lap.
+    pub const HUE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+
+    /// Every knob finite and in range — see [`Filter::sanitized`].
+    ///
+    /// A non-finite value falls back to the **neutral** setting for that knob rather
+    /// than to a bound: `NaN` says nothing about which end of the range was meant,
+    /// and the identity is the one answer that cannot make a picture worse.
+    pub fn sanitized(self) -> Self {
+        let clamp = |v: f32, neutral: f32, (lo, hi): (f32, f32)| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                neutral
+            }
+        };
+        Self {
+            exposure: clamp(self.exposure, 0.0, Self::EXPOSURE),
+            contrast: clamp(self.contrast, 1.0, Self::CONTRAST),
+            saturation: clamp(self.saturation, 1.0, Self::SATURATION),
+            hue: clamp(self.hue, 0.0, Self::HUE),
+        }
+    }
+}
+
+impl Default for ColorAdjust {
+    fn default() -> Self {
+        Self::NEUTRAL
+    }
+}
+
+/// Oklab `L` of mid-grey — sRGB `0.5` — which is what [`ColorAdjust::contrast`]
+/// pivots about.
+///
+/// Written down rather than computed at each use, and worth stating why the number
+/// is what it is: sRGB `0.5` is linear `0.2140`, the Oklab matrix rows sum to one so
+/// a neutral's `l = m = s = 0.2140`, and `L` is the cube root of that. Mirrored in
+/// `filter_common.wesl`, which is the copy that actually runs — the host side exists
+/// so a test can predict a texel without a shader.
+pub const CONTRAST_PIVOT: f32 = 0.5981;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pivot is the Oklab lightness of mid-grey, and it is written down in two
+    /// places (here and `filter_common.wesl`). Deriving it here is what says the
+    /// literal is the number it claims to be rather than one somebody typed.
+    #[test]
+    fn the_contrast_pivot_is_mid_greys_lightness() {
+        let lin = crate::color::srgb_to_linear(0.5);
+        let l = crate::color::linear_srgb_to_oklab([lin, lin, lin])[0];
+        assert!(
+            (l - CONTRAST_PIVOT).abs() < 5e-4,
+            "mid-grey is L = {l}, not {CONTRAST_PIVOT}",
+        );
+    }
+
+    /// A filter arriving from a file or a peer reaches **every texel** of the frame,
+    /// so the one thing that must not survive the way in is a value that is not a
+    /// number. A `NaN` here would come back as a white or black frame with nothing
+    /// able to say why.
+    #[test]
+    fn sanitizing_replaces_the_unusable_with_the_identity() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let wild = Filter::Color(ColorAdjust {
+                exposure: bad,
+                contrast: bad,
+                saturation: bad,
+                hue: bad,
+            });
+            assert_eq!(wild.sanitized(), Filter::Color(ColorAdjust::NEUTRAL));
+        }
+        // …and an ordinary out-of-range value is *clamped* rather than neutralized:
+        // a slider pushed past its stop still means "as far as it goes".
+        let hot = Filter::Color(ColorAdjust {
+            exposure: 40.0,
+            saturation: -3.0,
+            ..ColorAdjust::NEUTRAL
+        });
+        assert_eq!(
+            hot.sanitized(),
+            Filter::Color(ColorAdjust {
+                exposure: ColorAdjust::EXPOSURE.1,
+                saturation: ColorAdjust::SATURATION.0,
+                ..ColorAdjust::NEUTRAL
+            }),
+        );
+    }
+
+    /// A freshly added filter must change nothing: adding one is a step you take
+    /// *before* deciding what it does, and a filter that darkened the painting on
+    /// creation would be a destructive act dressed as an organizational one.
+    #[test]
+    fn a_new_filter_is_the_identity() {
+        for filter in Filter::ALL {
+            assert!(filter.is_neutral(), "{} is not neutral", filter.label());
+            assert_eq!(
+                filter.sanitized(),
+                filter,
+                "{} is not stable",
+                filter.label()
+            );
+        }
+    }
+}

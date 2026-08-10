@@ -28,6 +28,7 @@ const MIRRORS: &[(&[&str], &str)] = &[
     (&["composite", "matte", "overlay"], "View"),
     (&["dynamics"], "Stamp"),
     (&["fill"], "Fill"),
+    (&["filter_common"], "Filter"),
     (&["guides"], "Guide"),
     (&["mask_region"], "Region"),
     (&["media_common"], "Media"),

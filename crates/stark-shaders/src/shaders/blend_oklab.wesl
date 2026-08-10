@@ -3,12 +3,13 @@
 // alpha (composite.wesl), so the only space-specific work is Oklab ↔ normalized
 // XYZ; all of the light algebra and the compositing tail live in `blend_common`.
 
-import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab};
+import package::lib::color::{
+    oklab_to_linear_srgb, linear_srgb_to_oklab, linear_to_light, light_to_linear,
+};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
     FsOut, back_color, back_aux, src_color, src_aux, combine, merge,
-    linear_to_light, light_to_linear,
 };
 
 @vertex

@@ -23,14 +23,15 @@
 // attenuate the light passing through them, which is a statement about light, so it
 // is settled in light and the LUT is asked which mixture ended up that colour.
 
-import package::lib::color::{srgb_to_linear, linear_to_srgb};
+import package::lib::color::{
+    srgb_to_linear, linear_to_srgb, linear_to_light, light_to_linear,
+};
 import package::gen::mixbox_poly::{mixbox_eval_polynomial};
 import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
     b, back_color, back_aux, src_color, src_aux, combine, merge, merge_triple,
-    linear_to_light, light_to_linear,
 };
 
 // The residual halves of the two colours (§6.7). **Bindings 7 and 8 of

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use rpds::{HashTrieMap, Vector};
 
 use super::action::ActorId;
+use super::filter::Filter;
 use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion, Place};
 use super::selection::Selection;
 use crate::geom::{TileCoord, Vec2};
@@ -357,6 +358,18 @@ impl DocState {
         self.insert(Layer::matte(id, region, color), carrier, above)
     }
 
+    /// Insert a **filter** layer the same way — §21. It rewrites whatever is
+    /// composited beneath it in the stack it lands in.
+    pub fn insert_filter(
+        &self,
+        id: LayerId,
+        carrier: Option<LayerId>,
+        above: Option<LayerId>,
+        filter: Filter,
+    ) -> Self {
+        self.insert(Layer::filter_layer(id, filter), carrier, above)
+    }
+
     fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Option<LayerId>) -> Self {
         // A new layer goes above a named sibling or on top; it has no reason to
         // ask for the foot of a stack, so insertion keeps the two-state anchor and
@@ -438,7 +451,7 @@ impl DocState {
                 },
                 ..l.clone()
             },
-            LayerContent::Paint(_) => l.clone(),
+            LayerContent::Paint(_) | LayerContent::Filter(_) => l.clone(),
         })
     }
 
@@ -453,7 +466,25 @@ impl DocState {
                 },
                 ..l.clone()
             },
-            LayerContent::Paint(_) => l.clone(),
+            LayerContent::Paint(_) | LayerContent::Filter(_) => l.clone(),
+        })
+    }
+
+    /// Retune a filter layer — §21. A no-op on anything that is not one, and on an
+    /// absent id, like every other content setter here.
+    ///
+    /// The whole filter travels rather than one knob, on the argument
+    /// [`ViewCommand::SetGuides`](crate::command::ViewCommand::SetGuides) makes: the
+    /// frontend reads the current settings off the projection, moves one of them, and
+    /// sends the value back, so a filter that grows a parameter needs no command of
+    /// its own — and neither does the next filter kind.
+    pub fn set_filter(&self, id: LayerId, filter: Filter) -> Self {
+        self.map_layer(id, |l| match &l.content {
+            LayerContent::Filter(_) => Layer {
+                content: LayerContent::Filter(filter),
+                ..l.clone()
+            },
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => l.clone(),
         })
     }
 

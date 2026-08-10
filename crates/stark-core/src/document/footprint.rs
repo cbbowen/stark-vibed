@@ -51,6 +51,10 @@ pub enum Prop {
     /// A matte's region *and* colour — split no finer because no action writes
     /// one without the freedom to write the other.
     Matte,
+    /// A filter layer's settings (§21). One resource for the whole filter, for the
+    /// reason [`Matte`](Self::Matte) is one for a region and a fill: `SetFilter`
+    /// carries the filter entire, so there is no finer thing an action can write.
+    Filter,
 }
 
 /// One addressable piece of document state.
@@ -196,6 +200,9 @@ pub fn footprint(action: &Action) -> Footprint {
         ActionKind::AddLayer { id, carrier, above }
         | ActionKind::AddMatte {
             id, carrier, above, ..
+        }
+        | ActionKind::AddFilter {
+            id, carrier, above, ..
         } => Footprint {
             reads: [*carrier, *above]
                 .into_iter()
@@ -226,6 +233,7 @@ pub fn footprint(action: &Action) -> Footprint {
                         Resource::Prop(*src, Prop::Visible),
                         Resource::Prop(*src, Prop::Name),
                         Resource::Prop(*src, Prop::Matte),
+                        Resource::Prop(*src, Prop::Filter),
                     ]
                 })
                 .collect(),
@@ -264,6 +272,7 @@ pub fn footprint(action: &Action) -> Footprint {
         ActionKind::SetLayerName(id, _) => prop_write(*id, Prop::Name),
         ActionKind::SetMatteRect(id, _, _) => prop_write(*id, Prop::Matte),
         ActionKind::SetMatteColor(id, _) => prop_write(*id, Prop::Matte),
+        ActionKind::SetFilter(id, _) => prop_write(*id, Prop::Filter),
         ActionKind::Select(_) | ActionKind::InvertSelection => Footprint {
             reads: Vec::new(),
             writes: vec![Resource::Selection(actor)],

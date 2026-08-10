@@ -22,6 +22,8 @@ pub const ENTRY_POINTS: &[&str] = &[
     "composite",
     "dynamics",
     "fill",
+    "filter_mixbox",
+    "filter_oklab",
     "guides",
     "integrate",
     "mask_region",
@@ -37,12 +39,12 @@ pub const ENTRY_POINTS: &[&str] = &[
 ];
 
 /// The entries of [`ENTRY_POINTS`] that exist only in a build carrying the `mixbox`
-/// cargo feature — the two shaders that evaluate the pigment polynomial (§6.7).
+/// cargo feature — the shaders that evaluate the pigment polynomial (§6.7).
 ///
 /// They are the only importers of `package::gen::mixbox_poly` and
 /// `package::mixbox_lut`, so leaving them unbuilt is what unlinks the vendored
 /// CC BY-NC 4.0 code entirely rather than merely leaving it unreachable.
-pub const MIXBOX_ENTRY_POINTS: &[&str] = &["blend_mixbox", "media_mixbox"];
+pub const MIXBOX_ENTRY_POINTS: &[&str] = &["blend_mixbox", "filter_mixbox", "media_mixbox"];
 
 /// Whether `name` is built in a configuration whose `mixbox` feature is `mixbox`.
 ///

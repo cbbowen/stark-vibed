@@ -16,6 +16,7 @@ use std::sync::Arc;
 use rpds::Vector;
 
 use super::action::{Action, ActionKind, ActorId};
+use super::filter::Filter;
 use super::footprint::{Resource, footprint};
 use super::layer::{BlendMode, Layer, LayerId, MatteRegion};
 use super::selection::Selection;
@@ -60,6 +61,9 @@ enum PatchOp {
     Name(LayerId, Option<Arc<str>>),
     /// A matte's region and colour together — one footprint resource.
     Matte(LayerId, MatteRegion, [f32; 3]),
+    /// A filter layer's settings (§21) — one footprint resource, because the action
+    /// that writes them carries the filter entire.
+    Filter(LayerId, Filter),
     Selection(ActorId, Selection),
     Surface(SurfaceId),
     Background([f32; 3]),
@@ -104,6 +108,7 @@ impl StatePatch {
             }
             ActionKind::AddLayer { id, .. }
             | ActionKind::AddMatte { id, .. }
+            | ActionKind::AddFilter { id, .. }
             | ActionKind::RemoveLayer(id) => {
                 match (to.site_of(*id), from.contains_layer(*id)) {
                     (None, true) => ops.push(PatchOp::Absent(*id)),
@@ -163,6 +168,11 @@ impl StatePatch {
                     ops.push(PatchOp::Matte(*id, *region, *color));
                 }
             }
+            ActionKind::SetFilter(id, _) => {
+                if let Some(f) = to.layer(*id).and_then(|l| l.filter()) {
+                    ops.push(PatchOp::Filter(*id, f));
+                }
+            }
             ActionKind::Select(_) | ActionKind::InvertSelection => {
                 ops.push(PatchOp::Selection(actor, to.selection_of(actor)));
             }
@@ -207,6 +217,7 @@ impl StatePatch {
                         .set_matte_rect(*id, min, max)
                         .set_matte_color(*id, *color)
                 }
+                PatchOp::Filter(id, filter) => state.set_filter(*id, *filter),
                 PatchOp::Selection(actor, selection) => {
                     state.with_selection(*actor, selection.clone())
                 }

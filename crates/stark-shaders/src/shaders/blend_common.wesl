@@ -69,6 +69,12 @@
 //   · **Primary-independent.** Blending in RGB makes the result a function of the
 //     display's primaries. Two apps with different working primaries would disagree
 //     about what "glow" means; XYZ does not have an opinion.
+//
+// The conversion pair itself is `lib/color.wesl`'s `linear_to_light` /
+// `light_to_linear`. It lived here while this was the only pass that worked in
+// light; the filter pass (§21) scales light too, and a module in `lib` is where a
+// binding-free conversion two pipelines share belongs — importing it out of *this*
+// file would have dragged this one's bindings along with it.
 
 // (The un-premultiply guard this pass needs is `COVERAGE_EPS`, in
 // `lib/paint_common.wesl` — it used to be a local `EPS` here at 1e-4 while four
@@ -117,27 +123,6 @@ struct Blend {
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
-}
-
-// Linear sRGB → XYZ normalized to D65 white. These are the sRGB primaries' rows,
-// each divided by its own sum (= the white's tristimulus value), so `(1,1,1)` maps
-// to `(1,1,1)`.
-fn linear_to_light(c: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        dot(c, vec3<f32>(0.4339395, 0.3762078, 0.1898528)),
-        dot(c, vec3<f32>(0.2126729, 0.7151522, 0.0721750)),
-        dot(c, vec3<f32>(0.0177566, 0.1094671, 0.8727763)),
-    );
-}
-
-// The exact inverse: the XYZ→linear-sRGB matrix with column *j* scaled by the white
-// point's *j*th component, undoing the row normalization above.
-fn light_to_linear(c: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        dot(c, vec3<f32>( 3.0799545, -1.5371385, -0.5428160)),
-        dot(c, vec3<f32>(-0.9212583,  1.8760108,  0.0452477)),
-        dot(c, vec3<f32>( 0.0528873, -0.2040259,  1.1511385)),
-    );
 }
 
 // Reinhard: `T(x) = x/(1+x)`, so `T⁻¹(y) = y/(1−y)` and

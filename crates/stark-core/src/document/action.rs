@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::brush::BrushParams;
+use super::filter::Filter;
 use super::layer::{BlendMode, LayerId, MatteRegion, Place};
 use super::selection::SelectionOp;
 use super::state::DocState;
@@ -287,6 +288,32 @@ pub enum ActionKind {
     DuplicateLayer {
         ids: Vec<(LayerId, LayerId)>,
     },
+
+    /// Add a **filter** layer — a function of everything composited beneath it in
+    /// the stack it lands in (§21.2).
+    ///
+    /// It arrives holding a filter at its neutral setting, so adding one changes
+    /// nothing until it is dialled; the dialling is [`SetFilter`](Self::SetFilter).
+    /// Placed by the same two anchors every other layer is (§14.8), which is the
+    /// whole of how far a filter reaches — there is no scope to set, because *where
+    /// it sits is its scope*. Appended last, like every variant before it, so
+    /// postcard — which encodes an enum by variant *index* — keeps decoding older
+    /// files.
+    AddFilter {
+        id: LayerId,
+        carrier: Option<LayerId>,
+        above: Option<LayerId>,
+        filter: Filter,
+    },
+    /// Retune a filter layer (§21.5). One action per adjustment, not per pointer
+    /// move: a slider drag previews in view state and commits on release, the
+    /// bargain the frame drag and the opacity slider already make (§15.7, §14.6).
+    ///
+    /// Carries the **whole** filter rather than one parameter, so a filter that
+    /// grows a knob — or a new kind of filter entirely — needs no new action and no
+    /// wire-format break. A no-op on a layer that is not a filter, like
+    /// [`SetMatteColor`](Self::SetMatteColor) on a paint layer.
+    SetFilter(LayerId, Filter),
 }
 
 impl ActionKind {
@@ -316,6 +343,8 @@ impl ActionKind {
             ActionKind::SetLayerVisible(..) => "Layer visibility",
             ActionKind::SetLayerName(..) => "Rename layer",
             ActionKind::AddMatte { .. } => "Add frame",
+            ActionKind::AddFilter { .. } => "Add filter",
+            ActionKind::SetFilter(..) => "Filter",
             ActionKind::SetMatteRect(..) => "Move frame",
             ActionKind::SetMatteColor(..) => "Frame colour",
             ActionKind::SetBackground(_) => "Canvas colour",
@@ -473,6 +502,13 @@ impl history::Action for Action {
                 region,
                 color,
             } => state.insert_matte(*id, *carrier, *above, *region, *color),
+            ActionKind::AddFilter {
+                id,
+                carrier,
+                above,
+                filter,
+            } => state.insert_filter(*id, *carrier, *above, *filter),
+            ActionKind::SetFilter(id, filter) => state.set_filter(*id, *filter),
             ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
             ActionKind::SetMatteColor(id, color) => state.set_matte_color(*id, *color),
             ActionKind::SetBackground(rgb) => state.with_background(*rgb),

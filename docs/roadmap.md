@@ -38,6 +38,7 @@ Status lives here and nowhere else.
 | — | View mirror & rotate (§18.1.2) | done |
 | — | Timeline mode / scrubber (§18.2.4) | done |
 | — | Groups & clipping (§14) | done |
+| — | Filter layers (§21) | done — the architecture and the colour filter; the rest of the kinds (§21.9) remain |
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/lift/deposit/bleed; more sources and targets are variants away |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
@@ -268,13 +269,19 @@ scratch surface you genuinely mix on and then pick up from, running the *same*
 dynamics loop and the *same* eyedropper, is a novel and defensible feature that
 falls directly out of what is already built.
 
-#### 18.1.6 Adjustments and a few filters
+#### 18.1.6 Adjustments and a few filters — started
 
 Levels/curves, hue-sat, blur, sharpen, liquify/warp. Photoshop's bloat is not
 that adjustments exist; it is that there are ninety of them behind eight menus.
 Ten, shipped as **adjustment layers** (non-destructive, re-orderable, log-native),
 is strictly better than Photoshop's destructive model and cheaper to build than
 it.
+
+Built as **filter layers** (§21), and the model went one step past what this
+paragraph asked for: an adjustment layer's *scope* is where its row sits, so the
+clipping toggle Photoshop needs beside every adjustment is not a control here at
+all (§21.1). One kind ships — exposure / contrast / saturation / hue, in Oklab —
+and the rest are a variant and an arm each (§21.9).
 
 #### 18.1.7 Touch: the two-finger gesture — built
 

@@ -35,6 +35,35 @@ fn linear_srgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
+// Linear sRGB → XYZ normalized to D65 white. These are the sRGB primaries' rows,
+// each divided by its own sum (= the white's tristimulus value), so `(1,1,1)` maps
+// to `(1,1,1)`.
+//
+// **This is the space light is combined and scaled in** — see `blend_common.wesl`
+// for the argument, which is one paragraph long and worth reading before touching
+// anything here: XYZ is linear in light, non-negative for every real colour, and
+// primary-independent, and the row normalization is what makes "1" mean the same
+// thing on all three axes. Here in `lib` rather than beside that argument because
+// two passes now need the pair — the blend (§18.0.4) and the filter (§21) — and a
+// binding-free leaf is where a conversion two pipelines share belongs.
+fn linear_to_light(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        dot(c, vec3<f32>(0.4339395, 0.3762078, 0.1898528)),
+        dot(c, vec3<f32>(0.2126729, 0.7151522, 0.0721750)),
+        dot(c, vec3<f32>(0.0177566, 0.1094671, 0.8727763)),
+    );
+}
+
+// The exact inverse: the XYZ→linear-sRGB matrix with column *j* scaled by the white
+// point's *j*th component, undoing the row normalization above.
+fn light_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        dot(c, vec3<f32>( 3.0799545, -1.5371385, -0.5428160)),
+        dot(c, vec3<f32>(-0.9212583,  1.8760108,  0.0452477)),
+        dot(c, vec3<f32>( 0.0528873, -0.2040259,  1.1511385)),
+    );
+}
+
 fn oklab_to_linear_srgb(lab: vec3<f32>) -> vec3<f32> {
     let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
     let m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;

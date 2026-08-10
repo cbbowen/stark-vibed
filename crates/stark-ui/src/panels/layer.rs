@@ -40,6 +40,7 @@ use dioxus::html::Key;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
+use crate::panels::filter::AddFilterButton;
 use crate::panels::frame::AddFrameButton;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, layer_boxes, select_all};
@@ -259,6 +260,12 @@ pub fn LayerPanel() -> Element {
     // and cannot be read again after a handler has moved it. The id is all most
     // handlers here want, and it still copies.
     let selected_id = selected.as_ref().map(|l| l.id);
+    // Whether the two relational controls — blend and clip — have anything to say
+    // about the selected layer: nothing beneath it (§14.4.3), or no source of its own
+    // to meet what is beneath (§21.4, a filter).
+    let relational_inert = selected
+        .as_ref()
+        .is_none_or(|l| !l.has_backdrop || l.filter.is_some());
     // Where "Add layer" puts one: into the selected layer's own stack, above it.
     // Read out here rather than in the handler because the row block below consumes
     // `selected`, and this is the only part of it the handler wants.
@@ -285,6 +292,10 @@ pub fn LayerPanel() -> Element {
                 {label("Layer")}
             }
             AddFrameButton {}
+            // The third kind of layer (§21). Beside the other two rather than in a
+            // menu of its own, because that is what it is: a filter is a layer, and
+            // where it lands is the whole of what it acts on.
+            AddFilterButton {}
         }
 
         // Top of the document first, which is what a stack looks like from in front
@@ -365,7 +376,15 @@ pub fn LayerPanel() -> Element {
                 // sentence left standing in minimal mode would read as a bug.
                 div { class: "slider-label",
                     {icon(icons::OPACITY)}
-                    {label(if l.is_group { "Opacity \u{2014} of the group" } else { "Opacity" })}
+                    // A filter's opacity is its **strength** (§21.4), and the word is
+                    // worth changing: "50% opacity" on a colour adjustment invites
+                    // the reading that the filter is half transparent, when what it
+                    // is is half applied.
+                    {label(match (l.is_group, l.filter.is_some()) {
+                        (true, _) => "Opacity \u{2014} of the group",
+                        (false, true) => "Strength",
+                        (false, false) => "Opacity",
+                    })}
                 }
                 input {
                     class: "slider",
@@ -402,6 +421,11 @@ pub fn LayerPanel() -> Element {
                     {icon(icons::BLEND)}
                     {label(if l.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
                 }
+                // Both go inert on a **filter** as well as at the bottom of the
+                // document, and for a stronger reason than "there is nothing to
+                // combine with": a filter has no source at all — it *is* the
+                // backdrop, rewritten — so neither control has anything to describe
+                // (§21.4). One condition, read by both.
                 // Blend and clip are one row because they are one question — *how does
                 // this layer meet what is below it* — and they share the answer's two
                 // halves: the mode says how the paint combines, the toggle says where it
@@ -418,7 +442,7 @@ pub fn LayerPanel() -> Element {
                         // (§14.4.3). Shown rather than hidden: the control belongs to the
                         // layer wherever it sits, and a row that loses a control when it
                         // is dragged to the bottom reads as a bug.
-                        disabled: !l.has_backdrop,
+                        disabled: relational_inert,
                         onchange: move |e| {
                             if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
                                 dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
@@ -446,7 +470,7 @@ pub fn LayerPanel() -> Element {
                         // over nothing would erase the layer, which is the whole reason
                         // this one has to be stopped rather than merely left to do
                         // nothing (§14.4.3).
-                        disabled: !l.has_backdrop,
+                        disabled: relational_inert,
                         onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
                         {icon(icons::CLIP)}
                     }
@@ -581,6 +605,8 @@ fn settle_opacity(state: AppState, id: LayerId, mut pending: Signal<Option<f32>>
 fn opacity_hint(layer: &LayerInfo) -> &'static str {
     if layer.is_group {
         "Fades this layer and everything it carries, as one"
+    } else if layer.filter.is_some() {
+        "How much of the adjustment lands \u{2014} at 0 the filter is the identity"
     } else if layer.is_paintable() {
         "Opacity of the selected layer"
     } else {
@@ -631,10 +657,15 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
 /// opening the field on a frame showed a corner mark inside a text box. The row draws
 /// the glyph now, which leaves the placeholder a name.
 fn layer_label(info: &LayerInfo) -> String {
-    match (&info.name, info.matte.is_some()) {
-        (Some(name), _) => name.to_string(),
-        (None, true) => "Frame".to_string(),
-        (None, false) => format!("Layer {}", info.id.ordinal()),
+    match (&info.name, info.matte.is_some(), info.filter) {
+        (Some(name), ..) => name.to_string(),
+        (None, true, _) => "Frame".to_string(),
+        // The *filter's* own name rather than the word "Filter" (§21.6): unlike a
+        // frame, of which there is only ever one kind, which filter this is is the
+        // first thing to know about the row — and a stack of three rows all reading
+        // "Filter" would say nothing at all.
+        (None, _, Some(f)) => f.label().to_string(),
+        (None, false, None) => format!("Layer {}", info.id.ordinal()),
     }
 }
 
@@ -671,6 +702,7 @@ pub fn LayerRow(
     // several handlers want a piece of it.
     let visible = info.visible;
     let matte = info.matte.is_some();
+    let filter = info.filter.is_some();
     let label = layer_label(&info);
     // What the field opens on: the layer's *name*, which for one that has never been
     // named is empty. Deliberately not the label — seeding with the generated
@@ -688,19 +720,26 @@ pub fn LayerRow(
         .read()
         .as_ref()
         .is_some_and(|o| o.active_layer == id);
-    let row_class = match (matte, active) {
-        (true, true) => "layer-row matte active",
-        (true, false) => "layer-row matte",
-        (false, true) => "layer-row active",
-        (false, false) => "layer-row",
+    // Three kinds of row, and the two that are not paint wear their own ground: a
+    // frame is dashed (§15.7) and a filter is ruled (§21.6), because in both cases
+    // "the brush has nowhere to go here" is the thing to see before reaching for it.
+    // A filter's mark is a *line* rather than a dash: a frame bounds the piece, and a
+    // filter runs across everything under it.
+    let kind = if matte {
+        " matte"
+    } else if filter {
+        " filter"
+    } else {
+        ""
     };
+    let row_class = format!("layer-row{kind}{}", if active { " active" } else { "" });
     // Membership is an indent; clipping is a rail. Two marks, because they are two
     // facts (§14.6) — and a row can wear one without the other, which
     // is the state Photoshop's single arrow cannot express.
     let mut row_class = if info.clip {
         format!("{row_class} clipped")
     } else {
-        row_class.to_string()
+        row_class
     };
     // The layer that would carry what is being dropped. Marked while a drag is over
     // it because that is the one part of the landing the indent leaves to be inferred
@@ -722,6 +761,9 @@ pub fn LayerRow(
 
     let title = if matte {
         "Compose this frame — double-click to rename"
+    } else if filter {
+        "Tune this filter — it adjusts everything below it in its own stack. \
+         Double-click to rename"
     } else {
         "Paint on this layer — double-click to rename"
     };
@@ -871,7 +913,10 @@ pub fn LayerRow(
                     }
                 } else {
                     button {
-                        class: if matte { "layer-name layer-name-matte" } else { "layer-name" },
+                        // The two kinds that are a *what* rather than a place to
+                        // paint share one treatment: a glyph leading a dimmed,
+                        // un-pressable-looking name.
+                        class: if matte || filter { "layer-name layer-name-kind" } else { "layer-name" },
                         title,
                         // The click a drag leaves behind is not this row's — the
                         // drop has already said which layer is selected, and on a
@@ -929,6 +974,11 @@ pub fn LayerRow(
                         // and the name is about what the author calls it.
                         if matte {
                             {icon(icons::FRAME)}
+                        } else if filter {
+                            // The funnel the filter bar wears, for the same reason
+                            // the crop marks lead a frame's name: the mark is about
+                            // what the layer *is*, the name about what it is called.
+                            {icon(icons::FILTER)}
                         }
                         "{label}"
                     }
@@ -1048,6 +1098,8 @@ mod tests {
             has_backdrop: true,
             name: None,
             matte: None,
+            filter: None,
+            has_lower_sibling: true,
         }
     }
 

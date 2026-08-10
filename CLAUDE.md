@@ -39,6 +39,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [rendering.md](docs/rendering.md) | §6.3–§6.5, §6.7, §6.10 | The three compositing passes, blend modes, the media/lighting pass, aprons and the canvas surface, Oklab and Mixbox, the generated uniform mirrors |
 | [selection.md](docs/selection.md) | §6.8, §16 | The soft-mask coverage field every tool acts through, fill, and transform |
 | [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; matte layers, framing and export |
+| [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the colour filter |
 | [engine.md](docs/engine.md) | §7–§11 | The actor target, the save format, golden tests, the extensibility map, the Dioxus frontend |
 | [collaboration.md](docs/collaboration.md) | §12, §17 | The CRDT over the action log, iroh transport, owned selections, the presence roster |
 | [roadmap.md](docs/roadmap.md) | §13, §18, §19 | Build order and status, the gap analysis against the prior art, file-format stability |

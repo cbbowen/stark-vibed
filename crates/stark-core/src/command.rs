@@ -36,8 +36,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::document::{
-    BlendMode, BrushParams, FillOp, LayerId, MatteRegion, Place, SelectionOp, ShapeAction, Tool,
-    TransformMap,
+    BlendMode, BrushParams, FillOp, Filter, LayerId, MatteRegion, Place, SelectionOp, ShapeAction,
+    Tool, TransformMap,
 };
 use crate::geom::{Extent2, Vec2};
 use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
@@ -235,6 +235,24 @@ pub enum DocCommand {
         /// Straight sRGB.
         color: [f32; 3],
     },
+    /// Add a **filter** layer — a function of everything composited beneath it in
+    /// the stack it lands in (§21.2). The engine mints the id, as it does for
+    /// `AddLayer`; and as for `AddMatte` it does *not* become the active layer,
+    /// because a filter cannot be painted on.
+    ///
+    /// It arrives at its neutral setting, so adding one changes nothing until it is
+    /// dialled with [`SetFilter`](Self::SetFilter). Where it lands is its scope —
+    /// the root stack filters the whole painting, a carried stack filters that group
+    /// — so there is no third parameter saying how far it reaches.
+    AddFilter {
+        carrier: Option<LayerId>,
+        above: Option<LayerId>,
+        filter: Filter,
+    },
+    /// Retune a filter layer — one action per adjustment, committed when the slider
+    /// settles (§21.6). The whole filter travels, so a new knob or a new kind of
+    /// filter needs no command of its own.
+    SetFilter(LayerId, Filter),
     /// Move a matte's rect — one action per frame drag, committed on release.
     SetMatteRect(LayerId, Vec2, Vec2),
     /// Recolour a matte (straight sRGB).
@@ -434,6 +452,21 @@ pub enum ViewCommand {
     /// [`PreviewTransform`](Self::PreviewTransform) there is nothing to resample,
     /// which is what makes it affordable at pointer rate.
     PreviewLayerOpacity(Option<(LayerId, f32)>),
+
+    /// Show a filter layer set to `filter` **without logging it** — the in-flight
+    /// half of a filter-slider drag (§21.6). `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity), and
+    /// the one this feature could least do without: a colour adjustment is judged
+    /// *by looking* — how much saturation is too much is a question about the
+    /// painting, not about the number — so every value the pointer crosses has to
+    /// reach the canvas, and only the answer belongs in the log.
+    ///
+    /// A filter is presentation, folded in at composite time (§21.3), so a preview
+    /// costs one fullscreen pass and moves no pixels of stored paint. That is what
+    /// makes it affordable at pointer rate where
+    /// [`PreviewTransform`](Self::PreviewTransform) has to resample.
+    PreviewFilter(Option<(LayerId, Filter)>),
 
     /// Tune the media/lighting pass (§6.3). Changes how the canvas
     /// looks, not what it is.

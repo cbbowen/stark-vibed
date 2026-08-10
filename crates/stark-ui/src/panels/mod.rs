@@ -3,6 +3,7 @@
 
 pub mod brush;
 pub mod color;
+pub mod filter;
 pub mod frame;
 pub mod guides;
 pub mod layer;
@@ -18,6 +19,7 @@ pub mod transform;
 
 pub use brush::BrushPanel;
 pub use color::ColorPanel;
+pub use filter::FilterBar;
 pub use frame::{FrameBar, FrameOverlay};
 pub use guides::{GuideEditOverlay, GuidesPanel, PerspectiveGuideBar};
 pub use layer::LayerPanel;
