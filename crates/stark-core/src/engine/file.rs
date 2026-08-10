@@ -22,7 +22,6 @@ use crate::document::{
     Action, ActionKind, ActorId, BrushShape, DocState, LayerId, LinearTimeline, effective_actions,
 };
 use crate::gpu::{EnvironmentId, SurfaceId};
-use crate::image::RgbaImage;
 use crate::io::DocumentFile;
 use crate::{EngineError, Result};
 
@@ -235,7 +234,7 @@ impl Engine {
     pub fn replay_timelapse(
         &mut self,
         file: &DocumentFile,
-        mut on_frame: impl FnMut(RgbaImage),
+        mut on_frame: impl FnMut(crate::image::RgbaImage),
     ) -> Result<()> {
         self.require_content(file)?;
         self.adopt(file);
