@@ -229,6 +229,9 @@ pub fn TimelineBar() -> Element {
                     {icon(icons::TIMELINE)}
                     {label("Timeline")}
                 }
+                
+                span { class: "bar-sep" }
+
                 span { class: "timeline-note",
                     "Unavailable while the drawing is shared \u{2014} the history is everyone's."
                 }

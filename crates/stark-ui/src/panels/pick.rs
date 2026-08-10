@@ -88,6 +88,8 @@ pub fn PickBar() -> Element {
                 {label("Eyedropper")}
             }
 
+            span { class: "bar-sep" }
+
             div {
                 class: "segmented",
                 for (want, glyph, name, why) in SOURCES {

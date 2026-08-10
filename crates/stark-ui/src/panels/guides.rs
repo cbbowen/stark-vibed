@@ -559,6 +559,9 @@ pub fn PerspectiveGuideBar() -> Element {
                 {icon(icons::PERSPECTIVE_GRID)}
                 {name}
             }
+            
+            span { class: "bar-sep" }
+
             // Locks: hold a world axis fixed, constraining the canvas drag to
             // turns about it — lock the vertical and every gesture keeps the
             // verticals parallel. Colored as the axis's own lines are.

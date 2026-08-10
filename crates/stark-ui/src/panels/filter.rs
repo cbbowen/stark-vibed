@@ -718,6 +718,8 @@ pub fn FilterBar() -> Element {
                 {label(filter.label())}
             }
 
+            span { class: "bar-sep" }
+
             if inert {
                 span {
                     class: "filter-inert",
@@ -726,9 +728,9 @@ pub fn FilterBar() -> Element {
                             it and it will have something to work on.",
                     "nothing below it"
                 }
-            }
 
-            span { class: "bar-sep" }
+                span { class: "bar-sep" }
+            }
 
             {rows}
 
