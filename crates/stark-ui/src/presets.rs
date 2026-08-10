@@ -200,12 +200,8 @@ pub fn seed_defaults(state: AppState) {
     entries.set(defaults);
 }
 
-/// Make `name`'s preset the live brush. The painting colour (RGB) stays — a
-/// preset is a tool, not a colour choice — while the preset's own opacity
-/// (`color[3]`, the editor's Opacity slider) rides along. A stamp shape whose
-/// bytes are no longer anywhere (removed from the shape library, unseen by this
-/// document) falls back to the round tip rather than pointing at an asset the
-/// engine would silently substitute.
+/// Make `name`'s preset the live brush — the painting colour stays, everything
+/// else comes from the preset ([`wear`]).
 pub fn apply(state: AppState, name: &str) {
     let entry = state
         .presets
@@ -214,7 +210,29 @@ pub fn apply(state: AppState, name: &str) {
         .find(|e| e.name == name)
         .cloned();
     let Some(entry) = entry else { return };
-    let mut brush = entry.brush;
+    wear(state, entry.brush);
+}
+
+/// Put `brush` on: make it the live brush, **keeping the painting colour** and
+/// resolving its stamp.
+///
+/// The rule this module's docs state, as a function, because it is not only the
+/// preset library's any more — the quick-brush rack (`crate::slots`) swaps
+/// brushes in and out through it too, in both directions. Stated once, so "a
+/// tool is everything but the colour" cannot come to mean two things: a slot
+/// that changed the colour under the hand on the way in, or handed back the old
+/// one on the way out, would make the colour a property of which key was last
+/// pressed.
+///
+/// The RGB kept is the *live* one, so it survives every swap; the brush's own
+/// opacity (`color[3]`, a material property — §6.1) rides along with the tool,
+/// as does everything else.
+///
+/// A stamp shape whose bytes are no longer anywhere (removed from the shape
+/// library, unseen by this document) falls back to the round tip rather than
+/// pointing at an asset the engine would silently substitute.
+pub fn wear(state: AppState, brush: BrushParams) {
+    let mut brush = brush;
     brush.shape = match brush.shape {
         BrushShape::Stamp(id) => crate::shapes::ensure(state, id)
             .map(BrushShape::Stamp)

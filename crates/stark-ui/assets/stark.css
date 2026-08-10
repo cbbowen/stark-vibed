@@ -649,6 +649,71 @@ hr {
 }
 
 
+/* --- brush panel: the quick-brush rack at the panel's head (§18.1.8) ---
+   Ten chips on one line, so the row is a picture of the number row above the
+   keyboard and reads as an index rather than as a list of tools. They share the
+   row's width equally (`flex: 1`) — the slots are peers, and one that sized itself
+   to a longer label would break the mapping the row exists to draw. */
+.slot-rack {
+  display: flex;
+  gap: 3px;
+  padding: 2px 0 6px;
+}
+
+.slot-chip {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: #33333a;
+  color: #eee;
+  font: inherit;
+  font-size: 12px;
+  /* The digits are a column of the same glyphs at ten different values, so they
+     have to sit on the same rhythm; proportional figures would make 1 a narrow
+     chip's worth of whitespace next to 8. */
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+/* A slot nobody has filled: an outline where the chip would be, so the row still
+   shows all ten and says which of them are waiting. Not `disabled` — it is a real
+   binding with nothing behind it yet, and it is still the thing you hold while
+   clicking a preset to fill it. */
+.slot-chip.empty {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px #ffffff1f;
+  color: #ffffff4d;
+  cursor: default;
+}
+
+/* The brush in hand, on the same test the preset rows are lit by — so a slot and a
+   preset holding the same brush light together, which is what says they are two
+   ways to the one thing. */
+.slot-chip.active {
+  background: #3a6ea5;
+}
+
+/* Held right now. A ring rather than another fill, because it has to be legible
+   over both of the states above — an empty slot can be held too, which is how it
+   gets its first brush — and because it is on screen only for as long as a finger
+   is down. Nothing else in the chrome wears this, on purpose: it is the one mark
+   that means "and this is happening at this moment". */
+.slot-chip.held {
+  box-shadow: 0 0 0 2px #eee;
+  color: #fff;
+}
+
+.slot-chip .icon svg {
+  width: 13px;
+  height: 13px;
+}
+
 /* --- brush panel: the preset library at the panel's foot ---
    The section is the Brush panel's growable part (it carries `panel-grow`, which is
    what hands it the panel's spare height); a column of its own so the list under the

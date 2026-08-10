@@ -11,7 +11,8 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 
 use crate::collab::now_seconds;
-use crate::platform::{capture_pointer, on_window_key, sleep_ms};
+use crate::platform::{capture_pointer, on_window_blur, on_window_key, sleep_ms};
+use crate::slots::{self, Grip};
 use crate::state::{AppState, Dwell, PickScope, dispatch, update_brush};
 use stark_core::InputSample;
 use stark_core::command::{DocCommand, GestureCommand, ViewCommand};
@@ -121,18 +122,23 @@ impl Nav {
     }
 
     /// Whether `e` is a press this takes as navigation — a second finger on the
-    /// glass, the middle button anywhere, or space with the primary button — and if
-    /// so, begin: capture the pointer and swallow the event. `true` means "this
-    /// press is navigation, not yours"; callers check it before starting their own
+    /// glass, the middle button anywhere, or space with a contact — and if so,
+    /// begin: capture the pointer and swallow the event. `true` means "this press
+    /// is navigation, not yours"; callers check it before starting their own
     /// gesture, and abandon any gesture already in flight.
+    ///
+    /// A *contact* rather than the primary button ([`is_contact`]), so the pen's
+    /// eraser end pans under space like its tip does. It has to: the canvas arms
+    /// the eraser's brush slot on a press this one declined (§18.1.8), so a
+    /// space-drag that was not taken here would hand the eraser over for the
+    /// length of the pan.
     pub fn begin(self, e: &Event<PointerData>) -> bool {
         if is_finger(e) {
             return self.finger_down(e);
         }
         let pan = match e.trigger_button() {
             Some(MouseButton::Auxiliary) => true,
-            Some(MouseButton::Primary) => *self.state.space_down.peek(),
-            _ => false,
+            _ => is_contact(e) && *self.state.space_down.peek(),
         };
         if pan {
             e.prevent_default(); // suppress middle-click autoscroll
@@ -328,6 +334,43 @@ fn is_finger(e: &Event<PointerData>) -> bool {
     e.pointer_type() == "touch"
 }
 
+/// Whether `e` puts the tool **on** the canvas: the primary button, or the pen's
+/// other end against the glass.
+///
+/// One definition, because "a press that draws" is asked in three places — the
+/// canvas's own press, the space-drag pan, and the eraser hold — and a press that
+/// counted as a contact in one of them and not another would either paint without
+/// its brush or arm a brush without painting.
+pub fn is_contact(e: &Event<PointerData>) -> bool {
+    e.trigger_button() == Some(MouseButton::Primary) || is_eraser(e)
+}
+
+/// Whether `e` is the pen's **eraser end** — the tail of the stylus, reported as
+/// a pen contact carrying the eraser button (§18.1.8).
+///
+/// Read off the raw event rather than through [`MouseButton`], which stops at the
+/// fifth button and folds every code past it into `Unknown` — so a pen's eraser
+/// (`button` 5, `buttons` bit 32, per Pointer Events) and a mouse's seventh
+/// thumb button would arrive here as the same value. The web event says which,
+/// and it is already in the tree; off-wasm the downcast simply finds nothing,
+/// which is the right answer on a platform with no pens.
+///
+/// Both fields, because the two halves of the gesture report differently: the
+/// press and the release name the button that changed (`button`), while every
+/// move between them names only what is still down (`buttons`, with `button` at
+/// −1). A test on either alone would arm on the press and then, one move later,
+/// disagree with itself.
+pub fn is_eraser(e: &Event<PointerData>) -> bool {
+    /// `button` for the eraser end, per Pointer Events.
+    const ERASER_BUTTON: i16 = 5;
+    /// The same, as its bit in `buttons`.
+    const ERASER_BUTTONS: u16 = 32;
+
+    e.pointer_type() == "pen"
+        && e.downcast::<web_sys::PointerEvent>()
+            .is_some_and(|raw| raw.button() == ERASER_BUTTON || raw.buttons() & ERASER_BUTTONS != 0)
+}
+
 /// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
 pub fn snap_quarter(to: f32) -> f32 {
     let quarter = (to / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2;
@@ -371,6 +414,11 @@ pub fn bind_shortcuts(state: AppState) {
         }
     });
     on_window_key("keyup", move |e| handle_keyup(state, &e));
+    // The one event that takes a key away without ever sending its keyup: focus
+    // leaving the window. A number held across an Alt+Tab would otherwise hold
+    // its brush for the rest of the session, with the key that ends it now
+    // belonging to another window (`slots::release_all`).
+    on_window_blur(move || slots::release_all(state));
 }
 
 /// Whether `e` was typed into a control that owns its own keystrokes — a text
@@ -454,10 +502,21 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
     let m = modifiers_of(e);
     track_alt(state, m);
     if !(m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)) {
-        // Unmodified letters: the view bindings. Checked here, after the modifier set
-        // is known, so `Ctrl+H` stays the browser's and only a bare press is ours.
-        if !m.contains(Modifiers::ALT)
-            && let Key::Character(c) = key_of(e)
+        // Unmodified keys: the view bindings and the quick-brush rack. Checked
+        // here, after the modifier set is known, so `Ctrl+H` stays the browser's
+        // and only a bare press is ours.
+        if m.contains(Modifiers::ALT) {
+            return;
+        }
+        // A digit holds its brush for as long as it is down (§18.1.8). Shift is
+        // not excluded: on most layouts it is what the digit row types under, and
+        // a hand resting on it should not silently disarm the rack. `slots::hold`
+        // ignores a press while a hold is in flight, which is what makes the key's
+        // own auto-repeat harmless.
+        if let Some(slot) = slots::of_code(&e.code()) {
+            slots::hold(state, slot, Grip::Key);
+            e.prevent_default();
+        } else if let Key::Character(c) = key_of(e)
             && c.eq_ignore_ascii_case("h")
         {
             // Screen-relative, so it swaps the left of the screen with the right
@@ -500,6 +559,14 @@ fn handle_keyup(mut state: AppState, e: &web_sys::KeyboardEvent) {
             e.prevent_default();
         }
         _ => {}
+    }
+    // The rack's release, named by the slot it lets go of — so a hand rolling
+    // from 3 to 4 and off 4 first does not end the hold 3 still has (§18.1.8).
+    // Unguarded by `typing_into_a_field` like the two above, and for the same
+    // reason: focus can move between a press and its release, and a release that
+    // never arrived would leave the brush swapped.
+    if let Some(slot) = slots::of_code(&e.code()) {
+        slots::release(state, slot, Grip::Key);
     }
     track_alt(state, modifiers_of(e));
 }
@@ -752,6 +819,11 @@ pub fn end_interaction(
         dispatch(state, GestureCommand::End);
         drawing.set(false);
     }
+    // After the commit, never before: the release puts the displaced brush back,
+    // and the stroke that just ended has to be committed with the one it was
+    // drawn with. (A stroke snapshots its brush at `Start`, so this is belt and
+    // braces — but the order is the part that would be silently wrong.)
+    slots::release(state, slots::ERASER, Grip::Eraser);
     restore_action(state, action_restore);
     stop_watching(state);
     nav.stop();

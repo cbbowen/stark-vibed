@@ -231,6 +231,14 @@ icons! {
     // with the tool it arms — which is the whole discoverability argument that bar is
     // built on, made in a picture as well as a word.
     EYEDROPPER => "eyedropper-bold",
+    // The quick-brush rack's tenth chip (§18.1.8). The one slot in the row that
+    // wears a picture instead of its digit, because it is the one whose binding is
+    // not the digit: it is what the pen's other end reaches, and a `0` would say
+    // nothing about the thing already in the user's hand. What it names is the
+    // brush the slot ships with rather than a mode — there is no eraser tool here
+    // to draw (§6.2) — which is why it can be overwritten like any other slot and
+    // the mark still tells the truth about which one it is.
+    ERASER => "eraser-bold",
     ONE_LAYER => "stack-single-bold",
     ALL_LAYERS => "stack-simple-bold",
     ALL_LAYERS_AND_CANVAS => "stack-bold",

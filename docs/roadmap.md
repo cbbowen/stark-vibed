@@ -259,7 +259,8 @@ a brush **library** worth shipping, which is the thing users actually shop for.
 (The library's skeleton exists: named per-user presets persist in `localStorage`
 and apply from the Brush panel, `stark-ui/src/presets.rs`, where the shipped
 Pencil now maps tilt → size and pressure → flow; shape import/persistence is
-done, §6.6. Preset previews and preset import/export do not.)
+done, §6.6; and §18.1.8 puts ten of them under the number keys. Preset previews
+and preset import/export do not.)
 
 #### 18.1.5 A mixing palette
 
@@ -338,6 +339,85 @@ down.
 **Still missing** is everything else a tablet wants: a two-finger tap for undo, a
 long-press eyedropper, and hit targets sized for a thumb — the chrome is still
 laid out for a mouse.
+
+#### 18.1.8 Quick brushes — the number keys, and the pen's other end — built
+
+Every competitor binds keys to **tools**: B for brush, E for eraser, R for blur.
+Stark has no such list to bind. An eraser here is a brush whose `lift` is up and
+whose `add` is zero; a blur is one with `bleed` up; a smudge is `lift`+`deposit`
+(§6.2). They are points in one parameter space, not entries in a menu — which is
+the engine's whole claim about what a tool is, and it leaves the conventional
+binding with nothing to name. A key that selected a tool would have to select a
+*brush*, and which brush is the artist's answer, not ours.
+
+It also does not fit the hardware. The model those bindings come from is a mouse
+and a full keyboard; the hand this application is for holds a pen, rests on a
+tablet, and has one spare finger for the number row at most.
+
+So **the numbers hold brushes**, and there is exactly one rule:
+
+> A held number is a temporary swap of the live brush. Whatever you change while
+> it is held stays with the number; the brush you were holding comes back when
+> you let go.
+
+Everything the feature does falls out of that instead of being wired up three
+times — this is the whole of `stark-ui/src/slots.rs`, and the panel and the
+engine learn nothing:
+
+- **Hold and draw** and the stroke is the number's, because the slot's brush *is*
+  the live brush for the length of the hold, and a stroke takes its copy of the
+  brush at `Start`.
+- **Hold and click a preset** and the preset lands on the live brush, so at
+  release it is what the number keeps.
+- **Hold and drag Size or Flow** and the panel's sliders write the live brush, as
+  they always did. The Brush panel shows the live brush; while a number is held
+  the live brush is that number's, so it shows and edits the slot without a line
+  of code that knows about slots.
+- **Flip the pen over** and the eraser end holds slot 0 for as long as its tail
+  is on the glass. The same hold, made by hardware rather than by a key, so the
+  eraser is assigned and tuned by the same gestures as every other slot — and,
+  being a brush, it can be replaced with any other.
+
+Three things the rule has to get right, each a place a looser design goes wrong:
+
+- **An unused hold keeps nothing.** Compared against the brush the hold *entered*
+  on, so holding 5 and drawing does not quietly make 5 whatever was in hand. A
+  slot that filled itself on first press would be indistinguishable from one the
+  user had set.
+- **Colour is not part of a slot**, in both directions — the same rule the preset
+  library already states, now shared as `presets::wear` rather than restated.
+  Swapping never changes the colour you are painting with, a colour picked
+  mid-hold survives the release, and the "was anything changed?" test is
+  `presets::matches`, which is exactly *the same brush, colour aside*. The
+  brush's own opacity (`color[3]`, a material property — §6.1) does travel, as it
+  does in a preset.
+- **A hold ends only for whoever made it.** The grip is carried through, so a
+  keyup cannot end an eraser stroke and lifting the pen cannot release a key
+  still under a finger; the slot is carried too, so a hand rolling from 3 to 4
+  and off 4 first does not end the hold 3 still has. And a `blur` on the window
+  releases whatever is held, because focus leaving is the one way a key ends
+  without ever sending its keyup.
+
+The rack is read off the **physical** key (`code`, not `key`): on a French layout
+the digit row types `&é"'` unshifted, and a rack reachable only through Shift
+would be no rack.
+
+A row of chips at the head of the Brush panel draws the binding — which numbers
+are filled, which one the live brush is (lit on the same test the preset rows
+are), and which is held right now. Clicking a chip applies that slot for good,
+which is the mouse-only way in; tapping the *key* deliberately does not, because
+a tap and a hold are one keystroke told apart by how long it lasted, and binding
+them to different outcomes would make every hold a race against the user's own
+reflexes.
+
+A browser that has never set a slot is seeded from its own preset library, in
+memory and unpersisted — so storage is written only by the user's act, the seed
+stays live as the library grows, and a start whose bundled shapes failed to fetch
+cannot freeze a degraded preset into a slot.
+
+**Not built**: a second row (Shift+digit) for twenty, dragging a preset onto a
+chip to assign it without the keyboard, and clearing a slot back to empty — a
+slot is overwritten today, which is the only operation the rack has needed.
 
 ### 18.2 Tier 2 — where we can beat the prior art
 

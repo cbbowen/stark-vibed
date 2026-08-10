@@ -116,6 +116,26 @@ pub struct AppState {
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
+    /// The ten brushes under the hand (§18.1.8; `crate::slots`).
+    pub slots: SlotState,
+}
+
+/// The quick-brush rack's signals (§18.1.8), grouped because they are one
+/// feature's worth of state and because the second is meaningless without the
+/// first: a hold names a slot in the rack.
+///
+/// Root-owned like everything here, and it has to be — the rack is read from the
+/// window's own key handlers (`crate::input::bind_shortcuts`), which are bound
+/// once for the life of the page and belong to no component's scope.
+#[derive(Clone, Copy)]
+pub struct SlotState {
+    /// What each digit holds; `None` for a slot nobody has filled. Loaded from
+    /// `localStorage` at startup like the shape and preset libraries.
+    pub brushes: Signal<crate::slots::Rack>,
+    /// The hold in flight — `Some` for exactly as long as a number key is down
+    /// or the pen's eraser end is on the glass. The panel lights the held chip
+    /// off this, and the release reads the brushes it has to restore from it.
+    pub held: Signal<Option<crate::slots::Held>>,
 }
 
 /// A drawing guide selected for composing (§20.5): which entry of the
@@ -239,6 +259,10 @@ impl AppState {
                 notice: root_signal(|| None),
             },
             presets: root_signal(Vec::new),
+            slots: SlotState {
+                brushes: root_signal(|| [None; crate::slots::COUNT]),
+                held: root_signal(|| None),
+            },
         }
     }
 }

@@ -120,6 +120,36 @@ pub fn on_window_key(kind: &str, handler: impl FnMut(web_sys::KeyboardEvent) + '
 #[cfg(not(target_arch = "wasm32"))]
 pub fn on_window_key(_kind: &str, _handler: impl FnMut(web_sys::KeyboardEvent) + 'static) {}
 
+/// Call `handler` whenever the window loses focus.
+///
+/// The counterpart to [`on_window_key`], and it exists because keyup is not the
+/// only way a held key ends: focus leaving the window — Alt+Tab, a click into the
+/// browser's own chrome — takes the keyboard away and the release is delivered
+/// somewhere else entirely. Anything armed on a keydown therefore needs a second
+/// way to be disarmed, or it stays armed for the rest of the session
+/// (`crate::slots`).
+///
+/// `blur` on the window rather than `visibilitychange` on the document: it is
+/// focus that decides where a keyup goes, and a window can be fully visible with
+/// the keyboard somewhere else.
+///
+/// Registered once for the life of the page, so the closure is `forget`ten like
+/// the key handlers'.
+#[cfg(target_arch = "wasm32")]
+pub fn on_window_blur(mut handler: impl FnMut() + 'static) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut()>::new(move || handler());
+    let _ = window.add_event_listener_with_callback("blur", cb.as_ref().unchecked_ref());
+    cb.forget();
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn on_window_blur(_handler: impl FnMut() + 'static) {}
+
 /// Capture the pointer for the element under `e`, so the in-progress drag keeps
 /// streaming move/up events to it while the button is held — even after the pointer
 /// leaves the element. The capture releases automatically on pointer-up, which is

@@ -33,6 +33,7 @@ mod presets;
 mod render;
 mod settings;
 mod shapes;
+mod slots;
 mod state;
 mod widgets;
 
@@ -40,7 +41,6 @@ use std::collections::HashSet;
 
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::Modifiers;
-use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use brush_editor::BrushEditorModal;
@@ -113,6 +113,9 @@ fn app() -> Element {
     // browser that has never stored any).
     use_hook(|| shapes::load(state));
     use_hook(|| presets::load(state));
+    // And so does the quick-brush rack (§18.1.8) — a browser that has never set
+    // a slot is seeded below, once there is a preset library to seed it from.
+    use_hook(|| slots::load(state));
 
     // The ⚙ dialog's settings follow the browser the same way. Applied here, in the
     // root's own body, so the very first render is already in the mode the user left
@@ -168,6 +171,13 @@ fn app() -> Element {
             // brush shapes, and a stamp is named by content id — which the
             // imports just above are what produce.
             presets::seed_defaults(state);
+
+            // And the rack under the number keys, from that library — after it,
+            // because it copies what the library has rather than restating it,
+            // and a browser with its own presets gets its own first four on the
+            // digits (§18.1.8). A browser that has already set a slot keeps what
+            // it set; only a rack nobody has touched is filled in.
+            slots::seed_defaults(state);
 
             // The brush this app start begins on: the library's first preset (an
             // empty library leaves the engine's default brush), and then the
@@ -406,7 +416,9 @@ fn Canvas() -> Element {
                 if panels::timeline::is_playing(state) {
                     return;
                 }
-                if e.trigger_button() == Some(MouseButton::Primary) {
+                // The pen's other end draws too — it is a contact like the tip,
+                // differing only in the brush it arrives holding (§18.1.8).
+                if input::is_contact(&e) {
                     capture_pointer(&e);
                     // Painting and selecting are the same gesture from here — the
                     // tool decides what the engine builds (§6.8).
@@ -439,6 +451,19 @@ fn Canvas() -> Element {
                     if let Some(sample) = sample(state, &e)
                         && let Some(tolerance) = input_tolerance(state, &e)
                     {
+                        // Flipping the pen over holds the eraser slot for as long
+                        // as its tail is on the glass — the same hold a number key
+                        // makes, so the eraser is assigned and tuned by the same
+                        // gestures as every other slot (§18.1.8). Before `Start`,
+                        // because that is where the stroke takes its copy of the
+                        // brush; released by `end_interaction` after the commit.
+                        //
+                        // Not over a selection tool, where the brush decides
+                        // nothing about what a marquee cuts and a swap would be a
+                        // change the user could not see the point of.
+                        if !tool.is_selection() && input::is_eraser(&e) {
+                            slots::hold(state, slots::ERASER, slots::Grip::Eraser);
+                        }
                         // The marquee modifiers override the *combine mode*, so
                         // they apply only while the panel's action is a selecting
                         // one: under Fill there is nothing to combine, and letting

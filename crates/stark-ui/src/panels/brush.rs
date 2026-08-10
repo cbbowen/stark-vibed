@@ -6,6 +6,7 @@ use dioxus::prelude::*;
 use crate::icons::{self, icon, label};
 use crate::platform::select_all;
 use crate::presets;
+use crate::slots;
 use crate::state::{AppState, update_brush};
 use crate::widgets::Slider;
 use stark_core::document::{BrushShape, OrientationSource};
@@ -33,6 +34,10 @@ pub fn BrushPanel() -> Element {
         .unwrap_or_default();
 
     rsx! {
+        // First, because it says *which* brush the two sliders under it are the
+        // knobs of: while a number is held they are that number's.
+        SlotRack {}
+
         // The panel's two sliders are the two knobs a hand reaches for without looking
         // away from the canvas, which is what earns them their marks (`icons::SIZE`).
         Slider { label: "Size", glyph: icons::SIZE, min: 1.0, max: MAX_RADIUS, value: brush.radius,
@@ -54,6 +59,85 @@ pub fn BrushPanel() -> Element {
         hr {}
 
         PresetSection {}
+    }
+}
+
+/// The quick-brush rack (§18.1.8): the ten brushes the number keys hold, as a row
+/// of chips at the head of the Brush panel.
+///
+/// It is a *picture of a binding*, and that is most of its job — the numbers work
+/// whether or not this row is on screen, and nothing here is the state of
+/// anything. What it shows is which of them have brushes in, which one the live
+/// brush currently is, and (while a key is down) which one is being held, so the
+/// swap the hand just made has somewhere to be seen.
+///
+/// The chips are clickable as well, applying the slot for good, because a rack
+/// reachable only through the number row would be no rack at all for the hand
+/// this feature is for: a pen in one hand and a tablet under it leaves no spare
+/// finger for the keyboard. A click is deliberately not what a *tap* on the key
+/// does — see [`slots::pick`].
+///
+/// Safe as a child component: nothing here spawns, so there is no task to die
+/// with a re-render (the same note `PresetSection` carries).
+#[component]
+fn SlotRack() -> Element {
+    let state = use_context::<AppState>();
+    let rack = (state.slots.brushes)();
+    let held = (state.slots.held)().map(|h| h.slot);
+    let brush = state
+        .obs
+        .read()
+        .as_ref()
+        .map(|o| o.brush)
+        .unwrap_or_default();
+
+    rsx! {
+        div { class: "slot-rack",
+            // The digits in the order they sit on the keyboard, with the eraser's
+            // own slot last — where the `0` key is, and where a tenth of anything
+            // goes (`slots::ERASER`).
+            for slot in (1..slots::COUNT).chain(std::iter::once(slots::ERASER)) {
+                {
+                    let assigned = rack[slot];
+                    // Lit like a preset row, and on the same test: this is the
+                    // brush in hand, colour aside, until any knob moves off it.
+                    // Held wins — it is momentary, and it is the thing the user is
+                    // doing right now rather than a state they are in.
+                    let mut class = String::from("slot-chip");
+                    if assigned.is_none() {
+                        class.push_str(" empty");
+                    } else if assigned.is_some_and(|b| presets::matches(&brush, &b)) {
+                        class.push_str(" active");
+                    }
+                    if held == Some(slot) {
+                        class.push_str(" held");
+                    }
+                    let title = match (slot, assigned.is_some()) {
+                        // The eraser's chip says the binding a glyph cannot: that
+                        // the pen already in the hand reaches it. It does not claim
+                        // the slot *is* an eraser — that is only what it ships
+                        // with, and it is overwritten like any other.
+                        (slots::ERASER, true) => "Hold 0, or flip the pen over".to_string(),
+                        (slots::ERASER, false) => "Empty. Hold 0 (or the pen's eraser end) and click a preset".to_string(),
+                        (n, true) => format!("Hold {n} to paint with this brush"),
+                        (n, false) => format!("Empty. Hold {n} and click a preset to fill it"),
+                    };
+                    rsx! {
+                        button {
+                            key: "{slot}",
+                            class,
+                            title,
+                            onclick: move |_| slots::pick(state, slot),
+                            if slot == slots::ERASER {
+                                {icon(icons::ERASER)}
+                            } else {
+                                "{slot}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
