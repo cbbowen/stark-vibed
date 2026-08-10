@@ -310,6 +310,18 @@ than being checked at the drop:
   foot of a stack, which no sibling can be named against — hence `Place::Bottom`
   (§14.8).
 
+**A gesture lasts exactly as long as the press it is made of.** The grip is also a
+thing the pointer merely passes over, so the handler that steers a drag hears every
+hover too — which makes "the press is still down" a fact the gesture has to carry
+rather than one the panel can assume. It is carried two ways, both in `Grab`: a move
+with no button held ends the drag instead of steering it, and a grab that has landed
+is *terminal* — it lingers a moment for the click behind the release
+(`reorder::claimed`) and cannot be woken by anything in that moment. Neither is
+belt-and-braces: a release the panel never hears about, or a click that never arrives
+because the drop's own reorder replaced the element it was aimed at, would otherwise
+leave a row following the pointer around a panel with no button down, over a list it
+had already been moved in.
+
 The base of a group is still not swappable by a drag (§14.2): dropping a layer at
 the foot of a group's carried stack puts it under everything the group carries,
 above the base. Becoming the base is a different move — it is that layer carrying

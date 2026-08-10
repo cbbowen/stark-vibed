@@ -460,13 +460,20 @@ fn GuideRow(
                     },
                     onpointermove: move |e: Event<PointerData>| {
                         // The armed check first: it keeps every pointer move over the
-                        // panel from dirtying the whole roster.
-                        if drag.peek().is_none() {
+                        // panel from dirtying the whole roster — and a finished grab is
+                        // not armed, it is a receipt waiting for the click behind it
+                        // (`reorder::claimed`).
+                        if drag.peek().as_ref().is_none_or(Grab::over) {
                             return;
                         }
                         let p = e.client_coordinates();
+                        // Whether the press that armed this is still down — the name is
+                        // both the grip and a thing you hover, so a drag whose release
+                        // went somewhere this panel never hears about would otherwise
+                        // be steered by the hovers after it (`Grab::track`).
+                        let held = !e.held_buttons().is_empty();
                         if let Some(d) = drag.write().as_mut() {
-                            d.track((p.x as f32, p.y as f32));
+                            d.track((p.x as f32, p.y as f32), held);
                         }
                     },
                     onpointerup: move |_| onland.call(index),

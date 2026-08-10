@@ -944,13 +944,21 @@ pub fn LayerRow(
                         },
                         onpointermove: move |e: Event<PointerData>| {
                             // The armed check first: it is what keeps every pointer
-                            // move over the panel from dirtying the whole tree.
-                            if drag.peek().is_none() {
+                            // move over the panel from dirtying the whole tree — and a
+                            // finished grab is not armed, it is a receipt waiting for
+                            // the click behind it (`reorder::claimed`).
+                            if drag.peek().as_ref().is_none_or(Grab::over) {
                                 return;
                             }
                             let p = e.client_coordinates();
+                            // Whether the press that armed this is still down. A row's
+                            // name is both the grip and a thing you hover, so this
+                            // handler hears every pass of the pointer over the panel,
+                            // and a drag whose release went somewhere else would
+                            // otherwise be steered by them (`Grab::track`).
+                            let held = !e.held_buttons().is_empty();
                             if let Some(d) = drag.write().as_mut() {
-                                d.track((p.x as f32, p.y as f32));
+                                d.track((p.x as f32, p.y as f32), held);
                             }
                         },
                         onpointerup: move |_| onland.call(id),
@@ -1153,7 +1161,7 @@ mod tests {
             .expect("the dragged row is displayed");
         let anchor = (200.0, FIRST + at as f32 * STEP + H * 0.5);
         let mut grab = Grab::begin(id.to_string(), measured, anchor);
-        grab.track((anchor.0 + dx, anchor.1 + dy));
+        grab.track((anchor.0 + dx, anchor.1 + dy), true);
         grab
     }
 

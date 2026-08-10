@@ -49,7 +49,7 @@ pub struct Grab {
     anchor: (f32, f32),
     pointer: (f32, f32),
     live: bool,
-    spent: bool,
+    over: bool,
 }
 
 impl Grab {
@@ -66,13 +66,35 @@ impl Grab {
             anchor: at,
             pointer: at,
             live: false,
-            spent: false,
+            over: false,
         }
     }
 
-    /// Follow the pointer. Once a press is a drag it stays one — bringing a row back
-    /// near where it started would otherwise turn the gesture into a click again.
-    pub fn track(&mut self, at: (f32, f32)) {
+    /// Follow the pointer, `held` being whether a button is still down.
+    ///
+    /// Once a press is a drag it stays one — bringing a row back near where it
+    /// started would otherwise turn the gesture into a click again. What ends it is
+    /// the press ending, and `held` is the third way to hear that, after the release
+    /// and the cancel: **a move with nothing held is a hover**, and a hover is not the
+    /// middle of a drag.
+    ///
+    /// That third way is not belt and braces. A release this panel never hears about
+    /// — over the empty space past the end of the list, over anything in a row that is
+    /// not the grip — would otherwise leave a grab that is still armed, and since a
+    /// hover reaches the grip too, the row goes on following the pointer around a
+    /// panel with no button down. The same applies once the drop *has* landed: the
+    /// grab is kept a moment longer for the click behind it ([`claimed`]), and it must
+    /// not be steerable while it waits. Both are ruled out here rather than by asking
+    /// every caller to check, because a caller that forgets leaves a panel only a
+    /// close and reopen can put right.
+    pub fn track(&mut self, at: (f32, f32), held: bool) {
+        if self.over {
+            return;
+        }
+        if !held {
+            self.spend();
+            return;
+        }
         self.pointer = at;
         let (dx, dy) = self.delta();
         self.live |= dx.abs().max(dy.abs()) > GRAB_SLOP;
@@ -82,6 +104,14 @@ impl Grab {
     /// yet draws nothing and lands nothing.
     pub fn live(&self) -> bool {
         self.live
+    }
+
+    /// Whether the gesture is finished — landed, or ended by a press that is no longer
+    /// down. Such a grab draws nothing and follows nothing; it is kept only until the
+    /// click behind it arrives (see [`claimed`]), which is what a panel checks this
+    /// for: there is no gesture here to feed.
+    pub fn over(&self) -> bool {
+        self.over
     }
 
     /// How far the hand has taken the row, in px.
@@ -120,9 +150,16 @@ impl Grab {
     /// new order while the transforms were still on would be the move applied twice.
     /// The grab is kept rather than dropped only so the click behind it can be
     /// recognized — see [`claimed`].
+    ///
+    /// **Terminal**: nothing brings a spent grab back to life. It is what [`track`]
+    /// checks first, and the reason it is a state of the grab rather than the panel
+    /// dropping it — a panel that has just committed a move must not be able to
+    /// commit it again from the same press.
+    ///
+    /// [`track`]: Self::track
     pub fn spend(&mut self) {
         self.live = false;
-        self.spent = true;
+        self.over = true;
     }
 }
 
@@ -134,14 +171,17 @@ impl Grab {
 /// no longer the one that was pressed. Swallowing it is what keeps a move from also
 /// being a selection of whatever took the moved row's place.
 ///
-/// A press always overwrites the grab, so a spent one cannot outlive the gesture that
-/// left it even if no click ever arrives.
+/// A press always overwrites the grab, so a finished one cannot outlive the gesture
+/// that left it even if no click ever arrives — and while it waits it is inert, which
+/// is [`Grab::spend`]'s job rather than this one's. It was not always: a finished grab
+/// that a hover could re-arm turned "no click arrived" from a thing that costs nothing
+/// into a row that follows the pointer until the panel is closed (`2026-08-09`).
 pub fn claimed(grab: &mut Signal<Option<Grab>>) -> bool {
-    let spent = grab.peek().as_ref().is_some_and(|g| g.spent);
-    if spent {
+    let over = grab.peek().as_ref().is_some_and(Grab::over);
+    if over {
         grab.set(None);
     }
-    spent
+    over
 }
 
 /// Where a block of rows would land, and what the rows it displaces do about it.
@@ -360,12 +400,49 @@ mod tests {
     fn a_press_becomes_a_drag_once_and_stays_one() {
         let mut g = Grab::begin("a", vec![], (0.0, 0.0));
         assert!(!g.live());
-        g.track((0.0, GRAB_SLOP));
+        g.track((0.0, GRAB_SLOP), true);
         assert!(!g.live(), "the slop itself is still a click");
-        g.track((0.0, GRAB_SLOP + 1.0));
+        g.track((0.0, GRAB_SLOP + 1.0), true);
         assert!(g.live());
-        g.track((0.0, 0.0));
+        g.track((0.0, 0.0), true);
         assert!(g.live(), "back where it started is still a drag");
+    }
+
+    /// **A spent grab is dead.** It outlives its gesture by a moment, for the click
+    /// behind the release ([`claimed`]) — and a row's grip is also a thing the pointer
+    /// merely passes over, so it hears hovers in that moment. One of them re-arming it
+    /// left the dropped row following the pointer around the panel, over a list it had
+    /// already been moved in, with no gesture left that could put it down.
+    #[test]
+    fn a_spent_grab_is_not_re_armed_by_the_hover_behind_it() {
+        let mut g = Grab::begin("a", vec![], (0.0, 0.0));
+        g.track((0.0, 8.0 * GRAB_SLOP), true);
+        assert!(g.live());
+        g.spend();
+        // Far from the anchor, which is the whole point: the pointer is wherever the
+        // drop left it, so every one of these is a travel of more than the slop.
+        for at in [(0.0, 8.0 * GRAB_SLOP), (30.0, 200.0)] {
+            g.track(at, false);
+            assert!(!g.live(), "a hover at {at:?} woke a spent grab");
+            g.track(at, true);
+            assert!(!g.live(), "a press at {at:?} woke a spent grab");
+        }
+        assert!(g.over(), "and it is still the receipt the click needs");
+    }
+
+    /// The release this panel never heard. A drag that ends over anything without a
+    /// handler — the empty space past the end of the list, which is where a row
+    /// dragged to the bottom is let go — sends no `pointerup` here at all; the first
+    /// move with nothing held is the panel finding out, and it ends the gesture rather
+    /// than steering it, because a drop is committed by a release and this is not one.
+    #[test]
+    fn a_move_with_nothing_held_ends_the_gesture() {
+        let mut g = Grab::begin("a", vec![], (0.0, 0.0));
+        g.track((0.0, 8.0 * GRAB_SLOP), true);
+        assert!(g.live());
+        g.track((0.0, 9.0 * GRAB_SLOP), false);
+        assert!(!g.live(), "the press is not down, so there is no drag");
+        assert!(g.over());
     }
 
     /// A row the press never measured abandons the gesture rather than guessing.
