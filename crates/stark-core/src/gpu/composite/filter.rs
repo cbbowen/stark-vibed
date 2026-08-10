@@ -23,6 +23,11 @@ pub(super) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 pub(super) struct FilterPass {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) bgl: wgpu::BindGroupLayout,
+    /// How the chromatic gather (§21.10) reads the accumulator *between* texels:
+    /// bilinear, clamped to the edge — a tap displaced past the viewport reads the
+    /// rim rather than wrapping the far side of the picture into a fringe. The
+    /// point filters keep their exact `textureLoad`s and never touch it.
+    pub(super) sampler: wgpu::Sampler,
 }
 
 impl FilterPass {
@@ -40,15 +45,23 @@ impl FilterPass {
         });
         let resid_format = color_space.resid_format();
         // The binding numbers are the blend pass's, gaps and all: `filter_common`
-        // owns 0–2 where `blend_common` owns 0–4, and `mixbox_lut.wesl` hard-codes
-        // the LUT at 5–6 for whoever imports it (see the note in that file). So 3
-        // and 4 are simply not declared here — the two the source layer would have
-        // occupied — and everything after them keeps the number it has in the pass
-        // this one is a narrowing of.
+        // owns 0–3 where `blend_common` owns 0–4, and `mixbox_lut.wesl` hard-codes
+        // the LUT at 5–6 for whoever imports it (see the note in that file). Slot 3
+        // — one of the two the source layer would have occupied — carries the
+        // chromatic gather's sampler instead, and 4 stays undeclared; everything
+        // after keeps the number it has in the pass this one is a narrowing of.
+        //
+        // The accumulator textures are declared *sampled* rather than loaded,
+        // because the chromatic filter (§21.10) reads them through `sampler` at
+        // fractional positions. That asks their formats to be filterable, which
+        // `Rgba16Float`/`R16Float` are everywhere this runs — including WebGPU's
+        // core feature set — and costs the point filters nothing: a sampled
+        // declaration still serves their exact `textureLoad`s.
         let mut entries = vec![
             desc::uniform_slot(0, frag, std::mem::size_of::<FilterUniform>() as u64),
-            desc::load_tex(1, frag),   // accumulator color
-            desc::load_tex(2, frag),   // accumulator aux
+            desc::sample_tex(1, frag), // accumulator color
+            desc::sample_tex(2, frag), // accumulator aux
+            desc::sampler(3, frag),    // the chromatic gather's bilinear taps
             desc::sample_tex(5, frag), // pigment LUT (filtered)
             desc::sampler(6, frag),
         ];
@@ -57,7 +70,7 @@ impl FilterPass {
                 f, color_format,
                 "the filter pass loads the residual target with the colour's decode",
             );
-            entries.push(desc::load_tex(7, frag)); // accumulator residual
+            entries.push(desc::sample_tex(7, frag)); // accumulator residual
         }
         let bgl = desc::bind_group_layout(device, "stark filter bgl", &entries);
         let layout = desc::pipeline_layout(device, "stark filter layout", &[Some(&bgl)]);
@@ -76,6 +89,18 @@ impl FilterPass {
             ("vs_main", "fs_main"),
             &targets,
         );
-        Self { pipeline, bgl }
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("stark filter sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        Self {
+            pipeline,
+            bgl,
+            sampler,
+        }
     }
 }

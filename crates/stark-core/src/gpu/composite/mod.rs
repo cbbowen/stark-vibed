@@ -543,8 +543,13 @@ impl Compositor {
         // because the group cannot be merged until it has been composited. The two
         // cursors run independently, which is what lets a filter and a blend group
         // sit side by side in a stack without either counting the other's slots.
+        //
+        // `view` rides along for one field: the chromatic filter's dispersion is
+        // stated in canvas terms by the document and *sampled* in accumulator
+        // texels by the pass, and this is the moment the two meet (§21.10).
         fn collect(
             members: &[CompositeGroup],
+            view: ViewTransform,
             blends: &mut Vec<BlendUniform>,
             filters: &mut Vec<FilterUniform>,
         ) {
@@ -556,13 +561,13 @@ impl Compositor {
                     filters.push(FilterUniform {
                         kind: f.kind,
                         strength: f.strength,
+                        disp: chromatic_disp(f, view),
                         params: f.params,
-                        ..Default::default()
                     });
                     continue;
                 }
                 if let GroupContent::Stack(inner) = &m.content {
-                    collect(inner, blends, filters);
+                    collect(inner, view, blends, filters);
                 }
                 blends.push(BlendUniform {
                     mode: blend::blend_code(m.blend),
@@ -573,7 +578,7 @@ impl Compositor {
             }
         }
         let (mut blends, mut filters) = (Vec::new(), Vec::new());
-        collect(groups, &mut blends, &mut filters);
+        collect(groups, view, &mut blends, &mut filters);
         self.blend_uniforms.write(device, &p.ctx.queue, &blends);
         self.filter_uniforms.write(device, &p.ctx.queue, &filters);
         tile_bgs
@@ -812,11 +817,13 @@ impl Compositor {
     /// result to `out` (§21.3).
     ///
     /// [`Self::encode_blend`] with the source dropped, down to the bind group's
-    /// numbering: `filter_common.wesl` declares 0–2 where `blend_common.wesl`
-    /// declares 0–4, and the pigment LUT keeps 5–6 because `mixbox_lut.wesl`
-    /// hard-codes them for whoever imports it. The LUT itself is the blend pass's —
-    /// both passes ask it the same question, and an Oklab document binds the same
-    /// 1×1 stand-in so there is one layout per space rather than one per pass.
+    /// numbering: `filter_common.wesl` declares 0–3 where `blend_common.wesl`
+    /// declares 0–4 (3 is the chromatic gather's sampler, in one of the slots the
+    /// missing source vacates), and the pigment LUT keeps 5–6 because
+    /// `mixbox_lut.wesl` hard-codes them for whoever imports it. The LUT itself is
+    /// the blend pass's — both passes ask it the same question, and an Oklab
+    /// document binds the same 1×1 stand-in so there is one layout per space
+    /// rather than one per pass.
     fn encode_filter(
         &self,
         e: &Encode<'_>,
@@ -836,6 +843,7 @@ impl Compositor {
             },
             desc::tex(1, back.color),
             desc::tex(2, back.aux),
+            desc::samp(3, &e.p.filter.sampler),
             desc::tex(5, &e.p.blend.pigment.view),
             desc::samp(6, &e.p.blend.pigment.sampler),
         ];
@@ -1262,6 +1270,26 @@ impl Compositor {
 
         p.ctx.queue.submit([encoder.finish()]);
     }
+}
+
+/// The chromatic filter's dispersion vector for this frame: the red-end → blue-end
+/// displacement, carried from the canvas terms the document states (`params` =
+/// spread in canvas px, angle in canvas radians) into the **accumulator texels**
+/// the pass samples in, through the view's full canvas→screen linear map — zoom,
+/// rotation and mirror alike, so the fringes stay attached to the artwork exactly
+/// as the canvas weave does (§21.10, §6.4). Zero for every other filter kind,
+/// which is the true value rather than a stand-in: no other kind disperses.
+///
+/// Derived here, per frame, rather than stored in [`FilterDraw`]: the draw
+/// describes the document, and which texels a canvas distance spans is the view's
+/// fact, known only where the uniform is written.
+fn chromatic_disp(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
+    if f.kind != stark_shaders::mirror::filter_common::FILTER_CHROMATIC {
+        return [0.0; 2];
+    }
+    let (spread, angle) = (f.params[0], f.params[1]);
+    let d = view.linear() * crate::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
+    [d.x, d.y]
 }
 
 /// A viewport-sized offscreen render target, as pass A and the blend pass use.

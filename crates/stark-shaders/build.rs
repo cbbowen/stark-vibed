@@ -59,6 +59,7 @@ const CONSTS: &[(&str, &str)] = &[
     ("dynamics", "WICK_HALF"),
     ("dynamics", "WICK_RATE"),
     ("filter_common", "CONTRAST_PIVOT"),
+    ("filter_common", "FILTER_CHROMATIC"),
     ("filter_common", "FILTER_COLOR"),
     ("lib/paint_common", "RISE_LIMIT"),
     ("lib/paint_common", "TOOTH_RISE"),

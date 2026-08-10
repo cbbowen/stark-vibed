@@ -76,6 +76,15 @@ impl FilterDraw {
                 strength,
                 params: [c.exposure, c.contrast, c.saturation, c.hue],
             },
+            // The spread and angle stay in canvas terms here: which *texels* they
+            // become depends on the view, and this description deliberately has
+            // none — the encoder derives the uniform's dispersion vector per frame
+            // (§21.10).
+            Filter::Chromatic(c) => Self {
+                kind: stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
+                strength,
+                params: [c.spread, c.angle, 0.0, 0.0],
+            },
         }
     }
 }

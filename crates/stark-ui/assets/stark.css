@@ -1017,6 +1017,47 @@ hr {
   cursor: pointer;
 }
 
+/* The "+ Filter" button and the picker it opens: the anchor is the wrapper, so the
+   menu drops from the button whatever the header's flex does around it. */
+.filter-add {
+  position: relative;
+}
+
+/* The kinds of filter, one under the other, floated over the panel. The tokens are
+   the layer rows' own (the dark ground, the 6px radius, 12px type) — this is a list
+   of things a layer can be, drawn where the layer list lives. */
+.filter-add-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  background: #2c2c33;
+  border: 1px solid #4a4a52;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.filter-add-item {
+  display: block;
+  text-align: left;
+  background: none;
+  color: #eee;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.filter-add-item:hover {
+  background: #3a6ea5;
+}
+
 /* One entry in the tree: the row, plus the indent its own membership opens to the
    left of it. The indent is padding *here* rather than a margin on the row because
    that space is not empty any more — its last step holds the row's Release, so it has

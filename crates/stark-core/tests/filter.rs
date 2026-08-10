@@ -16,10 +16,10 @@
 mod common;
 
 use common::*;
-use stark_core::Engine;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_core::document::{ColorAdjust, Filter, LayerId, Place};
+use stark_core::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, Place};
 use stark_core::geom::Vec2;
+use stark_core::{Engine, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 const STROKE: &[Vec2] = &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
@@ -36,6 +36,36 @@ const GREY: Filter = Filter::Color(ColorAdjust {
     saturation: 0.0,
     ..ColorAdjust::NEUTRAL
 });
+
+/// A hard chromatic dispersion along the suite's stroke: wide enough that the
+/// fringes span several rendered pixels, aimed down the axis the stroke runs
+/// (§21.10), so a scan of the stroke's own row crosses both of them.
+const FRINGE: Filter = Filter::Chromatic(ChromaticAberration {
+    spread: 12.0,
+    angle: 0.0,
+});
+
+/// How far the filter moved each pixel's red-minus-blue separation, scanned along
+/// the stroke's row: `(min, max)` of `(R−B)_after − (R−B)_before` across it.
+///
+/// This is the observable that tells a *spectrum pulled apart* from a picture
+/// merely smeared: dispersion shifts the red and blue ends of the picture opposite
+/// ways along the axis, so one flank of the stroke gains red-over-blue and the
+/// other loses it — the swing must reach well clear of zero **in both signs**. A
+/// blur, a uniform shift, or a tint moves the separation everywhere the same way.
+/// Scanning for the extremes rather than sampling named pixels keeps the claim
+/// about the physics rather than about where exactly the brush's soft edge fell.
+fn separation_swing(before: &RgbaImage, after: &RgbaImage) -> (i32, i32) {
+    let y = before.height / 2;
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    for x in 0..before.width {
+        let (b, a) = (before.pixel(x, y), after.pixel(x, y));
+        let d = (a[0] as i32 - a[2] as i32) - (b[0] as i32 - b[2] as i32);
+        lo = lo.min(d);
+        hi = hi.max(d);
+    }
+    (lo, hi)
+}
 
 /// Whether a pixel is achromatic — the three channels within a level or two of one
 /// another, which is what a saturation of zero has to produce.
@@ -470,6 +500,98 @@ fn dragging_a_filter_previews_without_logging() {
     );
 }
 
+/// Chromatic aberration **parts the spectrum, both ways** (§21.10). Across the
+/// stroke, the separation the filter adds between the red and blue channels must
+/// swing to opposite signs on the two flanks — red spilling one way and blue the
+/// other is what dispersion *is*, and it is exactly what the three-shifted-copies
+/// shortcut this filter refuses would also show, so the same check covers the
+/// integral's ordering. See [`separation_swing`] for why this observable and not a
+/// named pixel's hue.
+#[test]
+fn chromatic_aberration_parts_the_spectrum_both_ways() {
+    let Some(mut engine) = painted() else { return };
+    let before = engine.render_to_image();
+    add_filter(&mut engine, None, FRINGE);
+    let after = engine.render_to_image();
+    assert!(
+        !images_match(&before, &after, 0),
+        "the dispersion has to change the picture for this test to mean anything",
+    );
+
+    let (lo, hi) = separation_swing(&before, &after);
+    assert!(
+        hi > 15 && lo < -15,
+        "dispersion should push red-vs-blue separation both ways across the \
+         stroke, got a swing of {lo}..{hi}",
+    );
+}
+
+/// **Deep inside flat paint the gather is the identity** — the partition of unity
+/// that §21.10 leans on: every channel's weights are normalized by their own sum,
+/// so where all the taps land on the same paint the integral provably returns it.
+/// The dispersion runs *along* the stroke, so every tap under the centre sits on
+/// the stroke's spine — the flattest paint the suite can offer — while the stroke's
+/// ends still prove the pass did something. A tolerance rather than bytes: the
+/// identity is exact in the linear-light algebra, and the trip out to light and
+/// back is not.
+#[test]
+fn chromatic_aberration_is_the_identity_deep_inside_flat_paint() {
+    let Some(mut engine) = painted() else { return };
+    let before = engine.render_to_image();
+    add_filter(
+        &mut engine,
+        None,
+        Filter::Chromatic(ChromaticAberration {
+            spread: 8.0,
+            angle: 0.0,
+        }),
+    );
+    let after = engine.render_to_image();
+    assert!(
+        !images_match(&before, &after, 0),
+        "the dispersion has to change the picture somewhere (the stroke's ends)",
+    );
+
+    let (b, a) = (center(&before), center(&after));
+    let worst = b
+        .iter()
+        .zip(a.iter())
+        .map(|(x, y)| (*x as i32 - *y as i32).abs())
+        .max()
+        .unwrap();
+    assert!(
+        worst <= 5,
+        "flat paint under the gather moved by {worst} levels \
+         (before {b:?}, after {a:?}) — the weights no longer sum to one",
+    );
+}
+
+/// The chromatic filter in a **pigment** document (§21.10, §6.7): every tap decodes
+/// through Mixbox's polynomial with its residual, and the summed light re-enters
+/// through the inverse LUT once. The physics claim is the same as the Oklab test's;
+/// what this covers is the per-tap leg no Oklab test touches.
+#[cfg(feature = "mixbox")]
+#[test]
+fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
+    let Some(mut engine) = engine_or_skip_with(stark_core::colorspace::ColorSpaceId::Mixbox) else {
+        return;
+    };
+    paint(&mut engine, RED, 22.0, STROKE);
+    let before = engine.render_to_image();
+    add_filter(&mut engine, None, FRINGE);
+    let after = engine.render_to_image();
+    assert!(
+        !images_match(&before, &after, 0),
+        "the dispersion has to change the pigment picture too",
+    );
+    let (lo, hi) = separation_swing(&before, &after);
+    assert!(
+        hi > 15 && lo < -15,
+        "dispersion in pigment should part red and blue both ways across the \
+         stroke, got a swing of {lo}..{hi}",
+    );
+}
+
 /// A filter survives the round trip through the **file** (§8). Worth its own test
 /// rather than being left to `save_load.rs`'s strokes: `AddFilter` and `SetFilter`
 /// are the first actions to carry a `Filter`, postcard writes no field names and no
@@ -490,6 +612,22 @@ fn a_filter_survives_save_and_load() {
             hue: 0.6,
         }),
     ));
+    // A second filter of the **other kind** rides the same log: `Chromatic` is an
+    // appended enum variant (§8), and appended is exactly the layout mistake class
+    // this test exists to catch — a variant misnumbered on either side decodes as
+    // a *different filter* rather than as an error.
+    let chroma = add_filter(
+        &mut engine,
+        None,
+        Filter::Chromatic(ChromaticAberration::NEUTRAL),
+    );
+    engine.process(DocCommand::SetFilter(
+        chroma,
+        Filter::Chromatic(ChromaticAberration {
+            spread: 9.5,
+            angle: -1.2,
+        }),
+    ));
     let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
 
@@ -499,22 +637,14 @@ fn a_filter_survives_save_and_load() {
         images_match(&before, &loaded.render_to_image(), 0),
         "save \u{2192} load must reproduce the filtered picture identically",
     );
-    // …and the settings come back as settings, not merely as the same pixels.
-    let obs = loaded.observe();
-    let back = obs
-        .layers
-        .iter()
-        .find_map(|l| l.filter)
-        .expect("the filter layer came back");
-    assert_eq!(
-        back,
-        engine
-            .observe()
-            .layers
-            .iter()
-            .find_map(|l| l.filter)
-            .unwrap()
-    );
+    // …and the settings come back as settings, not merely as the same pixels —
+    // every filter, in stack order, kind and numbers alike.
+    let filters = |e: &Engine| -> Vec<Filter> {
+        e.observe().layers.iter().filter_map(|l| l.filter).collect()
+    };
+    let back = filters(&loaded);
+    assert_eq!(back.len(), 2, "both filter layers came back");
+    assert_eq!(back, filters(&engine));
 }
 
 /// The **pigment** path (§6.7). A filter in a Mixbox document takes a different

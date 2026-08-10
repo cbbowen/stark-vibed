@@ -27,9 +27,11 @@ use serde::{Deserialize, Serialize};
 
 /// What a filter layer does to the stack beneath it (§21.2).
 ///
-/// One variant, because one is built. The enum is the seam the rest of §21.7 lands
-/// on — motion blur, chromatic aberration, outline — and per this codebase's own
-/// precedent (§1) no variant appears here before it does something to a pixel.
+/// Two variants, because two are built. The enum is the seam the rest of §21.7
+/// lands on — motion blur, outline, glow — and per this codebase's own precedent
+/// (§1) no variant appears here before it does something to a pixel. **Appended
+/// only**: postcard encodes an enum by index (§8), so a variant inserted above an
+/// existing one would silently rename every filter in every saved file.
 ///
 /// `Copy` on purpose: a filter is a handful of numbers, it is read once per render
 /// and once per projection, and a `Clone` would be a promise that some future
@@ -39,17 +41,24 @@ use serde::{Deserialize, Serialize};
 pub enum Filter {
     /// Exposure, contrast, saturation and hue, applied in Oklab (§21.5).
     Color(ColorAdjust),
+    /// The spectrum pulled apart across the picture — the lens's dispersion as the
+    /// integral it is, not as three shifted copies (§21.10).
+    Chromatic(ChromaticAberration),
 }
 
 impl Filter {
-    /// Every filter this build offers, at its neutral setting — the list a "new
+    /// Every filter this build offers, at its neutral setting — the list the "new
     /// filter" picker is built from, in the order it should offer them.
-    pub const ALL: [Filter; 1] = [Filter::Color(ColorAdjust::NEUTRAL)];
+    pub const ALL: [Filter; 2] = [
+        Filter::Color(ColorAdjust::NEUTRAL),
+        Filter::Chromatic(ChromaticAberration::NEUTRAL),
+    ];
 
     /// What this filter is called, in the panel and in the layer row.
     pub fn label(self) -> &'static str {
         match self {
             Filter::Color(_) => "Colour",
+            Filter::Chromatic(_) => "Chromatic aberration",
         }
     }
 
@@ -59,6 +68,20 @@ impl Filter {
     pub fn is_neutral(self) -> bool {
         match self {
             Filter::Color(c) => c == ColorAdjust::NEUTRAL,
+            // The spread alone: at zero spread every wavelength lands where it
+            // started, whatever the angle points at — so an angle dialled before
+            // the spread is not an edit yet, and the draw list rightly spends
+            // nothing on it.
+            Filter::Chromatic(c) => c.spread == 0.0,
+        }
+    }
+
+    /// The same **kind** of filter at its neutral setting — what the bar's
+    /// "Neutral" chip puts back, said once here rather than per panel arm.
+    pub fn neutral(self) -> Self {
+        match self {
+            Filter::Color(_) => Filter::Color(ColorAdjust::NEUTRAL),
+            Filter::Chromatic(_) => Filter::Chromatic(ChromaticAberration::NEUTRAL),
         }
     }
 
@@ -77,6 +100,7 @@ impl Filter {
     pub fn sanitized(self) -> Self {
         match self {
             Filter::Color(c) => Filter::Color(c.sanitized()),
+            Filter::Chromatic(c) => Filter::Chromatic(c.sanitized()),
         }
     }
 }
@@ -179,6 +203,82 @@ impl Default for ColorAdjust {
     }
 }
 
+/// Chromatic aberration: the lens's dispersion, as an **integral over the shifted
+/// spectrum** rather than the three shifted copies most applications draw (§21.10).
+///
+/// Two numbers describe the whole effect because they describe the lens: how far
+/// the spectrum is pulled apart, and along which axis. Everything else — the
+/// asymmetric spread of the blue end, the rainbow ordering of the fringe, the fact
+/// that a flat field is untouched — is the physics, computed in the pass rather
+/// than parameterized.
+///
+/// Both are stated **in canvas terms** (canvas px, canvas angle): the fringes
+/// belong to the artwork, so they scale with a zoom and turn with a rotation the
+/// way the paint does. The trip into screen texels is the encoder's, per frame,
+/// through the view's own linear map.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChromaticAberration {
+    /// How far the red end of the spectrum lands from the blue end, in **canvas
+    /// px** — the full width of the fringe an edge grows. `0` is the identity: no
+    /// wavelength moves, whatever the angle says.
+    ///
+    /// A distance rather than a unitless "amount" because that is what the knob
+    /// does to the picture, and because bounding it is what keeps the pass's tap
+    /// budget honest (§21.10).
+    pub spread: f32,
+    /// The axis the spectrum spreads along, in **radians**, canvas space: the
+    /// direction the blue end is carried, with the red end opposite. The picture
+    /// itself stays put — the two ends part symmetrically around it.
+    ///
+    /// Radians because that is the unit the engine states angles in; the frontend
+    /// offers degrees, which is a way of *presenting* an angle (§21.5's own
+    /// argument for the hue knob).
+    pub angle: f32,
+}
+
+impl ChromaticAberration {
+    /// The identity: nothing spreads.
+    pub const NEUTRAL: Self = Self {
+        spread: 0.0,
+        angle: 0.0,
+    };
+
+    /// The widest each knob may be dialled — the range a frontend's slider spans
+    /// and the range [`sanitized`](Self::sanitized) holds a log entry to.
+    ///
+    /// The spread's ceiling is also a promise to the renderer: the pass buys taps
+    /// in proportion to the on-screen dispersion and caps them (§21.10), and this
+    /// bound is what keeps the cap out of reach at working zooms.
+    pub const SPREAD: (f32, f32) = (0.0, 128.0);
+    /// A full turn either way, so every axis is reachable and none is reachable
+    /// twice by more than a lap.
+    pub const ANGLE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+
+    /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite
+    /// value falls back to the **neutral** setting for that knob, for
+    /// [`ColorAdjust::sanitized`]'s reason: `NaN` says nothing about which end of
+    /// the range was meant, and the identity cannot make a picture worse.
+    pub fn sanitized(self) -> Self {
+        let clamp = |v: f32, neutral: f32, (lo, hi): (f32, f32)| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                neutral
+            }
+        };
+        Self {
+            spread: clamp(self.spread, 0.0, Self::SPREAD),
+            angle: clamp(self.angle, 0.0, Self::ANGLE),
+        }
+    }
+}
+
+impl Default for ChromaticAberration {
+    fn default() -> Self {
+        Self::NEUTRAL
+    }
+}
+
 /// Oklab `L` of mid-grey — sRGB `0.5` — which is what [`ColorAdjust::contrast`]
 /// pivots about.
 ///
@@ -221,6 +321,14 @@ mod tests {
                 hue: bad,
             });
             assert_eq!(wild.sanitized(), Filter::Color(ColorAdjust::NEUTRAL));
+            let wild = Filter::Chromatic(ChromaticAberration {
+                spread: bad,
+                angle: bad,
+            });
+            assert_eq!(
+                wild.sanitized(),
+                Filter::Chromatic(ChromaticAberration::NEUTRAL),
+            );
         }
         // …and an ordinary out-of-range value is *clamped* rather than neutralized:
         // a slider pushed past its stop still means "as far as it goes".
@@ -237,6 +345,31 @@ mod tests {
                 ..ColorAdjust::NEUTRAL
             }),
         );
+        let wide = Filter::Chromatic(ChromaticAberration {
+            spread: 1000.0,
+            angle: 9.0,
+        });
+        assert_eq!(
+            wide.sanitized(),
+            Filter::Chromatic(ChromaticAberration {
+                spread: ChromaticAberration::SPREAD.1,
+                angle: ChromaticAberration::ANGLE.1,
+            }),
+        );
+    }
+
+    /// Zero spread is the identity **whatever the angle says** — at spread 0 no
+    /// wavelength moves, so an angle dialled first is not yet an edit and the draw
+    /// list must be free to drop the pass (§21.3's "neutral is dropped" rule,
+    /// which anything less would quietly break for one knob ordering).
+    #[test]
+    fn an_unspread_chromatic_filter_is_neutral_at_any_angle() {
+        let aimed = Filter::Chromatic(ChromaticAberration {
+            spread: 0.0,
+            angle: 2.0,
+        });
+        assert!(aimed.is_neutral());
+        assert_eq!(aimed.sanitized(), aimed, "sanitizing must not disturb it");
     }
 
     /// A freshly added filter must change nothing: adding one is a step you take

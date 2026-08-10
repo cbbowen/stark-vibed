@@ -117,7 +117,8 @@ requirements rather than optimizations:
 #### 21.3.1 What the pass does *not* touch
 
 Pass A's colour target holds the stack premultiplied by coverage; its aux holds the
-amount of paint (§6.1). A filter has an opinion about neither:
+amount of paint (§6.1). A **point** filter — one whose output texel is a function of
+its input texel alone — has an opinion about neither:
 
 - **Coverage comes out as it went in.** The adjustment runs on the *un*-premultiplied
   channels, so a half-covered texel is adjusted like a full one rather than like a
@@ -127,6 +128,15 @@ amount of paint (§6.1). A filter has an opinion about neither:
   colour. It is a real copy rather than a skipped attachment: the ping-pong means the
   pass's output targets are not the ones it read, so an aux left unwritten would hold
   whatever the previous bounce left there.
+
+A **resampling** filter — one that says what is *where*, not what colour it is — is
+the other case, and it transports all three lanes together. The reason is the media
+pass's own visibility law: paint shows only where coverage *and* height both exist
+(§6.3), so a chromatic fringe displaced past a stroke's edge with its colour alone
+would land on zero height and be a fringe that cannot be seen. §21.10 says what
+"together" means precisely; what survives from the two rules above is the shape of
+the promise — a filter changes only what its kind is *about*, and both kinds leave a
+strength-0 pass bit-identical to the backdrop.
 
 ### 21.4 What a filter borrows from a layer, and what it cannot
 
@@ -315,19 +325,133 @@ nothing on screen to say where it came from.
 12. A filter works in a **pigment** document — the road out through Mixbox's
     polynomial and back through its inverse LUT, with the latent residual carried on
     both legs (§6.7). Nothing in an Oklab test touches that half.
+13. Chromatic aberration **parts the spectrum, both ways** (§21.10): across a
+    stroke, the red-versus-blue separation the filter adds has opposite signs on
+    the two sides of the dispersion axis — the claim that distinguishes a spectrum
+    pulled apart from a picture merely smeared, checked without pinning any pixel's
+    exact hue.
+14. **Deep inside flat paint the gather is the identity** — the partition of unity,
+    §21.10's load-bearing normalization, measured where every tap lands on the same
+    paint. A tolerance rather than bytes: the identity is exact in the linear-light
+    algebra, and the trip out and back is not.
+15. The chromatic filter **works in a pigment document** — per-tap decodes through
+    the polynomial, one re-entry through the inverse LUT, the residual recomputed
+    for the arrived-at colour (§6.7).
 
 ### 21.9 Open
 
-- **The rest of the filters.** Motion blur, chromatic aberration, outline, blur, glow.
-  Each is a `Filter` variant and an arm in `filtered()`; the ones that read *neighbouring*
-  texels are the first to need something this pass does not have, since the accumulator
-  it samples is the supersampled render and a kernel in screen px is not a kernel in
-  canvas px (§6.4). That is the same question the media pass's relief already answers by
-  zoom-normalizing, and it is where the next filter's design starts.
+- **The rest of the filters.** Motion blur, outline, blur, glow. A point filter is a
+  `Filter` variant and an arm in `filtered()`; one that reads *neighbouring* texels
+  follows the chromatic filter instead (§21.10), which already answered the two
+  questions this bullet used to hold open — a kernel stated in canvas px reaches the
+  supersampled accumulator through the view's own linear map, per frame, and a
+  neighbourhood pass branches in each space's `fs_main` where the space's decode is
+  in reach per tap.
+- **Radial dispersion.** The chromatic filter's axis is uniform (§21.10) because an
+  infinite canvas has no centre for a lens's field to grow from. The frame (§15) is
+  the obvious candidate to donate one — dispersion growing with distance from the
+  framed centre is the full transverse-aberration look — and it is a third knob on
+  the same integral, not a new filter.
 - **Per-filter masking.** Not needed for scope — position is scope (§21.1) — but a
   *soft* boundary (grade the sky and not the ground) has no expression yet. The selection
   is the obvious source, and §15.9's P4 region algebra is the obvious representation.
 - **Filters on export.** They composite in pass A, so an export already carries them;
   nothing to do, recorded because it is the question everyone asks.
+
+### 21.10 The chromatic aberration filter
+
+The second filter, and the first that reads neighbouring texels. Most applications
+draw this effect as three copies of the picture — red, green, blue — shifted apart,
+which is not what a lens does and looks like what it is: three ghosts. A lens
+disperses *every wavelength* by its own amount, and a channel then holds that
+continuum weighed by the eye's response. So this filter is the integral, not three
+samples of it:
+
+```
+out(x) = ∫ w(λ) · image(x − d(λ)) dλ
+```
+
+Two numbers describe the whole effect because two numbers describe the lens:
+
+```rust
+pub struct ChromaticAberration {
+    pub spread: f32,   // red end → blue end, canvas px; 0 is the identity
+    pub angle: f32,    // the axis, radians, canvas space — where blue is carried
+}
+```
+
+Everything else — the rainbow ordering of the fringe, the blue end spreading farther
+than the red, a flat field coming through untouched — is the physics, computed in
+the pass rather than parameterized. Four decisions carry it:
+
+**The taps are uniform in displacement, and Cauchy's law names their wavelengths.**
+Dispersion in glass is `n(λ) ≈ A + B/λ²`, so a wavelength's displacement is linear
+in `1/λ²` — the blue end of the spectrum spreads farther than an equal run of the
+red end, which is half of why a real fringe looks the way it does. Sampling evenly
+*along the fringe* and inverting Cauchy to ask which wavelength landed at each tap
+puts the samples where the picture is (no tap is wasted where the fringe is thin)
+and gets that asymmetry exactly, rather than as a tuned constant. The weights are
+the CIE 1931 colour-matching functions — the Wyman–Sloan–Shirley analytic fit, so
+there is no table to bind — taken to linear sRGB and clamped at zero, since a
+monochromatic colour sits outside the gamut and a negative weight would ring where
+a fringe should glow.
+
+**The weights form an exact partition of unity, by construction.** Each channel of
+the gather divides by that channel's own summed weight, so wherever the image is
+locally flat the pass returns it *exactly* — for any tap count, at any spread, with
+no normalization constant to tune or to get wrong. This is the property that makes
+the filter honest at its edges: the fringe lives only where the picture changes,
+because everywhere else the integral provably cancels. (The identity is exact in
+the linear-light algebra; the trip out to light and back costs the usual rounding,
+which is why *neutral* — spread 0 — is still dropped from the draw list rather than
+trusted to a round trip, §21.3.)
+
+**The integral runs in linear light, bracketed by each space's own decode — per
+tap.** A sum over wavelengths is a sum of light; summing Oklab or pigment
+concentrations would mean nothing. So this is the one filter whose body lives in
+the space files rather than behind `filtered()`: an Oklab tap pays `Oklab → linear`
+and a Mixbox tap pays `poly(c) + r → linear` (§6.7), the accumulated light re-enters
+the space once at the end (for pigment, through the inverse LUT with the residual
+recomputed), and `filter_common.wesl` supplies the machinery every space shares —
+the tap count, the wavelength map, the weights, the sample positions.
+
+**Colour, coverage and height travel together.** §21.3.1's point-filter rules bend
+here, and the media pass is why: paint is visible only where coverage *and* height
+both exist, so a fringe that escaped a stroke's edge carrying colour alone would be
+invisible. The spectral weights carry the premultiplied light; their luminance
+carries the coverage and the height, so the amount of paint travels with the light
+that shows it. Transport conserves what §6.1 demands conserved: a shift-and-average
+of the height field moves paint without minting any. The strength mix then runs on
+the raw premultiplied lanes — all of them, together — so strength 0 is the backdrop
+bit for bit, the same exactness `weigh` gives the point filters (§21.4).
+
+**The knobs are canvas facts; the view arrives per frame.** The accumulator is the
+supersampled render, and a distance in screen texels is not a distance in canvas px
+(§6.4) — the question §21.9 held open. The answer is the media pass's own: the
+document states `spread` and `angle` on the canvas, and the encoder carries them
+through the view's full canvas→screen linear map — zoom, supersample, rotation and
+mirror alike — into a dispersion vector written into the uniform each frame
+(`chromatic_disp`, beside the slot writes). The fringes therefore stay attached to
+the artwork exactly as the canvas weave does, and an export disperses the same
+canvas distance the screen showed. The pass buys taps in proportion to that
+on-screen dispersion — enough that bilinear filtering closes the gap between
+neighbours — floored so a sub-texel spread still integrates over a few spectral
+bands, and capped (64) so an extreme spread at an extreme zoom stays one affordable
+pass; `SPREAD`'s bound is what keeps the cap out of reach at working zooms.
+
+Two honest edges, stated rather than hidden. The gather clamps at the viewport rim
+— a tap displaced past the edge reads the rim rather than wrapping the far side of
+the picture into a fringe — so within one spread-width of the frame's edge the
+fringe leans on repeated rim texels; an export shows the same, at its own border.
+And past the tap cap the spectrum quantizes gently rather than banding hard,
+because the taps stay bilinear and the partition of unity still normalizes whatever
+count ran.
+
+In the bar (§21.6) the filter is two sliders, Spread and Angle, through the same
+preview-per-sample / commit-once funnel as the colour filter's four; `+ Filter`
+grew the picker `Filter::ALL` always promised, each kind landing neutral. Zero
+spread is neutral **at any angle** — an angle dialled before its spread is not yet
+an edit, so the draw list stays free to drop the pass and
+`a_neutral_filter_changes_no_pixel` keeps its byte-level meaning.
 
 ---

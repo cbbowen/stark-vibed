@@ -27,7 +27,7 @@ pub use brush::{
     NoiseKind, OrientationSource, PenState,
 };
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
-pub use filter::{CONTRAST_PIVOT, ColorAdjust, Filter};
+pub use filter::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
 /// whether two of them can be reordered.
 pub use footprint::{Footprint, Prop, Resource, footprint};
