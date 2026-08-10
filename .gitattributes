@@ -6,3 +6,4 @@
 # Golden PNGs and other binaries must never be touched.
 *.png binary
 *.hdr binary
+*.ico binary

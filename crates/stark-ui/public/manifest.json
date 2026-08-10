@@ -1,0 +1,36 @@
+{
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "name": "Stark",
+  "short_name": "Stark",
+  "description": "A GPU-accelerated painting app with natural brush strokes, real pigment mixing, an infinite canvas and complete undo history.",
+  "categories": ["graphics", "productivity"],
+  "lang": "en",
+  "dir": "ltr",
+  "display": "standalone",
+  "orientation": "any",
+  "launch_handler": { "client_mode": "navigate-existing" },
+  "theme_color": "#151413",
+  "background_color": "#d8d8da",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    }
+  ]
+}

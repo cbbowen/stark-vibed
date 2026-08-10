@@ -74,6 +74,10 @@ crates/
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
   stark-ui/        Dioxus 0.7 frontend; owns the wgpu::Surface
+    index.html     the page shell: links the manifest, registers the worker
+    public/        manifest, service worker, launcher icons — an installable,
+                   offline-capable app (§11). Copied to the SITE ROOT unhashed,
+                   unlike `assets/`, renamed by content hash
 vendor/            third-party, EXCLUDED from the workspace
 ```
 

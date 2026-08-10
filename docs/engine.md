@@ -348,6 +348,33 @@ which the engine draws into directly. DOM chrome surrounds it.
     mode, and the engine half waits for the renderer, exactly as
     `presets::load`/`apply_first` split.
 
+- **The app installs, and it starts offline.** `index.html` (the crate root's
+  own, which replaces the one `dx` would generate) links a web app manifest and
+  registers a service worker; both, with the launcher icons, live in
+  `stark-ui/public/`, which the CLI copies to the **site root** unhashed —
+  unlike `assets/`, whose every file is renamed by content hash. That
+  distinction is the whole design of `public/sw.js`: the navigation response
+  names one build's hashed wasm, so it is fetched **network-first** and only
+  falls back to cache; everything else same-origin is content-addressed and so
+  can never be stale, and is served **cache-first** while a background fetch
+  refreshes it. Cross-origin, non-`GET` and range requests are passed straight
+  through, so the collaboration transport (§12.4) and any partial fetch are
+  untouched.
+  - This matters more here than for a typical app because the heavy assets are
+    deliberately *not* in the wasm binary: the brush stamps (§6.6), the ground
+    height maps (§6.4) and the environment HDR (§6.3) are all fetched after boot
+    by `builtins::import_all` / `grounds::open_default`. Without the worker that
+    is a fresh multi-megabyte download every start, and offline it is a document
+    that opens smooth and unlit.
+  - The custom `index.html` costs one thing: `dx serve`'s "rebuilding" toast,
+    which lives in the CLI's dev shell. Hot reload itself rides the wasm glue and
+    is unaffected. Note also that the CLI resolves its placeholders by literal
+    text match over the whole file, comments included.
+  - The icons are painted with Stark's own bristle stamp by
+    `stark-ui/tools/make-icons.py`, run by hand; the PNGs are checked in. Not a
+    build step — a logo is not a build product, and nothing keys off its bytes
+    the way `stark-assetid` keys off an asset's (§19).
+
 Because the engine is frontend-agnostic, this layer stays thin. (An earlier
 interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame
 back to a PNG data URL — correct but laggy; the WebGPU surface replaced it,

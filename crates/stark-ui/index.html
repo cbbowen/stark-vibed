@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<!--
+  Stark's page shell.
+
+  `dx` writes a default index.html when a crate has none; this file exists to add
+  the three things a default cannot know about — the web app manifest, the
+  service worker that installs it, and the icons a launcher shows (§11).
+  Everything else is the default's own head, kept as it was: the CLI resolves the
+  title and base-path placeholders and appends the wasm loader by literal text
+  match over this whole file, comments included — so nothing here may spell one
+  of its markers, even in prose.
+
+  One deliberate loss: supplying this file also replaces the CLI's *dev* shell,
+  so `dx serve` no longer shows its "rebuilding" toast. Hot reload itself is
+  unaffected — it rides the wasm glue, not this markup.
+-->
+<html lang="en">
+  <head>
+    <title>{app_title}</title>
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+    <meta charset="UTF-8" />
+    <!-- `user-scalable=no`: on this page a pinch is a canvas zoom and a
+         double-tap is a stroke — both belong to `input::Nav` (§18.1.7), and the
+         browser's own zoom would take them first over every part of the chrome
+         that is not the `touch-action: none` canvas. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="A GPU-accelerated painting app with natural brush strokes, real pigment mixing, an infinite canvas and complete undo history."
+    />
+
+    <link rel="manifest" href="/{base_path}/manifest.json" />
+    <!-- The chrome's colour, not the canvas's: this tints the browser/OS
+         surround, which is what the floating panels sit in. -->
+    <meta name="theme-color" content="#151413" />
+
+    <!-- The tab icon, small on purpose: the launcher's 512 comes from the
+         manifest, and pointing a favicon at it would download 60 kB to draw
+         16 px. -->
+    <link rel="icon" href="/{base_path}/favicon.ico" sizes="48x48 32x32 16x16" />
+    <link
+      rel="icon"
+      href="/{base_path}/icon-192.png"
+      type="image/png"
+      sizes="192x192"
+    />
+    <link rel="apple-touch-icon" href="/{base_path}/apple-touch-icon.png" />
+    <!-- iOS reads none of the manifest; these are its dialect of it. No
+         `viewport-fit=cover` to pair with them, so the web view stays below the
+         status bar and the command rail cannot end up under a notch. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="Stark" />
+
+    <script>
+      // Registered on `load`, not inline: the wasm bundle is the long pole of a
+      // cold start (WGPU is not small), and the worker has nothing to do until
+      // it is down. A browser without service workers just gets the app.
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", function () {
+          navigator.serviceWorker.register("/{base_path}/sw.js").catch(function (err) {
+            console.warn("Stark: service worker registration failed", err);
+          });
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <div id="main"></div>
+  </body>
+</html>
