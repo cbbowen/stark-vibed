@@ -12,7 +12,7 @@ use crate::document::{BrushParams, BrushShape, OrientationSource, PenState, Stro
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 use super::StrokeSpans;
-use super::budget::{MAX_REGION_DIM, MAX_STAMPS};
+use super::budget::{BLEED_TRAVEL_QUANTUM, MAX_REGION_DIM, MAX_STAMPS};
 
 /// One swept segment of the stroke.
 ///
@@ -685,13 +685,31 @@ fn for_each_touched(segments: &[Segment], mut f: impl FnMut(usize, TileCoord)) {
 }
 
 /// Tiles whose texture any segment's swept capsule overlaps — [`for_each_touched`]
-/// with the segments forgotten. What the dynamics path wants, which sizes a region
-/// from the tiles alone.
-pub(super) fn affected_tiles(segments: &[Segment]) -> BTreeSet<TileCoord> {
+/// with the segments forgotten — **plus the bleed firings' windows**. What the
+/// dynamics path wants, which sizes a region from the tiles alone.
+///
+/// The windows are in the walk because they write: a firing's sweep is walked back
+/// along the crossing segment's own arc, up to one [`BLEED_TRAVEL_QUANTUM`] before
+/// the segment it fires after (`plan::bleed_fires`) — and for the first segment of
+/// a piece or a live-tail range that stretch lies behind every segment box here,
+/// with one apron texel of margin. Left out of the accounting (as they were until
+/// 2026-08-11, while [`snapshot_size`](super::dynamics) *did* take them), the flux
+/// written there was silently clipped by the region's bounds check, and a rewritten
+/// tile's apron could diverge from an unrewritten neighbour's interior — a §6.4
+/// break in exactly the configuration `tests/seam.rs` does not draw.
+pub(super) fn affected_tiles(
+    segments: &[Segment],
+    fires: &[(usize, Segment)],
+) -> BTreeSet<TileCoord> {
     let mut coords = BTreeSet::new();
     for_each_touched(segments, |_, c| {
         coords.insert(c);
     });
+    for (_, w) in fires {
+        for_each_touched(std::slice::from_ref(w), |_, c| {
+            coords.insert(c);
+        });
+    }
     coords
 }
 
@@ -787,12 +805,25 @@ fn region_of(lo: Vec2, hi: Vec2) -> (u32, u32) {
 /// [`MAX_REGION_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always holds
 /// at least one segment — one tip's own footprint is the floor no subdivision gets
 /// under, which is what [`segment_fits_region`] gates on instead.
-pub(super) fn chunk_segments(segments: &[Segment]) -> Vec<Range<usize>> {
+///
+/// A segment is measured **with its own bleed firings** ([`affected_tiles`]'s
+/// reason): a window can reach back a quantum before the segment it fires after, so
+/// a piece's region must hold everything the piece will write, windows included —
+/// the same rectangle [`region_rect`] then builds from the tiles the pair names.
+pub(super) fn chunk_segments(
+    segments: &[Segment],
+    fires: &[(usize, Segment)],
+) -> Vec<Range<usize>> {
     let mut runs = Vec::new();
     let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
     let mut start = 0;
+    let mut pending = fires.iter().peekable();
     for (i, s) in segments.iter().enumerate() {
-        let (slo, shi) = segment_bounds(s);
+        let (mut slo, mut shi) = segment_bounds(s);
+        while let Some((_, w)) = pending.next_if(|(after, _)| *after == i) {
+            let (wlo, whi) = segment_bounds(w);
+            (slo, shi) = (slo.min(wlo), shi.max(whi));
+        }
         let (glo, ghi) = (lo.min(slo), hi.max(shi));
         let (w, h) = region_of(glo, ghi);
         if i > start && (w > MAX_REGION_DIM || h > MAX_REGION_DIM || i - start >= MAX_STAMPS) {
@@ -829,7 +860,16 @@ pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTole
     // sagitta out of its own box. Both are bounded by the turn a segment may bend
     // through (`MAX_HALF_TURN_SIN`) — under 2% and under 5% of the chord — so a
     // single margin covers the pair with room to spare.
-    let length = tol.max_len.max(DAB_TRAVEL * radius) * 1.1;
+    //
+    // A bleeding brush's segment also carries its firings, whose windows reach up
+    // to one quantum back past its start ([`chunk_segments`]) — so the floor the
+    // chunker cannot get under is that much longer for it.
+    let bleed = if b.dynamics.bleed > 0.0 {
+        BLEED_TRAVEL_QUANTUM * radius
+    } else {
+        0.0
+    };
+    let length = tol.max_len.max(DAB_TRAVEL * radius) * 1.1 + bleed;
     // The tip's reach rather than its radius, for [`coverage_bounds`]' reason: a
     // stamp that fills its mask's corners occupies a `√2`-wider box, and this is the
     // bound that decides whether the loop may draw the brush at all.
@@ -1983,11 +2023,11 @@ mod tests {
         }
     }
 
-    /// The union of every segment's [`segment_bounds`], as [`chunk_segments`]
-    /// accumulates it.
-    fn measured(segments: &[Segment]) -> Option<(u32, u32)> {
+    /// The union of every segment's — and firing window's — [`segment_bounds`], as
+    /// [`chunk_segments`] accumulates it.
+    fn measured(segments: &[Segment], fires: &[(usize, Segment)]) -> Option<(u32, u32)> {
         let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-        for s in segments {
+        for s in segments.iter().chain(fires.iter().map(|(_, w)| w)) {
             let (slo, shi) = segment_bounds(s);
             (lo, hi) = (lo.min(slo), hi.max(shi));
         }
@@ -2019,7 +2059,7 @@ mod tests {
         let map = tiles_with_segments(&segments);
         assert_eq!(
             map.keys().copied().collect::<BTreeSet<_>>(),
-            affected_tiles(&segments),
+            affected_tiles(&segments, &[]),
             "the two walks disagree on which tiles a stroke touches",
         );
         assert!(map.len() > 4, "not enough tiles to be an interesting case");
@@ -2093,14 +2133,65 @@ mod tests {
             ),
         ];
         for (what, segments) in cases {
-            let want = region_rect(&affected_tiles(&segments)).map(|r| (r.w, r.h));
+            let want = region_rect(&affected_tiles(&segments, &[])).map(|r| (r.w, r.h));
             assert_eq!(
-                measured(&segments),
+                measured(&segments, &[]),
                 want,
                 "region size disagrees for {what}"
             );
         }
-        assert_eq!(measured(&[]), None, "no segments is not a region");
+        assert_eq!(measured(&[], &[]), None, "no segments is not a region");
+    }
+
+    /// **The accounting covers a firing window's reach back past the piece** — the
+    /// 2026-08-11 regression, pinned where it is exact. A window is walked back
+    /// along its crossing segment's own arc and can start up to a
+    /// [`BLEED_TRAVEL_QUANTUM`] before the piece's first segment
+    /// (`plan::bleed_fires`); the margin the segment boxes leave is one apron
+    /// texel, so a bleeding tip wider than a few px reaches ground no segment box
+    /// names whenever its box falls within a quantum of a tile origin. Both halves
+    /// must take the windows: the tile walk (the region rectangle and the
+    /// write-back follow it — a tile it misses is flux silently clipped and an
+    /// apron/interior seam), and the chunker (a piece's region must hold everything
+    /// the piece writes).
+    #[test]
+    fn a_windows_reach_back_is_in_the_tiles_and_the_region() {
+        let tile = TILE_SIZE as f32;
+        let radius = 40.0;
+        let bq = BLEED_TRAVEL_QUANTUM * radius;
+        // The piece's first segment, placed so its own coverage box starts 3 px
+        // past a tile origin — inside the window's reach, outside the apron's.
+        let x0 = 2.0 * tile + radius + TILE_APRON as f32 + 3.0;
+        let s = seg(Vec2::new(x0, 8.0), Vec2::new(x0 + 50.0, 8.0), radius);
+        // Its firing's window, one quantum of arc ending where the segment starts —
+        // the shape `bleed_fires` emits for the first segment of a range.
+        let w = seg(Vec2::new(x0 - bq, 8.0), Vec2::new(x0, 8.0), radius);
+        let fires = vec![(0usize, w)];
+
+        let without = affected_tiles(&[s], &[]);
+        let with = affected_tiles(&[s], &fires);
+        let window_tiles = affected_tiles(&[w], &[]);
+        assert!(
+            window_tiles.iter().any(|c| !without.contains(c)),
+            "the window does not reach past the segment boxes — the case has gone \
+             soft and pins nothing",
+        );
+        assert!(
+            window_tiles.iter().all(|c| with.contains(c)),
+            "a tile the window writes is missing from the walk",
+        );
+        // And the chunker measures the very region the render then builds from the
+        // tiles — fires on both sides of the relation, like the segments always were.
+        assert_eq!(
+            measured(&[s], &fires),
+            region_rect(&with).map(|r| (r.w, r.h)),
+            "the chunker and the region disagree once the windows are counted",
+        );
+        assert_eq!(
+            chunk_segments(&[s], &fires),
+            vec![0..1],
+            "one segment and its firing are one piece",
+        );
     }
 
     /// What [`chunk_segments`] promises the loop: the pieces tile the stroke in order
@@ -2119,14 +2210,14 @@ mod tests {
                 seg(a, b, 60.0)
             })
             .collect();
-        let runs = chunk_segments(&segments);
+        let runs = chunk_segments(&segments, &[]);
         assert!(runs.len() > 1, "an oversized stroke should be cut up");
 
         let mut next = 0;
         for run in &runs {
             assert_eq!(run.start, next, "the pieces leave a gap or overlap");
             next = run.end;
-            let (w, h) = measured(&segments[run.clone()]).expect("a piece is never empty");
+            let (w, h) = measured(&segments[run.clone()], &[]).expect("a piece is never empty");
             assert!(
                 w <= MAX_REGION_DIM && h <= MAX_REGION_DIM,
                 "piece {run:?} needs a {w}x{h} region",

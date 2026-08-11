@@ -112,15 +112,30 @@ impl StrokeRenderer {
 
         let mut run = DynamicsRun::new(self, scene, rec, tol, tool);
         let mut map = scene.base.clone();
+        // The bleed cadence's firings for the whole range (§6.2), computed once and
+        // sliced per piece rather than re-derived inside each: the chunker must
+        // measure every piece **with its windows** — a window can reach back a
+        // quantum before the segment it fires after, which for a piece's first
+        // segment is ground no segment box covers ([`chunk_segments`]).
+        let fires = bleed_fires(rec.brush.dynamics.bleed, &segments);
         // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
         // and within it to the last piece — which is the same condition that says there
         // is no reservoir worth keeping. A range that stops short hands its tool on
         // instead, so nothing is stranded for the settle to hand back, and a live tail
         // computes the same settle its commit will.
-        let pieces = chunk_segments(&segments);
+        let pieces = chunk_segments(&segments, &fires);
         let last = pieces.len() - 1;
         for (i, piece) in pieces.into_iter().enumerate() {
-            map = run.draw(&map, &segments[piece], !capture && i == last);
+            // This piece's firings, re-keyed to its slice: `after` indexes `segments`,
+            // and the piece's plan walks its own slice. The order — what
+            // `dynamics_plan` asserts — survives a slice-and-shift untouched.
+            let lo = fires.partition_point(|(after, _)| *after < piece.start);
+            let hi = fires.partition_point(|(after, _)| *after < piece.end);
+            let piece_fires: Vec<(usize, Segment)> = fires[lo..hi]
+                .iter()
+                .map(|(after, w)| (after - piece.start, *w))
+                .collect();
+            map = run.draw(&map, &segments[piece], &piece_fires, !capture && i == last);
         }
         let tool_out = capture.then(|| run.capture_tool());
         // The pieces partition the segments, so the union of what each one enumerated
@@ -387,11 +402,21 @@ impl<'a> DynamicsRun<'a> {
     /// result back into fresh CoW tiles. The tool carries on from where the previous
     /// piece left it, and the canvas side needs no carrying — it is in `base`, which
     /// for a later piece is what the earlier ones wrote back.
-    /// `settle` is set only for the piece that ends the stroke: see
+    /// `fires` is this piece's slice of the range's bleed firings, `after` re-keyed
+    /// to `segments`; `settle` is set only for the piece that ends the stroke: see
     /// [`StrokeRenderer::render_dynamic`] and `dynamics.wesl::settle`.
-    fn draw(&mut self, base: &TileMap, segments: &[Segment], settle: bool) -> TileMap {
+    fn draw(
+        &mut self,
+        base: &TileMap,
+        segments: &[Segment],
+        fires: &[(usize, Segment)],
+        settle: bool,
+    ) -> TileMap {
         self.scope.flush();
-        let coords = affected_tiles(segments);
+        // Segments and firings both: a window writes up to a quantum behind the
+        // piece's first segment, and a tile (or region) the walk misses is flux
+        // silently clipped at the boundary (`affected_tiles`).
+        let coords = affected_tiles(segments, fires);
         // A piece holds at least one segment, and a segment covers at least one tile,
         // so the empty case cannot arise here — but it costs nothing to leave the
         // canvas alone if it ever did.
@@ -410,12 +435,10 @@ impl<'a> DynamicsRun<'a> {
         self.dirty.extend(coords.iter().copied());
         let region = self.composite_region(base, &halo, region_origin, w, h);
 
-        // ---- The bleed cadence's fire slots for this piece (§6.2), built before
-        // the snapshot scratch is sized: a firing's window sweeps up to
-        // [`BLEED_TRAVEL_QUANTUM`] radii where the piece's own segments may be
-        // sub-pixel, so its coverage box can be the largest in the piece.
-        let fires = bleed_fires(self.rec.brush.dynamics.bleed, segments);
-        let under = self.snapshot_scratch(segments, &fires);
+        // The snapshot scratch is sized over the firings as well as the segments: a
+        // window sweeps up to a quarter radius where the piece's own segments may
+        // be sub-pixel, so its coverage box can be the largest in the piece.
+        let under = self.snapshot_scratch(segments, fires);
 
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
@@ -427,7 +450,7 @@ impl<'a> DynamicsRun<'a> {
             consts: &self.consts,
             surface: self.scene.surface,
         };
-        let plan = dynamics_plan(&ctx, segments, &fires, settle);
+        let plan = dynamics_plan(&ctx, segments, fires, settle);
         // The cell scratch (§6.2), only when some slot actually takes the coarse
         // path — a small or hard tip allocates nothing and binds nothing.
         let cells = plan

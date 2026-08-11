@@ -1801,3 +1801,72 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
         );
     }
 }
+
+/// **A bleeding stroke's live preview is its commit**, held to the tightest
+/// tolerance any dynamics stroke in the suite gets (the corpus `bleed` case allows
+/// 12 levels; this allows 2).
+///
+/// The family this guards: a firing's window is history-free on purpose — walked
+/// back along the crossing segment's own arc, up to one `BLEED_TRAVEL_QUANTUM`
+/// *before* the segment it fires after (`plan::bleed_fires`) — so for the first
+/// segment of a live-tail range it can write ground behind everything the range's
+/// segments cover. Until 2026-08-11 the windows were absent from the region/tile
+/// accounting (`affected_tiles` and `chunk_segments` walked only the segments,
+/// while `snapshot_size` did take the fires), and flux written there was silently
+/// clipped by the region's bounds check — where the commit, whose windows never
+/// reach before arc 0, clips only at its own piece boundaries. The accounting now
+/// takes the windows on both sides (`a_windows_reach_back_is_in_the_tiles_and_the_
+/// region` pins the geometry exactly); measured **before** that fix, this case's
+/// preview and commit already agreed to 1 level — a cut only lands inside the
+/// vulnerable quantum-wide band by tile-phase luck — so this test is the pin that
+/// the family stays closed, not the reproduction that motivated closing it.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_bleeding_strokes_preview_is_its_commit() {
+    let Some(mut engine) = engine_or_skip_sized(stark_core::geom::Extent2 {
+        width: 1280,
+        height: 256,
+    }) else {
+        return;
+    };
+    // Two long parallel bands with a hard colour step between them — structure for
+    // the diffusion to move, everywhere along the stroke.
+    for (color, y) in [(GREEN, -22.0f32), ([0.95, 0.85, 0.1, 1.0], 22.0)] {
+        let mut b = brush(color, 26.0);
+        b.drain = 0.0;
+        stroke_with(&mut engine, b, &[Vec2::new(-620.0, y), Vec2::new(620.0, y)]);
+    }
+
+    // Pure lateral diffusion: no source, no vertical exchange — the loop runs for
+    // the bleed alone, so every visible difference is the flux.
+    let mut b = brush([0.0, 0.0, 0.0, 0.0], 120.0);
+    b.drain = 0.0;
+    b.dynamics.add = 0.0;
+    b.dynamics.bleed = 1.0;
+    engine.process(ViewCommand::SetBrush(b));
+
+    let samples: Vec<InputSample> = (0..200)
+        .map(|i| {
+            let t = i as f32 / 199.0;
+            InputSample::at(Vec2::new(t * 1120.0 - 560.0, (t * 20.0).sin() * 12.0))
+        })
+        .collect();
+    let (first, rest) = samples.split_first().expect("samples");
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: *first,
+        tolerance: DEFAULT_TOLERANCE,
+    });
+    for s in rest {
+        engine.process(GestureCommand::To { sample: *s });
+    }
+    let preview = engine.render_to_image();
+    engine.process(GestureCommand::End);
+    let committed = engine.render_to_image();
+
+    assert!(
+        images_match(&preview, &committed, 2),
+        "the bleeding stroke's preview differs from its commit — a firing's window \
+         is being clipped at a range or piece boundary the accounting missed",
+    );
+}
