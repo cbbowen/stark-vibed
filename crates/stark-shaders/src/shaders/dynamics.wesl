@@ -998,14 +998,25 @@ fn exchange(
     // smear conserving. Exactly 1 when there is no tooth, so an ordinary brush is
     // untouched.
     //
-    // **Both halves are in the mask's units, not the frame's** (§6.6). A reservoir
-    // texel tiles the frame, which for a padded volume is `frame_scale()` tips wide —
-    // so the mask under it sits at `local · frame_scale()`, and the track it is dragged
-    // along is that many more of the tip's own radii than of the frame's. The canvas
-    // side is already in mask units, its prefix having been integrated at the mask's
-    // column width, and the two must agree texel for texel or the tool receives less
-    // than the canvas gives up and the loop quietly destroys height (§6.1). Exactly 1
-    // for an unpadded volume, so nothing here moves for any brush but a nib.
+    // **Both halves are in the mask's units, not the frame's** (§6.6). A reservoir texel
+    // tiles the frame, which for a padded volume is `frame_scale()` tips wide — so the
+    // mask under it sits at `local · frame_scale()`, and the track it is dragged along is
+    // that many more of the tip's own radii than of the frame's. The canvas side is
+    // already in mask units, its prefix having been integrated at the mask's column
+    // width. Exactly 1 for an unpadded volume, so nothing here moves for any brush but a
+    // nib.
+    //
+    // Left in the frame's units the tool weights itself by a mask stretched over its own
+    // padding — picking up from a footprint `frame_scale()` wider than the one it lays —
+    // and books the exposure for it in the wrong units on top. What that does *today* is
+    // very little, and the reason is worth stating so nobody reads the correction as
+    // load-bearing where it is not: the paint it misplaces lands in the padding, and
+    // `deposit` reads the reservoir back through `bake`'s τ-weighted prefix, which is
+    // zero out there. So it is stranded rather than deposited, and a zero-angle nib
+    // renders within 2 levels either way (`assets.rs`). It is written correctly because
+    // the *representation* has to be consistent — the day anything reads the reservoir
+    // by something other than the mask's own τ, a tool a third too wide stops being
+    // invisible, and nothing about that day would point back here.
     let e_step = tau_of(coverage_at(local * frame_scale()))
         * travel_radii() * frame_scale() * tooth_bearing() / f32(EXCHANGE_STEPS);
     let ex = exchange_at(e_step);

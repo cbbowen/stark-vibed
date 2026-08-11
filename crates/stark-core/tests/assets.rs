@@ -11,7 +11,7 @@ mod common;
 use common::*;
 use stark_core::assets::MAX_SHAPE_DIM;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
-use stark_core::document::{BrushShape, Tool};
+use stark_core::document::{BrushShape, OrientationSource, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 
@@ -105,5 +105,89 @@ fn a_capped_shape_paints_and_survives_save_load() {
     assert!(
         images_match(&before, &after, 0),
         "capped-shape stroke must round-trip via the bundled canonical asset"
+    );
+}
+
+/// **The two orientation bakes must agree where they describe the same footprint**
+/// (§6.6) — which is the whole of what makes the pen volume's padding a change of
+/// representation rather than a change of brush.
+///
+/// The two are separate bakes now: follow-stroke is the mask as it stands, one layer,
+/// while pen is the same mask shrunk into a `PEN_PAD`-wider square, stacked per angle,
+/// and read back at a frame scaled to match. At a **relative angle of zero** they stand
+/// for the identical tip, so the marks have to land on top of one another — and that is
+/// the one comparison that pins every number the padding moves at once. Get the frame
+/// wrong and the pen mark is `√2` too wide or too narrow; get `build_prefix_tau`'s `dx`
+/// wrong and it is the right size at the wrong darkness. Either shows here as a mark
+/// that is not the other mark, and nowhere else as anything but "the nib looks off".
+///
+/// A mouse stroke along `+x` is the zero-angle case without contrivance: the travel
+/// direction and the (absent) tilt azimuth are both 0, so `orientation_turns` returns 0
+/// and the pen volume is read at its own slice 0.
+///
+/// The tolerance is for resampling and nothing else. The pen bake carries the mask
+/// through a rotation into a finer grid and the shader reads it back with its own
+/// bilinear, so the two differ by what two filter passes do to an edge; they cannot be
+/// compared to the bit. Measured, they agree to **2 levels** — while dropping the
+/// `PEN_PAD` out of the τ integral misses by 27 and reading the padded volume at an
+/// unpadded frame misses by 53, so the bound has half a decade of room on the side that
+/// matters and six times the resampling noise on the other.
+#[test]
+fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let id = engine.import_brush(&blob_png(160, 160)).expect("import");
+
+    let draw = |engine: &mut stark_core::Engine, orientation| {
+        let mut b = brush(RED, 60.0);
+        b.shape = BrushShape::Stamp(id);
+        b.orientation = orientation;
+        // Lift and deposit, so the **dynamics loop** draws this rather than the swept
+        // fast path. Both paths read the frame and the volume, and they read them from
+        // different sides — one uniform each, filled at different call sites — so a
+        // padding that only one of them agreed with would show here and in no golden
+        // the corpus draws.
+        //
+        // It does *not* pin the tool's own `frame_scale` (`dynamics.wesl::exchange`):
+        // what that corrects is stranded in the padding, where the deposit's τ-weighted
+        // read finds nothing, so the mark comes out within 2 levels either way. Said
+        // plainly because the alternative is a test that looks like coverage it has not
+        // got.
+        b.dynamics.lift = 0.6;
+        b.dynamics.deposit = 0.6;
+        engine.process(ViewCommand::SetBrush(b));
+        engine.process(GestureCommand::Start {
+            tool: Tool::Brush,
+            sample: InputSample::at(Vec2::new(-70.0, 0.0)),
+            tolerance: DEFAULT_TOLERANCE,
+        });
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(Vec2::new(70.0, 0.0)),
+        });
+        engine.process(GestureCommand::End);
+        let img = engine.render_to_image();
+        engine.process(stark_core::command::DocCommand::Undo);
+        img
+    };
+
+    let follow = draw(&mut engine, OrientationSource::FollowStroke);
+    let pen = draw(&mut engine, OrientationSource::Pen);
+
+    let worst = (0..follow.height)
+        .flat_map(|y| (0..follow.width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let (a, b) = (follow.pixel(x, y), pen.pixel(x, y));
+            (0..3)
+                .map(|c| (a[c] as i32 - b[c] as i32).abs())
+                .max()
+                .expect("three channels")
+        })
+        .max()
+        .expect("a viewport of pixels");
+    assert!(
+        worst <= 12,
+        "the pen bake's zero-angle mark is {worst} levels off the follow-stroke bake's \
+         — the padded volume is not standing for the same tip"
     );
 }

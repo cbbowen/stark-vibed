@@ -1001,8 +1001,12 @@ Only the tool side of the dynamics loop needs the conversion between the two
 (`frame_scale`, 1 for every unpadded volume). A prefix-τ difference is an
 absolute optical depth whatever box was baked around it, so the canvas side never
 asks; the reservoir, which has no prefix to difference and rebuilds its exposure
-from raw coverage, must — or it receives less than the canvas gives up and the
-loop quietly destroys height (§6.1).
+from raw coverage, must, or it picks up from a footprint `√2` wider than the one
+it lays. Today that correction changes almost nothing — the paint it misplaces
+lands in the padding, and the deposit reads the reservoir back through a
+τ-weighted prefix that is zero out there, so a zero-angle nib renders within two
+levels either way. It is written correctly because the representation has to be
+consistent, not because a pixel currently depends on it.
 
 Content-addressing is the load-bearing choice:
 
