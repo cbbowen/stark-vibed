@@ -219,13 +219,13 @@ prescribes. What was built, and what the measurements said:
   section says).
 - **Two new entry points** in `dynamics.wesl`: `cell_hoist` (one thread per
   canvas-anchored c×c cell) evaluates the exact kernel's front half — the two
-  `prefix_at` differences, the six `bake_at` taps, the divides that recover
-  the reservoir means — once at the cell's centre into an fp32 cell scratch;
-  `deposit_coarse` runs the exact kernel's own texel grid reading those means
-  back for two loads. Strictly per-texel, per model: `surface_tooth`, the
-  selection, the snapshot loads, the arc/drain/jitter, the stores, and the
-  f16 re-store guard (whose verdict stays exact — a zero-exposure cell takes
-  the same "keeps its value" exit as `dpre <= 0`).
+  `prefix_at` differences, the six `bake_at` taps — once at the cell's centre
+  into an fp32 cell scratch; `deposit_coarse` runs the exact kernel's own
+  texel grid reading those cells back. Strictly per-texel, per model:
+  `surface_tooth`, the selection, the snapshot loads, the arc/drain/jitter,
+  the stores, and the f16 re-store guard (whose verdict stays exact — a
+  cell neighbourhood with no exposure takes the same "keeps its value" exit
+  as `dpre <= 0`).
 - **Canvas anchoring without canvas coordinates**: the cell index is
   `floor((region texel + anchor) / c)` with `anchor = region origin mod c`
   carried in the new `Stamp::k` lane — congruence arithmetic on small
@@ -244,6 +244,28 @@ prescribes. What was built, and what the measurements said:
   is ~0.03 levels, well inside the 0.58 → 0.62 the march round accepted for
   its shoulder bound. Column-mean divergence 0.60 levels RMS; per-pixel mean
   0.51, worst 12 levels at the rim.
+- **The cell read had to be bilinear, and the levels did not say so**
+  (fixed the next day, same section of `dynamics.wesl`). A nearest read makes
+  every hoisted quantity piecewise constant over the cell, and on
+  `wide_smear` (c = 5) that printed a plainly visible grid of fat pixels
+  while moving the aggregate barely at all — the eye reads the *edges* an
+  axis-aligned step introduces, which is exactly what an RMS over the frame
+  averages away. **Lesson for the next coarse pass: measure a stencil
+  approximation by its worst step, not by its RMS.** The fix reads the four
+  surrounding cell centres and blends them, which needs two things together:
+  a one-cell border on the hoist grid (`CELL_BORDER`, `cell_base`) so no tap
+  falls outside what the hoist wrote, and the hoisted lanes stored
+  **premultiplied by the exposure that weights them** (`e`, `e·h`, `e·m`,
+  `e·m·lat`) so an unexposed neighbour contributes zero weight rather than a
+  zero mean — the same reason compositing interpolates premultiplied alpha.
+  The means are then recovered by the exact kernel's own divides, so a texel
+  at a cell centre reads what `deposit` would have computed there. Measured
+  against a forced-exact render of `wide_smear`: **max 11 → 4 levels, RMS
+  0.585 → 0.178**. Cost, bracketed master → change → master:
+  `commit/dynamics/500` 15.79/15.95 ms master vs 16.14 (+1.2% on the worse
+  master run), `live/dynamics/500` 714/731 vs 752 (+2.9%) — so the round's
+  −13.5%/−9.3% survives nearly whole. Pinned by
+  `the_bilinear_read_never_taps_a_cell_the_hoist_skipped`.
 - **Bench** (criterion baseline `precell` saved minutes before the change,
   same session, observed same-day noise ~1%): `commit/dynamics/500`
   18.03 → 15.59 ms (**−13.5%**), `live/dynamics/500` 863 → 783 ms

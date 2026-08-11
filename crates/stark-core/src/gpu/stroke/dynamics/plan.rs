@@ -420,13 +420,28 @@ struct Rect {
 }
 
 /// The cell scratch's square for a piece, in cells: enough for any rect the piece's
-/// snapshot scratch admits at the finest cell the coarse path runs (2). The same
-/// structural-fit move as [`snapshot_size`]/[`rect_extent`]: both sides of the
-/// relation go through this function — [`cell_geometry`] asserts against it,
-/// `DynamicsRun::cell_scratch` allocates from it — so no slot a plan can build reads
-/// cells the scratch does not hold.
+/// snapshot scratch admits at the finest cell the coarse path runs (2), plus the
+/// [`CELL_BORDER`] ring on each side. The same structural-fit move as
+/// [`snapshot_size`]/[`rect_extent`]: both sides of the relation go through this
+/// function — [`cell_geometry`] asserts against it, `DynamicsRun::cell_scratch`
+/// allocates from it — so no slot a plan can build reads cells the scratch does not
+/// hold.
 pub(super) fn cell_scratch_size(dsize: u32) -> u32 {
-    dsize.div_ceil(2) + 2
+    dsize.div_ceil(2) + 2 + 2 * CELL_BORDER
+}
+
+/// Cells of hoist beyond the rect's own, on each side, that `deposit_coarse`'s
+/// bilinear read needs (§6.2): a texel in the leading half of the first cell
+/// interpolates against the cell before it, and one in the trailing half of the last
+/// against the cell after. The shader spends it at the low end — `cell_base` starts
+/// the scratch one cell below the rect's first — so the count here covers both.
+const CELL_BORDER: u32 = 1;
+
+/// Cells the hoist must write to cover `span` texels from region texel `base`
+/// (already offset by the anchor), border included — the window
+/// `deposit_coarse`'s taps are asserted to sit inside.
+fn cell_span(base: i32, span: i32, c: i32) -> u32 {
+    ((base + span - 1).div_euclid(c) - base.div_euclid(c) + 1) as u32 + 2 * CELL_BORDER
 }
 
 /// The coarse deposit's per-slot geometry (§6.2): the cell grid's canvas anchor, and
@@ -437,7 +452,8 @@ pub(super) fn cell_scratch_size(dsize: u32) -> u32 {
 /// dispatch rect *as rounded up to whole workgroups*, clamped to the snapshot
 /// scratch — because a rounding texel past the rect still passes the shader's bounds
 /// checks and looks its cell up; a cell it can name must be one the hoist wrote, or
-/// the deposit reads whatever the previous segment left in the scratch.
+/// the deposit reads whatever the previous segment left in the scratch. Each texel
+/// names four, so the count carries a [`CELL_BORDER`] ring on each side.
 fn cell_geometry(
     cell: u32,
     region_origin: Vec2,
@@ -460,9 +476,7 @@ fn cell_geometry(
         (region_origin.y as i32).rem_euclid(c) as f32,
     );
     let cells = |origin: f32, a: f32, groups: u32| -> u32 {
-        let base = origin as i32 + a as i32;
-        let span = (groups * 8).min(dsize) as i32;
-        ((base + span - 1).div_euclid(c) - base.div_euclid(c) + 1) as u32
+        cell_span(origin as i32 + a as i32, (groups * 8).min(dsize) as i32, c)
     };
     let cx = cells(rect.origin.x, anchor.x, rect.groups.0);
     let cy = cells(rect.origin.y, anchor.y, rect.groups.1);
@@ -1148,6 +1162,55 @@ mod tests {
                 want,
                 "cell boundaries moved with the region origin {origin}",
             );
+        }
+    }
+
+    /// **Every cell the coarse deposit taps is one the hoist wrote** (§6.2). The
+    /// bilinear read names four cells per texel — `floor((rt + anchor + ½)/c − ½)`
+    /// and its upper neighbours — against a scratch that starts one cell *below* the
+    /// rect's first (`cell_base`), and the hoist grid has to cover both ends of that
+    /// or the deposit reads whatever the previous segment left in the scratch: not a
+    /// wrong colour but a stale one, from another segment's tip, which is the kind of
+    /// artifact a golden reports without naming.
+    ///
+    /// So this replays the shader's own tap arithmetic in f32, for every texel a
+    /// dispatch can scan, and asserts the window sits inside [`cell_span`]'s count —
+    /// the one the host dispatches and [`cell_scratch_size`] is asserted against.
+    #[test]
+    fn the_bilinear_read_never_taps_a_cell_the_hoist_skipped() {
+        let dsize = 64;
+        for cell in [2u32, 3, 5, 10, 16] {
+            for region_origin in [-640.0f32, -5.0, 0.0, 3.0, 17.0, 999.0] {
+                for rect_origin in [0.0f32, 1.0, 7.0, 33.0] {
+                    let rect = Rect {
+                        origin: Vec2::splat(rect_origin),
+                        groups: (3, 5),
+                    };
+                    let (anchor, groups) =
+                        cell_geometry(cell, Vec2::splat(region_origin), &rect, dsize);
+                    assert!(groups.is_some(), "a cell above 1 must take the coarse path");
+                    let (c, a) = (cell as i32, anchor.x as i32);
+                    // The shader's `cell_base`: the rect's first cell, less the border.
+                    let base = (rect_origin as i32 + a).div_euclid(c) - CELL_BORDER as i32;
+                    // The texels the deposit scans: its rect as rounded to whole
+                    // workgroups, clamped to the snapshot square — what `cells` counts.
+                    let span = (rect.groups.0 * 8).min(dsize) as i32;
+                    let count = cell_span(rect_origin as i32 + a, span, c) as i32;
+                    for t in 0..span {
+                        let rt = rect_origin as i32 + t;
+                        // `cell_tap`'s continuous cell coordinate, in the shader's f32.
+                        let u = ((rt + a) as f32 + 0.5) / cell as f32 - 0.5;
+                        let lo = u.floor() as i32 - base;
+                        assert!(
+                            lo >= 0 && lo + 1 < count,
+                            "cell {cell}, region origin {region_origin}, rect origin \
+                             {rect_origin}: texel {rt} taps cells {lo}..={} of a \
+                             {count}-cell hoist",
+                            lo + 1,
+                        );
+                    }
+                }
+            }
         }
     }
 

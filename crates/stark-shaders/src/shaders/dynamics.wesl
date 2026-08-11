@@ -344,17 +344,20 @@ fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 // ---- The footprint-cell scratch (§6.2, coarse deposit) ---------------------------
 //
 // Written by `cell_hoist` — one thread per canvas-anchored cell of the segment's
-// footprint — and read back by `deposit_coarse`, which is the whole trade: the two
-// prefix-τ differences, the six `bake_at` taps and the divides that recover the
-// reservoir means run once per cell instead of once per texel. fp32 like the bake it
+// footprint, plus a one-cell border the bilinear read needs — and read back by
+// `deposit_coarse`, which is the whole trade: the two prefix-τ differences and the six
+// `bake_at` taps run once per cell instead of once per texel. fp32 like the bake it
 // distils, and for one more reason besides precision: **exact zeros are semantic
 // here**. A cell whose centre the sweep never covers stores exposure 0, which is what
-// lets `deposit_coarse` return before touching the region — the same "keeps its
-// value" contract the exact kernel's `dpre <= 0` gives, on which the f16 re-store
-// guard rests.
+// lets `deposit_coarse` return before touching the region once all four of a texel's
+// neighbours are zero — the same "keeps its value" contract the exact kernel's
+// `dpre <= 0` gives, on which the f16 re-store guard rests.
 //
-//   tool = (exposure in the tip's measure, tool height mean, tool per-unit opacity, —)
-//   lat  = (the latent mean those masses weight, —)
+// Every lane past the exposure is **premultiplied by the weight that averages it**, so
+// the four taps blend as masses and not as means (see the coarse pair below):
+//
+//   tool = (e, e·height, e·mass, —)  with e the exposure in the tip's measure
+//   lat  = (e·mass·latent, —)        the same mass those means are taken against
 @group(0) @binding(31) var cell_tool_w: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(32) var cell_lat_w: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(33) var cell_tool: texture_2d<f32>;
@@ -1489,11 +1492,30 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // So the host may split the dispatch in two wherever the shoulder allows
 // (`budget::footprint_cell`): `cell_hoist` runs one thread per **cell** — a c×c
 // square of canvas texels — and evaluates the taps once at the cell's centre;
-// `deposit_coarse` then runs the same per-texel grid the exact kernel would, reading
-// its cell's means back for the price of two loads. What stays per-texel is what is
-// per-texel *by model*: the ground's tooth (the canvas's resolution, never the
-// cell's), the selection coverage, the snapshot reads, the colour-dynamics jitter,
-// the arc the drain fades along, and the store with its re-store guard.
+// `deposit_coarse` then runs the same per-texel grid the exact kernel would,
+// **interpolating** its neighbouring cell centres back into a per-texel value. What
+// stays per-texel is what is per-texel *by model*: the ground's tooth (the canvas's
+// resolution, never the cell's), the selection coverage, the snapshot reads, the
+// colour-dynamics jitter, the arc the drain fades along, and the store with its
+// re-store guard.
+//
+// **The read is bilinear, and that is not a polish pass.** A nearest read makes every
+// hoisted quantity piecewise constant over the cell, so the coverage falloff prints
+// as a staircase of c-wide treads on a canvas-anchored grid — a grid of fat pixels,
+// plainly visible at c = 5 even though the levels barely move, because the eye reads
+// the *edges* an axis-aligned step introduces and not the amplitude. Interpolating
+// costs three more loads per scratch texture and drops the error from O(c·|∇|) to
+// O(c²·|∇²|), which is what makes the shoulder bound in `footprint_cell` (four cells
+// across the falloff) mean what it claims.
+//
+// What is interpolated is **premultiplied by the exposure that weights it**, for the
+// same reason compositing interpolates premultiplied alpha: a cell whose centre the
+// sweep never covers carries no mean at all, not a mean of zero, and lerping toward
+// its zero would drag the tool's height and colour down at every rim. So the hoist
+// stores `(e, e·h, e·m)` and the latent as `e·m·lat`, and the deposit recovers the
+// means by the same divides the exact kernel does — an unexposed neighbour then
+// contributes zero *weight* rather than a zero *value*, and a texel whose four
+// neighbours are all unexposed still reads exactly 0 and takes the early exit.
 //
 // **The cell grid is anchored to the canvas, not to the region** (§6.4). A cell is
 // `floor(canvas / c)`, reached here as `floor((rt + anchor) / c)` with
@@ -1504,18 +1526,18 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
 // of the cell and the segment, so the hoisted means are as replay-deterministic as
 // the per-texel values they stand in for.
 //
-// What the approximation costs, and where it is bounded: within a cell the exposure
-// is the centre's, so the coverage falloff is rendered as a staircase of c-wide
-// treads — bounded visible because the falloff is at least 4c wide wherever the host
-// engages this path at all (`footprint_cell`), and a tip with no shoulder never
-// leaves the exact kernel. At the footprint's rim a cell straddling the edge applies
-// its centre's verdict to the whole tread, so the exchange reaches up to half a cell
-// past where the per-texel integral would stop (or stops half a cell short); the two
-// sides of the transfer then disagree by the rim ring's worth of exposure — the same
-// order as the mean-field freeze the loop already carries, and it fades with the
-// coverage itself. The bleed ladder is absent by construction rather than omitted:
-// bleed runs on dedicated slots, and the host keeps every bleed and settle slot on
-// the exact path.
+// What the approximation costs, and where it is bounded: the exposure a texel sees is
+// its cell centres' bilinear blend, so the coverage falloff is rendered as a piecewise
+// bilinear chord of the true one — no step anywhere, and an error second order in the
+// cell, bounded because the falloff is at least 4c wide wherever the host engages this
+// path at all (`footprint_cell`) and a tip with no shoulder never leaves the exact
+// kernel. At the footprint's rim the blend reaches up to a cell past where the
+// per-texel integral would stop, fading linearly to nothing over that last cell rather
+// than ending on a tread; the two sides of the transfer then disagree by the rim
+// ring's worth of exposure — the same order as the mean-field freeze the loop already
+// carries, and it fades with the coverage itself. The bleed ladder is absent by
+// construction rather than omitted: bleed runs on dedicated slots, and the host keeps
+// every bleed and settle slot on the exact path.
 
 // Floor division, componentwise. WGSL's `/` on i32 truncates toward zero, and the
 // cell grid must round the same way either side of zero — a dispatch rect's origin
@@ -1529,6 +1551,15 @@ fn div_floor2(n: vec2<i32>, c: i32) -> vec2<i32> {
     );
 }
 
+// The scratch's origin: one cell *below* the first the dispatch rect touches, because
+// a texel in that first cell's leading half interpolates against the cell before it.
+// Both kernels derive it from the same uniform, so the two agree on which texel of the
+// scratch is which cell, and the host counts the same two-cell surplus into the grid
+// it dispatches (`cell_geometry`).
+fn cell_base() -> vec2<i32> {
+    return div_floor2(under_origin() + cell_anchor(), cell_px()) - vec2<i32>(1, 1);
+}
+
 // One thread per cell: the exact kernel's front half, evaluated at the cell's centre
 // and stored for `deposit_coarse` to read back. Threads past the cells the host
 // counted for this rect evaluate a real (unused) cell or store out of bounds, which
@@ -1538,14 +1569,10 @@ fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ci = vec2<i32>(gid.xy);
     let c = cell_px();
     let a = cell_anchor();
-    // The first cell the dispatch rect touches — the same expression
-    // `deposit_coarse` derives, from the same uniform, so the two agree on which
-    // texel of this scratch is which cell.
-    let cell0 = div_floor2(under_origin() + a, c);
     // The cell's centre, in region px: the cell spans canvas `[k·c, (k+1)·c)`, i.e.
     // region `[k·c − a, (k+1)·c − a)`, and this is that span's midpoint — a position,
     // not a texel index, so no half-texel offset applies on top.
-    let p = (vec2<f32>(cell0 + ci) + vec2<f32>(0.5, 0.5)) * f32(c) - vec2<f32>(a);
+    let p = (vec2<f32>(cell_base() + ci) + vec2<f32>(0.5, 0.5)) * f32(c) - vec2<f32>(a);
     let sw = sweep_at(p, seg_start(), seg_dir(), radius(), travel_px(), curvature());
     var tool = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     var lat = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -1562,13 +1589,17 @@ fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
         if dpre > 0.0 {
             let d_load = bake_at(bake_load, xl, yl) - bake_at(bake_load, xl - sw.lr, yl);
             let d_latm = bake_at(bake_latm, xl, yl) - bake_at(bake_latm, xl - sw.lr, yl);
-            let inv_pre = 1.0 / dpre;
-            let tool_h = max(d_load.x, 0.0) * inv_pre;
-            let tool_m = max(d_load.y, 0.0) * inv_pre;
-            tool = vec4<f32>(dpre * sw.warp, tool_h, tool_m / max(tool_h, PAINT_EPS), 0.0);
-            lat = vec4<f32>(d_latm.xyz * inv_pre / max(tool_m, PAINT_EPS), 0.0);
+            // Everything below the exposure is stored **premultiplied by it** — the
+            // weight the interpolation has to carry, so an unexposed neighbour costs
+            // a lerp weight and not a value. `deposit_coarse` divides them back out
+            // with the exact kernel's own expressions, so a texel at a cell centre
+            // recovers precisely what `deposit` would have computed there.
+            let e = dpre * sw.warp;
+            let load = sw.warp * max(d_load.xy, vec2<f32>(0.0, 0.0));
+            tool = vec4<f32>(e, load.x, load.y, 0.0);
+            lat = vec4<f32>(d_latm.xyz * sw.warp, 0.0);
             @if(resid) let d_rlm = bake_at(bake_rlm, xl, yl) - bake_at(bake_rlm, xl - sw.lr, yl);
-            @if(resid) res = vec4<f32>(d_rlm.xyz * inv_pre / max(tool_m, PAINT_EPS), 0.0);
+            @if(resid) res = vec4<f32>(d_rlm.xyz * sw.warp, 0.0);
         }
     }
     textureStore(cell_tool_w, ci, tool);
@@ -1576,11 +1607,44 @@ fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
     @if(resid) textureStore(cell_res_w, ci, res);
 }
 
+// A texel's read of the cell scratch: the four cell centres around it and their
+// bilinear weights, in scratch coordinates. The centre of cell `k` sits at region
+// position `(k + ½)·c − a`, so the continuous cell coordinate of the texel whose
+// centre is `rt + ½` is `(rt + a + ½)/c − ½`, and the four cells are its floor and
+// that cell's upper neighbours. `cell_base`'s border ring is what keeps every one of
+// them a cell the hoist actually wrote.
+struct CellTap {
+    // The lower-left cell, in the scratch's own coordinates.
+    at: vec2<i32>,
+    // Weights for (0,0), (1,0), (0,1), (1,1) — summing to 1.
+    w: vec4<f32>,
+}
+
+fn cell_tap(rt: vec2<i32>) -> CellTap {
+    let c = cell_px();
+    let a = cell_anchor();
+    let u = (vec2<f32>(rt + a) + vec2<f32>(0.5, 0.5)) / f32(c) - vec2<f32>(0.5, 0.5);
+    let lo = floor(u);
+    let f = u - lo;
+    let g = vec2<f32>(1.0, 1.0) - f;
+    return CellTap(
+        vec2<i32>(lo) - cell_base(),
+        vec4<f32>(g.x * g.y, f.x * g.y, g.x * f.y, f.x * f.y),
+    );
+}
+
+fn cell_lerp(tex: texture_2d<f32>, tap: CellTap) -> vec4<f32> {
+    return textureLoad(tex, tap.at, 0) * tap.w.x
+        + textureLoad(tex, tap.at + vec2<i32>(1, 0), 0) * tap.w.y
+        + textureLoad(tex, tap.at + vec2<i32>(0, 1), 0) * tap.w.z
+        + textureLoad(tex, tap.at + vec2<i32>(1, 1), 0) * tap.w.w;
+}
+
 // The exact `deposit` with its front half read from the cell scratch. Every
 // departure from that kernel is one of two things: a per-texel quantity replaced by
-// its cell's (the exposure, the tool means), or the bleed ladder gone — the host
-// keeps bleed slots on the exact path, so `bled` here is structurally false and the
-// re-store guard loses nothing. Everything else — the frame, the tooth, the
+// the blend of its cells' (the exposure, the tool means), or the bleed ladder gone —
+// the host keeps bleed slots on the exact path, so `bled` here is structurally false
+// and the re-store guard loses nothing. Everything else — the frame, the tooth, the
 // selection, the arc, the jitter, the parcel algebra, the guard, the stores — is
 // line for line the same, and must stay so: the two kernels are one model at two
 // resolutions, and a divergence between them is a `preview == committed` bug waiting
@@ -1603,19 +1667,14 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let xl = sw.local.x;
 
-    // This texel's cell. `rt ≥ 0` here (the region bounds just said so) and the
-    // anchor is in `[0, c)`, so the numerator cannot be negative — but the floor
-    // form is kept anyway, because `cell0`'s can be and the two must be the same
-    // arithmetic or the subtraction below stops meaning "cells into the rect".
-    let c = cell_px();
-    let a = cell_anchor();
-    let cell0 = div_floor2(under_origin() + a, c);
-    let ct = div_floor2(rt + a, c) - cell0;
-    let tool = textureLoad(cell_tool, ct, 0);
-    // The cell's exposure, in the tip's measure (`dpre · warp` at the centre). Zero
-    // is the hoist's "outside the swept footprint" verdict, and takes the same exit.
+    // This texel's four cells and their weights.
+    let tap = cell_tap(rt);
+    let tool = cell_lerp(cell_tool, tap);
+    // The exposure in the tip's measure (`dpre · warp`), blended from the centres.
+    // Zero is the hoist's "outside the swept footprint" verdict at all four of them,
+    // and takes the same exit.
     if tool.x <= 0.0 {
-        return; // the cell saw no exposure: the region keeps its value
+        return; // no cell around this texel saw exposure: the region keeps its value
     }
     // The ground's share of this texel (§6.4) — per texel, never per cell: tooth is
     // the canvas's resolution, and averaging it over a cell would smear the weave
@@ -1629,10 +1688,15 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let uc = textureLoad(under_color, t, 0);
     let ua = textureLoad(under_aux, t, 0);
-    let tool_h = tool.y;
-    let tool_op = tool.z;
-    let tool_lat = textureLoad(cell_lat, ct, 0).xyz;
-    @if(resid) let tool_res = textureLoad(cell_res, ct, 0).xyz;
+    // The means, recovered from the blended masses by the exact kernel's own
+    // expressions — `inv_e` standing where `deposit` writes `inv_pre`, the two
+    // differing by the warp both sides of the ratio carry.
+    let inv_e = 1.0 / tool.x;
+    let tool_h = tool.y * inv_e;
+    let tool_m = tool.z * inv_e;
+    let tool_op = tool_m / max(tool_h, PAINT_EPS);
+    let tool_lat = cell_lerp(cell_lat, tap).xyz * inv_e / max(tool_m, PAINT_EPS);
+    @if(resid) let tool_res = cell_lerp(cell_res, tap).xyz * inv_e / max(tool_m, PAINT_EPS);
     @if(resid) let ur = textureLoad(under_resid, t, 0);
 
     let h0 = ua.x;
