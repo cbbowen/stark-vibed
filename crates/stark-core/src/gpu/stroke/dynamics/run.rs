@@ -312,50 +312,52 @@ impl<'a> DynamicsRun<'a> {
             // Init: latent = the brush's own colour, per-unit opacity = its alpha;
             // the carried amount starts at the pre-`charge` glob (0 = empty tool).
             let d = rec.brush.dynamics;
-            scope.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics brush init"),
-                color_attachments: &[
-                    Some(desc::attach(
-                        &brush_color[0],
-                        desc::clear_to(wgpu::Color {
-                            r: consts.channels[0] as f64,
-                            g: consts.channels[1] as f64,
-                            b: consts.channels[2] as f64,
-                            a: consts.channels[3] as f64,
-                        }),
-                    )),
-                    Some(desc::attach(
-                        &brush_aux[0],
-                        desc::clear_to(wgpu::Color {
-                            // Carried height = the pre-`charge` glob; the rest of
-                            // the reservoir aux is unused (height is the only
-                            // thing the tool carries, §6.1).
-                            r: d.charge as f64,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
-                        }),
-                    )),
-                    // A freshly charged tip holds the brush's own colour, and that
-                    // colour's residual with it — the same clear, off the same
-                    // constants (§6.7).
-                    brush_resid.as_ref().map(|v| {
-                        desc::attach(
-                            &v[0],
+            scope
+                .encoder()
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("stark dynamics brush init"),
+                    color_attachments: &[
+                        Some(desc::attach(
+                            &brush_color[0],
                             desc::clear_to(wgpu::Color {
-                                r: consts.resid[0] as f64,
-                                g: consts.resid[1] as f64,
-                                b: consts.resid[2] as f64,
+                                r: consts.channels[0] as f64,
+                                g: consts.channels[1] as f64,
+                                b: consts.channels[2] as f64,
+                                a: consts.channels[3] as f64,
+                            }),
+                        )),
+                        Some(desc::attach(
+                            &brush_aux[0],
+                            desc::clear_to(wgpu::Color {
+                                // Carried height = the pre-`charge` glob; the rest of
+                                // the reservoir aux is unused (height is the only
+                                // thing the tool carries, §6.1).
+                                r: d.charge as f64,
+                                g: 0.0,
+                                b: 0.0,
                                 a: 0.0,
                             }),
-                        )
-                    }),
-                ][..2 + usize::from(brush_resid.is_some())],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                        )),
+                        // A freshly charged tip holds the brush's own colour, and that
+                        // colour's residual with it — the same clear, off the same
+                        // constants (§6.7).
+                        brush_resid.as_ref().map(|v| {
+                            desc::attach(
+                                &v[0],
+                                desc::clear_to(wgpu::Color {
+                                    r: consts.resid[0] as f64,
+                                    g: consts.resid[1] as f64,
+                                    b: consts.resid[2] as f64,
+                                    a: 0.0,
+                                }),
+                            )
+                        }),
+                    ][..2 + usize::from(brush_resid.is_some())],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
         }
         let mut bake = |label: &'static str| {
             scope
@@ -581,13 +583,13 @@ impl<'a> DynamicsRun<'a> {
                 .scope
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics region composite"),
-                color_attachments: &att[..att_n],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                    label: Some("stark dynamics region composite"),
+                    color_attachments: &att[..att_n],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
             // An empty region (no base tiles) just stays cleared → "no paint".
             if let Some(inst) = &tile_inst {
                 pass.set_pipeline(&kit.composite_pipeline);
@@ -1117,12 +1119,12 @@ impl<'a> DynamicsRun<'a> {
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark dynamics slice"),
-                color_attachments: &[Some(desc::attach(&narrow_view, desc::CLEAR))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                    color_attachments: &[Some(desc::attach(&narrow_view, desc::CLEAR))],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
             pass.set_pipeline(&kit.slice_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..3, 0..1);

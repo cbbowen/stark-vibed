@@ -224,7 +224,11 @@ pub(super) struct Kept {
 impl Kept {
     /// The leased texture — what a resume copy reads from and a capture writes to.
     pub(super) fn tex(&self) -> &wgpu::Texture {
-        &self.lease.as_ref().expect("a Kept holds its lease until drop").tex
+        &self
+            .lease
+            .as_ref()
+            .expect("a Kept holds its lease until drop")
+            .tex
     }
 }
 

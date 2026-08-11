@@ -59,10 +59,23 @@ quantum). Pin it first with a preview-vs-commit or seam test at a radius where
 the quantum spans a tile boundary — a large bleeding brush whose range cut
 falls just past a tile origin.
 
-- [ ] Write the failing test (seam or preview==commit, bleeding brush,
-      window crossing the region's leading edge)
-- [ ] Fold fires into the tile walk and chunk bounds
-- [ ] Re-bless any goldens the fixed flux moves (fix the model, no fudge)
+- [x] Test written first (`a_bleeding_strokes_preview_is_its_commit`,
+      tests/dynamics.rs, tol 2 — tightest any dynamics stroke gets). **Honest
+      finding: it passed on the unfixed code at 1 level worst**, on a
+      designed-hostile case (radius 120 pure-bleed across five tile boundaries).
+      Two reasons measured out: a whole render's windows never reach before arc 0,
+      so only piece/range boundaries are exposed at all, and a cut lands inside
+      the quantum-wide vulnerable band only by tile-phase luck. So the fix is
+      accounting hygiene and seam-risk closure, not a visible-artifact cure — the
+      deterministic pin is the unit test
+      `a_windows_reach_back_is_in_the_tiles_and_the_region` (segments.rs), which
+      exercises the exact geometry.
+- [x] Fires folded in end to end (`3d86447`): computed once per range in
+      `render_dynamic`, measured into `chunk_segments`' per-segment bounds,
+      walked into `affected_tiles`, sliced per piece with `after` re-keyed;
+      `segment_fits_region` charges a bleeding brush the extra quantum.
+- [x] No goldens moved — whole renders were never clipped (windows cannot
+      precede arc 0), so committed pixels are untouched by construction.
 
 ### 2. "Leases return only after submit" is enforced by convention at three sites
 
@@ -82,8 +95,20 @@ ordering. Design it to cover both `ScratchPool` leases and the swept path's
 pooled tile pair (and ideally the `TilePool` case, retiring the open memory
 item).
 
-- [ ] Submit-scope type; migrate `DynamicsRun` and `render_swept`
-- [ ] Extend to `TilePool` acquisitions recorded into open encoders
+- [x] Submit-scope type; `DynamicsRun` and `render_swept` migrated (`27c3449`).
+      The pool moved up to `stroke/scratch.rs` and its `give` went private; the
+      two release paths are `SubmitScope` (owns the encoder *and* the leases,
+      releases each tier only in the call that submits — `flush` for piece
+      leases, `finish` for run leases) and `Kept` (a lease that outlives its run,
+      returned on drop under the borrow argument: a run only ever borrows a
+      `ToolState` and submits before returning). `DynamicsRun` shed three fields
+      and a flag; the swept path's comment-defended `drop` pair became
+      `hold`-then-`finish`.
+- [x] The swept path's tile-pair — the sharpest TilePool instance of the class —
+      now rides `SubmitScope::hold`, which keeps any drop-releases-to-a-pool
+      resource alive past the submit. The *general* TilePool campaign
+      (`transform::Recording`, the compositor) is outside this module and stays
+      on the pool-free-list memory item; `hold` is the template for it.
 
 ## Maintainability
 
@@ -101,8 +126,14 @@ binding-index consts from the shader's own `@binding` declarations. Both host
 sides then write `binding::REGION_RESID`, and renumbering becomes a one-file
 change in the shader.
 
-- [ ] Generate `@binding` consts per shader module
-- [ ] Migrate `kit.rs` layouts and `run.rs` bind groups to the names
+- [x] `emit_bindings` in `build/mirror.rs` (`96be1c0`): one `u32` const per
+      `@binding` declaration, named for its WESL variable, `@if`-gated ones
+      included (the unlinked source keeps them); a name collision is a build
+      failure. Listed per module in `build.rs::BINDINGS` — `dynamics` for now,
+      the mechanism extends by adding a name.
+- [x] `kit.rs` layouts and `run.rs` bind groups both name
+      `mirror::dynamics::binding::*`; the margin comments that were the only map
+      are gone.
 
 ### 4. The λ mapping is defined twice, tied by a stale comment
 
@@ -114,8 +145,9 @@ own clamp" — a file that no longer exists (the module split into
 pricing the very rates the shader runs is load-bearing for the exchange-step
 budget, so the agreement should be structural.
 
-- [ ] One shared `lambda`/`rate_of` in `budget.rs`; fix the two stale
-      `dynamics.rs` references
+- [x] One `budget::lambda` over a shared `ln_keep` core (`faff575`); the plan's
+      slots and the flattener's pricing both call it, and the two stale
+      `dynamics.rs` references now point at the function.
 
 ### 5. Stale doc in `snapshot_scratch`
 
@@ -125,15 +157,13 @@ the sampling margin … +2 because …" — the pre-refactor arithmetic that
 `rect_extent` structural fit. The sentence now documents the exact form the
 refactor retired.
 
-- [ ] Rewrite the doc to point at `rect_extent`/`snapshot_size`
+- [x] Rewritten to state the structural fit (`faff575`).
 
 ### 6. Small items
 
-- `region_rect`'s 5-tuple return (`segments.rs`) — every caller destructures
-  five positional fields; a named struct reads better.
-- `unpoisoned` is duplicated verbatim with its doc essay in `tips.rs` and
-  `dynamics/scratch.rs`; one copy in a shared spot ends the drift risk
-  between the two arguments.
+- [x] `region_rect` returns a named `RegionRect` (`faff575`).
+- [x] One `unpoisoned` on the stroke module, with a doc that covers both
+      arguments (`faff575`).
 
 ## Performance
 
@@ -163,7 +193,9 @@ already proven for the snapshot.
 `ToolState::drop` one fold later. The `Key` already encodes usage, so these
 could come from the `ScratchPool` with the lease held by `ToolState`.
 
-- [ ] Pool the tool-state copies (lease lifetime moves into `ToolState`)
+- [x] Pooled as `Kept` leases held by `ToolState` (`27c3449`); the eager-destroy
+      `Drop` impl is gone — the pool's return-on-drop is behind the resuming
+      run's submit by the borrow argument.
 
 ### 9. The round-tip cache is a single entry
 
@@ -174,7 +206,8 @@ collab session (§12), or replay interleaving strokes from different brushes,
 hits that every frame. A 2–4 entry LRU keeps the eviction story and removes
 the thrash.
 
-- [ ] Small LRU keyed by hardness bits
+- [x] `ROUND_TIPS_KEPT = 4`, move-to-back on hit, evict-front (`27c3449`); the
+      slider-drag working set still holds, the alternating-brush thrash is gone.
 
 ## Deliberate non-findings
 

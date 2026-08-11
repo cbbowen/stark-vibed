@@ -363,14 +363,16 @@ impl StrokeRenderer {
                     scratch.resid_view(),
                     desc::CLEAR,
                 );
-                let mut pass = scope.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark sweep pass"),
-                    color_attachments: &sweep_att[..sweep_n],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
+                let mut pass = scope
+                    .encoder()
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("stark sweep pass"),
+                        color_attachments: &sweep_att[..sweep_n],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
                 pass.set_pipeline(&self.swept.pipeline);
                 pass.set_bind_group(0, &bind_group, &[xform_off]);
                 pass.set_bind_group(1, &prefix_bg, &[]);
@@ -426,14 +428,16 @@ impl StrokeRenderer {
                     dst.resid_view(),
                     desc::CLEAR,
                 );
-                let mut pass = scope.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark integrate"),
-                    color_attachments: &int_att[..int_n],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
+                let mut pass = scope
+                    .encoder()
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("stark integrate"),
+                        color_attachments: &int_att[..int_n],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
                 pass.set_pipeline(&self.swept.integrate_pipeline);
                 pass.set_bind_group(0, &integrate_bg, &[]);
                 pass.draw(0..3, 0..1);
