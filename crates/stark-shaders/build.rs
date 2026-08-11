@@ -34,7 +34,6 @@ const MIRRORS: &[(&[&str], &str)] = &[
     (&["media_common"], "Media"),
     (&["resolve"], "Resolve"),
     (&["selection"], "Params"),
-    (&["slice"], "Params"),
     (&["stamp_common"], "TileXform"),
     (&["transform"], "Combine"),
     (&["transform"], "Gated"),

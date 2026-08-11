@@ -11,7 +11,6 @@ use crate::gpu::tile::SCRATCH_AUX_FORMAT;
 
 use super::BAKE_FORMAT;
 use super::plan::SLOT;
-use super::run::SLICE_SLOT;
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
 ///
@@ -81,7 +80,10 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) prefix_bgl: wgpu::BindGroupLayout,
     /// Bilinear clamp sampler for the region / reservoir / coverage lookups.
     pub(in crate::gpu::stroke) exchange_sampler: wgpu::Sampler,
-    // Region → CoW tile write-back.
+    // Region → CoW tile write-back: the aux narrow pass. Colour and residual leave
+    // the region as plain texture copies (`DynamicsRun::write_back`), so the one
+    // pipeline the write-back keeps is the narrowing of the wide region aux to the
+    // persistent height channel — once over the whole region, not once per tile.
     pub(in crate::gpu::stroke) slice_pipeline: wgpu::RenderPipeline,
     pub(in crate::gpu::stroke) slice_bgl: wgpu::BindGroupLayout,
 }
@@ -464,23 +466,18 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- Region → tile slice (write-back).
+    // ---- Region → tile write-back: the aux narrow pass. The colour and residual
+    // channels are copied out of the region bit-exactly (`DynamicsRun::write_back`),
+    // so this draws once over the whole region rather than once per tile, and needs
+    // neither a per-tile uniform nor a residual variant.
     let slice_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics slice"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::slice(resid).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::slice().into()),
     });
-    // One slot per tile the piece writes back, selected by a dynamic offset: the
-    // region bindings beside it are the same for every tile, so the whole group is
-    // built once per piece ([`UNIFORM_STRIDE`]).
     let slice_bgl = desc::bind_group_layout(
         device,
         "stark dynamics slice bgl",
-        &[
-            desc::uniform_slot(0, frag, SLICE_SLOT),
-            desc::load_tex(1, frag),
-            desc::load_tex(2, frag),
-            desc::load_tex(3, frag), // the region's residual (§6.7)
-        ][..3 + usize::from(resid)],
+        &[desc::load_tex(0, frag)],
     );
     let slice_layout =
         desc::pipeline_layout(device, "stark dynamics slice layout", &[Some(&slice_bgl)]);
@@ -490,11 +487,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         &slice_layout,
         &slice_shader,
         ("vs_main", "fs_main"),
-        &[
-            desc::target(color_space.color_format()),
-            desc::target(color_space.aux_format()),
-            color_space.resid_format().and_then(desc::target),
-        ][..2 + usize::from(resid)],
+        &[desc::target(color_space.aux_format())],
     );
 
     DynamicsKit {

@@ -65,8 +65,9 @@ pub fn generate(
     vertex: &[(&str, &str, &str)],
 ) {
     // Grouped by the module a declaration is emitted under, in first-seen order.
-    // `Params` is declared in both `selection.wesl` and `slice.wesl` with *different*
-    // members, so the WESL module has to be part of the Rust path.
+    // One struct name can be declared by two modules with *different* members
+    // (`selection.wesl`'s `Params` and `slice.wesl`'s once were exactly that), so
+    // the WESL module has to be part of the Rust path.
     let mut modules: Vec<(String, TokenStream)> = Vec::new();
     let mut push = |module: &str, item: TokenStream| {
         // A module under `lib/` is named for its file, not its path: `lib` holds the

@@ -42,14 +42,6 @@ use stark_shaders::mirror::dynamics::BAKE_RES;
 // `#[repr(C)]` copy of, under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
-// The write-back's uniform, generated from `slice.wesl`'s own declaration (§6.7):
-// the tile texture's top-left in region texels.
-use stark_shaders::mirror::slice::Params as SliceUniform;
-
-/// One tile's window into the write-back's offset buffer — the `min_binding_size` the
-/// slice layout declares, taken from the struct rather than written down.
-pub(super) const SLICE_SLOT: u64 = std::mem::size_of::<SliceUniform>() as u64;
-
 /// Workgroup counts for the reservoir passes (`wick`, and `exchange`'s own half).
 /// `exchange` is dispatched over these *plus* the slot's footprint groups on x, since
 /// the snapshot shares its grid.
@@ -448,26 +440,35 @@ impl<'a> DynamicsRun<'a> {
         let kit = &r.dynamics;
         let device = &r.ctx.device;
 
-        let region_usage = wgpu::TextureUsages::RENDER_ATTACHMENT | LOOP_USAGE;
+        // COPY_SRC because the write-back cuts the tiles straight out of these by
+        // texture copy ([`Self::write_back`]).
+        let region_usage =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | LOOP_USAGE;
         let mut region_tex = |label: &'static str| {
-            scoped_view(
+            let tex = scoped_tex(
                 device,
                 &mut self.piece,
                 (w, h),
                 wgpu::TextureFormat::Rgba16Float,
                 region_usage,
                 label,
-            )
+            );
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            (tex, view)
         };
-        let color = region_tex("stark dynamics region color");
-        let aux = region_tex("stark dynamics region aux");
+        let (color_tex, color) = region_tex("stark dynamics region color");
+        let (_, aux) = region_tex("stark dynamics region aux");
         // The region's residual (§6.7), in the same format for the same reason: it is
         // the rest of the colour beside it, and the loop reads and writes the two at
         // exactly the same points.
-        let resid = r
+        let (resid_tex, resid) = match r
             .color_space
             .has_resid()
-            .then(|| region_tex("stark dynamics region resid"));
+            .then(|| region_tex("stark dynamics region resid"))
+        {
+            Some((t, v)) => (Some(t), Some(v)),
+            None => (None, None),
+        };
 
         // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
         // own `ViewUniform` — this path binds its own buffer to the very same
@@ -577,8 +578,10 @@ impl<'a> DynamicsRun<'a> {
         };
 
         Region {
+            color_tex,
             color,
             aux,
+            resid_tex,
             resid,
             sel_mask,
         }
@@ -1027,9 +1030,20 @@ impl<'a> DynamicsRun<'a> {
     /// a fresh CoW tile → aprons stay bit-identical to neighbour interiors (§6.4), and
     /// the wide region aux narrows to the persistent one (height).
     ///
+    /// One region-sized narrow pass, then plain texture copies: the colour and
+    /// residual tiles are the region's own formats, so a copy is exact, and the aux
+    /// copies out of the narrowed texture the single pass wrote — where this used to
+    /// record a render pass per tile, ~30 of them per fold under a wide tip, whose
+    /// fixed pass cost was most of the write-back's 15% share of a live gesture.
+    /// Rounding is untouched: a copy is bit-exact, and the narrow pass render-writes
+    /// a loaded f16 value back to its own lattice point (see `slice.wesl`).
+    ///
     /// `lo` is the region's *interior* origin — the top-left tile origin, an apron in
     /// from the region rectangle — so a tile's offset into the region is measured
-    /// against it.
+    /// against it. Offsets are integral and non-negative by [`region_rect`]'s
+    /// construction, and the far edge of the last tile's block is exactly the region's
+    /// extent, so every copy is in bounds (a violation is a loud validation error,
+    /// where the draws this replaced would have silently read out of bounds).
     fn write_back(
         &mut self,
         base: &TileMap,
@@ -1041,71 +1055,51 @@ impl<'a> DynamicsRun<'a> {
         let kit = &r.dynamics;
         let device = &r.ctx.device;
 
-        // Every tile slices out of the *same* region, so the only thing that varies
-        // across these draws is the offset uniform — one [`UNIFORM_STRIDE`] slot each
-        // in one buffer, under one bind group, rather than a buffer and a bind group
-        // per tile on every pointer move ([`UNIFORM_STRIDE`]).
-        let mut data = vec![0u8; coords.len() * UNIFORM_STRIDE];
-        for (i, coord) in coords.iter().enumerate() {
-            let off = coord.origin() - lo;
-            let slice = SliceUniform {
-                offset: [off.x, off.y, 0.0, 0.0],
-            };
-            let at = i * UNIFORM_STRIDE;
-            data[at..at + SLICE_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&slice));
-        }
-        let ubuf = self
-            .piece
-            .buffer(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("stark dynamics slice params"),
-                size: data.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        r.ctx.queue.write_buffer(&ubuf, 0, &data);
+        // The one channel that changes representation, narrowed once over the whole
+        // region (§6.7's aux stays a single height channel on the persistent tile).
+        let narrow = scoped_tex(
+            device,
+            &mut self.piece,
+            (region.color_tex.width(), region.color_tex.height()),
+            r.color_space.aux_format(),
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            "stark dynamics narrow aux",
+        );
+        let narrow_view = narrow.create_view(&wgpu::TextureViewDescriptor::default());
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics slice bg"),
             layout: &kit.slice_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &ubuf,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(SLICE_SLOT),
-                    }),
-                },
-                desc::tex(1, &region.color),
-                desc::tex(2, &region.aux),
-            ]
-            .into_iter()
-            // The residual slices out with the colour it belongs to (§6.7).
-            .chain(region.resid.as_ref().map(|v| desc::tex(3, v)))
-            .collect::<Vec<_>>(),
+            entries: &[desc::tex(0, &region.aux)],
         });
+        {
+            let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark dynamics slice"),
+                color_attachments: &[Some(desc::attach(&narrow_view, desc::CLEAR))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&kit.slice_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
 
         let mut new_map = base.clone();
-        for (i, coord) in coords.iter().enumerate() {
+        for coord in coords {
             let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
-            {
-                let (att, att_n) = desc::tile_attachments(
-                    dst.color_view(),
-                    dst.aux_view(),
-                    dst.resid_view(),
-                    desc::CLEAR,
-                );
-                let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark dynamics slice"),
-                    color_attachments: &att[..att_n],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&kit.slice_pipeline);
-                pass.set_bind_group(0, &bg, &[(i * UNIFORM_STRIDE) as u32]);
-                pass.draw(0..3, 0..1);
-            }
+            let off = coord.origin() - lo;
+            dst.copy_from_region(
+                &mut self.encoder,
+                &region.color_tex,
+                &narrow,
+                region.resid_tex.as_ref(),
+                wgpu::Origin3d {
+                    x: off.x as u32,
+                    y: off.y as u32,
+                    z: 0,
+                },
+            );
             new_map = new_map.insert(*coord, dst);
         }
         new_map
@@ -1189,11 +1183,18 @@ impl<'a> DynamicsRun<'a> {
 
 /// One piece's canvas region: a 1:1 copy of the canvas under its segments, which the
 /// loop evolves in place before [`DynamicsRun::write_back`] slices it into tiles.
+///
+/// The colour and residual carry their textures beside the views: the write-back
+/// cuts tiles out of them by texture copy, and a copy is addressed by texture where
+/// every pass binding is addressed by view. Both handles are `Arc`-backed clones of
+/// the one piece-scoped allocation.
 struct Region {
+    color_tex: wgpu::Texture,
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
     /// The region's residual (§6.7), in a space that has one — evolved in place by the
     /// same dispatches that evolve the colour, and sliced back with it.
+    resid_tex: Option<wgpu::Texture>,
     resid: Option<wgpu::TextureView>,
     /// The selection over the region (§6.8) — its own gathered mask, or the 1×1
     /// constant that stands in for an unrestricted selection.
@@ -1264,8 +1265,33 @@ struct CoarseBindings {
 const LOOP_USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
 
-/// A texture scoped to one `render_dynamic` call, as a view: registered with `scoped`
-/// so it is destroyed right after the submit.
+/// A texture scoped to one `render_dynamic` call: registered with `scoped` so it is
+/// destroyed right after the submit.
+fn scoped_tex(
+    device: &wgpu::Device,
+    scoped: &mut ScopedResources,
+    size: (u32, u32),
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+    label: &'static str,
+) -> wgpu::Texture {
+    scoped.texture(device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    }))
+}
+
+/// [`scoped_tex`] as a view, for the consumers that only ever bind it.
 fn scoped_view(
     device: &wgpu::Device,
     scoped: &mut ScopedResources,
@@ -1274,21 +1300,7 @@ fn scoped_view(
     usage: wgpu::TextureUsages,
     label: &'static str,
 ) -> wgpu::TextureView {
-    scoped
-        .texture(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: size.0,
-                height: size.1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage,
-            view_formats: &[],
-        }))
+    scoped_tex(device, scoped, size, format, usage, label)
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 

@@ -234,13 +234,49 @@ impl Drop for GpuTex {
 /// bind group, and which no test would catch until a driver complained. Nothing
 /// needs the texture today (the accessors that offered one had no callers at all),
 /// so the way to rule that out is not to offer it. Re-adding one means reading this
-/// paragraph first, which is the point.
+/// paragraph first, which is the point. The one consumer that needs the texture *as
+/// a copy destination* — the dynamics write-back — gets [`Self::copy_into`], which
+/// encodes the command in here and hands nothing out, so the class stays ruled out
+/// rather than re-opened with a caveat.
 #[derive(Clone)]
 pub struct TexHandle(Arc<GpuTex>);
 
 impl TexHandle {
     pub fn view(&self) -> &wgpu::TextureView {
         &self.0.view
+    }
+
+    /// Encode a copy of one full `TILE_TEX` block out of `src` at `origin` into this
+    /// texture — the write-back's slice, as a bit-exact copy (§6.2/§6.4).
+    ///
+    /// The formats must match (a copy's are required to), which is the write-back's
+    /// own guarantee: it copies each tile channel from a region-sized texture of that
+    /// channel's format.
+    pub fn copy_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::Texture,
+        origin: wgpu::Origin3d,
+    ) {
+        let dst = self
+            .0
+            .tex
+            .as_ref()
+            .expect("a live handle holds its texture");
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: src,
+                mip_level: 0,
+                origin,
+                aspect: wgpu::TextureAspect::All,
+            },
+            dst.as_image_copy(),
+            wgpu::Extent3d {
+                width: TILE_TEX,
+                height: TILE_TEX,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -291,6 +327,29 @@ impl TilePairHandle {
     /// once, for every tile it ever makes.
     pub fn resid_view(&self) -> Option<&wgpu::TextureView> {
         self.0.resid.as_ref().map(TexHandle::view)
+    }
+
+    /// Encode the write-back's slice of this tile out of region-sized channel
+    /// textures (§6.2): one `TILE_TEX` block from each at `origin` — the colour, the
+    /// narrowed aux, and the residual where the colour space has one. Copies, so the
+    /// tile is bit-identical to the region block it was cut from, and every
+    /// rewritten tile's apron to its neighbour's interior (§6.4).
+    pub fn copy_from_region(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::Texture,
+        aux: &wgpu::Texture,
+        resid: Option<&wgpu::Texture>,
+        origin: wgpu::Origin3d,
+    ) {
+        // The pairing is the colour space's, decided once for tile and region alike
+        // (§6.7) — a mismatch here means the two were built against different spaces.
+        debug_assert_eq!(self.0.resid.is_some(), resid.is_some());
+        self.0.color.copy_into(encoder, color, origin);
+        self.0.aux.copy_into(encoder, aux, origin);
+        if let (Some(t), Some(src)) = (&self.0.resid, resid) {
+            t.copy_into(encoder, src, origin);
+        }
     }
 
     /// Whether two handles are the same allocation. A tile's texels are never

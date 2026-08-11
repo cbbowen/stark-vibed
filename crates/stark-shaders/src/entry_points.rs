@@ -85,9 +85,13 @@ pub const RESID_FEATURE: &str = "resid";
 ///
 /// **This whole pass is skipped without the `mixbox` cargo feature.** A residual is
 /// something a *pigment* space has, Mixbox is the only one, and `resid_format()` is
-/// then `None` for every space in the build — so the variants would be eight artifacts
+/// then `None` for every space in the build — so the variants would be seven artifacts
 /// nothing could ever select. `build.rs` skips the pass and `lib.rs` compiles the
 /// `resid`-taking accessors down to their plain arm.
+///
+/// `slice` is **not** here: since the write-back's colour and residual became plain
+/// texture copies (§6.2), the one pass left under that name narrows the wide region
+/// aux, which every colour space has and neither varies.
 ///
 /// Kept sorted, like [`ENTRY_POINTS`] and for the same reason.
 pub const RESID_ENTRY_POINTS: &[&str] = &[
@@ -96,7 +100,6 @@ pub const RESID_ENTRY_POINTS: &[&str] = &[
     "fill",
     "integrate",
     "matte",
-    "slice",
     "stamp",
     "transform",
 ];

@@ -160,13 +160,13 @@ pub fn dynamics(resid: bool) -> &'static str {
     resid_variant!(resid, "dynamics", "dynamics_resid")
 }
 
-/// WGSL region→tile write-back for the stamp loop — §6.2/§6.4.
+/// WGSL region-aux narrowing for the stamp loop's write-back — §6.2/§6.4.
 ///
-/// Takes `resid` because this pass carries a tile's colour, so it is built in two
-/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
-/// needs (§6.7), and without it.
-pub fn slice(resid: bool) -> &'static str {
-    resid_variant!(resid, "slice", "slice_resid")
+/// Takes no `resid`: the write-back's colour and residual leave the region as plain
+/// texture copies, so the pass under this name touches only the aux, which every
+/// colour space has and neither varies.
+pub fn slice() -> &'static str {
+    include_wesl!("slice")
 }
 
 /// WGSL affine-transform passes: the moved parcel, the cut+stack combine, and
@@ -262,7 +262,7 @@ mod tests {
             ("overlay", overlay),
             ("resolve", resolve),
             ("selection", selection),
-            ("slice", || slice(false)),
+            ("slice", slice),
             ("stamp", || stamp(false)),
             ("transform", || transform(false)),
         ];
@@ -316,7 +316,6 @@ mod tests {
             ("fill", fill),
             ("integrate", integrate),
             ("matte", matte),
-            ("slice", slice),
             ("stamp", stamp),
             ("transform", transform),
         ];
