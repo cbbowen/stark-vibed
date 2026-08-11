@@ -165,12 +165,10 @@ costs no meaningful occupancy, so the specialization machinery isn't worth it.
 
 **Remaining levers, in expected order:**
 
-- **Shoulder-bounded coarse evaluation** (model change): deposit/exchange
-  evaluate the exchange laws at canvas resolution across a footprint whose
-  content varies at the scale of the tip's shoulder (`3·(1−hardness)·r`). The
-  march's travel-cell lesson — resolve the shoulder, not the radius — applied
-  in the footprint domain. This is the only lever sized to the 64–75% the two
-  big passes hold; needs the golden/ripple methodology from the march round.
+- **Shoulder-bounded coarse evaluation** — **done for `deposit`** (the 53%/44%
+  pass); see the implementation record below. `exchange` (whose share at r=500
+  is mostly the footprint `snapshot` riding its grid — a copy that cannot be
+  coarsened) and `settle` were left exact.
 - **Slice batching**: 15% of live is ~30 render passes per fold (one per
   tile). A compute write-back in one pass would trade render-target rounding
   for storage rounding (see the f16 ratchet note) — only worth it with the
@@ -181,7 +179,66 @@ costs no meaningful occupancy, so the specialization machinery isn't worth it.
 - The settle share (10.5% live) is the preview==commit price and moves only
   with the model.
 
-## Investigation brief: shoulder-bounded coarse evaluation (next session)
+## Implemented: the shoulder-bounded coarse deposit (2026-08-10)
+
+The brief below was executed the same day, for `deposit` alone as it
+prescribes. What was built, and what the measurements said:
+
+- **The cell law** lives in `gpu::stroke::budget::footprint_cell`: a pure
+  function of the brush shape and the segment's radius,
+  `cell = min(0.02·r, 0.25·shoulder)` with `shoulder = 3·(1−hardness)·r` for
+  `Round`, 0 for `Stamp` (sharpest), engaging only above 2 texels and capped
+  at 16. Hard tips and every radius ≤ 100 stay at cell 1 — and cell 1 is not
+  a parameter value but **the exact kernel**: the host dispatches the
+  untouched `deposit` pipeline, so bit-identity there is structural. Bleed
+  and settle slots are always exact. CPU pins in `budget::tests` (hard tip
+  never coarsened, softer never finer, the bench radii land where this
+  section says).
+- **Two new entry points** in `dynamics.wesl`: `cell_hoist` (one thread per
+  canvas-anchored c×c cell) evaluates the exact kernel's front half — the two
+  `prefix_at` differences, the six `bake_at` taps, the divides that recover
+  the reservoir means — once at the cell's centre into an fp32 cell scratch;
+  `deposit_coarse` runs the exact kernel's own texel grid reading those means
+  back for two loads. Strictly per-texel, per model: `surface_tooth`, the
+  selection, the snapshot loads, the arc/drain/jitter, the stores, and the
+  f16 re-store guard (whose verdict stays exact — a zero-exposure cell takes
+  the same "keeps its value" exit as `dpre <= 0`).
+- **Canvas anchoring without canvas coordinates**: the cell index is
+  `floor((region texel + anchor) / c)` with `anchor = region origin mod c`
+  carried in the new `Stamp::k` lane — congruence arithmetic on small
+  integers, so pieces and live folds with different region origins agree on
+  every cell boundary and no f32 ever holds an absolute canvas position.
+  Pinned by `cell_boundaries_are_canvas_anchored_whatever_the_region_origin`.
+- **The wide case bound first**: `corpus_wide_smear` (r=250, hardness 0.9 →
+  cell 5) exercises the coarse path through the whole battery — incremental
+  vs fresh at five cut points, preview == commit, save/load, golden.
+  Sabotaging the hoist (storing zero exposure) moves 42% of its pixels, so
+  the green run is proof the path binds, not a floored cell. The blessed
+  exact-path golden **still passes unchanged** (tol 6, <1% rule), so no
+  re-bless was needed.
+- **Ripple** (the march round's column-mean method, 21 px trend): exact
+  0.377 → coarse 0.403 levels RMS — the added vertically-coherent structure
+  is ~0.03 levels, well inside the 0.58 → 0.62 the march round accepted for
+  its shoulder bound. Column-mean divergence 0.60 levels RMS; per-pixel mean
+  0.51, worst 12 levels at the rim.
+- **Bench** (criterion baseline `precell` saved minutes before the change,
+  same session, observed same-day noise ~1%): `commit/dynamics/500`
+  18.03 → 15.59 ms (**−13.5%**), `live/dynamics/500` 863 → 783 ms
+  (**−9.3%**), `commit/250` −2.0%, `live/250` no change, every r ≤ 100 line
+  within ±1.1% — the cell-1 floor held, dispatch for dispatch.
+- **Why not the −35–45% the brief projected, measured**: a ceiling bracket
+  (returning from `deposit_coarse` right after the cell load, so only the
+  frame, the reject tests and one cell read remain) lands at −30.6% commit /
+  −21.7% live. The gap between that ceiling and the realized win is the
+  per-texel body — the selection + two snapshot loads, `exchange_at`, the
+  parcel/blend algebra and the two f16 stores — i.e. the **read-modify-write
+  itself**, which the projection had attributed to the hoistable taps. Any
+  further coarse-deposit work is bounded by that bracket, and most of it
+  (loads + stores) cannot move while the pass still writes pixels. The next
+  levers on the wide-tip live number are therefore the ones already listed:
+  slice batching, scratch persistence, and the settle's model.
+
+## Investigation brief: shoulder-bounded coarse evaluation (as written before the work)
 
 The lever sized to deposit+exchange's 64–75%. Everything below is what a fresh
 session needs; read this section, then the referenced material, before code.

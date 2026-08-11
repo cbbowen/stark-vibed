@@ -12,7 +12,7 @@
 //! Nothing here touches the GPU. It is float arithmetic over a [`BrushParams`], which
 //! is what lets the segment-budget tests pin it exactly (`segments::tests`).
 
-use crate::document::{BrushDynamics, BrushParams};
+use crate::document::{BrushDynamics, BrushParams, BrushShape};
 /// The numbers `dynamics.wesl` computes with, generated from its own declarations
 /// (§6.10) — the wick's stencil, and the bleed stencil's shares. Both are relations
 /// this file has to honour rather than values it may choose, so it reads them from
@@ -431,6 +431,56 @@ const EXCHANGE_REFERENCE_RATE: f32 = 5.991_465;
 /// the tip. None of those care how fast paint changes hands.
 const MAX_EXCHANGE_TRAVEL: f32 = 1.0;
 
+/// Ceiling on the footprint cell, in texels. [`footprint_cell`]'s own law reaches 10
+/// at the 500 px radius cap, so this is headroom against a future cap rather than a
+/// number any brush hits today — it exists so a degenerate input cannot ask the cell
+/// scratch for a stencil coarser than the shoulder argument was ever measured at.
+const FOOTPRINT_CELL_MAX: f32 = 16.0;
+
+/// The **footprint cell** (§6.2): the edge, in canvas texels, of the square over which
+/// the coarse deposit may evaluate the exchange laws *once* and apply the result to
+/// every texel inside — 1 meaning the exact per-texel kernel and nothing else.
+///
+/// The bound is the tip's **shoulder** — the width of a round tip's coverage falloff,
+/// `3·(1−hardness)·radius` for the `1 − |y|^h` profile family — because that is the
+/// finest feature the footprint-domain fields can carry: the prefix-τ differences, the
+/// baked reservoir means and the exchange solves the cell hoists are all smooth at the
+/// scale the coverage itself varies. A quarter of the shoulder puts at least four
+/// cells across the falloff; the `0.02·radius` term keeps the cell a fixed small
+/// fraction of the tip where the shoulder is generous. Both constants are the
+/// stroke-space march round's, kept because they were *measured* there: the ripple a
+/// coarse cell prints stayed at the no-coarsening floor under the shoulder bound
+/// (0.62 vs 0.58 levels rms column-mean) and broke it under a radius-only bound
+/// (1.04), and a radius-scaled cell over a shoulderless tip was exactly the
+/// stroke-end spike regression of 2026-08-07.
+///
+/// Two properties are load-bearing rather than tuning:
+///
+/// * **A hard tip earns no coarsening.** `hardness = 1` has no shoulder, so the min
+///   is 0 and the cell is 1 — the exact kernel, bit-for-bit, by construction. A
+///   `Stamp` mask can be arbitrarily hard, so it is treated as the sharpest case and
+///   never coarsened at all.
+/// * **A pure function of the brush shape and the segment's radius**, like every
+///   other number in this file — a live tail and its commit pick the same cell for
+///   the same segment, which is what `preview == committed` (§1.3) needs from it.
+///
+/// The threshold is 2: a cell must *beat* two texels before the coarse path engages,
+/// because below that the hoist pass costs more than the ~4× it saves — which also
+/// means the whole bench sweep at radius ≤ 100 (where `0.02·r ≤ 2`) stays on the
+/// exact kernel, dispatch for dispatch.
+pub(super) fn footprint_cell(shape: &BrushShape, radius: f32) -> u32 {
+    let shoulder = match shape {
+        BrushShape::Round { hardness } => 3.0 * (1.0 - hardness.clamp(0.0, 1.0)) * radius,
+        BrushShape::Stamp(_) => 0.0,
+    };
+    let cell = (0.02 * radius).min(0.25 * shoulder);
+    if cell <= 2.0 {
+        1
+    } else {
+        cell.min(FOOTPRINT_CELL_MAX) as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,6 +657,77 @@ mod tests {
                 merged < 0.95 * one,
                 "a {n}-quantum window delivered {merged} against the {one} a firing \
                  per crossing gets, so the shortfall this guards has gone away",
+            );
+        }
+    }
+
+    // --- the footprint cell ------------------------------------------------
+
+    /// The property the whole coarse deposit rests on: **a tip with no shoulder earns
+    /// no coarsening**, at any size. `hardness = 1` and every `Stamp` mask take the
+    /// exact per-texel kernel bit-for-bit — not approximately, structurally: the cell
+    /// is 1, so the host never even dispatches the coarse pipelines. This is the
+    /// 2026-08-07 stroke-end spike regression, pinned as arithmetic.
+    #[test]
+    fn a_shoulderless_tip_is_never_coarsened() {
+        let stamp = BrushShape::Stamp(crate::assets::AssetId([7u8; 32]));
+        for radius in [8.0f32, 100.0, 250.0, 500.0, 4000.0] {
+            assert_eq!(
+                footprint_cell(&BrushShape::Round { hardness: 1.0 }, radius),
+                1
+            );
+            assert_eq!(footprint_cell(&stamp, radius), 1);
+        }
+    }
+
+    /// A softer tip is never resolved *finer* than a harder one of the same size —
+    /// the law is monotone in the shoulder, so there is no hardness at which
+    /// softening a brush makes it more expensive.
+    #[test]
+    fn a_softer_tip_never_gets_a_finer_cell() {
+        for radius in [50.0f32, 250.0, 500.0] {
+            let mut last = u32::MAX;
+            for h in [0.0f32, 0.25, 0.5, 0.8, 0.95, 0.99, 1.0] {
+                let cell = footprint_cell(&BrushShape::Round { hardness: h }, radius);
+                assert!(
+                    cell <= last,
+                    "radius {radius}: hardness {h} got cell {cell}, harder was {last}",
+                );
+                last = cell;
+            }
+        }
+    }
+
+    /// Where the bench sweep actually lands, pinned so a retune is a deliberate act:
+    /// every radius up to 100 floors to the exact kernel (the `0.02·r` term is ≤ 2
+    /// there), the 250/500 lines coarsen under it, and a nearly-hard wide tip is
+    /// bounded by its shoulder instead.
+    #[test]
+    fn the_cell_law_lands_where_the_bench_reads_it() {
+        let soft = BrushShape::Round { hardness: 0.5 };
+        for radius in [8.0f32, 30.0, 100.0] {
+            assert_eq!(
+                footprint_cell(&soft, radius),
+                1,
+                "radius {radius} must stay exact"
+            );
+        }
+        assert_eq!(footprint_cell(&soft, 250.0), 5);
+        assert_eq!(footprint_cell(&soft, 500.0), 10);
+        // Shoulder-bound: at hardness 0.99 a 500 px tip's shoulder is 15 px, so the
+        // quarter-shoulder term (3.75) undercuts the 10 the radius term would give.
+        assert_eq!(
+            footprint_cell(&BrushShape::Round { hardness: 0.99 }, 500.0),
+            3
+        );
+        // At least four cells across the shoulder wherever the shoulder binds.
+        for h in [0.9f32, 0.95, 0.99] {
+            let shoulder = 3.0 * (1.0 - h) * 500.0;
+            let cell = footprint_cell(&BrushShape::Round { hardness: h }, 500.0);
+            assert!(
+                cell as f32 * 4.0 <= shoulder || cell == 1,
+                "hardness {h}: cell {cell} puts fewer than 4 cells across the \
+                 {shoulder} px shoulder",
             );
         }
     }

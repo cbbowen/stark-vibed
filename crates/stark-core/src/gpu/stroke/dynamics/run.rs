@@ -23,7 +23,8 @@ use super::super::{
 };
 use super::BAKE_FORMAT;
 use super::plan::{
-    LoopDispatch, PlanCtx, SLOT, SlotKind, bleed_fires, dynamics_plan, snapshot_size,
+    LoopDispatch, PlanCtx, SLOT, SlotKind, bleed_fires, cell_scratch_size, dynamics_plan,
+    snapshot_size,
 };
 /// Resolution (texels per side) of the stamp loop's tool reservoir
 /// (§6.2). Brush-local, so carried colour detail is ~radius/32 canvas px — plenty
@@ -415,8 +416,14 @@ impl<'a> DynamicsRun<'a> {
             surface: self.scene.surface,
         };
         let plan = dynamics_plan(&ctx, segments, &fires, settle);
+        // The cell scratch (§6.2), only when some slot actually takes the coarse
+        // path — a small or hard tip allocates nothing and binds nothing.
+        let cells = plan
+            .iter()
+            .any(|d| d.cell_groups.is_some())
+            .then(|| self.cell_scratch(under.size));
         let stamp_buf = self.upload_plan(&plan);
-        let bind = self.bind_piece(&region, &under, &stamp_buf);
+        let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref());
 
         self.record_loop(&plan, &bind);
         self.write_back(base, &coords, lo, &region)
@@ -613,6 +620,35 @@ impl<'a> DynamicsRun<'a> {
         }
     }
 
+    /// The footprint-cell scratch (§6.2): where `cell_hoist` leaves the per-cell
+    /// means for `deposit_coarse` to read back. Sized by the same structural-fit
+    /// relation the snapshot scratch uses — [`cell_scratch_size`] of the piece's own
+    /// `dsize`, which `cell_geometry` asserted every slot's hoist grid against — and
+    /// registered on the piece like the region, for the same lifetime argument.
+    fn cell_scratch(&mut self, dsize: u32) -> Cells {
+        let device = &self.r.ctx.device;
+        let size = cell_scratch_size(dsize);
+        let mut tex = |label: &'static str| {
+            scoped_view(
+                device,
+                &mut self.piece,
+                (size, size),
+                BAKE_FORMAT,
+                LOOP_USAGE,
+                label,
+            )
+        };
+        Cells {
+            tool: tex("stark dynamics cell tool"),
+            lat: tex("stark dynamics cell lat"),
+            res: self
+                .r
+                .color_space
+                .has_resid()
+                .then(|| tex("stark dynamics cell res")),
+        }
+    }
+
     /// The plan's uniform slots, one [`UNIFORM_STRIDE`]-aligned window each — dynamic
     /// uniform offsets being the standard way to vary a uniform across dispatches
     /// within one pass.
@@ -653,6 +689,7 @@ impl<'a> DynamicsRun<'a> {
         region: &Region,
         under: &Snapshot,
         stamp_buf: &wgpu::Buffer,
+        cells: Option<&Cells>,
     ) -> PieceBindings {
         let r = self.r;
         let kit = &r.dynamics;
@@ -789,11 +826,61 @@ impl<'a> DynamicsRun<'a> {
             layout: &kit.settle_bgl,
             entries: &settle_entries,
         });
+        // The coarse pair's groups (§6.2), only for a piece whose plan hoists at all.
+        // The hoist reads the same baked prefixes the exact deposit's front half did;
+        // the coarse deposit swaps those two bindings for the cell means and keeps
+        // everything else the exact one binds.
+        let coarse = cells.map(|cl| {
+            let mut hoist_entries = vec![
+                params(),
+                desc::tex(19, &self.bake_load),
+                desc::tex(20, &self.bake_latm),
+                desc::tex(31, &cl.tool),
+                desc::tex(32, &cl.lat),
+            ];
+            push_resid(
+                &mut hoist_entries,
+                &[(30, self.bake_rlm.as_ref()), (35, cl.res.as_ref())],
+            );
+            let hoist = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark dynamics cell hoist bg"),
+                layout: &kit.hoist_bgl,
+                entries: &hoist_entries,
+            });
+            let mut coarse_entries = vec![
+                params(),
+                desc::tex(11, &under.color),
+                desc::tex(12, &under.aux),
+                desc::tex(13, &region.color),
+                desc::tex(14, &region.aux),
+                desc::tex(15, &self.noise),
+                desc::samp(16, &r.tips.noise_sampler),
+                desc::tex(21, &region.sel_mask),
+                desc::tex(22, &self.scene.surface.view),
+                desc::tex(33, &cl.tool),
+                desc::tex(34, &cl.lat),
+            ];
+            push_resid(
+                &mut coarse_entries,
+                &[
+                    (25, under.resid.as_ref()),
+                    (24, region.resid.as_ref()),
+                    (36, cl.res.as_ref()),
+                ],
+            );
+            let deposit = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark dynamics deposit coarse bg"),
+                layout: &kit.deposit_coarse_bgl,
+                entries: &coarse_entries,
+            });
+            CoarseBindings { hoist, deposit }
+        });
         PieceBindings {
             snapshot,
             exchange,
             bake,
             deposit,
+            coarse,
             settle,
         }
     }
@@ -884,10 +971,32 @@ impl<'a> DynamicsRun<'a> {
                         RESERVOIR_GROUPS.1.max(d.groups.1),
                         1,
                     );
-                    cpass.set_pipeline(&kit.deposit_pipeline);
-                    cpass.set_bind_group(0, &bind.deposit, &[off]);
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                    // The canvas's half: exact per texel, or — where the tip's
+                    // shoulder allows (`footprint_cell`) — hoisted once per cell and
+                    // applied over the same texel grid. The hoist reads the bake this
+                    // segment just wrote and nothing the exchange writes, so its
+                    // place in the chain costs one more serialized dispatch only on
+                    // the wide tips that are texel-bound rather than dispatch-bound.
+                    match d
+                        .cell_groups
+                        .map(|cg| (cg, bind.coarse.as_ref().expect("a coarse slot binds cells")))
+                    {
+                        Some((cg, cb)) => {
+                            cpass.set_pipeline(&kit.hoist_pipeline);
+                            cpass.set_bind_group(0, &cb.hoist, &[off]);
+                            cpass.set_bind_group(1, prefix_bg, &[]);
+                            cpass.dispatch_workgroups(cg.0, cg.1, 1);
+                            cpass.set_pipeline(&kit.deposit_coarse_pipeline);
+                            cpass.set_bind_group(0, &cb.deposit, &[off]);
+                            cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                        }
+                        None => {
+                            cpass.set_pipeline(&kit.deposit_pipeline);
+                            cpass.set_bind_group(0, &bind.deposit, &[off]);
+                            cpass.set_bind_group(1, prefix_bg, &[]);
+                            cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                        }
+                    }
                     cur = 1 - cur;
                 }
                 // The pen-up: snapshot the final footprint, bake the standing tip's
@@ -1120,6 +1229,16 @@ fn push_resid<'v>(
     }
 }
 
+/// The footprint-cell scratch (§6.2): the coarse deposit's per-cell means, sized by
+/// [`cell_scratch_size`] of the piece's snapshot square so every hoist grid a slot
+/// can ask for fits by construction.
+struct Cells {
+    tool: wgpu::TextureView,
+    lat: wgpu::TextureView,
+    /// The residual's cell mean, allocated exactly when the colour space has one.
+    res: Option<wgpu::TextureView>,
+}
+
 /// The bind groups one piece's dispatches switch between. Built once per piece
 /// because every dispatch varies only the stamp uniform's dynamic offset; the
 /// reservoir ping-pong is the one thing that needs a pair.
@@ -1128,7 +1247,16 @@ struct PieceBindings {
     exchange: [wgpu::BindGroup; 2],
     bake: [wgpu::BindGroup; 2],
     deposit: wgpu::BindGroup,
+    /// The coarse pair's groups — `Some` exactly when the piece allocated a cell
+    /// scratch, i.e. when some slot's [`footprint_cell`](super::plan) beat 1.
+    coarse: Option<CoarseBindings>,
     settle: wgpu::BindGroup,
+}
+
+/// The two bind groups a coarse slot dispatches with (§6.2).
+struct CoarseBindings {
+    hoist: wgpu::BindGroup,
+    deposit: wgpu::BindGroup,
 }
 
 /// What every texture the loop reads and writes needs to be: sampled by one

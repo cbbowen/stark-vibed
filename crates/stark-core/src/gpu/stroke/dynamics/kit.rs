@@ -59,6 +59,16 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) bake_bgl: wgpu::BindGroupLayout,
     pub(in crate::gpu::stroke) deposit_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) deposit_bgl: wgpu::BindGroupLayout,
+    /// The **coarse deposit** pair (§6.2), for the slots whose tip's shoulder lets
+    /// the exchange be evaluated per cell instead of per texel
+    /// (`budget::footprint_cell`): `cell_hoist` distils the prefix and the bake into
+    /// per-cell means, `deposit_coarse` reads them back over the exact kernel's own
+    /// texel grid. Slots with a cell of 1 — every hard or small tip, every bleed and
+    /// settle slot — never touch either and keep `deposit_pipeline` bit-for-bit.
+    pub(in crate::gpu::stroke) hoist_pipeline: wgpu::ComputePipeline,
+    pub(in crate::gpu::stroke) hoist_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) deposit_coarse_pipeline: wgpu::ComputePipeline,
+    pub(in crate::gpu::stroke) deposit_coarse_bgl: wgpu::BindGroupLayout,
     /// The pen-up: settles the transfer the tip was still in the middle of when the
     /// stroke stopped (`dynamics.wesl::settle`). Reads the reservoir through its own
     /// `bake` dispatch — the zero-travel slot bakes the *remaining pass's* delivery
@@ -77,7 +87,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
 }
 
 /// Build the brush-dynamics stamp-loop kit (§6.2): the region
-/// composite, the loop's seven compute pipelines, and the region→tile slice.
+/// composite, the loop's nine compute pipelines, and the region→tile slice.
 pub(in crate::gpu::stroke) fn build_dynamics_kit(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
@@ -170,9 +180,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- The stamp loop: one module, seven entry points — `snapshot`, `exchange`,
-    // `wick_x`, `wick_y`, `bake`, `deposit`, `settle` — over five bind group layouts,
-    // since the two wick axes share `exchange`'s (they need a strict subset of it).
+    // ---- The stamp loop: one module, nine entry points — `snapshot`, `exchange`,
+    // `wick_x`, `wick_y`, `bake`, `deposit`, `cell_hoist`, `deposit_coarse`,
+    // `settle` — over seven bind group layouts, since the two wick axes share
+    // `exchange`'s (they need a strict subset of it).
     // Every layout includes the dynamic-offset stamp uniform at binding 0; the binding
     // numbers partition the module's group(0) — see dynamics.wesl.
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -279,6 +290,24 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             stor(24),        // region_resid_w
         ][..9 + 3 * usize::from(resid)],
     );
+    // The colour-dynamics noise tile + its repeat sampler (§6.2) — shared by the two
+    // deposit layouts, which jitter the brush's own `add` paint identically.
+    let noise_tex_entry = wgpu::BindGroupLayoutEntry {
+        binding: 15,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let noise_samp_entry = wgpu::BindGroupLayoutEntry {
+        binding: 16,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    };
     let deposit_bgl = desc::bind_group_layout(
         device,
         "stark dynamics deposit bgl",
@@ -291,23 +320,8 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             ctex(12, false),
             stor(13),
             stor(14),
-            // The colour-dynamics noise tile + its repeat sampler (§6.2).
-            wgpu::BindGroupLayoutEntry {
-                binding: 15,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 16,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
+            noise_tex_entry,
+            noise_samp_entry,
             // The selection mask over the region (§6.8) — read 1:1 with the region
             // here, so `textureLoad` suffices.
             ctex(21, false),
@@ -318,6 +332,44 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             ctex(25, false), // under_resid
             stor(24),        // region_resid_w
         ][..12 + 3 * usize::from(resid)],
+    );
+    // The coarse pair (§6.2). `cell_hoist` is the exact deposit's front half — the
+    // baked prefixes in, the per-cell means out — plus the prefix-τ volume at group 1.
+    let hoist_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics cell hoist bgl",
+        &[
+            params_entry,
+            ctex(19, false),
+            ctex(20, false),
+            stor32(31),
+            stor32(32),
+            ctex(30, false), // bake_rlm
+            stor32(35),      // cell_res_w
+        ][..5 + 2 * usize::from(resid)],
+    );
+    // `deposit_coarse` is the deposit layout with the baked prefixes swapped for the
+    // cell means — it takes no prefix-τ tap and no bake tap of its own, which is the
+    // whole point, so neither binding (nor group 1) appears here.
+    let deposit_coarse_bgl = desc::bind_group_layout(
+        device,
+        "stark dynamics deposit coarse bgl",
+        &[
+            params_entry,
+            ctex(11, false),
+            ctex(12, false),
+            stor(13),
+            stor(14),
+            noise_tex_entry,
+            noise_samp_entry,
+            ctex(21, false),
+            ctex(22, false),
+            ctex(33, false), // cell_tool
+            ctex(34, false), // cell_lat
+            ctex(25, false), // under_resid
+            stor(24),        // region_resid_w
+            ctex(36, false), // cell_res
+        ][..11 + 3 * usize::from(resid)],
     );
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
     // prefix binding, but compute-visible.
@@ -383,6 +435,18 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "deposit",
         &[Some(&deposit_bgl), Some(&prefix_bgl)],
     );
+    // The hoist takes the same prefix-τ taps the deposit's front half did; the coarse
+    // deposit takes none, so its layout stops at group 0.
+    let hoist_pipeline = cpipe(
+        "stark dynamics cell hoist",
+        "cell_hoist",
+        &[Some(&hoist_bgl), Some(&prefix_bgl)],
+    );
+    let deposit_coarse_pipeline = cpipe(
+        "stark dynamics deposit coarse",
+        "deposit_coarse",
+        &[Some(&deposit_coarse_bgl)],
+    );
     // The settle reads the prefix-τ volume too (group 1): its exposure is a pair of
     // readings of it, which is what makes the pen-up fade over the whole tip rather
     // than over the few pixels of its coverage knee.
@@ -447,6 +511,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         bake_bgl,
         deposit_pipeline,
         deposit_bgl,
+        hoist_pipeline,
+        hoist_bgl,
+        deposit_coarse_pipeline,
+        deposit_coarse_bgl,
         settle_pipeline,
         settle_bgl,
         exchange_sampler,

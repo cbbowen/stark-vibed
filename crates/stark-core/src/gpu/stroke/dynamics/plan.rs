@@ -22,7 +22,7 @@ use crate::geom::Vec2;
 
 use super::super::budget::{
     BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, TAU_PER_PASS, WICK_TRAVEL_QUANTUM,
-    bleed_stencil,
+    bleed_stencil, footprint_cell,
 };
 use super::super::segments::{Segment, coverage_bounds};
 // The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
@@ -55,6 +55,13 @@ pub(super) struct LoopDispatch {
     /// the ~4·r² texels its footprint can reach instead of the ~10·r² a diagonal one
     /// might have needed.
     pub(super) groups: (u32, u32),
+    /// Workgroup counts for the `cell_hoist` grid when this slot takes the **coarse
+    /// deposit** (§6.2) — `Some` exactly when [`footprint_cell`] beat 1 for this
+    /// segment's tip, which only a painting segment's can. `None` is the exact
+    /// per-texel `deposit`, bit-for-bit the kernel every slot ran before the coarse
+    /// path existed; bleed and settle slots are always `None`, so the lateral flux
+    /// and the pen-up never see a cell at all.
+    pub(super) cell_groups: Option<(u32, u32)>,
     pub(super) kind: SlotKind,
 }
 
@@ -208,6 +215,13 @@ struct Slot {
     tooth: f32,
     weave_scale: f32,
     weave_bias: Vec2,
+    /// The footprint cell's edge in texels (§6.2) — 1 is the exact per-texel deposit,
+    /// which is also the neutral value: the exact kernels never read the lane.
+    cell: f32,
+    /// The cell grid's canvas anchor: the region's canvas origin modulo the cell,
+    /// so cell boundaries are pinned to canvas texels whatever region surrounds them
+    /// (§6.4). Zero whenever `cell` is 1.
+    cell_anchor: Vec2,
 }
 
 impl Default for Slot {
@@ -241,6 +255,11 @@ impl Default for Slot {
             tooth: 0.0,
             weave_scale: 0.0,
             weave_bias: Vec2::ZERO,
+            // 1, not 0, for the same reason the bearing is 1: the neutral cell is
+            // "exact", and a slot that never reads the lane should still carry the
+            // value that means what it does.
+            cell: 1.0,
+            cell_anchor: Vec2::ZERO,
         }
     }
 }
@@ -287,6 +306,7 @@ impl Slot {
                 self.weave_bias.y,
             ],
             j: self.resid,
+            k: [self.cell, self.cell_anchor.x, self.cell_anchor.y, 0.0],
         }
     }
 }
@@ -406,6 +426,61 @@ struct Rect {
     groups: (u32, u32),
 }
 
+/// The cell scratch's square for a piece, in cells: enough for any rect the piece's
+/// snapshot scratch admits at the finest cell the coarse path runs (2). The same
+/// structural-fit move as [`snapshot_size`]/[`rect_extent`]: both sides of the
+/// relation go through this function — [`cell_geometry`] asserts against it,
+/// `DynamicsRun::cell_scratch` allocates from it — so no slot a plan can build reads
+/// cells the scratch does not hold.
+pub(super) fn cell_scratch_size(dsize: u32) -> u32 {
+    dsize.div_ceil(2) + 2
+}
+
+/// The coarse deposit's per-slot geometry (§6.2): the cell grid's canvas anchor, and
+/// the `cell_hoist` workgroup counts covering every cell the slot's texel grid can
+/// touch — or `None` when the cell is 1 and the slot keeps the exact kernel.
+///
+/// The cells are counted over the texels the deposit will actually scan — the
+/// dispatch rect *as rounded up to whole workgroups*, clamped to the snapshot
+/// scratch — because a rounding texel past the rect still passes the shader's bounds
+/// checks and looks its cell up; a cell it can name must be one the hoist wrote, or
+/// the deposit reads whatever the previous segment left in the scratch.
+fn cell_geometry(
+    cell: u32,
+    region_origin: Vec2,
+    rect: &Rect,
+    dsize: u32,
+) -> (Vec2, Option<(u32, u32)>) {
+    if cell <= 1 {
+        return (Vec2::ZERO, None);
+    }
+    let c = cell as i32;
+    // The anchor is congruence arithmetic, so it needs the origin to *be* the
+    // integer it is (a tile origin less the apron): a fractional origin would put
+    // the grid off the canvas texels everything above says it is on.
+    debug_assert!(
+        region_origin.x.fract() == 0.0 && region_origin.y.fract() == 0.0,
+        "a region origin must sit on a canvas texel for the cell grid to anchor to it",
+    );
+    let anchor = Vec2::new(
+        (region_origin.x as i32).rem_euclid(c) as f32,
+        (region_origin.y as i32).rem_euclid(c) as f32,
+    );
+    let cells = |origin: f32, a: f32, groups: u32| -> u32 {
+        let base = origin as i32 + a as i32;
+        let span = (groups * 8).min(dsize) as i32;
+        ((base + span - 1).div_euclid(c) - base.div_euclid(c) + 1) as u32
+    };
+    let cx = cells(rect.origin.x, anchor.x, rect.groups.0);
+    let cy = cells(rect.origin.y, anchor.y, rect.groups.1);
+    let fit = cell_scratch_size(dsize);
+    assert!(
+        cx <= fit && cy <= fit,
+        "a {cx}x{cy}-cell hoist overruns the {fit}-cell scratch",
+    );
+    (anchor, Some((cx.div_ceil(8), cy.div_ceil(8))))
+}
+
 impl PlanCtx<'_> {
     /// [`dispatch_rect`] against this piece's origin and snapshot square.
     fn rect(&self, lo: Vec2, hi: Vec2) -> Rect {
@@ -506,8 +581,15 @@ pub(super) fn dynamics_plan(
         // matters.
         let quantum = WICK_TRAVEL_QUANTUM * s.radius;
         let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
+        // The footprint cell this segment's deposit may evaluate the exchange at
+        // (§6.2): a pure function of the brush shape and the segment's own radius
+        // ([`footprint_cell`]), so a live tail and its commit pick the same cell —
+        // and 1, the exact kernel, for every tip whose shoulder proves nothing.
+        let cell = footprint_cell(&b.shape, s.radius);
+        let (cell_anchor, cell_groups) = cell_geometry(cell, region_origin, &rect, ctx.dsize);
         plan.push(LoopDispatch {
             groups: rect.groups,
+            cell_groups,
             kind: SlotKind::Segment {
                 wick_steps: wick_steps.max(0.0) as u32,
             },
@@ -536,6 +618,8 @@ pub(super) fn dynamics_plan(
                 add: s.add,
                 curvature: s.curvature,
                 tooth: s.tooth,
+                cell: cell as f32,
+                cell_anchor,
                 // No `bleed_reach` and no `lambda_bleed`: the lateral flux runs only on
                 // the dedicated firings, so a painting segment takes the no-bleed path
                 // bit-for-bit (§6.2). Both are `Slot::default`'s zero.
@@ -559,6 +643,10 @@ pub(super) fn dynamics_plan(
             let (reach, lambda_bleed) = bleed_stencil(fire.bleed, fire.radius, fire.length);
             plan.push(LoopDispatch {
                 groups: rect.groups,
+                // Bleed slots keep the exact deposit whatever the tip: the ladder's
+                // flux pairs need both threads of a pair to read per-texel exposures,
+                // and the firings are rare and small next to the painting they cut.
+                cell_groups: None,
                 kind: SlotKind::Bleed,
                 // Everything a painting segment carries and this does not is
                 // `Slot::default`'s zero, which is what the slot *means*: λ_lift = 0 so
@@ -613,6 +701,10 @@ pub(super) fn dynamics_plan(
         let rect = ctx.rect(end - Vec2::splat(s.radius), end + Vec2::splat(s.radius));
         plan.push(LoopDispatch {
             groups: rect.groups,
+            // The settle is one dispatch at the end of a stroke — nothing to amortize
+            // — and its p-norm handover is exactly the smooth structure a cell would
+            // staircase, so it stays exact whatever the tip.
+            cell_groups: None,
             kind: SlotKind::Settle,
             slot: Slot {
                 start: p,
@@ -972,6 +1064,8 @@ mod tests {
             weave_scale: 33.0,
             weave_bias: Vec2::new(34.0, 35.0),
             resid: [36.0, 37.0, 38.0, 39.0],
+            cell: 40.0,
+            cell_anchor: Vec2::new(41.0, 42.0),
         }
         .pack();
 
@@ -1013,6 +1107,11 @@ mod tests {
             [36.0, 37.0, 38.0, 39.0],
             "j: the colour's residual (§6.7)"
         );
+        assert_eq!(
+            packed.k,
+            [40.0, 41.0, 42.0, 0.0],
+            "k: the footprint cell + its canvas anchor (§6.2)"
+        );
     }
 
     /// The neutral slot is neutral *in the shader's terms*, which for one field is not
@@ -1023,6 +1122,7 @@ mod tests {
     fn the_default_slot_is_neutral_rather_than_zeroed() {
         let d = Slot::default().pack();
         assert_eq!(d.h[2], 1.0, "the default bearing must be 1, not 0");
+        assert_eq!(d.k[0], 1.0, "the default cell must be 1 — exact — not 0");
         for (lane, name) in [
             (d.a, "a"),
             (d.b, "b"),
@@ -1040,6 +1140,40 @@ mod tests {
             [0.0; 3],
             "lane h beyond the bearing"
         );
+        assert_eq!([d.k[1], d.k[2], d.k[3]], [0.0; 3], "lane k beyond the cell");
+    }
+
+    /// **The cell grid is anchored to the canvas, not to the region** (§6.4). Where a
+    /// cell boundary falls must be a property of the canvas position and the brush
+    /// alone: region origins differ per piece and per live fold, and a grid that
+    /// moved with them would break tile aprons against neighbour interiors and
+    /// `preview == committed` in one stroke. This replays the shader's own index
+    /// arithmetic (`div_floor(rt + anchor, c)`) against [`cell_geometry`]'s anchor
+    /// for a spread of origins and asserts every boundary lands on the same canvas
+    /// texel as it does with the origin at zero.
+    #[test]
+    fn cell_boundaries_are_canvas_anchored_whatever_the_region_origin() {
+        let rect = Rect {
+            origin: Vec2::ZERO,
+            groups: (8, 8),
+        };
+        let boundaries = |origin: f32| -> Vec<i32> {
+            let (anchor, groups) = cell_geometry(5, Vec2::new(origin, origin), &rect, 64);
+            assert!(groups.is_some(), "a cell of 5 must take the coarse path");
+            let (c, a) = (5i32, anchor.x as i32);
+            // The canvas texels where the shader's cell index steps: its region
+            // texel is `canvas − origin`, its cell `floor((rt + anchor) / c)`.
+            let idx = |canvas: i32| (canvas - origin as i32 + a).div_euclid(c);
+            (-63..64).filter(|x| idx(*x) != idx(*x - 1)).collect()
+        };
+        let want = boundaries(0.0);
+        for origin in [-640.0f32, -5.0, 3.0, 17.0, 999.0] {
+            assert_eq!(
+                boundaries(origin),
+                want,
+                "cell boundaries moved with the region origin {origin}",
+            );
+        }
     }
 
     // --- the bleed cadence -------------------------------------------------
