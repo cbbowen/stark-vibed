@@ -127,6 +127,60 @@ the browser's own compositor depth.
 - [ ] Delta-only `overlay_tiles`; fix the O(n²) per-sample record clone and
   control-point rebuild.
 
+## Wide tips (r≈500): the measured split
+
+Measured 2026-08-10 on `stroke-latency` (run-to-run noise that day <1%, so the
+shares are firm). Baselines: `commit/dynamics/500` = 19.13 ms,
+`live/dynamics/500` = 913.7 ms per 240-move gesture (~3.8 ms per fold) — the
+wide tip's live gesture is as slow as r=8's was before the small-radius work.
+The `live/{250,500}` bench lines exist as of this branch; the live bench
+drives the lazy fold explicitly (`Engine::flush_live` per move).
+
+Phase split, by env-gated dispatch skipping (the dynamics-perf-profile
+bracketing method, re-measured for master's per-segment loop — the march-era
+percentages died with the march):
+
+| phase | share of commit | share of live |
+|---|---|---|
+| deposit | **53%** | **44%** |
+| exchange | 23% | 20% |
+| slice (write-back) | 6.5% | 15% |
+| settle | 2.7% | 10.5% |
+| wick+bake+snapshot | 7.8% | 7.4% |
+| region composite | ~0 | 2.5% |
+
+The opposite regime from small radii: r=8 is dispatch-bound; r=500 is bound by
+per-texel work in the footprint-sized passes. Deposit runs at ~1 ns/texel —
+an order of magnitude below streaming rates, so it is ALU/latency-bound on its
+per-texel loads and exchange-law math, not bandwidth-bound.
+
+**Done:** `prefix_at` round-tip fast path (a one-layer prefix volume was read
+as two identical slices and mixed — eight loads where four suffice, and
+`mix(a,a,t)` double-rounds): **−6.0% commit, −6.2% live** at r=500.
+
+**Measured and rejected:** compiling the bleed ladder out of `deposit`
+(`@if(bleed)` specialization for non-bleed slots). Deleting the block outright
+moved the r=500 lines ≤0.9% beyond the fast path — the never-taken branch
+costs no meaningful occupancy, so the specialization machinery isn't worth it.
+
+**Remaining levers, in expected order:**
+
+- **Shoulder-bounded coarse evaluation** (model change): deposit/exchange
+  evaluate the exchange laws at canvas resolution across a footprint whose
+  content varies at the scale of the tip's shoulder (`3·(1−hardness)·r`). The
+  march's travel-cell lesson — resolve the shoulder, not the radius — applied
+  in the footprint domain. This is the only lever sized to the 64–75% the two
+  big passes hold; needs the golden/ripple methodology from the march round.
+- **Slice batching**: 15% of live is ~30 render passes per fold (one per
+  tile). A compute write-back in one pass would trade render-target rounding
+  for storage rounding (see the f16 ratchet note) — only worth it with the
+  rounding argument written down.
+- **Scratch persistence across a stroke** (Tier 2 item): region + snapshot +
+  reservoir textures are recreated per fold; the all-passes-skipped floor was
+  0.92 ms/move, which bounds what pooling can reclaim (≤24% of live).
+- The settle share (10.5% live) is the preview==commit price and moves only
+  with the model.
+
 ## Measuring
 
 - Tier 1 and the ingestion/preview decoupling are invisible to

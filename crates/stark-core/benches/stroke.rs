@@ -147,7 +147,7 @@ fn commit(c: &mut Criterion) {
         .warm_up_time(Duration::from_secs(2))
         .measurement_time(Duration::from_secs(12));
 
-    for radius in [8.0f32, 30.0, 100.0, 500.0] {
+    for radius in [8.0f32, 30.0, 100.0, 250.0, 500.0] {
         for (mode, brush) in [("dynamics", smear(radius)), ("swept", plain(radius))] {
             // r=500 on the swept path is one enormous instanced draw with nothing to
             // learn from — the interesting extreme radius is the dynamics one, where
@@ -205,8 +205,15 @@ fn live(c: &mut Criterion) {
         // flat sampling will not run fewer than one gesture per sample.
         .measurement_time(Duration::from_secs(15));
 
-    for radius in [8.0f32, 30.0, 100.0] {
+    // 250/500 too, unlike the old sweep: a wide tip's live latency is exactly what
+    // this group exists to see, and it was the one thing it could not.
+    for radius in [8.0f32, 30.0, 100.0, 250.0, 500.0] {
         for (mode, brush) in [("dynamics", smear(radius)), ("swept", plain(radius))] {
+            // Same rationale as `commit`: the swept path at extreme radii is one
+            // enormous instanced draw with nothing to learn from.
+            if mode == "swept" && radius > 100.0 {
+                continue;
+            }
             engine.process(ViewCommand::SetBrush(brush));
             g.bench_function(BenchmarkId::new(mode, radius), |b| {
                 b.iter_custom(|iters| {
@@ -221,6 +228,13 @@ fn live(c: &mut Criterion) {
                         });
                         for s in it {
                             engine.process(GestureCommand::To { sample: *s });
+                            // The fold is lazy: `To` marks it stale and the
+                            // presentation read rebuilds it. The frontend takes
+                            // that read once per rAF; folding per move here is
+                            // the per-move latency ceiling this group guards —
+                            // and the same work the pre-lazy engine did per `To`,
+                            // so older baselines stay comparable.
+                            engine.flush_live();
                             // Drain per move, not per gesture: queuing all 240 moves
                             // and waiting once would measure throughput, and what
                             // makes a stroke feel laggy is the latency of one move.

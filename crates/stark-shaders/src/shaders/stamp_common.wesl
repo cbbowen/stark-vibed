@@ -455,6 +455,16 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
         return 0.0;
     }
     let nz = i32(textureNumLayers(prefix_tex));
+    // A round tip's volume is one slice, and that slice is the answer at every
+    // orientation. Worth a branch rather than letting the general path stand:
+    // that path reads the same slice twice — eight loads where four suffice, on
+    // the hottest lookup the dynamics loop has (`deposit` takes this difference
+    // at every footprint texel) — and its `mix(a, a, fw)` is not even the
+    // identity in floats (two roundings), so the collapse is the more exact
+    // reading as well as the cheaper one.
+    if nz == 1 {
+        return prefix_slice(xl, yl, 0);
+    }
     let fl = fract(w) * f32(nz);
     let l0f = floor(fl);
     let fw = fl - l0f;
