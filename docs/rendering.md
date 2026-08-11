@@ -763,15 +763,15 @@ other, assert it where it constrains something:
 
 ```rust
 const _: () = assert!(SWEEP_VERTS == 2 * (SWEEP_SLICES + 1), "…");
-const _: () = assert!(WICK_TRAVEL_QUANTUM * WICK_RATE == WICK_HALF as f32, "…");
 ```
 
-Both were runtime tests reading the *linked* shader, and both were limited by it.
-The first had to check through `SWEEP_SLICES` because the shader states
-`SWEEP_VERTS` for the host's benefit and never computes with it, so the linker
-stripped it. The second could not read `WICK_RATE` at all, for the same reason —
-the shader computes with the baked `WICK_KERNEL`. Reading unlinked sources retires
-that whole class, and the checks moved from `cargo test` to `cargo build`.
+That was a runtime test reading the *linked* shader, and it was limited by it: it
+had to check through `SWEEP_SLICES` because the shader states `SWEEP_VERTS` for
+the host's benefit and never computes with it, so the linker stripped it. (The
+retired wick's cadence relation was the other case, and the sharper one — its
+`WICK_RATE` survived the linker only as prose, because the shader computes with a
+baked kernel.) Reading unlinked sources retires that whole class, and the checks
+moved from `cargo test` to `cargo build`.
 
 ### Why it is trustworthy
 

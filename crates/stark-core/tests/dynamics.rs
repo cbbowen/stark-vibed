@@ -1659,3 +1659,145 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
          in it and the light is reading it",
     );
 }
+
+/// **A drained smear must leave no ring at its lift end** — the artifact the retired
+/// `wick` pass existed to suppress, pinned as behaviour now that the pass is gone.
+///
+/// The disease (diagnosed 2026-07-31): `exchange` keys each reservoir cell's
+/// exposure on its own τ, which collapses over a hard tip's shoulder, so when
+/// `drain` ran the brush dry the interior emptied with the fading trail while the
+/// shoulder ring kept paint lifted hundreds of px back — and printed it as a rim
+/// outside a scraped groove, curving into a chevron at the stroke end. The wick (a
+/// lateral flux in the reservoir) treated the symptom; what actually cures it is
+/// the pen-up settle delivering the remaining pass's payout in the right order (the
+/// delivery integral, 2026-08-02) — the ring's slow payout *is* the visible trail,
+/// so once it is served correctly nothing is left stranded. Measured on the removal
+/// (2026-08-10, wick on vs off): no lateral rise above 1 level in either arm, fade
+/// past the stroke end monotone both ways, worst 4 levels anywhere in the frame.
+///
+/// Two metrics, both statements a stroke's cross-section must satisfy:
+/// - the **ring**: worst rise above a running minimum walking laterally away from
+///   the stroke axis, per column (paint may only fall off as you leave the axis;
+///   any rise is a rim outside a groove);
+/// - the **fade**: worst rise walking along the axis past the stroke end (the
+///   trail may only fade; a rise is a stranded ring printing past the end).
+#[test]
+fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
+    use stark_core::geom::Extent2;
+    const WIDE: Extent2 = Extent2 {
+        width: 1600,
+        height: 256,
+    };
+    let brush = BrushParams {
+        radius: 80.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        drain: 0.005,
+        dynamics: BrushDynamics {
+            add: 1.0,
+            lift: 0.95,
+            deposit: 0.95,
+            ..BrushDynamics::default()
+        },
+        ..BrushParams::default()
+    };
+    // Two regimes: the fifteen-radius stroke (the brush bone dry for
+    // most of the trail — the wick-removal measurement's constructed case), and the
+    // original golden's own 5.4-radius stroke (the brush
+    // just running dry at the end — the regime the chevron was first pinned in).
+    // Canvas x = pixel x − 800 at this viewport.
+    let cases: [(&str, [Vec2; 3], u32); 2] = [
+        (
+            "15-radius (bone dry)",
+            [
+                Vec2::new(-1000.0, 0.0),
+                Vec2::new(-400.0, 0.0),
+                Vec2::new(200.0, 0.0),
+            ],
+            1000,
+        ),
+        (
+            "5.4-radius (golden_lift_end_regression stroke 2)",
+            [
+                Vec2::new(-400.0, 0.0),
+                Vec2::new(0.0, 0.0),
+                Vec2::new(30.0, 0.0),
+            ],
+            830,
+        ),
+    ];
+
+    // Paint level per pixel against the pre-stroke render of the same engine, so the
+    // ground's own structure cancels: red paint pulls the green channel down.
+    let level = |before: &stark_core::RgbaImage, after: &stark_core::RgbaImage, x: u32, y: u32| {
+        (before.pixel(x, y)[1] as i32 - after.pixel(x, y)[1] as i32).max(0)
+    };
+
+    for (name, points, end_px) in cases {
+        let Some(mut engine) = engine_or_skip_sized(WIDE) else {
+            return;
+        };
+        let before = engine.render_to_image();
+        stroke_with(&mut engine, brush, &points);
+        let after = engine.render_to_image();
+
+        // Sanity: the stroke landed, and heavily. Sampled early in the body — at
+        // drain 0.005 the brush is dry long before a long stroke's mid-trail.
+        let start_px = (points[0].x as i32 + 800).max(0) as u32;
+        let body = (start_px..start_px + 300)
+            .map(|x| level(&before, &after, x, WIDE.height / 2))
+            .max()
+            .expect("a row");
+        assert!(body > 100, "{name}: the smear did not land ({body} levels)");
+
+        let ring = |before: &stark_core::RgbaImage, after: &stark_core::RgbaImage| {
+            let axis = WIDE.height / 2;
+            let mut worst = (0i32, 0u32, 0u32);
+            for x in 0..WIDE.width {
+                for dir in [-1i32, 1] {
+                    let mut min = i32::MAX;
+                    let mut y = axis as i32;
+                    while y >= 0 && (y as u32) < WIDE.height {
+                        let l = level(before, after, x, y as u32);
+                        min = min.min(l);
+                        if l - min > worst.0 {
+                            worst = (l - min, x, y as u32);
+                        }
+                        y += dir;
+                    }
+                }
+            }
+            worst
+        };
+        let fade = |before: &stark_core::RgbaImage, after: &stark_core::RgbaImage| {
+            let y = WIDE.height / 2;
+            let mut min = i32::MAX;
+            let mut worst = (0i32, 0u32);
+            // From the stroke end out to the frame edge: the trail may only fade.
+            for x in end_px..WIDE.width {
+                let l = level(before, after, x, y);
+                min = min.min(l);
+                if l - min > worst.0 {
+                    worst = (l - min, x);
+                }
+            }
+            worst
+        };
+
+        // Measured at 1 and 0 on the adapter this was built on; the slack covers
+        // cross-adapter rounding, not a smaller ring — the artifact this pins was a
+        // visible rim, not a level of noise.
+        let (r, rx, ry) = ring(&before, &after);
+        assert!(
+            r <= 3,
+            "{name}: a rim rises {r} levels outside a groove at ({rx}, {ry}) — the \
+             lift-end ring is back; the settle is no longer delivering the shoulder's \
+             payout in order",
+        );
+        let (f, fx) = fade(&before, &after);
+        assert!(
+            f <= 1,
+            "{name}: the trail rises {f} levels at x {fx} past the stroke end — a \
+             stranded ring is printing beyond the lift",
+        );
+    }
+}

@@ -5,16 +5,14 @@
 // give the sequencing; usage scopes are per-dispatch, so the region may be
 // sampled by one dispatch and storage-written by the next — no copies):
 //
-//   - per flattened segment, in order: `wick` (let the paint on the tool migrate
-//     between neighbouring parts of the tip, before either half of the transfer reads
-//     it), `bake` (integrate the reservoir along the travel axis, so the deposit can
-//     read what the tip presented over a whole pass rather than at one point),
+//   - per flattened segment, in order: `bake` (integrate the reservoir along the
+//     travel axis, so the deposit can read what the tip presented over a whole pass
+//     rather than at one point),
 //     `exchange` — one thread per **tool reservoir** texel, which settles the tool's
 //     half of the transfer, and which also carries the `snapshot` (copy the segment's
 //     footprint texels to an `under` scratch, so the deposit can read-modify-write the
 //     region) in the tail of its own grid — and `deposit`, one thread per footprint
-//     texel. `wick` and `exchange` each ping-pong the reservoir, so a segment cycles it
-//     twice.
+//     texel. `exchange` ping-pongs the reservoir, so a segment cycles it once.
 //
 // **The snapshot is not a step of the loop, it is the read side of the deposit**, and
 // it depends on nothing the exchange writes. Giving it a dispatch of its own bought a
@@ -121,8 +119,7 @@ struct Stamp {
     // f–h: colour dynamics (§6.2) for the brush's own `add` paint —
     // the same field/domain as the fast path's jitter, so the two paths agree.
     // f: noise frequency per lookup axis (across the stroke, along it) .xy,
-    //    1/NOISE_TILE_PX in .z; .w unused. (The wick's step is not here: its kernel is
-    //    a compile-time binomial and its cadence is the host's, see `wick_axis`.)
+    //    1/NOISE_TILE_PX in .z; .w unused.
     f: vec4<f32>,
     // g: per colour-channel noise amplitude .xyz (all 0 = off); arc length at
     //    the segment start (canvas px) in .w.
@@ -265,13 +262,13 @@ fn weave_uv_bias() -> vec2<f32> { return st.i.zw; }
 // Bilinear clamp sampler for the region / reservoir / coverage lookups.
 @group(0) @binding(5) var samp: sampler;
 // The brush tip's coverage mask over brush-local [-1,1]² (R8; §6.6) — the
-// reservoir texel's own footprint weight. Read by the **tool** side only (`wick`
-// and `exchange`); the canvas side uses the prefix-τ exposure instead.
+// reservoir texel's own footprint weight. Read by the **tool** side only
+// (`exchange`); the canvas side uses the prefix-τ exposure instead.
 @group(0) @binding(6) var cov_tex: texture_2d<f32>;
 // The tool reservoir ping-pong: colour = (latent .xyz, per-unit opacity .w),
 // aux = (carried height, _, _, _). `src` is read this dispatch, `dst` written;
-// the host swaps the bind group after each pass that writes it — `wick` and
-// `exchange`, so a painting segment cycles it twice. A bleed or settle slot
+// the host swaps the bind group after each pass that writes it — `exchange`,
+// so a painting segment cycles it once. A bleed or settle slot
 // writes it not at all and leaves it where the previous segment put it.
 @group(0) @binding(7) var brush_src_color: texture_2d<f32>;
 @group(0) @binding(8) var brush_src_aux: texture_2d<f32>;
@@ -631,302 +628,13 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
     );
 }
 
-// ---- 0. Wick: paint migrating within the tip. ------------------------------------
-//
-// The reservoir is a grid of independent cells: each one trades with the canvas
-// directly beneath it and with nothing else. Real paint on a tool does not hold still
-// like that — it creeps between the bristles — and leaving that out is visible,
-// because the *rate* each cell trades at varies enormously across the tip.
-//
-// `exchange` keys a cell's exposure on its own optical depth, and τ is flat across the
-// interior (the 0.999 coverage clamp caps it) and then falls away over a hard tip's
-// shoulder — at `hardness = 0.95` the last cells still in contact exchange some twenty
-// times slower than the interior. So when a stroke's own paint runs out
-// (`drain`) and the tip is smearing what it picked up, the interior cells empty in step
-// with the fading trail while the shoulder ring goes on holding paint lifted hundreds
-// of pixels back. Nothing relaxes it, and the deposit lays each lateral row's load back
-// at its own offset, so the ring prints: a rim of surplus paint at the shoulder with a
-// scraped groove just inside it, curving into a tip-shaped chevron where the stroke
-// stops. `golden_lift_end_regression` pins it.
-//
-// So the cells trade with their four neighbours, in **flux form**: a pair swaps a share
-// of its difference, one thread adding what the other subtracts. That makes the whole
-// pass a pure internal redistribution — total height and optical mass over the tool are
-// unchanged to the last bit the float arithmetic keeps — which is why it can sit in the
-// loop without touching the conservation argument the transfer rests on (§6.1).
-//
-// **It runs before `bake`, not between `bake` and `exchange`.** Those two are the two
-// halves of one transfer and only add up if both read the reservoir as the segment
-// found it; wicking between them would let the canvas receive a share of one reservoir
-// while the tool gave up a share of another, and the halves would disagree by the flux.
-// Ahead of both, it is simply part of what the tool arrives at the segment carrying.
-//
-// **What the flux chases is concentration, not height.** A tool holds more paint where
-// there is more of it in contact, so the state a tip relaxes towards is `height ∝
-// coverage` — its own shape — and the thing that actually equalises is height *per unit
-// coverage*. Driving the flux on raw height instead would make uniform height the
-// equilibrium, which is a different brush: it pumps paint out of the interior into the
-// barely-touching shoulder, and the whole stroke lays down ~5% of a radius wider with a
-// softer edge. Measured, not reasoned about — that version widened this test's body
-// edge from 15 to 32 levels before the concentration form replaced it.
-//
-// The mobility is `min` of the two cells' coverage — symmetric, so the flux stays
-// antisymmetric, and vanishing where the tip does. That second property matters twice
-// over: no paint is dragged out into the zero-coverage corners of the square reservoir,
-// where nothing would ever deposit it again, and a cell out of contact carries nothing
-// along. It is also what bounds the scheme: a cell can shed at most `min(c_n, c_t)/c_t
-// ≤ 1` of its own concentration to each neighbour.
-
-// How readily paint migrates within the tip, per unit of travel in radius units.
-//
-// Tuned against `golden_lift_end_regression`, measuring the ring as the worst rise
-// above a groove along any lateral profile — a stroke's paint may only fall off as you
-// walk away from its axis, so any rise is a rim sitting outside a scrape. Rates 1, 2,
-// 4, 8 gave 2.0, 1.67, 1.0, 1.67 levels. 4 is the optimum from both ends: below it the
-// worst rise is still *at the stroke end*, which is the ring itself, and above it the
-// ring is gone but the rim the wick feeds starts registering instead.
-//
-// There is a real cost on the other side, which is why this is not simply set high.
-// Wicking hands paint to shoulder cells that used to hold almost none — the same rate
-// disparity that stranded the ring also starved them — so they now deposit, and the
-// stroke's own edge softens: the same test's body edge climbs 25 → 29 → 33 → 36 levels
-// across the rates above. Arguably the starved rim was the older defect of the two, but
-// it is a visible change to every paint-manipulating brush and not one to spend for
-// free, which is what makes the optimum an optimum rather than a floor.
-//
-// Read it as a **variance rate**: travelling `lr` injects `σ² = 0.5 · WICK_RATE · lr`
-// texels² per axis, and since variance adds under composition, the total over a stroke
-// is proportional to the distance travelled however the path was cut and however the
-// cadence below chops it up. It was 8 while the retired saturating form was silently
-// delivering a fraction of nominal at the step this loop actually runs at; with the
-// scheme honest the same smoothing costs about half the number.
-//
-// It also sets the wick's **cadence**: one pass of the kernel below carries
-// `WICK_HALF / WICK_RATE` of travel, which is what `stroke::WICK_TRAVEL_QUANTUM` must
-// equal.
-const WICK_RATE: f32 = 4.0;
-
-// **The wick keeps its own cadence, and that is what bounds the step.** It used to run
-// once per segment, whatever a segment happened to be, and carry however much travel
-// that was by pushing the flux's *reach* outwards — `d = sqrt(WICK_RATE·lr)`, on the
-// argument that variance is `Σ w·d²`, so moving the same weight further buys `d²` times
-// the smoothing under the same `Σw ≤ 1` stability bound.
-//
-// The argument is true about variance and wrong about *conditioning*, and the failure is
-// not gradual. A four-point stencil at integer distance `d` couples a cell only to cells
-// of the same parity in `d`, so at even reach the grid's two sublattices stop talking:
-// the checkerboard mode `(−1)^(x+y)` has eigenvalue exactly **1** and never decays,
-// while `Σw = 1` leaves the cell *none* of its own value. That is not a corner —
-// `exchange_travel` caps at `MAX_EXCHANGE_TRAVEL = 1`, and `WICK_RATE · 1 = 4` puts the
-// reach at exactly 2, so **every brush at the relaxed end of the range ran there**.
-// Measured across `lift = deposit`: the checkerboard eigenvalue is 0 at 0.95/0.95 (the
-// point `WICK_RATE` was tuned at, and the only well-conditioned one), −0.86 at 0.8/0.8,
-// and 1.0 for anything relaxed to the cap.
-//
-// So the reach is gone and the *cadence* carries the step instead: the host wicks once
-// per `WICK_TRAVEL_QUANTUM` of travel (`stroke::WICK_TRAVEL_QUANTUM`, in radii),
-// independent of where the segment boundaries fell, and each step is one fixed
-// nearest-neighbour stencil sized to exactly that quantum. Sub-stepping in time was
-// rejected before on the grounds that this loop is dispatch-bound — but the cadence is
-// *slower* than the old one wherever the loop is expensive (a tight brush's segments are
-// shorter than the quantum, so half of them now skip the pass entirely) and faster only
-// where segments are long and therefore few. Total wick dispatches over a stroke are
-// `travel / quantum`, which no longer depends on the segmentation at all.
-//
-// **The stencil is a separable binomial, run as two 1-D passes**, and the quantum is
-// whatever that kernel's variance buys. The 1-D binomial `C(2m, m+k) / 4^m` has
-// variance `m/2` and frequency response `cos^{2m}(θ/2)` — exactly zero at Nyquist, so
-// the checkerboard mode is annihilated rather than merely damped, at every `m`. Setting
-// `m/2 = 0.5·WICK_RATE·lr` gives the travel one pass carries:
-//
-//     lr = m / WICK_RATE      →      WICK_TRAVEL_QUANTUM
-//
-// **`m = 1` is the stencil this replaced**, exactly: `C(2, 1+k)/4 = [¼, ½, ¼]`, which
-// is the old `[w, 1−2w, w]` at its `w = ¼` limit. So this is a strict generalisation of
-// a tuned behaviour rather than a new one, and the total variance a stroke receives is
-// unchanged — only how it is parcelled out.
-//
-// The two passes are each internally conservative (a 1-D symmetric flux exchange, one
-// thread adding what its partner subtracts), so composing them conserves exactly, and
-// the concentration form is re-derived between them. That is why this can be two passes
-// at all: a non-separable 2-D kernel of the same variance would need `(2m+1)² − 1` taps
-// in one pass — 80 at `m = 4` — to save a single dispatch.
-//
-// **`m` is deliberately not pushed as far as it will go.** Widening trades cost for a
-// coarser cadence, and the cadence has a price the variance argument does not see: a
-// firing happens at the *start of the segment* the boundary fell in, so its position
-// jitters by up to one segment length, and a kernel carrying four times the variance
-// per firing amplifies that jitter fourfold. Measured on
-// `a_carried_stroke_is_independent_of_how_the_path_was_cut`:
-//
-//     m       1     2     4     8
-//     levels  2     3     4     5      (the test's bound is 4)
-//
-// `m = 2` is where that stops being free: it halves the taps per unit of travel for one
-// level, and is dispatch-neutral. `m = 4` would halve the dispatches too, for another
-// level — but the previous constant to trade this same quantity, `RESERVOIR_EXCHANGE_STEP`,
-// was tightened *away* from that level once already, so doubling it back for a wick
-// saving is not the trade to make here.
-//
-// **The place to widen is the march, not this loop**, which is the other reason to hold
-// at 2. Here both axes are dispatches and so must share a cadence; in stroke space the
-// along-travel pass runs inside a lateral row's own workgroup for free, so only the
-// across-row pass is a barrier and only *it* wants a wide kernel. Committing to a wide
-// `m` now would bank the jitter on both axes to save dispatches on one.
-//
-// Offsets stay *integer*, which is load-bearing rather than convenient: the pair
-// `(x, x+d)` is then symmetric, so both threads compute one number and apply it with
-// opposite signs. Sampling a neighbour at a fractional distance through the bilinear
-// sampler would quietly break conservation, because the partner is a blend of four cells
-// whose reciprocal flux does not mirror it.
-
-// Half-width of the 1-D binomial, and the kernel itself indexed by `|k|`. **Must match
-// `stroke::WICK_TRAVEL_QUANTUM`**, which is `WICK_HALF / WICK_RATE`.
-const WICK_HALF: i32 = 2;
-const WICK_KERNEL = array<f32, 3>(
-    6.0 / 16.0,
-    4.0 / 16.0,
-    1.0 / 16.0,
-);
-
-// One neighbour pair's parcel for this cell. `weight` is the share of the pair's
-// concentration difference that crosses, and the mobility folded in on top converts
-// that concentration back into the height it moves. Every factor is symmetric in the
-// pair, so the neighbour computes the identical number and applies it with the opposite
-// sign — which is what conserves the total exactly.
-fn wick_pair(
-    t: vec2<i32>,
-    off: vec2<i32>,
-    bdim: vec2<u32>,
-    cov_t: f32,
-    inv_t: f32,
-    self_load: Load,
-    weight: f32,
-) -> Load {
-    let tn = t + off;
-    let n = load_at(tn, bdim);
-    let cov_n = coverage_at(brush_local_at(tn, bdim));
-    let f = weight * min(cov_t, cov_n);
-    let inv_n = 1.0 / max(cov_n, WICK_MIN_COV);
-    var d: Load;
-    d.h = f * (n.h * inv_n - self_load.h * inv_t);
-    d.m = f * (n.m * inv_n - self_load.m * inv_t);
-    d.lm = f * (n.lm * inv_n - self_load.lm * inv_t);
-    // The same share of the same pair's concentration difference: the residual
-    // diffuses with the paint carrying it, never on a mobility of its own.
-    @if(resid) d.rlm = f * (n.rlm * inv_n - self_load.rlm * inv_t);
-    return d;
-}
-
-// Coverage floor for the concentration quotient. Cells below it are out of contact —
-// nothing ever deposits from them and the mobility above already zeroes their flux — so
-// this only keeps the division finite, it never decides a pixel.
-const WICK_MIN_COV: f32 = 1e-4;
-
-// What one reservoir cell carries, in the quantities the flux moves: height, optical
-// mass (opacity·height), and the latent riding as a mass weight — the same
-// mass-weighted form the rest of the loop blends colour in, so a cell that gains paint
-// from a neighbour gains that neighbour's colour in proportion to what it brought.
-struct Load {
-    h: f32,
-    m: f32,
-    lm: vec3<f32>,
-    // The residual's colour-mass, `res·m` — the same shape and the same weight as
-    // `lm`, because it is the rest of the same colour (§6.7).
-    @if(resid) rlm: vec3<f32>,
-}
-
-fn load_at(t: vec2<i32>, bdim: vec2<u32>) -> Load {
-    let tc = clamp(t, vec2<i32>(0, 0), vec2<i32>(bdim) - vec2<i32>(1, 1));
-    let c = textureLoad(brush_src_color, tc, 0);
-    let a = textureLoad(brush_src_aux, tc, 0);
-    var out: Load;
-    out.h = a.x;
-    out.m = c.a * a.x;
-    out.lm = c.rgb * out.m;
-    @if(resid) out.rlm = textureLoad(brush_src_resid, tc, 0).rgb * out.m;
-    return out;
-}
-
-// A reservoir texel's brush-local coordinates, clamped into the grid — so a cell on the
-// border reads *itself* as its outside neighbour, the difference is exactly zero, and
-// the rim is a no-flux wall with no special case.
-fn brush_local_at(t: vec2<i32>, bdim: vec2<u32>) -> vec2<f32> {
-    let tc = clamp(t, vec2<i32>(0, 0), vec2<i32>(bdim) - vec2<i32>(1, 1));
-    return (vec2<f32>(tc) + vec2<f32>(0.5, 0.5)) / vec2<f32>(bdim) * 2.0 - vec2<f32>(1.0, 1.0);
-}
-
-// One 1-D pass of the binomial along `axis`. Both entry points below are this with a
-// different axis, and running the two in sequence realises the separable 2-D kernel.
-//
-// Nothing here couples the two axes, which is the property the stroke-space march
-// depends on: the along-travel pass touches only cells of the same lateral row, so a
-// workgroup that owns a row can run it with no barrier, and only the across-row pass
-// has to be a dispatch of its own.
-fn wick_axis(gid: vec3<u32>, axis: vec2<i32>) {
-    let bdim = textureDimensions(brush_src_color);
-    if gid.x >= bdim.x || gid.y >= bdim.y {
-        return;
-    }
-    let t = vec2<i32>(gid.xy);
-    let self_load = load_at(t, bdim);
-    let cov_t = coverage_at(brush_local_at(t, bdim));
-    let inv_t = 1.0 / max(cov_t, WICK_MIN_COV);
-
-    // Every share is taken against the *entering* state on both sides, never against a
-    // running total: that is what makes this thread's flux the exact negative of the
-    // one its neighbour computes for the same pair — the mobility, the weight and the
-    // two concentrations are all symmetric in the pair, so the two threads compute one
-    // number and disagree only in sign.
-    var d: Load;
-    d.h = 0.0;
-    d.m = 0.0;
-    d.lm = vec3<f32>(0.0, 0.0, 0.0);
-    @if(resid) d.rlm = vec3<f32>(0.0, 0.0, 0.0);
-    for (var k = 1; k <= WICK_HALF; k = k + 1) {
-        let w = WICK_KERNEL[k];
-        let a = wick_pair(t, axis * k, bdim, cov_t, inv_t, self_load, w);
-        let b = wick_pair(t, axis * -k, bdim, cov_t, inv_t, self_load, w);
-        d.h += a.h + b.h;
-        d.m += a.m + b.m;
-        d.lm += a.lm + b.lm;
-        @if(resid) d.rlm += a.rlm + b.rlm;
-    }
-
-    let h = self_load.h + d.h;
-    let m = self_load.m + d.m;
-    let lm = self_load.lm + d.lm;
-    @if(resid) let rlm = self_load.rlm + d.rlm;
-    // Colour comes back out of the mass weight it travelled as. With no mass there is
-    // no colour to recover, so the cell keeps the latent it had rather than a quotient
-    // of two vanishing numbers (§6.1).
-    var lat = textureLoad(brush_src_color, t, 0).rgb;
-    // The residual is recovered under the *same* guard and the same mass, so the two
-    // halves of a cell's colour can never be taken from different states.
-    @if(resid) var res = textureLoad(brush_src_resid, t, 0).rgb;
-    if m > PAINT_EPS {
-        lat = lm / m;
-        @if(resid) res = rlm / m;
-    }
-    // Snapped to the f16 lattice first (`lib::store`): this pass ping-pongs the
-    // reservoir every wick and every segment, so a store that truncates walks the
-    // tool's carried paint down one ULP per firing.
-    textureStore(brush_dst_color_w, t, f16_nearest4(vec4<f32>(lat, m / max(h, PAINT_EPS))));
-    textureStore(brush_dst_aux_w, t, f16_nearest4(vec4<f32>(h, 0.0, 0.0, 0.0)));
-    @if(resid) textureStore(brush_dst_resid_w, t, f16_nearest4(vec4<f32>(res, 0.0)));
-}
-
-// Along the tip's travel axis — the one a stroke-space row could run internally.
-@compute @workgroup_size(8, 8)
-fn wick_x(@builtin(global_invocation_id) gid: vec3<u32>) {
-    wick_axis(gid, vec2<i32>(1, 0));
-}
-
-// Across it — the one that couples lateral rows, and so must stay a dispatch.
-@compute @workgroup_size(8, 8)
-fn wick_y(@builtin(global_invocation_id) gid: vec3<u32>) {
-    wick_axis(gid, vec2<i32>(0, 1));
-}
+// (The `wick` pass — pass 0 of this loop, a lateral flux letting the tool's paint
+// migrate within the tip — stood here from 2026-07-31 to 2026-08-10. It existed to
+// suppress the lift-end shoulder ring `golden_lift_end_regression` pins; once the
+// pen-up `settle` became the remaining pass's exact delivery integral, the ring no
+// longer returns without it — measured on a fifteen-radius drained smear, wick on
+// vs off: no lateral rise above 1 level, fade past the stroke end monotone both
+// ways, worst 4 levels anywhere. §6.2 records the history and the measurement.)
 
 // ---- 1. Bake: the reservoir's swept prefix along the travel axis. ----------------
 //
@@ -1372,7 +1080,7 @@ fn exchange(
 // consecutive windows compose to first order and a texel the tip never covers never
 // moves.
 //
-// **The bleed runs on dedicated slots, not on the painting segments — the wick's
+// **The bleed runs on dedicated slots, not on the painting segments — a travel
 // cadence, realised as geometry.** Real slow input is fitted at a control point per
 // pointer sample (a measured repro: 177 knots over 68 px, segments of 0.39 px), and
 // at that cut a per-segment bleed is broken twice over: the flux
@@ -1395,11 +1103,11 @@ fn exchange(
 // segments carry λ_bleed = 0, so between firings the canvas takes the no-bleed
 // path bit-for-bit.
 //
-// **Flux form, like the wick**: both threads of a pair compute the same number from
+// **Flux form**: both threads of a pair compute the same number from
 // the same `under` snapshot — the neighbour's exposure is re-derived from the same
 // uniform, so the same floats — and apply it with opposite signs. The redistribution
 // is internal to the canvas, so it conserves height and optical mass to rounding
-// (not to the bit, as the wick does: the delta rides through this thread's own
+// (not to the bit: the delta rides through this thread's own
 // `keep` multiply and selection lerp below) and needs no entry in the tool's books.
 //
 // `min(w, w_n)` is the pair's mobility, and it carries three boundaries at once:
@@ -1627,7 +1335,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // Clamped into the snapshot rect. A clamped tap lands on the rect's
                 // border, which the margins put provably outside the sweep, so its
                 // exposure — and with it the flux — is exactly zero: a no-flux
-                // wall, like the wick's rim, at every scale.
+                // wall, at every scale.
                 let tn = clamp(
                     t + BLEED_OFFS[i] * dist,
                     vec2<i32>(0, 0),

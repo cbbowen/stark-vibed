@@ -42,16 +42,6 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// the `deposit` after it hands the canvas (`dynamics.wesl::exchange`).
     pub(in crate::gpu::stroke) exchange_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) exchange_bgl: wgpu::BindGroupLayout,
-    /// Paint migrating *within* the tip, ahead of both halves of the transfer
-    /// (`dynamics.wesl::wick_axis`). Shares `exchange`'s bind group: it reads and writes
-    /// the same reservoir ping-pong and needs a strict subset of the same bindings.
-    ///
-    /// Two pipelines because the stencil is **separable** and runs as one 1-D pass per
-    /// axis: `.0` along the tip's travel, `.1` across it. Splitting them is what lets
-    /// the kernel be four times as wide for the same work per unit travel — and it is
-    /// the shape a stroke-space march needs, where the along-travel pass lives inside a
-    /// lateral row's own workgroup and only the across-row pass is a barrier.
-    pub(in crate::gpu::stroke) wick_pipelines: (wgpu::ComputePipeline, wgpu::ComputePipeline),
     /// Integrates the reservoir along the segment's travel axis so the deposit can
     /// read the whole pass instead of one mid-pass sample (`dynamics.wesl::bake`).
     pub(in crate::gpu::stroke) bake_pipeline: wgpu::ComputePipeline,
@@ -182,10 +172,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- The stamp loop: one module, nine entry points — `snapshot`, `exchange`,
-    // `wick_x`, `wick_y`, `bake`, `deposit`, `cell_hoist`, `deposit_coarse`,
-    // `settle` — over seven bind group layouts, since the two wick axes share
-    // `exchange`'s (they need a strict subset of it).
+    // ---- The stamp loop: one module, seven entry points — `snapshot`, `exchange`,
+    // `bake`, `deposit`, `cell_hoist`, `deposit_coarse`, `settle` — over seven bind
+    // group layouts.
     // Every layout includes the dynamic-offset stamp uniform at binding 0; the binding
     // numbers partition the module's group(0) — see dynamics.wesl.
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -234,8 +223,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             ctex(2, true),
             // The footprint snapshot's targets: the segment's `snapshot` runs from the
             // tail of the `exchange` grid rather than from a dispatch of its own
-            // (`dynamics.wesl::exchange`), so its writes belong to this layout. The
-            // `wick`, which shares this layout, leaves them alone.
+            // (`dynamics.wesl::exchange`), so its writes belong to this layout.
             stor(3),
             stor(4),
             csamp,
@@ -414,17 +402,6 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "exchange",
         &[Some(&exchange_bgl)],
     );
-    // The wick reads the reservoir and writes the other half of the ping-pong, which is
-    // exactly what `exchange_bgl` already describes — the region and selection bindings
-    // it also carries simply go unused, which a pipeline layout is free to do.
-    //
-    // One pipeline per axis: the stencil is separable, so a firing is two 1-D passes
-    // (`dynamics.wesl::wick_axis`). The axis rides in the entry point rather than the
-    // uniform because both passes of a firing share the segment's slot.
-    let wick_pipelines = (
-        cpipe("stark dynamics wick x", "wick_x", &[Some(&exchange_bgl)]),
-        cpipe("stark dynamics wick y", "wick_y", &[Some(&exchange_bgl)]),
-    );
     // The bake reads the prefix-τ volume too (group 1) — the exposure weights in
     // its integral are that volume's own differences.
     let bake_pipeline = cpipe(
@@ -499,7 +476,6 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         snapshot_bgl,
         exchange_pipeline,
         exchange_bgl,
-        wick_pipelines,
         bake_pipeline,
         bake_bgl,
         deposit_pipeline,

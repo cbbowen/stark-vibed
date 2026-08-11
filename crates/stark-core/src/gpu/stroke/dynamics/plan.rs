@@ -21,8 +21,7 @@ use crate::document::StrokeRecord;
 use crate::geom::Vec2;
 
 use super::super::budget::{
-    BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, TAU_PER_PASS, WICK_TRAVEL_QUANTUM,
-    bleed_stencil, footprint_cell,
+    BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, TAU_PER_PASS, bleed_stencil, footprint_cell,
 };
 use super::super::segments::{Segment, coverage_bounds};
 // The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
@@ -73,18 +72,12 @@ pub(super) struct LoopDispatch {
 /// else, which is easier to see as an arm than as an early `continue` plus a tail
 /// block indexed past the end of the loop.
 pub(super) enum SlotKind {
-    /// A stretch of painting: `wick` → `bake` → `exchange` (+ `snapshot`) →
-    /// `deposit`.
-    ///
-    /// `wick_steps` is how many `wick` firings fall during it
-    /// ([`WICK_TRAVEL_QUANTUM`](super::WICK_TRAVEL_QUANTUM)). Usually 0 or 1 — the
-    /// wick keeps its own cadence, so a segment shorter than the quantum often skips
-    /// it entirely and a long one pays for several.
-    Segment { wick_steps: u32 },
+    /// A stretch of painting: `bake` → `exchange` (+ `snapshot`) → `deposit`.
+    Segment,
     /// A dedicated **bleed slot**: a quad whose sweep is one firing of the bleed
     /// cadence's travel window, with every vertical rate and the source zeroed.
     /// Dispatched as `snapshot` + `deposit` alone — the tool plays no part, so there
-    /// is nothing to wick, bake or exchange, and the reservoir ping-pong is left
+    /// is nothing to bake or exchange, and the reservoir ping-pong is left
     /// exactly where the previous segment put it.
     Bleed,
     /// The pen-up: `snapshot` → `bake` → `settle`. At most one per plan, and always
@@ -566,21 +559,6 @@ pub(super) fn dynamics_plan(
         // representative of that whose error is second order where either endpoint's
         // would be first.
         let (_, mid_dir) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length * 0.5);
-        // The `wick` passes falling during this segment. Counted off the segment's own
-        // **absolute** arc length rather than by accumulating a debt across the loop,
-        // and that is the whole reason it is written this way: a live tail re-renders
-        // from a span boundary, so anything carried between segments would have to be
-        // threaded through [`ToolState`] and would still have to agree with the commit
-        // that eventually replaces it. Keyed on the arc, the count is a pure function of
-        // the segment, so every render of a stretch of stroke wicks it identically
-        // (§6.2, live == committed).
-        //
-        // A segment's own radius sets its quantum, so a stroke whose radius varies can
-        // land a boundary twice or skip one where the pitch changes. That is a ±1 on a
-        // *smoothing* cadence, and it stays deterministic, which is the property that
-        // matters.
-        let quantum = WICK_TRAVEL_QUANTUM * s.radius;
-        let wick_steps = ((s.dist + s.length) / quantum).floor() - (s.dist / quantum).floor();
         // The footprint cell this segment's deposit may evaluate the exchange at
         // (§6.2): a pure function of the brush shape and the segment's own radius
         // ([`footprint_cell`]), so a live tail and its commit pick the same cell —
@@ -590,9 +568,7 @@ pub(super) fn dynamics_plan(
         plan.push(LoopDispatch {
             groups: rect.groups,
             cell_groups,
-            kind: SlotKind::Segment {
-                wick_steps: wick_steps.max(0.0) as u32,
-            },
+            kind: SlotKind::Segment,
             slot: Slot {
                 start: p,
                 dir: s.dir,
@@ -764,10 +740,9 @@ pub(super) fn dynamics_plan(
 /// travel across firings, so N of them deliver N quanta's worth exactly — more steps,
 /// not bigger ones, as in any explicit diffusion solver.
 ///
-/// Counted off the **absolute** arc exactly as the wick's crossings are, and for
-/// the same reason: the firings, and the windows they sweep, are then a pure
-/// function of the record, independent of how the path was cut (§6.2, live ==
-/// committed). Why the lateral flux cannot simply ride the painting segments is a
+/// Counted off the **absolute** arc, so the firings, and the windows they sweep,
+/// are a pure function of the record, independent of how the path was cut (§6.2,
+/// live == committed). Why the lateral flux cannot simply ride the painting segments is a
 /// numeric story told at the shader (`dynamics.wesl`, the bleed-slot note): on real
 /// slow input the fitter emits sub-pixel segments, whose per-texel exposure is
 /// prefix-cancellation noise and whose per-segment fluxes sit under the f16 ULP of
@@ -873,8 +848,8 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segme
                     // The window inherits the crossing segment's rates: it is that
                     // segment's own firing, and `bleed` is the only one it will use —
                     // every other axis is zeroed in the slot it becomes. Reading them
-                    // from one point of the window is the same approximation the
-                    // wick's cadence already makes about the radius it fires at.
+                    // from one point of the window is the cadence's usual
+                    // approximation about the radius it fires at.
                     add: s.add,
                     lift: s.lift,
                     deposit: s.deposit,
@@ -1559,12 +1534,8 @@ mod tests {
     }
 
     // `the_host_and_the_shader_agree_on_the_loops_constants` stood here, reading
-    // `BAKE_RES` and `WICK_HALF` out of the linked shader. Both are generated now, so
-    // there is one declaration of each; the wick's cadence relation moved to a
-    // compile-time assertion beside `WICK_TRAVEL_QUANTUM` (`budget.rs`), which is
-    // where it constrains something. `WICK_RATE` — which this test noted it could not
-    // read, the linker having stripped a constant that survives only in prose — is
-    // read from the unlinked source and is part of that assertion.
+    // `BAKE_RES` out of the linked shader. It is generated now, so there is one
+    // declaration of it (§6.10).
 
     // `the_stamp_struct_has_the_same_nine_lanes_on_both_sides` stood here, counting
     // `vec4<f32>` in the shader source and comparing against [`SLOT`]. There is no

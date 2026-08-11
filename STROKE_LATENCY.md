@@ -59,9 +59,14 @@ the browser's own compositor depth.
   passes sized by `BRUSH_RES = 64` regardless of tip, so small tips pay them
   most often.
 - Small-radius strokes are **dispatch-bound**: segment length is capped by
-  `WICK_TRAVEL_QUANTUM = 0.5` (the wick may not be straddled), so r=8 runs
-  hundreds of serialized dispatch chains — the 889 ms live gesture in the
-  bench record.
+  `RESERVOIR_EXCHANGE_STEP` (0.125 radii for a hard-trading brush, relaxed up to
+  1 radius by `exchange_travel` for gentler ones), so r=8 runs hundreds of
+  serialized dispatch chains — the 889 ms live gesture in the bench record.
+  *(Correction 2026-08-10: this entry originally blamed `WICK_TRAVEL_QUANTUM` —
+  "the wick may not be straddled" — but that coupling was march-only; master's
+  wick fired on its own cadence inside a segment and never capped its length.
+  What the wick did cost on master was its two serialized dispatches per
+  half-radius of travel, since removed — see the record below.)*
 - `overlay_tiles` re-inserts every tile the stroke has *ever* dirtied on each
   sample (grows with stroke length, not tail length). `path_as_finished` plus
   the whole control-point `Vec` and a full `StrokeRecord` clone per sample
@@ -115,11 +120,13 @@ the browser's own compositor depth.
   `ScratchPool`, see the write-back/scratch implementation record below); the
   bind groups half is not, and the composite's per-tile groups cannot be, since
   the base tiles they reference are fresh CoW tiles every fold.
-- [ ] The wick-removal experiment **on master**: it frees the
-  `WICK_TRAVEL_QUANTUM` segment cap (the small-radius dispatch lever), but the
-  settle-as-continuation that made removal safe on the march branch did not
-  cross the revert — re-run the 15-radius wick-on/off A/B against master's
-  settle before believing it.
+- [x] The wick-removal experiment **on master**: run 2026-08-10, and the removal
+  shipped. The item as written promised a freed segment cap that turned out to be
+  march-only (see the corrected ledger entry above); what the experiment actually
+  gated was the removal itself, and it came back clean — master's
+  delivery-integral settle (2026-08-02) cures the lift-end ring on its own,
+  exactly as the march's settle-as-continuation did. Details in the
+  implementation record below.
 - [x] **Skip presentation frames when the GPU falls behind.** The WebGPU
   backend has no back-pressure of its own (`present` is a no-op, Fifo and
   `desired_maximum_frame_latency` are dead values, `get_current_texture` never
@@ -318,6 +325,64 @@ the loop's own groups could persist behind the pooled textures, but the
 composite's per-tile groups cannot (they reference fresh CoW tiles every
 fold), so that residual belongs to the damage-tracking/bind-group-cache round
 (Tier 3).
+
+## Implemented: the wick removal (2026-08-10)
+
+The Tier 2 experiment, run and acted on the same day.
+
+**What the item got wrong, first.** The promised prize — freeing a
+`WICK_TRAVEL_QUANTUM` segment cap — did not exist on master: "a segment may not
+straddle a firing" was the *march's* coupling, and master's binomial wick
+(commit `5c624de`) already fired on its own cadence inside a segment.
+`flatten_tolerance` caps a dynamics segment by `exchange_travel` alone
+(0.125 radii for a hard-trading brush, up to 1 radius for gentle ones), and its
+own comment says the wick's quantum is deliberately not in the sum. What the
+wick actually cost on master was **two serialized dispatches per half-radius of
+travel** in the dispatch-bound regime — on the bench's smear brush
+(lift 0.6 / deposit 0.5, segments ≈ 0.47 radii) roughly two wick dispatches for
+every three-dispatch segment chain.
+
+**The experiment.** The `golden_lift_end_regression` brush (r=80,
+hardness 0.95, drain 0.005, lift/deposit 0.95) on a fifteen-radius stroke *and*
+on the golden's own 5.4-radius stroke, wick on vs off, against master's
+delivery-integral settle (2026-08-02) — which postdates the `WICK_RATE` tuning,
+so the tuning measurements were stale. Metrics: worst lateral rise above a
+running minimum per column (a stroke's paint may only fall off walking away
+from its axis; any rise is a rim outside a groove), and worst rise along the
+axis past the stroke end (the trail may only fade). Result: **no ring in either
+arm** — worst lateral rise 1 level (frame-edge noise, not at the stroke), fade
+perfectly monotone, the arms within 4 levels anywhere. The march's conclusion
+holds on master's own settle: the ring's slow payout is what the trail is made
+of, the delivery-integral settle serves it in order, and the wick was treating
+the symptom of the old settle's mispairing.
+
+**What shipped.** The pass deleted end to end: `wick_x`/`wick_y` and helpers
+plus the whole cadence/conditioning essay in `dynamics.wesl`, the two pipelines
+(`kit.rs`), the `wick_steps` loop (`run.rs`), the plan's
+`Segment { wick_steps }` payload and quantum arithmetic (`plan.rs`),
+`WICK_TRAVEL_QUANTUM` and its compile-time stencil assertion (`budget.rs`), and
+the `WICK_HALF`/`WICK_RATE` mirror constants (`build.rs`). A painting segment
+now cycles the reservoir ping-pong once (exchange), not twice.
+`a_drained_smear_leaves_no_ring_at_the_lift_end` (tests/dynamics.rs) pins both
+metrics as behaviour; docs/brush.md §6.2 keeps the disease, the history and the
+parity lesson (a sparse reach decouples sublattices — cited by the bleed's
+ladder).
+
+**Verification.** Full suite 691 tests / 45 binaries green; wasm and
+no-default-features clippy clean. `golden_lift_end_regression` — the artifact's
+own pin — passed **unchanged**. Exactly two goldens moved, both barely over the
+1% rule (`straight_smear_into_paint` 1.03%, `wiggly_smear_into_paint` 1.51% of
+pixels over tol 6): the carried patch keeps slightly crisper texture without
+the lateral smoothing, the documented edge-softening cost of the wick running
+in reverse. Re-blessed after visual inspection.
+
+**Bench** (criterion `prewick` baseline saved minutes before the change, same
+session; every line p < 0.05 except live/500):
+`commit/dynamics/8` −23.7%, `/30` −18.5%, `/100` −6.9%, `/250` −2.9%,
+`/500` −2.7%; `live/dynamics/8` **892 → 707 ms (−21.3%)**, `/30` −14.0%,
+`/100` −5.8%, `/250` −3.0%, `/500` flat (p = 0.26). The exact dispatch-bound
+profile: the win concentrates where the loop is serialized-dispatch-limited,
+and vanishes where it is texel-bound.
 
 ## Investigation brief: shoulder-bounded coarse evaluation (as written before the work)
 

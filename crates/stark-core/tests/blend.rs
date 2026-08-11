@@ -668,8 +668,8 @@ fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
 ///
 /// That test paints black and reads it straight back, which exercises the stamp, the
 /// integrate and the composite. A *carrying* brush makes a round trip none of those
-/// do: it lifts paint off the region into its own reservoir, wicks it about inside the
-/// tip, bakes it along the travel and lays it down again somewhere else. Each of those
+/// do: it lifts paint off the region into its own reservoir, bakes it along the
+/// travel and lays it down again somewhere else. Each of those
 /// is a separate place the residual has to ride the same masses the latent does, and
 /// the fast-path test cannot see any of them — a loop that carried concentrations
 /// alone would pick up black paint and put down the grey they describe (§6.7).

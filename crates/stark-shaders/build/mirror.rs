@@ -87,8 +87,9 @@ pub fn generate(
         // The *unlinked* source. The linker mangles `Stamp` to
         // `package__1dynamics_Stamp`, emits it once per artifact that reaches it, and
         // strips whatever no entry point uses — the reason the check this replaces
-        // could not see `WICK_RATE` at all. And it drops the comments that are half of
-        // what is being generated here.
+        // could not see a constant that survived only in prose (the retired wick's
+        // `WICK_RATE` was the case that proved it). And it drops the comments that
+        // are half of what is being generated here.
         let tu: TranslationUnit = src
             .parse()
             .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()));
@@ -350,11 +351,11 @@ fn vertex_format(ty: &Type) -> Option<(TokenStream, u32)> {
 /// Emit `const NAME` from `module` as a Rust constant of the same type and value.
 ///
 /// **Evaluated, not read.** The value is whatever `wesl`'s const evaluator makes of
-/// the initializer, so a constant derived from its neighbours — `WICK_HALF` from a
-/// rate and a quantum — comes out as the number the shader will actually compute
-/// with. The check this replaces parsed a decimal literal out of the *linked* source
-/// and could do neither: a derived constant is not a literal, and the linker had
-/// already stripped anything no entry point reached.
+/// the initializer, so a constant derived from its neighbours comes out as the
+/// number the shader will actually compute with. The check this replaces parsed a
+/// decimal literal out of the *linked* source and could do neither: a derived
+/// constant is not a literal, and the linker had already stripped anything no entry
+/// point reached.
 fn emit_const(tu: &TranslationUnit, src: &str, module: &str, name: &str) -> TokenStream {
     let decl = tu
         .global_declarations

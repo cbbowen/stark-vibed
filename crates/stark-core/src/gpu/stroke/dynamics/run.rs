@@ -50,9 +50,9 @@ const SNAPSHOT_QUANTUM: u32 = 64;
 // `#[repr(C)]` copy of, under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
-/// Workgroup counts for the reservoir passes (`wick`, and `exchange`'s own half).
-/// `exchange` is dispatched over these *plus* the slot's footprint groups on x, since
-/// the snapshot shares its grid.
+/// Workgroup counts for the reservoir half of `exchange`, which is dispatched over
+/// these *plus* the slot's footprint groups on x, since the snapshot shares its
+/// grid.
 ///
 /// A constant, not per-dispatch data: the reservoir is [`BRUSH_RES`]² whatever the
 /// segment does, and the two slot kinds that do not run an exchange never read it.
@@ -944,7 +944,7 @@ impl<'a> DynamicsRun<'a> {
         }
     }
 
-    /// Record the loop: wick → bake → exchange (+ snapshot) → deposit per segment, in
+    /// Record the loop: bake → exchange (+ snapshot) → deposit per segment, in
     /// stroke order. One compute pass; the implicit barriers between dispatches give
     /// the sequential semantics, and usage scopes are per-dispatch, so the region may
     /// be sampled by one dispatch and storage-written by the next.
@@ -986,25 +986,8 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 }
-                SlotKind::Segment { wick_steps } => {
-                    // Let the tool's own paint migrate across the tip before anything
-                    // reads it. Ahead of *both* halves of the transfer, so `bake` and
-                    // `exchange` still see one another's entry state and their shares
-                    // still add up (`dynamics.wesl::wick_axis`). Each pass reads `cur`
-                    // and writes the other half, like every reservoir pass, so it
-                    // cycles the ping-pong once.
-                    //
-                    // A firing is **two** passes, because the stencil is separable: one
-                    // along the tip's travel, one across it.
-                    for _ in 0..wick_steps {
-                        for pipe in [&kit.wick_pipelines.0, &kit.wick_pipelines.1] {
-                            cpass.set_pipeline(pipe);
-                            cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
-                            cpass.dispatch_workgroups(RESERVOIR_GROUPS.0, RESERVOIR_GROUPS.1, 1);
-                            cur = 1 - cur;
-                        }
-                    }
-                    // Bake this segment's swept reservoir prefix next — it folds in the
+                SlotKind::Segment => {
+                    // Bake this segment's swept reservoir prefix first — it folds in the
                     // tip's current orientation as well as the reservoir state.
                     cpass.set_pipeline(&kit.bake_pipeline);
                     cpass.set_bind_group(0, &bind.bake[cur], &[off]);

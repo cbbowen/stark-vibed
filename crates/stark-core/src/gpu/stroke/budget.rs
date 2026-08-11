@@ -14,9 +14,9 @@
 
 use crate::document::{BrushDynamics, BrushParams, BrushShape};
 /// The numbers `dynamics.wesl` computes with, generated from its own declarations
-/// (§6.10) — the wick's stencil, and the bleed stencil's shares. Both are relations
-/// this file has to honour rather than values it may choose, so it reads them from
-/// the shader instead of keeping a second copy to drift.
+/// (§6.10) — the bleed stencil's shares. Relations this file has to honour rather
+/// than values it may choose, so it reads them from the shader instead of keeping a
+/// second copy to drift.
 use stark_shaders::mirror::dynamics as shader;
 
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
@@ -77,45 +77,8 @@ pub(super) const MAX_STAMPS: usize = 4096;
 /// accuracy instead of spent here: **§6.2**.
 /// `golden_drained_brush_length_independent` is what pins it.
 const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
-/// How far the tip travels between `wick` passes, in radii (§6.2).
-///
-/// **The wick keeps a cadence of its own, decoupled from the segment cadence** — why
-/// the reach it replaced was badly conditioned, and why the stencil is separable, are
-/// in §6.2. The value is not a tolerance: it is the travel one pass of that stencil
-/// carries, so **it must track `dynamics.wesl`'s `WICK_HALF / WICK_RATE`** — which the
-/// assertion below now states to the compiler rather than to the reader.
-///
-/// Because variance adds under composition, a stroke gets the same total smoothing
-/// whatever the segmentation and whatever the quantum — widening the kernel and firing
-/// it less often is an exact trade, not an approximation, which is what makes this a
-/// free parameter to spend on cost.
-///
-/// **It stops at 2 on purpose, and the reason is a cost the variance argument cannot
-/// see.** A firing lands at the start of whichever segment its boundary fell in, so its
-/// position jitters by up to one segment length, and a kernel carrying more variance per
-/// firing amplifies that jitter proportionally. Measured on
-/// `a_carried_stroke_is_independent_of_how_the_path_was_cut`, a stencil half-width of
-/// 1/2/4/8 gives 2/3/4/5 levels of cut-dependence — and 4 levels is what
-/// [`RESERVOIR_EXCHANGE_STEP`] was tightened *away* from, so buying it back to save a
-/// wick dispatch is the wrong trade.
-pub(super) const WICK_TRAVEL_QUANTUM: f32 = 0.5;
-
-/// The wick's cadence is the shader's stencil, divided by its rate.
-///
-/// A stencil widened on one side without moving the cadence on the other smooths by
-/// the wrong amount per unit travel: it does not crash, it renders subtly wrong. This
-/// used to be a runtime test that could only reach `WICK_HALF`, because `WICK_RATE`
-/// survives in the shader only as prose — it computes with the baked `WICK_KERNEL` —
-/// and the linker strips what no entry point reaches. Both are generated from the
-/// *unlinked* source now (§6.10), so all three numbers are real and the relation is
-/// checked where it is declared.
-const _: () = assert!(
-    WICK_TRAVEL_QUANTUM * shader::WICK_RATE == shader::WICK_HALF as f32,
-    "the wick's travel quantum and `dynamics.wesl`'s stencil have diverged — the \n     smoothing per unit travel moved with one of them",
-);
-/// How much travel (in radii) the `bleed` stencil carries per firing (§6.2) — the
-/// same cadence pattern as [`WICK_TRAVEL_QUANTUM`], and adopted for the same reason
-/// the wick has one: **the cadence carries the step, so the segmentation cannot.**
+/// How much travel (in radii) the `bleed` stencil carries per firing (§6.2):
+/// **the cadence carries the step, so the segmentation cannot.**
 ///
 /// Firing per segment was measured non-conservative on real input, and the failure is
 /// numeric rather than conceptual. A hand that draws slowly is fitted at a control
@@ -128,7 +91,7 @@ const _: () = assert!(
 /// 44, bit-exact zero on a uniform coat at any cut — so the arithmetic is right and
 /// the quantization regime is the whole defect.
 ///
-/// Keyed on **absolute arc length**, exactly like the wick's crossings, so the
+/// Keyed on **absolute arc length**, so the
 /// firings — and the windows they sweep — are a pure function of the record,
 /// independent of how the path was cut (§6.2, live == committed). Each firing is a
 /// dedicated **bleed slot** in the dispatch plan (`dynamics::bleed_fires`): a quad
@@ -402,8 +365,7 @@ fn exchange_travel(d: BrushDynamics) -> f32 {
     let rate_of = |axis: f32| -(1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0);
     // `bleed` is deliberately *not* in this sum: it fires on its own travel cadence
     // with the window's exposure ([`BLEED_TRAVEL_QUANTUM`]), so segment length does
-    // not set its step and shortening segments buys it nothing — the same reasoning
-    // that keeps the wick's quantum out of here.
+    // not set its step and shortening segments buys it nothing.
     let rate = rate_of(d.lift) + rate_of(d.deposit);
     if rate <= 0.0 {
         return MAX_EXCHANGE_TRAVEL;

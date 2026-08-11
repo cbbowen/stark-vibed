@@ -340,15 +340,14 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
    tool: a painting **segment**, a **bleed** firing (see `bleed` below), and the
    single **settle** that ends a stroke. The reservoir ping-pong therefore advances
    on segments and on nothing else.
-   - Per segment: **wick** (paint migrating within the tip, on its own travel
-     cadence — often zero passes, see below), **bake** (integrate the reservoir
+   - Per segment: **bake** (integrate the reservoir
      along the travel axis), **exchange** (the tool's half of the transfer, one
      thread per reservoir texel, which also carries the **snapshot** — the copy of
      the segment quad's region texels into an `under` scratch that lets the deposit
      read-modify-write — in the tail of its own grid) and **deposit**, one thread
      per footprint texel. The snapshot rides along because it depends on nothing
      the exchange writes, so the barrier that used to separate them bought no
-     ordering: four serialized dispatches per segment where there were five. The
+     ordering: three serialized dispatches per segment where there were four. The
      range that ends the stroke closes with a standalone `snapshot` + `bake` +
      **settle** over the final footprint (see *The pen-up* below) — standalone
      because there the settle *reads* what the snapshot and the bake write. A texel's **exposure** to the
@@ -399,57 +398,39 @@ footprint. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      through. `bake` integrates it along the travel axis into a swept prefix, so
      the deposit reads what the tip presented over a whole pass rather than one
      mid-pass sample — exact for any segment length.
-   - **Paint migrates within the tip (`wick`), because the cells trade at wildly
-     different rates.** A cell's exposure is keyed on its own optical depth, and τ is
-     flat across the interior (the coverage clamp caps it) then falls away over a hard
-     tip's shoulder — at `hardness = 0.95`, some twenty times slower at the last cells
-     still in contact. Left as isolated cells, that disparity strands
-     paint: once a stroke's own source runs dry (`drain`) and the tip is only smearing,
-     the interior empties in step with the fading trail while the shoulder ring still
-     holds what it lifted hundreds of pixels back. The deposit lays each lateral row's
-     load back at its own offset, so the ring prints — a rim of surplus paint with a
-     scraped groove inside it, curving into a tip-shaped chevron where the stroke stops
-     (`golden_lift_end_regression`).
+   - **Paint does not migrate within the tip: the `wick` pass (2026-07-31 →
+     2026-08-10) is retired.** The disease it treated is real, and worth keeping on
+     the record. A cell's exposure is keyed on its own optical depth, and τ is flat
+     across the interior (the coverage clamp caps it) then falls away over a hard
+     tip's shoulder — at `hardness = 0.95`, some twenty times slower at the last
+     cells still in contact. Left as isolated cells, that disparity strands paint:
+     once a stroke's own source runs dry (`drain`) and the tip is only smearing, the
+     interior empties in step with the fading trail while the shoulder ring still
+     holds what it lifted hundreds of pixels back. With the settle of that era, the
+     ring printed — a rim of surplus paint with a scraped groove inside it, curving
+     into a tip-shaped chevron where the stroke stops
+     (`golden_lift_end_regression`) — and the wick relaxed the disparity away with a
+     four-neighbour flux over the reservoir, on a travel cadence of its own.
 
-     So each cell trades with its four neighbours in **flux form**: one thread adds what
-     the other subtracts, making the pass a pure internal redistribution that leaves
-     total height and optical mass on the tool untouched — which is what lets it sit in
-     the loop without disturbing the conservation argument the transfer rests on. What
-     it chases is **concentration**, height per unit coverage, not height: a tool holds
-     more paint where more of it is in contact, so `height ∝ coverage` — the tip's own
-     shape — is the state it relaxes towards. Driving it on raw height instead makes
-     *uniform* height the equilibrium, which pumps paint out of the interior into the
-     barely-touching rim and is a measurably different brush.
+     It was treating a symptom. The shoulder ring's slow payout is what the visible
+     trail is *made of* (it serves last), and once the pen-up settle became the
+     remaining pass's exact delivery integral (*The pen-up* below), that payout is
+     delivered in the right order and nothing is left stranded for a lateral
+     smoothing pass to rescue. Measured at the removal, on a fifteen-radius drained
+     smear of the golden's own brush and on the golden's 5.4-radius stroke, wick on
+     vs off: no lateral rise above one level in either arm, the fade past the
+     stroke end monotone both ways, worst 4 levels anywhere in the frame.
+     `a_drained_smear_leaves_no_ring_at_the_lift_end` pins the property the wick
+     used to guard, and what the removal buys is two fewer serialized dispatches
+     per half-radius of travel in a loop that is dispatch-bound at small radii.
 
-     It runs **before `bake`**, not between `bake` and `exchange`: those two are the two
-     halves of one transfer and only add up if both read the reservoir as the segment
-     found it. Ahead of both, it is simply part of what the tool arrives carrying.
-
-     The rate has a cost on the far side, and it is why `WICK_RATE` is a knee rather
-     than a large number. Wicking hands paint to shoulder cells that used to hold almost
-     none — the same rate disparity that stranded the ring also starved them — so they
-     now deposit and the stroke's own edge softens.
-
-     **The wick keeps its own travel cadence** (`WICK_TRAVEL_QUANTUM`), not the segment's.
-     It used to run once per segment and absorb whatever travel that was by widening the
-     flux's *reach*, `d = sqrt(WICK_RATE·lr)` — sound about variance, and badly
-     conditioned, because a four-point stencil at integer distance `d` couples only cells
-     of the same parity in `d`. At the reach of exactly 2 that `MAX_EXCHANGE_TRAVEL`
-     produces, the grid's two sublattices decouple outright: the checkerboard mode has
-     eigenvalue 1 and never decays, while the shares leave the cell none of its own
-     value. Every brush relaxed to the travel cap ran there — measured across
-     `lift = deposit`, the eigenvalue is 0 at 0.95/0.95 (the point `WICK_RATE` was tuned
-     at, and the only well-conditioned one), −0.86 at 0.8/0.8, and 1.0 at the cap.
-
-     So the reach is gone and the cadence carries the step: one pass per
-     `1/WICK_RATE` of travel, with a fixed nearest-neighbour stencil sized to exactly
-     that. The stencil is **separable** — the tensor product of `[w, 1−2w, w]` per axis
-     rather than a plain cross — which reaches the same per-axis variance with a
-     checkerboard eigenvalue of `(1−4w)²` instead of `1−8w`, i.e. zero at the stability
-     limit instead of −1, and so doubles the quantum for four extra taps. Variance still
-     adds under composition, so a stroke gets the same total smoothing however the path
-     was cut; and since the quantum is longer than a tight brush's segments, half of them
-     now skip the pass altogether.
+     One numerical lesson from its fixes outlives it, and the bleed's ladder below
+     cites it: a sparse stencil at integer distance `d` couples only cells of the
+     same parity in `d`, so widening a flux's *reach* to carry more variance
+     decouples the grid's sublattices — at even reach the checkerboard mode's
+     eigenvalue hits 1 and never decays. A step must ride its cadence (more
+     firings), or fill in its taps down to true neighbours; it may not ride a
+     sparse reach.
    - **What is left is first order in the segment length, and it is the loop's last
      open defect.** Both halves still read the state the segment *entered* with — the
      canvas side integrates over which reservoir cell is above it (`bake`), the tool side
@@ -695,7 +676,7 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   where it was.
   It runs inside `deposit` in **flux form** (both threads of a neighbour pair
   compute one number from the same `under` snapshot and apply it with opposite
-  signs, `min` of the pair's exposures as the mobility, the wick's own scheme), so
+  signs, `min` of the pair's exposures as the mobility), so
   it is a pure internal redistribution: height is conserved, the tool's books are
   untouched, and no paint leaks to texels outside the sweep, whose threads never
   write. Ahead of the lift, since its stability bound is a share of the *entering*
@@ -703,7 +684,7 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   `O(k_bleed·k_lift·e²)` — second order, the class the loop already carries. The
   pen-up settles none of it: the axis has no reservoir, so a break of contact
   strands nothing.
-  **It fires on dedicated slots at the wick's kind of cadence, not on the painting
+  **It fires on dedicated slots at a travel cadence of its own, not on the painting
   segments** (`BLEED_TRAVEL_QUANTUM`, `stroke::dynamics::bleed_fires`): one
   quad per crossing of a quarter radius of *absolute arc*, whose sweep is exactly one
   quantum of path, bent along the crossing segment's own arc, and whose vertical
@@ -761,7 +742,7 @@ Clamping the load at 1 is what keeps the two paths drawing the same start cap.
   reach and a second copy of them is a way for the two sides to disagree about how
   much a firing diffuses with nothing failing. The 1 px taps are the floor
   rather than the rate — sparse ±d taps alone decouple the grid into d²
-  sublattices (the wick's parity failure generalized) and would let sub-reach
+  sublattices (the retired wick's parity failure generalized) and would let sub-reach
   texture ride through a "blur" untouched; coupling every texel to its true
   neighbours makes every non-zero frequency strictly decay. Shares sum to 1/8, so
   the worst mode's eigenvalue is `1 − w`: at the aimed-for blend it is damped by
@@ -787,14 +768,14 @@ stored zero every pass paid for. Gloss is now a **uniform property of the paint*
 
 *Determinism* — a stroke is a pure function of `base` + the `StrokeRecord`, so
 replay and `preview == committed` hold and the log stays compact: only path +
-params are stored, never per-segment data. Note that the wick's cadence is keyed
+params are stored, never per-segment data. Note that the bleed's cadence is keyed
 on **absolute arc length**, not accumulated across the loop, precisely so it
 carries no state across a range boundary: a live tail re-rendered from a span
-wicks a stretch of stroke identically to the commit that replaces it.
+fires a stretch of stroke identically to the commit that replaces it.
 *Perf* — one footprint-sized dispatch per segment plus the exchange (which
 carries the snapshot) and the bake, inside one pass; a live stroke re-renders only
 its tail, resuming the reservoir from the frozen head. What remains is per-segment
-dispatch overhead: a few hundred segments each costing four small serialized
+dispatch overhead: a few hundred segments each costing three small serialized
 dispatches dominates a move, and the reservoir-side passes are sized by
 `BRUSH_RES` rather than by the tip, so a *small* tip pays them most often. Mapping
 the canvas into lateral × longitudinal stroke space, where the lateral rows

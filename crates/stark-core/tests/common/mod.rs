@@ -337,7 +337,7 @@ fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
 }
 
-fn write_png(path: &Path, img: &RgbaImage) {
+pub fn write_png(path: &Path, img: &RgbaImage) {
     let file = fs::File::create(path).expect("create png");
     let mut enc = png::Encoder::new(BufWriter::new(file), img.width, img.height);
     enc.set_color(png::ColorType::Rgba);

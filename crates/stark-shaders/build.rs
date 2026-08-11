@@ -55,8 +55,6 @@ const CONSTS: &[(&str, &str)] = &[
     ("dynamics", "BLEED_LADDER_TAPS"),
     ("dynamics", "BLEED_SHARE_LADDER"),
     ("dynamics", "BLEED_SHARE_NEAR"),
-    ("dynamics", "WICK_HALF"),
-    ("dynamics", "WICK_RATE"),
     ("filter_common", "CONTRAST_PIVOT"),
     ("filter_common", "FILTER_CHROMATIC"),
     ("filter_common", "FILTER_COLOR"),
