@@ -15,7 +15,7 @@ use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
 
 use super::super::segments::{
-    Segment, affected_tiles, chunk_segments, generate_segments_in, region_rect,
+    RegionRect, Segment, affected_tiles, chunk_segments, generate_segments_in, region_rect,
 };
 use super::super::{
     ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState,
@@ -420,7 +420,14 @@ impl<'a> DynamicsRun<'a> {
         // A piece holds at least one segment, and a segment covers at least one tile,
         // so the empty case cannot arise here — but it costs nothing to leave the
         // canvas alone if it ever did.
-        let Some((halo, lo, region_origin, w, h)) = region_rect(&coords) else {
+        let Some(RegionRect {
+            halo,
+            lo,
+            origin: region_origin,
+            w,
+            h,
+        }) = region_rect(&coords)
+        else {
             return base.clone();
         };
         // The run's dirty set is the union of the pieces', which is why no caller has
@@ -637,8 +644,11 @@ impl<'a> DynamicsRun<'a> {
     /// closed-form "worst rotation" to fall back on. Sized from *this* piece's
     /// segments, so a piece drawn with a fine tip pays for a fine tip.
     ///
-    /// +3 for the sampling margin `dynamics_plan` adds each side, +2 because a
-    /// per-segment rect then rounds outward by a texel each side.
+    /// The fit against every dispatch rect is structural, not arithmetic kept in
+    /// step: both sides go through `plan::rect_extent` — [`snapshot_size`] takes its
+    /// maximum over the piece's own coverage boxes, and `plan::dispatch_rect`
+    /// asserts each rect against it — so no rect a piece can build overruns the
+    /// scratch that piece sized.
     fn snapshot_scratch(&mut self, segments: &[Segment], fires: &[(usize, Segment)]) -> Snapshot {
         let r = self.r;
         let device = &r.ctx.device;

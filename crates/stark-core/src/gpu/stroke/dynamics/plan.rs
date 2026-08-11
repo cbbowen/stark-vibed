@@ -21,7 +21,7 @@ use crate::document::StrokeRecord;
 use crate::geom::Vec2;
 
 use super::super::budget::{
-    BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, TAU_PER_PASS, bleed_stencil, footprint_cell,
+    BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_stencil, footprint_cell, lambda,
 };
 use super::super::segments::{Segment, coverage_bounds};
 // The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
@@ -544,15 +544,11 @@ pub(super) fn dynamics_plan(
     // across the sweep, and the midpoint is the representative of that whose error is
     // second order where either endpoint's would be first.
     let bearing = |tooth: f32, dir: Vec2| surface.bearing(tooth, dir.to_array());
-    // λ = ln(1 − axis), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped clean),
-    // per [`TAU_PER_PASS`] — so an axis reads as a fraction *per pass of the tip*,
-    // which is what a 0..1 knob should mean, rather than per unit optical depth.
-    //
-    // Taken **per segment**, off the rates the segment generator resolved from the
-    // pen (§6.2), rather than once for the stroke. Nothing else about the loop
-    // changes: every dispatch already carried its own λs in its slot, because a
-    // segment is where the exchange happens.
-    let lambda = |axis: f32| (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0) / TAU_PER_PASS;
+    // λ per axis is [`lambda`](super::super::budget::lambda) — one definition, the
+    // same clamp the flattening budget prices. Taken **per segment**, off the rates
+    // the segment generator resolved from the pen (§6.2), rather than once for the
+    // stroke: every dispatch carries its own λs in its slot, because a segment is
+    // where the exchange happens.
     let common = SlotCommon {
         k: consts,
         weave: [consts.grain_uv, grain_bias.x, grain_bias.y],

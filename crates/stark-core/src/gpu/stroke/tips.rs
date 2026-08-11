@@ -20,26 +20,10 @@ use crate::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 use crate::gpu::context::GpuContext;
 
 use super::segments::round_coverage;
+use super::unpoisoned;
 
 /// Resolution of the generated round-tip prefix texture.
 pub(super) const ROUND_RES: u32 = 256;
-
-/// Take a lock whose only contents are a **cache**, poisoned or not.
-///
-/// Both caches here hold the output of a pure bake — a coverage field, a noise
-/// volume — keyed by what produced it. A panic while one is held cannot leave a torn
-/// value in it, because the value is moved in whole after the bake has finished; all
-/// poisoning tells us is that some *other* thread panicked while it happened to be
-/// looking something up. Propagating that as a panic of our own turns one thread's
-/// failure into a dead renderer, which is a worse answer than re-baking a texture.
-fn unpoisoned<'a, T>(
-    lock: Result<
-        std::sync::MutexGuard<'a, T>,
-        std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
-    >,
-) -> std::sync::MutexGuard<'a, T> {
-    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// The brush textures both paths resolve, and the lazily-baked caches behind them.
 #[derive(Clone)]

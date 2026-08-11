@@ -325,6 +325,27 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     tol
 }
 
+/// `λ = ln(1 − axis) / TAU_PER_PASS ≤ 0` — the transfer rate an axis becomes in the
+/// shader's terms (§6.2), clamped away from −∞ (axis = 1 ⇒ e^{−20} ≈ scraped
+/// clean). Dividing by [`TAU_PER_PASS`] is what makes an axis read as a fraction
+/// **per pass of the tip** rather than per unit optical depth. Zero is "no
+/// transfer".
+///
+/// The one definition, on purpose: the plan fills every slot's λ lanes from it,
+/// and [`exchange_travel`] prices the flattening budget off the same clamp
+/// ([`ln_keep`]). The flattener charging exactly the rates the shader will run is
+/// what the exchange-step bound rests on — and it used to rest on two closures,
+/// here and in the plan, agreeing by comment.
+pub(super) fn lambda(axis: f32) -> f32 {
+    ln_keep(axis) / TAU_PER_PASS
+}
+
+/// `ln(1 − axis) ≤ 0`, clamped away from −∞ — the shared core of [`lambda`] and of
+/// the transfer magnitude [`exchange_travel`] prices.
+fn ln_keep(axis: f32) -> f32 {
+    (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0)
+}
+
 /// How far the tool may travel per segment, in radii — [`RESERVOIR_EXCHANGE_STEP`]
 /// scaled by how fast *this* brush actually trades.
 ///
@@ -335,7 +356,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
 /// is what makes one constant mean the same thing to every brush.
 ///
 /// The rate falls out in closed form. Each axis enters the shader as
-/// `λ = ln(1 − axis) / TAU_PER_PASS` (`dynamics.rs`), so `(k_lift + k_deposit) · τ` is
+/// `λ = ln(1 − axis) / TAU_PER_PASS` ([`lambda`]), so `(k_lift + k_deposit) · τ` is
 /// just `−ln((1 − lift)(1 − deposit))` — the `τ` cancels, and there is no calibration
 /// hiding in it.
 ///
@@ -360,9 +381,9 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
 /// completes and so the error the step bounds — the brush is charged its worst case
 /// and every segment of every stroke it draws comes in under it.
 fn exchange_travel(d: BrushDynamics) -> f32 {
-    // Mirrors `dynamics.rs`'s own clamp, so the flattener prices the rates the shader
-    // will actually run — an axis at 1.0 is `−∞` otherwise.
-    let rate_of = |axis: f32| -(1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0);
+    // [`ln_keep`] — the very clamp [`lambda`] hands the shader, so the flattener
+    // prices the rates it will actually run (an axis at 1.0 is `−∞` otherwise).
+    let rate_of = |axis: f32| -ln_keep(axis);
     // `bleed` is deliberately *not* in this sum: it fires on its own travel cadence
     // with the window's exposure ([`BLEED_TRAVEL_QUANTUM`]), so segment length does
     // not set its step and shortening segments buys it nothing.

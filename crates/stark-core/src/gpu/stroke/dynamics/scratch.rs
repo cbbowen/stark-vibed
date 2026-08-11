@@ -24,6 +24,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::super::unpoisoned;
+
 /// How many bytes of free textures the pool will hold before it starts destroying
 /// the least-recently-used. One wide-tip piece's working set — region, narrow,
 /// snapshot and cells, three channels each in a pigment space — is on the order of
@@ -80,18 +82,6 @@ struct Inner {
 /// it needs no device; each checkout brings one.
 #[derive(Clone, Default)]
 pub(in crate::gpu::stroke) struct ScratchPool(Arc<Mutex<Inner>>);
-
-/// Take a lock whose only contents are a cache, poisoned or not — the argument is
-/// [`tips`](super::super::tips)'s: the free list cannot be left mid-invariant by an
-/// unwinding thread, and a dead renderer is a worse answer than a cold pool.
-fn unpoisoned<'a, T>(
-    lock: Result<
-        std::sync::MutexGuard<'a, T>,
-        std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
-    >,
-) -> std::sync::MutexGuard<'a, T> {
-    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 impl ScratchPool {
     /// Check a texture out: the newest free entry matching `key` exactly, or a fresh

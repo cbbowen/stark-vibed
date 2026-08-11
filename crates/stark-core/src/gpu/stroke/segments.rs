@@ -851,12 +851,9 @@ pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTole
 /// live tail, which covers a handful of tiles and is redrawn on every pointer move,
 /// that difference is most of the cost of the whole path.
 ///
-/// Returns `(tiles to composite, lo origin, region origin, w, h)`, or `None` if
-/// `coords` is empty. The size is [`chunk_segments`]'s business, not this one's — it
-/// hands over pieces that fit by construction.
-pub(super) fn region_rect(
-    coords: &BTreeSet<TileCoord>,
-) -> Option<(Vec<TileCoord>, Vec2, Vec2, u32, u32)> {
+/// Returns `None` if `coords` is empty. The size is [`chunk_segments`]'s business,
+/// not this one's — it hands over pieces that fit by construction.
+pub(super) fn region_rect(coords: &BTreeSet<TileCoord>) -> Option<RegionRect> {
     let mut lo = Vec2::splat(f32::INFINITY);
     let mut hi = Vec2::splat(f32::NEG_INFINITY);
     for c in coords {
@@ -876,8 +873,31 @@ pub(super) fn region_rect(
             }
         }
     }
-    let region_origin = lo - Vec2::splat(TILE_APRON as f32);
-    Some((halo.into_iter().collect(), lo, region_origin, w, h))
+    let origin = lo - Vec2::splat(TILE_APRON as f32);
+    Some(RegionRect {
+        halo: halo.into_iter().collect(),
+        lo,
+        origin,
+        w,
+        h,
+    })
+}
+
+/// What [`region_rect`] measures for a piece: the region rectangle the stamp loop
+/// evolves, and the tiles composited into it.
+pub(super) struct RegionRect {
+    /// The tiles to composite: the affected set plus the one-tile ring around it, so
+    /// rewritten tiles' aprons read real neighbour content (§6.4).
+    pub(super) halo: Vec<TileCoord>,
+    /// The top-left affected tile's origin — the region's *interior* origin, which
+    /// the write-back measures each tile's offset against.
+    pub(super) lo: Vec2,
+    /// The region rectangle's top-left in canvas px: [`lo`](Self::lo) less one
+    /// apron — what every slot's coordinates are measured from.
+    pub(super) origin: Vec2,
+    /// The rectangle's extent in texels.
+    pub(super) w: u32,
+    pub(super) h: u32,
 }
 
 #[cfg(test)]
@@ -2073,7 +2093,7 @@ mod tests {
             ),
         ];
         for (what, segments) in cases {
-            let want = region_rect(&affected_tiles(&segments)).map(|(_, _, _, w, h)| (w, h));
+            let want = region_rect(&affected_tiles(&segments)).map(|r| (r.w, r.h));
             assert_eq!(
                 measured(&segments),
                 want,

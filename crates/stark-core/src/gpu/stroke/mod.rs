@@ -66,6 +66,24 @@ pub(crate) use incremental::safe_frozen;
 /// registered buffer and one bind group however many tiles it crosses.
 const UNIFORM_STRIDE: usize = 256;
 
+/// Take a lock whose only contents are a **cache or a free list**, poisoned or not.
+///
+/// Every lock in this module guards derived state — a baked tip texture
+/// ([`tips`]), a pooled scratch list ([`dynamics`]'s `ScratchPool`) — whose values
+/// are moved in whole after the work producing them has finished, so a panic while
+/// the lock is held cannot leave a torn value behind. All poisoning tells us is
+/// that some *other* thread panicked while it happened to be looking something up;
+/// propagating that as a panic of our own turns one thread's failure into a dead
+/// renderer, which is a worse answer than a cold cache.
+fn unpoisoned<'a, T>(
+    lock: Result<
+        std::sync::MutexGuard<'a, T>,
+        std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
+    >,
+) -> std::sync::MutexGuard<'a, T> {
+    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Clone)]
 pub struct StrokeRenderer {
     ctx: GpuContext,
