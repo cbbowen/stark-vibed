@@ -954,9 +954,7 @@ pub enum BrushShape {
 `orientation` (`FollowStroke` | `Pen`) sets how the swept footprint is angled:
 `FollowStroke` keeps the shape's native axis on the stroke tangent (what makes a
 bristle brush read as a real stroke rather than a rubber stamp), while `Pen` pins
-it to the pen's tilt azimuth in canvas space, like a calligraphy nib. The swept
-integral runs along the travel direction, so the shape is pre-rotated into a
-per-orientation prefix-τ volume indexed by the relative angle.
+it to the pen's tilt azimuth in canvas space, like a calligraphy nib.
 
 **A mask is a square, and a tip's reach says so.** The prefix-τ volume is indexed
 over brush-local `|x| ≤ 1, |y| ≤ 1`, so a shape may be opaque out to the corners
@@ -967,9 +965,44 @@ square**, `√2 · radius` from the centreline for a stamp, not the radius. Meas
 against the radius alone the two answers agree at every axis-aligned angle and
 differ most at 45°, which is exactly the shape of the bug it caused: a diagonal
 stroke sliced off along a tile boundary, with horizontal and vertical strokes
-looking perfect. `FollowStroke` is where it shows, because layer 0 of the volume
-is the identity and keeps the mask's corners; a rotated slice loses them at bake
-time, the source being zero outside its own square.
+looking perfect.
+
+**The two orientation sources are two bakes, not one bake read two ways.** The
+swept integral runs along the travel direction, so orienting the footprint means
+turning the mask *inside the frame that integral is taken in* — and the two
+sources ask opposite amounts of that:
+
+- `FollowStroke` never turns it at all. The relative angle is 0 by definition, so
+  the volume is **one layer, the mask as it stands**, integrated over its own
+  width. That is what nearly every stroke reads, and it costs a single pass.
+- `Pen` turns it through the whole circle, and *a square does not fit inside
+  itself turned* — a 45° rotation puts its corners `√2` out, and what survives an
+  unpadded bake is the octagon the two squares share, 83% of the tip. So the pen
+  volume is **padded by `√2` and stacked**, one layer per relative angle, built
+  on first use rather than at import (the store cannot see a brush setting, and
+  eagerly baking it would charge every follow-stroke brush for a mode it never
+  enters).
+
+Padding a volume moves two numbers, and both have to move together or the mode
+stops matching its own brush:
+
+- **The frame.** The padded `[-1, 1]²` is `√2` tips wide, so the sweep is unrolled
+  in a frame that much larger for the mask inside it to land at the radius the
+  brush asked for. `Segment::frame` carries it and is the only radius the shaders
+  see; `Segment::radius` stays the tip's own, which is what keeps a nib's bleed
+  cadence, stencil and touch-down dab the size of the tip rather than of the box
+  around it.
+- **The column width the τ integral is taken at.** A padded column is narrower in
+  texels while standing for the same width of *mask*, so `build_prefix_tau` takes
+  its `dx` as a parameter rather than as `2/width`. Take it from the texture and
+  every pen stroke lands `√2` lighter than the same brush following the stroke.
+
+Only the tool side of the dynamics loop needs the conversion between the two
+(`frame_scale`, 1 for every unpadded volume). A prefix-τ difference is an
+absolute optical depth whatever box was baked around it, so the canvas side never
+asks; the reservoir, which has no prefix to difference and rebuilds its exposure
+from raw coverage, must — or it receives less than the canvas gives up and the
+loop quietly destroys height (§6.1).
 
 Content-addressing is the load-bearing choice:
 

@@ -251,7 +251,11 @@ impl StrokeRenderer {
                 SegmentInstance {
                     start: s.start.to_array(),
                     dir: s.dir.to_array(),
-                    geom: [s.radius, s.length],
+                    // The **frame**, not the tip: brush-local coordinates are the
+                    // volume's, and a padded one is wider than the shape inside it
+                    // (§6.6, [`Segment::frame`]). The two are the same number for
+                    // every brush but a pen-oriented stamp.
+                    geom: [s.frame, s.length],
                     extra: [s.orient, s.dist, s.curvature, s.add],
                     tooth: s.tooth,
                 }

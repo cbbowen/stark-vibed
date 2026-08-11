@@ -166,10 +166,19 @@ struct Slot {
     /// The sweep's start in region px, and the unit travel tangent it leaves along.
     start: Vec2,
     dir: Vec2,
-    /// The tip's radius in region px, and its travel as a multiple of that radius —
-    /// 0 on a settle, which is a break of contact rather than a stretch of it.
-    radius: f32,
+    /// The radius of the frame the sweep is unrolled in, region px, and its travel as
+    /// a multiple of that radius — 0 on a settle, which is a break of contact rather
+    /// than a stretch of it.
+    ///
+    /// The frame, not the tip ([`Segment::frame`]): a pen-oriented stamp's volume is
+    /// padded, and everything the shader reads out of a brush-local coordinate is in
+    /// that larger frame.
+    frame: f32,
     travel_radii: f32,
+    /// How many tips wide that frame is (§6.6) — the one conversion between the
+    /// frame's units and the mask's, and 1 for every unpadded volume. Only the tool
+    /// side reads it, the canvas side's prefix differences being absolute.
+    frame_scale: f32,
     /// `λ = ln(1 − axis) ≤ 0`, clamped away from −∞. Zero is "no transfer".
     lambda_lift: f32,
     lambda_deposit: f32,
@@ -218,17 +227,20 @@ struct Slot {
 }
 
 impl Default for Slot {
-    /// Zero everywhere except `bearing`, whose neutral value is **1** — the share of
-    /// the ground a tip stands on where there is nothing to bite, and what leaves an
-    /// exchange alone if one runs. A zeroed bearing would silently book the tool's
-    /// half of every transfer against no ground at all, which is not "no tooth" but
-    /// "infinite tooth", so it is the one field a derived `Default` would get wrong.
+    /// Zero everywhere except the three fields whose neutral value is **1**, each for
+    /// the same reason: they are *scales*, and a zeroed scale does not mean "none of
+    /// this" but "none of the thing it multiplies". `bearing` is the share of the
+    /// ground a tip stands on where there is nothing to bite — zeroed it would book the
+    /// tool's half of every transfer against no ground at all, which is not "no tooth"
+    /// but "infinite tooth". `cell` at 1 is the exact per-texel deposit. `frame_scale`
+    /// at 1 is an unpadded volume, where the frame and the tip are one thing.
     fn default() -> Self {
         Self {
             start: Vec2::ZERO,
             dir: Vec2::ZERO,
-            radius: 0.0,
+            frame: 0.0,
             travel_radii: 0.0,
+            frame_scale: 1.0,
             lambda_lift: 0.0,
             lambda_deposit: 0.0,
             channels: [0.0; 4],
@@ -248,9 +260,6 @@ impl Default for Slot {
             tooth: 0.0,
             weave_scale: 0.0,
             weave_bias: Vec2::ZERO,
-            // 1, not 0, for the same reason the bearing is 1: the neutral cell is
-            // "exact", and a slot that never reads the lane should still carry the
-            // value that means what it does.
             cell: 1.0,
             cell_anchor: Vec2::ZERO,
         }
@@ -264,7 +273,7 @@ impl Slot {
         Stamp {
             a: [self.start.x, self.start.y, self.dir.x, self.dir.y],
             b: [
-                self.radius,
+                self.frame,
                 self.travel_radii,
                 self.lambda_lift,
                 self.lambda_deposit,
@@ -276,9 +285,7 @@ impl Slot {
                 self.orient,
                 self.drain,
             ],
-            // `.w` is the last of the lane that carried the midpoint `exchange` used
-            // to sample the canvas at; it walks the texel's own track now.
-            e: [self.add, self.curvature, self.bleed_reach, 0.0],
+            e: [self.add, self.curvature, self.bleed_reach, self.frame_scale],
             f: self.noise_freq,
             g: [
                 self.noise_amp[0],
@@ -586,8 +593,11 @@ pub(super) fn dynamics_plan(
             slot: Slot {
                 start: p,
                 dir: s.dir,
-                radius: s.radius,
-                travel_radii: s.length / s.radius,
+                // The frame, and the travel in its units — both the volume's, which is
+                // the tip's own for everything but a padded (pen-oriented) stamp.
+                frame: s.frame,
+                travel_radii: s.length / s.frame,
+                frame_scale: s.frame / s.radius,
                 lambda_lift: lambda(s.lift),
                 lambda_deposit: lambda(s.deposit),
                 rect_origin: rect.origin,
@@ -648,8 +658,9 @@ pub(super) fn dynamics_plan(
                 slot: Slot {
                     start: p,
                     dir: fire.dir,
-                    radius: fire.radius,
-                    travel_radii: fire.length / fire.radius,
+                    frame: fire.frame,
+                    travel_radii: fire.length / fire.frame,
+                    frame_scale: fire.frame / fire.radius,
                     rect_origin: rect.origin,
                     orient: fire.orient,
                     // The window's own curvature, so the relaxed band follows the paint
@@ -706,7 +717,8 @@ pub(super) fn dynamics_plan(
                 // rates are the *last* segment's, which is where the pen was when it
                 // left the page — the same segment this slot takes its radius and
                 // orientation from. (`travel_radii` stays at its default 0.)
-                radius: s.radius,
+                frame: s.frame,
+                frame_scale: s.frame / s.radius,
                 lambda_lift: lambda(s.lift),
                 lambda_deposit: lambda(s.deposit),
                 rect_origin: rect.origin,
@@ -858,8 +870,9 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segme
                     curvature: s.curvature,
                     radius: s.radius,
                     // The crossing segment's shape is the window's shape — a firing is
-                    // that segment relaxing its own footprint, so it reaches exactly as
-                    // far from the centreline.
+                    // that segment relaxing its own footprint, so it is swept in the
+                    // same frame and reaches exactly as far from the centreline.
+                    frame: s.frame,
                     reach: s.reach,
                     // One quantum of arc length, which is what `sweep_at` measures
                     // travel in — and what `bleed_stencil` is calibrated against.
@@ -1001,8 +1014,9 @@ mod tests {
             dir,
             curvature: 0.0,
             radius,
-            // A round tip's reach: the plan builders are being measured here, not the
-            // width of any one shape.
+            // A round tip's frame and reach, both the radius: the plan builders are
+            // being measured here, not the width of any one shape.
+            frame: radius,
             reach: radius,
             length,
             orient: 0.0,
@@ -1042,8 +1056,9 @@ mod tests {
         let packed = Slot {
             start: Vec2::new(1.0, 2.0),
             dir: Vec2::new(3.0, 4.0),
-            radius: 5.0,
+            frame: 5.0,
             travel_radii: 6.0,
+            frame_scale: 43.0,
             lambda_lift: 7.0,
             lambda_deposit: 8.0,
             channels: [9.0, 10.0, 11.0, 12.0],
@@ -1072,7 +1087,7 @@ mod tests {
         assert_eq!(
             packed.b,
             [5.0, 6.0, 7.0, 8.0],
-            "b: radius, travel, λ_lift, λ_dep"
+            "b: frame radius, travel, λ_lift, λ_dep"
         );
         assert_eq!(packed.c, [9.0, 10.0, 11.0, 12.0], "c: colour + opacity");
         assert_eq!(
@@ -1082,8 +1097,8 @@ mod tests {
         );
         assert_eq!(
             packed.e,
-            [17.0, 18.0, 19.0, 0.0],
-            "e: add, curvature, reach, —"
+            [17.0, 18.0, 19.0, 43.0],
+            "e: add, curvature, bleed reach, frame scale"
         );
         assert_eq!(packed.f, [20.0, 21.0, 22.0, 23.0], "f: noise frequency");
         assert_eq!(
@@ -1113,27 +1128,39 @@ mod tests {
         );
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for one field is not
-    /// zero: a `bearing` of 0 books the tool's half of every transfer against no ground
-    /// at all — infinite tooth, not absent tooth — so a derived `Default` would make
-    /// the two slot kinds that leave it alone quietly wrong.
+    /// The neutral slot is neutral *in the shader's terms*, which for three fields is
+    /// not zero. Each of them is a **scale**, and a zeroed scale does not say "none of
+    /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
+    /// half of every transfer against no ground at all — infinite tooth, not absent
+    /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
+    /// `frame_scale` of 0 is a tip of no width rather than an unpadded volume. A
+    /// derived `Default` would make every slot kind that leaves one alone quietly
+    /// wrong, and this is the list that says which they are.
     #[test]
     fn the_default_slot_is_neutral_rather_than_zeroed() {
         let d = Slot::default().pack();
         assert_eq!(d.h[2], 1.0, "the default bearing must be 1, not 0");
         assert_eq!(d.k[0], 1.0, "the default cell must be 1 — exact — not 0");
+        assert_eq!(
+            d.e[3], 1.0,
+            "the default frame scale must be 1 — unpadded — not 0"
+        );
         for (lane, name) in [
             (d.a, "a"),
             (d.b, "b"),
             (d.c, "c"),
             (d.d, "d"),
-            (d.e, "e"),
             (d.f, "f"),
             (d.g, "g"),
             (d.i, "i"),
         ] {
             assert_eq!(lane, [0.0; 4], "lane {name} is not neutral by default");
         }
+        assert_eq!(
+            [d.e[0], d.e[1], d.e[2]],
+            [0.0; 3],
+            "lane e beyond the frame scale"
+        );
         assert_eq!(
             [d.h[0], d.h[1], d.h[3]],
             [0.0; 3],

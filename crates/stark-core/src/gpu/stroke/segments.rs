@@ -32,7 +32,22 @@ pub(super) struct Segment {
     /// branch on — so a stroke the arc fit declines to bend is bit-identical to one
     /// drawn before arcs existed (§6.2).
     pub(super) curvature: f32,
+    /// The tip's own radius in canvas px — how wide the shape lands, and the length
+    /// every rate the host measures is denominated in (the bleed cadence, the stencil's
+    /// diffusivity, the touch-down dab).
     pub(super) radius: f32,
+    /// The radius of the **frame the sweep is integrated in**, in canvas px: the one
+    /// radius the shaders see, and the tip's own only when the two coincide.
+    ///
+    /// They part company for a pen-oriented stamp (§6.6). Its prefix-τ volume is padded
+    /// so the mask can turn inside it without losing its corners, so the volume's
+    /// `[-1, 1]²` is `PEN_PAD` tips wide rather than one — and the sweep has to be
+    /// unrolled in a frame that much larger for the mask inside it to land at the
+    /// radius the brush asked for. Everything the shader derives from brush-local
+    /// coordinates (the swept arc, the colour-noise domain, the reservoir's placement)
+    /// is in this frame; nothing the host prices is, which is what keeps a nib's dab
+    /// and its bleed the size of the tip instead of the size of the box around it.
+    pub(super) frame: f32,
     /// How far from the centreline this tip's deposit can land, in canvas px — the
     /// half-extent of its footprint **square**, not of the disc inscribed in it
     /// ([`tip_reach`], scaled by the `radius` above).
@@ -414,6 +429,7 @@ pub(super) fn generate_segments_in(
             dir: sweep.dir,
             curvature: sweep.curvature,
             radius,
+            frame: radius * frame_scale(b),
             reach: radius * tip_reach(&b.shape),
             length: sweep.length,
             orient: orientation_turns(b.orientation, sweep.mid_dir, at.tilt),
@@ -597,6 +613,26 @@ pub(super) fn tip_reach(shape: &BrushShape) -> f32 {
         // is what a bound taken off the radius alone was cutting off at the tile
         // boundary.
         BrushShape::Stamp(_) => std::f32::consts::SQRT_2,
+    }
+}
+
+/// The frame the sweep is integrated in for this brush, as a multiple of the tip's own
+/// radius (§6.6) — what [`Segment::frame`] scales, and 1 for everything but a
+/// pen-oriented stamp.
+///
+/// A property of the brush rather than of the shape alone, because it is the pair
+/// `(shape, orientation)` that decides which prefix-τ volume gets bound: a stamp that
+/// follows the stroke reads an unpadded identity layer and a stamp pinned to the pen
+/// reads the padded stack. Resolved from the same pair on both sides, so the frame the
+/// renderer sweeps in is the frame the volume was baked for
+/// ([`AssetStore::prefix_view`](crate::assets::AssetStore::prefix_view)).
+pub(super) fn frame_scale(b: &BrushParams) -> f32 {
+    match (b.shape, b.orientation) {
+        // A disc is its own rotation, so its volume is one slice with nothing to turn
+        // inside it — whatever the orientation source says.
+        (BrushShape::Round { .. }, _) => 1.0,
+        (BrushShape::Stamp(_), OrientationSource::FollowStroke) => 1.0,
+        (BrushShape::Stamp(_), OrientationSource::Pen) => crate::assets::pen_frame_scale(),
     }
 }
 
@@ -1909,8 +1945,9 @@ mod tests {
             },
             curvature: 0.0,
             radius,
-            // A round tip's reach, which is the radius: these cases are about how the
-            // measurements combine boxes, not about how wide one shape is.
+            // A round tip's frame and reach, both the radius: these cases are about how
+            // the measurements combine boxes, not about how wide one shape is.
+            frame: radius,
             reach: radius,
             length,
             orient: 0.0,

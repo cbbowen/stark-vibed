@@ -88,6 +88,11 @@ impl TipCache {
     ///
     /// Both render paths resolve it the same way — they differ in which bind-group
     /// layout they hang it off, not in how the texture is chosen.
+    ///
+    /// The **orientation source** is part of the question for an image brush (§6.6):
+    /// follow-stroke reads a single identity layer, pen a padded stack of them. A round
+    /// tip is rotation-invariant and answers both with the same one slice, which is why
+    /// it is asked only for its hardness.
     pub(super) fn prefix_view(
         &self,
         assets: &AssetStore,
@@ -95,7 +100,7 @@ impl TipCache {
     ) -> wgpu::TextureView {
         match brush.shape {
             BrushShape::Stamp(id) => assets
-                .prefix_view(id)
+                .prefix_view(id, brush.orientation)
                 .unwrap_or_else(|| self.round_tip(BrushShape::DEFAULT_HARDNESS).prefix),
             BrushShape::Round { hardness } => self.round_tip(hardness).prefix,
         }
@@ -136,7 +141,14 @@ impl TipCache {
         let cov = round_coverage(hardness, ROUND_RES);
         // The round tip is rotation-invariant, so a single orientation layer suffices —
         // the shader's wrapping lookup reads it for every orientation (§6.6).
-        let prefix = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
+        let prefix = build_prefix_tau(
+            &self.ctx,
+            ROUND_RES,
+            ROUND_RES,
+            1,
+            2.0 / ROUND_RES as f32,
+            &cov,
+        );
         let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
         let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
         let tip = RoundTip { prefix, coverage };
