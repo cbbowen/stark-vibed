@@ -7,11 +7,12 @@
 //! (no CPU readback, so it works on WebGPU) with a per-segment x per-lateral-band
 //! reservoir texture standing in for the tip's load.
 //!
-//! The path is four modules, split by what a maintainer is holding in their head:
+//! The path is three modules, split by what a maintainer is holding in their head:
 //! [`plan`] works out what to dispatch and touches no GPU at all, [`kit`] builds the
-//! objects it is dispatched with, [`run`] records it, and [`scratch`] pools the
-//! working textures the recording checks out and hands back. What is left here is
-//! the one question asked before any of them — which path a stroke takes at all.
+//! objects it is dispatched with, and [`run`] records it — checking its working
+//! textures out of the stroke-level [`scratch`](super::scratch) pool through the
+//! submit scope that owns their release. What is left here is the one question
+//! asked before any of them — which path a stroke takes at all.
 
 use crate::document::StrokeRecord;
 
@@ -21,10 +22,8 @@ use super::segments::segment_fits_region;
 mod kit;
 mod plan;
 mod run;
-mod scratch;
 
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
-pub(super) use scratch::ScratchPool;
 
 /// fp32, for the same reason the prefix-τ volume is: every fragment reads the baked
 /// swept prefix as a *difference* of two prefix sums (§6.2), so f16 would band exactly

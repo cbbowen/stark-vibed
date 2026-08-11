@@ -15,6 +15,7 @@
 use crate::document::StrokeRecord;
 use crate::geom::TileCoord;
 
+use super::scratch::Kept;
 use super::segments;
 
 /// The stamp loop's carried state at a cut point in a stroke (§6.2).
@@ -30,30 +31,21 @@ use super::segments;
 /// The reservoir is brush-*local*, which is why this works at all: it says nothing
 /// about where the stroke is, so the region rectangle may change completely between
 /// the piece that produced this state and the piece that resumes from it.
+/// The textures ride in [`Kept`] leases rather than being created and destroyed
+/// per pointer move: one of these is captured per fold, and the pool hands the
+/// same textures back on drop — which is sound *because* a run only ever borrows a
+/// `ToolState`, so the drop that returns a lease can only happen after the run's
+/// own submit (see [`Kept`]).
 pub struct ToolState {
     /// Reservoir colour: per texel, the latent paint (rgb) and its per-unit opacity.
-    pub(super) color: wgpu::Texture,
+    pub(super) color: Kept,
     /// Reservoir aux: per texel, the carried amount (height).
-    pub(super) aux: wgpu::Texture,
+    pub(super) aux: Kept,
     /// Reservoir residual (§6.7), in a space that has one: the rest of the
     /// colour above. Carried across ranges for the same reason the colour is — a tip
     /// that picked up black paint has to still be carrying black when the next
     /// pointer move resumes it, and the concentrations alone cannot say so.
-    pub(super) resid: Option<wgpu::Texture>,
-}
-
-impl Drop for ToolState {
-    fn drop(&mut self) {
-        // Destroyed eagerly for the same reason as `ScopedResources`: one of these is
-        // allocated per pointer move, and waiting on JS GC to free them OOMs the tab.
-        // Safe because WebGPU defers the real free until the submitted work that reads
-        // them retires.
-        self.color.destroy();
-        self.aux.destroy();
-        if let Some(r) = &self.resid {
-            r.destroy();
-        }
-    }
+    pub(super) resid: Option<Kept>,
 }
 
 /// What a range render leaves behind for the range that resumes after it.

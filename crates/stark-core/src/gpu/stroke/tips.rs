@@ -25,20 +25,29 @@ use super::unpoisoned;
 /// Resolution of the generated round-tip prefix texture.
 pub(super) const ROUND_RES: u32 = 256;
 
+/// How many round tips [`TipCache`] keeps baked at once.
+///
+/// More than one because one brush is not the working set: two peers painting
+/// concurrently at different hardness (§12), or a replay interleaving strokes from
+/// different brushes, alternate keys on every render — and a single entry re-bakes
+/// 256² of `acos`/`exp` plus two texture uploads per miss, per frame. Four covers a
+/// handful of simultaneous brushes; a hardness slider still walks through fresh
+/// values per frame, which is why this is an LRU of a few rather than a map that
+/// banks ~320 KB of GPU texture per position and never hands it back.
+const ROUND_TIPS_KEPT: usize = 4;
+
 /// The brush textures both paths resolve, and the lazily-baked caches behind them.
 #[derive(Clone)]
 pub(super) struct TipCache {
     ctx: GpuContext,
-    /// The round tip's baked textures, keyed by `hardness.to_bits()` (§6.6).
+    /// The round tips' baked textures, keyed by `hardness.to_bits()` (§6.6): an LRU
+    /// of [`ROUND_TIPS_KEPT`], newest last.
     ///
-    /// **One entry, replaced rather than accumulated** — and that is a fact about the
-    /// key, not caution. Hardness is a continuous slider, so a live preview walks it
-    /// through a fresh value per frame while the user drags one: keeping every
-    /// position would bank ~320 KB of GPU texture apiece and never hand it back, while
-    /// keeping the last is exactly the working set of *adjust the knob and look*.
-    /// [`noise_cache`](Self::noise_cache) below grows without bound for the opposite
-    /// reason — its key is a small enum, so the whole domain fits and nothing evicts.
-    round_tip: Arc<Mutex<Option<(u32, RoundTip)>>>,
+    /// Bounded where [`noise_cache`](Self::noise_cache) below grows freely, and the
+    /// difference is the key: hardness is a continuous slider a live preview walks
+    /// through a fresh value per frame, while the noise kinds are a small enum whose
+    /// whole domain fits.
+    round_tip: Arc<Mutex<Vec<(u32, RoundTip)>>>,
     /// Colour dynamics (§6.2): the shared wrap/linear sampler, the 1×1×1 zero volume
     /// bound when a brush's jitter is off, and the lazily-baked per-kind fields.
     pub(super) noise_sampler: wgpu::Sampler,
@@ -60,7 +69,7 @@ impl TipCache {
         let (_dummy_tex, dummy_noise) = crate::noise::dummy_noise_texture(ctx);
         Self {
             ctx: ctx.clone(),
-            round_tip: Arc::new(Mutex::new(None)),
+            round_tip: Arc::new(Mutex::new(Vec::new())),
             noise_sampler,
             dummy_noise,
             noise_cache: Arc::new(Mutex::new(Vec::new())),
@@ -117,10 +126,12 @@ impl TipCache {
     fn round_tip(&self, hardness: f32) -> RoundTip {
         let key = hardness.to_bits();
         let mut cache = unpoisoned(self.round_tip.lock());
-        if let Some((k, tip)) = cache.as_ref()
-            && *k == key
-        {
-            return tip.clone();
+        if let Some(i) = cache.iter().position(|(k, _)| *k == key) {
+            // Move the hit to the back — the eviction below takes from the front.
+            let hit = cache.remove(i);
+            let tip = hit.1.clone();
+            cache.push(hit);
+            return tip;
         }
         let cov = round_coverage(hardness, ROUND_RES);
         // The round tip is rotation-invariant, so a single orientation layer suffices —
@@ -136,7 +147,13 @@ impl TipCache {
         let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
         let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
         let tip = RoundTip { prefix, coverage };
-        *cache = Some((key, tip.clone()));
+        cache.push((key, tip.clone()));
+        if cache.len() > ROUND_TIPS_KEPT {
+            // Oldest first. Dropped rather than `destroy()`ed: unlike the per-stroke
+            // resources, evictions happen at the *rate the brush changes*, not per
+            // pointer move, so JS GC keeps up fine.
+            cache.remove(0);
+        }
         tip
     }
     /// The colour-dynamics noise tile for a brush: the baked field for its

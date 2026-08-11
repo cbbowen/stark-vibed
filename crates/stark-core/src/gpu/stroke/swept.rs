@@ -12,9 +12,7 @@ use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
 use super::segments::{SegmentInstance, generate_segments_in, tiles_with_segments};
-use super::{
-    ScopedResources, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE,
-};
+use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, UNIFORM_STRIDE};
 
 // Vertices in one segment's swept geometry: a triangle strip of two rims across
 // `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc rather
@@ -196,10 +194,12 @@ impl StrokeRenderer {
             );
         }
 
-        // The per-stroke instance buffer registers here and is `destroy()`d when this
-        // drops (at the end of `render`, after the submit below) — freeing it
-        // deterministically instead of leaking to JS GC (§6.2).
-        let mut scoped = ScopedResources::default();
+        // The submit scope: the per-stroke buffers and the shared scratch pair ride
+        // in it, and only the `finish` that submits the commands naming them can
+        // release them (`scratch::SubmitScope`) — where this used to be a
+        // `ScopedResources` plus two carefully-placed `drop`s that a comment
+        // defended against being moved above the submit.
+        let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
         // Resolve the brush's prefix-τ texture: image brushes from the asset
         // store; the round tip generated (and cached) from its hardness.
@@ -267,7 +267,7 @@ impl StrokeRenderer {
         // buffers well below the normal `maxBufferSize`, so a long stroke would panic
         // in `createBuffer`.
         let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
-        let instance_buf = scoped.buffer(device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark sweep instances"),
             size: instance_bytes.len() as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -282,9 +282,6 @@ impl StrokeRenderer {
             tool: None,
             dirty: coords.clone(),
         };
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("stark stroke commit"),
-        });
 
         // Per-tile sweep transforms, one [`UNIFORM_STRIDE`] slot each in a single
         // buffer the draws below select with a dynamic offset. The texture top-left is
@@ -316,7 +313,7 @@ impl StrokeRenderer {
             let at = i * UNIFORM_STRIDE;
             xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
         }
-        let xform_buf = scoped.buffer(device.create_buffer(&wgpu::BufferDescriptor {
+        let xform_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stark sweep xforms"),
             size: xform_data.len() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -366,7 +363,7 @@ impl StrokeRenderer {
                     scratch.resid_view(),
                     desc::CLEAR,
                 );
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = scope.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark sweep pass"),
                     color_attachments: &sweep_att[..sweep_n],
                     depth_stencil_attachment: None,
@@ -429,7 +426,7 @@ impl StrokeRenderer {
                     dst.resid_view(),
                     desc::CLEAR,
                 );
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = scope.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("stark integrate"),
                     color_attachments: &int_att[..int_n],
                     depth_stencil_attachment: None,
@@ -444,18 +441,14 @@ impl StrokeRenderer {
             new_map = new_map.insert(*coord, dst);
         }
 
-        self.ctx.queue.submit([encoder.finish()]);
-
-        // `scoped` drops here, *after* the submit — destroying this stroke's instance
-        // buffer. It isn't pooled (sized per stroke) and a live stroke re-renders every
-        // pointer move, so left to JS GC they pile up and OOM the tab; `destroy()`
-        // after submit reclaims them at once (WebGPU keeps the memory until the
-        // in-flight work that uses them completes).
-        drop(scoped);
-        // And the scratch pair after it, for the stronger reason given where it is
-        // acquired: released any earlier it is a *pooled* texture this command buffer
-        // still names, free to be handed out — or destroyed — before the submit.
-        drop(scratch);
+        // The scratch pair rides the scope past the submit, for the reason given
+        // where it is acquired: released any earlier it is a *pooled* texture this
+        // command buffer still names, free to be handed out — or destroyed — before
+        // the submit. `finish` then submits and releases everything behind that
+        // submit: the tile pair back to its pool by drop, the per-stroke buffers by
+        // `destroy()` (left to JS GC they pile up and OOM the tab, §6.2).
+        scope.hold(scratch);
+        scope.finish();
         (new_map, carry)
     }
 }

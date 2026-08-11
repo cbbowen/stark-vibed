@@ -35,12 +35,14 @@ use crate::noise::NOISE_TILE_PX;
 mod budget;
 mod dynamics;
 mod incremental;
+mod scratch;
 mod segments;
 mod swept;
 mod tips;
 
 use budget::MAX_REGION_DIM;
-use dynamics::{DynamicsKit, ScratchPool, StrokePath, build_dynamics_kit, dynamics_setup};
+use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
+use scratch::ScratchPool;
 use swept::{SweptKit, build_swept_kit};
 use tips::TipCache;
 
