@@ -686,9 +686,12 @@ pub(super) fn dynamics_plan(
         let tan = settle_tangent(rec, ctx.tol, segments);
         let p = end - region_origin;
         // The tip's own square rather than a swept box — a pen-up is a standing tip.
-        // It cannot overrun the snapshot scratch: that was sized from coverage boxes,
-        // and a segment's box is this square grown by its travel.
-        let rect = ctx.rect(end - Vec2::splat(s.radius), end + Vec2::splat(s.radius));
+        // Its half-extent is the tip's `reach`, which is the radius only for a shape
+        // that stays inside its own disc (`segments::tip_reach`); the settle writes the
+        // same footprint the pass was laying, corners included. It cannot overrun the
+        // snapshot scratch: that was sized from coverage boxes, and a segment's box is
+        // this square grown by its travel.
+        let rect = ctx.rect(end - Vec2::splat(s.reach), end + Vec2::splat(s.reach));
         plan.push(LoopDispatch {
             groups: rect.groups,
             // The settle is one dispatch at the end of a stroke — nothing to amortize
@@ -854,6 +857,10 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> Vec<(usize, Segme
                     // ([`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN)).
                     curvature: s.curvature,
                     radius: s.radius,
+                    // The crossing segment's shape is the window's shape — a firing is
+                    // that segment relaxing its own footprint, so it reaches exactly as
+                    // far from the centreline.
+                    reach: s.reach,
                     // One quantum of arc length, which is what `sweep_at` measures
                     // travel in — and what `bleed_stencil` is calibrated against.
                     length: bq,
@@ -994,6 +1001,9 @@ mod tests {
             dir,
             curvature: 0.0,
             radius,
+            // A round tip's reach: the plan builders are being measured here, not the
+            // width of any one shape.
+            reach: radius,
             length,
             orient: 0.0,
             dist,

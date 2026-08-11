@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use crate::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
+use crate::document::{BrushParams, BrushShape, OrientationSource, PenState, StrokeRecord};
 use crate::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 use super::StrokeSpans;
@@ -33,6 +33,16 @@ pub(super) struct Segment {
     /// drawn before arcs existed (§6.2).
     pub(super) curvature: f32,
     pub(super) radius: f32,
+    /// How far from the centreline this tip's deposit can land, in canvas px — the
+    /// half-extent of its footprint **square**, not of the disc inscribed in it
+    /// ([`tip_reach`], scaled by the `radius` above).
+    ///
+    /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1` — that is the whole
+    /// domain of the prefix-τ volume — so a shape is free to fill the corners of its
+    /// own mask, and an image stamp that does reaches `√2 · radius` from the
+    /// centreline. Only the round tip, zero outside its unit disc by construction
+    /// ([`round_coverage`]), reaches exactly `radius`.
+    pub(super) reach: f32,
     /// Arc length of the centreline (canvas px) — the tip's own travel, which is the
     /// measure every rate in both paths is denominated in.
     pub(super) length: f32,
@@ -392,17 +402,19 @@ pub(super) fn generate_segments_in(
         };
         let m = &b.modulation;
         let d = b.dynamics;
+        // The size mapping and the taper both scale the tip; the floor keeps a
+        // tapered tip a hairline at its very point rather than a degenerate
+        // zero-width sweep (which would also divide by zero in the dynamics
+        // loop's reservoir cadence). With the default brush the mapping is
+        // pressure, linearly, so this is the product it has always been — to the
+        // bit (`Modulation::factor`).
+        let radius = (b.radius * m.size(pen) * tap).max(0.5);
         Segment {
             start: at.pos,
             dir: sweep.dir,
             curvature: sweep.curvature,
-            // The size mapping and the taper both scale the tip; the floor keeps a
-            // tapered tip a hairline at its very point rather than a degenerate
-            // zero-width sweep (which would also divide by zero in the dynamics
-            // loop's reservoir cadence). With the default brush the mapping is
-            // pressure, linearly, so this is the product it has always been — to the
-            // bit (`Modulation::factor`).
-            radius: (b.radius * m.size(pen) * tap).max(0.5),
+            radius,
+            reach: radius * tip_reach(&b.shape),
             length: sweep.length,
             orient: orientation_turns(b.orientation, sweep.mid_dir, at.tilt),
             dist: sweep.dist,
@@ -564,6 +576,30 @@ fn sample_at(pts: &[crate::path::IntermediateSample], arc: f32) -> (Vec2, Vec2, 
     (p.pos, Vec2::new(1.0, 0.0), p.pressure, p.tilt)
 }
 
+/// How far a tip of this shape deposits from the centreline, as a multiple of the
+/// radius in force (§6.6) — the half-extent of its footprint square, which is what
+/// [`Segment::reach`] scales.
+///
+/// The sweep integrates every shape over brush-local `|x| ≤ 1, |y| ≤ 1`, so what
+/// separates the two answers is not how the mask is *drawn* but whether the shape can
+/// occupy the corners of its own square. Stated as a property of the shape rather than
+/// measured off the mask because it has to be the same number on both sides of a
+/// commit and on every peer, and a bound is exactly what the callers want: a box that
+/// is a little large costs fragments that difference their prefix taps to zero, and one
+/// that is a little small is a clipped stroke.
+pub(super) fn tip_reach(shape: &BrushShape) -> f32 {
+    match shape {
+        // Exactly zero outside its unit disc, by construction (`round_coverage`), so
+        // the corners of its square hold nothing to lose.
+        BrushShape::Round { .. } => 1.0,
+        // An imported mask may be opaque to the very corner texel. Swept along a
+        // diagonal that square's canvas box is `√2` times as wide as the disc's, which
+        // is what a bound taken off the radius alone was cutting off at the tile
+        // boundary.
+        BrushShape::Stamp(_) => std::f32::consts::SQRT_2,
+    }
+}
+
 /// The shape's orientation for a segment, as a fraction of a full turn ∈ [0, 1): the
 /// relative angle between the shape's native axis and the travel direction `dir`, which
 /// picks the prefix-τ orientation layer (§6.6).
@@ -654,10 +690,19 @@ pub(super) fn segment_end(s: &Segment) -> Vec2 {
 /// The rasterized geometry reaches further than this at the caps (the shaders sweep a
 /// generous angular margin so the round end is never clipped), but every fragment out
 /// there differences two prefix taps to exactly zero and writes nothing. What a box
-/// has to contain is where the deposit *lands*, which is within one radius of the arc.
+/// has to contain is where the deposit *lands*, which is within the tip's
+/// [`reach`](Segment::reach) of the arc.
+///
+/// **The tip's reach, not its radius.** The two are the same number only for a shape
+/// that stays inside the disc inscribed in its mask; a stamp that fills the corners
+/// reaches `√2` times as far, and swept along a diagonal that difference is a whole
+/// corner of the footprint. Under-reporting it here is a stroke clipped at a tile
+/// boundary — `for_each_touched` leaves the tile out of the render (or leaves this
+/// segment out of a tile another segment brought in), and the dynamics loop dispatches
+/// a rect too small for its own footprint.
 pub(super) fn coverage_bounds(s: &Segment) -> (Vec2, Vec2) {
     let end = segment_end(s);
-    let reach = Vec2::splat(s.radius + crate::path::arc_sagitta(s.curvature, s.length));
+    let reach = Vec2::splat(s.reach + crate::path::arc_sagitta(s.curvature, s.length));
     (s.start.min(end) - reach, s.start.max(end) + reach)
 }
 
@@ -749,7 +794,10 @@ pub(super) fn segment_fits_region(b: &BrushParams, tol: crate::path::FlattenTole
     // through (`MAX_HALF_TURN_SIN`) — under 2% and under 5% of the chord — so a
     // single margin covers the pair with room to spare.
     let length = tol.max_len.max(DAB_TRAVEL * radius) * 1.1;
-    let extent = length + 2.0 * (radius + TILE_APRON as f32);
+    // The tip's reach rather than its radius, for [`coverage_bounds`]' reason: a
+    // stamp that fills its mask's corners occupies a `√2`-wider box, and this is the
+    // bound that decides whether the loop may draw the brush at all.
+    let extent = length + 2.0 * (radius * tip_reach(&b.shape) + TILE_APRON as f32);
     let worst = (extent / TILE_SIZE as f32).ceil().max(0.0) as u32 * TILE_SIZE + TILE_TEX;
     worst <= MAX_REGION_DIM
 }
@@ -1457,6 +1505,70 @@ mod tests {
         }
     }
 
+    /// A tip's box has to contain the **square** it is swept over, not the disc
+    /// inscribed in that square — and at a diagonal those are different boxes.
+    ///
+    /// This is the bug the `reach` field exists for. Every shape is integrated over
+    /// brush-local `|x| ≤ 1, |y| ≤ 1`, so a stamp is free to paint the corners of its
+    /// own mask; measured against the radius alone, a stroke running at 45° claimed a
+    /// box `√2` too small on both axes, and `for_each_touched` then left tiles — or
+    /// segments within a tile — out of the render. What it looks like is a stroke sliced
+    /// off along a tile boundary, which no golden would attribute to the tip's width.
+    ///
+    /// Swept at a range of angles because the axis-aligned ones are exactly where the
+    /// two answers agree, and those were the ones that always looked right.
+    #[test]
+    fn a_square_tip_claims_the_corners_it_can_paint() {
+        let radius = 24.0f32;
+        let stamp = BrushShape::Stamp(crate::assets::AssetId([7u8; 32]));
+        assert_eq!(
+            tip_reach(&BrushShape::default()),
+            1.0,
+            "a round tip is a disc"
+        );
+        for k in 0..16 {
+            // Angles off the axes as well as on them, from the series (see
+            // `sin_series`) so the case is the same on every platform.
+            let theta = k as f64 * std::f64::consts::TAU / 16.0;
+            let dir = Vec2::new(cos_series(theta) as f32, sin_series(theta) as f32);
+            let mut b = BrushParams {
+                radius,
+                ..BrushParams::default()
+            };
+            b.shape = stamp;
+            let rec = record(b, &[Vec2::ZERO, dir * 200.0]);
+            for (i, s) in whole(&rec).iter().enumerate() {
+                let (lo, hi) = coverage_bounds(s);
+                let perp = Vec2::new(-s.dir.y, s.dir.x);
+                let end = segment_end(s);
+                // The four corners of the tip's square at each end of the travel —
+                // every one of them a texel the deposit may reach.
+                for base in [s.start, end] {
+                    for sx in [-1.0f32, 1.0] {
+                        for sy in [-1.0f32, 1.0] {
+                            let c = base + s.dir * (sx * s.radius) + perp * (sy * s.radius);
+                            // At exactly 45° the box is *tight* — the corner is on its
+                            // edge — and the two sides reach `r·√2` by different
+                            // arithmetic, so they land an ulp or so apart. A tolerance
+                            // well under a texel is what says "contains" here; nothing
+                            // downstream can resolve less, and both consumers add their
+                            // own margin (`TILE_APRON`, `RECT_MARGIN`) on top.
+                            const SLACK: f32 = 1e-3;
+                            assert!(
+                                c.x >= lo.x - SLACK
+                                    && c.y >= lo.y - SLACK
+                                    && c.x <= hi.x + SLACK
+                                    && c.y <= hi.y + SLACK,
+                                "angle {k}/16, segment {i}: the tip's corner {c:?} \
+                                 falls outside its own coverage box {lo:?}..{hi:?}",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // --- segment budget ----------------------------------------------------
 
     /// A stroke through `pts` with `brush`, as a path of plain full-pressure knots.
@@ -1797,6 +1909,9 @@ mod tests {
             },
             curvature: 0.0,
             radius,
+            // A round tip's reach, which is the radius: these cases are about how the
+            // measurements combine boxes, not about how wide one shape is.
+            reach: radius,
             length,
             orient: 0.0,
             dist: 0.0,

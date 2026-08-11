@@ -958,6 +958,19 @@ it to the pen's tilt azimuth in canvas space, like a calligraphy nib. The swept
 integral runs along the travel direction, so the shape is pre-rotated into a
 per-orientation prefix-τ volume indexed by the relative angle.
 
+**A mask is a square, and a tip's reach says so.** The prefix-τ volume is indexed
+over brush-local `|x| ≤ 1, |y| ≤ 1`, so a shape may be opaque out to the corners
+of its own image; only the round tip, exactly zero outside its unit disc, stops
+at one radius. So the box that decides which tiles a segment is drawn into — and
+which rect the dynamics loop dispatches over its footprint — is the **rotated
+square**, `√2 · radius` from the centreline for a stamp, not the radius. Measured
+against the radius alone the two answers agree at every axis-aligned angle and
+differ most at 45°, which is exactly the shape of the bug it caused: a diagonal
+stroke sliced off along a tile boundary, with horizontal and vertical strokes
+looking perfect. `FollowStroke` is where it shows, because layer 0 of the volume
+is the identity and keeps the mask's corners; a rotated slice loses them at bake
+time, the source being zero outside its own square.
+
 Content-addressing is the load-bearing choice:
 
 - **The action log stays tiny.** `StrokeRecord` carries a 32-byte `AssetId`, not
