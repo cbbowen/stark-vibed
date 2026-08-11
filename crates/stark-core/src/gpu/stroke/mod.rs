@@ -40,7 +40,7 @@ mod swept;
 mod tips;
 
 use budget::MAX_REGION_DIM;
-use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
+use dynamics::{DynamicsKit, ScratchPool, StrokePath, build_dynamics_kit, dynamics_setup};
 use swept::{SweptKit, build_swept_kit};
 use tips::TipCache;
 
@@ -83,10 +83,16 @@ pub struct StrokeRenderer {
 
     /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
     /// prefix-τ volume both paths integrate against, the coverage mask the reservoir
-    /// weights by, and the colour-dynamics field. **The one mutable thing here**, which
-    /// is why it is a type of its own rather than five fields: the sentence above about
-    /// immutable objects is then true of everything else without qualification.
+    /// weights by, and the colour-dynamics field. **One of the two mutable things
+    /// here** (the other is [`scratch`](Self::scratch)), which is why it is a type of
+    /// its own rather than five fields: the sentence above about immutable objects is
+    /// then true of everything else without qualification.
     tips: TipCache,
+
+    /// The stamp loop's pooled working textures (§6.2): checked out per fold, handed
+    /// back after each submit. Shared across clones like the caches in `tips`, so
+    /// the live fold and the commit that replaces it draw from one free list.
+    scratch: ScratchPool,
 
     /// The base bound where a stroke reaches a tile the layer does not have yet
     /// (§6.8's pattern). The integrate reads it through clamped loads, so bare
@@ -194,6 +200,7 @@ impl StrokeRenderer {
             swept,
             dynamics,
             tips: TipCache::new(ctx),
+            scratch: ScratchPool::default(),
             zeroes,
             selection,
         }

@@ -111,9 +111,10 @@ the browser's own compositor depth.
 - [ ] Then `getPredictedEvents()` (preview tail only — prediction never enters
   the fitter, so `preview == committed` is untouched) to cover the browser
   compositor's untunable 1–2 frames.
-- [ ] Persist dynamics scratch (region/snapshot/reservoir textures, bind
-  groups) across a stroke — the per-piece fixed cost the r≈100 bench residual
-  pointed at.
+- [x] Persist dynamics scratch across a stroke — the textures half is done (the
+  `ScratchPool`, see the write-back/scratch implementation record below); the
+  bind groups half is not, and the composite's per-tile groups cannot be, since
+  the base tiles they reference are fresh CoW tiles every fold.
 - [ ] The wick-removal experiment **on master**: it frees the
   `WICK_TRAVEL_QUANTUM` segment cap (the small-radius dispatch lever), but the
   settle-as-continuation that made removal safe on the march branch did not
@@ -169,13 +170,11 @@ costs no meaningful occupancy, so the specialization machinery isn't worth it.
   pass); see the implementation record below. `exchange` (whose share at r=500
   is mostly the footprint `snapshot` riding its grid — a copy that cannot be
   coarsened) and `settle` were left exact.
-- **Slice batching**: 15% of live is ~30 render passes per fold (one per
-  tile). A compute write-back in one pass would trade render-target rounding
-  for storage rounding (see the f16 ratchet note) — only worth it with the
-  rounding argument written down.
-- **Scratch persistence across a stroke** (Tier 2 item): region + snapshot +
-  reservoir textures are recreated per fold; the all-passes-skipped floor was
-  0.92 ms/move, which bounds what pooling can reclaim (≤24% of live).
+- **Slice batching** — **done**, though not as the compute write-back this
+  entry once sketched (the persistent tile aux is `R16Float`, which WebGPU
+  cannot storage-write at all); see the implementation record below.
+- **Scratch persistence across a stroke** (Tier 2 item) — **done** for the
+  textures; the record below has what the 0.92 ms/move floor actually paid out.
 - The settle share (10.5% live) is the preview==commit price and moves only
   with the model.
 
@@ -237,6 +236,71 @@ prescribes. What was built, and what the measurements said:
   (loads + stores) cannot move while the pass still writes pixels. The next
   levers on the wide-tip live number are therefore the ones already listed:
   slice batching, scratch persistence, and the settle's model.
+
+## Implemented: the batched write-back and the scratch pool (2026-08-10)
+
+The two levers the coarse-deposit round ranked next, built the same day in
+order, each against a criterion baseline saved the same session
+(`preslice` → `postslice` → the pool's compare run).
+
+**The batched write-back.** The compute write-back the lever entry once
+sketched is impossible as stated — the persistent tile aux is `R16Float`,
+which WebGPU cannot storage-write at all. What shipped keeps every rounding
+bit-identical instead: one region-sized render pass narrows the wide region
+aux to the persistent height channel (`slice.wesl`, now uniform-free and
+resid-free), and each tile then cuts its whole `TILE_TEX` block out of the
+region by `copy_texture_to_texture` — colour and residual straight from the
+region textures (the tile formats are the region's own), aux from the narrowed
+texture. A copy is bit-exact, and the narrow pass render-writes a loaded f16
+value back to its own lattice point, so every golden passes unchanged. The
+tile pool's "a handle never hands out its texture" invariant survives:
+`TexHandle::copy_into` encodes the copy inside `tile.rs` and hands nothing
+out. Bench vs `preslice`: every commit line improved (commit/8 −6.2%,
+commit/500 −2.8%), live/500 −2.9%; that run's live/100 and /250 lines drifted
+high on wide CIs, and the pool run below repaid them with interest.
+
+**The scratch pool** (`gpu::stroke::dynamics::scratch`). Every fold used to
+create and destroy its region, narrow, snapshot, cell, reservoir and bake
+textures — the per-fold fixed cost the 0.92 ms/move floor bounded at ≤24% of
+live. `ScratchPool` keeps them on a free list keyed by the exact descriptor
+(size, format, usage, label — exact size on purpose: the dynamics shaders read
+`textureDimensions` of the snapshot and region, so an oversized stand-in would
+change what they compute). It is shared across renderer clones, so live folds
+and their commit draw from one free list, and a lease returns only *after* the
+submit that recorded against it — the whole reuse argument on one queue. The
+snapshot square rounds up to a 64-texel quantum at its allocation site
+(`SNAPSHOT_QUANTUM`) so the measured maximum stops drifting a few texels per
+fold; invisible to every pass, since stores and reads are gated by the slot
+rects and the sweep test, and the `textureDimensions` bounds only widen onto
+texels those gates reject. No consumer relies on the zero-init a fresh texture
+gets — an audited property listed in the module doc (clear-loads, full
+copies/stores before any read, the snapshot's shared `outside_sweep` gate,
+hoist-before-read cells; the bake pair was already reused across a stroke's
+segments on exactly this argument). Retention is budgeted: 256 MiB, LRU, with
+explicit `destroy()` on eviction.
+
+Proof of binding: a temporary probe through `corpus_wide_smear` counted 62
+hits / 68 misses — the misses being each key's first take per battery cut,
+since the battery builds a fresh renderer (fresh pool) per cut where the app
+and the bench hold one per gesture. The battery's incremental-vs-fresh
+equalities double as the stale-content detector: different cuts lay different
+stale patterns, and the renders still agree.
+
+Bench vs `postslice` (p < 0.05 on every live line): live/8 −3.9% (856 ms),
+live/30 −10.2% (341 ms), live/100 −20.5% (253 ms), live/250 −17.0% (359 ms),
+live/500 −9.4% (702 ms). Commit lines flat, as they must be — a commit
+renders once, so its takes are the pool's misses.
+
+**Net for the session** (`preslice` → after both): live/dynamics faster at
+every radius — r=8 −4.2%, r=30 −9.2%, r=100 −13.1%, r=250 −14.2%, r=500
+−12.0% — and commit/8 −5.8%, commit/500 −2.7%. Against the morning-of
+baselines that opened this file's wide-tip section, live/500 is
+913.7 → 702.5 ms (−23%). Still open on the live numbers: the settle's model
+(10.5% of live at r=500), and the bind-group half of the per-fold fixed cost —
+the loop's own groups could persist behind the pooled textures, but the
+composite's per-tile groups cannot (they reference fresh CoW tiles every
+fold), so that residual belongs to the damage-tracking/bind-group-cache round
+(Tier 3).
 
 ## Investigation brief: shoulder-bounded coarse evaluation (as written before the work)
 
