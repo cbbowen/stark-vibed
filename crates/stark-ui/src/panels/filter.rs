@@ -20,19 +20,32 @@
 //! With more than one *kind* of filter (§21.10), "+ Filter" grew the one thing it
 //! was always going to need: a picker over [`Filter::ALL`], which is the core's own
 //! list in the core's own order. The bar itself keys everything per-kind off the
-//! selected filter — its knob table, its label, its neutral — so a new kind is a
-//! new table here and nothing else.
+//! selected filter — its controls, its label, its neutral — so a new kind lands in
+//! one `match` arm and nothing else. [`knob_rows`] is still the cheap way to fill
+//! that arm: a `const` table of [`Knob`]s and no more bar code.
 //!
-//! **The colour filter is the one kind that is not only sliders**, and the reason is
-//! that three of its numbers are not three things. `hue`, `saturation` and `tint` are
-//! a rotation, a scale and a translation of one Oklab `(a, b)` plane, so what they
-//! are between them is a single affine map — and the honest picture of an affine map
-//! of a plane is the image of a circle. [`chroma_dial`] draws exactly that, over the
-//! same Oklab slice the colour picker shows, and every part of it is a fact rather
-//! than a metaphor: the rim is where a colour of chroma [`DIAL_CHROMA`] ends up, the
-//! centre is where a grey ends up, and the arm is where red ends up. Three tracks
-//! could say the same thing, but only one at a time, and none of them could say what
-//! the picture says at rest — *this is what the filter will do to a colour*.
+//! **Neither kind of filter here is only sliders**, and both for the same reason:
+//! their numbers are not separate things, so separate tracks would be the wrong
+//! picture of them.
+//!
+//! `hue`, `saturation` and `tint` are a rotation, a scale and a translation of one
+//! Oklab `(a, b)` plane, so what they are between them is a single affine map — and
+//! the honest picture of an affine map of a plane is the image of a circle.
+//! [`chroma_dial`] draws exactly that, over the same Oklab slice the colour picker
+//! shows, and every part of it is a fact rather than a metaphor: the rim is where a
+//! colour of chroma [`DIAL_CHROMA`] ends up, the centre is where a grey ends up, and
+//! the arm is where red ends up. Three tracks could say the same thing, but only one
+//! at a time, and none of them could say what the picture says at rest — *this is
+//! what the filter will do to a colour*.
+//!
+//! The chromatic filter's `spread` and `angle` are a length and a direction, which is
+//! to say they are **one vector** — the displacement from where the red end of the
+//! spectrum lands to where the blue end does (§21.10). [`fringe_pad`] draws that
+//! vector, and draws it as the thing it describes: a bar of the real dispersion
+//! spectrum, painted with the pass's own [`dispersion_weight`] at the pass's own
+//! wavelengths, growing out of the centre in the direction the fringe will run.
+//! Dragging it *is* pulling the spectrum apart. Two tracks could not show that the
+//! two numbers are one arrow, and no slider can show what the fringe will look like.
 
 use std::sync::LazyLock;
 
@@ -44,6 +57,7 @@ use crate::panels::color::ab_field_data_url;
 use crate::platform::capture_pointer;
 use crate::state::{AppState, dispatch};
 use crate::widgets::settle;
+use stark_core::color::{dispersion_weight, linear_to_srgb};
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 use stark_core::{LayerId, LayerInfo};
@@ -65,11 +79,10 @@ use stark_core::{LayerId, LayerInfo};
 /// would be an anonymous track. Reading the two off one field is what makes the wrong
 /// pair unrepresentable rather than merely unlikely.
 ///
-/// The chromatic filter's two are the `None`s — a to-do, not a decision. The rule
-/// that used to keep *all* of these unmarked was about a bar, not about the set: one
-/// marked slider among unmarked ones reads worse than none marked. That still holds
-/// and is still satisfied, because each bar draws one kind's table and the colour
-/// filter's is now marked throughout.
+/// The rule that used to keep *all* of these unmarked was about a bar, not about the
+/// set: one marked slider among unmarked ones reads worse than none marked. That
+/// still holds and is still satisfied — each bar draws one kind's table, and the
+/// colour filter's, the only table left, is marked throughout.
 struct Knob<F: 'static> {
     name: &'static str,
     hint: &'static str,
@@ -95,8 +108,8 @@ struct Knob<F: 'static> {
 const DEG: f32 = 180.0 / std::f32::consts::PI;
 
 /// A whole number of degrees — an angle's readout to anyone dragging it; decimals
-/// of a degree are noise. Shared by the chromatic filter's Angle knob and the dial's
-/// hue readout, so the two ways this application shows an angle cannot drift apart.
+/// of a degree are noise. Shared by the dial's hue and the dispersion pad's axis, so
+/// the two ways this application shows an angle cannot drift apart.
 fn fmt_degrees(v: f32) -> String {
     format!("{}\u{00B0}", v.round() as i32)
 }
@@ -133,37 +146,6 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         get: |c| c.contrast,
         set: |c, v| ColorAdjust { contrast: v, ..c },
         fmt: |v| format!("{v:.2}"),
-    },
-];
-
-const CHROMATIC_KNOBS: &[Knob<ChromaticAberration>] = &[
-    Knob {
-        name: "Spread",
-        hint: "How far the spectrum is pulled apart, in canvas pixels \u{2014} the \
-               width of the fringe every edge grows. The whole rainbow is in \
-               between, not three offset copies: the effect is the lens's own \
-               dispersion, integrated (\u{a7}21.10).",
-        glyph: None,
-        range: ChromaticAberration::SPREAD,
-        scale: 1.0,
-        get: |c| c.spread,
-        set: |c, v| ChromaticAberration { spread: v, ..c },
-        fmt: |v| format!("{v:.1}"),
-    },
-    Knob {
-        name: "Angle",
-        hint: "The axis the colours part along, in degrees \u{2014} the way the blue \
-               end of the spectrum is carried, with the red end opposite. Stated on \
-               the canvas, so it turns with the painting rather than the window.",
-        glyph: None,
-        range: (
-            ChromaticAberration::ANGLE.0 * DEG,
-            ChromaticAberration::ANGLE.1 * DEG,
-        ),
-        scale: 1.0 / DEG,
-        get: |c| c.angle,
-        set: |c, v| ChromaticAberration { angle: v, ..c },
-        fmt: fmt_degrees,
     },
 ];
 
@@ -286,8 +268,9 @@ pub fn AddFilterButton() -> Element {
     }
 }
 
-/// The rows of sliders for one filter kind — the generic half of the bar, so a new
-/// kind brings a knob table and nothing else. `current` is the whole filter's
+/// The rows of sliders for one filter kind — the generic half of the bar, so a kind
+/// whose numbers really are separate is a knob table and nothing else. `current` is
+/// the whole filter's
 /// settings off the projection; each edit replaces one number and sends the whole
 /// thing back through `wrap`, which is what keeps "the filter travels entire" true
 /// per kind without the bar knowing any kind's shape (§21.6).
@@ -385,11 +368,18 @@ const DIAL_SCALE: f32 = DIAL_PX * 0.5 / DIAL_AB;
 const DIAL_GRAB: f32 = 10.0;
 
 /// What Shift steps each axis by. Their whole job is to make the round numbers
-/// reachable by hand: 0°, a saturation of exactly 1, and a tint of exactly nothing
-/// are single points in a continuum a pointer will not land on twice.
-const HUE_STEP: f32 = std::f32::consts::PI / 12.0; // 15°
+/// reachable by hand: 0°, a saturation of exactly 1, a tint of exactly nothing and a
+/// spread of a whole pixel are single points in a continuum a pointer will not land
+/// on twice.
+///
+/// One angle step for both pictures, because "the round angles" is a fact about
+/// hands and not about hue: the dial's rotation and the fringe's axis want the same
+/// dozen directions, and two constants of the same value would be two chances to
+/// disagree.
+const ANGLE_STEP: f32 = std::f32::consts::PI / 12.0; // 15°
 const SATURATION_STEP: f32 = 0.05;
 const TINT_STEP: f32 = 0.01;
+const SPREAD_STEP: f32 = 1.0; // one canvas px
 
 /// The plane itself, rendered once for the process. Unlike the picker's field there is
 /// nothing to invalidate — [`DIAL_L`] and [`DIAL_AB`] are constants — so this is a
@@ -486,7 +476,7 @@ fn drag_dial(
             let hue = if r > 1e-4 { dy.atan2(dx) } else { c.hue };
             let saturation = r / DIAL_CHROMA;
             ColorAdjust {
-                hue: if step { snapped(hue, HUE_STEP) } else { hue },
+                hue: if step { snapped(hue, ANGLE_STEP) } else { hue },
                 saturation: if step {
                     snapped(saturation, SATURATION_STEP)
                 } else {
@@ -642,14 +632,316 @@ fn chroma_dial(
     }
 }
 
-/// One line of the dial's readout, in the knobs' own label/value pair — the dial
-/// replaced two tracks, and the numbers they showed should not have been replaced
-/// with them. Shown rather than typed into: the dial is where these are set.
+/// One line of a picture's readout, in the knobs' own label/value pair — a picture
+/// replaced some tracks, and the numbers they showed should not have been replaced
+/// with them. Shown rather than typed into: the picture is where these are set.
 #[component]
 fn DialRow(name: &'static str, value: String, hint: &'static str) -> Element {
     rsx! {
         span { class: "filter-knob-label", title: hint, "{name}" }
         span { class: "filter-knob-value", title: hint, "{value}" }
+    }
+}
+
+// —— the dispersion pad ——————————————————————————————————————————————————————
+
+/// The pad's field, on screen (px) — square, and the dial's size, because the two are
+/// the same bar's picture and a bar whose height changed with the kind of filter
+/// selected would jump under the pointer that selected it.
+const PAD_PX: f32 = DIAL_PX;
+
+/// The centre of the field, in its own px — where the picture stays put.
+const PAD_MID: f32 = PAD_PX * 0.5;
+
+/// The radius the widest reachable spread is drawn at (px): the field's half-width,
+/// less room for the handle itself.
+///
+/// Derived rather than picked, on [`DIAL_AB`]'s argument turned the other way round:
+/// what has to be true is that **no reachable setting puts a handle outside the
+/// element that receives the pointer**, so the margin is the handle's own radius plus
+/// its grab slop, and a fatter handle moves the stop rather than escaping it.
+const PAD_R: f32 = PAD_MID - PAD_HANDLE - 2.0;
+
+/// The handle's drawn radius (px) — the dot at the blue end of the fringe.
+const PAD_HANDLE: f32 = 5.0;
+
+/// The spreads the graduation rings stand for, in canvas px — 8 and 32, with the
+/// ceiling itself drawn as the stop beyond them.
+///
+/// Each is a quarter of the next, which under the square-root law below puts them at
+/// exactly half of each other's radius — so the ladder draws itself evenly and the
+/// picture states its own scale: rings that crowd outward *are* the compression. Two
+/// rungs and the rim rather than three and the rim, because a fourth would land 6px
+/// from the centre and its label on top of the one above it.
+const PAD_RINGS: &[f32] = &[
+    ChromaticAberration::SPREAD.1 / 16.0,
+    ChromaticAberration::SPREAD.1 / 4.0,
+];
+
+/// How many stops the drawn spectrum spends. Enough that the bar reads as a continuum
+/// at the widest it is ever drawn (`2 · PAD_R` px) rather than as bands — which is the
+/// same thing the pass's tap count buys, for the same reason.
+const PAD_STOPS: usize = 32;
+
+/// Where a spread is drawn, as a radius in the field (px).
+///
+/// **Square-root, not linear**, and this is the one place the pad is a scale rather
+/// than a picture. The interesting spreads are the small ones — a fringe of two or
+/// three canvas px is a lens, thirty is an effect — and `SPREAD`'s ceiling is 128, so
+/// a linear pad would spend nine tenths of its radius on settings nobody dials and
+/// leave "2" and "3" a pixel apart. Equal *area* per unit of spread is the standard
+/// fix and it costs nothing in honesty, because the law is stated by the rings and
+/// the number itself is in the readout: `d(spread)/d(radius)` goes to zero at the
+/// centre, so the fine end is the fine end.
+fn pad_radius(spread: f32) -> f32 {
+    PAD_R * (spread / ChromaticAberration::SPREAD.1).max(0.0).sqrt()
+}
+
+/// The inverse: the spread a handle at radius `r` means.
+///
+/// Unclamped, for [`dial_ab`]'s reason — [`Filter::sanitized`] is the single place a
+/// number is held to its range, and a second opinion here is how a control comes to
+/// disagree with the value it displays. Past the rim a drag simply pins at 128.
+fn pad_spread(r: f32) -> f32 {
+    let t = r / PAD_R;
+    ChromaticAberration::SPREAD.1 * t * t
+}
+
+/// Where the blue end of the fringe is drawn, in the field's px.
+///
+/// `+y` is **down**, unlike the dial's plane: this is a canvas direction, and the
+/// canvas is drawn on the screen with `y` down. So the bar in the pad runs the way the
+/// fringe runs in the painting, which is the whole claim the picture makes.
+fn pad_xy(c: ChromaticAberration) -> (f32, f32) {
+    let r = pad_radius(c.spread);
+    (PAD_MID + r * c.angle.cos(), PAD_MID + r * c.angle.sin())
+}
+
+/// The dispersion spectrum as SVG gradient stops: `(offset, css colour)` from the red
+/// end at 0 to the blue end at 1.
+///
+/// **The pass's own weights, at the pass's own wavelengths** (§21.10) — this is what
+/// makes the bar a statement about the render rather than a rainbow someone drew. Two
+/// honest adjustments, both about *showing* a response rather than integrating one:
+/// the run is normalized so its strongest channel is full intensity (the weights are a
+/// response, and their absolute scale means nothing — the pass divides them out too),
+/// and the result is encoded to sRGB, because that is what a screen takes. The
+/// relative brightness along the run survives both, so the deep ends read dark exactly
+/// as the eye finds them.
+///
+/// A `LazyLock` for [`DIAL_FIELD`]'s reason: it is a fixed function of nothing, so a
+/// filter selection costs no arithmetic.
+static PAD_SPECTRUM: LazyLock<Vec<(f32, String)>> = LazyLock::new(|| {
+    let weights: Vec<[f32; 3]> = (0..PAD_STOPS)
+        .map(|i| dispersion_weight(i as f32 / (PAD_STOPS - 1) as f32))
+        .collect();
+    let peak = weights
+        .iter()
+        .flatten()
+        .copied()
+        .fold(0.0f32, f32::max)
+        .max(1e-6);
+    weights
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let q = |v: f32| (linear_to_srgb(v / peak).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            (
+                i as f32 / (PAD_STOPS - 1) as f32,
+                format!("#{:02x}{:02x}{:02x}", q(w[0]), q(w[1]), q(w[2])),
+            )
+        })
+        .collect()
+});
+
+/// One pointer sample on the dispersion pad: the pointer *is* the blue end.
+///
+/// Absolute rather than by delta, like the dial's centre and for the same reason — a
+/// single click anywhere in the field is a complete edit, and there is no handle to
+/// miss, because the one handle's position is the whole of what is being set. Previews
+/// and settles through the same funnel everything else here does (§21.6).
+fn drag_fringe(
+    state: AppState,
+    id: LayerId,
+    c: ChromaticAberration,
+    mut tuning: Signal<Option<Filter>>,
+    e: &Event<PointerData>,
+) {
+    let p = e.element_coordinates();
+    let (dx, dy) = (p.x as f32 - PAD_MID, p.y as f32 - PAD_MID);
+    let r = dx.hypot(dy);
+    // At the centre a direction does not exist and `atan2` would answer 0, snapping the
+    // axis back to horizontal every time a drag crossed the middle. Keep the axis the
+    // gesture already had and move the spread alone — `drag_dial`'s hue does the same,
+    // and it is the same fact about polar coordinates.
+    let angle = if r > 1e-4 { dy.atan2(dx) } else { c.angle };
+    let spread = pad_spread(r);
+    let step = e.modifiers().contains(Modifiers::SHIFT);
+    let next = Filter::Chromatic(ChromaticAberration {
+        spread: if step {
+            snapped(spread, SPREAD_STEP)
+        } else {
+            spread
+        },
+        angle: if step {
+            snapped(angle, ANGLE_STEP)
+        } else {
+            angle
+        },
+    })
+    .sanitized();
+    tuning.set(Some(next));
+    dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
+}
+
+/// The chromatic filter's `spread` and `angle` as the one thing they are: the vector
+/// the spectrum is pulled apart along (see the module docs).
+///
+/// Everything drawn is a claim about the render, checkable by eye against the fringe
+/// the canvas grows:
+///
+/// - the **bar** is the spectrum — the pass's own weights at the pass's own
+///   wavelengths, red end to blue end, painted along the axis they part on;
+/// - its **length** is the spread, which is the full width of the fringe an edge
+///   grows;
+/// - the **handle** is where the blue end lands, and the bar's other tip is the red;
+/// - the **centre** is the picture, which does not move: the two ends part around it.
+///
+/// So the drag is the effect: pull the rainbow out of the middle and turn it, and the
+/// painting does what the pad just did.
+fn fringe_pad(
+    state: AppState,
+    id: LayerId,
+    c: ChromaticAberration,
+    tuning: Signal<Option<Filter>>,
+    mut pulling: Signal<bool>,
+) -> Element {
+    let (bx, by) = pad_xy(c);
+    // The red end: the blue end reflected in the centre, because the spread is
+    // symmetric — the fringe parts around the picture rather than dragging it.
+    let (rx, ry) = (2.0 * PAD_MID - bx, 2.0 * PAD_MID - by);
+    // A gradient over a zero-length line paints nothing, and at spread 0 the two ends
+    // are the same point. Nothing is drawn there either, which is the correct picture
+    // of "no wavelength moves" — but the *stops* still have to describe a real line,
+    // so the bar is simply omitted rather than degenerating.
+    let dispersed = c.spread > 0.0;
+    let commit = move |_| settle(state, tuning, move |f| DocCommand::SetFilter(id, f));
+
+    rsx! {
+        div { class: "filter-fringe",
+            div {
+                class: "fringe-field",
+                title: "The dispersion, as the vector it is. Drag to pull the spectrum \
+                        apart \u{2014} how far out is the width of the fringe every \
+                        edge grows, and which way is the axis it parts on, stated on \
+                        the canvas so it turns with the painting. The dot is where the \
+                        blue end lands and the far tip is the red; the picture itself \
+                        stays in the middle. Hold Shift for round steps.",
+                // Pointer capture, as the dial's field takes: the drag keeps reporting
+                // once it leaves the box, and what it reports is held to the stops by
+                // the sanitizer rather than by the element's edge.
+                onpointerdown: move |e| {
+                    capture_pointer(&e);
+                    pulling.set(true);
+                    drag_fringe(state, id, c, tuning, &e);
+                },
+                onpointermove: move |e| {
+                    if pulling() {
+                        drag_fringe(state, id, c, tuning, &e);
+                    }
+                },
+                onpointerup: move |e| { pulling.set(false); commit(e); },
+                onpointercancel: move |e| { pulling.set(false); commit(e); },
+                svg {
+                    class: "fringe-svg",
+                    width: "{PAD_PX}",
+                    height: "{PAD_PX}",
+                    view_box: "0 0 {PAD_PX} {PAD_PX}",
+                    defs {
+                        linearGradient {
+                            id: "fringe-spectrum",
+                            gradient_units: "userSpaceOnUse",
+                            x1: "{rx}", y1: "{ry}", x2: "{bx}", y2: "{by}",
+                            for (at, hex) in PAD_SPECTRUM.iter() {
+                                stop { key: "{at}", offset: "{at}", stop_color: "{hex}" }
+                            }
+                        }
+                    }
+                    // The graduation, and the stop at the end of it. Both faint and
+                    // both always up: unlike the dial's bound they are not a stop that
+                    // only matters in hand — they are what says the radius is a
+                    // square root, and a picture whose scale appeared only while it
+                    // was being dragged would be read wrong at rest.
+                    for spread in PAD_RINGS {
+                        circle {
+                            key: "{spread}",
+                            class: "fringe-grid",
+                            cx: "{PAD_MID}", cy: "{PAD_MID}", r: "{pad_radius(*spread)}",
+                        }
+                    }
+                    circle {
+                        class: "fringe-bound",
+                        cx: "{PAD_MID}", cy: "{PAD_MID}", r: "{PAD_R}",
+                    }
+                    // The rings' spreads, in hand only — at rest the ladder is enough
+                    // to say "this is a scale", and three numbers standing over the
+                    // spectrum the rest of the time would be three numbers in the way.
+                    if pulling() {
+                        for spread in PAD_RINGS.iter().chain([&ChromaticAberration::SPREAD.1]) {
+                            text {
+                                key: "{spread}",
+                                class: "fringe-tick",
+                                x: "{PAD_MID}",
+                                y: "{PAD_MID - pad_radius(*spread)}",
+                                "{spread}"
+                            }
+                        }
+                    }
+                    if dispersed {
+                        // Drawn twice through one gradient: a wide soft pass under a
+                        // narrow bright one, which is what a fringe *is* — light, not
+                        // a line. Cheaper than an SVG blur filter and, unlike one, it
+                        // costs nothing at spread 0 because neither is drawn.
+                        line {
+                            class: "fringe-glow",
+                            x1: "{rx}", y1: "{ry}", x2: "{bx}", y2: "{by}",
+                            stroke: "url(#fringe-spectrum)",
+                        }
+                        line {
+                            class: "fringe-bar",
+                            x1: "{rx}", y1: "{ry}", x2: "{bx}", y2: "{by}",
+                            stroke: "url(#fringe-spectrum)",
+                        }
+                    }
+                    // Where the picture stays. Small and always up, because "the two
+                    // ends part around this" is the claim that separates this filter
+                    // from the three shifted copies everyone else draws.
+                    circle { class: "fringe-origin", cx: "{PAD_MID}", cy: "{PAD_MID}", r: "1.5" }
+                    circle {
+                        class: "fringe-handle",
+                        cx: "{bx}", cy: "{by}", r: "{PAD_HANDLE}",
+                    }
+                }
+            }
+            div { class: "dial-readout",
+                DialRow {
+                    name: "Spread",
+                    value: format!("{:.1} px", c.spread),
+                    hint: "How far the spectrum is pulled apart, in canvas pixels \
+                           \u{2014} the width of the fringe every edge grows. The \
+                           whole rainbow is in between, not three offset copies: the \
+                           effect is the lens's own dispersion, integrated \
+                           (\u{a7}21.10).",
+                }
+                DialRow {
+                    name: "Axis",
+                    value: fmt_degrees(c.angle * DEG),
+                    hint: "The direction the blue end of the spectrum is carried, with \
+                           the red end opposite. Stated on the canvas, so it turns \
+                           with the painting rather than with the window.",
+                }
+            }
+        }
     }
 }
 
@@ -673,6 +965,11 @@ pub fn FilterBar() -> Element {
     // the dial is mounted for one kind of filter, and a hook that runs for one kind
     // of filter is a hook that runs sometimes.
     let grabbed = use_signal(|| None::<Grab>);
+    // And the dispersion pad's: whether its one handle is in hand. A `bool` rather
+    // than a second [`Grab`], because the pad has one thing to grab and an enum of one
+    // variant would be a bool that took longer to read. Declared here for the reason
+    // above.
+    let pulling = use_signal(|| false);
     let Some((info, filter)) = selected_filter(state) else {
         return rsx! {};
     };
@@ -682,9 +979,10 @@ pub fn FilterBar() -> Element {
     // which would each have to explain the same thing.
     let inert = !info.has_underlay;
 
-    // The one place the bar knows the kinds apart: which controls it puts up. Still a
-    // knob table each, and the colour filter's dial ahead of its two — the plane's
-    // three numbers first, then the two that move along the axis the plane has none of.
+    // The one place the bar knows the kinds apart: which controls it puts up. A
+    // picture each — the colour filter's plane ahead of the two tracks that move along
+    // the axis a plane has nothing to say about, and the chromatic filter's vector,
+    // which is the whole of it.
     let rows = match filter {
         Filter::Color(c) => rsx! {
             {chroma_dial(state, info.id, c, tuning, grabbed)}
@@ -698,14 +996,7 @@ pub fn FilterBar() -> Element {
                 {knob_rows(state, info.id, c, COLOR_KNOBS, Filter::Color, tuning)}
             }
         },
-        Filter::Chromatic(c) => knob_rows(
-            state,
-            info.id,
-            c,
-            CHROMATIC_KNOBS,
-            Filter::Chromatic,
-            tuning,
-        ),
+        Filter::Chromatic(c) => fringe_pad(state, info.id, c, tuning, pulling),
     };
 
     rsx! {

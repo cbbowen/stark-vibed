@@ -2912,8 +2912,104 @@ button.layer-remove:hover {
   stroke-width: 1;
 }
 
-/* The three numbers the dial sets, in the knobs' own label/value pair. Fixed width for
-   the reason the knobs have one: they change under the pointer, and a column that
+/* The dispersion pad (§21.6): the chromatic filter's spread and angle as the one
+   vector they are. Same shape as the dial beside it — a square picture and its numbers
+   — because they are the same bar's two answers to the same question. */
+.filter-fringe {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Unlike the dial's field there is no plane to draw: what this field holds is a
+   direction and a distance, so the ground is just depth for the spectrum to glow
+   against — darkest at the centre, where the picture stays put. */
+.fringe-field {
+  position: relative;
+  width: 116px; /* mirrors PAD_PX in panels/filter.rs */
+  height: 116px;
+  border-radius: 6px;
+  cursor: crosshair;
+  background: radial-gradient(circle at 50% 50%, #15151a, #26262e);
+  box-shadow: inset 0 0 0 1px #ffffff14;
+  touch-action: none;
+}
+
+/* The vector over it, on `.dial-svg`'s terms: never the event target, so the drag
+   always reads coordinates in the field. No `overflow: visible` here where the dial
+   needs it — and that is a difference between the two pictures rather than an
+   oversight. Nothing the pad draws can leave the field (PAD_R is derived to guarantee
+   it), so an SVG root's own clip costs nothing and keeps the glow off the corners. */
+.fringe-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The graduation: the spreads the ladder stands for. Faint, dashed and always up —
+   what they say is that the radius is a square root, which is a fact about the
+   control and not a state of it. */
+.fringe-grid {
+  fill: none;
+  stroke: #ffffff26;
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+
+/* The stop: the widest spread the core will take. Solid where the graduation is
+   dashed, because this one is an edge rather than a mark. */
+.fringe-bound {
+  fill: none;
+  stroke: #ffffff3d;
+  stroke-width: 1;
+}
+
+/* The rings' numbers, up only while the pad is in hand. Centred on the ring they
+   label and nudged up off it, tabular so the three do not shuffle. */
+.fringe-tick {
+  fill: #ffffff8c;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  paint-order: stroke;
+  stroke: #000000a6;
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+}
+
+/* The spectrum, drawn twice through one gradient — a wide blurred pass under a narrow
+   bright one. A fringe is light and light has a halo, and two strokes of one paint
+   server is the cheapest true thing to say so. */
+.fringe-glow {
+  stroke-width: 11;
+  stroke-linecap: round;
+  opacity: 0.3;
+  filter: blur(3px);
+}
+
+.fringe-bar {
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+/* Where the picture stays: the point the two ends part around. */
+.fringe-origin {
+  fill: #ffffffa6;
+}
+
+/* The blue end, and the only thing to grab. Hollow rather than the dial's filled dot,
+   so the spectrum it sits on the end of shows through it — the handle is a ring around
+   a colour, not a lid over one. */
+.fringe-handle {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+  filter: drop-shadow(0 0 1.5px #000c);
+}
+
+/* The numbers a filter's picture sets, in the knobs' own label/value pair. Fixed width
+   for the reason the knobs have one: they change under the pointer, and a column that
    resizes as a sign appears drags the controls beside it. */
 .dial-readout {
   display: grid;

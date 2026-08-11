@@ -310,6 +310,44 @@ And which handle a drag has hold of is decided once, on pointer-down, and held f
 gesture — a live hit test would turn a rotation swung in past the centre into a
 translation halfway through.
 
+**The chromatic filter's two numbers are one vector, and the pad draws the fringe
+itself.** `spread` is a length and `angle` is a direction (§21.10), so what they are
+between them is the displacement from where the red end of the spectrum lands to where
+the blue end does — and two tracks cannot show that an arrow is one thing. So the bar
+draws the arrow, as the thing it describes:
+
+| what is drawn | what it is |
+|---|---|
+| the bar | the dispersion spectrum, at the pass's own wavelengths and weighed by the pass's own `dispersion_weight` — red end to blue end |
+| its length | the spread: the full width of the fringe every edge grows |
+| the handle | where the **blue** end lands; the far tip is the red |
+| the centre | the picture, which does not move — the two ends part around it |
+
+Which makes the drag the effect: pull the rainbow out of the middle and turn it, and
+the painting does what the pad just did. The spectrum is the pass's own colour science
+rather than a rainbow someone drew — `color::dispersion_weight`, the host copy of
+`filter_common.wesl`'s `ca_weight`, over wavelengths from `ca_lambda`'s own Cauchy
+inversion, with the two endpoints and the Cauchy span coming through the build-time
+mirror (§6.10) so the range drawn and the range integrated cannot drift. Two honest
+adjustments separate drawing a response from integrating one: the run is normalized so
+its strongest channel is full intensity (the weights are a response, whose absolute
+scale means nothing — the pass divides it out too), and it is encoded to sRGB, because
+that is what a screen takes. Relative brightness survives both, so the deep ends read
+dark exactly as the eye finds them.
+
+One handle, not two, and the whole field is its target: the vector is symmetric, so the
+red end is wherever the blue end is not, and a single click anywhere is a complete edit
+— the dial's centre, on the dial's argument. The one place the pad is a *scale* rather
+than a picture is its radius, which is a **square root** of the spread: the interesting
+fringes are two or three canvas px and `SPREAD`'s ceiling is 128, so a linear pad would
+spend nine tenths of its radius on settings nobody dials and leave "2" and "3" a pixel
+apart. Equal area per unit of spread costs nothing in honesty because the law states
+itself — the graduation rings are a quarter of each other and so sit at half each
+other's radius, rings crowding outward *are* the compression, and the number itself is
+in the readout. The rim is the core's own `SPREAD.1`, and the drawn radius stops a
+handle's width inside the field, so no reachable setting puts the handle outside the
+element that receives the pointer — `DIAL_AB`'s guarantee, made the other way round.
+
 **The controls preview live and log once.** Each pointer move sends
 `ViewCommand::PreviewFilter` (view state, never logged) and the settled drag commits a
 single `DocCommand::SetFilter`. This is the bargain the frame drag (§15.7), the canvas
@@ -532,12 +570,15 @@ And past the tap cap the spectrum quantizes gently rather than banding hard,
 because the taps stay bilinear and the partition of unity still normalizes whatever
 count ran.
 
-In the bar (§21.6) the filter is two sliders, Spread and Angle, through the same
-preview-per-sample / commit-once funnel the colour filter's dial and tracks use;
-`+ Filter`
-grew the picker `Filter::ALL` always promised, each kind landing neutral. Zero
-spread is neutral **at any angle** — an angle dialled before its spread is not yet
-an edit, so the draw list stays free to drop the pass and
-`a_neutral_filter_changes_no_pixel` keeps its byte-level meaning.
+In the bar (§21.6) the filter is one picture rather than two sliders: a pad holding
+the dispersion **vector**, drawn as a bar of the real spectrum growing out of the
+centre, through the same preview-per-sample / commit-once funnel the colour filter's
+dial and tracks use; `+ Filter` grew the picker `Filter::ALL` always promised, each
+kind landing neutral. Zero spread is neutral **at any angle** — an angle dialled
+before its spread is not yet an edit, so the draw list stays free to drop the pass
+and `a_neutral_filter_changes_no_pixel` keeps its byte-level meaning. The pad says
+the same thing by drawing nothing but its graduation at spread 0: a gradient over a
+zero-length line paints nothing, which is the correct picture of *no wavelength
+moves*.
 
 ---

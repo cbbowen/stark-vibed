@@ -8,6 +8,11 @@
 //! convergence (§12).
 //!
 //! Oklab transform after Björn Ottosson.
+//!
+//! Two further pieces of the same shader library live here for the same reason: the
+//! light space `linear_to_light`/`light_to_linear` state (§18.0.4), and the
+//! dispersion spectrum the chromatic filter integrates over (§21.10) — the host
+//! needs the latter to *draw* a fringe it is about to ask the pass for.
 
 /// sRGB transfer function: gamma-encoded component in `[0,1]` → linear.
 pub fn srgb_to_linear(c: f32) -> f32 {
@@ -85,12 +90,122 @@ pub fn oklab_to_srgb(laba: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// Linear sRGB → XYZ normalized to D65 white — the space light is combined and
+/// scaled in (see `lib/color.wesl`, which holds the argument). Each row of the sRGB
+/// primaries divided by its own sum, so `(1,1,1)` maps to `(1,1,1)`.
+pub fn linear_to_light(c: [f32; 3]) -> [f32; 3] {
+    let [r, g, b] = c;
+    [
+        0.433_939_5 * r + 0.376_207_8 * g + 0.189_852_8 * b,
+        0.212_672_9 * r + 0.715_152_2 * g + 0.072_175 * b,
+        0.017_756_6 * r + 0.109_467_1 * g + 0.872_776_3 * b,
+    ]
+}
+
+/// The exact inverse of [`linear_to_light`].
+pub fn light_to_linear(c: [f32; 3]) -> [f32; 3] {
+    let [x, y, z] = c;
+    [
+        3.079_954_5 * x - 1.537_138_5 * y - 0.542_816 * z,
+        -0.921_258_3 * x + 1.876_010_8 * y + 0.045_247_7 * z,
+        0.052_887_3 * x - 0.204_025_9 * y + 1.151_138_5 * z,
+    ]
+}
+
+// —— the dispersion spectrum (§21.10) ————————————————————————————————————————
+//
+// The chromatic filter's own colour science, on the host: which wavelength lands
+// where along a fringe, and what the eye makes of it. The **pass** is the copy that
+// runs (`filter_common.wesl`'s `ca_lambda` / `ca_weight`); this one exists so the
+// frontend can *draw* the fringe it is about to ask for — the spectrum bar in the
+// filter bar's dispersion pad (§21.6) is painted with these very colours, which is
+// what makes it a statement about the render rather than a rainbow.
+//
+// The two ends and the Cauchy span come through the build-time mirror (§6.10) rather
+// than being transcribed, so the range this samples and the range the pass integrates
+// cannot drift; `dispersion_lambda_spans_the_visible` ties the three together.
+
+/// The reddest wavelength the dispersion integral carries, in nm — parameter `s = 0`.
+pub const LAMBDA_RED: f32 = stark_shaders::mirror::filter_common::CA_LAMBDA_RED;
+/// The bluest, at `s = 1`.
+pub const LAMBDA_BLUE: f32 = stark_shaders::mirror::filter_common::CA_LAMBDA_BLUE;
+
+/// The wavelength (nm) whose refraction lands at dispersion parameter `s ∈ [0, 1]`
+/// — 0 the red end of the fringe, 1 the blue.
+///
+/// Cauchy's law inverted, exactly as the pass inverts it: `(λ_red/λ)²` runs linearly
+/// across the range, which is what makes the taps uniform in *displacement* and the
+/// blue end spread farther than an equal run of the red (§21.10).
+pub fn dispersion_lambda(s: f32) -> f32 {
+    LAMBDA_RED / (1.0 + s * stark_shaders::mirror::filter_common::CA_CAUCHY_SPAN).sqrt()
+}
+
+/// One lobe of the CIE fit below: a piecewise Gaussian, its two flanks falling at
+/// their own rates.
+fn lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
+    let t = (x - mu) / if x < mu { s1 } else { s2 };
+    (-0.5 * t * t).exp()
+}
+
+/// The eye's response to the wavelength at dispersion parameter `s`, as **linear
+/// sRGB**: the CIE 1931 colour-matching functions (the Wyman–Sloan–Shirley analytic
+/// fit), normalized to D65 and clamped at zero.
+///
+/// A *response*, not a colour — its absolute scale means nothing, only its shape
+/// along `s`. In the pass that is why each channel of the gather divides by its own
+/// summed weight; a caller drawing the spectrum normalizes for the same reason.
+pub fn dispersion_weight(s: f32) -> [f32; 3] {
+    let l = dispersion_lambda(s);
+    let x = 1.056 * lobe(l, 599.8, 37.9, 31.0) + 0.362 * lobe(l, 442.0, 16.0, 26.7)
+        - 0.065 * lobe(l, 501.1, 20.4, 26.2);
+    let y = 0.821 * lobe(l, 568.8, 46.9, 40.5) + 0.286 * lobe(l, 530.9, 16.3, 31.1);
+    let z = 1.217 * lobe(l, 437.0, 11.8, 36.0) + 0.681 * lobe(l, 459.0, 26.0, 13.8);
+    let lin = light_to_linear([x / 0.9505, y, z / 1.089]);
+    [lin[0].max(0.0), lin[1].max(0.0), lin[2].max(0.0)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn close(a: [f32; 4], b: [f32; 4], eps: f32) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() <= eps)
+    }
+
+    #[test]
+    fn light_roundtrip() {
+        for c in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.2, 0.5, 0.8]] {
+            let back = light_to_linear(linear_to_light(c));
+            assert!(
+                c.iter().zip(back).all(|(x, y)| (x - y).abs() <= 1e-4),
+                "roundtrip {c:?} -> {back:?}"
+            );
+        }
+    }
+
+    /// The three mirrored constants (§6.10) are one statement in three parts: the
+    /// Cauchy span *is* `(λ_red/λ_blue)² − 1`, so inverting it at `s = 1` has to land
+    /// on the blue end. Editing any one of them in the shader and not the others
+    /// fails here rather than quietly narrowing the spectrum the frontend draws.
+    #[test]
+    fn dispersion_lambda_spans_the_visible() {
+        assert!((dispersion_lambda(0.0) - LAMBDA_RED).abs() < 1e-3);
+        assert!((dispersion_lambda(1.0) - LAMBDA_BLUE).abs() < 1e-2);
+    }
+
+    /// A fringe is a rainbow: red at one end, blue at the other, and nothing negative
+    /// or dark in between — the properties the drawn spectrum bar relies on.
+    #[test]
+    fn dispersion_weight_is_a_rainbow() {
+        let red = dispersion_weight(0.0);
+        let blue = dispersion_weight(1.0);
+        assert!(red[0] > red[2], "the red end is red: {red:?}");
+        assert!(blue[2] > blue[0], "the blue end is blue: {blue:?}");
+        for i in 0..=32 {
+            let w = dispersion_weight(i as f32 / 32.0);
+            assert!(w.iter().all(|c| *c >= 0.0), "clamped at zero: {w:?}");
+            assert!(w.iter().any(|c| *c > 1e-3), "carries light: {w:?}");
+        }
     }
 
     #[test]
