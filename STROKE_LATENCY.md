@@ -181,6 +181,112 @@ costs no meaningful occupancy, so the specialization machinery isn't worth it.
 - The settle share (10.5% live) is the preview==commit price and moves only
   with the model.
 
+## Investigation brief: shoulder-bounded coarse evaluation (next session)
+
+The lever sized to deposit+exchange's 64–75%. Everything below is what a fresh
+session needs; read this section, then the referenced material, before code.
+
+### The idea
+
+`deposit`, `exchange` and `settle` evaluate the exchange laws at canvas
+resolution across a footprint whose content cannot vary faster than the tip
+resolves. A tip's finest feature is its **shoulder**, width
+`3·(1−hardness)·r` for `Round` (treat `Stamp` as sharpest — its mask can be
+arbitrarily hard). At r=500, hardness 0.5, the shoulder is ~750 px wide; the
+per-texel τ taps, bake taps and exchange-law solves are computing a field that
+is locally constant at that scale. The march learned this as its travel-cell
+law — **resolve the shoulder, never the radius** — and its final bound was
+`cell = max(fits, min(0.02·r, 0.25·shoulder), 1)`. The same scale law applies
+here, in the footprint domain, with the floor at 1 keeping every tip below
+the threshold (and every hard tip at any size) bit-identical by construction.
+
+### The shape to try first
+
+Hoist, don't resample. Deposit is ALU/latency-bound (~1 ns/texel), not
+bandwidth-bound, so the win is computing the expensive per-texel quantities —
+the two `prefix_at` differences, the six `bake_at` taps, the `exchange_at`
+solve — once per c×c cell and applying them across the cell's texels, while
+keeping strictly per-texel everything that is per-texel by *model*:
+
+- `surface_tooth` — tooth is the canvas's resolution, never the cell's (the
+  branch-only defect the tooth memory records; the deposition gate must stay
+  a per-texel read).
+- the selection mask, the snapshot loads, the store.
+- the identity-store early-out (`ex.keep == 1 && parcel == 0 && !bled`) must
+  stay **exact** — an interpolated `keep` of 0.9999 where the true value is 1
+  re-stores untouched texels and re-opens the f16 truncation ratchet. Derive
+  the cell's "identity" verdict from exact cell-level facts, not from
+  interpolated factors.
+
+Do deposit alone first (53% of commit); extend to exchange and settle only
+after deposit pays.
+
+### Hard constraints
+
+- **§6.4 purity**: every pass that writes tiles must be a pure function of
+  canvas position. The cell grid must be anchored to **canvas** coordinates,
+  not to the region rect (region origins differ per piece and per move) —
+  otherwise aprons stop matching neighbour interiors and `tests/seam.rs`
+  fails. This is the easiest way to get it structurally wrong.
+- **preview == commit**: the cell must be a pure function of the brush and
+  segment (like the march's was), so live and commit pick the same cell.
+- Bleed taps read neighbours at rung distances — check the interaction where
+  taps cross cell boundaries before touching the Bleed slot at all (or leave
+  Bleed slots at cell 1; they are rare and already small).
+
+### Measurement kit
+
+- Bench: `cargo bench -p stark-core --bench stroke -- "dynamics"` now has
+  commit+live at {8,30,100,250,500}; live drives `Engine::flush_live` per
+  move. Bracket master/change/master; a win must clear the whole master
+  envelope (the noise floor is usually 15–20%, though 2026-08-10 measured
+  <1% — check the day before trusting small deltas).
+- Phase re-bracket: the `STARK_SKIP_DYN` env-gate instrumentation is not
+  committed but is trivial to re-add (gate each dispatch kind in
+  `DynamicsRun::record_loop`, the region composite pass, and the write-back
+  loop; see the dynamics-perf-profile memory for the method).
+- Ripple: the streaks a coarse cell prints are ~1 level RMS but vertically
+  coherent — per-pixel max/mean metrics show nothing. Average each column
+  down the trail, subtract a smooth trend, compare RMS. The march round's
+  numbers: 0.58 (no coarsening) vs 0.62 (shoulder bound) vs 1.04 (radius
+  bound) — the shoulder bound is what closed the hardness-1 regression.
+- The independent reference: a wide glaze must land the same whether the
+  stamp loop or the swept path's analytic integral renders it (the march
+  round built `a_wide_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`
+  at r=150 — it did **not** cross the revert; rebuild the method).
+- Chris's captured repro (`painting.stark`, r=500 hardness 1 max flow) is the
+  regression case for stroke-end spikes; `examples/repro_march` was the
+  march-era harness — verify what still exists on master at session start.
+
+### Traps on record (do not rediscover)
+
+- **Every existing dynamics golden paints at r 30–110, where any shoulder
+  bound floors to cell 1** — the whole suite would pass an arbitrarily wrong
+  constant without exercising it once. Build the wide case first (the
+  `golden_wide_smear_regression` r=250 curved smear pattern) and check what
+  is *binding* before believing any green run.
+- A hardness-1 tip must earn **zero** coarsening — the 2026-08-07 stroke-end
+  spike regression was exactly a radius-scaled cell sampling a shoulderless
+  tip at 10 px.
+- Sub-sampling coverage *within* a step was measured on the march: cost
+  15–17% and did not fix what the coarse cell broke. Bounding the cell did.
+- The march memories describe stroke-space machinery — the scale law and the
+  measurement methods transfer; the code does not. Read the
+  stroke-space-march-reverted memory before trusting any march memory.
+- Write CPU pins for the cell law itself (the march had
+  `the_travel_cell_follows_the_tips_shoulder`-style tests: hard tip → no
+  coarsening, soft tip → reaches the bound, soft never finer than hard,
+  Stamp treated as sharpest, small tips march one texel). Those tests did not
+  cross the revert; they need writing fresh for the footprint cell.
+
+### What success looks like
+
+Amdahl: deposit+exchange+settle ≈ 65–75% of live at r=500; a c=2 cell hoists
+~75% of their ALU → roughly −35 to −45% on `live/dynamics/500` (913.7 ms →
+~500–600 ms), more at c=4 for very soft tips. Nothing may move at r ≤ 100
+(cell floors to 1 — verify with the bench sweep), and the hardness-1 capture
+must be bit-identical.
+
 ## Measuring
 
 - Tier 1 and the ingestion/preview decoupling are invisible to
