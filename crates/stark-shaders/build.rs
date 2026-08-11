@@ -85,6 +85,14 @@ const VERTEX: &[(&str, &str, &str)] = &[
     ("stamp", "vs_main", "SegmentInstance"),
 ];
 
+/// The WESL modules whose `@binding` indices are generated as named consts
+/// (`build/mirror.rs::emit_bindings`) — the third transcription of the host/shader
+/// boundary after the structs and the constants. `dynamics` is here because its
+/// ~37 indices were maintained in three places (the WESL declarations, the
+/// bind-group layouts, the bind-group entries) with margin comments as the only
+/// map.
+const BINDINGS: &[&str] = &["dynamics"];
+
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
 const MIXBOX_GLSL: &str = "../../vendor/mixbox/shaders/mixbox.glsl";
@@ -126,6 +134,7 @@ fn main() {
         MIRRORS,
         CONSTS,
         VERTEX,
+        BINDINGS,
     );
 
     // Generated modules resolve out of `OUT_DIR`; everything else out of the tree.

@@ -37,6 +37,10 @@ const BRUSH_RES: u32 = 64;
 // generated from the shader, which is the side that decides it (§6.10). A mismatch
 // scanned the wrong width and rendered subtly wrong without crashing.
 use stark_shaders::mirror::dynamics::BAKE_RES;
+// The `@binding` indices, generated from `dynamics.wesl`'s own declarations (§6.10):
+// the bind groups here and the layouts in [`kit`](super::kit) both name the
+// shader's numbering rather than keeping copies of it.
+use stark_shaders::mirror::dynamics::binding as b;
 
 /// The snapshot square's pool quantum: [`DynamicsRun::snapshot_scratch`] rounds the
 /// measured size up to a multiple of this, so the handful of sizes a stroke's folds
@@ -764,24 +768,27 @@ impl<'a> DynamicsRun<'a> {
         let kit = &r.dynamics;
         let device = &r.ctx.device;
         let params = || wgpu::BindGroupEntry {
-            binding: 0,
+            binding: b::ST,
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: stamp_buf,
                 offset: 0,
                 size: wgpu::BufferSize::new(SLOT as u64),
             }),
         };
-        let samp = || desc::samp(5, &kit.exchange_sampler);
+        let samp = || desc::samp(b::SAMP, &kit.exchange_sampler);
         let mut snapshot_entries = vec![
             params(),
-            desc::tex(1, &region.color),
-            desc::tex(2, &region.aux),
-            desc::tex(3, &under.color),
-            desc::tex(4, &under.aux),
+            desc::tex(b::REGION_COLOR, &region.color),
+            desc::tex(b::REGION_AUX, &region.aux),
+            desc::tex(b::UNDER_COLOR_W, &under.color),
+            desc::tex(b::UNDER_AUX_W, &under.aux),
         ];
         push_resid(
             &mut snapshot_entries,
-            &[(23, region.resid.as_ref()), (26, under.resid.as_ref())],
+            &[
+                (b::REGION_RESID, region.resid.as_ref()),
+                (b::UNDER_RESID_W, under.resid.as_ref()),
+            ],
         );
         let snapshot = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stark dynamics snapshot bg"),
@@ -793,27 +800,30 @@ impl<'a> DynamicsRun<'a> {
         let exchange = std::array::from_fn(|i| {
             let mut entries = vec![
                 params(),
-                desc::tex(1, &region.color),
-                desc::tex(2, &region.aux),
-                desc::tex(3, &under.color),
-                desc::tex(4, &under.aux),
+                desc::tex(b::REGION_COLOR, &region.color),
+                desc::tex(b::REGION_AUX, &region.aux),
+                desc::tex(b::UNDER_COLOR_W, &under.color),
+                desc::tex(b::UNDER_AUX_W, &under.aux),
                 samp(),
-                desc::tex(6, &self.cov),
-                desc::tex(7, &self.brush_color[i]),
-                desc::tex(8, &self.brush_aux[i]),
-                desc::tex(9, &self.brush_color[1 - i]),
-                desc::tex(10, &self.brush_aux[1 - i]),
-                desc::tex(21, &region.sel_mask),
+                desc::tex(b::COV_TEX, &self.cov),
+                desc::tex(b::BRUSH_SRC_COLOR, &self.brush_color[i]),
+                desc::tex(b::BRUSH_SRC_AUX, &self.brush_aux[i]),
+                desc::tex(b::BRUSH_DST_COLOR_W, &self.brush_color[1 - i]),
+                desc::tex(b::BRUSH_DST_AUX_W, &self.brush_aux[1 - i]),
+                desc::tex(b::SEL_MASK, &region.sel_mask),
             ];
             // The residual ping-pongs on the same phase as the colour: read `i`,
             // write `1 - i`, or the tool's two halves would drift apart.
             push_resid(
                 &mut entries,
                 &[
-                    (23, region.resid.as_ref()),
-                    (26, under.resid.as_ref()),
-                    (27, self.brush_resid.as_ref().map(|v| &v[i])),
-                    (28, self.brush_resid.as_ref().map(|v| &v[1 - i])),
+                    (b::REGION_RESID, region.resid.as_ref()),
+                    (b::UNDER_RESID_W, under.resid.as_ref()),
+                    (b::BRUSH_SRC_RESID, self.brush_resid.as_ref().map(|v| &v[i])),
+                    (
+                        b::BRUSH_DST_RESID_W,
+                        self.brush_resid.as_ref().map(|v| &v[1 - i]),
+                    ),
                 ],
             );
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -828,16 +838,16 @@ impl<'a> DynamicsRun<'a> {
             let mut entries = vec![
                 params(),
                 samp(),
-                desc::tex(7, &self.brush_color[i]),
-                desc::tex(8, &self.brush_aux[i]),
-                desc::tex(17, &self.bake_load),
-                desc::tex(18, &self.bake_latm),
+                desc::tex(b::BRUSH_SRC_COLOR, &self.brush_color[i]),
+                desc::tex(b::BRUSH_SRC_AUX, &self.brush_aux[i]),
+                desc::tex(b::BAKE_LOAD_W, &self.bake_load),
+                desc::tex(b::BAKE_LATM_W, &self.bake_latm),
             ];
             push_resid(
                 &mut entries,
                 &[
-                    (27, self.brush_resid.as_ref().map(|v| &v[i])),
-                    (29, self.bake_rlm.as_ref()),
+                    (b::BRUSH_SRC_RESID, self.brush_resid.as_ref().map(|v| &v[i])),
+                    (b::BAKE_RLM_W, self.bake_rlm.as_ref()),
                 ],
             );
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -850,23 +860,23 @@ impl<'a> DynamicsRun<'a> {
         // snapshot, and write the region's residual back — the same three roles the
         // colour's 19/11/13 play beside them.
         let resid_write = [
-            (30, self.bake_rlm.as_ref()),
-            (25, under.resid.as_ref()),
-            (24, region.resid.as_ref()),
+            (b::BAKE_RLM, self.bake_rlm.as_ref()),
+            (b::UNDER_RESID, under.resid.as_ref()),
+            (b::REGION_RESID_W, region.resid.as_ref()),
         ];
         let mut deposit_entries = vec![
             params(),
             samp(),
-            desc::tex(19, &self.bake_load),
-            desc::tex(20, &self.bake_latm),
-            desc::tex(11, &under.color),
-            desc::tex(12, &under.aux),
-            desc::tex(13, &region.color),
-            desc::tex(14, &region.aux),
-            desc::tex(15, &self.noise),
-            desc::samp(16, &r.tips.noise_sampler),
-            desc::tex(21, &region.sel_mask),
-            desc::tex(22, &self.scene.surface.view),
+            desc::tex(b::BAKE_LOAD, &self.bake_load),
+            desc::tex(b::BAKE_LATM, &self.bake_latm),
+            desc::tex(b::UNDER_COLOR, &under.color),
+            desc::tex(b::UNDER_AUX, &under.aux),
+            desc::tex(b::REGION_COLOR_W, &region.color),
+            desc::tex(b::REGION_AUX_W, &region.aux),
+            desc::tex(b::DYN_NOISE_TEX, &self.noise),
+            desc::samp(b::DYN_NOISE_SAMP, &r.tips.noise_sampler),
+            desc::tex(b::SEL_MASK, &region.sel_mask),
+            desc::tex(b::SURFACE_TEX, &self.scene.surface.view),
         ];
         push_resid(&mut deposit_entries, &resid_write);
         let deposit = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -878,16 +888,16 @@ impl<'a> DynamicsRun<'a> {
         // `exchange` it needs no bind group per ping-pong half; the bake's does that.
         let mut settle_entries = vec![
             params(),
-            desc::tex(19, &self.bake_load),
-            desc::tex(20, &self.bake_latm),
-            desc::tex(11, &under.color),
-            desc::tex(12, &under.aux),
-            desc::tex(13, &region.color),
-            desc::tex(14, &region.aux),
-            desc::tex(21, &region.sel_mask),
+            desc::tex(b::BAKE_LOAD, &self.bake_load),
+            desc::tex(b::BAKE_LATM, &self.bake_latm),
+            desc::tex(b::UNDER_COLOR, &under.color),
+            desc::tex(b::UNDER_AUX, &under.aux),
+            desc::tex(b::REGION_COLOR_W, &region.color),
+            desc::tex(b::REGION_AUX_W, &region.aux),
+            desc::tex(b::SEL_MASK, &region.sel_mask),
             // The ground: the pen-up delivery is a deposit like any other, and is
             // gated by the same tooth (§6.4).
-            desc::tex(22, &self.scene.surface.view),
+            desc::tex(b::SURFACE_TEX, &self.scene.surface.view),
         ];
         push_resid(&mut settle_entries, &resid_write);
         let settle = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -902,14 +912,17 @@ impl<'a> DynamicsRun<'a> {
         let coarse = cells.map(|cl| {
             let mut hoist_entries = vec![
                 params(),
-                desc::tex(19, &self.bake_load),
-                desc::tex(20, &self.bake_latm),
-                desc::tex(31, &cl.tool),
-                desc::tex(32, &cl.lat),
+                desc::tex(b::BAKE_LOAD, &self.bake_load),
+                desc::tex(b::BAKE_LATM, &self.bake_latm),
+                desc::tex(b::CELL_TOOL_W, &cl.tool),
+                desc::tex(b::CELL_LAT_W, &cl.lat),
             ];
             push_resid(
                 &mut hoist_entries,
-                &[(30, self.bake_rlm.as_ref()), (35, cl.res.as_ref())],
+                &[
+                    (b::BAKE_RLM, self.bake_rlm.as_ref()),
+                    (b::CELL_RES_W, cl.res.as_ref()),
+                ],
             );
             let hoist = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark dynamics cell hoist bg"),
@@ -918,23 +931,23 @@ impl<'a> DynamicsRun<'a> {
             });
             let mut coarse_entries = vec![
                 params(),
-                desc::tex(11, &under.color),
-                desc::tex(12, &under.aux),
-                desc::tex(13, &region.color),
-                desc::tex(14, &region.aux),
-                desc::tex(15, &self.noise),
-                desc::samp(16, &r.tips.noise_sampler),
-                desc::tex(21, &region.sel_mask),
-                desc::tex(22, &self.scene.surface.view),
-                desc::tex(33, &cl.tool),
-                desc::tex(34, &cl.lat),
+                desc::tex(b::UNDER_COLOR, &under.color),
+                desc::tex(b::UNDER_AUX, &under.aux),
+                desc::tex(b::REGION_COLOR_W, &region.color),
+                desc::tex(b::REGION_AUX_W, &region.aux),
+                desc::tex(b::DYN_NOISE_TEX, &self.noise),
+                desc::samp(b::DYN_NOISE_SAMP, &r.tips.noise_sampler),
+                desc::tex(b::SEL_MASK, &region.sel_mask),
+                desc::tex(b::SURFACE_TEX, &self.scene.surface.view),
+                desc::tex(b::CELL_TOOL, &cl.tool),
+                desc::tex(b::CELL_LAT, &cl.lat),
             ];
             push_resid(
                 &mut coarse_entries,
                 &[
-                    (25, under.resid.as_ref()),
-                    (24, region.resid.as_ref()),
-                    (36, cl.res.as_ref()),
+                    (b::UNDER_RESID, under.resid.as_ref()),
+                    (b::REGION_RESID_W, region.resid.as_ref()),
+                    (b::CELL_RES, cl.res.as_ref()),
                 ],
             );
             let deposit = device.create_bind_group(&wgpu::BindGroupDescriptor {

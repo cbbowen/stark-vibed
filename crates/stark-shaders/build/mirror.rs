@@ -63,6 +63,7 @@ pub fn generate(
     wanted: &[(&[&str], &str)],
     consts: &[(&str, &str)],
     vertex: &[(&str, &str, &str)],
+    bindings: &[&str],
 ) {
     // Grouped by the module a declaration is emitted under, in first-seen order.
     // One struct name can be declared by two modules with *different* members
@@ -117,6 +118,11 @@ pub fn generate(
     for (module, entry, name) in vertex {
         let (src, tu) = read(module);
         push(module, emit_vertex(&tu, &src, module, entry, name));
+    }
+
+    for module in bindings {
+        let (src, tu) = read(module);
+        push(module, emit_bindings(&tu, &src, module));
     }
 
     let items = modules.iter().map(|(module, items)| {
@@ -318,6 +324,74 @@ fn emit_vertex(
             assert!(SIZE == #size, #msg_size);
             #(#checks)*
         };
+    }
+}
+
+/// Emit `pub mod binding` holding one `u32` const per `@binding` declaration in
+/// `module` — the indices the host's bind-group layouts and bind-group entries name.
+///
+/// The third transcription of the same boundary, and the one with the least
+/// redundancy to catch it: a binding number was written in the WESL declaration, in
+/// the layout entry, and in the bind-group entry, with margin comments as the only
+/// map between them. The struct mirrors made the *lanes* single-sourced; this does
+/// the same for the *slots*, so a renumbering in the shader is a one-file change
+/// that the host follows by name.
+///
+/// Every declaration is emitted, `@if`-gated ones included — the unlinked source
+/// keeps them, and a host that binds one does so exactly when the matching feature
+/// build declares it. The name is the WESL variable's, uppercased; two declarations
+/// that collide there are a build failure rather than a silent shadowing.
+fn emit_bindings(tu: &TranslationUnit, src: &str, module: &str) -> TokenStream {
+    let mut ctx = Context::new(tu);
+    let mut names: Vec<String> = Vec::new();
+    let mut consts = Vec::new();
+    for d in &tu.global_declarations {
+        let GlobalDeclaration::Declaration(decl) = &**d else {
+            continue;
+        };
+        let Some(expr) = decl.attributes.iter().find_map(|a| match &**a {
+            Attribute::Binding(e) => Some(e),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let member = decl.ident.name();
+        let index = match expr.eval_value(&mut ctx).ok().and_then(|i| match i {
+            Instance::Literal(LiteralInstance::AbstractInt(n)) => u32::try_from(n).ok(),
+            Instance::Literal(LiteralInstance::U32(n)) => Some(n),
+            Instance::Literal(LiteralInstance::I32(n)) => u32::try_from(n).ok(),
+            _ => None,
+        }) {
+            Some(n) => n,
+            None => panic!("`{module}.wesl`'s `{member}` has a `@binding` that is not a number"),
+        };
+        let name = member.to_uppercase();
+        assert!(
+            !names.contains(&name),
+            "`{module}.wesl` declares two bindings that both mirror as `{name}`"
+        );
+        names.push(name.clone());
+        let docs = doc_lines(&src[..d.span().range().start]);
+        let ident = format_ident!("{name}");
+        let index = lit(index);
+        consts.push(quote! {
+            #(#[doc = #docs])*
+            pub const #ident: u32 = #index;
+        });
+    }
+    assert!(
+        !consts.is_empty(),
+        "`{module}.wesl` declares no `@binding`s, so there is nothing to mirror"
+    );
+    let doc = format!(
+        " The `@binding` indices `{module}.wesl` declares, named for their WESL\n \
+         variables — the shader's declarations are the only ones.",
+    );
+    quote! {
+        #[doc = #doc]
+        pub mod binding {
+            #(#consts)*
+        }
     }
 }
 
