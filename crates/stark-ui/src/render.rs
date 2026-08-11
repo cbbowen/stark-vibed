@@ -7,6 +7,9 @@
 //! [`request_paint`](crate::state::request_paint)), and calls
 //! [`Renderer::resize`] when the canvas (window) changes size.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use stark_core::AssetNeed;
 use stark_core::command::{DocCommand, ViewCommand};
 use stark_core::document::Tool;
@@ -18,6 +21,24 @@ use stark_core::{
 use wasm_bindgen::JsCast;
 
 pub const CANVAS_ID: &str = "stark-canvas";
+
+/// How many painted frames may still be executing on the GPU before
+/// [`request_paint`](crate::state::request_paint) skips a frame instead of
+/// submitting another.
+///
+/// This is the back-pressure the surface cannot give on the WebGPU backend:
+/// `present` is a no-op there, `PresentMode::Fifo` and
+/// `desired_maximum_frame_latency` are dead values, and `get_current_texture`
+/// hands out a fresh canvas texture every frame without blocking — so nothing
+/// stops a paint per rAF from deepening the GPU queue without bound whenever a
+/// frame's work exceeds the frame budget. Two is what
+/// `desired_maximum_frame_latency` would have asked for: enough depth that the
+/// CPU and GPU pipeline instead of alternating, while a GPU more than two
+/// frames behind sheds presentation frames rather than queueing them.
+/// Skipping is safe because ingestion is decoupled from presentation — samples
+/// keep reaching the fitter per event, and the first fold after a skip shows
+/// exactly what the skipped folds would have (`Engine::flush_live`).
+const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 /// Owns the canvas surface and the painting engine.
 pub struct Renderer {
@@ -43,6 +64,12 @@ pub struct Renderer {
     /// The Navigator panel's canvas and everything that draws into it — `None` until
     /// the panel mounts one ([`Renderer::attach_overview`]).
     overview: Option<Overview>,
+    /// Painted frames whose GPU work has not yet completed (see
+    /// [`MAX_FRAMES_IN_FLIGHT`]). Incremented per [`paint`](Self::paint),
+    /// decremented by the `on_submitted_work_done` callback that paint registers
+    /// — an atomic behind an `Arc` because the callback must be `Send` and may
+    /// not touch a signal.
+    frames_in_flight: Arc<AtomicU32>,
 }
 
 /// A second WebGPU surface showing the same document: the Navigator panel's canvas,
@@ -610,6 +637,16 @@ impl Renderer {
         self.resize(width, height);
     }
 
+    /// Whether the GPU still owes the work of [`MAX_FRAMES_IN_FLIGHT`] painted
+    /// frames — the signal for [`request_paint`](crate::state::request_paint) to
+    /// skip a frame rather than deepen the queue. Because submissions on one
+    /// queue complete in order, a paint's completion also vouches for every
+    /// submission before it (commit renders, fills), so queue depth from
+    /// non-paint work is counted too, one frame later.
+    pub fn gpu_behind(&self) -> bool {
+        self.frames_in_flight.load(Ordering::Relaxed) >= MAX_FRAMES_IN_FLIGHT
+    }
+
     /// Render the current canvas straight into the surface texture and present.
     pub fn paint(&mut self) {
         use wgpu::CurrentSurfaceTexture::{Suboptimal, Success};
@@ -622,6 +659,15 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.engine.render(&view);
+        // Count this frame against the in-flight budget until the GPU finishes
+        // it. Registered after the render's submit, so the callback fires once
+        // everything this paint queued has executed. The WebGPU spec resolves
+        // the underlying promise even on device loss, so the count cannot wedge.
+        let in_flight = Arc::clone(&self.frames_in_flight);
+        in_flight.fetch_add(1, Ordering::Relaxed);
+        self.engine.gpu().queue.on_submitted_work_done(move || {
+            in_flight.fetch_sub(1, Ordering::Relaxed);
+        });
         self.engine.gpu().queue.present(frame);
     }
 }
@@ -781,5 +827,6 @@ async fn finish_init(
         builtins: Vec::new(),
         grounds: Vec::new(),
         overview: None,
+        frames_in_flight: Arc::new(AtomicU32::new(0)),
     }
 }

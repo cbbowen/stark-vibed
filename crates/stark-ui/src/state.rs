@@ -1274,21 +1274,41 @@ pub fn request_paint(state: AppState) {
         return;
     }
     queued.set(true);
-    // Directly in the rAF callback, not a task the rAF wakes. A woken task
-    // resumes in the microtask drain, two scheduler hops after the callback —
-    // and a *dioxus* task further waits out a VDOM render of whatever scopes
-    // are dirty by then, since the scheduler polls tasks only once no scope is.
-    // Any of that slipping past the frame's rendering steps shows the previous
-    // frame's canvas for a whole display interval. The callback itself runs in
-    // the animation phase, ahead of the rendering steps by definition, so the
-    // frame that fires it is the frame that shows it. The closure is a plain
-    // move of root-owned signals, so no component scope is involved and there
-    // is nothing here to die with one (see the module note on `root_signal`).
+    schedule_paint(state);
+}
+
+/// One animation-frame hop of [`request_paint`]: paint, unless the GPU has
+/// fallen behind — then hold the latch and try again next frame.
+///
+/// Directly in the rAF callback, not a task the rAF wakes. A woken task
+/// resumes in the microtask drain, two scheduler hops after the callback —
+/// and a *dioxus* task further waits out a VDOM render of whatever scopes
+/// are dirty by then, since the scheduler polls tasks only once no scope is.
+/// Any of that slipping past the frame's rendering steps shows the previous
+/// frame's canvas for a whole display interval. The callback itself runs in
+/// the animation phase, ahead of the rendering steps by definition, so the
+/// frame that fires it is the frame that shows it. The closure is a plain
+/// move of root-owned signals, so no component scope is involved and there
+/// is nothing here to die with one (see the module note on `root_signal`).
+fn schedule_paint(state: AppState) {
     crate::platform::on_animation_frame(move || {
+        let mut renderer = state.renderer;
+        let mut guard = renderer.write();
+        // The GPU still owes more than a full pipeline of painted frames
+        // (`Renderer::gpu_behind`): submitting another would deepen the queue,
+        // not the picture. Skip the frame — with the latch *held*, so the next
+        // rAF re-checks — and let the work drain. Nothing is lost: mutations
+        // keep integrating per event and only mark the fold stale, so the
+        // first paint after the drain folds everything accrued at once and
+        // shows exactly what the skipped frames would have.
+        if guard.as_ref().is_some_and(Renderer::gpu_behind) {
+            drop(guard);
+            schedule_paint(state);
+            return;
+        }
         let mut queued = state.paint_queued;
         queued.set(false);
-        let mut renderer = state.renderer;
-        if let Some(r) = renderer.write().as_mut() {
+        if let Some(r) = guard.as_mut() {
             r.paint();
         }
     });

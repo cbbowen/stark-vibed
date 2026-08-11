@@ -120,6 +120,23 @@ the browser's own compositor depth.
   settle-as-continuation that made removal safe on the march branch did not
   cross the revert — re-run the 15-radius wick-on/off A/B against master's
   settle before believing it.
+- [x] **Skip presentation frames when the GPU falls behind.** The WebGPU
+  backend has no back-pressure of its own (`present` is a no-op, Fifo and
+  `desired_maximum_frame_latency` are dead values, `get_current_texture` never
+  blocks), so a frame whose fold+composite exceeded the frame budget used to
+  deepen the GPU queue on every rAF, unboundedly, for as long as the stroke
+  lasted. `Renderer::paint` now counts frames in flight via
+  `Queue::on_submitted_work_done`, and the rAF callback (`schedule_paint`)
+  skips the paint — holding the `paint_queued` latch and re-arming for the
+  next frame — while ≥2 painted frames are still executing
+  (`MAX_FRAMES_IN_FLIGHT`, the depth `desired_maximum_frame_latency` would
+  have asked for). Safe by the ingestion/preview decoupling above: samples
+  keep reaching the fitter per event, and one fold's cost is bounded by the
+  unfrozen tail rather than by the samples accrued, so the first paint after
+  the drain catches up in a single fold. One queue means a paint's completion
+  also vouches for every submission before it, so commit renders and fills
+  count against the depth too, one frame later. Invisible to the stroke bench
+  (browser-side, like Tier 1); verify with the pointer-`timeStamp` → rAF probe.
 
 ### Tier 3 — scaling costs
 
