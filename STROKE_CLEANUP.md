@@ -185,7 +185,17 @@ groups built over them are cacheable alongside the leases; failing that,
 pooling buffers with a size quantum like `SNAPSHOT_QUANTUM` is the same trick
 already proven for the snapshot.
 
-- [ ] Bench the bind-group/buffer creation share of a live fold, then decide
+- [x] Benched and decided: **deferred.** The A/B (branch base `e48fcb5` vs the
+      cleanup tip, criterion `--baseline precleanup`, 2026-08-11) shows no
+      regression on any line; the small-radius live lines — where per-fold CPU
+      overhead would surface if bind-group creation were a real share — moved
+      within noise (live/dynamics/8: −1.4%, p = 0.69), and the wide live lines
+      improved (live/dynamics/250 −10.7%, /500 −12.6%, both p < 0.05, the
+      tool-state pooling being the plausible mechanism). The motivating failure
+      mode is JS GC *rate* in the browser, which a native criterion bench cannot
+      see — so adopting a bind-group cache on this evidence would be tuning to
+      the wrong instrument. Revisit with a browser profile; `Kept` is the shape
+      a pooled buffer would take.
 
 ### 8. `capture_tool` allocates fresh textures every pointer move
 
@@ -221,3 +231,38 @@ the thrash.
   (documented at the call site); no change.
 - `noise_cache` growing without bound is fine — its key domain is a small
   enum, documented.
+
+## Implemented: the close-out record (2026-08-11)
+
+All nine items resolved on branch `stroke-cleanup`, in five commits:
+
+- `faff575` — items 4–6: one `budget::lambda` (shared `ln_keep` core) for the
+  plan's slots and the flattener's pricing; `RegionRect` replaces the 5-tuple;
+  one `unpoisoned`; the stale `+3/+2` and `dynamics.rs` references fixed.
+- `96be1c0` — item 3: `emit_bindings` in the mirror generator; `kit.rs` and
+  `run.rs` name `mirror::dynamics::binding::*` instead of 37 raw integers.
+- `27c3449` — items 2, 8, 9: the pool moves to `stroke/scratch.rs` with `give`
+  private; `SubmitScope` (release-through-submit, two lease tiers) and `Kept`
+  (return-on-drop under the borrow argument) are the only ways back to the free
+  list; `capture_tool` pools its copies; the round-tip cache is a 4-entry LRU.
+- `3d86447` — item 1: bleed fire windows folded into `affected_tiles`,
+  `chunk_segments` and `segment_fits_region`; computed once per range, sliced
+  per piece. Pinned by `a_windows_reach_back_is_in_the_tiles_and_the_region`
+  (exact, unit) and `a_bleeding_strokes_preview_is_its_commit` (GPU, tol 2 —
+  which also measured the pre-fix effect honestly at 1 level worst: hygiene and
+  seam-risk closure, not an artifact cure).
+- `848ef24` — rustfmt + ledger bookkeeping.
+
+**Verification:** `cargo fmt --check`, `clippy --all-targets -D warnings` (both
+feature configurations), the wasm32 check, and one full
+`cargo test --workspace --no-fail-fast`: 45 binaries, 701 tests, 0 failures.
+No goldens moved — whole renders were never window-clipped by construction, and
+nothing else in the cleanup touches a committed pixel.
+
+**Bench** (criterion A/B, branch base `e48fcb5` baseline `precleanup` vs tip,
+same session): no line regressed; every commit/* and small-radius live line
+within noise; live/dynamics/250 −10.7% and live/dynamics/500 −12.6% (both
+p < 0.05) — the tool-state pooling is the plausible mechanism, though a
+between-run environment drift contribution cannot be excluded. Item 7's
+bind-group/buffer pooling is the one deliberate deferral, recorded at its
+checkbox: the native bench cannot see the JS-GC failure mode that motivates it.
