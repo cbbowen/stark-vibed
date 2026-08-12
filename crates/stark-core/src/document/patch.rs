@@ -135,6 +135,23 @@ impl StatePatch {
                     }
                 }
             }
+            // A merge writes three things and this puts back all three: the
+            // destination's paint, the opacity the fold left at 1.0, and the source
+            // layer itself — record and place, exactly as `RemoveLayer`'s restore does
+            // (§14.11). The tile diff comes first so the destination is there to take
+            // the source back when its site names it as its carrier.
+            ActionKind::MergeLayerDown { source, dest } => {
+                tile_diff(*dest, paint_rect(action, *dest), to, from, &mut ops);
+                if let Some(l) = to.layer(*dest) {
+                    ops.push(PatchOp::Opacity(*dest, l.opacity));
+                }
+                if let (Some(site), false) = (to.site_of(*source), from.contains_layer(*source)) {
+                    ops.push(PatchOp::Present {
+                        site,
+                        layer: to.layer(*source).expect("sited layer exists").clone(),
+                    });
+                }
+            }
             ActionKind::MoveLayer { .. } => ops.push(PatchOp::Structure(structure(to))),
             ActionKind::SetLayerBlend(id, _) => {
                 if let Some(l) = to.layer(*id) {

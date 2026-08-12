@@ -38,7 +38,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [brush.md](docs/brush.md) | §6.1, §6.2, §6.6, §6.9 | Tiles and channels, path fitting, swept-segment stamping, the wet-mixing dynamics loop, brush shape assets, drag-and-hold shape assist |
 | [rendering.md](docs/rendering.md) | §6.3–§6.5, §6.7, §6.10 | The three compositing passes, blend modes, the media/lighting pass, aprons and the canvas surface, Oklab and Mixbox, the generated uniform mirrors |
 | [selection.md](docs/selection.md) | §6.8, §16 | The soft-mask coverage field every tool acts through, fill, and transform |
-| [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; matte layers, framing and export |
+| [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; merging a layer down without changing the picture; matte layers, framing and export |
 | [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the colour filter, the spectral chromatic aberration |
 | [engine.md](docs/engine.md) | §7–§11 | The actor target, the save format, golden tests, the extensibility map, the Dioxus frontend |
 | [collaboration.md](docs/collaboration.md) | §12, §17 | The CRDT over the action log, iroh transport, owned selections, the presence roster |

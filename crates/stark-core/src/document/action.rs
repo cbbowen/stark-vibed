@@ -314,6 +314,33 @@ pub enum ActionKind {
     /// wire-format break. A no-op on a layer that is not a filter, like
     /// [`SetMatteColor`](Self::SetMatteColor) on a paint layer.
     SetFilter(LayerId, Filter),
+
+    /// Merge `source` **down** onto `dest`, the layer directly beneath it: `dest`
+    /// keeps its identity and its properties and takes the paint of both, `source`
+    /// ceases to exist (§14.11).
+    ///
+    /// The one action in this list whose promise is about *pixels that do not change*:
+    /// a merge is offered exactly where the pair composites identically to the one
+    /// layer, so the document looks the same before and afterwards. Which pairs those
+    /// are is [`merge::plan`](super::merge::plan), a pure function of the state — so
+    /// the log carries no reasoning, only the two ids, and every peer and every replay
+    /// re-derives the same answer from the same document.
+    ///
+    /// `dest` is derived rather than chosen, and travels anyway for the reason
+    /// [`DuplicateLayer`](Self::DuplicateLayer)'s ids do: a [`Footprint`] is built from
+    /// the action alone and cannot search the tree for what "down" meant (§12.6).
+    /// Naming it is also what makes the rejection honest — an action whose plan now
+    /// points somewhere else is **deterministically declined**, leaving the document
+    /// unchanged, which is what a concurrent reorder looks like from here.
+    ///
+    /// Appended last, like every variant before it, so postcard — which encodes an
+    /// enum by variant *index* — keeps decoding older files.
+    ///
+    /// [`Footprint`]: super::footprint::Footprint
+    MergeLayerDown {
+        source: LayerId,
+        dest: LayerId,
+    },
 }
 
 impl ActionKind {
@@ -336,6 +363,7 @@ impl ActionKind {
             ActionKind::AddLayer { .. } => "Add layer",
             ActionKind::DuplicateLayer { .. } => "Duplicate layer",
             ActionKind::RemoveLayer(_) => "Remove layer",
+            ActionKind::MergeLayerDown { .. } => "Merge down",
             ActionKind::MoveLayer { .. } => "Reorder layer",
             ActionKind::SetLayerBlend(..) => "Blend mode",
             ActionKind::SetLayerClip(..) => "Clip layer",
@@ -371,6 +399,7 @@ pub struct ApplyCtx {
     pub selection: SelectionRenderer,
     pub transform: crate::gpu::transform::TransformRenderer,
     pub fill: crate::gpu::fill::FillRenderer,
+    pub merge: crate::gpu::merge::MergeRenderer,
     /// The device, so a canvas surface can be built here on demand.
     pub gpu: crate::gpu::context::GpuContext,
     /// The canvas surfaces and the bytes registered for them (§6.4).
@@ -551,6 +580,49 @@ impl history::Action for Action {
             // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
             // deterministically when unbounded or oversized, so peers and replays
             // agree about a log that contains one.
+            // Fold two layers into one without moving a pixel of the composite
+            // (§14.11). The plan is re-derived from the state being folded over rather
+            // than trusted from the log, so a replay and a peer decide from the same
+            // document — and a plan that no longer names `dest` (a concurrent reorder,
+            // a mode set on either layer since) declines the whole action, leaving the
+            // document untouched. Deterministic, so everyone declines together.
+            ActionKind::MergeLayerDown { source, dest } => {
+                let Some(plan) = super::merge::plan(&state, *source) else {
+                    return Ok(state);
+                };
+                if plan.dest != *dest {
+                    tracing::warn!("merge down no longer names this destination; ignored");
+                    return Ok(state);
+                }
+                // Both sides are paint that carries nothing — `plan` said so — so the
+                // tile maps are there to be read. Cloned out before the rewrite for
+                // the reason `paint_base` clones: a handful of `Arc` bumps, and it is
+                // what keeps the borrow of the state off the tree being rebuilt.
+                let (Some(lower), Some(upper)) =
+                    (paint_base(&state, *dest), paint_base(&state, *source))
+                else {
+                    return Ok(state);
+                };
+                let opacity = |id| state.layer(id).map_or(1.0, |l| l.opacity);
+                let tiles = ctx.merge.apply(
+                    &ctx.pool,
+                    crate::gpu::merge::MergeSide {
+                        tiles: &lower,
+                        opacity: opacity(*dest),
+                    },
+                    crate::gpu::merge::MergeSide {
+                        tiles: &upper,
+                        opacity: opacity(*source),
+                    },
+                    plan.kind,
+                );
+                // Both sliders are inside the tiles now, so the surviving layer stands
+                // at full opacity — the merged paint would otherwise be faded twice.
+                state
+                    .map_layer(*dest, |l| l.with_tiles(tiles))
+                    .set_layer_opacity(*dest, 1.0)
+                    .remove_layer(*source)
+            }
             ActionKind::Fill { layer, op } => {
                 let Some(base) = paint_base(&state, *layer) else {
                     return Ok(state);

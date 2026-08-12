@@ -481,7 +481,7 @@ impl Engine {
         // fields are reassigned below, and a `Surface` is two reference-counted wgpu
         // handles.
         let surface = self.apply.surfaces.current().clone();
-        let (pool, stroke, compositor_pipeline, compositor, transform, fill) =
+        let (pool, stroke, compositor_pipeline, compositor, transform, fill, merge) =
             build_gpu(GpuBuild {
                 gpu: &self.gpu,
                 target_format: self.target_format,
@@ -496,6 +496,7 @@ impl Engine {
         self.apply.stroke = stroke;
         self.apply.transform = transform;
         self.apply.fill = fill;
+        self.apply.merge = merge;
         self.compositor = compositor;
         self.compositor_pipeline = compositor_pipeline;
     }

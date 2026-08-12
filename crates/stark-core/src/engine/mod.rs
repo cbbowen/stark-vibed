@@ -47,8 +47,9 @@ use crate::error::EngineError;
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
-    Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer, GpuContext, Registry,
-    SelectionRenderer, StrokeRenderer, Surface, SurfaceId, TilePool, TransformRenderer,
+    Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer, GpuContext,
+    MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Surface, SurfaceId, TilePool,
+    TransformRenderer,
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
@@ -149,6 +150,20 @@ pub struct LayerInfo {
     /// and clip are defined against position (§14.4.3); this one follows the
     /// renderer because a filter's reach *is* the renderer's accumulator.
     pub has_underlay: bool,
+    /// The layer this one would **merge down** onto, or `None` when there is no merge
+    /// here that leaves the document looking the same (§14.11).
+    ///
+    /// Projected as the destination rather than as a `bool` because the panel says
+    /// what the click will do — the row it folds into — and asking the engine twice
+    /// for one answer is how a tooltip ends up describing a different merge from the
+    /// one the button performs.
+    ///
+    /// Unlike every other field here this is a statement about a *pair* of layers, and
+    /// it is the only control in the panel that is absent rather than merely inert
+    /// when the answer is no: a merge that would change the picture is not a weaker
+    /// merge, it is a different edit, and offering it greyed out would suggest the
+    /// document is what stands in the way.
+    pub merge_down: Option<LayerId>,
 }
 
 impl LayerInfo {
@@ -382,7 +397,7 @@ impl Engine {
         let environment = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
         let selection = SelectionRenderer::new(&gpu);
         let gpu_for_ctx = gpu.clone();
-        let (pool, stroke, compositor_pipeline, compositor, transform, fill) =
+        let (pool, stroke, compositor_pipeline, compositor, transform, fill, merge) =
             build_gpu(GpuBuild {
                 gpu: &gpu,
                 target_format,
@@ -410,6 +425,7 @@ impl Engine {
                 selection,
                 transform,
                 fill,
+                merge,
                 gpu: gpu_for_ctx,
                 surfaces: surface,
             },
@@ -747,6 +763,32 @@ impl Engine {
                 self.commit(ActionKind::RemoveLayer(id));
                 self.repoint_active_layer();
             }
+            DocCommand::MergeLayerDown(id) => {
+                // Asked here rather than only inside `apply`, so a merge that cannot
+                // preserve the document's appearance never reaches the log at all —
+                // the same argument `Transform` makes about a degenerate map. `apply`
+                // asks again anyway, because a peer's action arrives without passing
+                // through here (§14.11).
+                if let Some(plan) = crate::document::merge::plan(self.document(), id) {
+                    self.commit(ActionKind::MergeLayerDown {
+                        source: plan.source,
+                        dest: plan.dest,
+                    });
+                    // The merged layer is where the work now is, so the brush follows
+                    // it — and the layer that was selected may be the one that has just
+                    // stopped existing, which `repoint_active_layer` alone would answer
+                    // by picking whatever is nearest rather than by picking the paint.
+                    if self.session.active_layer == id
+                        && self
+                            .document()
+                            .layer(plan.dest)
+                            .is_some_and(|l| l.is_paintable())
+                    {
+                        self.session.active_layer = plan.dest;
+                    }
+                    self.repoint_active_layer();
+                }
+            }
             DocCommand::SetLayerBlend(id, blend) => {
                 self.commit(ActionKind::SetLayerBlend(id, blend))
             }
@@ -1012,6 +1054,9 @@ impl Engine {
                 },
                 filter: l.filter(),
                 has_underlay,
+                // Asked of the *shown* document, like everything else on this row, so
+                // the control tracks a drag preview rather than the value behind it.
+                merge_down: crate::document::merge::plan(shown, l.id).map(|p| p.dest),
             });
             carriers.push((l.id, draws_content(l)));
         });
@@ -1212,6 +1257,7 @@ fn build_gpu(
     Compositor,
     TransformRenderer,
     FillRenderer,
+    MergeRenderer,
 ) {
     let GpuBuild {
         gpu,
@@ -1245,7 +1291,8 @@ fn build_gpu(
     );
     let compositor = Compositor::new(&compositor_pipeline, viewport);
     let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone(), zeroes.clone());
-    let fill = FillRenderer::new(gpu, cs.clone(), selection.clone(), zeroes);
+    let fill = FillRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
+    let merge = MergeRenderer::new(gpu, cs.as_ref(), zeroes);
     (
         pool,
         stroke,
@@ -1253,6 +1300,7 @@ fn build_gpu(
         compositor,
         transform,
         fill,
+        merge,
     )
 }
 

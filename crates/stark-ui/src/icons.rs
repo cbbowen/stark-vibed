@@ -185,6 +185,16 @@ icons! {
     // picture is the panel *after* the click, which is the same thing the Carry and
     // Release elbows are drawn to say.
     DUPLICATE => "copy-bold",
+    // Merge down (§14.11), beside Duplicate and drawn as its opposite: [`ADD_LAYER`]'s
+    // stack with a member taken *out of it* rather than put in. That is exactly what
+    // the click does to the panel — two rows become one — and saying it with the
+    // header's own glyph is what keeps it from reading as a second Remove, which is
+    // [`REMOVE`]'s trash can and a different act entirely: nothing is lost here, the
+    // paint moves down.
+    //
+    // The control is absent rather than inert where a merge would change the picture,
+    // so this glyph never appears greyed out — see `LayerInfo::merge_down`.
+    MERGE_DOWN => "stack-minus-bold",
     // Timeline mode and its transport (§18.2.4). A slideshow for the mode, because
     // what the mode offers is the log played back rather than a clock or a strip of
     // film; play and pause for the transport, which have no second reading.

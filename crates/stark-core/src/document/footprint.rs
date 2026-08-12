@@ -323,6 +323,43 @@ pub fn footprint(action: &Action) -> Footprint {
             reads: vec![Resource::Existence(*layer), Resource::Selection(actor)],
             writes: vec![Resource::Paint(*layer, fill_rect(op))],
         },
+        // A merge is a function of **everything about both layers**, because that is
+        // what its plan reads: the tiles it stacks, and the blend, clip, opacity and
+        // visibility that decide whether the merge is offered at all (§14.11). It is
+        // also a function of the tree's shape, which decides what "down" means — and
+        // `StackOrder` is written here, so the write covers that read.
+        //
+        // The same argument `DuplicateLayer` makes, taken one step further: a duplicate
+        // reads its subtree's properties, while a merge would silently *change its own
+        // answer* if one of them moved past it, so claiming them is what keeps a
+        // concurrent blend-mode change from commuting with a merge that the mode would
+        // have refused.
+        ActionKind::MergeLayerDown { source, dest } => Footprint {
+            reads: [*source, *dest]
+                .into_iter()
+                .flat_map(|id| {
+                    [
+                        Resource::Prop(id, Prop::Blend),
+                        Resource::Prop(id, Prop::Clip),
+                        Resource::Prop(id, Prop::Visible),
+                        // Both sliders are folded into the merged tiles, so both are
+                        // read; only the destination's is *written* (below), the
+                        // source having ceased to exist.
+                        Resource::Prop(id, Prop::Opacity),
+                    ]
+                })
+                .chain([Resource::Paint(*source, TileRect::ALL)])
+                .collect(),
+            writes: vec![
+                Resource::Existence(*source),
+                Resource::Existence(*dest),
+                Resource::Paint(*dest, TileRect::ALL),
+                // The surviving layer is left at full opacity, both sliders having
+                // been folded into its tiles.
+                Resource::Prop(*dest, Prop::Opacity),
+                Resource::StackOrder,
+            ],
+        },
         ActionKind::Undo(_) => Footprint::default(),
     }
 }

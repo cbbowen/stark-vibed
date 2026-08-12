@@ -750,6 +750,22 @@ pub fn LayerRow(
     let carry_onto = row.carry_onto;
     let release_to = row.release_to;
     let removable = row.removable;
+    // The layer this one folds into, or `None` where no merge preserves the picture
+    // (§14.11). Read straight off the projection rather than worked out here: whether a
+    // pair composites as one layer is a question about blend modes, clipping and the
+    // isolation each is stated against, and a second opinion in the panel is how a
+    // button ends up offering an edit the engine then declines.
+    let merge_down = info.merge_down;
+    // Which layer it lands in is worth saying, because "down" is not always the row
+    // below: the bottom member of a group folds into the layer carrying it (§14.1),
+    // which the panel draws *under* the indent rather than directly beneath. Chosen
+    // out here rather than inside the attribute so the branch is a plain `if` in
+    // ordinary code, which is where a reader looks for one.
+    let merge_title = if merge_down.is_some() && merge_down == info.carrier {
+        "Merge this layer into the one carrying it \u{2014} the picture stays the same"
+    } else {
+        "Merge this layer down into the one below \u{2014} the picture stays the same"
+    };
 
     let title = if matte {
         "Compose this frame — double-click to rename"
@@ -994,6 +1010,33 @@ pub fn LayerRow(
                         "{peer.initials()}"
                     }
                 }
+                // Merge down (§14.11): this layer's paint folded into the one beneath
+                // it, and this row gone. On the row for the same reason Carry and
+                // Duplicate are — it names its own layer, so there is no "the selected
+                // layer" to read.
+                //
+                // **Absent rather than inert** where the pair cannot be merged, which
+                // is the one place this panel departs from its own habit of greying a
+                // control out. A merge that would change the picture is not a weaker
+                // merge, it is a different edit — and a disabled button here would
+                // invite the reading that the document is temporarily in the way, when
+                // what is actually true is that these two layers do not describe one
+                // layer. The engine answers the same question before it logs anything
+                // (`LayerInfo::merge_down`), so the two cannot disagree.
+                //
+                // Its slot is held either way, like Carry's and Remove's: the eyes are
+                // a column to glance down, and a row without a merge must not push its
+                // neighbours sideways.
+                if merge_down.is_some() {
+                    button {
+                        class: "layer-merge",
+                        title: "{merge_title}",
+                        onclick: move |_| dispatch(state, DocCommand::MergeLayerDown(id)),
+                        {icon(icons::MERGE_DOWN)}
+                    }
+                } else {
+                    span { class: "layer-merge" }
+                }
                 // Duplicate, beside Remove: a second copy of this layer directly above
                 // it, carrying its tiles, its name and everything it carries
                 // (§14.8). On the row for the same reason every other move is —
@@ -1100,6 +1143,10 @@ mod tests {
             matte: None,
             filter: None,
             has_underlay: true,
+            // These tests are about where a drag lands, which is geometry — nothing
+            // here reads the merge, and offering one would say something about a pair
+            // of rows that the fixture's `(id, depth)` pairs do not describe.
+            merge_down: None,
         }
     }
 

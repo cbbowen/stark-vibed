@@ -18,6 +18,7 @@ pub(crate) mod desc;
 pub(crate) mod environment;
 pub(crate) mod fill;
 pub(crate) mod half;
+pub(crate) mod merge;
 pub(crate) mod pigment;
 pub(crate) mod readback;
 pub(crate) mod registry;
@@ -34,6 +35,7 @@ pub use composite::{
 pub use context::GpuContext;
 pub use environment::{Environment, EnvironmentId};
 pub use fill::FillRenderer;
+pub use merge::{MergeRenderer, MergeSide};
 pub use registry::{Registry, Resource};
 pub use selection::SelectionRenderer;
 pub use stroke::{StrokeRenderer, StrokeSpans, ToolState};

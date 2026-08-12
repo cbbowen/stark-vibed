@@ -1318,6 +1318,35 @@ button.layer-release:hover {
   color: #eee;
 }
 
+/* Merge down, one slot in from Duplicate (§14.11). Bare and 14px like its
+   neighbours, and — unlike Duplicate — its slot is *held*, because not every row has
+   a merge: the foot of the document has nothing below it, and a pair that does not
+   composite as one layer is not offered one at all. A row without it must not push
+   Duplicate, Remove and the eye sideways, which is the same column argument Carry and
+   Remove are built on.
+
+   It answers a hover in the plain light, like Duplicate: nothing is destroyed here —
+   the paint moves down and the picture is unchanged — so the red is Remove's alone. */
+.layer-merge {
+  width: 14px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: #ffffffa6;
+}
+
+button.layer-merge {
+  cursor: pointer;
+}
+
+button.layer-merge:hover {
+  color: #eee;
+}
+
 /* Remove, in the row it removes, one slot in from the eye. Bare and 14px like Carry,
    because the slot has to be held on the one row that has no Remove — the eyes are a
    column to glance down, and a single row's eye stepping right would cost exactly what
@@ -1366,6 +1395,7 @@ button.layer-remove:hover {
    go with the opacity, so an invisible control cannot be clicked; only Release can
    actually be reached without hovering its row, but the pair is one rule. */
 .layer-carry,
+.layer-merge,
 .layer-duplicate,
 .layer-remove,
 .layer-release,
@@ -1378,6 +1408,7 @@ button.layer-remove:hover {
 /* The whole entry, indent included, is the hover target — reaching for a control in
    the margin should not require finding it first. */
 .layer-item:hover .layer-carry,
+.layer-item:hover .layer-merge,
 .layer-item:hover .layer-duplicate,
 .layer-item:hover .layer-remove,
 .layer-item:hover .layer-release,
@@ -1510,6 +1541,7 @@ button.layer-remove:hover {
    hand around. The eye of a *hidden* layer stays, because that one is not a control
    answering a hover, it is the row saying what it is (see `.layer-eye.hidden`). */
 .layer-item.dragging:hover .layer-carry,
+.layer-item.dragging:hover .layer-merge,
 .layer-item.dragging:hover .layer-duplicate,
 .layer-item.dragging:hover .layer-remove,
 .layer-item.dragging:hover .layer-release,

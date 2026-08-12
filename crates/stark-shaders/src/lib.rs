@@ -189,6 +189,16 @@ pub fn fill(resid: bool) -> &'static str {
     resid_variant!(resid, "fill", "fill_resid")
 }
 
+/// WGSL layer merge-down: two stacked layers' tiles reduced to the one tile that
+/// composites to the same texels — §14.11.
+///
+/// Takes `resid` because this pass carries a tile's colour, so it is built in two
+/// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
+/// needs (§6.7), and without it.
+pub fn merge(resid: bool) -> &'static str {
+    resid_variant!(resid, "merge", "merge_resid")
+}
+
 /// WGSL selection-mask rasterization: one op's shape combined into a mask tile —
 /// §6.8.
 pub fn selection() -> &'static str {
@@ -259,6 +269,7 @@ mod tests {
             #[cfg(feature = "mixbox")]
             ("media_mixbox", media_mixbox),
             ("media_oklab", media_oklab),
+            ("merge", || merge(false)),
             ("overlay", overlay),
             ("resolve", resolve),
             ("selection", selection),
@@ -316,6 +327,7 @@ mod tests {
             ("fill", fill),
             ("integrate", integrate),
             ("matte", matte),
+            ("merge", merge),
             ("stamp", stamp),
             ("transform", transform),
         ];

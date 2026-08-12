@@ -510,6 +510,176 @@ resource is already coarse.
 - **Aux under an opaque group** (§14.7) — a pre-existing question this feature
   makes more visible, not one it creates.
 
+### 14.11 Merging a layer down
+
+Numbered after §14.10 rather than beside §14.4, where it belongs by subject,
+because section numbers are cited from the source and are not renumbered.
+
+#### The law
+
+> **A merge must not change what the document looks like.**
+
+That is the whole specification, and it is what separates a merge from any other
+destructive edit. A painter merges to stop spending a layer on something that is
+finished — not to accept a new picture in exchange. A merge that shifts a pixel
+is a bug with no way to notice it: by the time the file is saved, the layers that
+would have shown the difference are gone.
+
+The law is not free. **A merge is not always possible**, so the operation returns
+an `Option` and the panel offers the control only where there is one — absent
+rather than greyed out, because a pair that does not composite as one layer is not
+a weaker merge but a different edit (§14.11.4).
+
+#### 14.11.1 Why it is exact, and not merely close
+
+Write `h` for a texel's height, `op` for its per-unit opacity, and `m = op·h` for
+its **optical mass**. Pass A gives a layer the weight
+
+```text
+    w = 1 − exp(−K·m)
+```
+
+— its visible alpha, the translucent-slab law (§6.1) — stacks the weighted colours
+with premultiplied "over", and sums the heights. Stack two layers and
+
+```text
+    1 − w  =  (1 − w₀)(1 − w₁)  =  exp(−K·(m₀ + m₁))
+```
+
+so **masses add exactly as heights do**. The merged texel therefore has
+
+```text
+    H = h₀ + h₁          M = m₀ + m₁          opacity = M / H
+```
+
+and its opacity is the *height-weighted mean* of the two. Nothing is fitted and no
+constant is tuned: a tile stores opacity and height as two numbers (§6.1), which is
+exactly the freedom needed to name any (coverage, height) a stack can reach while
+conserving height. The colour follows through `blend_latent` — and that function is
+not written for this, it is `paint_common.wesl`'s existing parcel-stacking law, the
+one the brush deposits through and `fill.wesl` lays a fill with. A merge stacks two
+layers the way a stroke stacks paint on paint, because those are the same act.
+
+The **opacity slider** is the one thing that does not simply add. Pass A scales the
+finished weight by it and the height by it (`w·opl`, `h·opl`), which is not the
+weight of a slab of any opacity — so the merge inverts the law,
+`M = −ln(1 − opl·(1 − e^{−K·m}))/K`, to recover the mass that does produce that
+weight. It lands in range (`M ≤ h·opl` for every `opacity ≤ 1`), so the mean above
+is still a per-unit opacity, and both sliders end up **inside the merged tiles**:
+merging two half-faded layers gives one layer at full strength that looks the same.
+
+#### 14.11.2 What has to hold for a pair
+
+Write `B` for everything composited beneath the pair, `D` for the lower layer (the
+**destination**, which survives, keeping its name, place and properties) and `S`
+for the upper (the **source**, which is consumed). The document shows
+`merge_S(merge_D(B, D), S)` and must go on showing it as `merge_D(B, D ⊕ S)`, for
+every `B`. Two independent questions:
+
+- **Does `S` reach the accumulator by plain "over"?** Only then is `⊕` the stacking
+  law, and only then does over's associativity — `over(over(B,D),S) =
+  over(B, over(D,S))` — carry the result across.
+- **Is the backdrop `S` is stated against exactly `D`?** A clip reads the backdrop's
+  coverage, so this decides whether "clipped to `D`" is even what `S` means. It is
+  `D` alone in exactly two places: `S` is the bottom of the stack its **carrier**
+  `D` opens (a group's members composite over its base, §14.1), or `S` sits second
+  from the bottom of the **root** stack, whose accumulator starts cleared.
+
+Which gives the offered set. Both sides must be paint that carries nothing, both
+must be equally visible (hiding a layer hides what it carries, §14.3, so a merge
+across a difference would reveal or conceal paint), and:
+
+| Where `S` sits | `S` may be | `D` may be |
+|---|---|---|
+| Bottom of its carrier's stack | `Normal`, clipped or not | anything — the carrier's blend, clip and opacity point *outward* (§14.4.3), and only its content is rewritten. Its **opacity** is the exception (below). |
+| Second from the foot of the root stack | `Normal`, clipped or not | any blend (inert with no backdrop, §14.4.3), unclipped, any opacity |
+| Anywhere else, above a sibling | `Normal`, unclipped | `Normal`, unclipped, any opacity |
+
+The carrier's opacity is pinned at 1 for a reason worth naming: a group's opacity is
+applied to its *composited whole* at the merge (§14.7), which is not something a
+tile can carry — so the surviving layer would have to keep it, and the source's
+paint, which the slider never scaled, would start being scaled by it.
+
+#### 14.11.3 Two laws, because a clip is a deletion
+
+An unclipped source **stacks**. A clipped one is *deleted outside its backdrop*
+(§14.4), and reading `blend_common.wesl::merge` at `MODE_NORMAL` with `clip = 1`
+against a backdrop that is exactly this tile gives
+
+```text
+    αo = αb                              coverage untouched, so M = m₀
+    Co = αb·(αs·Cs + (1−αs)·Cb)          that coverage over a lerp
+    ho = hb + hs·αb                      height suppressed with the colour
+```
+
+— which is why the shader has two branches rather than one law with a mask. The
+height term is the half that matters: leaving it behind would light relief over
+paint that is not there (§14.4.2).
+
+#### 14.11.4 What is deliberately refused
+
+**Two layers sharing a blend mode.** The tempting rule — "same mode, so merge them
+in that mode" — is *false*, and quietly. The blend functions are associative by
+construction (each is addition conjugated by a tone curve, §18.0.4), but the
+Porter-Duff wrapper is not: its middle term applies the blend function to the
+accumulator's **coverage-averaged** colour, and averaging does not commute with a
+curve. Two 50%-covered `Reinhard` layers over a backdrop come out at 0.6446 stacked
+and 0.6442 merged. `Multiply` happens to survive — its blend function is bilinear,
+so the expansion factorizes — but a rule that holds for one mode of four is a
+special case, not a law, and not worth a shader path that has to be right about
+which.
+
+**A source with a blend mode, merged into its carrier.** This one *is* sound: the
+group's isolated content is what the merge rewrites, so the outward merge is
+unchanged whatever the mode. It needs the blend algebra evaluated in tile space and
+inverted back through the slab law, and `blend_common.wesl` owns bindings a tile
+pass cannot inherit — so it is left out rather than approximated, and those rows
+keep the control hidden. It is the obvious next increment.
+
+**Mattes, filters and groups.** A matte and a filter have no tile map, so neither
+is merged nor merged into — the same refusal a stroke aimed at one gets (§15.7,
+§21.4). A group as the source would have to flatten a subtree; a group as the
+*destination* is not what sits beneath the source, its whole group is.
+
+#### 14.11.5 Plumbing
+
+- **One action**, `MergeLayerDown { source, dest }`, appended last so postcard keeps
+  decoding older files (§8). `dest` is derived rather than chosen — "down" names one
+  layer — and travels anyway for the reason `DuplicateLayer`'s ids do: a `Footprint`
+  is built from the action alone and cannot search the tree (§12.6).
+- **The rule is a pure function of the state**, so the log carries no reasoning. The
+  applying side re-derives the plan and **declines deterministically** if it now
+  names a different destination, which is what a concurrent reorder or a blend mode
+  set since looks like from here — so every peer and every replay declines together.
+- **The footprint claims both layers whole**: their tiles, and the blend, clip,
+  opacity and visibility the plan reads. A merge that commuted with a blend-mode
+  change on either layer would silently change its own answer.
+- **Cost is the overlap, not the document.** A tile only one side has passes through
+  by handle, and within a shared tile the shader has an exact passthrough branch on
+  each side — so merging a small stroke layer onto a canvas-spanning background
+  rewrites the tiles the stroke covers and leaves the rest bit-identical, which
+  `tests/merge.rs` asserts to the byte rather than to a tolerance.
+
+#### 14.11.6 Invariants worth a test (`tests/merge.rs`)
+
+Every test in that file has the same shape — render, merge, render, compare —
+because a merge has no property of its own to assert: its whole content is
+agreement with the compositor, and the compositor is what a render runs.
+
+1. Two plain layers, two faded layers, a translucent glaze over opaque paint, a
+   clipped layer, and a group's bottom member folded into its base all leave the
+   composite unchanged within a least-significant bit — the tile arithmetic runs in
+   f32 and lands in f16 storage, and no more than that is allowed.
+2. A merge whose layers do not overlap is exact **to the byte**, which is the
+   structural half of the claim rather than a looser version of (1).
+3. The upper layer is still on top afterwards — the one thing pixel equality alone
+   would not have told you *which* bug had been avoided.
+4. A merge the rule does not offer is a silent no-op that logs nothing, so the
+   panel's rule and the engine's are one rule.
+5. Undo restores both layers — record, place, and the destination's own opacity,
+   which the fold had set to 1 — by handle, so it is exact; redo reproduces the
+   merge exactly.
+
 ---
 
 ## 15. Framing, mattes, and export

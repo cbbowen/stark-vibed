@@ -30,6 +30,7 @@ pub const ENTRY_POINTS: &[&str] = &[
     "matte",
     "media_mixbox",
     "media_oklab",
+    "merge",
     "overlay",
     "resolve",
     "selection",
@@ -100,6 +101,7 @@ pub const RESID_ENTRY_POINTS: &[&str] = &[
     "fill",
     "integrate",
     "matte",
+    "merge",
     "stamp",
     "transform",
 ];

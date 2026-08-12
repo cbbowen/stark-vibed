@@ -14,6 +14,7 @@ pub(crate) mod fill;
 pub(crate) mod filter;
 pub(crate) mod footprint;
 pub(crate) mod layer;
+pub(crate) mod merge;
 pub(crate) mod patch;
 pub(crate) mod selection;
 pub(crate) mod state;
@@ -32,6 +33,9 @@ pub use filter::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 /// whether two of them can be reordered.
 pub use footprint::{Footprint, Prop, Resource, footprint};
 pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion, PaintTiles, Place};
+/// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
+/// leaves the document looking the same, which is the whole of what a merge promises.
+pub use merge::{MergeKind, MergePlan};
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState, LayerSite};
 pub use timeline::{

@@ -173,6 +173,16 @@ pub enum DocCommand {
     /// (§14.2). To keep what it carried, release those layers with
     /// [`MoveLayer`](Self::MoveLayer) first.
     RemoveLayer(LayerId),
+    /// Merge a layer **down** onto the one beneath it (§14.11): the lower layer keeps
+    /// its name, its place and its properties, and takes the paint of both; the upper
+    /// one is gone.
+    ///
+    /// **Declined when it would change what the document looks like**, which is the
+    /// whole of what a merge promises and the reason this is not always available. The
+    /// engine answers the same question the panel asks before offering the control
+    /// ([`LayerInfo::merge_down`](crate::LayerInfo::merge_down)), so a command sent
+    /// anyway is a silent no-op rather than a different picture.
+    MergeLayerDown(LayerId),
     SetLayerBlend(LayerId, BlendMode),
     /// Clip a layer to the paint beneath it in its own stack, or stop
     /// (§14.4). On the base of a group this clips the whole group
