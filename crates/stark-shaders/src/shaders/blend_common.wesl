@@ -125,43 +125,67 @@ struct FsOut {
     @location(1) aux: vec4<f32>,
 }
 
-// Reinhard: `T(x) = x/(1+x)`, so `T⁻¹(y) = y/(1−y)` and
+// ---- the emissive modes' conjugating curve, as a pair --------------------------
 //
-//     f(a,b) = (a + b − 2ab) / (1 − ab)
+// `Reinhard` and `Drago` are `f(a,b) = T(T⁻¹(a) + T⁻¹(b))`, and this is `T⁻¹` and `T`
+// — written as the pair rather than as the collapsed two-argument form they used to
+// be, because **the addition in the middle is the part that has to be reachable**.
+// Collapsed, the curve can only combine two values at full strength; separated, the
+// quantity that adds is a value in its own hand, so coverage and opacity can weigh it
+// (`added_light`) and a stack of any depth is one sum.
 //
-// evaluated here in terms of the *complements* `u = 1−a`, `v = 1−b`, which is the
-// same function:
+// `emission` is the linear light a display-referred value stands for, and it is where
+// the two modes actually differ. Everything else about them is the addition.
+
+// The largest emission `T⁻¹` will report, as its reciprocal. Reinhard's inverse is
+// `y/(1−y)`, which is unbounded at display white — the single most likely input an
+// author produces — so it needs a floor under the denominator, and this is it. At
+// 1e-6 the cap is 1e6, whose tonemap is 0.999999: white comes back white to five
+// places past what an 8-bit target can show, and a sum of several stays finite in
+// f32 rather than reaching the `inf/inf` that would make a NaN of the whole texel.
 //
-//     1 − f = uv / (u + v − uv)
+// The collapsed form this replaced handled `a = b = 1` by working in the complements
+// and landing on exactly 1. That exactness is the one thing given up here, and it is
+// given up for a reason: the complement form cannot express "half a lamp".
+const EMISSION_EPS: f32 = 1e-6;
+
+// `T⁻¹`: the linear emission behind a display-referred light value.
 //
-// That form is the one to compute. The direct expression is 0/0 at `a = b = 1` —
-// two white layers, the single most likely thing an author does — whereas this one
-// reads `0 / max(0, ε)` and lands on exactly 1, which is the right answer. It also
-// makes the mode's defining property visible: the numerator carries a factor of both
-// complements, so the result reaches 1 only when an input already is 1. No finite
-// stack of glow layers clips.
-fn reinhard(a: f32, bb: f32) -> f32 {
-    let u = 1.0 - a;
-    let v = 1.0 - bb;
-    return 1.0 - u * v / max(u + v - u * v, 1e-6);
+// Clamped into `[0,1]` first, for `combine`'s reason: the curves are defined on light
+// between black and display white, and a channel outside that came from a colour
+// outside the gamut rather than from light that is really there. Drago needs no floor
+// — with the input clamped, `e^{y/k}` tops out at `e^{1/k}`, which for any sane `k`
+// is a small number — so the guard is Reinhard's alone.
+fn emission(x: vec3<f32>) -> vec3<f32> {
+    let y = clamp(x, vec3<f32>(0.0), vec3<f32>(1.0));
+    if b.mode == MODE_DRAGO {
+        return b.k * (exp(y / b.k) - vec3<f32>(1.0));
+    }
+    return y / max(vec3<f32>(1.0) - y, vec3<f32>(EMISSION_EPS));
 }
 
-// Drago: `T(x) = k·log(1 + x/k)`, so `T⁻¹(y) = k(e^{y/k} − 1)` and
+// `T`: the display-referred light value an emission tonemaps to.
 //
-//     f(a,b) = k·log(e^{a/k} + e^{b/k} − 1)
+// Deliberately **not** clamped on the way out. Reinhard's curve is asymptotic, so it
+// cannot pass 1 however much light it is given; Drago's is a logarithm and does, and
+// that overshoot is the feature — the half-float composite target carries it into the
+// media pass's highlight roll-off (see `BlendMode::Drago`).
+fn tonemap(e: vec3<f32>) -> vec3<f32> {
+    let x = max(e, vec3<f32>(0.0));
+    if b.mode == MODE_DRAGO {
+        return b.k * log(vec3<f32>(1.0) + x / b.k);
+    }
+    return x / (vec3<f32>(1.0) + x);
+}
+
+// Whether this mode combines by **adding light** — the emissive half of the family.
 //
-// factored by the larger input so no exponential is ever raised on a large positive
-// argument:
-//
-//     f = m + k·log(1 + e^{(n−m)/k} − e^{−m/k}),   m = max(a,b),  n = min(a,b)
-//
-// Both exponentials now have non-positive arguments, so the whole thing is stable at
-// any `k`, and the log's argument stays ≥ `e^{(n−m)/k} > 0`. Unlike `reinhard` this
-// overshoots: two whites give `1 + k·log 2`. That is deliberate — see `BlendMode`.
-fn drago(a: f32, bb: f32, k: f32) -> f32 {
-    let m = max(a, bb);
-    let n = min(a, bb);
-    return m + k * log(1.0 + exp((n - m) / k) - exp(-m / k));
+// The one question that decides which of two laws a merge runs, and it is a property
+// of the mode rather than of the layer: an emissive mode's coverage weighs the
+// *emission* (`added_light`), while `Multiply`'s weighs the working-space colour, and
+// each is the linear quantity for its own half of the family (see the header).
+fn is_emissive() -> bool {
+    return b.mode == MODE_REINHARD || b.mode == MODE_DRAGO;
 }
 
 // Combine two light values, channel by channel.
@@ -190,10 +214,63 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
     if b.mode == MODE_MULTIPLY {
         return x * y;
     }
-    if b.mode == MODE_DRAGO {
-        return vec3<f32>(drago(x.x, y.x, b.k), drago(x.y, y.y, b.k), drago(x.z, y.z, b.k));
-    }
-    return vec3<f32>(reinhard(x.x, y.x), reinhard(x.y, y.y), reinhard(x.z, y.z));
+    // The emissive modes, at full coverage — which is the only case that reaches
+    // here, since `added_light` is what a partly-covered one goes through. Written as
+    // the conjugation itself rather than as a closed form, so the curve has one
+    // definition and this is visibly the `α = 1` case of the general law.
+    return tonemap(emission(x) + emission(y));
+}
+
+// The emissive modes' whole colour algebra: **premultiplied emission adds**.
+//
+// This is the same three-term Porter-Duff expansion `merge_triple` runs, evaluated on
+// premultiplied *emission* instead of on premultiplied channels — at which point it
+// collapses, because the blend function in that space is `+`:
+//
+//     (1−αb)·αs·Ls  +  αb·αs·(Lb+Ls)  +  αb·(1−αs)·Lb
+//   = αs·Ls·[(1−αb) + αb]  +  αb·Lb·[αs + (1−αs)]
+//   = αs·Ls + αb·Lb
+//
+// Two things follow, and the second is the stronger one.
+//
+// **It is associative and commutative at any coverage**, being addition — so three
+// glow layers give the same picture in any order and regrouping them changes nothing,
+// which is what the modes were derived to guarantee and what the collapsed form only
+// managed where every layer was opaque. Nonlinear `B` applied to the accumulator's
+// coverage-*averaged* colour is what broke it: averaging does not commute with a
+// curve.
+//
+// **It does not depend on the coverage-correlation guess.** `E[Σ] = ΣE[]` holds
+// whatever the joint distribution, where `E[B(…)]` for a nonlinear `B` needs
+// Porter-Duff's independence assumption to mean anything. Two half-covered glow layers
+// give `½·Ea + ½·Eb` whether their halves are disjoint or identical — which is also
+// why this is the *physically* right rule and not merely the convenient one: light
+// averaged over a partly-covered pixel is linear in light.
+//
+// `Multiply` is not here and needs nothing: its blend function is bilinear, so
+// working-space mixing already **is** its linear quantity — averaging transmitted
+// light over an area is linear in transmittance, not in density. Each half of the
+// family weighs coverage in the quantity that adds for it; the emissive half was
+// borrowing multiply's.
+//
+// Returns the **un-premultiplied** output light, so the caller converts one triple
+// back to its own channels. `cs_raw_a` is the source's stored coverage, scaled here
+// by the group opacity exactly as `merge` scales it.
+fn added_light(xb: vec3<f32>, cb_a: f32, xs: vec3<f32>, cs_raw_a: f32) -> vec3<f32> {
+    let cs_a = cs_raw_a * b.opacity;
+    // A clipped layer's light is admitted only where the backdrop is — the same
+    // `keep` the alpha uses, which is what makes the two agree (§14.4.1).
+    let keep = select(cb_a, 1.0, b.clip == 0u);
+    let e = emission(xb) * cb_a + emission(xs) * (cs_a * keep);
+    return tonemap(e / max(merge_alpha(cb_a, cs_a), EMISSION_EPS));
+}
+
+// The coverage a merge leaves behind, clip included (§14.4.1) — one definition, because
+// `added_light` divides by the very number `merge` writes into alpha, and the two
+// disagreeing would spread the light over the wrong area.
+fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
+    let keep = select(cb_a, 1.0, b.clip == 0u);
+    return cs_a * keep + cb_a * (1.0 - cs_a);
 }
 
 // Compose the blended layer onto the accumulator (the tail every mode shares).
@@ -210,18 +287,22 @@ fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
 //
 // The interpolation `mix(…, αb)` is W3C's `(1 − αb)·Cs + αb·B(Cb, Cs)`: blend
 // against what is genuinely underneath, and where nothing is, the layer is simply
-// itself. It runs in the **working space** rather than in light, which is not a
-// detail — it means a layer over empty canvas takes the identity branch and never
-// makes the trip out to light and back. In a Mixbox document, where that trip is a
-// LUT lookup which drops the latent residual, it is the difference between
-// "unchanged" and "slightly recoloured for nothing".
+// itself. It runs in the **working space**, which is right for `Multiply` and was
+// wrong for the emissive modes — see `added_light`, which is the path those take
+// now. What is left here is `Normal` (reached only by a clipped layer) and the one
+// mode whose blend function is bilinear, so that working-space mixing *is* its
+// linear quantity.
 //
 // The source term is written `cs.rgb` and not `Cs·αs`, which is the same number:
 // `Cs` was only ever `cs.rgb` divided by `αs` so the blend function could see a
 // colour rather than a premultiplied one, and multiplying it back would round-trip a
-// division for no reason. Spelling it this way makes the identity *exact* — a mode
-// over an empty stack is bit-for-bit the `Normal` render, which `tests/blend.rs`
-// asserts to the byte — instead of exact-to-a-least-significant-bit.
+// division for no reason. Spelling it this way is what makes an **empty backdrop**
+// exact: `mix(x, y, 0)` is `x` to the bit, so a mode over an empty stack is
+// bit-for-bit the `Normal` render, which `tests/blend.rs` asserts to the byte. The
+// space shaders route `αb = 0` here for exactly that reason rather than through
+// `added_light`, whose round trip out to light and back could not promise it — and
+// in a Mixbox document that trip is a LUT lookup which drops the latent residual, so
+// it is the difference between "unchanged" and "slightly recoloured for nothing".
 //
 //
 // CLIPPING (§14.4)
@@ -278,8 +359,26 @@ fn merge(cb: vec4<f32>, cs_raw: vec4<f32>, blended: vec3<f32>, hb: f32, hs: f32)
     var out: FsOut;
     out.color = vec4<f32>(
         merge_triple(cb.rgb, cb.a, cs.rgb, cs.a, blended),
-        cs.a * keep + cb.a * (1.0 - cs.a),
+        merge_alpha(cb.a, cs.a),
     );
+    out.aux = vec4<f32>(hb + hs * keep * b.opacity, 0.0, 0.0, 0.0);
+    return out;
+}
+
+// [`merge`] for the emissive path, whose colour the caller has already worked out.
+//
+// The two differ in one line and share the rest, which is the point: coverage and
+// height are facts about how much paint is there, and no blend mode has an opinion
+// about either. What the emissive modes change is the *colour* law, so that is all
+// this replaces — `chan` arrives un-premultiplied from `added_light`, converted back
+// into the caller's own channels, and is premultiplied here by the very alpha
+// `added_light` divided by.
+fn merge_added(cb: vec4<f32>, cs_raw: vec4<f32>, chan: vec3<f32>, hb: f32, hs: f32) -> FsOut {
+    let cs = cs_raw * b.opacity;
+    let keep = select(cb.a, 1.0, b.clip == 0u);
+    let a = merge_alpha(cb.a, cs.a);
+    var out: FsOut;
+    out.color = vec4<f32>(chan * a, a);
     out.aux = vec4<f32>(hb + hs * keep * b.opacity, 0.0, 0.0, 0.0);
     return out;
 }

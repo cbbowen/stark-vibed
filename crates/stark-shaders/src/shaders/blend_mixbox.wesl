@@ -31,7 +31,8 @@ import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
-    b, back_color, back_aux, src_color, src_aux, combine, merge, merge_triple,
+    b, back_color, back_aux, src_color, src_aux,
+    added_light, combine, is_emissive, merge, merge_added, merge_triple,
 };
 
 // The residual halves of the two colours (§6.7). **Bindings 7 and 8 of
@@ -79,28 +80,64 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let res_b = rb.rgb / max(cb.a, COVERAGE_EPS);
     let res_s = rs.rgb / max(cs.a, COVERAGE_EPS);
 
-    let light = combine(latent_to_light(chan_b, res_b), latent_to_light(chan_s, res_s));
+    let hb = textureLoad(back_aux, p, 0).x;
+    let hs = textureLoad(src_aux, p, 0).x;
+
+    var out: FsOut;
+    // **Nothing beneath**: every mode is the source, given back to the bit by the
+    // `mix(…, αb)` at `αb = 0` — and, here more than anywhere, without the trip out
+    // to light, which is a LUT lookup that would re-quantize a latent that is already
+    // exact (`blend_common::merge`). Both halves of the colour take the same branch.
+    if cb.a <= 0.0 {
+        let base = merge(cb, cs, chan_s, hb, hs);
+        out.color = base.color;
+        out.aux = base.aux;
+        out.resid = vec4<f32>(
+            merge_triple(rb.rgb, cb.a, rs.rgb * b.opacity, cs.a * b.opacity, res_s),
+            base.color.a,
+        );
+        return out;
+    }
+
     // `max(…, 0)` before the sRGB encode: the combination is componentwise in XYZ,
     // which can step just outside the gamut on very saturated pairs, and the LUT is
     // indexed by sRGB. `mixbox_srgb_to_concentrations` clamps the top end itself.
+    // The rest of `mixbox_rgb_to_latent` is the residual: what the polynomial could
+    // not say about the colour the light works out to. **The trip back from light is
+    // exact** — it was the LUT's concentrations alone, so a blend that landed on black
+    // stored a mixture the media pass would render `#383838`, and every blend result
+    // was pulled toward the polynomial's reachable set.
+    // The emissive modes settle the whole colour in **emission**, where combining is
+    // addition (`added_light`), so a pigment document asks the LUT which mixture ended
+    // up that colour and is finished — there is no Porter-Duff triple left to run on
+    // either half. That the residual falls out of the same answer rather than being
+    // merged separately is a simplification the additive law buys: the two halves are
+    // one colour, and here they are decoded from one.
+    if is_emissive() {
+        let x = added_light(
+            latent_to_light(chan_b, res_b), cb.a,
+            latent_to_light(chan_s, res_s), cs.a,
+        );
+        let srgb = clamp(
+            linear_to_srgb(max(light_to_linear(x), vec3<f32>(0.0))),
+            vec3<f32>(0.0), vec3<f32>(1.0),
+        );
+        let conc = mixbox_srgb_to_concentrations(srgb);
+        let base = merge_added(cb, cs, conc, hb, hs);
+        out.color = base.color;
+        out.aux = base.aux;
+        out.resid = vec4<f32>((srgb - mixbox_eval_polynomial(conc)) * base.color.a, base.color.a);
+        return out;
+    }
+
+    let light = combine(latent_to_light(chan_b, res_b), latent_to_light(chan_s, res_s));
     let srgb = clamp(
         linear_to_srgb(max(light_to_linear(light), vec3<f32>(0.0))),
         vec3<f32>(0.0), vec3<f32>(1.0),
     );
     let blended = mixbox_srgb_to_concentrations(srgb);
-    // The rest of `mixbox_rgb_to_latent`: what the polynomial could not say about the
-    // colour the light works out to. **The trip back from light is now exact** — it
-    // was the LUT's concentrations alone, so a blend that landed on black stored a
-    // mixture the media pass would render `#383838`, and every blend result was pulled
-    // toward the polynomial's reachable set. `tests/blend.rs` carried a 40/255
-    // tolerance for that.
     let blended_res = srgb - mixbox_eval_polynomial(blended);
-
-    let hb = textureLoad(back_aux, p, 0).x;
-    let hs = textureLoad(src_aux, p, 0).x;
     let base = merge(cb, cs, blended, hb, hs);
-
-    var out: FsOut;
     out.color = base.color;
     out.aux = base.aux;
     // The residual takes the identical three-term merge on the identical weights, and

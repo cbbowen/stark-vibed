@@ -37,24 +37,25 @@
 //!
 //! # What is deliberately refused
 //!
-//! **Two layers sharing a blend mode.** The tempting rule — "same mode, so merge them
-//! in that mode" — is false for the light-combining modes, and quietly. Their blend
-//! *functions* are associative (that is the point of building each as a conjugation of
-//! addition, [`BlendMode`]), but the Porter-Duff wrapper around them is not: the
-//! middle term applies the blend function to the accumulator's **coverage-averaged**
-//! colour, and averaging does not commute with a curve. Two 50%-covered
-//! [`Reinhard`](BlendMode::Reinhard) layers over a backdrop come out at 0.6446
-//! stacked and 0.6442 merged — a difference no golden would flag as a *rule* being
-//! wrong, only as one image being slightly off. ([`Multiply`](BlendMode::Multiply)
-//! happens to survive, its blend function being bilinear; a rule that holds for one
-//! mode of four is a special case, not a law, and it is not worth a shader path that
-//! has to be right about which.)
+//! **Two layers sharing a blend mode — for now, and no longer on principle.** This
+//! was refused as *unsound*: the blend functions are associative by construction, but
+//! the Porter-Duff wrapper applied them to the accumulator's coverage-averaged
+//! colour, and averaging does not commute with a curve, so a same-mode merge was only
+//! approximately the stack. That is fixed at the source rather than worked around
+//! here — the emissive modes now weigh coverage in emission, where the combination is
+//! addition, and are associative at any coverage (§18.0.4, `blend_common::added_light`).
 //!
-//! **A source with a blend mode, merged into its carrier.** This one *is* sound — the
-//! group's isolated content is unchanged by construction — but it needs the blend
-//! algebra evaluated in tile space and inverted back through the slab law, and
-//! `blend_common.wesl` owns bindings that a tile pass cannot inherit. Left out rather
-//! than approximated; the layers it covers keep their Merge control hidden.
+//! So the merge is now *sound* and merely unimplemented, which is a different
+//! sentence and a smaller one. What it still needs is the mode's algebra evaluated in
+//! **tile** space: the light conversion is per colour space, and in a pigment document
+//! that means binding the Mixbox LUT into a pass that has never needed it. The slab-law
+//! inversion the result then has to be stored through already exists
+//! (`merge.wesl::optical_mass`).
+//!
+//! **A source with a blend mode, merged into its carrier.** Sound for a different and
+//! simpler reason — the group's isolated content is what the merge rewrites, so the
+//! outward merge is unchanged whatever the mode — and blocked on the same tile-space
+//! conversion. The two arrive together when it does.
 //!
 //! **Groups.** A source that carries layers would have to flatten a whole subtree, and
 //! a destination that carries layers is not what sits beneath the source — its whole

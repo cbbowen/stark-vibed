@@ -676,23 +676,25 @@ paint that is not there (§14.4.2).
 
 #### 14.11.4 What is deliberately refused
 
-**Two layers sharing a blend mode.** The tempting rule — "same mode, so merge them
-in that mode" — is *false*, and quietly. The blend functions are associative by
-construction (each is addition conjugated by a tone curve, §18.0.4), but the
-Porter-Duff wrapper is not: its middle term applies the blend function to the
-accumulator's **coverage-averaged** colour, and averaging does not commute with a
-curve. Two 50%-covered `Reinhard` layers over a backdrop come out at 0.6446 stacked
-and 0.6442 merged. `Multiply` happens to survive — its blend function is bilinear,
-so the expansion factorizes — but a rule that holds for one mode of four is a
-special case, not a law, and not worth a shader path that has to be right about
-which.
+**Two layers sharing a blend mode — for now, and no longer on principle.** This was
+refused as *unsound*, and it was: the blend functions are associative by
+construction, but the Porter-Duff wrapper applied them to the accumulator's
+coverage-averaged colour, and averaging does not commute with a curve. That is now
+fixed at the source rather than worked around here — the emissive modes weigh
+coverage in emission, where the combination is addition, and are associative at any
+coverage (§18.0.4). The same measurement that condemned the merge condemned the
+modes: reordering three glow layers moved the canvas by 20 levels.
 
-**A source with a blend mode, merged into its carrier.** This one *is* sound: the
-group's isolated content is what the merge rewrites, so the outward merge is
-unchanged whatever the mode. It needs the blend algebra evaluated in tile space and
-inverted back through the slab law, and `blend_common.wesl` owns bindings a tile
-pass cannot inherit — so it is left out rather than approximated, and those rows
-keep the control hidden. It is the obvious next increment.
+So this merge is now sound and merely unimplemented, which is a smaller sentence.
+What it needs is the mode's algebra in **tile** space — the light conversion is per
+colour space, and a pigment document would have to bind the Mixbox LUT into a pass
+that has never needed it. The slab-law inversion to store the result already exists.
+
+**A source with a blend mode, merged into its carrier.** Sound for a simpler reason —
+the group's isolated content is what the merge rewrites, so the outward merge is
+unchanged whatever the mode — and blocked on the same tile-space conversion. The two
+arrive together when it does.
+
 
 **Mattes, filters and groups.** A matte and a filter have no tile map, so neither
 is merged nor merged into — the same refusal a stroke aimed at one gets (§15.7,

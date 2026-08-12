@@ -128,14 +128,55 @@ rather than RGB also means two saturated glazes cross without the dead channel a
 RGB multiply produces when one primary sits near zero.
 
 Being conjugations of `+` makes all three commutative and associative with a
-neutral element, so reordering a stack of them is not a colour decision —
-`tests/blend.rs` pins that, along with the identity (a mode over an empty stack
-is bit-for-bit the `Normal` render). The neutral element is where the family
-splits and where the tests split with it. Each colour space supplies only its
-channels ↔ light conversion, which for Mixbox is the pigment polynomial and its
-inverse LUT (`mixbox_lut.wesl`) — the one place the engine inverts Mixbox on the
-GPU. The rest of the darkening family attaches at the same seam: one more `T`,
-one more variant, no new machinery.
+neutral element, so reordering a stack of them is not a colour decision. **That
+holds at any coverage, and for a long time it did not.** Porter-Duff weighs a
+layer by its coverage in the *working space* — the `(1 − αb)·Cs` term — which
+applies the blend function to the accumulator's coverage-*averaged* colour, and
+averaging does not commute with a curve. Reordering three glow layers moved the
+canvas by up to **20 levels** at every partly-covered texel, which is most of a
+stroke: the slab law leaves an ordinary interior around 45% covered, so this was
+not an edge-only effect.
+
+The emissive modes therefore weigh coverage in **emission** — the quantity that
+adds — rather than in the working space (`blend_common::added_light`). The same
+three-term Porter-Duff expansion evaluated there collapses, because the blend
+function in that space is `+`:
+
+```
+  (1−αb)·αs·Ls + αb·αs·(Lb+Ls) + αb·(1−αs)·Lb  =  αs·Ls + αb·Lb
+```
+
+so a stack of any depth is one sum: associative and commutative by construction,
+and — the stronger property — independent of the coverage-correlation guess,
+since `E[Σ] = ΣE[]` holds whatever the joint distribution where `E[B(…)]` for a
+nonlinear `B` does not. It is also the physically right rule rather than merely
+the convenient one: light averaged over a partly-covered pixel is linear in
+light. `Multiply` needs none of this and is untouched — its blend function is
+bilinear, so working-space mixing already *is* its linear quantity (averaging
+transmitted light over an area is linear in transmittance, not in density). Each
+half of the family weighs coverage in the quantity that adds for it; the emissive
+half had been borrowing multiply's.
+
+**What it costs, stated plainly.** The emissive modes now disagree with `Normal`
+about what partial coverage means, by single-digit levels. `Normal` is occlusion
+and this engine mixes occluded paint in the perceptual working space on purpose
+(§6.1), so both weightings are right for their own question — but it means "black
+is the identity" is no longer *pixel* identity with a `Normal` render at partial
+coverage. It remains the identity of the combination, which is what the law says.
+`tests/blend.rs` pins all three facts separately: the identity at full coverage
+where the conversions are the only thing running, the order-independence over the
+whole canvas, and the coverage-law gap itself — asserted rather than accepted,
+because it is the one place these modes part company with the rest of the
+compositor.
+
+The neutral element is where the family splits and where the tests split with it.
+Each colour space supplies only its channels ↔ light conversion, which for Mixbox
+is the pigment polynomial and its inverse LUT (`mixbox_lut.wesl`) — the one place
+the engine inverts Mixbox on the GPU. In a pigment document the emissive path is
+also *simpler* than it was: the whole colour falls out of one sum, so the latent's
+residual is decoded from that answer rather than merged separately. The rest of
+the darkening family attaches at the same seam: one more `T`, one more variant, no
+new machinery.
 
 One thing is *not* free: a glaze sees the layer stack but not the substrate,
 which pass B composites underneath afterwards, so multiply over bare paper leaves

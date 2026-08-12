@@ -22,7 +22,7 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::DocCommand;
-use stark_core::document::{BlendMode, BrushParams, BrushShape, LayerId};
+use stark_core::document::{BlendMode, BrushDynamics, BrushParams, BrushShape, LayerId};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
 
@@ -50,6 +50,25 @@ fn layer_with(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
         above: None,
     });
     paint(engine, color, 44.0, points);
+}
+
+/// A brush that reaches **full coverage**: six times the ordinary flow, and a tip
+/// hard enough that the interior is flat rather than a dome.
+///
+/// The slab law `1 − exp(−K·opacity·height)` never quite reaches 1, so an ordinary
+/// stroke's own interior sits well under full coverage — around 0.45 at the default
+/// flow. That is invisible for most purposes and decisive for two tests here, which
+/// are about the colour algebra and would otherwise be measuring the coverage law
+/// instead.
+fn opaque(color: [f32; 4]) -> BrushParams {
+    BrushParams {
+        dynamics: BrushDynamics {
+            add: 6.0,
+            ..Default::default()
+        },
+        shape: BrushShape::Round { hardness: 0.99 },
+        ..brush(color, 44.0)
+    }
 }
 
 /// Warm on the root, cool on a layer above it, crossing at the canvas origin.
@@ -233,20 +252,22 @@ fn blend_only_acts_where_the_layers_meet() {
 /// `+`. This is the property that makes a blend mode safe to build a painting on:
 /// reordering the stack is not supposed to be a colour decision.
 ///
-/// The law is about the *colour* algebra, so the assertion is made where the colour
-/// algebra is the only thing running: an interior patch every one of the three
-/// strokes covers at full opacity. Away from there, at a stroke's antialiased edge,
-/// stacking order genuinely does matter — `(1 − αb)·Cs` weighs the top layer's own
-/// colour by how much backdrop it found, so which layer is on top is a real
-/// difference. That is Porter-Duff, not the blend mode; `Normal` layers have exactly
-/// the same property, and no derivation could remove it.
+/// **Asserted over the whole canvas**, edges included, which it could not be before.
+/// The modes used to weigh coverage in the working space — Porter-Duff's
+/// `(1 − αb)·Cs` term — and averaging does not commute with a curve, so which layer
+/// was on top made a real difference wherever coverage was partial: this same
+/// comparison ran to **20 levels** across the canvas while passing comfortably inside
+/// a 25-px box of solid paint.
 ///
-/// Which is why the tip is a hard one rather than the shared `brush()`'s. A round tip
-/// lays `1 − |y|^h` across the stroke (`round_coverage`), so "the interior" is only
-/// opaque to the last bit for a hardness that puts the box inside the flat top: at
-/// `hardness = 0.8` the diagonal stroke arrives at the corner of this box a
-/// thousandth short of opaque, which is enough backdrop for the Porter-Duff term to
-/// see the order — a genuine effect, and not the one being tested.
+/// The comment here used to say that was Porter-Duff rather than the blend mode, and
+/// that no derivation could remove it. That is true of `Normal`, where order is
+/// occlusion and genuinely matters. It was not true of these two: light adds whatever
+/// is in front of what, and they now weigh coverage in emission
+/// (`blend_common::added_light`), where the sum is order-independent by construction.
+///
+/// So the bound stays 2 for the ordinary reason — associativity is exact in ℝ and
+/// merely very close in the half-float the composite targets carry between passes —
+/// and it now covers every texel rather than the ones that happened to be opaque.
 #[test]
 fn glow_stacking_is_order_independent() {
     // Three strokes through the origin at different angles: the middle of the canvas
@@ -283,41 +304,85 @@ fn glow_stacking_is_order_independent() {
     let c = render([1, 2, 0]).expect("third engine");
 
     for (name, other) in [("2,0,1", &b), ("1,2,0", &c)] {
-        // 2, not 0: associativity is exact in ℝ and merely very close in the
-        // half-float the composite targets carry between passes.
-        let worst = max_diff_in_box(&a, other, 12);
+        let (frac, worst) = diff_fraction(&a, other);
         assert!(
             worst <= 2,
-            "reordering glow layers ({name}) moved the fully-covered interior by {worst}"
+            "reordering glow layers ({name}) moved the canvas by {worst} \
+             (over {:.2}% of it)",
+            frac * 100.0,
         );
     }
 }
 
-/// The worst per-channel difference inside a centred `2·half + 1` square.
-fn max_diff_in_box(a: &RgbaImage, b: &RgbaImage, half: u32) -> u8 {
-    let (cx, cy) = (a.width / 2, a.height / 2);
-    let mut worst = 0u8;
-    for y in cy - half..=cy + half {
-        for x in cx - half..=cx + half {
-            let (pa, pb) = (a.pixel(x, y), b.pixel(x, y));
-            for i in 0..4 {
-                worst = worst.max((pa[i] as i32 - pb[i] as i32).unsigned_abs() as u8);
-            }
-        }
-    }
-    worst
+/// **An emissive layer weighs its coverage in light; `Normal` weighs it in the
+/// working space — so the two disagree wherever coverage is partial.** Asserted
+/// rather than merely accepted, because it is the one place these modes deliberately
+/// part company with the rest of the compositor, and anyone who decides to "fix" it
+/// should have to come here and read why.
+///
+/// The reason is physical. A pixel 45% covered by a lamp emits 45% of that lamp's
+/// light, and averaging light over an area is linear *in light* — so an emissive mode
+/// has to weigh coverage there. `Normal` is occlusion, and this engine mixes occluded
+/// paint in the perceptual working space on purpose (§6.1), so its own weighting
+/// belongs where it is. Neither is wrong; they answer different questions, and a
+/// partly-covered glow layer over black is where you can see both at once.
+///
+/// What it costs is that "black is the identity" stops being *pixel* identity with a
+/// `Normal` render at partial coverage. It remains the identity of the combination,
+/// which is what the law says and what
+/// [`black_is_the_identity_through_the_round_trip`] pins at full coverage. The gap
+/// below is single-digit levels; what bought it was the 20 levels of order dependence
+/// in [`glow_stacking_is_order_independent`].
+#[test]
+fn an_emissive_layer_weighs_its_coverage_in_light() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    // An ordinary stroke, whose interior the slab law leaves well short of full
+    // coverage — which is the condition under test rather than an edge case.
+    paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
+    layer_with(&mut engine, WARM, V_STROKE);
+    let normal = center(&engine.render_to_image());
+
+    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Reinhard));
+    let glow = center(&engine.render_to_image());
+
+    let worst = (0..3)
+        .map(|i| (normal[i] as i32 - glow[i] as i32).unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        worst > 0,
+        "the two coverage laws must actually differ here, or this test says nothing \
+         and the identity test above is quietly measuring both at once",
+    );
+    assert!(
+        worst <= 8,
+        "the gap between the two coverage laws is bounded — {worst} levels is not a \
+         different law, it is a broken one",
+    );
 }
 
 /// **Black is the identity — the round trip under test.** `f(a, 0) = a` for both
 /// curves, so a light layer over *black paint* must come back out its own colour.
 ///
 /// Unlike [`blend_over_nothing_is_normal`], this one does not take the shortcut:
-/// with an opaque backdrop the interpolation weight is 1, so the colour genuinely
-/// makes the trip out to normalized XYZ and back. That makes it the check on the
-/// conversions themselves — and in a Mixbox document, on `mixbox_lut.wesl`, the one
-/// place the engine inverts the pigment polynomial on the GPU. A LUT with its axes
-/// or its rows the wrong way round would still be "brighter at the overlap"; it
-/// would not survive this.
+/// with a backdrop present the colour genuinely makes the trip out to normalized XYZ
+/// and back, and now out to *emission* and back on top of that. That makes it the
+/// check on the conversions themselves — and in a Mixbox document, on
+/// `mixbox_lut.wesl`, the one place the engine inverts the pigment polynomial on the
+/// GPU. A LUT with its axes or its rows the wrong way round would still be "brighter
+/// at the overlap"; it would not survive this.
+///
+/// **The paint is laid heavily on purpose**, and that is what makes this a test of the
+/// round trip rather than of two coverage laws. An emissive mode weighs coverage in
+/// light where `Normal` weighs it in the working space
+/// ([`an_emissive_layer_weighs_its_coverage_in_light`]), so at partial coverage the
+/// two answer differently *by design* and comparing them would measure that instead.
+/// A brush at six times the ordinary flow puts the slab law within a hair of full
+/// coverage, where the difference vanishes and only the conversions are left — and
+/// there the identity is exact to within a level, tighter than this test could
+/// assert before.
 #[test]
 fn black_is_the_identity_through_the_round_trip() {
     // A near-neutral and a saturated colour, because the two spaces cost very
@@ -349,9 +414,14 @@ fn black_is_the_identity_through_the_round_trip() {
             let Some(mut engine) = engine_or_skip_with(space) else {
                 return;
             };
-            // A wide black ground with the colour laid over the middle of it.
+            // A wide black ground with the colour laid over the middle of it, thick
+            // enough to reach full coverage — see the note above.
             paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
-            layer_with(&mut engine, color, V_STROKE);
+            engine.process(DocCommand::AddLayer {
+                carrier: None,
+                above: None,
+            });
+            stroke_with(&mut engine, opaque(color), V_STROKE);
             let over_black = center(&engine.render_to_image());
 
             engine.process(DocCommand::SetLayerBlend(TOP, mode));
