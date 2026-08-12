@@ -106,7 +106,7 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     // The source has to be paint that carries nothing, and has to reach the
     // accumulator by "over" — a mode of its own is refused here, before either
     // position case, because neither can absorb it (see the header).
-    if !is_plain_paint(s) || !s.blend.is_normal() {
+    if !is_plain_paint(s) || !s.composite.blend.is_normal() {
         return None;
     }
 
@@ -128,7 +128,7 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
             let below = stack.get(site.index - 1)?;
             (
                 below.id,
-                site.carrier.is_none() && site.index == 1 && !below.clip,
+                site.carrier.is_none() && site.index == 1 && !below.composite.clip,
             )
         }
     };
@@ -141,7 +141,7 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         return None;
     }
 
-    let kind = if s.clip {
+    let kind = if s.composite.clip {
         MergeKind::Clip
     } else {
         MergeKind::Over
@@ -163,7 +163,7 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         // a tile can carry, so the merged layer would have to keep it — and the source's
         // paint, which was never scaled by it, would start being.
         Some(_) if site.index == 0 => {
-            if !d.content_is_paint() || d.opacity != 1.0 {
+            if !d.content_is_paint() || d.composite.opacity != 1.0 {
                 return None;
             }
         }
@@ -177,10 +177,10 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         // identity, which is the same fact `LayerInfo::has_backdrop` reports (§14.4.3).
         // A *clip* there is not inert — it erases the layer — so it is still refused.
         _ => {
-            if !is_plain_paint(d) || d.clip {
+            if !is_plain_paint(d) || d.composite.clip {
                 return None;
             }
-            if !backdrop_is_dest && !d.blend.is_normal() {
+            if !backdrop_is_dest && !d.composite.blend.is_normal() {
                 return None;
             }
         }

@@ -89,8 +89,15 @@ That is also the rule for *which* properties the group takes from its base:
 
 | | belongs to | why |
 |---|---|---|
-| `blend`, `clip` | **relational** — the group's, taken from the base | vacuous at the base, so free |
-| `opacity`, `visible`, `name` | **intrinsic** — the group's own, as the base's own | the base's opacity does real work; it cannot be borrowed |
+| `blend`, `clip`, `opacity` | **`CompositeParams`** — the group's, taken from the base | all three are stated against the backdrop, so all three are vacuous at the base and free to describe the group's own merge outward |
+| `visible`, `name` | **intrinsic** — the group's own, as the base's own | they describe the layer itself and mean the same thing whatever is under it |
+
+Opacity sits in the first row, and it took a bug to establish that. It reads as
+intrinsic — *how faded is this layer* — but it is applied at the same step as the
+other two and to the same thing: the group's composited whole (§14.7). Carried
+separately, it was applied to the base's own content as well; grouped, the base
+composites with `CompositeParams::IDENTITY` and there is one place to get it
+right.
 
 Group opacity is therefore *not* the duplication Photoshop's group blend mode
 was: fading a group fades the base and everything on it as one unit. The one
@@ -361,12 +368,18 @@ Both are asserted by `dragging_layer_opacity_previews_without_logging` and
 shape rather than a special case inside a loop:
 
 ```rust
-pub struct CompositeGroup {
+/// How something meets what lies beneath it. One value, in the document and in
+/// the draw list alike, because every rule about them is a rule about all three.
+pub struct CompositeParams {
     pub blend: BlendMode,
     pub clip: bool,
-    /// Applied to this whole subtree at merge — members overlap, so it cannot be
+    /// Applied to the composited whole at merge — members overlap, so it cannot be
     /// folded into per-tile opacity the way a leaf layer's can.
     pub opacity: f32,
+}
+
+pub struct CompositeGroup {
+    pub params: CompositeParams,
     pub content: GroupContent,
 }
 
@@ -377,6 +390,16 @@ pub enum GroupContent {
     Stack(Vec<CompositeGroup>),
 }
 ```
+
+The three are **one value** rather than three fields, and that is load-bearing
+rather than tidy. They are stated against a backdrop, so they are vacuous
+together where there is none; they decide the fast path together, since a layer
+needs isolating if *any* of them does something; and — the reason they were
+grouped — they belong to the group **as a whole and never to its base**. A group's
+members composite over its base (§14.1), so the base's own content is a member: it
+composites with `CompositeParams::IDENTITY` and the layer's params are applied
+once, to the result. Held apart, that was three chances to get one rule wrong, and
+one of them was taken (below).
 
 Build-time rules, in `Engine::composite_groups`:
 
@@ -417,16 +440,36 @@ Two consequences to know about:
   exclusive rather than cumulative: a base whose items carry the slider *and*
   whose group applies it at the merge is a base faded twice. That is exactly what
   happened for as long as this feature existed — a group base at 0.5 drew its own
-  paint at 0.25 while everything it carried drew at 0.5 — because `layer_items`
-  tags with the layer's opacity, which is right for a leaf and wrong the moment
+  paint at 0.25 while everything it carried drew at 0.5 — because the item builder
+  tagged with the layer's opacity, which is right for a leaf and wrong the moment
   the same items go into a `Stack`. The slider still faded, the two granularities
   still differed, and the only visible symptom was a base fading faster than the
-  layers standing on it. `composite_stack` now takes the slider back off the
-  base's items before building the group, and `tests/groups.rs::
-  a_groups_opacity_fades_its_base_exactly_once` pins it by the one case where the
-  two granularities **coincide**: with non-overlapping members, a group at opacity
-  `a` must render exactly as the same layers ungrouped at `a`, which a base at
-  `a²` breaks while everything it carries stays right.
+  layers standing on it.
+
+  The fix was one line; the *repair* was making the shape unable to say it.
+  `CompositeGroup::leaf` is now the only constructor that folds an opacity into an
+  item, and it takes that opacity off the group in the same expression, so folded
+  and applied-at-a-merge are exclusive by construction. The item builder no longer
+  knows what a layer's opacity is. And `composite_stack` states the whole rule
+  twice, in two lines that read as the sentence:
+
+  ```rust
+  let group = if carried.is_empty() {
+      CompositeGroup::leaf(layer.composite, own)                      // a leaf is the whole of it
+  } else {
+      members.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own)); // the base is a member
+      CompositeGroup::stack(layer.composite, members)                 // …the params are the group's
+  };
+  ```
+
+  Two tests hold it. `tests/groups.rs::a_groups_opacity_fades_its_base_exactly_once`
+  pins the pixels by the one case where the two granularities **coincide**: with
+  non-overlapping members, a group at opacity `a` must render exactly as the same
+  layers ungrouped at `a`, which a base at `a²` breaks while everything it carries
+  stays right. `CompositeGroup`'s own unit tests pin the constructor contract with
+  no GPU at all — including that the collapse in `stack` uses `run` and not `leaf`,
+  since re-folding there would flatten two tidied-away faded layers back to full
+  strength.
 - **An opaque group does not erase the relief beneath it.** `merge()` sums the
   aux, so impasto under an opaque group embosses through it, exactly as it
   already does under an opaque non-`Normal` layer and unlike an opaque matte

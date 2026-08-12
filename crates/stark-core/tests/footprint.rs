@@ -85,13 +85,17 @@ fn matte_of(l: &Layer) -> Option<(MatteRegion, [f32; 3])> {
 /// splits them into, since that is the granularity undo restores them at.
 fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
     let mut out = Vec::new();
-    if a.blend != b.blend {
+    // Split finer than the struct: `CompositeParams` travels as one value through
+    // compositing, but undo restores each of the three on its own — a clip toggle has
+    // to commute with a blend change on the same layer (§12.6). One place where the
+    // grouping deliberately does not propagate.
+    if a.composite.blend != b.composite.blend {
         out.push(Prop::Blend);
     }
-    if a.clip != b.clip {
+    if a.composite.clip != b.composite.clip {
         out.push(Prop::Clip);
     }
-    if a.opacity != b.opacity {
+    if a.composite.opacity != b.composite.opacity {
         out.push(Prop::Opacity);
     }
     if a.visible != b.visible {

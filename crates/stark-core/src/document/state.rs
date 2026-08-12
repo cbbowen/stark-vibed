@@ -11,7 +11,7 @@ use rpds::{HashTrieMap, Vector};
 
 use super::action::ActorId;
 use super::filter::Filter;
-use super::layer::{BlendMode, Layer, LayerContent, LayerId, MatteRegion, Place};
+use super::layer::{BlendMode, CompositeParams, Layer, LayerContent, LayerId, MatteRegion, Place};
 use super::selection::Selection;
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::SurfaceId;
@@ -549,7 +549,13 @@ impl DocState {
     pub fn set_layer_blend(&self, id: LayerId, blend: BlendMode) -> Self {
         self.map_layer(id, |l| match &l.content {
             LayerContent::Filter(_) => l.clone(),
-            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer { blend, ..l.clone() },
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer {
+                composite: CompositeParams {
+                    blend,
+                    ..l.composite
+                },
+                ..l.clone()
+            },
         })
     }
 
@@ -558,14 +564,23 @@ impl DocState {
     pub fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
         self.map_layer(id, |l| match &l.content {
             LayerContent::Filter(_) => l.clone(),
-            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer { clip, ..l.clone() },
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer {
+                composite: CompositeParams {
+                    clip,
+                    ..l.composite
+                },
+                ..l.clone()
+            },
         })
     }
 
     /// Set a layer's opacity, clamped to [0, 1] (no-op if absent).
     pub fn set_layer_opacity(&self, id: LayerId, opacity: f32) -> Self {
         self.map_layer(id, |l| Layer {
-            opacity: opacity.clamp(0.0, 1.0),
+            composite: CompositeParams {
+                opacity: opacity.clamp(0.0, 1.0),
+                ..l.composite
+            },
             ..l.clone()
         })
     }
@@ -937,18 +952,18 @@ mod tests {
             .set_layer_clip(FILTER, true);
         let filter = state.layer(FILTER).expect("filter exists");
         assert_eq!(
-            filter.blend,
+            filter.composite.blend,
             BlendMode::Normal,
             "a filter stored a blend mode"
         );
-        assert!(!filter.clip, "a filter stored a clip");
+        assert!(!filter.composite.clip, "a filter stored a clip");
         // …while a paint layer beside it still takes both.
         let state = state
             .set_layer_blend(BASE, BlendMode::Multiply)
             .set_layer_clip(BASE, true);
         let base = state.layer(BASE).expect("base exists");
-        assert_eq!(base.blend, BlendMode::Multiply);
-        assert!(base.clip);
+        assert_eq!(base.composite.blend, BlendMode::Multiply);
+        assert!(base.composite.clip);
     }
 
     /// Every filter is sanitized where it **enters state**, not only where a local

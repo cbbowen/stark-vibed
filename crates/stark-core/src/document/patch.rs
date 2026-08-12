@@ -143,7 +143,7 @@ impl StatePatch {
             ActionKind::MergeLayerDown { source, dest } => {
                 tile_diff(*dest, paint_rect(action, *dest), to, from, &mut ops);
                 if let Some(l) = to.layer(*dest) {
-                    ops.push(PatchOp::Opacity(*dest, l.opacity));
+                    ops.push(PatchOp::Opacity(*dest, l.composite.opacity));
                 }
                 if let (Some(site), false) = (to.site_of(*source), from.contains_layer(*source)) {
                     ops.push(PatchOp::Present {
@@ -155,17 +155,17 @@ impl StatePatch {
             ActionKind::MoveLayer { .. } => ops.push(PatchOp::Structure(structure(to))),
             ActionKind::SetLayerBlend(id, _) => {
                 if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Blend(*id, l.blend));
+                    ops.push(PatchOp::Blend(*id, l.composite.blend));
                 }
             }
             ActionKind::SetLayerClip(id, _) => {
                 if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Clip(*id, l.clip));
+                    ops.push(PatchOp::Clip(*id, l.composite.clip));
                 }
             }
             ActionKind::SetLayerOpacity(id, _) => {
                 if let Some(l) = to.layer(*id) {
-                    ops.push(PatchOp::Opacity(*id, l.opacity));
+                    ops.push(PatchOp::Opacity(*id, l.composite.opacity));
                 }
             }
             ActionKind::SetLayerVisible(id, _) => {

@@ -5,7 +5,7 @@
 //! decided by the document, and the only judgement it makes is [`CompositeGroup::stack`]'s:
 //! whether a group can tell itself apart from no group at all.
 
-use crate::document::{BlendMode, Filter};
+use crate::document::{CompositeParams, Filter};
 use crate::geom::TileCoord;
 use crate::gpu::tile::TilePairHandle;
 
@@ -43,13 +43,12 @@ pub enum CompositeItem {
 impl CompositeItem {
     /// Draw this item at `opacity` instead of the one it was built with.
     ///
-    /// Exists for one caller and one fact: a group's opacity is applied to its
-    /// composited whole at the merge (§14.7), and the base's own content is a
-    /// **member of that whole** — so once the base's items are going into a
-    /// `Stack`, the slider that is about to be applied at the merge must come *off*
-    /// them. Setting it rather than building the list twice, because whether the
-    /// layer is a group is only known after its carried stack has been culled.
-    pub fn set_opacity(&mut self, opacity: f32) {
+    /// **Private, with exactly one caller**: [`CompositeGroup::leaf`], which is where
+    /// a layer's opacity is folded into items that do not overlap. Building the items
+    /// already faded and letting a group apply its own on top is precisely the double
+    /// fade §14.7 describes, so the only way to set an item's opacity is to go through
+    /// the constructor that takes it off the group in the same breath.
+    fn set_opacity(&mut self, opacity: f32) {
         match self {
             CompositeItem::Tile { opacity: o, .. } => *o = opacity,
             CompositeItem::Matte(m) => m.opacity = opacity,
@@ -122,19 +121,17 @@ impl FilterDraw {
 /// whose members are themselves groups.
 #[derive(Clone)]
 pub struct CompositeGroup {
-    pub blend: BlendMode,
-    /// Clip to the coverage of what this group composites onto
-    /// (§14.4). Costs the same isolation a blend mode does, and for the same reason:
-    /// the merge has to *read* the backdrop's alpha.
-    pub clip: bool,
-    /// Applied to this group's whole composited result at the merge, not to its
-    /// members one at a time.
+    /// How this group's composited result merges into everything below it — the
+    /// **layer's own** params, applied once, to the whole (§14.4.3).
     ///
-    /// That distinction is only visible on a [`Stack`](GroupContent::Stack),
-    /// whose members overlap — a leaf layer's tiles do not, so its opacity rides
-    /// on [`CompositeItem::Tile`] and this stays 1.0 for it. Two granularities of
-    /// the same fact, and the cheaper one is used wherever it is equivalent.
-    pub opacity: f32,
+    /// The same [`CompositeParams`] the document holds, carried through unchanged,
+    /// which is what stops the render path taking them apart and putting two of them
+    /// back in different places. Clipping costs the same isolation a blend mode does,
+    /// and for the same reason: the merge has to *read* the backdrop's alpha.
+    ///
+    /// [`Self::leaf`] is the one constructor that moves anything out of here, and it
+    /// moves only the opacity, only onto items that provably do not overlap.
+    pub params: CompositeParams,
     pub content: GroupContent,
 }
 
@@ -167,32 +164,65 @@ pub enum GroupContent {
     /// the same ping-pong and the same scratch and costs the same one pass
     /// (`composite/filter.rs`).
     ///
-    /// Its enclosing [`CompositeGroup`]'s `blend`, `clip` and `opacity` are
-    /// `Normal`, `false` and `1.0`, always: a filter has no source to merge, so
-    /// there is nothing for them to describe, and its opacity is already inside the
-    /// draw as the filter's strength (§21.4).
+    /// Its enclosing [`CompositeGroup`]'s params are [`CompositeParams::IDENTITY`],
+    /// always: a filter has no source to merge, so there is nothing for them to
+    /// describe, and its opacity is already inside the draw as the filter's strength
+    /// (§21.4).
     Filter(FilterDraw),
 }
 
 impl CompositeGroup {
-    /// A run of drawables that merges outward through `blend` and `clip`.
-    pub fn run(blend: BlendMode, clip: bool, items: Vec<CompositeItem>) -> Self {
+    /// A run of drawables that merges outward through `params`, **each item carrying
+    /// whatever opacity it was built with**.
+    ///
+    /// The raw constructor, for a caller that already holds finished items — the
+    /// collapse in [`Self::stack`], which concatenates runs whose opacities are
+    /// already folded in. A caller turning *one layer* into a run wants
+    /// [`Self::leaf`] instead, which is the difference between "these items are
+    /// ready" and "fold this layer's opacity into them".
+    pub fn run(params: CompositeParams, items: Vec<CompositeItem>) -> Self {
         Self {
-            blend,
-            clip,
-            opacity: 1.0,
+            params,
             content: GroupContent::Run(items),
         }
     }
 
+    /// **One layer's** drawables, merging outward through `params` — the constructor
+    /// every layer goes through, and the only place opacity is ever folded into an
+    /// item.
+    ///
+    /// The fold is what keeps a faded layer on the fast path: `params.opacity` on the
+    /// group would make it non-direct and cost two render passes, while a layer's
+    /// tiles do not overlap, so scaling each of them is identical to scaling the
+    /// composited layer. Two granularities of one fact, and the cheaper one is taken
+    /// wherever it is equivalent.
+    ///
+    /// **Equivalent, and therefore exclusive.** The opacity comes *off* the params on
+    /// the way past, so what is folded is never also applied at a merge. That is not
+    /// a nicety: it is the bug this constructor exists to make unrepresentable. A
+    /// group's base composites with [`CompositeParams::IDENTITY`] — the layer's own
+    /// params belong to the group as a whole — and for as long as the base's items
+    /// were tagged by the item builder instead, a base at 0.5 drew its paint at 0.25
+    /// while everything it carried drew at 0.5 (§14.7).
+    pub fn leaf(params: CompositeParams, mut items: Vec<CompositeItem>) -> Self {
+        for item in &mut items {
+            item.set_opacity(params.opacity);
+        }
+        Self::run(
+            CompositeParams {
+                opacity: 1.0,
+                ..params
+            },
+            items,
+        )
+    }
+
     /// A filter layer's pass, which merges nothing and is merged through nothing
-    /// (§21) — see [`GroupContent::Filter`] for why the three relational fields are
-    /// fixed rather than taken from the layer.
+    /// (§21) — see [`GroupContent::Filter`] for why the params are fixed rather than
+    /// taken from the layer.
     pub fn filter(draw: FilterDraw) -> Self {
         Self {
-            blend: BlendMode::Normal,
-            clip: false,
-            opacity: 1.0,
+            params: CompositeParams::IDENTITY,
             content: GroupContent::Filter(draw),
         }
     }
@@ -213,9 +243,8 @@ impl CompositeGroup {
     /// The condition cannot be relaxed to "the group itself is normal": a member
     /// with a mode of its own *does* blend against a different backdrop once
     /// isolated, and that difference is the feature (§14.5).
-    pub fn stack(blend: BlendMode, clip: bool, opacity: f32, members: Vec<Self>) -> Self {
-        let free = blend.is_normal() && !clip && opacity >= 1.0;
-        if free && members.iter().all(|m| m.as_direct_run().is_some()) {
+    pub fn stack(params: CompositeParams, members: Vec<Self>) -> Self {
+        if params.is_free() && members.iter().all(|m| m.as_direct_run().is_some()) {
             let items = members
                 .into_iter()
                 .flat_map(|m| match m.content {
@@ -229,12 +258,13 @@ impl CompositeGroup {
                     }
                 })
                 .collect();
-            return Self::run(blend, clip, items);
+            // `run`, not `leaf`: these items already carry their own layers' folded
+            // opacities, and re-folding this group's — which the guard above has just
+            // proved is 1.0 — would overwrite every one of them.
+            return Self::run(params, items);
         }
         Self {
-            blend,
-            clip,
-            opacity,
+            params,
             content: GroupContent::Stack(members),
         }
     }
@@ -269,7 +299,7 @@ impl CompositeGroup {
     /// Whether this group's *merge* is a no-op — normal, unclipped, opaque. Says
     /// nothing about its content, which is the other half of "direct".
     fn is_free(&self) -> bool {
-        self.blend.is_normal() && !self.clip && self.opacity >= 1.0
+        self.params.is_free()
     }
 
     /// Every drawable in this group, in composite order — the flat streams pass A
@@ -329,4 +359,130 @@ pub(super) fn scratch_needs(members: &[CompositeGroup]) -> Vec<bool> {
     let mut needs = Vec::new();
     walk(members, 0, &mut needs);
     needs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::BlendMode;
+
+    /// A drawable with a known opacity and nothing else — a matte, because it is the
+    /// one [`CompositeItem`] that is plain data. A tile would need a GPU to make one,
+    /// and none of what is under test here has anything to do with paint.
+    fn item(opacity: f32) -> CompositeItem {
+        CompositeItem::Matte(MatteDraw {
+            rect: [0.0; 4],
+            channels: [0.0; 4],
+            resid: [0.0; 4],
+            opacity,
+        })
+    }
+
+    /// The opacity of every drawable in a group, in order.
+    fn opacities(group: &CompositeGroup) -> Vec<f32> {
+        group
+            .items()
+            .iter()
+            .map(|i| match i {
+                CompositeItem::Matte(m) => m.opacity,
+                CompositeItem::Tile { opacity, .. } => *opacity,
+            })
+            .collect()
+    }
+
+    fn faded(opacity: f32) -> CompositeParams {
+        CompositeParams {
+            opacity,
+            ..CompositeParams::IDENTITY
+        }
+    }
+
+    /// [`CompositeGroup::leaf`] folds the opacity into the items **and takes it off
+    /// the merge**. Both halves, because either alone is a bug: folding without
+    /// clearing fades the layer twice (§14.7), and clearing without folding loses the
+    /// fade entirely.
+    ///
+    /// The third assertion is what the fold is *for*: a faded leaf stays on the fast
+    /// path, where the same opacity left on the group would cost it two render passes.
+    #[test]
+    fn a_leaf_folds_its_opacity_into_its_items_and_off_its_merge() {
+        let group = CompositeGroup::leaf(faded(0.4), vec![item(1.0), item(1.0)]);
+        assert_eq!(opacities(&group), vec![0.4, 0.4], "the fold did not happen");
+        assert_eq!(group.params.opacity, 1.0, "the merge would fade it again");
+        assert!(
+            group.as_direct_run().is_some(),
+            "a faded leaf must stay on the fast path",
+        );
+    }
+
+    /// The blend mode and the clip travel the other way: they describe a merge, so
+    /// they stay on the group and never reach an item.
+    #[test]
+    fn a_leaf_keeps_its_blend_and_clip_on_the_merge() {
+        let params = CompositeParams {
+            blend: BlendMode::Multiply,
+            clip: true,
+            opacity: 0.5,
+        };
+        let group = CompositeGroup::leaf(params, vec![item(1.0)]);
+        assert_eq!(group.params.blend, BlendMode::Multiply);
+        assert!(group.params.clip);
+        assert!(
+            group.as_direct_run().is_none(),
+            "a mode and a clip still need isolating",
+        );
+    }
+
+    /// Collapsing a free group must **not** re-fold: its members' items already carry
+    /// their own layers' opacities, and the collapse is a concatenation rather than a
+    /// new layer.
+    ///
+    /// This is the trap [`CompositeGroup::run`] exists to keep open. `stack` ends in a
+    /// constructor call, and reaching for `leaf` there — the one every other caller
+    /// uses — would set every item to the group's own opacity, which the collapse has
+    /// just proved is 1.0. Two faded layers tidied into a folder would come back out
+    /// at full strength, which is exactly the "grouping changed my painting" failure
+    /// §14.7 rule 2 exists to rule out.
+    #[test]
+    fn collapsing_a_free_group_keeps_its_members_folded_opacities() {
+        let group = CompositeGroup::stack(
+            CompositeParams::IDENTITY,
+            vec![
+                CompositeGroup::leaf(faded(0.25), vec![item(1.0)]),
+                CompositeGroup::leaf(faded(0.75), vec![item(1.0)]),
+            ],
+        );
+        assert!(
+            group.as_direct_run().is_some(),
+            "a free group of direct members collapses into a run (§14.7 rule 2)",
+        );
+        assert_eq!(opacities(&group), vec![0.25, 0.75]);
+    }
+
+    /// A group whose own params do something keeps them — and its **base** does not.
+    ///
+    /// The arrangement `composite_stack` builds: the base's content as a member at
+    /// [`CompositeParams::IDENTITY`], the layer's own params on the group. Applied at
+    /// both, an opacity of `a` would reach the base's paint as `a²`, which is the bug
+    /// this shape was rebuilt to make unrepresentable.
+    #[test]
+    fn a_groups_params_ride_the_group_and_never_its_base() {
+        let group = CompositeGroup::stack(
+            faded(0.5),
+            vec![
+                CompositeGroup::leaf(CompositeParams::IDENTITY, vec![item(1.0)]),
+                CompositeGroup::leaf(CompositeParams::IDENTITY, vec![item(1.0)]),
+            ],
+        );
+        assert!(
+            group.as_direct_run().is_none(),
+            "a faded group cannot collapse — its opacity has to be applied at a merge",
+        );
+        assert_eq!(group.params.opacity, 0.5, "the group carries the fade");
+        assert_eq!(
+            opacities(&group),
+            vec![1.0, 1.0],
+            "no member, base included, may carry the group's fade as well",
+        );
+    }
 }

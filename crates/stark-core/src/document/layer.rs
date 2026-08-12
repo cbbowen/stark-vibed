@@ -284,6 +284,74 @@ impl BlendMode {
     }
 }
 
+/// How something — a layer together with everything it carries, or a composited
+/// group — **meets what lies beneath it** (§14.4.3).
+///
+/// The three travel as one value because they are one question asked three ways, and
+/// because every rule about them is a rule about all three at once:
+///
+/// - They are stated **against a backdrop**, so they are vacuous where there is none
+///   — the foot of the root stack, where a mode is the identity, a clip would erase
+///   the layer, and opacity is the only one that still does anything.
+/// - They belong to the **group as a whole**, never to its base. A group's members
+///   composite over its base (§14.1), so the base's own content is a *member*: it
+///   draws with [`IDENTITY`](Self::IDENTITY) and these are applied once, to the
+///   result. Keeping them together is what makes that one assignment rather than
+///   three, and it is why a fourth relational property added here needs no second
+///   place to be remembered.
+/// - They decide the compositor's **fast path** together ([`is_free`](Self::is_free)):
+///   a layer needs isolating if *any* of them does something, so no one of them can
+///   answer the question alone.
+///
+/// Grouped in the document rather than only in the draw list, so `Layer` and
+/// [`CompositeGroup`] hold the same value and the render path never has to take them
+/// apart. The **projection** ([`LayerInfo`]) deliberately keeps them flat: that is a
+/// list of fields for a panel to hang one widget on each, and a blend picker has no
+/// use for the clip beside it.
+///
+/// [`CompositeGroup`]: crate::gpu::CompositeGroup
+/// [`LayerInfo`]: crate::LayerInfo
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CompositeParams {
+    pub blend: BlendMode,
+    /// Clip to the coverage of what this composites onto (§14.4).
+    pub clip: bool,
+    /// Opacity in [0, 1], applied to the **composited whole**.
+    pub opacity: f32,
+}
+
+impl CompositeParams {
+    /// Meeting the backdrop by plain premultiplied "over" at full strength — which is
+    /// to say not interacting with it at all.
+    ///
+    /// The value a group's **base** composites with, and the value a fresh layer
+    /// carries. Also `Default`, so `..CompositeParams::IDENTITY` and
+    /// `..Default::default()` are the same struct-update tail; the constant exists
+    /// because "the identity" is what the call sites mean, and `default()` reads as
+    /// "whatever we happened to pick".
+    pub const IDENTITY: Self = Self {
+        blend: BlendMode::Normal,
+        clip: false,
+        opacity: 1.0,
+    };
+
+    /// Whether these do nothing, so what they describe can draw straight into the
+    /// accumulator instead of being isolated and merged (§6.3, §14.7).
+    ///
+    /// One predicate over all three rather than three tests at each call site: a
+    /// layer needs isolating if *any* of them does something, and a call site that
+    /// checked two of them would have found the fast path once too often.
+    pub fn is_free(self) -> bool {
+        self.blend.is_normal() && !self.clip && self.opacity >= 1.0
+    }
+}
+
+impl Default for CompositeParams {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
 /// The region a matte layer fills (§15.2).
 ///
 /// A region is a coverage field over the *infinite* plane, so what matters is its
@@ -412,45 +480,46 @@ pub enum LayerContent {
 ///
 /// **A group is a layer with a non-empty [`carries`](Self::carries)**, and there
 /// is no other kind (§14.2). One sentence covers the whole model:
-/// a layer's [`blend`](Self::blend), [`clip`](Self::clip) and
-/// [`opacity`](Self::opacity) describe how it *together with everything it
-/// carries* meets what lies beneath it.
+/// a layer's [`composite`](Self::composite) params describe how it *together with
+/// everything it carries* meets what lies beneath it.
 ///
 /// That splits the properties in two, and the split is why there is no separate
 /// group object to own a second copy of anything:
 ///
-/// - **Relational** — `blend` and `clip`, which are about the backdrop. At the
-///   bottom of a stack a layer has no backdrop *inside* its group, so these are
-///   vacuous there and are free to describe the group's own merge outward. That
-///   is not an overload: `merge()` with an empty backdrop is provably the
-///   `Normal` result, so the slot could not express anything to begin with
-///   (`blend_common.wesl`, and `tests/blend.rs` pins it to the byte).
-/// - **Intrinsic** — `opacity`, `visible`, `name`. The base's opacity does real
-///   work, so it cannot be borrowed; fading a layer fades what it carries with
-///   it, as one unit, which is what fading a group should do.
+/// - **[`composite`](Self::composite)** — blend, clip and opacity, which are about
+///   the backdrop, and which therefore belong to the layer *plus its subtree*
+///   rather than to its own content. At the bottom of a stack there is no backdrop
+///   inside the group, so they are vacuous there and are free to describe the
+///   group's own merge outward. That is not an overload: `merge()` with an empty
+///   backdrop is provably the `Normal` result, so the slot could not express
+///   anything to begin with (`blend_common.wesl`, and `tests/blend.rs` pins it to
+///   the byte).
+/// - **Intrinsic** — `visible`, `name`, which describe the layer itself and mean
+///   the same thing whatever is under it.
+///
+/// Opacity sits in the first group, and it took a bug to establish that it belongs
+/// there. It reads as intrinsic — "how faded is this layer" — but it is applied at
+/// the same step as the other two, to the same thing: the group's composited whole
+/// (§14.7). Held separately, it was applied to the base's own content *as well*, and
+/// a group base at 0.5 drew its paint at 0.25. Now the base composites with
+/// [`CompositeParams::IDENTITY`] and there are no longer three chances to get that
+/// wrong.
 #[derive(Clone)]
 pub struct Layer {
     pub id: LayerId,
-    pub blend: BlendMode,
-    /// Clip to the paint beneath — the clipping mask, restated
-    /// (§14.4).
+    /// How this layer — **and everything it carries** — meets what lies beneath it
+    /// (§14.4.3). One value rather than three fields, because every rule about them
+    /// is a rule about all three at once: see [`CompositeParams`].
     ///
-    /// The layer exists only where there is paint under it **in its own stack**:
-    /// it inherits the alpha of everything composited below it there, not of
-    /// "the nearest layer that is not itself clipped". There is no chain to
-    /// trace, because the group is what bounds *below* — clipping to exactly one
-    /// layer is that layer carrying this one, which is the same single gesture
-    /// every other app spells with a separate mode.
-    ///
-    /// Applied at the same step as [`blend`](Self::blend) and, like it, pointing
-    /// **outward**: on the base of a group this clips the whole composited group
-    /// to what lies beneath the group.
-    ///
-    /// Not a scale on the source's alpha — see `blend_common.wesl` for why that
-    /// is the wrong operation and what the right one is.
-    pub clip: bool,
-    /// Layer opacity in [0, 1].
-    pub opacity: f32,
+    /// The **clip** is the one worth restating here (§14.4). The layer exists only
+    /// where there is paint under it *in its own stack*: it inherits the alpha of
+    /// everything composited below it there, not of "the nearest layer that is not
+    /// itself clipped". There is no chain to trace, because the group is what bounds
+    /// *below* — clipping to exactly one layer is that layer carrying this one, which
+    /// is the same single gesture every other app spells with a separate mode. It is
+    /// not a scale on the source's alpha; see `blend_common.wesl` for why that is the
+    /// wrong operation and what the right one is.
+    pub composite: CompositeParams,
     /// Whether the layer contributes to the composite.
     pub visible: bool,
     /// What the author called this layer, or `None` for one that has never been
@@ -485,9 +554,7 @@ impl Layer {
     pub fn new(id: LayerId) -> Self {
         Self {
             id,
-            blend: BlendMode::Normal,
-            clip: false,
-            opacity: 1.0,
+            composite: CompositeParams::IDENTITY,
             visible: true,
             name: None,
             content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new())),

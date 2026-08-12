@@ -571,10 +571,10 @@ impl Compositor {
                     collect(inner, view, blends, filters);
                 }
                 blends.push(BlendUniform {
-                    mode: blend::blend_code(m.blend),
+                    mode: blend::blend_code(m.params.blend),
                     k: DRAGO_K,
-                    clip: u32::from(m.clip),
-                    opacity: m.opacity,
+                    clip: u32::from(m.params.clip),
+                    opacity: m.params.opacity,
                 });
             }
         }

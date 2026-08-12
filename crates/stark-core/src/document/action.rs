@@ -603,7 +603,7 @@ impl history::Action for Action {
                 else {
                     return Ok(state);
                 };
-                let opacity = |id| state.layer(id).map_or(1.0, |l| l.opacity);
+                let opacity = |id| state.layer(id).map_or(1.0, |l| l.composite.opacity);
                 let tiles = ctx.merge.apply(
                     &ctx.pool,
                     crate::gpu::merge::MergeSide {

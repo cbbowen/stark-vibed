@@ -32,7 +32,10 @@ pub use filter::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
 /// whether two of them can be reordered.
 pub use footprint::{Footprint, Prop, Resource, footprint};
-pub use layer::{BlendMode, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion, PaintTiles, Place};
+pub use layer::{
+    BlendMode, CompositeParams, DRAGO_K, Layer, LayerContent, LayerId, MatteRegion, PaintTiles,
+    Place,
+};
 /// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
 /// leaves the document looking the same, which is the whole of what a merge promises.
 pub use merge::{MergeKind, MergePlan};

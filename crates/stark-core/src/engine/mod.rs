@@ -809,7 +809,7 @@ impl Engine {
                 if self
                     .document()
                     .layer(id)
-                    .is_none_or(|l| l.opacity != opacity)
+                    .is_none_or(|l| l.composite.opacity != opacity)
                 {
                     self.commit(ActionKind::SetLayerOpacity(id, opacity));
                 }
@@ -978,7 +978,9 @@ impl Engine {
         /// document rather than of a viewport, so the answer does not change when
         /// the artist scrolls.
         fn contributes(l: &Layer) -> bool {
-            l.visible && l.opacity > 0.0 && (draws_content(l) || l.carries.iter().any(contributes))
+            l.visible
+                && l.composite.opacity > 0.0
+                && (draws_content(l) || l.carries.iter().any(contributes))
         }
         let doc = self.timeline.current();
         // The layers and the substrate colour are read from the *previewed*
@@ -1026,9 +1028,9 @@ impl Engine {
             filled[depth] = filled[depth] || contributes(l);
             layers.push(LayerInfo {
                 id: l.id,
-                blend: l.blend,
-                clip: l.clip,
-                opacity: l.opacity,
+                blend: l.composite.blend,
+                clip: l.composite.clip,
+                opacity: l.composite.opacity,
                 visible: l.visible,
                 carrier: carriers.last().map(|&(id, _)| id),
                 depth,

@@ -11,7 +11,7 @@
 //! instead of taking one.
 
 use super::Engine;
-use crate::document::{BlendMode, DocState, Layer, LayerContent, LayerId};
+use crate::document::{CompositeParams, DocState, Layer, LayerContent, LayerId};
 use crate::geom::{Extent2, TileRect, ViewTransform};
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, FilterDraw, GpuContext, MatteDraw, Offscreen,
@@ -509,14 +509,29 @@ impl Engine {
         visible: Option<TileRect>,
     ) -> Vec<CompositeGroup> {
         if let Some(id) = only {
-            let Some(layer) = doc.layer(id).filter(|l| l.visible && l.opacity > 0.0) else {
+            let Some(layer) = doc
+                .layer(id)
+                .filter(|l| l.visible && l.composite.opacity > 0.0)
+            else {
                 return Vec::new();
             };
             let items = self.layer_items(layer, visible);
             return if items.is_empty() {
                 Vec::new()
             } else {
-                vec![CompositeGroup::run(BlendMode::Normal, false, items)]
+                // Blend and clip are dropped — a sample is of the paint that is
+                // there, not of the part of it that survives its surroundings — but
+                // the **opacity is kept**, because it scales the coverage the pick
+                // sums and thresholds on (`MIN_COVERAGE`, `engine::pick`). Dropping
+                // it would change what a faded layer reports, which is a question
+                // about the eyedropper rather than about compositing.
+                vec![CompositeGroup::leaf(
+                    CompositeParams {
+                        opacity: layer.composite.opacity,
+                        ..CompositeParams::IDENTITY
+                    },
+                    items,
+                )]
             };
         }
         // The root stack has nothing under its first member, by definition — see
@@ -546,7 +561,7 @@ impl Engine {
         for layer in layers {
             // Hiding a layer hides what it carries: the group is the layer
             // (§14.3), so its visibility is the group's.
-            if !layer.visible || layer.opacity <= 0.0 {
+            if !layer.visible || layer.composite.opacity <= 0.0 {
                 continue;
             }
             // A **filter layer** rewrites what is already composited beneath it *in
@@ -568,11 +583,14 @@ impl Engine {
                     "a filter never carries (§21.2) — the state refuses the arrangement",
                 );
                 if (under || !groups.is_empty()) && !f.is_neutral() {
-                    groups.push(CompositeGroup::filter(FilterDraw::new(f, layer.opacity)));
+                    groups.push(CompositeGroup::filter(FilterDraw::new(
+                        f,
+                        layer.composite.opacity,
+                    )));
                 }
                 continue;
             }
-            let mut own = self.layer_items(layer, visible);
+            let own = self.layer_items(layer, visible);
             let carried = self.composite_stack(layer.carries.iter(), visible, !own.is_empty());
             // An empty layer is dropped rather than given a group. For `Normal`
             // that only saves a loop; for a blend mode or a clip it saves two
@@ -589,33 +607,26 @@ impl Engine {
             if own.is_empty() && carried.is_empty() {
                 continue;
             }
+            // **Where the layer's composite params go**, and the only place the
+            // question is asked (§14.4.3, §14.7):
+            //
+            // - A **leaf** is the whole of what it draws, so its params are its run's.
+            // - A **group's base** is a *member* of the group, not the group. Its own
+            //   content composites with `IDENTITY` and the layer's params are applied
+            //   once, to the composited whole. Every one of the three would be wrong
+            //   applied twice: a blend mode would combine the base with itself, a clip
+            //   would clip the base to its own coverage, and an opacity would fade it
+            //   to `a²` — which is what happened for as long as the three were carried
+            //   separately and the item builder tagged them with one of them.
             let mut group = if carried.is_empty() {
-                // A leaf: its opacity is already folded into its tiles, which is
-                // equivalent because tiles within a layer do not overlap.
-                CompositeGroup::run(layer.blend, layer.clip, own)
+                CompositeGroup::leaf(layer.composite, own)
             } else {
-                // A group: the base's own paint at the bottom of it, then what it
-                // carries. Its opacity applies to the composite, not to the
-                // members — they overlap.
-                //
-                // **Including the base**, which is what this loop is for. A base's own
-                // content is a member of the group like any other (§14.1), and
-                // `layer_items` tags every item with the layer's opacity because that
-                // is right for a *leaf* — where the group below is the same layer's
-                // slider being applied a second time, at the merge. Left in, a group
-                // base at 0.5 drew its own paint at 0.25 while everything it carried
-                // drew at 0.5, and nothing said so: the slider still faded, the two
-                // granularities still differed, and the only visible symptom was a
-                // base that faded faster than the layers standing on it.
-                for item in &mut own {
-                    item.set_opacity(1.0);
-                }
                 let mut members = Vec::with_capacity(carried.len() + 1);
                 if !own.is_empty() {
-                    members.push(CompositeGroup::run(BlendMode::Normal, false, own));
+                    members.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
                 }
                 members.extend(carried);
-                CompositeGroup::stack(layer.blend, layer.clip, layer.opacity, members)
+                CompositeGroup::stack(layer.composite, members)
             };
             // Merge into the run below when neither side needs isolating — the
             // fast path, and the reason an ordinary document is one group.
@@ -646,6 +657,13 @@ impl Engine {
 
     /// What one layer's own content draws, without what it carries.
     ///
+    /// Every item comes out at **opacity 1**, and that is not a stub: the layer's
+    /// opacity is a [`CompositeParams`] field, so it arrives with the other two and
+    /// is folded in — or not — by [`CompositeGroup::leaf`], which is the one place
+    /// that decision is made (§14.7). This function tagging items with it as well is
+    /// exactly how a group's base came to be faded twice, so it no longer knows what
+    /// a layer's opacity is.
+    ///
     /// Paint is culled to `visible` (§6.3); a matte is not. A matte's rect can be
     /// the *hole* in a frame, whose fill covers everything outside it (§15.4.4), so
     /// there is no box to test it against — and there is at most one per layer, so
@@ -659,7 +677,7 @@ impl Engine {
                 .map(|(coord, handle)| CompositeItem::Tile {
                     coord: *coord,
                     handle: handle.clone(),
-                    opacity: layer.opacity,
+                    opacity: 1.0,
                 })
                 .collect(),
             LayerContent::Matte { region, color } => {
@@ -674,7 +692,7 @@ impl Engine {
                         let r = self.color_space.rgb_to_resid(*color);
                         [r[0], r[1], r[2], 0.0]
                     },
-                    opacity: layer.opacity,
+                    opacity: 1.0,
                 })]
             }
             // A filter draws no items at all: it is a pass over what the *stack* has
