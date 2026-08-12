@@ -137,6 +137,23 @@ sample stops being an opacity-weighted mean: with the ground behind it every tex
 is opaque, so a patch half-covered by a stroke reads as a mixture of paint and
 canvas instead of as the stroke alone.
 
+The **sample-one-layer** source drops that layer's composite params entirely —
+blend, clip and opacity (§14.4.3). All three say how the layer meets what is beneath
+it, which is exactly what this source is asked to ignore: the first two decide how
+much of the paint survives its surroundings, and the slider decides how much of the
+layer the *document* shows. None of them says what the paint **is**, so a layer
+turned down reports the same colour rather than a paler one — which is the property
+that matters in use, since the reason to sample a faded layer is usually to go on
+painting with what is already on it. Zero is the exception and a different statement
+rather than a fainter one: a layer switched off contributes nothing, so it answers
+`None` like bare canvas.
+
+That the colour was already right is worth saying, because it is why this went
+unnoticed: the sample divides by the coverage it sums, so the opacity cancelled. What
+it did not cancel out of was the floor beneath which a patch is called empty, so a
+faded enough layer reported *nothing at all* where the same paint at full strength
+reported its colour.
+
 #### 18.0.3 Transform — built
 
 Engine *and* gesture UI; see §16. Remaining: snapping, and the cut/copy/paste

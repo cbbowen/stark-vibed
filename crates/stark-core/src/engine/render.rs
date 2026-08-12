@@ -509,6 +509,17 @@ impl Engine {
         visible: Option<TileRect>,
     ) -> Vec<CompositeGroup> {
         if let Some(id) = only {
+            // Fully transparent is the one exception to dropping the opacity below,
+            // and this filter is now the whole of it rather than an optimization: a
+            // layer turned all the way down contributes nothing to the document, so
+            // sampling it answers "nothing here" — the same answer bare canvas gives —
+            // instead of reporting paint that is switched off. Everywhere above zero
+            // the setting says nothing about what the paint *is*, so nothing about
+            // what a sample of it reports; at zero it is not a fainter statement of
+            // the same thing, it is the absence of one.
+            //
+            // Hidden reads the same way, and for the reason it does everywhere else:
+            // a sample comes off the same stack the screen draws (§18.0.2).
             let Some(layer) = doc
                 .layer(id)
                 .filter(|l| l.visible && l.composite.opacity > 0.0)
@@ -519,19 +530,21 @@ impl Engine {
             return if items.is_empty() {
                 Vec::new()
             } else {
-                // Blend and clip are dropped — a sample is of the paint that is
-                // there, not of the part of it that survives its surroundings — but
-                // the **opacity is kept**, because it scales the coverage the pick
-                // sums and thresholds on (`MIN_COVERAGE`, `engine::pick`). Dropping
-                // it would change what a faded layer reports, which is a question
-                // about the eyedropper rather than about compositing.
-                vec![CompositeGroup::leaf(
-                    CompositeParams {
-                        opacity: layer.composite.opacity,
-                        ..CompositeParams::IDENTITY
-                    },
-                    items,
-                )]
+                // **All three composite params are dropped**, opacity included: a
+                // sample is of the paint that is there, not of the part of it that
+                // survives its surroundings, and a layer's opacity is exactly such a
+                // surrounding — it says how much of this layer the *document* shows,
+                // which is the question the other two pick sources ask. Turning a
+                // layer down does not turn its paint into a paler paint, so
+                // "sample this layer" must answer the same colour at any setting.
+                //
+                // The pick already reported that colour, because it divides by the
+                // coverage it sums and the opacity cancels (`mean_channels`). What
+                // dropping it changes is where the pick answers **at all**: a faded
+                // layer's coverage was scaled down towards `PICK_MIN_OPACITY`, so a
+                // thin glaze on a layer at 20% could report "nothing here" while the
+                // same paint at 100% reported its colour.
+                vec![CompositeGroup::leaf(CompositeParams::IDENTITY, items)]
             };
         }
         // The root stack has nothing under its first member, by definition — see

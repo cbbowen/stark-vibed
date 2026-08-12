@@ -29,6 +29,20 @@ pub enum PickSource {
     /// One layer alone: the colour that layer would have if it were the only one in
     /// the document. What "sample the current layer" has to mean, since a glaze on
     /// top of somebody else's underpainting is not the same paint as the two mixed.
+    ///
+    /// **Its composite params are dropped, opacity included** (§14.4.3). All three
+    /// describe how the layer meets what is beneath it, which is precisely what this
+    /// source is asked to ignore: a blend mode and a clip decide how much of the paint
+    /// survives its surroundings, and the opacity slider decides how much of the layer
+    /// the *document* shows. None of them says what the paint **is**, so turning a
+    /// layer down reports the same colour rather than a paler one — which is the
+    /// property a painter needs, since the reason to sample a faded layer is usually
+    /// to go on painting with what is already on it.
+    ///
+    /// **Except at zero**, where the layer contributes nothing at all and this answers
+    /// `None` like bare canvas. That is not the same statement made fainter: every
+    /// setting above zero is a layer that is there and turned down, and zero is a
+    /// layer that is switched off.
     Layer(LayerId),
 }
 

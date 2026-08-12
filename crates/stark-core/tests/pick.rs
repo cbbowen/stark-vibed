@@ -268,6 +268,76 @@ fn one_layer_ignores_the_layers_over_it() {
     );
 }
 
+/// Sampling one layer **ignores its opacity slider** — and stops entirely at zero.
+///
+/// Turning a layer down does not turn its paint into a paler paint; it says how much
+/// of the layer the *document* shows, which is the question the other two sources
+/// ask. So `Layer` reports the same colour at every setting above zero.
+///
+/// Zero is the exception, and it is a different kind of statement: a layer turned all
+/// the way down contributes nothing, so sampling it answers "nothing here" — the same
+/// answer bare canvas gives — rather than reporting paint that is switched off.
+///
+/// **What actually changed, stated exactly**: not the colour, but where the pick
+/// answers at all. The pick divides by the coverage it sums, so a layer's opacity
+/// always cancelled out of the *colour* — the ordinary settings below would have
+/// passed before the slider was dropped, and they are here as a pin rather than as a
+/// regression. What the opacity did not cancel out of is `PICK_MIN_OPACITY`, the
+/// floor beneath which a patch is called empty: it scaled the coverage towards that
+/// floor, so far enough down, solid paint reported nothing at all.
+///
+/// `0.001` is where that bites for paint this thick, and it is the case that fails
+/// without the change. It is deliberately an extreme value: the boundary is what is
+/// under test, and quoting a realistic one that happened to sit above the floor would
+/// be a test that passes either way — which the first draft of this one was.
+#[test]
+fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let layer = engine.observe().active_layer;
+    paint(&mut engine, RED, 24.0, BAR);
+    let source = PickOptions {
+        source: PickSource::Layer(layer),
+        ..PickOptions::default()
+    };
+    let full = pick(&mut engine, Vec2::ZERO, source).expect("opaque paint picks");
+
+    for opacity in [0.75, 0.25, 0.02, 0.001] {
+        engine.process(DocCommand::SetLayerOpacity(layer, opacity));
+        assert_near(
+            pick(&mut engine, Vec2::ZERO, source),
+            [full[0], full[1], full[2], 1.0],
+            0.02,
+            &format!("the layer's paint at opacity {opacity}"),
+        );
+    }
+
+    // Zero is a different statement, not a fainter one: the layer contributes nothing
+    // to the document, so there is nothing of it to sample.
+    engine.process(DocCommand::SetLayerOpacity(layer, 0.0));
+    assert_eq!(
+        pick(&mut engine, Vec2::ZERO, source),
+        None,
+        "a layer turned all the way down has nothing to sample",
+    );
+
+    // …and the *composite* still fades with the slider, which is what says this is a
+    // property of the one-layer source rather than of the pick as a whole.
+    engine.process(DocCommand::SetLayerOpacity(layer, 1.0));
+    let opaque = pick_point(&mut engine, Vec2::ZERO).expect("the composite shows paint");
+    engine.process(DocCommand::SetLayerOpacity(layer, 0.0));
+    assert_eq!(
+        pick_point(&mut engine, Vec2::ZERO),
+        None,
+        "the composite of a layer turned all the way down is bare canvas",
+    );
+    assert!(
+        near(opaque, RED, 0.05),
+        "…where at full strength it is paint"
+    );
+}
+
 /// A hidden layer is not sampled, because a sample comes off the same stack the
 /// screen draws — the option list is shared with rendering precisely so that this
 /// cannot drift.
