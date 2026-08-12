@@ -572,7 +572,7 @@ impl Engine {
                 }
                 continue;
             }
-            let own = self.layer_items(layer, visible);
+            let mut own = self.layer_items(layer, visible);
             let carried = self.composite_stack(layer.carries.iter(), visible, !own.is_empty());
             // An empty layer is dropped rather than given a group. For `Normal`
             // that only saves a loop; for a blend mode or a clip it saves two
@@ -597,6 +597,19 @@ impl Engine {
                 // A group: the base's own paint at the bottom of it, then what it
                 // carries. Its opacity applies to the composite, not to the
                 // members — they overlap.
+                //
+                // **Including the base**, which is what this loop is for. A base's own
+                // content is a member of the group like any other (§14.1), and
+                // `layer_items` tags every item with the layer's opacity because that
+                // is right for a *leaf* — where the group below is the same layer's
+                // slider being applied a second time, at the merge. Left in, a group
+                // base at 0.5 drew its own paint at 0.25 while everything it carried
+                // drew at 0.5, and nothing said so: the slider still faded, the two
+                // granularities still differed, and the only visible symptom was a
+                // base that faded faster than the layers standing on it.
+                for item in &mut own {
+                    item.set_opacity(1.0);
+                }
                 let mut members = Vec::with_capacity(carried.len() + 1);
                 if !own.is_empty() {
                     members.push(CompositeGroup::run(BlendMode::Normal, false, own));

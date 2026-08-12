@@ -40,6 +40,23 @@ pub enum CompositeItem {
     Matte(MatteDraw),
 }
 
+impl CompositeItem {
+    /// Draw this item at `opacity` instead of the one it was built with.
+    ///
+    /// Exists for one caller and one fact: a group's opacity is applied to its
+    /// composited whole at the merge (§14.7), and the base's own content is a
+    /// **member of that whole** — so once the base's items are going into a
+    /// `Stack`, the slider that is about to be applied at the merge must come *off*
+    /// them. Setting it rather than building the list twice, because whether the
+    /// layer is a group is only known after its carried stack has been culled.
+    pub fn set_opacity(&mut self, opacity: f32) {
+        match self {
+            CompositeItem::Tile { opacity: o, .. } => *o = opacity,
+            CompositeItem::Matte(m) => m.opacity = opacity,
+        }
+    }
+}
+
 /// A filter layer's pass parameters (§21).
 ///
 /// Deliberately **not** a `Filter`: what the shader reads is a code and two uniform

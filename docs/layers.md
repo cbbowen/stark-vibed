@@ -412,6 +412,21 @@ Two consequences to know about:
   so scaling each tile is identical to scaling the composited layer — but members
   of a group *do* overlap, so a group's opacity must be applied at the merge.
   That asymmetry is not a wart; it is the same fact at two granularities.
+
+  **A group's base is a member**, and the two granularities are therefore
+  exclusive rather than cumulative: a base whose items carry the slider *and*
+  whose group applies it at the merge is a base faded twice. That is exactly what
+  happened for as long as this feature existed — a group base at 0.5 drew its own
+  paint at 0.25 while everything it carried drew at 0.5 — because `layer_items`
+  tags with the layer's opacity, which is right for a leaf and wrong the moment
+  the same items go into a `Stack`. The slider still faded, the two granularities
+  still differed, and the only visible symptom was a base fading faster than the
+  layers standing on it. `composite_stack` now takes the slider back off the
+  base's items before building the group, and `tests/groups.rs::
+  a_groups_opacity_fades_its_base_exactly_once` pins it by the one case where the
+  two granularities **coincide**: with non-overlapping members, a group at opacity
+  `a` must render exactly as the same layers ungrouped at `a`, which a base at
+  `a²` breaks while everything it carries stays right.
 - **An opaque group does not erase the relief beneath it.** `merge()` sums the
   aux, so impasto under an opaque group embosses through it, exactly as it
   already does under an opaque non-`Normal` layer and unlike an opaque matte

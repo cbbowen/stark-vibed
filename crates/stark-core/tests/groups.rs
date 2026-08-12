@@ -720,6 +720,66 @@ fn group_opacity_fades_the_composite_not_the_members() {
     );
 }
 
+/// A group's opacity fades its **base** exactly once.
+///
+/// The test above says the two granularities differ; it does not say by how much, and
+/// for a long time the answer was wrong in a way it could not see. `layer_items` tags
+/// every item with the layer's opacity — right for a leaf, where that is the only
+/// place the slider is applied — and the group built from those items then applied it
+/// *again* at the merge. So a group base at 0.5 drew its own paint at 0.25 while
+/// everything it carried drew at 0.5. The slider still faded, the two granularities
+/// still differed, and nothing in the suite contradicted it.
+///
+/// What pins it is a case where the two granularities **coincide**: where a group's
+/// members do not overlap, fading the composite and fading each member are the same
+/// operation, so a group at opacity `a` must render exactly as the same layers
+/// ungrouped at opacity `a`. A base faded twice comes out at `a²` and breaks the
+/// equality, while every layer it carries stays right — which is what makes this a
+/// test of the base in particular rather than of group opacity in general.
+#[test]
+fn a_groups_opacity_fades_its_base_exactly_once() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    const FADE: f32 = 0.5;
+
+    // The base's paint and the carried layer's, far enough apart that no texel of one
+    // is under the other — which is the whole reason the two answers coincide here.
+    paint(&mut engine, WARM, 26.0, H_STROKE);
+    let carried = add_layer(&mut engine);
+    paint(&mut engine, COOL, 26.0, AWAY);
+
+    // Grouped: one slider, on the group, faded at its merge.
+    engine.process(DocCommand::MoveLayer {
+        id: carried,
+        carrier: Some(ROOT),
+        at: Place::Top,
+    });
+    engine.process(DocCommand::SetLayerOpacity(ROOT, FADE));
+    let grouped = engine.render_to_image();
+
+    // Ungrouped: two sliders, one per layer, folded into their tiles.
+    engine.process(DocCommand::MoveLayer {
+        id: carried,
+        carrier: None,
+        at: Place::Above(ROOT),
+    });
+    engine.process(DocCommand::SetLayerOpacity(carried, FADE));
+    let flat = engine.render_to_image();
+
+    // Not to the byte: the grouped path scales the accumulator in the blend pass
+    // while the flat one scales each tile in pass A, and the two round differently at
+    // half precision. A base faded twice would be out by tens of levels over the whole
+    // stroke, not by a bit at its edges.
+    let bad = frac_exceeding(&grouped, &flat, 2);
+    assert!(
+        bad < 0.001,
+        "a group of non-overlapping members must fade as one layer would: \
+         {:.2}% of the canvas differs by more than 2 levels",
+        bad * 100.0,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The projection the panel is built on.
 // ---------------------------------------------------------------------------
