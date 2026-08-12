@@ -173,7 +173,7 @@ impl PresenceQuota {
     /// next resync frame (§17.4, §17.5).
     fn reserve(&self) -> bool {
         self.0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
                 (queued < PRESENCE_QUEUE).then_some(queued + 1)
             })
             .is_ok()
