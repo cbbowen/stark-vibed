@@ -344,10 +344,20 @@ fn an_unoffered_merge_changes_nothing() {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
+    let middle = add_layer(&mut engine);
+    paint(&mut engine, PALE, 44.0, H_STROKE);
     let top = add_layer(&mut engine);
     paint(&mut engine, COOL, 44.0, V_STROKE);
+    // Modes that **disagree**, above the foot of the stack where both are stated
+    // against something: after a merge one set of params would have to speak for
+    // both, and there is no third mode that means "glow here and multiply there".
+    engine.process(DocCommand::SetLayerBlend(middle, BlendMode::Multiply));
     engine.process(DocCommand::SetLayerBlend(top, BlendMode::Reinhard));
-    assert_eq!(offered(&engine, top), None, "a mode must not be mergeable");
+    assert_eq!(
+        offered(&engine, top),
+        None,
+        "modes that disagree must not be mergeable",
+    );
 
     let before = engine.render_to_image();
     let layers = engine.observe().layers.len();
@@ -448,4 +458,135 @@ fn the_active_layer_follows_the_merge() {
 
     engine.process(DocCommand::MergeLayerDown(top));
     assert_eq!(engine.observe().active_layer, ROOT);
+}
+
+// ---------------------------------------------------------------------------
+// Through a blend mode. These take the general path — both layers expanded into
+// what they composite to, the compositor's own blend pass between them, the
+// result stored back as a tile — where everything above takes the direct one.
+// ---------------------------------------------------------------------------
+
+/// **Siblings sharing a blend mode.** The pair composites as one layer carrying
+/// `merge(D, S)`, because the modes are associative at any coverage (§18.0.4). While
+/// they weighed coverage in the working space they were not, and this merge was
+/// refused for exactly that reason.
+///
+/// A backdrop under the pair is the point: with nothing beneath them every mode is the
+/// identity and the test would pass on a merge that had learned nothing.
+#[test]
+fn siblings_sharing_a_mode_merge() {
+    for mode in [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply] {
+        let Some(mut engine) = engine_or_skip_blue() else {
+            return;
+        };
+        paint(&mut engine, PALE, 60.0, H_STROKE);
+        let lower = add_layer(&mut engine);
+        paint(&mut engine, WARM, 44.0, H_STROKE);
+        engine.process(DocCommand::SetLayerBlend(lower, mode));
+        let upper = add_layer(&mut engine);
+        paint(&mut engine, COOL, 44.0, V_STROKE);
+        engine.process(DocCommand::SetLayerBlend(upper, mode));
+
+        let (before, after, dest) = merged(&mut engine, upper);
+        assert_eq!(dest, lower);
+        unchanged(&before, &after, 3, &format!("{mode:?} siblings"));
+        assert_eq!(
+            info(&engine, lower).expect("the survivor").blend,
+            mode,
+            "the survivor has to go on meeting the backdrop the same way",
+        );
+    }
+}
+
+/// **Any mode, into its carrier.** A group's members composite over its base (§14.1),
+/// so the group's isolated content is `merge_source(base, source)` before and after —
+/// and what the group merges outward is unchanged whatever the source's mode is. This
+/// one was always sound and only ever blocked on the tile-space plumbing.
+///
+/// The carrier wears a mode of its own too, so the test says that the *group's* merge
+/// outward is untouched as well as its inside.
+#[test]
+fn any_mode_merges_into_its_carrier() {
+    for mode in [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply] {
+        let Some(mut engine) = engine_or_skip_blue() else {
+            return;
+        };
+        paint(&mut engine, PALE, 60.0, H_STROKE);
+        let base = add_layer(&mut engine);
+        paint(&mut engine, WARM, 44.0, H_STROKE);
+        let carried = add_layer(&mut engine);
+        paint(&mut engine, COOL, 44.0, V_STROKE);
+        engine.process(DocCommand::SetLayerBlend(carried, mode));
+        engine.process(DocCommand::MoveLayer {
+            id: carried,
+            carrier: Some(base),
+            at: Place::Top,
+        });
+        engine.process(DocCommand::SetLayerBlend(base, BlendMode::Multiply));
+
+        let (before, after, dest) = merged(&mut engine, carried);
+        assert_eq!(dest, base);
+        unchanged(&before, &after, 3, &format!("{mode:?} into a carrier"));
+        assert_eq!(
+            info(&engine, base).expect("the survivor").blend,
+            BlendMode::Multiply,
+            "the carrier's own outward mode is untouched",
+        );
+    }
+}
+
+/// **A faded carrier keeps its slider.** A group's opacity is applied to its composited
+/// whole, and the merge rewrites the inside of that whole — so the base expands at full
+/// strength and the fade stays on the layer, where it goes on meaning what it meant.
+///
+/// This was refused while the base's slider was being folded into the tiles like a
+/// sibling's, which would have faded the merged paint twice.
+#[test]
+fn a_faded_carrier_keeps_its_own_opacity() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, PALE, 60.0, H_STROKE);
+    let base = add_layer(&mut engine);
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let carried = add_layer(&mut engine);
+    paint(&mut engine, COOL, 44.0, V_STROKE);
+    engine.process(DocCommand::MoveLayer {
+        id: carried,
+        carrier: Some(base),
+        at: Place::Top,
+    });
+    engine.process(DocCommand::SetLayerOpacity(base, 0.45));
+
+    let (before, after, _) = merged(&mut engine, carried);
+    unchanged(&before, &after, 2, "a faded carrier");
+    assert_eq!(
+        info(&engine, base).expect("the survivor").opacity,
+        0.45,
+        "the group's fade belongs to the layer, not to its tiles",
+    );
+}
+
+/// A clipped member folded into a **faded** base — the two relaxations at once, since
+/// a clip reads the backdrop's coverage and the fade must not have touched it yet.
+#[test]
+fn a_clipped_member_merges_into_a_faded_carrier() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    paint(&mut engine, PALE, 60.0, H_STROKE);
+    let base = add_layer(&mut engine);
+    paint(&mut engine, WARM, 44.0, H_STROKE);
+    let carried = add_layer(&mut engine);
+    paint(&mut engine, COOL, 20.0, V_STROKE);
+    engine.process(DocCommand::MoveLayer {
+        id: carried,
+        carrier: Some(base),
+        at: Place::Top,
+    });
+    engine.process(DocCommand::SetLayerClip(carried, true));
+    engine.process(DocCommand::SetLayerOpacity(base, 0.6));
+
+    let (before, after, _) = merged(&mut engine, carried);
+    unchanged(&before, &after, 2, "a clipped member under a faded base");
 }

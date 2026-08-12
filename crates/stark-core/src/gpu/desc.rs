@@ -166,6 +166,19 @@ pub(crate) fn tex(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntr
     }
 }
 
+/// A whole-buffer uniform binding — the entry a [`uniform`] layout slot takes.
+///
+/// The one-liner it replaces was written out at a dozen call sites as a
+/// `BindGroupEntry` with an `as_entire_binding()` inside; a dynamic-offset slot needs
+/// the explicit [`wgpu::BufferBinding`] form instead and still says so where it is
+/// used, which is the difference worth seeing at a call site.
+pub(crate) fn uniform_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+    wgpu::BindGroupEntry {
+        binding,
+        resource: buffer.as_entire_binding(),
+    }
+}
+
 /// A sampler binding.
 pub(crate) fn samp(binding: u32, sampler: &wgpu::Sampler) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {

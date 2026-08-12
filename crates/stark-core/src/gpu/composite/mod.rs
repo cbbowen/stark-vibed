@@ -43,6 +43,8 @@ mod resolve;
 mod tiles;
 mod view;
 
+use std::sync::Arc;
+
 use crate::colorspace::ColorSpace;
 use crate::document::DRAGO_K;
 use crate::geom::{Extent2, ViewTransform};
@@ -51,9 +53,8 @@ use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::surface::{SURFACE_TILE_PX, Surface};
 
-use blend::{
-    BlendPass, BlendUniform, ScratchLevel, ScratchTargets, Targets, UNIFORM_SLOT, UniformSlots,
-};
+pub(crate) use blend::{BlendPass, BlendUniform, UNIFORM_SLOT, blend_code};
+use blend::{ScratchLevel, ScratchTargets, Targets, UniformSlots};
 use filter::{FilterPass, FilterUniform};
 use group::scratch_needs;
 // The free items are imported by name rather than qualified, because `render`'s own
@@ -151,7 +152,9 @@ pub struct CompositorPipeline {
     /// The canvas → NDC mapping passes A and C share.
     view: View,
     tiles: TilePass,
-    blend: BlendPass,
+    /// Shared with `gpu::merge`, which runs the same pipeline on tile-sized
+    /// targets to merge a layer down through its mode (§14.11).
+    blend: Arc<BlendPass>,
     /// Filter layers (§21) — the blend pass with the isolated source removed, so
     /// close to it that the two share the scratch and the pigment LUT.
     filter: FilterPass,
@@ -281,12 +284,13 @@ impl Offscreen {
 }
 
 impl CompositorPipeline {
-    pub fn new(
+    pub(crate) fn new(
         ctx: &GpuContext,
         target_format: wgpu::TextureFormat,
         color_space: &dyn ColorSpace,
         surface: Surface,
         environment: Environment,
+        blend: Arc<BlendPass>,
     ) -> Self {
         let device = &ctx.device;
         let color_format = color_space.color_format();
@@ -298,7 +302,7 @@ impl CompositorPipeline {
         let view = View::new(device);
         Self {
             tiles: TilePass::new(device, &view, color_space, color_format, aux_format),
-            blend: BlendPass::new(ctx, color_space, color_format, aux_format),
+            blend,
             filter: FilterPass::new(ctx, color_space, color_format, aux_format),
             overlay: OverlayPass::new(device, &view, target_format),
             guides: GuidePass::new(device, target_format),

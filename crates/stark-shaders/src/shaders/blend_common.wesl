@@ -180,94 +180,26 @@ fn tonemap(e: vec3<f32>) -> vec3<f32> {
 
 // Whether this mode combines by **adding light** — the emissive half of the family.
 //
-// The one question that decides which of two laws a merge runs, and it is a property
-// of the mode rather than of the layer: an emissive mode's coverage weighs the
-// *emission* (`added_light`), while `Multiply`'s weighs the working-space colour, and
-// each is the linear quantity for its own half of the family (see the header).
+// What it decides is which space the merge below runs in, and that is a property of
+// the mode rather than of the layer: the emissive modes are affine in *emission*, and
+// `Multiply` is affine in the light itself.
 fn is_emissive() -> bool {
     return b.mode == MODE_REINHARD || b.mode == MODE_DRAGO;
 }
 
-// Combine two light values, channel by channel.
+// Whether this mode **covers** rather than combines — the one that needs no light at
+// all, and the only one `merge` still settles in the working space.
 //
-// Inputs are clamped into `[0,1]` first: the curves are defined on light between
-// black and display white, and a channel outside that came from a colour outside the
-// gamut, not from light that is really there. Multiply wants the clamp for a blunter
-// reason — two negative channels multiply to a *positive* one, so an out-of-gamut
-// pair would come back brighter from the one mode that only ever darkens. The
-// *output* is deliberately not clamped — Drago's overshoot is the feature, and the
-// half-float composite target carries it into the media pass's highlight roll-off.
-fn combine(back: vec3<f32>, src: vec3<f32>) -> vec3<f32> {
-    let x = clamp(back, vec3<f32>(0.0), vec3<f32>(1.0));
-    let y = clamp(src, vec3<f32>(0.0), vec3<f32>(1.0));
-    // Normal's blend function is "the source" — it covers rather than combines.
-    // Reached only by a clipped layer, and `merge` does not read what this
-    // returns for it: taking the source *premultiplied* instead is the same
-    // number without a round trip out of the working space and back, which is
-    // what keeps a clipped layer over opaque paint identical to an unclipped one.
-    if b.mode == MODE_NORMAL {
-        return y;
-    }
-    // Multiply is `T(T⁻¹(a) + T⁻¹(b))` for `T(x) = e^{-x}` — adding optical density,
-    // which is what a glaze does. No helper: unlike the emissive curves there is
-    // nothing to rearrange for stability, because there is nothing to be unstable.
-    if b.mode == MODE_MULTIPLY {
-        return x * y;
-    }
-    // The emissive modes, at full coverage — which is the only case that reaches
-    // here, since `added_light` is what a partly-covered one goes through. Written as
-    // the conjugation itself rather than as a closed form, so the curve has one
-    // definition and this is visibly the `α = 1` case of the general law.
-    return tonemap(emission(x) + emission(y));
+// Reached only by a clipped layer or a faded group (§14.4): an unclipped `Normal` layer
+// at full opacity is the absence of a pass.
+fn is_normal() -> bool {
+    return b.mode == MODE_NORMAL;
 }
 
-// The emissive modes' whole colour algebra: **premultiplied emission adds**.
-//
-// This is the same three-term Porter-Duff expansion `merge_triple` runs, evaluated on
-// premultiplied *emission* instead of on premultiplied channels — at which point it
-// collapses, because the blend function in that space is `+`:
-//
-//     (1−αb)·αs·Ls  +  αb·αs·(Lb+Ls)  +  αb·(1−αs)·Lb
-//   = αs·Ls·[(1−αb) + αb]  +  αb·Lb·[αs + (1−αs)]
-//   = αs·Ls + αb·Lb
-//
-// Two things follow, and the second is the stronger one.
-//
-// **It is associative and commutative at any coverage**, being addition — so three
-// glow layers give the same picture in any order and regrouping them changes nothing,
-// which is what the modes were derived to guarantee and what the collapsed form only
-// managed where every layer was opaque. Nonlinear `B` applied to the accumulator's
-// coverage-*averaged* colour is what broke it: averaging does not commute with a
-// curve.
-//
-// **It does not depend on the coverage-correlation guess.** `E[Σ] = ΣE[]` holds
-// whatever the joint distribution, where `E[B(…)]` for a nonlinear `B` needs
-// Porter-Duff's independence assumption to mean anything. Two half-covered glow layers
-// give `½·Ea + ½·Eb` whether their halves are disjoint or identical — which is also
-// why this is the *physically* right rule and not merely the convenient one: light
-// averaged over a partly-covered pixel is linear in light.
-//
-// `Multiply` is not here and needs nothing: its blend function is bilinear, so
-// working-space mixing already **is** its linear quantity — averaging transmitted
-// light over an area is linear in transmittance, not in density. Each half of the
-// family weighs coverage in the quantity that adds for it; the emissive half was
-// borrowing multiply's.
-//
-// Returns the **un-premultiplied** output light, so the caller converts one triple
-// back to its own channels. `cs_raw_a` is the source's stored coverage, scaled here
-// by the group opacity exactly as `merge` scales it.
-fn added_light(xb: vec3<f32>, cb_a: f32, xs: vec3<f32>, cs_raw_a: f32) -> vec3<f32> {
-    let cs_a = cs_raw_a * b.opacity;
-    // A clipped layer's light is admitted only where the backdrop is — the same
-    // `keep` the alpha uses, which is what makes the two agree (§14.4.1).
-    let keep = select(cb_a, 1.0, b.clip == 0u);
-    let e = emission(xb) * cb_a + emission(xs) * (cs_a * keep);
-    return tonemap(e / max(merge_alpha(cb_a, cs_a), EMISSION_EPS));
-}
 
-// The coverage a merge leaves behind, clip included (§14.4.1) — one definition, because
-// `added_light` divides by the very number `merge` writes into alpha, and the two
-// disagreeing would spread the light over the wrong area.
+// The coverage a merge leaves behind, clip included (§14.4.1) — one definition,
+// because `combined_light` divides by the very number `merge` writes into alpha, and
+// the two disagreeing would spread the light over the wrong area.
 fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
     let keep = select(cb_a, 1.0, b.clip == 0u);
     return cs_a * keep + cb_a * (1.0 - cs_a);
@@ -406,4 +338,58 @@ fn merge_triple(
     // paint** bit-identical to the fixed-function `over` an unclipped one gets.
     let src_term = select(blended * cs_a, cs_rgb, b.mode == MODE_NORMAL);
     return mix(cs_rgb * outside, src_term, cb_a) + cb_rgb * (1.0 - cs_a);
+}
+
+
+// **The whole colour algebra of every combining mode**, in one expansion.
+//
+// This is `merge_triple`'s three-term Porter-Duff expansion — the same one, the same
+// weights — evaluated in **the space where the mode's blend function is affine**, and
+// that phrase is the entire content of this function. Everything else is which space
+// that is:
+//
+//   · The emissive modes are addition conjugated by a curve, so they are affine in
+//     **emission** (`T⁻¹` of the light), where the expansion collapses outright:
+//
+//         (1−αb)·αs·Ls + αb·αs·(Lb+Ls) + αb·(1−αs)·Lb  =  αs·Ls + αb·Lb
+//
+//     — premultiplied emission simply adds.
+//   · `Multiply` is Beer-Lambert, so it is bilinear in **light**, light being a
+//     transmittance there (`T(x) = e^{-x}` makes the added quantity optical density).
+//     The expansion does not collapse, but it does not need to: bilinear is affine in
+//     each argument, which is all that matters.
+//
+// **Why the space is the whole question.** Porter-Duff weighs each layer by its
+// coverage, and a weighted average commutes with the blend function only where that
+// function is affine. Run it anywhere else — the working space, say — and `B` gets
+// applied to the accumulator's coverage-*averaged* colour, which is not the average of
+// `B`. That is not a rounding difference: it made stacking order matter by 20 levels
+// wherever coverage was partial, and it made two same-mode layers impossible to merge
+// into one (§18.0.4, §14.11).
+//
+// It is also the physically right rule rather than the convenient one. Averaging over
+// a partly-covered pixel is linear in the quantity that is *there*: radiance for a
+// lamp, transmitted light for a glaze. Both are the mode's own space.
+//
+// Returns the **un-premultiplied** output light, so the caller converts one triple back
+// into its own channels. `cs_raw_a` is the source's stored coverage, scaled here by the
+// group opacity exactly as `merge` scales it.
+fn combined_light(xb: vec3<f32>, cb_a: f32, xs: vec3<f32>, cs_raw_a: f32) -> vec3<f32> {
+    let cs_a = cs_raw_a * b.opacity;
+    // The coverage the merge leaves behind — the very number `merge` writes into
+    // alpha, so the light is spread over exactly the area it will be read back from.
+    let a = max(merge_alpha(cb_a, cs_a), EMISSION_EPS);
+    if is_emissive() {
+        let lb = emission(xb);
+        let ls = emission(xs);
+        return tonemap(merge_triple(lb * cb_a, cb_a, ls * cs_a, cs_a, lb + ls) / a);
+    }
+    // Clamped into `[0,1]` first: the curves are defined on light between black and
+    // display white, and a channel outside that came from a colour outside the gamut
+    // rather than from light that is really there. Multiply wants it for a blunter
+    // reason — two negative channels multiply to a *positive* one, so an out-of-gamut
+    // pair would come back brighter from the one mode that only ever darkens.
+    let lb = clamp(xb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let ls = clamp(xs, vec3<f32>(0.0), vec3<f32>(1.0));
+    return merge_triple(lb * cb_a, cb_a, ls * cs_a, cs_a, lb * ls) / a;
 }

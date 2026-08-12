@@ -32,7 +32,7 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
     b, back_color, back_aux, src_color, src_aux,
-    added_light, combine, is_emissive, merge, merge_added, merge_triple,
+    combined_light, is_normal, merge, merge_added, merge_triple,
 };
 
 // The residual halves of the two colours (§6.7). **Bindings 7 and 8 of
@@ -84,11 +84,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let hs = textureLoad(src_aux, p, 0).x;
 
     var out: FsOut;
-    // **Nothing beneath**: every mode is the source, given back to the bit by the
-    // `mix(…, αb)` at `αb = 0` — and, here more than anywhere, without the trip out
-    // to light, which is a LUT lookup that would re-quantize a latent that is already
-    // exact (`blend_common::merge`). Both halves of the colour take the same branch.
-    if cb.a <= 0.0 {
+    // Two ways out without the trip to light and back, and here more than anywhere
+    // that trip is worth skipping: it is a LUT lookup that would re-quantize a latent
+    // which is already exact. **Nothing beneath** — every mode is the source, given
+    // back to the bit by `merge`'s `mix(..., ab)` at `ab = 0`. **`Normal`** — it covers
+    // rather than combines, so it has no blend function to be affine anywhere and the
+    // working space is where it belongs. Both halves of the colour take the branch.
+    if cb.a <= 0.0 || is_normal() {
         let base = merge(cb, cs, chan_s, hb, hs);
         out.color = base.color;
         out.aux = base.aux;
@@ -99,52 +101,34 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         return out;
     }
 
-    // `max(…, 0)` before the sRGB encode: the combination is componentwise in XYZ,
+    // Everything else is settled in the mode's own space (`combined_light`), and a
+    // pigment document then asks the LUT which mixture ended up that colour. That the
+    // residual falls out of the same answer rather than being merged separately is a
+    // simplification the one-expansion law buys: the two halves are one colour, and
+    // here they are decoded from one.
+    //
+    // `max(..., 0)` before the sRGB encode: the combination is componentwise in XYZ,
     // which can step just outside the gamut on very saturated pairs, and the LUT is
-    // indexed by sRGB. `mixbox_srgb_to_concentrations` clamps the top end itself.
-    // The rest of `mixbox_rgb_to_latent` is the residual: what the polynomial could
-    // not say about the colour the light works out to. **The trip back from light is
-    // exact** — it was the LUT's concentrations alone, so a blend that landed on black
-    // stored a mixture the media pass would render `#383838`, and every blend result
-    // was pulled toward the polynomial's reachable set.
-    // The emissive modes settle the whole colour in **emission**, where combining is
-    // addition (`added_light`), so a pigment document asks the LUT which mixture ended
-    // up that colour and is finished — there is no Porter-Duff triple left to run on
-    // either half. That the residual falls out of the same answer rather than being
-    // merged separately is a simplification the additive law buys: the two halves are
-    // one colour, and here they are decoded from one.
-    if is_emissive() {
-        let x = added_light(
-            latent_to_light(chan_b, res_b), cb.a,
-            latent_to_light(chan_s, res_s), cs.a,
-        );
-        let srgb = clamp(
-            linear_to_srgb(max(light_to_linear(x), vec3<f32>(0.0))),
-            vec3<f32>(0.0), vec3<f32>(1.0),
-        );
-        let conc = mixbox_srgb_to_concentrations(srgb);
-        let base = merge_added(cb, cs, conc, hb, hs);
-        out.color = base.color;
-        out.aux = base.aux;
-        out.resid = vec4<f32>((srgb - mixbox_eval_polynomial(conc)) * base.color.a, base.color.a);
-        return out;
-    }
-
-    let light = combine(latent_to_light(chan_b, res_b), latent_to_light(chan_s, res_s));
+    // indexed by sRGB. `mixbox_srgb_to_concentrations` clamps the top end itself. The
+    // rest of `mixbox_rgb_to_latent` is the residual: what the polynomial could not say
+    // about the colour the light works out to. **The trip back from light is exact** —
+    // it was the LUT's concentrations alone, so a blend that landed on black stored a
+    // mixture the media pass would render `#383838`.
+    let x = combined_light(
+        latent_to_light(chan_b, res_b),
+        cb.a,
+        latent_to_light(chan_s, res_s),
+        cs.a,
+    );
     let srgb = clamp(
-        linear_to_srgb(max(light_to_linear(light), vec3<f32>(0.0))),
+        linear_to_srgb(max(light_to_linear(x), vec3<f32>(0.0))),
         vec3<f32>(0.0), vec3<f32>(1.0),
     );
-    let blended = mixbox_srgb_to_concentrations(srgb);
-    let blended_res = srgb - mixbox_eval_polynomial(blended);
-    let base = merge(cb, cs, blended, hb, hs);
+    let conc = mixbox_srgb_to_concentrations(srgb);
+    let base = merge_added(cb, cs, conc, hb, hs);
     out.color = base.color;
     out.aux = base.aux;
-    // The residual takes the identical three-term merge on the identical weights, and
-    // rides the alpha `merge` already decided (§6.7).
-    out.resid = vec4<f32>(
-        merge_triple(rb.rgb, cb.a, rs.rgb * b.opacity, cs.a * b.opacity, blended_res),
-        base.color.a,
-    );
+    out.resid = vec4<f32>((srgb - mixbox_eval_polynomial(conc)) * base.color.a, base.color.a);
     return out;
+
 }

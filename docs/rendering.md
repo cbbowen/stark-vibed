@@ -137,27 +137,36 @@ canvas by up to **20 levels** at every partly-covered texel, which is most of a
 stroke: the slab law leaves an ordinary interior around 45% covered, so this was
 not an edge-only effect.
 
-The emissive modes therefore weigh coverage in **emission** — the quantity that
-adds — rather than in the working space (`blend_common::added_light`). The same
-three-term Porter-Duff expansion evaluated there collapses, because the blend
-function in that space is `+`:
+So **every combining mode weighs coverage in the space where its own blend
+function is affine** (`blend_common::combined_light`), which is the one sentence
+this reduces to. It is the same three-term Porter-Duff expansion in every case;
+only the space changes:
 
-```
-  (1−αb)·αs·Ls + αb·αs·(Lb+Ls) + αb·(1−αs)·Lb  =  αs·Ls + αb·Lb
-```
+- The emissive modes are addition conjugated by a curve, so they are affine in
+  **emission** (`T⁻¹` of the light), where the expansion collapses outright —
+  `(1−αb)·αs·Ls + αb·αs·(Lb+Ls) + αb·(1−αs)·Lb = αs·Ls + αb·Lb`. Premultiplied
+  emission simply adds, so a stack of any depth is one sum.
+- `Multiply` is Beer-Lambert, so it is bilinear in **light**, light being a
+  transmittance there. The expansion does not collapse and does not need to:
+  bilinear is affine in each argument, which is all a weighted average asks for.
 
-so a stack of any depth is one sum: associative and commutative by construction,
-and — the stronger property — independent of the coverage-correlation guess,
-since `E[Σ] = ΣE[]` holds whatever the joint distribution where `E[B(…)]` for a
-nonlinear `B` does not. It is also the physically right rule rather than merely
-the convenient one: light averaged over a partly-covered pixel is linear in
-light. `Multiply` needs none of this and is untouched — its blend function is
-bilinear, so working-space mixing already *is* its linear quantity (averaging
-transmitted light over an area is linear in transmittance, not in density). Each
-half of the family weighs coverage in the quantity that adds for it; the emissive
-half had been borrowing multiply's.
+Multiply was **not** exempt, and the first attempt at this said it was. Its blend
+function is bilinear in *light*, and the working space is Oklab — so mixing
+coverage there was as wrong for it as for the others, and by a similar amount:
+reordering three multiply layers moved the canvas by 13 levels where the emissive
+modes moved 20. `Normal` is genuinely exempt, and for a reason no amount of
+algebra changes: it covers rather than combines, so it has no blend function to be
+affine anywhere.
 
-**What it costs, stated plainly.** The emissive modes now disagree with `Normal`
+Two properties follow, and the second is the stronger. Each mode is associative and
+commutative at any coverage. And the result no longer depends on the
+coverage-correlation guess, since `E[Σ] = ΣE[]` holds whatever the joint
+distribution where `E[B(…)]` for a nonlinear `B` does not. It is also the
+physically right rule rather than the convenient one: averaging over a
+partly-covered pixel is linear in the quantity that is *there* — radiance for a
+lamp, transmitted light for a glaze — and both are the mode's own space.
+
+**What it costs, stated plainly.** The combining modes now disagree with `Normal`
 about what partial coverage means, by single-digit levels. `Normal` is occlusion
 and this engine mixes occluded paint in the perceptual working space on purpose
 (§6.1), so both weightings are right for their own question — but it means "black

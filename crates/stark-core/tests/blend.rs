@@ -52,6 +52,10 @@ fn layer_with(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
     paint(engine, color, 44.0, points);
 }
 
+/// Every mode that **combines** rather than covers — the three that reach the blend
+/// pass with something to say, and the three that weigh coverage in their own space.
+const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply];
+
 /// A brush that reaches **full coverage**: six times the ordinary flow, and a tip
 /// hard enough that the interior is flat rather than a dome.
 ///
@@ -107,7 +111,7 @@ fn blend_over_nothing_is_normal() {
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let normal = engine.render_to_image();
 
-    for mode in [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply] {
+    for mode in COMBINING {
         engine.process(DocCommand::SetLayerBlend(ROOT, mode));
         let blended = engine.render_to_image();
         let (frac, worst) = diff_fraction(&normal, &blended);
@@ -270,6 +274,12 @@ fn blend_only_acts_where_the_layers_meet() {
 /// and it now covers every texel rather than the ones that happened to be opaque.
 #[test]
 fn glow_stacking_is_order_independent() {
+    for mode in COMBINING {
+        stacking_is_order_independent(mode);
+    }
+}
+
+fn stacking_is_order_independent(mode: BlendMode) {
     // Three strokes through the origin at different angles: the middle of the canvas
     // is inside all three, well clear of any edge.
     let paths: [&[Vec2]; 3] = [
@@ -294,7 +304,7 @@ fn glow_stacking_is_order_independent() {
             };
             stroke_with(&mut engine, opaque, paths[i]);
             let id = engine.observe().active_layer;
-            engine.process(DocCommand::SetLayerBlend(id, BlendMode::Reinhard));
+            engine.process(DocCommand::SetLayerBlend(id, mode));
         }
         Some(engine.render_to_image())
     };
@@ -314,7 +324,7 @@ fn glow_stacking_is_order_independent() {
     }
 }
 
-/// **An emissive layer weighs its coverage in light; `Normal` weighs it in the
+/// **A combining layer weighs its coverage in its own space; `Normal` weighs it in the
 /// working space — so the two disagree wherever coverage is partial.** Asserted
 /// rather than merely accepted, because it is the one place these modes deliberately
 /// part company with the rest of the compositor, and anyone who decides to "fix" it
@@ -334,7 +344,7 @@ fn glow_stacking_is_order_independent() {
 /// below is single-digit levels; what bought it was the 20 levels of order dependence
 /// in [`glow_stacking_is_order_independent`].
 #[test]
-fn an_emissive_layer_weighs_its_coverage_in_light() {
+fn a_combining_layer_weighs_its_coverage_in_light() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
@@ -456,8 +466,10 @@ fn black_is_the_identity_through_the_round_trip() {
 #[test]
 fn white_is_the_identity_through_the_round_trip() {
     const MUTED: [f32; 4] = [0.55, 0.52, 0.48, 1.0];
-    // Same colours and the same tolerances as the black case: the cost is the round
-    // trip's, and the round trip does not know which end of the range asked for it.
+    // Same colours and the same tolerances as the black case, and the same heavy
+    // brush for the same reason: the cost under test is the round trip's, and at
+    // partial coverage a combining mode's coverage law would be measured instead
+    // ([`a_combining_layer_weighs_its_coverage_in_light`]).
     let cases = [
         (ColorSpaceId::Oklab, MUTED, 2u8),
         (ColorSpaceId::Oklab, WARM, 2u8),
@@ -468,9 +480,14 @@ fn white_is_the_identity_through_the_round_trip() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };
-        // A wide white ground with the colour laid over the middle of it.
+        // A wide white ground with the colour laid over the middle of it, thick
+        // enough to reach full coverage — see the note on the black case.
         paint(&mut engine, [1.0, 1.0, 1.0, 1.0], 70.0, H_STROKE);
-        layer_with(&mut engine, color, V_STROKE);
+        engine.process(DocCommand::AddLayer {
+            carrier: None,
+            above: None,
+        });
+        stroke_with(&mut engine, opaque(color), V_STROKE);
         let over_white = center(&engine.render_to_image());
 
         engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
@@ -502,8 +519,17 @@ fn multiply_over_black_is_black() {
     // `(under Normal, under Multiply)` for one colour laid over black.
     let sample = |color: [f32; 4]| -> Option<([u8; 4], [u8; 4])> {
         let mut engine = engine_or_skip()?;
-        paint(&mut engine, [0.0, 0.0, 0.0, 1.0], 70.0, H_STROKE);
-        layer_with(&mut engine, color, V_STROKE);
+        // The black laid **thick**: "multiply over black is black" is a claim about
+        // where the black actually is, and an ordinary stroke's interior covers well
+        // under half (the slab law never reaches 1). Where it does not cover there is
+        // nothing under the glaze, so the glaze shows — correctly, and not what this
+        // test is about.
+        stroke_with(&mut engine, opaque([0.0, 0.0, 0.0, 1.0]), H_STROKE);
+        engine.process(DocCommand::AddLayer {
+            carrier: None,
+            above: None,
+        });
+        stroke_with(&mut engine, opaque(color), V_STROKE);
         let normal = center(&engine.render_to_image());
         engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
         Some((normal, center(&engine.render_to_image())))

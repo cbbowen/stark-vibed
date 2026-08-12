@@ -199,6 +199,16 @@ pub fn merge(resid: bool) -> &'static str {
     resid_variant!(resid, "merge", "merge_resid")
 }
 
+/// WGSL slab-law conversions, both ways: a stored tile expanded into what it
+/// composites to, and a composite stored back as a tile — §14.11.
+///
+/// What lets a blend-mode merge run the *real* blend pass on tile-sized targets
+/// instead of a second copy of its algebra. Takes `resid` because both directions
+/// carry a tile's colour, so it is built in two variants (see [`RESID_ENTRY_POINTS`]).
+pub fn slab(resid: bool) -> &'static str {
+    resid_variant!(resid, "slab", "slab_resid")
+}
+
 /// WGSL selection-mask rasterization: one op's shape combined into a mask tile —
 /// §6.8.
 pub fn selection() -> &'static str {
@@ -273,6 +283,7 @@ mod tests {
             ("overlay", overlay),
             ("resolve", resolve),
             ("selection", selection),
+            ("slab", || slab(false)),
             ("slice", slice),
             ("stamp", || stamp(false)),
             ("transform", || transform(false)),
@@ -328,6 +339,7 @@ mod tests {
             ("integrate", integrate),
             ("matte", matte),
             ("merge", merge),
+            ("slab", slab),
             ("stamp", stamp),
             ("transform", transform),
         ];

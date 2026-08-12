@@ -152,20 +152,21 @@ fn mix32(x: u64) -> u32 {
 /// actually rolls off instead of for algebraic convenience.
 ///
 /// **The guarantee holds at any coverage**, which took getting right: a layer's
-/// coverage weighs its *emission* — the quantity that adds — rather than its
-/// working-space colour, because applying the curve to a coverage-averaged colour is
-/// not the same as averaging the curve, and stacking order used to matter by up to 20
-/// levels wherever a stroke was less than solid. See `blend_common.wesl`'s
-/// `added_light`, and §18.0.4 for what that costs.
+/// coverage weighs it in the space where its blend function is affine, not in the
+/// working space, because applying a curve to a coverage-averaged colour is not the
+/// same as averaging the curve. Stacking order used to matter by up to 20 levels
+/// wherever a stroke was less than solid. See `blend_common.wesl`'s `combined_light`,
+/// and §18.0.4 for what that costs.
 ///
 /// [`Reinhard`](Self::Reinhard) and [`Drago`](Self::Drago) are the emissive half:
 /// they add light and their identity is black. [`Multiply`](Self::Multiply) is the
 /// subtractive half — the same construction with `T(x) = e^{-x}`, which makes the
 /// added quantity optical density and the identity white. That is the *whole* of
-/// what changes between the two halves; the family is one idea, not two — though the
-/// halves do weigh coverage in different quantities, each in the one that adds for
-/// it: averaging light over an area is linear in light, averaging transmitted light
-/// is linear in transmittance, so `Multiply` weighs coverage where it always did.
+/// what changes between the two halves; the family is one idea, not two. Each half
+/// does weigh coverage in a different space — emission for the emissive modes, light
+/// itself for `Multiply` — but that is the same rule read twice: **the space where
+/// the mode's own blend function is affine**, which is the only space a weighted
+/// average commutes with it in.
 ///
 /// The combination happens in **CIE XYZ normalized to the display white**, not in
 /// the working colour space and not in RGB: XYZ is linear in light, its components

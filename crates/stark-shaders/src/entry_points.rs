@@ -34,6 +34,7 @@ pub const ENTRY_POINTS: &[&str] = &[
     "overlay",
     "resolve",
     "selection",
+    "slab",
     "slice",
     "stamp",
     "transform",
@@ -102,6 +103,7 @@ pub const RESID_ENTRY_POINTS: &[&str] = &[
     "integrate",
     "matte",
     "merge",
+    "slab",
     "stamp",
     "transform",
 ];

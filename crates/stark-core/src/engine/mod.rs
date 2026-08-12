@@ -47,9 +47,9 @@ use crate::error::EngineError;
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::desc::Zeroes;
 use crate::gpu::{
-    Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer, GpuContext,
-    MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Surface, SurfaceId, TilePool,
-    TransformRenderer,
+    BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
+    GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Surface, SurfaceId,
+    TilePool, TransformRenderer,
 };
 use crate::peer::Peers;
 use crate::session::ShapeResult;
@@ -1284,17 +1284,27 @@ fn build_gpu(
     );
     let zeroes = Zeroes::new(gpu, cs.color_format(), cs.aux_format(), cs.resid_format());
     let stroke = StrokeRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
+    // Built once and shared: `gpu::merge` runs this very pipeline on tile-sized
+    // targets to merge a layer down through its mode (§14.11), and building a second
+    // one would decode the Mixbox LUT twice.
+    let blend = Arc::new(BlendPass::new(
+        gpu,
+        cs.as_ref(),
+        cs.color_format(),
+        cs.aux_format(),
+    ));
     let compositor_pipeline = CompositorPipeline::new(
         gpu,
         target_format,
         cs.as_ref(),
         surface.clone(),
         environment.clone(),
+        blend.clone(),
     );
     let compositor = Compositor::new(&compositor_pipeline, viewport);
     let transform = TransformRenderer::new(gpu, cs.as_ref(), selection.clone(), zeroes.clone());
     let fill = FillRenderer::new(gpu, cs.clone(), selection.clone(), zeroes.clone());
-    let merge = MergeRenderer::new(gpu, cs.as_ref(), zeroes);
+    let merge = MergeRenderer::new(gpu, cs.as_ref(), zeroes, blend);
     (
         pool,
         stroke,

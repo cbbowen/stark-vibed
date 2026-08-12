@@ -629,77 +629,99 @@ merging two half-faded layers gives one layer at full strength that looks the sa
 #### 14.11.2 What has to hold for a pair
 
 Write `B` for everything composited beneath the pair, `D` for the lower layer (the
-**destination**, which survives, keeping its name, place and properties) and `S`
-for the upper (the **source**, which is consumed). The document shows
-`merge_S(merge_D(B, D), S)` and must go on showing it as `merge_D(B, D ⊕ S)`, for
-every `B`. Two independent questions:
+**destination**, which survives, keeping its name and its place) and `S` for the upper
+(the **source**, which is consumed). The document shows `merge_S(merge_D(B, D), S)` and
+must go on showing it as `merge_D(B, D ⊕ S)`, for every `B`. Two independent questions:
 
-- **Does `S` reach the accumulator by plain "over"?** Only then is `⊕` the stacking
-  law, and only then does over's associativity — `over(over(B,D),S) =
-  over(B, over(D,S))` — carry the result across.
+- **Is `merge_S` associative?** Only then does `merge_S(merge_S(B,D),S)` equal
+  `merge_S(B, merge_S(D,S))`, which is what lets `⊕` be `merge_S` itself. Every
+  combining mode now is, at any coverage, because each weighs coverage in the space
+  where its own blend function is affine (§18.0.4). While they weighed it in the
+  working space, none of them was, and this whole family of merges was refused.
 - **Is the backdrop `S` is stated against exactly `D`?** A clip reads the backdrop's
-  coverage, so this decides whether "clipped to `D`" is even what `S` means. It is
-  `D` alone in exactly two places: `S` is the bottom of the stack its **carrier**
-  `D` opens (a group's members composite over its base, §14.1), or `S` sits second
-  from the bottom of the **root** stack, whose accumulator starts cleared.
+  coverage, so this decides whether "clipped to `D`" is even what `S` means — and it is
+  what lets `S` carry a mode of its own into a carrier. It is `D` alone in exactly two
+  places: `S` is the bottom of the stack its **carrier** `D` opens (a group's members
+  composite over its base, §14.1), or `S` sits second from the bottom of the **root**
+  stack, whose accumulator starts cleared.
 
-Which gives the offered set. Both sides must be paint that carries nothing, both
-must be equally visible (hiding a layer hides what it carries, §14.3, so a merge
-across a difference would reveal or conceal paint), and:
+Which gives the offered set. Both sides must be paint that carries nothing, both must
+be equally visible (hiding a layer hides what it carries, §14.3, so a merge across a
+difference would reveal or conceal paint), and:
 
 | Where `S` sits | `S` may be | `D` may be |
 |---|---|---|
-| Bottom of its carrier's stack | `Normal`, clipped or not | anything — the carrier's blend, clip and opacity point *outward* (§14.4.3), and only its content is rewritten. Its **opacity** is the exception (below). |
-| Second from the foot of the root stack | `Normal`, clipped or not | any blend (inert with no backdrop, §14.4.3), unclipped, any opacity |
-| Anywhere else, above a sibling | `Normal`, unclipped | `Normal`, unclipped, any opacity |
+| Bottom of its carrier's stack | **anything** — any mode, clipped or not | anything, opacity included |
+| Second from the foot of the root stack | anything | any blend (inert with no backdrop, §14.4.3), unclipped, any opacity |
+| Anywhere else, above a sibling | any mode, unclipped | the **same** mode, unclipped, any opacity |
 
-The carrier's opacity is pinned at 1 for a reason worth naming: a group's opacity is
-applied to its *composited whole* at the merge (§14.7), which is not something a
-tile can carry — so the surviving layer would have to keep it, and the source's
-paint, which the slider never scaled, would start being scaled by it.
+Three rules stand behind that table, and each is one sentence:
 
-#### 14.11.3 Two laws, because a clip is a deletion
+- **Into a carrier, everything about `S` is absorbed.** The group's isolated content is
+  `merge_S(base, S)` before the merge and the merged tile afterwards, so what the group
+  merges outward is unchanged whatever `S` was — mode, clip and all.
+- **The carrier keeps all three of its own params.** Its blend and clip point outward
+  (§14.4.3) and its opacity applies to the group's composited whole (§14.7) — none of
+  which the inside of that whole has anything to do with. So the base expands at
+  **full strength** and the slider stays on the layer. Folding it into the tiles like a
+  sibling's is what used to make a faded carrier unmergeable, and it would have faded
+  the merged paint twice.
+- **Between siblings the two must agree**, because afterwards one set of params speaks
+  for both. Same mode, neither clipped. At the foot of the root stack they need not
+  agree at all: nothing is stated against anything there.
 
-An unclipped source **stacks**. A clipped one is *deleted outside its backdrop*
-(§14.4), and reading `blend_common.wesl::merge` at `MODE_NORMAL` with `clip = 1`
-against a backdrop that is exactly this tile gives
+#### 14.11.3 Two laws, and which pairs take which
 
-```text
-    αo = αb                              coverage untouched, so M = m₀
-    Co = αb·(αs·Cs + (1−αs)·Cb)          that coverage over a lerp
-    ho = hb + hs·αb                      height suppressed with the colour
-```
+A `Normal` merge is settled **in tile space directly** (`merge.wesl`), because that is
+the ordinary one and it needs no colour conversion at all:
 
-— which is why the shader has two branches rather than one law with a mask. The
-height term is the half that matters: leaving it behind would light relief over
-paint that is not there (§14.4.2).
+- **Unclipped** — the source stacks: heights add, masses add, opacity is their
+  quotient (§14.11.1).
+- **Clipped** — the source is *deleted outside its backdrop* (§14.4). Reading
+  `blend_common.wesl::merge` at `MODE_NORMAL` with `clip = 1` against a backdrop that
+  is exactly this tile gives
+
+  ```text
+      αo = αb                              coverage untouched, so M = m₀
+      Co = αb·(αs·Cs + (1−αs)·Cb)          that coverage over a lerp
+      ho = hb + hs·αb                      height suppressed with the colour
+  ```
+
+  The height term is the half that matters: leaving it behind would light relief over
+  paint that is not there (§14.4.2).
+
+Everything else takes the general law, and the general law **borrows the compositor's
+own blend pass**: expand both layers into what they composite to (`slab.wesl`), run
+`blend_oklab`/`blend_mixbox` between them on tile-sized targets, store the result back
+as a tile. Four passes and three scratch trios per tile where the direct path takes one
+and none — the right trade for an action rather than a frame, and what it buys is that
+**a merged tile is produced by the very shader the screen would have run**. No second
+implementation of the blend algebra exists to drift from the first, which is the same
+argument the eyedropper makes for sampling through the compositor rather than beside it
+(§18.0.2).
+
+`slab.wesl` is that conversion, both ways: `fs_expand` is `composite.wesl`'s fragment
+stage with the view taken out, and `fs_store` inverts it — coverage back to an optical
+mass, mass over height back to an opacity. The inverse is exact and lands in range by
+construction; see §14.11.1.
 
 #### 14.11.4 What is deliberately refused
 
-**Two layers sharing a blend mode — for now, and no longer on principle.** This was
-refused as *unsound*, and it was: the blend functions are associative by
-construction, but the Porter-Duff wrapper applied them to the accumulator's
-coverage-averaged colour, and averaging does not commute with a curve. That is now
-fixed at the source rather than worked around here — the emissive modes weigh
-coverage in emission, where the combination is addition, and are associative at any
-coverage (§18.0.4). The same measurement that condemned the merge condemned the
-modes: reordering three glow layers moved the canvas by 20 levels.
+**Modes that disagree, between siblings.** After the merge one set of params speaks for
+both, and there is no third mode that means "glow here and multiply there". This is the
+one refusal that is permanent rather than pending.
 
-So this merge is now sound and merely unimplemented, which is a smaller sentence.
-What it needs is the mode's algebra in **tile** space — the light conversion is per
-colour space, and a pigment document would have to bind the Mixbox LUT into a pass
-that has never needed it. The slab-law inversion to store the result already exists.
+**Mattes, filters and groups.** A matte and a filter have no tile map, so neither is
+merged nor merged into — the same refusal a stroke aimed at one gets (§15.7, §21.4). A
+group as the source would have to flatten a subtree; a group as the *destination* is not
+what sits beneath the source, its whole group is.
 
-**A source with a blend mode, merged into its carrier.** Sound for a simpler reason —
-the group's isolated content is what the merge rewrites, so the outward merge is
-unchanged whatever the mode — and blocked on the same tile-space conversion. The two
-arrive together when it does.
-
-
-**Mattes, filters and groups.** A matte and a filter have no tile map, so neither
-is merged nor merged into — the same refusal a stroke aimed at one gets (§15.7,
-§21.4). A group as the source would have to flatten a subtree; a group as the
-*destination* is not what sits beneath the source, its whole group is.
+Everything else that was once refused now merges. The history is worth keeping because
+it was a wrong *reason* rather than a missing feature: same-mode siblings were called
+unsound, and were, until the modes stopped weighing coverage in the working space
+(§18.0.4); a source with a mode of its own into its carrier was always sound and only
+ever blocked on the tile-space plumbing above; and a faded carrier was blocked by the
+merge treating its slider as a sibling's.
 
 #### 14.11.5 Plumbing
 
@@ -729,7 +751,10 @@ agreement with the compositor, and the compositor is what a render runs.
 1. Two plain layers, two faded layers, a translucent glaze over opaque paint, a
    clipped layer, and a group's bottom member folded into its base all leave the
    composite unchanged within a least-significant bit — the tile arithmetic runs in
-   f32 and lands in f16 storage, and no more than that is allowed.
+   f32 and lands in f16 storage, and no more than that is allowed. The pairs that
+   take the general law — siblings sharing each mode, every mode into a carrier, a
+   clipped member under a faded base — are held to three, the extra being the two
+   further f16 round trips `slab.wesl` adds either side of the blend.
 2. A merge whose layers do not overlap is exact **to the byte**, which is the
    structural half of the claim rather than a looser version of (1).
 3. The upper layer is still on top afterwards — the one thing pixel equality alone

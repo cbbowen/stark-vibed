@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::brush::BrushParams;
 use super::filter::Filter;
-use super::layer::{BlendMode, LayerId, MatteRegion, Place};
+use super::layer::{BlendMode, Layer, LayerId, MatteRegion, Place};
 use super::selection::SelectionOp;
 use super::state::DocState;
 use crate::geom::Vec2;
@@ -603,24 +603,33 @@ impl history::Action for Action {
                 else {
                     return Ok(state);
                 };
-                let opacity = |id| state.layer(id).map_or(1.0, |l| l.composite.opacity);
+                // Every number here is the plan's: what each side's tiles are worth on
+                // their own, how the upper meets the lower, and what the survivor
+                // carries afterwards. The two differ by where the destination's slider
+                // belongs — folded into the tiles beside a sibling, left on the layer
+                // when the destination is a carrier and the slider is the group's
+                // (§14.7) — and that decision is made once, in `plan`, rather than
+                // twice here and there.
                 let tiles = ctx.merge.apply(
                     &ctx.pool,
-                    crate::gpu::merge::MergeSide {
-                        tiles: &lower,
-                        opacity: opacity(*dest),
+                    crate::gpu::merge::MergeScene {
+                        lower: crate::gpu::merge::MergeSide {
+                            tiles: &lower,
+                            opacity: plan.dest_opacity,
+                        },
+                        upper: crate::gpu::merge::MergeSide {
+                            tiles: &upper,
+                            opacity: plan.source_params.opacity,
+                        },
+                        blend: plan.source_params.blend,
+                        clip: plan.source_params.clip,
                     },
-                    crate::gpu::merge::MergeSide {
-                        tiles: &upper,
-                        opacity: opacity(*source),
-                    },
-                    plan.kind,
                 );
-                // Both sliders are inside the tiles now, so the surviving layer stands
-                // at full opacity — the merged paint would otherwise be faded twice.
                 state
-                    .map_layer(*dest, |l| l.with_tiles(tiles))
-                    .set_layer_opacity(*dest, 1.0)
+                    .map_layer(*dest, |l| Layer {
+                        composite: plan.keeps,
+                        ..l.with_tiles(tiles)
+                    })
                     .remove_layer(*source)
             }
             ActionKind::Fill { layer, op } => {

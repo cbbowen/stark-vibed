@@ -61,24 +61,11 @@
 //! a destination that carries layers is not what sits beneath the source — its whole
 //! group is. Both are refused rather than partially handled.
 
-use super::layer::{Layer, LayerContent, LayerId};
+use super::layer::{CompositeParams, Layer, LayerContent, LayerId};
 use super::state::DocState;
 
-/// How the source layer's paint lands on the destination's — the one thing the tile
-/// pass has to be told, and the only shape of merge each case admits.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum MergeKind {
-    /// Premultiplied "over": the source stacks on the destination, heights adding.
-    /// What an unclipped `Normal` layer does to everything below it.
-    Over,
-    /// The source **clipped** to the destination (§14.4): deleted where the
-    /// destination has no coverage, and its height suppressed with it, so no relief
-    /// is left lighting over paint that is not there.
-    Clip,
-}
-
-/// The merge a [`plan`] found: which layer is consumed, which survives, and how the
-/// paint lands.
+/// The merge a [`plan`] found: which layer is consumed, which survives, how the paint
+/// lands, and what each side's tiles are worth on their own.
 ///
 /// The destination is derived rather than chosen — "down" names exactly one layer —
 /// but it is carried anyway, because a [`Footprint`] is built from the action alone
@@ -87,11 +74,26 @@ pub enum MergeKind {
 /// honest against a tree that has moved under it.
 ///
 /// [`Footprint`]: super::footprint::Footprint
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MergePlan {
     pub source: LayerId,
     pub dest: LayerId,
-    pub kind: MergeKind,
+    /// How the source's paint meets the destination's — **the source layer's own**
+    /// params, always. A merge folds the upper layer into the lower through exactly
+    /// the merge the compositor would have run between the two, which is the whole of
+    /// why the result is the same picture.
+    ///
+    /// Its `opacity` is the source's own, and it is folded into the merged tiles.
+    pub source_params: CompositeParams,
+    /// What the destination's tiles are worth on their own: its own opacity when the
+    /// two are siblings, and **1.0 when the destination is the carrier** — a group's
+    /// base composites at [`CompositeParams::IDENTITY`] inside the isolation, its
+    /// slider belonging to the group as a whole (§14.7).
+    pub dest_opacity: f32,
+    /// What the surviving layer's params become. The destination's own, untouched,
+    /// when it is a carrier; otherwise the pair's shared mode at full opacity, both
+    /// sliders having been folded into the tiles.
+    pub keeps: CompositeParams,
 }
 
 /// The merge of `source` into the layer beneath it, or `None` when there is none that
@@ -104,10 +106,10 @@ pub struct MergePlan {
 pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     let site = state.site_of(source)?;
     let s = state.layer(source)?;
-    // The source has to be paint that carries nothing, and has to reach the
-    // accumulator by "over" — a mode of its own is refused here, before either
-    // position case, because neither can absorb it (see the header).
-    if !is_plain_paint(s) || !s.composite.blend.is_normal() {
+    // Both sides have to be paint that carries nothing — the source because a subtree
+    // cannot travel as one tile, the destination because what sits beneath the source
+    // would then be a whole group rather than that layer's content.
+    if !is_plain_paint(s) {
         return None;
     }
 
@@ -141,53 +143,76 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     if s.visible != d.visible {
         return None;
     }
-
-    let kind = if s.composite.clip {
-        MergeKind::Clip
-    } else {
-        MergeKind::Over
-    };
     // A clip is stated against the backdrop, so it can only be folded into a layer
-    // that *is* the backdrop.
-    if kind == MergeKind::Clip && !backdrop_is_dest {
+    // that **is** the backdrop.
+    if s.composite.clip && !backdrop_is_dest {
         return None;
     }
 
-    match site.carrier {
-        // Into the **carrier**. Its blend and its clip point outward — they describe
-        // how the group meets what lies under the group (§14.4.3) — and the group's
-        // isolated content is exactly what this merge rewrites, so both survive
-        // untouched whatever they are.
+    let keeps = match site.carrier {
+        // Into the **carrier**. Everything about it survives untouched: its blend and
+        // its clip point outward — they describe how the group meets what lies under
+        // the group (§14.4.3) — and its opacity is applied to the group's composited
+        // whole, which is exactly what this merge rewrites the inside of. So the
+        // merge runs against the base's content at full strength and the slider stays
+        // where it is, on the layer.
         //
-        // Its **opacity** does not, and that is why it is pinned: a group's opacity is
-        // applied to the composited whole at the merge (§14.7), which is not something
-        // a tile can carry, so the merged layer would have to keep it — and the source's
-        // paint, which was never scaled by it, would start being.
+        // The source may carry **any** mode here, and that is not a special case: the
+        // group's isolated content is `merge_source(base, source)` before and after,
+        // so what the group merges outward is unchanged whatever the source's mode is.
         Some(_) if site.index == 0 => {
-            if !d.content_is_paint() || d.composite.opacity != 1.0 {
+            if !d.content_is_paint() {
                 return None;
             }
+            d.composite
         }
-        // Into a **sibling**. Here the destination is a leaf whose own opacity rides on
-        // its tiles, so it folds in with the source's; what it may not have is a
-        // relational property of its own, since after the merge that property would
-        // apply to the source's paint too.
+        // Into a **sibling**. Here the destination is a leaf whose own opacity rides
+        // on its tiles, so it folds in with the source's and the survivor stands at
+        // full strength.
         //
-        // The exception is the foot of the root stack, where there is no backdrop for
-        // either to be stated against: a mode there is the identity and stays the
-        // identity, which is the same fact `LayerInfo::has_backdrop` reports (§14.4.3).
-        // A *clip* there is not inert — it erases the layer — so it is still refused.
+        // The two must **agree** about how they meet the backdrop, because after the
+        // merge one set of params speaks for both: same mode, and neither clipped
+        // (the destination's clip would start applying to the source's paint, and the
+        // source's is refused above unless the destination *is* its whole backdrop —
+        // which a sibling with anything under it is not).
+        //
+        // Same-mode siblings merge because the modes are associative at any coverage
+        // (§18.0.4): `merge(merge(B,D),S)` is `merge(B, merge(D,S))`, so the pair
+        // composites as one layer carrying `merge(D,S)`. That was false until the
+        // emissive modes stopped weighing coverage in the working space, and the merge
+        // was refused for exactly that reason.
         _ => {
             if !is_plain_paint(d) || d.composite.clip {
                 return None;
             }
-            if !backdrop_is_dest && !d.composite.blend.is_normal() {
+            // At the foot of the root stack neither mode is stated against anything,
+            // so they need not agree — both are the identity there, and so is
+            // whichever one the survivor ends up wearing. Anywhere else one set of
+            // params has to speak for both afterwards, so they must.
+            if !backdrop_is_dest && d.composite.blend != s.composite.blend {
                 return None;
             }
+            CompositeParams {
+                blend: d.composite.blend,
+                clip: false,
+                opacity: 1.0,
+            }
         }
-    }
+    };
 
-    Some(MergePlan { source, dest, kind })
+    Some(MergePlan {
+        source,
+        dest,
+        source_params: s.composite,
+        // A carrier's own content composites at full strength inside the isolation;
+        // a sibling's rides its own slider (§14.7).
+        dest_opacity: if site.index == 0 && site.carrier.is_some() {
+            1.0
+        } else {
+            d.composite.opacity
+        },
+        keeps,
+    })
 }
 
 /// Paint that carries nothing: the only shape either side of a merge may take today.
@@ -212,6 +237,8 @@ mod tests {
     const B: LayerId = LayerId(1);
     const C: LayerId = LayerId(2);
 
+    const MODES: [BlendMode; 3] = [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply];
+
     /// Three paint layers in the root stack, bottom-to-top: A, B, C.
     fn flat() -> DocState {
         DocState::with_layer(A)
@@ -219,8 +246,22 @@ mod tests {
             .insert_layer(C, None, Some(B))
     }
 
-    fn kind(state: &DocState, source: LayerId) -> Option<(LayerId, MergeKind)> {
-        plan(state, source).map(|p| (p.dest, p.kind))
+    /// The layer `source` would merge down onto, if any.
+    fn dest(state: &DocState, source: LayerId) -> Option<LayerId> {
+        plan(state, source).map(|p| p.dest)
+    }
+
+    /// What each side is worth and what the survivor keeps — the whole plan bar the
+    /// two ids, which `dest` covers.
+    fn terms(state: &DocState, source: LayerId) -> Option<(CompositeParams, f32, CompositeParams)> {
+        plan(state, source).map(|p| (p.source_params, p.dest_opacity, p.keeps))
+    }
+
+    fn faded(opacity: f32) -> CompositeParams {
+        CompositeParams {
+            opacity,
+            ..CompositeParams::IDENTITY
+        }
     }
 
     /// The ordinary case, and the one that must never grow a condition: plain layers
@@ -229,49 +270,73 @@ mod tests {
     #[test]
     fn a_plain_layer_merges_onto_the_plain_layer_below() {
         let state = flat();
-        assert_eq!(kind(&state, C), Some((B, MergeKind::Over)));
-        assert_eq!(kind(&state, B), Some((A, MergeKind::Over)));
-        assert_eq!(kind(&state, A), None, "the foot of the stack has no `down`");
+        assert_eq!(dest(&state, C), Some(B));
+        assert_eq!(dest(&state, B), Some(A));
+        assert_eq!(dest(&state, A), None, "the foot of the stack has no `down`");
+        assert_eq!(
+            terms(&state, C),
+            Some((CompositeParams::IDENTITY, 1.0, CompositeParams::IDENTITY)),
+        );
     }
 
-    /// Opacity is folded into the merged tiles, so a faded layer is mergeable — the
-    /// one relational property that is not a property at all.
+    /// Between siblings both sliders are folded into the merged tiles, so the survivor
+    /// stands at full strength — the destination's is a leaf's, and a leaf's opacity
+    /// rides on its tiles (§14.7).
     #[test]
-    fn opacity_does_not_stop_a_merge_between_siblings() {
+    fn sibling_opacities_are_folded_into_the_tiles() {
         let state = flat().set_layer_opacity(C, 0.4).set_layer_opacity(B, 0.25);
-        assert_eq!(kind(&state, C), Some((B, MergeKind::Over)));
+        assert_eq!(
+            terms(&state, C),
+            Some((faded(0.4), 0.25, CompositeParams::IDENTITY)),
+            "both sides expand at their own opacity and the survivor is left at 1",
+        );
     }
 
-    /// A blend mode on **either** side is refused between siblings: the source's
-    /// because "over" is the only law this merges by, the destination's because after
-    /// the merge it would apply to the source's paint as well.
+    /// **Siblings sharing a blend mode merge**, and that turns on the modes being
+    /// associative at any coverage (§18.0.4). While they weighed coverage in the
+    /// working space they were not, and this was refused for exactly that reason.
     ///
-    /// Sharing a mode does not help, which is the rule this test exists to pin — see
-    /// the module header for why it is false rather than merely unimplemented.
+    /// Modes that *disagree* are still refused, and always will be: after the merge one
+    /// set of params speaks for both, and there is no third mode that means "multiply
+    /// here and glow there".
     #[test]
-    fn a_blend_mode_refuses_a_sibling_merge_even_when_both_share_it() {
-        for mode in [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply] {
-            let source = flat().set_layer_blend(C, mode);
-            assert_eq!(kind(&source, C), None, "{mode:?} on the source");
-
-            let dest = flat().set_layer_blend(B, mode);
-            assert_eq!(kind(&dest, C), None, "{mode:?} on the destination");
-
+    fn siblings_merge_when_their_modes_agree_and_not_otherwise() {
+        for mode in MODES {
             let both = flat().set_layer_blend(C, mode).set_layer_blend(B, mode);
-            assert_eq!(kind(&both, C), None, "{mode:?} on both");
+            assert_eq!(dest(&both, C), Some(B), "{mode:?} on both");
+            assert_eq!(
+                terms(&both, C).map(|(_, _, keeps)| keeps.blend),
+                Some(mode),
+                "the survivor has to go on meeting the backdrop the same way",
+            );
+
+            let source_only = flat().set_layer_blend(C, mode);
+            assert_eq!(dest(&source_only, C), None, "{mode:?} on the source alone");
+            let dest_only = flat().set_layer_blend(B, mode);
+            assert_eq!(
+                dest(&dest_only, C),
+                None,
+                "{mode:?} on the destination alone"
+            );
         }
+        // …and two *different* modes are no better than one.
+        let mixed = flat()
+            .set_layer_blend(C, BlendMode::Reinhard)
+            .set_layer_blend(B, BlendMode::Multiply);
+        assert_eq!(dest(&mixed, C), None);
     }
 
     /// At the foot of the root stack a blend mode is the identity — there is nothing
-    /// under it to combine with — so it neither blocks the merge nor changes it.
+    /// under it to combine with — so neither layer's mode has to agree with anything.
     #[test]
-    fn a_mode_on_the_bottom_layer_is_inert_and_allows_the_merge() {
-        let state = flat().set_layer_blend(A, BlendMode::Multiply);
-        assert_eq!(kind(&state, B), Some((A, MergeKind::Over)));
-        // …but a clip there erases the layer rather than going inert, so it is still
-        // refused.
-        let clipped = state.set_layer_clip(A, true);
-        assert_eq!(kind(&clipped, B), None);
+    fn modes_need_not_agree_where_neither_is_stated_against_anything() {
+        let state = flat()
+            .set_layer_blend(A, BlendMode::Multiply)
+            .set_layer_blend(B, BlendMode::Reinhard);
+        assert_eq!(dest(&state, B), Some(A));
+        // …but a clip on the bottom layer erases it rather than going inert, so it is
+        // still refused.
+        assert_eq!(dest(&state.set_layer_clip(A, true), B), None);
     }
 
     /// A clipped layer clips to **everything beneath it in its own stack** (§14.4), so
@@ -280,43 +345,55 @@ mod tests {
     fn a_clipped_layer_merges_only_where_the_destination_is_its_whole_backdrop() {
         // Second from the foot of the root stack: the accumulator holds A alone.
         let state = flat().set_layer_clip(B, true);
-        assert_eq!(kind(&state, B), Some((A, MergeKind::Clip)));
+        assert_eq!(dest(&state, B), Some(A));
+        assert!(
+            terms(&state, B).is_some_and(|(source, _, keeps)| source.clip && !keeps.clip),
+            "the clip is spent on the merge, not carried by the survivor",
+        );
         // One row higher, C is clipped to A *and* B, which no merge into B can carry.
-        let higher = flat().set_layer_clip(C, true);
-        assert_eq!(kind(&higher, C), None);
+        assert_eq!(dest(&flat().set_layer_clip(C, true), C), None);
     }
 
     /// A group's members composite over its base (§14.1), so the bottom carried layer
-    /// merges into the carrier — and does so whatever the carrier's own blend and clip
-    /// are, since those describe how the *group* meets what lies under it and the
-    /// group's content is exactly what this rewrites.
+    /// merges into the carrier — **whatever mode it carries**. The group's isolated
+    /// content is `merge_source(base, source)` either way, so what the group merges
+    /// outward is unchanged, and that is the whole argument.
     #[test]
-    fn the_bottom_of_a_carried_stack_merges_into_its_carrier() {
+    fn the_bottom_of_a_group_merges_into_its_base_under_any_mode() {
         let state = flat().move_layer(C, Some(B), Place::Top);
-        assert_eq!(kind(&state, C), Some((B, MergeKind::Over)));
-
-        let styled = state
-            .set_layer_blend(B, BlendMode::Multiply)
-            .set_layer_clip(B, true);
-        assert_eq!(
-            kind(&styled, C),
-            Some((B, MergeKind::Over)),
-            "the carrier's outward properties are untouched by the merge",
-        );
-        // And a clipped member clips to exactly the base, which is the gesture
-        // "clip to this one layer" is spelled with (§14.4).
-        let clipped = state.set_layer_clip(C, true);
-        assert_eq!(kind(&clipped, C), Some((B, MergeKind::Clip)));
+        for mode in MODES {
+            let with_mode = state.set_layer_blend(C, mode);
+            assert_eq!(dest(&with_mode, C), Some(B), "{mode:?} into a carrier");
+            assert_eq!(
+                terms(&with_mode, C).map(|(source, _, _)| source.blend),
+                Some(mode),
+                "the merge runs through the source's own mode",
+            );
+        }
+        // A clipped member clips to exactly the base, which is the gesture "clip to
+        // this one layer" is spelled with (§14.4).
+        assert_eq!(dest(&state.set_layer_clip(C, true), C), Some(B));
     }
 
-    /// A group's opacity is applied to its composited whole, which a tile cannot carry
-    /// — so the one property of a carrier that blocks the merge is that one.
+    /// The carrier's own params survive the merge untouched — all three of them.
+    ///
+    /// Its blend and its clip point outward, describing how the *group* meets what lies
+    /// under it, and its opacity is applied to the group's composited whole. The merge
+    /// rewrites the inside of that whole, so none of the three has anything to do with
+    /// it — which is why the base expands at **1.0** rather than at its own slider.
     #[test]
-    fn a_faded_carrier_refuses_the_merge() {
+    fn a_carrier_keeps_all_of_its_own_params() {
         let state = flat()
             .move_layer(C, Some(B), Place::Top)
+            .set_layer_blend(B, BlendMode::Multiply)
+            .set_layer_clip(B, true)
             .set_layer_opacity(B, 0.5);
-        assert_eq!(kind(&state, C), None);
+        let carrier = state.layer(B).expect("the carrier exists").composite;
+        assert_eq!(
+            terms(&state, C),
+            Some((CompositeParams::IDENTITY, 1.0, carrier)),
+            "the base composites at full strength inside the group, and keeps its own",
+        );
     }
 
     /// What sits beneath a layer whose lower sibling is a **group** is that whole
@@ -326,33 +403,33 @@ mod tests {
     fn groups_are_refused_on_both_sides() {
         // B carries A — the stack is [B[A], C], with C sitting above the whole group.
         let dest_group = flat().move_layer(A, Some(B), Place::Top);
-        assert_eq!(kind(&dest_group, C), None, "the destination is a group");
+        assert_eq!(dest(&dest_group, C), None, "the destination is a group");
 
         // The other side: [A, B[C]], so B is a group with plain paint directly under
         // it. Everything else about the pair is mergeable; that B is a subtree is the
         // whole of what refuses it.
         let source_group = flat().move_layer(C, Some(B), Place::Top);
-        assert_eq!(kind(&source_group, B), None, "the source is a group");
+        assert_eq!(dest(&source_group, B), None, "the source is a group");
         // …and the member inside it still merges into its base, which is what says the
         // refusal above is about B being a subtree rather than about the tree having
         // become unreadable here.
-        assert_eq!(kind(&source_group, C), Some((B, MergeKind::Over)));
+        assert_eq!(dest(&source_group, C), Some(B));
     }
 
     /// Merging across a difference in visibility would reveal hidden paint or hide
     /// visible paint; two hidden layers show nothing either way and merge fine.
     #[test]
     fn visibility_has_to_match() {
-        assert_eq!(kind(&flat().set_layer_visible(C, false), C), None);
-        assert_eq!(kind(&flat().set_layer_visible(B, false), C), None);
+        assert_eq!(dest(&flat().set_layer_visible(C, false), C), None);
+        assert_eq!(dest(&flat().set_layer_visible(B, false), C), None);
         assert_eq!(
-            kind(
+            dest(
                 &flat()
                     .set_layer_visible(C, false)
                     .set_layer_visible(B, false),
                 C,
             ),
-            Some((B, MergeKind::Over)),
+            Some(B),
         );
     }
 
@@ -370,13 +447,13 @@ mod tests {
         let over_matte = DocState::with_layer(A)
             .insert_matte(B, None, Some(A), region, [1.0; 3])
             .insert_layer(C, None, Some(B));
-        assert_eq!(kind(&over_matte, C), None, "a matte destination");
-        assert_eq!(kind(&over_matte, B), None, "a matte source");
+        assert_eq!(dest(&over_matte, C), None, "a matte destination");
+        assert_eq!(dest(&over_matte, B), None, "a matte source");
 
         let with_filter = DocState::with_layer(A)
             .insert_filter(B, None, Some(A), Filter::Color(ColorAdjust::NEUTRAL))
             .insert_layer(C, None, Some(B));
-        assert_eq!(kind(&with_filter, C), None, "a filter destination");
-        assert_eq!(kind(&with_filter, B), None, "a filter source");
+        assert_eq!(dest(&with_filter, C), None, "a filter destination");
+        assert_eq!(dest(&with_filter, B), None, "a filter source");
     }
 }

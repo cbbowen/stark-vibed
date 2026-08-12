@@ -35,6 +35,7 @@ const MIRRORS: &[(&[&str], &str)] = &[
     (&["merge"], "Merge"),
     (&["resolve"], "Resolve"),
     (&["selection"], "Params"),
+    (&["slab"], "Slab"),
     (&["stamp_common"], "TileXform"),
     (&["transform"], "Combine"),
     (&["transform"], "Gated"),

@@ -51,7 +51,7 @@ impl<'a> Targets<'a> {
 }
 
 // Generated from `blend_common.wesl`'s own declaration (§6.7).
-pub(super) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
+pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 
 /// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
 /// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
@@ -59,7 +59,7 @@ pub(super) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 /// `Normal` reaches the pass only when the group is **clipped** or carries an
 /// opacity of its own (§14.4); an ordinary normal layer is the
 /// absence of a pass.
-pub(super) fn blend_code(mode: BlendMode) -> u32 {
+pub(crate) fn blend_code(mode: BlendMode) -> u32 {
     match mode {
         BlendMode::Normal => 0,
         BlendMode::Reinhard => 1,
@@ -77,7 +77,7 @@ pub(super) fn blend_code(mode: BlendMode) -> u32 {
 /// pass reading the last value written. Two blend groups — or two filters — in one
 /// document is not an edge case, so a buffer holds them all and each pass binds its
 /// own offset.
-pub(super) const UNIFORM_SLOT: u64 = 256;
+pub(crate) const UNIFORM_SLOT: u64 = 256;
 
 /// A grow-on-demand buffer of [`UNIFORM_SLOT`]-sized uniform slots — the one
 /// mechanism behind the blend pass's per-merge uniforms and the filter pass's
@@ -148,14 +148,21 @@ fn alloc_slots(device: &wgpu::Device, label: &'static str, count: usize) -> wgpu
 
 /// The blend pass: one fullscreen draw merging an isolated group into the
 /// accumulator.
-pub(super) struct BlendPass {
-    pub(super) pipeline: wgpu::RenderPipeline,
-    pub(super) bgl: wgpu::BindGroupLayout,
-    pub(super) pigment: PigmentLut,
+///
+/// **Shared, not owned.** A merge-down through a blend mode runs this very pipeline on
+/// tile-sized targets (§14.11, `gpu::merge`), so a merged layer cannot drift from the
+/// stack it replaced — the same argument the eyedropper makes for sampling through the
+/// compositor rather than beside it. It is behind an `Arc` for a blunter reason too:
+/// building one decodes the Mixbox LUT, which is not a thing to do twice per
+/// document.
+pub(crate) struct BlendPass {
+    pub(crate) pipeline: wgpu::RenderPipeline,
+    pub(crate) bgl: wgpu::BindGroupLayout,
+    pub(crate) pigment: PigmentLut,
 }
 
 impl BlendPass {
-    pub(super) fn new(
+    pub(crate) fn new(
         ctx: &GpuContext,
         color_space: &dyn ColorSpace,
         color_format: wgpu::TextureFormat,

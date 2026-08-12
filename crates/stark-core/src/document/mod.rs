@@ -38,7 +38,7 @@ pub use layer::{
 };
 /// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
 /// leaves the document looking the same, which is the whole of what a merge promises.
-pub use merge::{MergeKind, MergePlan};
+pub use merge::MergePlan;
 pub use selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
 pub use state::{CanvasBounds, DEFAULT_BACKGROUND, DEFAULT_SURFACE, DocState, LayerSite};
 pub use timeline::{

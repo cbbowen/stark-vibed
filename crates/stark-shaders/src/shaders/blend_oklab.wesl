@@ -10,7 +10,7 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
     FsOut, back_color, back_aux, src_color, src_aux,
-    added_light, combine, is_emissive, merge, merge_added,
+    combined_light, is_normal, merge, merge_added,
 };
 
 @vertex
@@ -29,25 +29,28 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let hb = textureLoad(back_aux, p, 0).x;
     let hs = textureLoad(src_aux, p, 0).x;
 
-    // **Nothing beneath**: with no backdrop every mode is the source, and `merge`
-    // gives it back to the bit — its `mix(…, αb)` at `αb = 0` is the source term
-    // verbatim, with no trip out to light and back to round it (`blend_common`).
-    // `chan_s` stands in for the blend function's opinion, which that `mix` discards.
-    if cb.a <= 0.0 {
+    // Two ways out without the trip to light and back, and both are exact rather
+    // than merely cheap. **Nothing beneath**: with no backdrop every mode is the
+    // source, and `merge` gives it back to the bit — its `mix(…, αb)` at `αb = 0` is
+    // the source term verbatim. **`Normal`**: it covers rather than combines, so there
+    // is no blend function to be affine anywhere and the working space is where it
+    // belongs. Reached only by a clipped layer or a faded group (§14.4).
+    //
+    // `chan_s` stands in for the blend function's opinion, which neither branch reads.
+    if cb.a <= 0.0 || is_normal() {
         return merge(cb, cs, chan_s, hb, hs);
     }
 
-    let light_b = linear_to_light(oklab_to_linear_srgb(chan_b));
-    let light_s = linear_to_light(oklab_to_linear_srgb(chan_s));
+    // Everything else is settled in the mode's own space, where its blend function is
+    // affine and Porter-Duff's coverage weighting therefore commutes with it
+    // (`combined_light`). The whole output colour falls out of that one expansion, so
+    // there is no triple left to run here — only the conversion back to Oklab.
+    let x = combined_light(
+        linear_to_light(oklab_to_linear_srgb(chan_b)),
+        cb.a,
+        linear_to_light(oklab_to_linear_srgb(chan_s)),
+        cs.a,
+    );
+    return merge_added(cb, cs, linear_srgb_to_oklab(light_to_linear(x)), hb, hs);
 
-    // The emissive modes weigh coverage in **emission**, where the combination is
-    // addition, so they compose one sum rather than a nest of interpolations
-    // (`added_light`). The whole output colour falls out of that sum, so there is no
-    // Porter-Duff triple left to run — only the conversion back to Oklab.
-    if is_emissive() {
-        let x = added_light(light_b, cb.a, light_s, cs.a);
-        return merge_added(cb, cs, linear_srgb_to_oklab(light_to_linear(x)), hb, hs);
-    }
-    let blended = linear_srgb_to_oklab(light_to_linear(combine(light_b, light_s)));
-    return merge(cb, cs, blended, hb, hs);
 }

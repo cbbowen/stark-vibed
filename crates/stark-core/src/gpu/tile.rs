@@ -75,6 +75,9 @@ pub enum AllocSource {
     FillDestination,
     /// A tile rewritten by a layer merge-down (§14.11).
     MergeDestination,
+    /// A merge's composited scratch: the two layers expanded into what they
+    /// composite to, and the blend between them (§14.11).
+    MergeScratch,
 }
 
 impl AllocSource {
@@ -85,7 +88,7 @@ impl AllocSource {
     /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree.
     /// A variant that slipped past both would go uncounted rather than out of
     /// bounds — telemetry degrading is the right failure for telemetry.
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Unknown,
         Self::IntegrateDestination,
         Self::StrokeScratch,
@@ -96,6 +99,7 @@ impl AllocSource {
         Self::TransformMask,
         Self::FillDestination,
         Self::MergeDestination,
+        Self::MergeScratch,
     ];
 
     const fn name(self) -> &'static str {
@@ -110,6 +114,7 @@ impl AllocSource {
             Self::TransformMask => "transform mask",
             Self::FillDestination => "fill destination",
             Self::MergeDestination => "merge destination",
+            Self::MergeScratch => "merge scratch",
         }
     }
 }
