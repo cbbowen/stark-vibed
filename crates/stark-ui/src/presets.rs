@@ -121,7 +121,7 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
                 drain: 0.001,
                 shape: BrushShape::Round { hardness: 0.95 },
                 dynamics: BrushDynamics {
-                    add: 2.0,
+                    add: 3.0,
                     lift: 0.25,
                     deposit: 0.75,
                     bleed: 0.25,
@@ -152,11 +152,11 @@ fn shipped_presets(pencil: BrushShape) -> Vec<PresetEntry> {
             Some(2),
             BrushParams {
                 radius: 18.0,
-                shape: BrushShape::Round { hardness: 0.92 },
+                shape: BrushShape::Round { hardness: 0.95 },
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
                 dynamics: BrushDynamics {
-                    add: 0.3,
+                    add: 0.45,
                     ..BrushDynamics::default()
                 },
                 ..BrushParams::default()
