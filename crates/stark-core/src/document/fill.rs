@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use super::selection::{Selection, SelectionMode, SelectionShape, tile_box, tiles_covering};
 use crate::geom::{TILE_APRON, TileCoord, Vec2};
+use crate::gradient::Gradient;
 
 /// Largest number of paint tiles one fill may write. The same stance and roughly
 /// the same size as [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES):
@@ -74,6 +75,50 @@ impl ShapeAction {
     }
 }
 
+/// What paint a fill lays: the same parcel everywhere, or one that varies with
+/// canvas position (§22.4). This is the seam §18.0.4 named — a gradient is not a
+/// new pipeline, it is a fill whose parcel reads its latent from position — so
+/// the region, the gate, the stacking law and the footprint are all [`FillOp`]'s,
+/// untouched.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Parcel {
+    /// One colour everywhere. Straight (un-premultiplied) sRGB RGBA, like
+    /// [`BrushParams::color`](super::BrushParams::color); the alpha is the
+    /// paint's **per-unit opacity**, not a coverage — a thin wash and a thick
+    /// one differ in [`FillOp::height`], not here (§6.1).
+    Solid([f32; 4]),
+    /// A colour ramp read from canvas position (§22.4).
+    Gradient(GradientParcel),
+}
+
+/// The gradient half of a [`Parcel`]: which ramp, along what axis, at what
+/// opacity (§22.4).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GradientParcel {
+    /// The ramp — embedded **by value**, the way a stroke embeds its brush
+    /// colour, so the document stays self-contained and replayable with no
+    /// reference into anyone's browser-local library (§22.3).
+    pub gradient: Gradient,
+    /// Where `t = 0` and `t = 1` sit on the canvas.
+    pub axis: GradientAxis,
+    /// Per-unit opacity, uniform along the ramp — stops carry no alpha (§22.1),
+    /// so the one opacity a fill has is the parcel's, exactly as for a solid.
+    pub opacity: f32,
+}
+
+/// The geometry mapping canvas position to ramp position — the shape the
+/// composing drag draws (§22.4). Beyond either end the ramp holds its end stop:
+/// a gradient fill covers its whole region, the axis only says where the
+/// transition lives.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GradientAxis {
+    /// `t` grows from `from` to `to` along the line joining them, constant on
+    /// perpendiculars.
+    Linear { from: Vec2, to: Vec2 },
+    /// `t` grows with distance from `center`, reaching 1 at `radius`.
+    Radial { center: Vec2, radius: f32 },
+}
+
 /// One logged fill (§18.0.4): a region, and the parcel of paint to
 /// lay in it. Compact enough for the action log and the wire, exactly like
 /// [`SelectionOp`](super::SelectionOp) — the shape travels, never the tiles, and
@@ -87,25 +132,42 @@ pub struct FillOp {
     /// Edge softness in canvas px, read exactly as a selection op's is: 0 still
     /// antialiases.
     pub feather: f32,
-    /// Straight (un-premultiplied) sRGB RGBA, like
-    /// [`BrushParams::color`](super::BrushParams::color). The alpha is the paint's
-    /// **per-unit opacity**, not a coverage — a thin wash and a thick one differ in
-    /// `height`, not here (§6.1).
-    pub color: [f32; 4],
+    /// The paint to lay — one colour, or a ramp read from position (§22.4).
+    pub paint: Parcel,
     /// Paint **height** laid where coverage is full, taken from the brush's
     /// [`add`](super::BrushDynamics::add) so a fill and the brush in hand lay the
     /// same amount of paint. Partial coverage lays proportionally less, which is
     /// what makes a feathered edge a thinning of the paint rather than a fade of
     /// its colour.
+    ///
+    /// One height for the whole fill, gradient or not: the ramp varies the
+    /// *colour* of the paint, never how much of it there is — a transition in
+    /// thickness would read as a lighting feature, not a colour one (§22.4).
     pub height: f32,
 }
 
 impl FillOp {
     pub fn new(shape: SelectionShape, feather: f32, color: [f32; 4], height: f32) -> Self {
+        Self::with_paint(
+            shape,
+            feather,
+            Parcel::Solid(color.map(|c| c.clamp(0.0, 1.0))),
+            height,
+        )
+    }
+
+    pub fn with_paint(shape: SelectionShape, feather: f32, paint: Parcel, height: f32) -> Self {
+        let paint = match paint {
+            Parcel::Solid(c) => Parcel::Solid(c.map(|c| c.clamp(0.0, 1.0))),
+            Parcel::Gradient(g) => Parcel::Gradient(GradientParcel {
+                opacity: g.opacity.clamp(0.0, 1.0),
+                ..g
+            }),
+        };
         Self {
             shape,
             feather,
-            color: color.map(|c| c.clamp(0.0, 1.0)),
+            paint,
             height: height.max(0.0),
         }
     }
@@ -114,6 +176,12 @@ impl FillOp {
     /// alone, so [`plan`] refuses it when there is no mask.
     pub fn of_selection(color: [f32; 4], height: f32) -> Self {
         Self::new(SelectionShape::All, 0.0, color, height)
+    }
+
+    /// Fill whatever is selected with a gradient — the selection bar's gradient
+    /// mode (§22.4). The same bound and the same refusal as [`Self::of_selection`].
+    pub fn gradient_of_selection(parcel: GradientParcel, height: f32) -> Self {
+        Self::with_paint(SelectionShape::All, 0.0, Parcel::Gradient(parcel), height)
     }
 
     /// How far past the shape's own boundary its coverage can reach, in canvas px.

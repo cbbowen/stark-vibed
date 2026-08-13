@@ -100,7 +100,15 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// wrote it, where a version-5 file needed nothing. That is a real cost and the
 /// reason `save_bytes` still writes everything unless it is told what may be left
 /// out.
-const WIRE_VERSION: u32 = 6;
+///
+/// **7** — `FillOp::color` became `paint: Parcel`, an enum whose first variant
+/// (`Solid`) carries the old four floats and whose second is the gradient
+/// parcel (§22.4). Postcard has no slot for the discriminant that now precedes
+/// them, so a version-6 `Fill` action misreads rather than degrades. The clean
+/// reshape was chosen over an appended `Option` deliberately: files are alpha
+/// (§19), the bump is the whole cost, and a fill's paint being one field is
+/// what every consumer of the op gets to rely on from here on.
+const WIRE_VERSION: u32 = 7;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

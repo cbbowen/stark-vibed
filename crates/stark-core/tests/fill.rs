@@ -529,3 +529,323 @@ fn fill_golden() {
     });
     assert_golden("fill_ellipse", &engine.render_to_image(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// The gradient fill (§22.4): a parcel whose latent varies with canvas position.
+// ---------------------------------------------------------------------------
+
+use stark_core::colorspace::ColorSpaceId;
+use stark_core::document::{GradientAxis, GradientParcel, Parcel};
+use stark_core::{Gradient, GradientStop, PickOptions};
+
+const BLUE: [f32; 4] = [0.1, 0.2, 0.8, 1.0];
+
+fn red_blue() -> Gradient {
+    Gradient::new(vec![
+        GradientStop {
+            t: 0.0,
+            color: [RED[0], RED[1], RED[2]],
+        },
+        GradientStop {
+            t: 1.0,
+            color: [BLUE[0], BLUE[1], BLUE[2]],
+        },
+    ])
+    .expect("two stops")
+}
+
+fn is_blue(img: &RgbaImage, canvas: Vec2) -> bool {
+    let [r, g, b] = texel(img, canvas);
+    b - r > 40 && b - g > 40
+}
+
+/// Commit a gradient fill of the rect `min..max`, through the direct command path.
+fn gradient_fill_rect(
+    engine: &mut stark_core::Engine,
+    min: Vec2,
+    max: Vec2,
+    parcel: GradientParcel,
+    feather: f32,
+    height: f32,
+) {
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Fill {
+        layer,
+        op: FillOp::with_paint(
+            SelectionShape::rect_from_corners(min, max),
+            feather,
+            Parcel::Gradient(parcel),
+            height,
+        ),
+    });
+}
+
+/// The ramp lies along its axis, and beyond either end it holds its end stop —
+/// a gradient fill covers its whole region; the axis only places the transition.
+#[test]
+fn a_linear_gradient_fill_ramps_along_its_axis_and_clamps_past_it() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // The region is wider than the axis, so the clamp is observable inside it.
+    gradient_fill_rect(
+        &mut engine,
+        Vec2::new(-90.0, -30.0),
+        Vec2::new(90.0, 30.0),
+        GradientParcel {
+            gradient: red_blue(),
+            axis: GradientAxis::Linear {
+                from: Vec2::new(-50.0, 0.0),
+                to: Vec2::new(50.0, 0.0),
+            },
+            opacity: 1.0,
+        },
+        0.0,
+        0.7,
+    );
+    let img = engine.render_to_image();
+    assert!(
+        is_red(&img, Vec2::new(-50.0, 0.0)),
+        "the axis starts on red"
+    );
+    assert!(is_blue(&img, Vec2::new(50.0, 0.0)), "and ends on blue");
+    assert!(
+        is_red(&img, Vec2::new(-80.0, 0.0)),
+        "before the axis the ramp holds its first stop"
+    );
+    assert!(
+        is_blue(&img, Vec2::new(80.0, 0.0)),
+        "past the axis it holds its last"
+    );
+    // Constant on perpendiculars: the ramp is a function of the axis alone.
+    assert_eq!(
+        texel(&img, Vec2::new(-50.0, -20.0)),
+        texel(&img, Vec2::new(-50.0, 20.0)),
+        "perpendicular offsets read the same ramp position"
+    );
+    // And the middle is a mixture, not either end.
+    let [r, _, b] = texel(&img, Vec2::ZERO);
+    assert!(
+        r > 40 && b > 40,
+        "the midpoint should mix the two ends, got {:?}",
+        texel(&img, Vec2::ZERO)
+    );
+}
+
+/// A radial axis rings outward: first stop at the centre, last at and past the
+/// radius, and the same colour at the same distance in every direction.
+#[test]
+fn a_radial_gradient_fill_rings_outward() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    gradient_fill_rect(
+        &mut engine,
+        Vec2::new(-80.0, -80.0),
+        Vec2::new(80.0, 80.0),
+        GradientParcel {
+            gradient: red_blue(),
+            axis: GradientAxis::Radial {
+                center: Vec2::ZERO,
+                radius: 50.0,
+            },
+            opacity: 1.0,
+        },
+        0.0,
+        0.7,
+    );
+    let img = engine.render_to_image();
+    assert!(is_red(&img, Vec2::ZERO), "the centre is the first stop");
+    assert!(
+        is_blue(&img, Vec2::new(70.0, 0.0)),
+        "past the radius the ramp holds its last stop"
+    );
+    assert_eq!(
+        texel(&img, Vec2::new(30.0, 0.0)),
+        texel(&img, Vec2::new(0.0, 30.0)),
+        "the ramp is a function of distance alone"
+    );
+}
+
+/// The preview is the commit, before the commit — `PreviewTransform`'s bargain,
+/// made by the gradient-fill mode (§22.4): `ViewCommand::PreviewFill` runs the
+/// same `FillRenderer::apply` over the same committed tiles as
+/// `DocCommand::Fill`, so the two frames must be identical.
+#[test]
+fn the_gradient_preview_matches_the_commit() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        GREEN,
+        20.0,
+        &[Vec2::new(-60.0, -20.0), Vec2::new(60.0, 20.0)],
+    );
+    select_rect(
+        &mut engine,
+        Vec2::new(-55.0, -35.0),
+        Vec2::new(55.0, 35.0),
+        8.0,
+    );
+    let layer = engine.observe().active_layer;
+    let op = FillOp::gradient_of_selection(
+        GradientParcel {
+            gradient: red_blue(),
+            axis: GradientAxis::Linear {
+                from: Vec2::new(-55.0, 0.0),
+                to: Vec2::new(55.0, 0.0),
+            },
+            opacity: 0.9,
+        },
+        0.6,
+    );
+
+    engine.process(ViewCommand::PreviewFill(Some((layer, op.clone()))));
+    let previewed = engine.render_to_image();
+    engine.process(ViewCommand::PreviewFill(None));
+    engine.process(DocCommand::Fill { layer, op });
+    let committed = engine.render_to_image();
+    assert!(
+        images_match(&previewed, &committed, 0),
+        "gradient-fill preview vs commit must be bit-identical"
+    );
+}
+
+/// A redrawn axis previews a fresh fill, never a stack: fifty previews render
+/// the same frame as one — the same claim the drag-fill preview makes.
+#[test]
+fn the_gradient_preview_does_not_accumulate() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    select_rect(
+        &mut engine,
+        Vec2::new(-40.0, -40.0),
+        Vec2::new(40.0, 40.0),
+        0.0,
+    );
+    let layer = engine.observe().active_layer;
+    let op = |to: f32| {
+        FillOp::gradient_of_selection(
+            GradientParcel {
+                gradient: red_blue(),
+                axis: GradientAxis::Linear {
+                    from: Vec2::new(-40.0, 0.0),
+                    to: Vec2::new(to, 0.0),
+                },
+                opacity: 1.0,
+            },
+            0.6,
+        )
+    };
+    engine.process(ViewCommand::PreviewFill(Some((layer, op(40.0)))));
+    let first = engine.render_to_image();
+    for to in 0..50 {
+        engine.process(ViewCommand::PreviewFill(Some((layer, op(to as f32)))));
+        let _ = engine.render_to_image();
+    }
+    engine.process(ViewCommand::PreviewFill(Some((layer, op(40.0)))));
+    let last = engine.render_to_image();
+    assert!(
+        images_match(&first, &last, 0),
+        "re-previewing the same axis must render the same frame"
+    );
+}
+
+/// The ramp's ends are its stops, in **both** colour spaces — in Mixbox the
+/// stops convert to concentrations *and residual*, and an end that forgot the
+/// residual would come back as the polynomial's nearest reachable colour
+/// (§6.7). Read back through the eyedropper, which answers in sRGB.
+#[test]
+fn the_ramp_ends_are_the_stops_in_both_spaces() {
+    for space in ColorSpaceId::all_available() {
+        let Some(mut engine) = engine_or_skip_with(space) else {
+            return;
+        };
+        gradient_fill_rect(
+            &mut engine,
+            Vec2::new(-60.0, -30.0),
+            Vec2::new(60.0, 30.0),
+            GradientParcel {
+                gradient: red_blue(),
+                axis: GradientAxis::Linear {
+                    from: Vec2::new(-40.0, 0.0),
+                    to: Vec2::new(40.0, 0.0),
+                },
+                opacity: 1.0,
+            },
+            0.0,
+            0.7,
+        );
+        for (at, want, name) in [
+            (Vec2::new(-40.0, 0.0), RED, "start"),
+            (Vec2::new(40.0, 0.0), BLUE, "end"),
+        ] {
+            let got = pollster::block_on(engine.pick_color(at, PickOptions::default()))
+                .unwrap_or_else(|| panic!("{space:?}: no paint at the {name}"));
+            for ch in 0..3 {
+                assert!(
+                    (got[ch] - want[ch]).abs() < 0.04,
+                    "{space:?}: the {name} should be its stop, got {got:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A gradient fill replays identically from the log — with every field of the
+/// parcel distinct (three stops, a radial axis, partial opacity, a feather), so
+/// a mis-ordered decode shows up as a different picture rather than a lucky
+/// match (the same stance as the filter's round-trip test).
+#[test]
+fn a_gradient_fill_survives_save_and_load() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let gradient = Gradient::new(vec![
+        GradientStop {
+            t: 0.0,
+            color: [0.9, 0.1, 0.1],
+        },
+        GradientStop {
+            t: 0.3,
+            color: [0.9, 0.8, 0.1],
+        },
+        GradientStop {
+            t: 1.0,
+            color: [0.1, 0.2, 0.8],
+        },
+    ])
+    .expect("three stops");
+    select_rect(
+        &mut engine,
+        Vec2::new(-50.0, -50.0),
+        Vec2::new(50.0, 50.0),
+        6.0,
+    );
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Fill {
+        layer,
+        op: FillOp::gradient_of_selection(
+            GradientParcel {
+                gradient,
+                axis: GradientAxis::Radial {
+                    center: Vec2::new(5.0, -3.0),
+                    radius: 47.0,
+                },
+                opacity: 0.85,
+            },
+            0.65,
+        ),
+    });
+    let before = engine.render_to_image();
+
+    let bytes = engine.save_bytes().expect("save");
+    engine.load_bytes(&bytes).expect("load");
+    let after = engine.render_to_image();
+    assert!(
+        images_match(&before, &after, 2),
+        "a gradient fill did not replay identically from the log"
+    );
+}

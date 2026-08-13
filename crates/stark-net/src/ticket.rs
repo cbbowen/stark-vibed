@@ -20,7 +20,7 @@ const PREFIX: &str = "stark";
 
 /// The encoding this build mints, and the only one it reads.
 ///
-/// The wire protocols carry their version in the ALPN (`stark/collab/0`); the
+/// The wire protocols carry their version in the ALPN (`stark/collab/1`); the
 /// ticket had nowhere to carry one, so the first change to [`EndpointAddr`] or
 /// [`TopicId`]'s postcard shape would have surfaced as an unexplained decode
 /// failure on a link someone pasted (§19). One byte buys the message instead.

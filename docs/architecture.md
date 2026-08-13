@@ -266,6 +266,7 @@ pub enum ViewCommand {             // never logged, never sent
     PreviewMatteRect(..),          // §15.7
     PreviewMatteColor(..),         // §15.7
     PreviewTransform(..),          // §16.6
+    PreviewFill(..),               // §22.4 — the gradient fill's composing drag
     PreviewBackground(..),         // §15.5
     PreviewLayerOpacity(..),       // §14.6  — the in-flight half of a slider drag
     SetShowPeerSelections(bool),   // §17.3

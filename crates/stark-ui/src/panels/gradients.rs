@@ -71,27 +71,41 @@ pub fn GradientsPanel() -> Element {
                         "No gradients yet. Trace a line through your painting and the colours it crosses become one."
                     }
                 }
-                for entry in entries {
-                    {
-                        let remove_name = entry.name.clone();
-                        let strip = gradients::css_strip(&entry.gradient);
-                        rsx! {
-                            div {
-                                key: "{entry.name}",
-                                class: "gradient-row",
-                                div { class: "gradient-strip", style: "background: {strip};" }
-                                div { class: "gradient-row-foot",
-                                    span { class: "gradient-row-name", title: "{entry.name}", "{entry.name}" }
-                                    // The same trash the preset, layer and guide rows
-                                    // wear: a fourth roster, same act, same mark.
-                                    button {
-                                        class: "gradient-remove",
-                                        title: "Remove gradient",
-                                        onclick: move |e| {
-                                            e.stop_propagation();
-                                            gradients::remove(state, &remove_name);
-                                        },
-                                        {icon(icons::REMOVE)}
+                {
+                    // The row the next fill would use (§22.4): the selected
+                    // entry, or the first standing in — highlighted as *the*
+                    // answer, so what a fill will lay is never a surprise.
+                    let current = gradients::current_name(state);
+                    rsx! {
+                        for entry in entries {
+                            {
+                                let select_name = entry.name.clone();
+                                let remove_name = entry.name.clone();
+                                let strip = gradients::css_strip(&entry.gradient);
+                                let active = current.as_deref() == Some(entry.name.as_str());
+                                rsx! {
+                                    div {
+                                        key: "{entry.name}",
+                                        class: if active { "gradient-row active" } else { "gradient-row" },
+                                        // Clicking takes the ramp in hand — and
+                                        // re-previews a composing fill, so mid-mode
+                                        // the canvas answers the click.
+                                        onclick: move |_| gradients::select(state, &select_name),
+                                        div { class: "gradient-strip", style: "background: {strip};" }
+                                        div { class: "gradient-row-foot",
+                                            span { class: "gradient-row-name", title: "{entry.name}", "{entry.name}" }
+                                            // The same trash the preset, layer and guide rows
+                                            // wear: a fourth roster, same act, same mark.
+                                            button {
+                                                class: "gradient-remove",
+                                                title: "Remove gradient",
+                                                onclick: move |e| {
+                                                    e.stop_propagation();
+                                                    gradients::remove(state, &remove_name);
+                                                },
+                                                {icon(icons::REMOVE)}
+                                            }
+                                        }
                                     }
                                 }
                             }

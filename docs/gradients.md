@@ -19,12 +19,12 @@ the engine's problem. The trace is the eyedropper generalized from a point to a
 line (§18.0.2), and everything below follows from taking that sentence
 literally.
 
-What ships in this chapter is the gradient itself and the library of them; what
-*consumes* a gradient ships at seams other chapters already name — the
-position-varying `FillOp` parcel (§18.0.4, §10) first, a gradient-map filter
-layer (§21) behind it. Nothing here anticipates them beyond being the value
-they will embed: no fill mode, no map channel, no inert hook (§1's "nothing
-inert ships").
+The chapter runs from the gradient itself (§22.1) through the capture that
+makes one (§22.2) and the library that keeps them (§22.3) to the first
+consumer: the **gradient fill** (§22.4), the position-varying `FillOp` parcel
+§18.0.4 and §10 always named. The gradient map (§21) remains ahead (§22.5),
+and nothing here anticipates it beyond being the value it will embed — no map
+channel, no inert hook (§1's "nothing inert ships").
 
 ### 22.1 The model: stops in sRGB, a ramp in Oklab
 
@@ -147,10 +147,11 @@ Unlike the presets there are **no built-in entries**: a gradient's whole story
 is that it came off *your* canvas, and a panel opening on a stranger's sunset
 would tell the opposite one. The empty state teaches the gesture instead.
 Captures are named by the machinery ("Gradient N", first free) so the artist
-can trace twice without a dialog between; rows offer the same trash every
-other roster offers, and nothing else — a row is not clickable, because until
-the fill lands there is nothing applying a gradient could mean, and a hover
-highlight would promise one.
+can trace twice without a dialog between; rows wear the same trash every other
+roster wears, and clicking one takes the ramp in hand for the fill (§22.4).
+That click was deliberately withheld until the fill existed: while the library
+was the whole feature, a selectable row would have promised an application
+nothing could honour.
 
 The panel (`PanelId::Gradients`, closed by default like the other
 between-passages panels) shows each entry as a strip drawn by
@@ -160,15 +161,68 @@ disagree with what the engine will later fill with. Its Trace button arms the
 capture mode and stays lit for the mode's life: the catcher it arms is
 invisible, so the button is the mode's indicator as well as its switch.
 
-### 22.4 What attaches here next
+### 22.4 The gradient fill: a parcel that varies with position
 
-- **Gradient fill** (§18.0.4) — the `FillOp` parcel reads its latent from
-  position rather than a uniform (§10's row); the op gains the fitted stops and
-  a geometry (two points, linear first). Region, gate, stacking law, action and
-  footprint unchanged — which is why the fill is *not* this chapter.
+The fill §18.0.4 promised, at exactly the seam it named: `FillOp`'s paint
+became a **`Parcel`** — `Solid` (the old four floats) or `Gradient` (a §22.1
+`Gradient` embedded **by value**, a `GradientAxis`, and one per-unit opacity,
+since stops carry none). Region, gate, stacking law, action, footprint and
+inverse are all untouched: a gradient fill is gated by the selection exactly as
+a brush is, deposits paint with real height, and stacks by the shared parcel
+law. The ramp varies the parcel's *latent* only — one height for the whole
+fill, because a transition in thickness would read as a lighting feature, not a
+colour one. Beyond either end of the axis the ramp holds its end stop: the fill
+covers its whole region, the axis only places the transition.
+
+Two axis kinds, and both are **the drag, read two ways**: `Linear { from, to }`
+is press-to-release along the ramp; `Radial { center, radius }` reads the same
+drag as centre and reach. The composing UI keeps the two raw points and derives
+the axis per kind, so switching Linear ↔ Radial on the bar reinterprets the
+drag the hand already made instead of throwing it away.
+
+**Interpolation happens in the working space, per fragment.** Every stop
+converts on the CPU once per fill — `rgb_to_channels` *and* `rgb_to_resid`,
+because in Mixbox the residual is half the colour (§6.7) — and the shader
+lerps between adjacent stops in those channels. In an Oklab document that is
+exactly `Gradient::sample`, so the painted ramp is the panel's strip; in a
+Mixbox document it is a **pigment ramp** — yellow-to-blue passes through green
+the way paint does, which the sRGB strip cannot preview and which is the point
+of painting in pigments. The fragment reads its canvas position through the
+same per-tile origin discipline as the selection rasterizer, so the ramp is a
+pure function of canvas position and a tile's apron cannot disagree with its
+neighbour's interior (§6.4). The solid path kept its exact arithmetic and
+lanes — branching on stop count, not restructuring — so the fill golden did
+not move.
+
+**The composing mode is the transform's, aimed at a fill** (§16.6). The
+Selection bar — the fill needs a mask to be bounded by, and the bar exists
+exactly when there is one — gains a **Gradient** button (disabled with an
+explanatory title while the library is empty). It swaps in a bar of its own
+(the ramp in hand as a strip, Linear/Radial, Done) and a full-viewport catcher
+where the drag composes the axis. Every mutation funnels through one update
+that issues `ViewCommand::PreviewFill` — the same `FillRenderer::apply` the
+commit runs over the committed tiles, so **preview == commit bit-exactly**
+(pinned in `tests/fill.rs`) and re-dragging previews one fill, never a stack of
+glazes. "Done" commits a single `DocCommand::Fill`; entering Timeline mode
+abandons the composition the way it abandons a transform. The brush's opacity
+and `add` are captured at entry, the shape-drag bargain (§6.8): editing the
+brush mid-mode does not change what Done was about to commit.
+
+This is what makes the library's rows *selectable*: "the gradient in hand" now
+means something, so clicking a row takes it (the highlight always resolves —
+an unset or orphaned choice falls back to the first entry), and picking a
+different ramp mid-mode re-previews immediately. The choice is per-session
+working state like the brush colour, not a stored fact about the library.
+
+The wire cost was taken openly: replacing `color` with the `Parcel` enum
+reshapes `FillOp`, so `WIRE_VERSION` moved to 7 (old files refuse rather than
+misread, the §19 alpha policy) and the collab ALPN to `stark/collab/1` (the
+gossip path carries actions with no version of its own, so incompatible builds
+must fail to meet rather than decode each other wrong).
+
+### 22.5 What attaches here next
+
 - **Gradient map** — a filter layer (§21) whose transfer function is a
   `Gradient`, indexing the ramp by the luminance beneath. The same embedded
-  value, a different consumer.
-
-Both consume a `Gradient` by value. Nothing about the library, the capture or
-the model waits on either.
+  value, a different consumer; nothing about the library, the capture or the
+  fill waits on it.

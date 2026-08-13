@@ -62,6 +62,11 @@ pub struct GradientEntry {
 pub struct GradientsState {
     /// Library entries, loaded from `localStorage` at startup.
     pub entries: Signal<Vec<GradientEntry>>,
+    /// The entry the next gradient fill uses (§22.4), by name; `None` — or a
+    /// name a removal has since orphaned — falls back to the first entry
+    /// ([`current`]). Per-session, deliberately: which ramp is in hand is
+    /// working state like the brush colour, not a fact about the library.
+    pub selected: Signal<Option<String>>,
     /// Whether the trace mode is armed: the canvas catcher is mounted and the
     /// next drag across the painting is sampled into a gradient.
     pub armed: Signal<bool>,
@@ -70,6 +75,39 @@ pub struct GradientsState {
     /// A transient line under the library: "the trace found no paint", storage
     /// trouble. `None` when quiet.
     pub notice: Signal<Option<String>>,
+}
+
+/// Make `name` the gradient the next fill uses, and re-preview a composing
+/// fill so the canvas answers the click immediately (§22.4).
+pub fn select(state: AppState, name: &str) {
+    let mut sel = state.gradients.selected;
+    sel.set(Some(name.to_string()));
+    crate::panels::gradient_fill::refresh(state);
+}
+
+/// The gradient a fill would use right now: the selected entry, or the first —
+/// so a library with anything in it always answers, and the Gradients panel
+/// highlights the same row this resolves to.
+pub fn current(state: AppState) -> Option<Gradient> {
+    current_name(state).and_then(|name| {
+        state
+            .gradients
+            .entries
+            .read()
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.gradient.clone())
+    })
+}
+
+/// The name [`current`] resolves to, for the panel's highlight.
+pub fn current_name(state: AppState) -> Option<String> {
+    let entries = state.gradients.entries.read();
+    let sel = state.gradients.selected.read();
+    sel.as_ref()
+        .filter(|n| entries.iter().any(|e| &e.name == *n))
+        .cloned()
+        .or_else(|| entries.first().map(|e| e.name.clone()))
 }
 
 /// Load what this browser has saved. Call once at app start, before the

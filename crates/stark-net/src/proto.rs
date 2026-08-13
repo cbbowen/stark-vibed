@@ -5,7 +5,7 @@
 //! - **Gossip** carries [`Stamped`] messages — one committed action or
 //!   presence frame each, postcard-encoded. Actions are small (fitted control
 //!   points, ids, params); pixels and image bytes never ride gossip.
-//! - **The `stark/collab/0` ALPN** answers [`Request`]s over one bi-stream per
+//! - **The `stark/collab/1` ALPN** answers [`Request`]s over one bi-stream per
 //!   request: the full session [`Snapshot`](Request::Snapshot) (the save-format
 //!   container, assets bundled) for joins.
 //! - **The `iroh-blobs` ALPN** serves individual brush images to peers that
@@ -22,8 +22,11 @@ use stark_core::peer::PeerFrame;
 
 use crate::mirror::Mirror;
 
-/// The catch-up (snapshot) protocol.
-pub(crate) const ALPN: &[u8] = b"stark/collab/0";
+/// The catch-up (snapshot) protocol. The trailing number moves with the wire:
+/// gossip payloads carry no version of their own, so two builds whose action
+/// encoding differs must fail to *meet* rather than decode each other's
+/// messages wrong — bumped to 1 when `FillOp` was reshaped (§22.4).
+pub(crate) const ALPN: &[u8] = b"stark/collab/1";
 
 /// One gossip broadcast: the payload plus who authored it. Postcard-encoded.
 ///

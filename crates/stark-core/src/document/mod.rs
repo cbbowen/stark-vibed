@@ -27,7 +27,7 @@ pub use brush::{
     BrushDynamics, BrushParams, BrushShape, ColorDynamics, ModSource, Modulation, Modulations,
     NoiseKind, OrientationSource, PenState,
 };
-pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
+pub use fill::{FillOp, GradientAxis, GradientParcel, MAX_FILL_TILES, Parcel, ShapeAction};
 pub use filter::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
 /// whether two of them can be reordered.

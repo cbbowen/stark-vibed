@@ -20,15 +20,24 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
-use crate::document::fill::{FillOp, plan};
-use crate::document::selection::{Selection, SelectionMode, SelectionOp, SelectionShape};
+use crate::document::fill::{FillOp, GradientAxis, Parcel, plan};
+use crate::document::selection::{
+    Selection, SelectionMode, SelectionOp, SelectionShape, mask_tex_origin,
+};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 
-// Generated from `fill.wesl`'s own declaration (§6.7).
+// Generated from `fill.wesl`'s own declarations (§6.7).
 use stark_shaders::mirror::fill::Fill as FillUniform;
+use stark_shaders::mirror::fill::Tile as TileUniform;
+
+// The shader's stop capacity is the fitter's (§22.1) — asserted rather than
+// commented, since a gradient with more stops than the uniform holds would
+// truncate silently (§6.10).
+const _: () =
+    assert!(stark_shaders::mirror::fill::MAX_GRADIENT_STOPS as usize == crate::gradient::MAX_STOPS);
 
 #[derive(Clone)]
 pub struct FillRenderer {
@@ -75,6 +84,9 @@ impl FillRenderer {
         if resid_format.is_some() {
             entries.push(desc::load_tex(5, frag)); // base residual (§6.7)
         }
+        // The tile's canvas origin — per tile, where binding 0 is per fill. Bound
+        // unconditionally at 6 so its index does not move with the resid feature.
+        entries.push(desc::uniform(6, frag));
         let bgl = desc::bind_group_layout(device, "stark fill bgl", &entries);
         let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(&bgl)]);
         let mut targets = vec![desc::target(color_format), desc::target(aux_format)];
@@ -138,17 +150,42 @@ impl FillRenderer {
             label: Some("stark fill"),
         });
 
-        let channels = self
-            .color_space
-            .rgb_to_channels([op.color[0], op.color[1], op.color[2]]);
-        let resid = self
-            .color_space
-            .rgb_to_resid([op.color[0], op.color[1], op.color[2]]);
-        let uniform = FillUniform {
-            c: [channels[0], channels[1], channels[2], op.color[3]],
-            p: [op.height, 0.0, 0.0, 0.0],
-            r: [resid[0], resid[1], resid[2], 0.0],
-        };
+        // Every stop's colour converts to this space's channels **on the CPU, once
+        // per fill** — the shader then interpolates in the working space, which is
+        // what makes an Oklab ramp the library strip's and a Mixbox ramp a pigment
+        // mixture (§22.4).
+        let mut uniform = FillUniform::default();
+        uniform.p[0] = op.height;
+        match &op.paint {
+            Parcel::Solid(color) => {
+                let channels = self
+                    .color_space
+                    .rgb_to_channels([color[0], color[1], color[2]]);
+                let resid = self
+                    .color_space
+                    .rgb_to_resid([color[0], color[1], color[2]]);
+                uniform.c = [channels[0], channels[1], channels[2], color[3]];
+                uniform.r = [resid[0], resid[1], resid[2], 0.0];
+            }
+            Parcel::Gradient(g) => {
+                let stops = g.gradient.stops();
+                uniform.p[1] = stops.len() as f32;
+                uniform.p[3] = g.opacity;
+                uniform.axis = match g.axis {
+                    GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
+                    GradientAxis::Radial { center, radius } => {
+                        uniform.p[2] = 1.0;
+                        [center.x, center.y, radius, 0.0]
+                    }
+                };
+                for (i, stop) in stops.iter().enumerate() {
+                    let channels = self.color_space.rgb_to_channels(stop.color);
+                    let resid = self.color_space.rgb_to_resid(stop.color);
+                    uniform.stop_c[i] = [channels[0], channels[1], channels[2], stop.t];
+                    uniform.stop_r[i] = [resid[0], resid[1], resid[2], 0.0];
+                }
+            }
+        }
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark fill uniform"),
             contents: bytemuck::bytes_of(&uniform),
@@ -170,6 +207,16 @@ impl FillRenderer {
             });
             let region_mask = self.selection.mask_for(&region, *coord);
             let gate_mask = self.selection.mask_for(gate, *coord);
+            // The tile's canvas origin, apron included — mask and paint tiles
+            // share their geometry, so the selection's origin is this pass's too.
+            let origin = mask_tex_origin(*coord);
+            let tile_ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("stark fill tile uniform"),
+                contents: bytemuck::bytes_of(&TileUniform {
+                    origin: [origin.x, origin.y, 0.0, 0.0],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
             let dst = (
                 pool.acquire_tex(self.color_format, AllocSource::FillDestination),
                 pool.acquire_tex(self.aux_format, AllocSource::FillDestination),
@@ -189,6 +236,10 @@ impl FillRenderer {
             if let Some(view) = &base_resid {
                 entries.push(desc::tex(5, view));
             }
+            entries.push(wgpu::BindGroupEntry {
+                binding: 6,
+                resource: tile_ubuf.as_entire_binding(),
+            });
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("stark fill bg"),
                 layout: &self.bgl,

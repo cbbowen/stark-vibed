@@ -57,8 +57,9 @@ use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{
-    FilterBar, FrameBar, FrameOverlay, GradientTraceOverlay, GuideEditOverlay, PerspectiveGuideBar,
-    PickBar, SelectionBar, TimelineBar, TransformBar, TransformOverlay,
+    FilterBar, FrameBar, FrameOverlay, GradientFillBar, GradientFillOverlay, GradientTraceOverlay,
+    GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, TimelineBar, TransformBar,
+    TransformOverlay,
 };
 use platform::capture_pointer;
 use render::CANVAS_ID;
@@ -282,6 +283,12 @@ fn app() -> Element {
             // to any mode already holding the pointer.
             GradientTraceOverlay {}
 
+            // The gradient fill's catcher and axis chrome, while the Selection
+            // bar's Gradient is composing (§22.4). Beside the trace's
+            // in the stack; the two modes cannot be live at once — one is armed
+            // from a panel the other's bar has replaced.
+            GradientFillOverlay {}
+
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.
             PeerCursors {}
@@ -306,6 +313,9 @@ fn app() -> Element {
                 // The transform gesture's flips and "Done", standing in for the
                 // selection bar while one is composing (§16.6).
                 TransformBar {}
+                // The gradient fill's axis kinds and "Done", standing in the
+                // same way while a ramp is being composed (§22.4).
+                GradientFillBar {}
                 // The drawing-guide edit mode's controls — locks, axis
                 // visibility, cell count, opacity — while a perspective grid is
                 // being composed (§20.5).

@@ -387,6 +387,27 @@ impl Engine {
         )
     }
 
+    /// The document as a `Fill` commit of `op` would leave it — the gradient
+    /// fill's composing preview (§22.4), built through the **same**
+    /// `FillRenderer::apply` the commit uses, for `preview_transform`'s reason:
+    /// what is shown is what "Done" will produce. `None` when the layer cannot
+    /// take paint or the fill is refused (unbounded, over the cap) — the
+    /// preview then shows the committed document, matching the commit.
+    pub(super) fn preview_fill(
+        &self,
+        layer: LayerId,
+        op: &crate::document::FillOp,
+    ) -> Option<DocState> {
+        let doc = self.timeline.current();
+        let base = doc.layer(layer)?.tiles()?.clone();
+        let selection = doc.selection_of(self.actor);
+        let tiles = self
+            .apply
+            .fill
+            .apply(&self.apply.pool, &base, &selection, op)?;
+        Some(doc.map_layer(layer, |l| l.with_tiles(tiles)))
+    }
+
     /// Install (or, with `None`, drop) the unlogged edit in flight and refold — the
     /// shared tail of every `Preview*` command.
     pub(super) fn set_doc_preview(&mut self, preview: Option<DocState>) {

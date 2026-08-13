@@ -85,7 +85,7 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
 - **Live edits:** `iroh-gossip` broadcasts each newly committed `Action`
   (postcard-encoded; small — a fitted path, not pixels) on the session's random
   `TopicId`. The message ceiling is raised (256 KiB) so long strokes fit.
-- **Join / catch-up:** a joining peer connects over the `stark/collab/0` ALPN and
+- **Join / catch-up:** a joining peer connects over the `stark/collab/1` ALPN and
   requests a **snapshot** — the save-format container (§8), assets and grounds
   bundled — then rides the gossip tail. It joins the topic *before* fetching, so
   the snapshot/gossip overlap covers the seam (dedup by id). Every member serves

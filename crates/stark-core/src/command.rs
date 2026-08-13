@@ -431,6 +431,18 @@ pub enum ViewCommand {
     /// map, a long drag never compounds resampling loss.
     PreviewTransform(Option<(LayerId, TransformMap)>),
 
+    /// Show the document as a [`DocCommand::Fill`] would leave it, **without
+    /// logging it** — the in-flight half of the gradient-fill gesture, where the
+    /// drag composes the ramp's axis and "Done" commits one `Fill` (§22.4).
+    /// `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewTransform`](Self::PreviewTransform), through
+    /// the same renderer as its commit (`FillRenderer::apply`), so what is shown
+    /// is what committing would produce. Each preview lays the parcel on the
+    /// *committed* tiles, so redrawing the axis a hundred times previews one
+    /// fill, never a hundred stacked glazes.
+    PreviewFill(Option<(LayerId, FillOp)>),
+
     /// Show a substrate colour **without logging it** — the in-flight half of a
     /// canvas-colour drag (§15.5). `None` drops the preview.
     ///

@@ -600,7 +600,12 @@ impl Engine {
             }
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
-            DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
+            DocCommand::Fill { layer, op } => {
+                // The commit supersedes whatever the gradient-fill mode was
+                // previewing (§22.4) — `Transform`'s reason, one arm up.
+                self.preview.set_doc(None);
+                self.commit(ActionKind::Fill { layer, op });
+            }
             DocCommand::Transform { layer, map } => {
                 // The commit supersedes whatever the gesture was previewing, for
                 // the same reason `SetMatteRect` drops its preview.
@@ -916,6 +921,10 @@ impl Engine {
             }
             ViewCommand::PreviewTransform(t) => {
                 let preview = t.and_then(|(layer, map)| self.preview_transform(layer, &map));
+                self.set_doc_preview(preview);
+            }
+            ViewCommand::PreviewFill(f) => {
+                let preview = f.and_then(|(layer, op)| self.preview_fill(layer, &op));
                 self.set_doc_preview(preview);
             }
             ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),

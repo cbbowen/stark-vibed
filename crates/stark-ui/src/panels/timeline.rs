@@ -113,6 +113,12 @@ pub fn set_open(state: AppState, open: bool) {
     if open && transform.write().take().is_some() {
         dispatch(state, ViewCommand::PreviewTransform(None));
     }
+    // The gradient-fill mode composes against the committed document too
+    // (§22.4), and scrubbing has the same power to pull it out from under.
+    let mut gradient_fill = state.gradient_fill;
+    if open && gradient_fill.write().take().is_some() {
+        dispatch(state, ViewCommand::PreviewFill(None));
+    }
     let mut mode = state.timeline.open;
     mode.set(open);
 }

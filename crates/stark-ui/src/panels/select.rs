@@ -172,13 +172,17 @@ pub fn SelectionBar() -> Element {
     // panel that happens to host the control.
     let brush_color = obs.as_ref().map_or([0.0; 4], |o| o.brush.color);
     drop(obs);
-    // While a transform gesture is composing, its bar stands in for this one: the
-    // whole-selection commands would fight the gesture (deselecting mid-transform
-    // would move the wrong region on "Done").
-    let transforming = state.transform.read().is_some();
+    // While a transform or gradient-fill gesture is composing, its bar stands in
+    // for this one: the whole-selection commands would fight the gesture
+    // (deselecting mid-transform would move the wrong region on "Done").
+    let composing = state.transform.read().is_some() || state.gradient_fill.read().is_some();
+    // The gradient fill needs a ramp to lay; with the library empty the chip
+    // stays, disabled, and its title says where ramps come from — the control
+    // is the map of what is possible, the state says what is missing.
+    let have_gradients = !state.gradients.entries.read().is_empty();
 
     rsx! {
-        if active && !transforming {
+        if active && !composing {
             div { class: chrome_class(state, "selection-bar"),
                 // The Select panel's own mark, on the bar the panel's gestures raise —
                 // the bar is *this panel's* state made visible, so it says so with the
@@ -213,6 +217,28 @@ pub fn SelectionBar() -> Element {
                     onclick: move |_| fill_selection(state),
                     {icon_tinted(icons::PAINT_BUCKET, brush_color)}
                     {label("Fill")}
+                }
+                // The same act as Fill with the parcel varying along a dragged
+                // axis (§22.4) — a mode rather than a click, because
+                // the axis is composed by hand and judged by eye.
+                {
+                    // Hoisted: an `if`/`else` in an rsx! attribute trips clippy's
+                    // suspicious-else-formatting on the expansion.
+                    let gradient_title = if have_gradients {
+                        "Fill the selection with a gradient \u{2014} drag the axis, then Done"
+                    } else {
+                        "No gradients yet \u{2014} trace one in the Gradients panel first"
+                    };
+                    rsx! {
+                        button {
+                            class: "chip",
+                            disabled: !have_gradients,
+                            title: gradient_title,
+                            onclick: move |_| crate::panels::gradient_fill::begin(state),
+                            {icon(icons::GRADIENT)}
+                            {label("Gradient")}
+                        }
+                    }
                 }
                 button {
                     class: "chip",

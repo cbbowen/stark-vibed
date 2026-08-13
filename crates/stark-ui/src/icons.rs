@@ -242,8 +242,18 @@ icons! {
     // built on, made in a picture as well as a word.
     EYEDROPPER => "eyedropper-bold",
     // The Gradients panel (§22.3): a square filling from ink to air, which is what
-    // a ramp is. Worn by the panel's title bar and its entry in the Panels menu.
+    // a ramp is. Worn by the panel's title bar and its entry in the Panels menu —
+    // and by the gradient-fill bar (§22.4), which is that library's ramp being
+    // put to work, so it is the same subject and the same mark.
     GRADIENT => "gradient-bold",
+    // The gradient-fill bar's two axis kinds (§22.4): each glyph is the figure
+    // the drag draws — a segment the ramp runs along, a circle the ramp reaches.
+    // `GRADIENT_RADIAL` shares its file with [`CIRCLE`] the way [`BUILTIN`]
+    // shares [`LOCK`]'s: the *picture* is the same on purpose (both marks mean
+    // "a circle from this drag") while the control differs, so it gets its own
+    // name rather than borrowing the ellipse-select chip's.
+    GRADIENT_LINEAR => "line-segment-bold",
+    GRADIENT_RADIAL => "circle-bold",
     // The trace that *makes* a gradient (§22.2): the eyedropper with a sample in
     // hand, because that is the claim the feature stakes — the trace is the
     // eyedropper generalized from a point to a line, and the mark should say it is
