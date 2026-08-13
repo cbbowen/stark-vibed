@@ -481,7 +481,7 @@ fn every_action_touches_only_what_it_declares() {
             op: FillOp::new(
                 rect(Vec2::new(40.0, 40.0), Vec2::new(80.0, 80.0)),
                 1.0,
-                [0.2, 0.7, 0.4, 1.0],
+                [0.2, 0.7, 0.4],
                 0.5,
             ),
         },
@@ -492,7 +492,7 @@ fn every_action_touches_only_what_it_declares() {
         "fill the selection",
         DocCommand::Fill {
             layer: root,
-            op: FillOp::of_selection([0.3, 0.3, 0.8, 1.0], 0.4),
+            op: FillOp::of_selection([0.3, 0.3, 0.8], 0.4),
         },
     );
 

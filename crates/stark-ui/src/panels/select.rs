@@ -42,10 +42,18 @@ use stark_core::document::{FillOp, SelectionMode, SelectionOp, ShapeAction, Tool
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();
     let obs = state.obs.read();
-    let (tool, action, feather, brush_color) = obs
+    let (tool, action, feather, opacity, brush_color) = obs
         .as_ref()
-        .map(|o| (o.tool, o.shape_action, o.selection_feather, o.brush.color))
-        .unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, [0.0; 4]));
+        .map(|o| {
+            (
+                o.tool,
+                o.shape_action,
+                o.selection_feather,
+                o.fill_opacity,
+                o.brush.color,
+            )
+        })
+        .unwrap_or((Tool::Brush, ShapeAction::default(), 0.0, 1.0, [0.0; 4]));
     drop(obs);
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
@@ -146,6 +154,17 @@ pub fn SelectPanel() -> Element {
                 }
             }
         }
+        // Above Feather, because the two are read in that order: *how solid*, then
+        // *how soft at the edge*. It sets what every fill covers with — the chip's
+        // gesture, the bar's button and the gradient mode alike — and it is one
+        // control rather than the brush's alpha times the brush's flow, which is
+        // the arrangement it replaces: two sliders in another panel, neither
+        // labelled for this, which between them could not reach an opaque fill
+        // (`FillOp::opacity`). It has no effect on the four *selecting* actions;
+        // a selection's own strength is its mask, and softening that everywhere
+        // would leave the marching ants with no 0.5 contour to find.
+        Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: opacity,
+            oninput: move |v| dispatch(state, ViewCommand::SetFillOpacity(v)) }
         Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
             oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
     }
@@ -264,18 +283,24 @@ pub fn SelectionBar() -> Element {
 /// Fill whatever is selected, on the active layer, with the brush's paint
 /// (§18.0.4).
 ///
-/// Reads the colour and the amount off the brush rather than off controls of its
-/// own, which is the same choice [`ShapeAction::Fill`] makes: a fill lays the paint
-/// you have in hand, so the Color and Brush panels are already its settings.
+/// The **colour** comes off the brush, which is the choice [`ShapeAction::Fill`]
+/// makes too: a fill lays the paint you have in hand, so the Color panel is
+/// already its setting. How far it covers does not — that is this panel's Opacity
+/// slider, one control for every way a fill is reached.
 pub fn fill_selection(state: AppState) {
-    let Some((layer, brush)) = state.obs.peek().as_ref().map(|o| (o.active_layer, o.brush)) else {
+    let Some((layer, [r, g, b, _], opacity)) = state
+        .obs
+        .peek()
+        .as_ref()
+        .map(|o| (o.active_layer, o.brush.color, o.fill_opacity))
+    else {
         return;
     };
     dispatch(
         state,
         DocCommand::Fill {
             layer,
-            op: FillOp::of_selection(brush.color, brush.dynamics.add),
+            op: FillOp::of_selection([r, g, b], opacity),
         },
     );
 }

@@ -164,15 +164,20 @@ invisible, so the button is the mode's indicator as well as its switch.
 ### 22.4 The gradient fill: a parcel that varies with position
 
 The fill §18.0.4 promised, at exactly the seam it named: `FillOp`'s paint
-became a **`Parcel`** — `Solid` (the old four floats) or `Gradient` (a §22.1
-`Gradient` embedded **by value**, a `GradientAxis`, and one per-unit opacity,
-since stops carry none). Region, gate, stacking law, action, footprint and
-inverse are all untouched: a gradient fill is gated by the selection exactly as
-a brush is, deposits paint with real height, and stacks by the shared parcel
-law. The ramp varies the parcel's *latent* only — one height for the whole
-fill, because a transition in thickness would read as a lighting feature, not a
-colour one. Beyond either end of the axis the ramp holds its end stop: the fill
-covers its whole region, the axis only places the transition.
+became a **`Parcel`** — `Solid` (a colour) or `Gradient` (a §22.1 `Gradient`
+embedded **by value** and a `GradientAxis`). Region, gate, stacking law, action,
+footprint and inverse are all untouched: a gradient fill is gated by the
+selection exactly as a brush is, deposits paint with real height, and stacks by
+the shared parcel law. The ramp varies the parcel's *latent* only — one
+`FillOp::opacity` for the whole fill, because a transition in thickness would
+read as a lighting feature, not a colour one. Beyond either end of the axis the
+ramp holds its end stop: the fill covers its whole region, the axis only places
+the transition.
+
+A parcel carries **no opacity of its own**, in either variant. It says what
+paint; how far the fill covers is `FillOp::opacity` — the Select panel's slider
+(§6.8) — and asking the question once rather than per-parcel is what keeps a
+gradient fill and a solid one answerable by the same control.
 
 Two axis kinds, and both are **the drag, read two ways**: `Linear { from, to }`
 is press-to-release along the ramp; `Radial { center, radius }` reads the same
@@ -204,9 +209,9 @@ that issues `ViewCommand::PreviewFill` — the same `FillRenderer::apply` the
 commit runs over the committed tiles, so **preview == commit bit-exactly**
 (pinned in `tests/fill.rs`) and re-dragging previews one fill, never a stack of
 glazes. "Done" commits a single `DocCommand::Fill`; entering Timeline mode
-abandons the composition the way it abandons a transform. The brush's opacity
-and `add` are captured at entry, the shape-drag bargain (§6.8): editing the
-brush mid-mode does not change what Done was about to commit.
+abandons the composition the way it abandons a transform. The fill opacity is
+captured at entry, the shape-drag bargain (§6.8): moving the slider mid-mode
+does not change what Done was about to commit.
 
 This is what makes the library's rows *selectable*: "the gradient in hand" now
 means something, so clicking a row takes it (the highlight always resolves —
@@ -215,8 +220,10 @@ different ramp mid-mode re-previews immediately. The choice is per-session
 working state like the brush colour, not a stored fact about the library.
 
 The wire cost was taken openly: replacing `color` with the `Parcel` enum
-reshapes `FillOp`, so `WIRE_VERSION` moved to 7 (old files refuse rather than
-misread, the §19 alpha policy) and the collab ALPN to `stark/collab/1` (the
+reshapes `FillOp`, so `WIRE_VERSION` moved to 7 — and to 9 when the parcel's
+own opacity went away in favour of `FillOp::opacity` (§6.8) — with old files
+refusing rather than misreading, the §19 alpha policy, and the collab ALPN to
+`stark/collab/1` (the
 gossip path carries actions with no version of its own, so incompatible builds
 must fail to meet rather than decode each other wrong).
 

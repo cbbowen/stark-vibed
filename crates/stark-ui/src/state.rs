@@ -343,14 +343,10 @@ pub enum GradientTarget {
     /// Fill the selection on `layer`. The ramp is read live from the library
     /// (the panel's highlighted row), so a click there re-previews.
     ///
-    /// `opacity` and `height` are the brush's, captured at entry the way a
-    /// shape drag captures its colour (§6.8): editing the brush mid-mode must
-    /// not change what "Done" was about to commit.
-    Fill {
-        layer: LayerId,
-        opacity: f32,
-        height: f32,
-    },
+    /// `opacity` is the Select panel's, captured at entry the way a shape drag
+    /// captures its colour (§6.8): moving the slider mid-mode must not change
+    /// what "Done" was about to commit.
+    Fill { layer: LayerId, opacity: f32 },
     /// Repaint the matte `layer` (§15.4). The ramp rides the target — seeded
     /// from the matte's own paint, so re-composing an old gradient's axis does
     /// not silently swap its colours for the library's current row; a library

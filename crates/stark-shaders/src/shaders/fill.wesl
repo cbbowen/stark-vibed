@@ -24,7 +24,7 @@
 // *paint* mixes — a pigment ramp, which is the point of having pigments. Height
 // does not vary: the ramp is a transition in colour, not in thickness.
 
-import package::lib::paint_common::{blend_latent, PAINT_EPS};
+import package::lib::paint_common::{blend_latent, OPACITY_K, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::ramp_common::{ramp_position};
 import package::lib::sample::{load1};
@@ -33,15 +33,22 @@ import package::lib::sample::{load1};
 // (`gradient::MAX_STOPS`, asserted equal host-side §6.10).
 const MAX_GRADIENT_STOPS: u32 = 16;
 
+// Where a fill declares "opaque" to be, as optical mass. Coverage is
+// `1 − exp(−K·mass)` and so reaches 1 only in the limit; something finite has to
+// stand for the end of the slider, and this is it. The matte slab's thickness,
+// for the identical reason and by the identical arithmetic (`matte.wesl`,
+// §15.4): at `OPACITY_K = 1` it leaves under a thousandth of the ground showing.
+const OPAQUE_MASS: f32 = 8.0;
+
 struct Fill {
     // .xyz = a solid parcel's latent in this space's colour channels (Oklab
-    // L,a,b or Mixbox concentrations); .w = its per-unit opacity. Read only
-    // when `p.y == 0` — kept in the same lanes as before the gradient existed,
-    // so a solid fill's arithmetic is bit-identical to what the goldens pinned.
+    // L,a,b or Mixbox concentrations), read only when `p.y == 0`; .w unused —
+    // a parcel carries colour alone, the strength is `p.x` below.
     c: vec4<f32>,
-    // .x = paint height laid at full coverage; .y = gradient stop count (0 = a
+    // .x = the fill's **opacity**: the visible alpha it covers with where
+    // coverage is full (`FillOp::opacity`); .y = gradient stop count (0 = a
     // solid parcel; a gradient always has ≥ 2, §22.1); .z = the axis kind
-    // (0 linear, 1 radial); .w = a gradient parcel's per-unit opacity.
+    // (0 linear, 1 radial); .w unused.
     p: vec4<f32>,
     // A solid parcel colour's **residual** (.xyz) — the half of it the space's
     // three channels cannot express (§6.7); .w unused. Zero for every space but
@@ -124,7 +131,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // a solid fill cannot have moved by an ulp for the gradient existing.
     var parcel_lat = f.c.rgb;
     var parcel_res = f.r.rgb;
-    var parcel_op = f.c.w;
     let stops = u32(f.p.y);
     if stops >= 2 {
         let pos = tile.origin.xy + frag.xy;
@@ -145,14 +151,28 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         let s = clamp((t - a.w) / span, 0.0, 1.0);
         parcel_lat = mix(a.xyz, b.xyz, s);
         parcel_res = mix(f.stop_r[j].xyz, f.stop_r[j + 1u].xyz, s);
-        parcel_op = f.p.w;
     }
 
-    // Coverage scales the *height* — the amount of paint — never the per-unit
-    // opacity, which is a property of the pigment and not of how much of it
-    // there is (§6.1).
-    let h1 = f.p.x * cov;
-    let m1 = parcel_op * h1;
+    // What the fill asks for at this texel: its opacity through its own region and
+    // through the author's gate. A **coverage** — the quantity the eye reads and
+    // the one the slider is labelled with — not yet an amount of paint.
+    let want = min(f.p.x * cov, 1.0 - exp(-OPACITY_K * OPAQUE_MASS));
+
+    // The paint that lands. A fill lays **fully opaque paint**: per-unit opacity 1,
+    // so its optical mass and its height are one number, and that number is
+    // whatever the slab law needs in order to *be* `want` — the inversion
+    // `1 − exp(−K·m) = w` ⇒ `m = −ln(1 − w)/K`, the same one a blended merge-down
+    // runs (`slab.wesl::fs_store`). The cap above is what keeps the logarithm
+    // finite, exactly as `fs_store`'s guard does.
+    //
+    // Two things fall out, and both are the point. A fill at opacity 1 *covers* —
+    // no amount of the brush's flow ever did, since flow enters through the same
+    // exponential and 95% is what its whole range buys. And coverage now scales
+    // the *paint* while landing linearly on the *canvas*: a feathered edge thins
+    // from eight units to none, and reads as precisely the ramp
+    // `selection.wesl` rasterized, because `want` is linear in `cov`.
+    let m1 = -log(1.0 - want) / OPACITY_K;
+    let h1 = m1;
 
     let h = h0 + h1;
     let mm = m0 + m1;

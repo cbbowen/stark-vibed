@@ -155,22 +155,17 @@ impl FillRenderer {
         // what makes an Oklab ramp the library strip's and a Mixbox ramp a pigment
         // mixture (§22.4).
         let mut uniform = FillUniform::default();
-        uniform.p[0] = op.height;
+        uniform.p[0] = op.opacity;
         match &op.paint {
             Parcel::Solid(color) => {
-                let channels = self
-                    .color_space
-                    .rgb_to_channels([color[0], color[1], color[2]]);
-                let resid = self
-                    .color_space
-                    .rgb_to_resid([color[0], color[1], color[2]]);
-                uniform.c = [channels[0], channels[1], channels[2], color[3]];
+                let channels = self.color_space.rgb_to_channels(*color);
+                let resid = self.color_space.rgb_to_resid(*color);
+                uniform.c = [channels[0], channels[1], channels[2], 0.0];
                 uniform.r = [resid[0], resid[1], resid[2], 0.0];
             }
             Parcel::Gradient(g) => {
                 let stops = g.gradient.stops();
                 uniform.p[1] = stops.len() as f32;
-                uniform.p[3] = g.opacity;
                 uniform.axis = match g.axis {
                     GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
                     GradientAxis::Radial { center, radius } => {

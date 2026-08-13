@@ -97,8 +97,8 @@ fn main() {
             op: FillOp::new(
                 SelectionShape::rect_from_corners(lo - pad, hi + pad),
                 0.0,
-                [0.45, 0.40, 0.38, 1.0],
-                4.0,
+                [0.45, 0.40, 0.38],
+                1.0,
             ),
         };
         doc.actions = vec![fill, stroke];

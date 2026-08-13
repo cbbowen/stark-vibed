@@ -16,12 +16,11 @@
 //!   fill of an unbounded plane is undefined, and here the selection is what bounds
 //!   it. A fill with *neither* a bounded shape nor a bounded selection is refused
 //!   ([`plan`] returns `None`), deterministically, so peers and replays agree.
-//! - **A fill deposits paint, not colour.** The parcel it lands carries the brush's
-//!   own [`add`](super::BrushDynamics::add) as its height, so a filled region has
-//!   real thickness: it takes the light, it can be glazed over, and a lift brush can
-//!   scrape it back. It stacks by the shared parcel law (`paint_common.wesl`), the
-//!   very law a stroke deposits through — so a fill cannot drift from a very slow
-//!   brush covering the same area.
+//! - **A fill deposits paint, not colour.** The parcel it lands is fully opaque
+//!   paint of a real thickness — enough of it to *be* the coverage asked for
+//!   ([`FillOp::opacity`]) — so a filled region takes the light, can be glazed
+//!   over, and a lift brush can scrape it back. It stacks by the shared parcel law
+//!   (`paint_common.wesl`), the very law a stroke deposits through.
 //!
 //! Pure CPU geometry, like [`super::transform`]: [`plan`] decides *which* tiles, and
 //! [`crate::gpu::fill::FillRenderer`] does the GPU work.
@@ -82,17 +81,15 @@ impl ShapeAction {
 /// untouched.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Parcel {
-    /// One colour everywhere. Straight (un-premultiplied) sRGB RGBA, like
-    /// [`BrushParams::color`](super::BrushParams::color); the alpha is the
-    /// paint's **per-unit opacity**, not a coverage — a thin wash and a thick
-    /// one differ in [`FillOp::height`], not here (§6.1).
-    Solid([f32; 4]),
+    /// One colour everywhere. Straight sRGB, and **colour only**: how strongly a
+    /// fill covers is [`FillOp::opacity`], one number for the whole fill, so a
+    /// parcel says *what* paint and never *how much* of it (§6.1).
+    Solid([f32; 3]),
     /// A colour ramp read from canvas position (§22.4).
     Gradient(GradientParcel),
 }
 
-/// The gradient half of a [`Parcel`]: which ramp, along what axis, at what
-/// opacity (§22.4).
+/// The gradient half of a [`Parcel`]: which ramp, along what axis (§22.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GradientParcel {
     /// The ramp — embedded **by value**, the way a stroke embeds its brush
@@ -101,9 +98,6 @@ pub struct GradientParcel {
     pub gradient: Gradient,
     /// Where `t = 0` and `t = 1` sit on the canvas.
     pub axis: GradientAxis,
-    /// Per-unit opacity, uniform along the ramp — stops carry no alpha (§22.1),
-    /// so the one opacity a fill has is the parcel's, exactly as for a solid.
-    pub opacity: f32,
 }
 
 /// The geometry mapping canvas position to ramp position — the shape the
@@ -134,54 +128,59 @@ pub struct FillOp {
     pub feather: f32,
     /// The paint to lay — one colour, or a ramp read from position (§22.4).
     pub paint: Parcel,
-    /// Paint **height** laid where coverage is full, taken from the brush's
-    /// [`add`](super::BrushDynamics::add) so a fill and the brush in hand lay the
-    /// same amount of paint. Partial coverage lays proportionally less, which is
-    /// what makes a feathered edge a thinning of the paint rather than a fade of
-    /// its colour.
+    /// How strongly the fill covers where coverage is full: its **visible alpha**,
+    /// in `0..=1`. The Select panel's Opacity slider, and the only strength knob a
+    /// fill has.
     ///
-    /// One height for the whole fill, gradient or not: the ramp varies the
+    /// Stated as coverage rather than as a height because that is the question the
+    /// control answers — *how much of what is underneath still shows?* — and
+    /// because a height cannot answer it. Coverage is `1 − exp(−K·mass)` (§6.1),
+    /// which approaches 1 asymptotically, so "opaque" is not a thickness anyone can
+    /// pick off a slider: at the brush's own flow it is 95%, and the last 5% is a
+    /// dozen more flow's worth. The shader inverts that law instead
+    /// (`fill.wesl`, the same inverse `slab.wesl` merges through) and lays
+    /// **fully opaque paint of exactly the mass this asks for** — so 1 covers, ½
+    /// covers half, and the number on the slider is the number on the canvas.
+    ///
+    /// Partial coverage — a feathered edge, or the selection gating the fill —
+    /// scales it, and since mass and thickness are the same thing for opaque
+    /// paint, a feathered edge is still a *thinning* of the paint rather than a
+    /// fade of its colour.
+    ///
+    /// One opacity for the whole fill, gradient or not: the ramp varies the
     /// *colour* of the paint, never how much of it there is — a transition in
     /// thickness would read as a lighting feature, not a colour one (§22.4).
-    pub height: f32,
+    pub opacity: f32,
 }
 
 impl FillOp {
-    pub fn new(shape: SelectionShape, feather: f32, color: [f32; 4], height: f32) -> Self {
-        Self::with_paint(
-            shape,
-            feather,
-            Parcel::Solid(color.map(|c| c.clamp(0.0, 1.0))),
-            height,
-        )
+    pub fn new(shape: SelectionShape, feather: f32, color: [f32; 3], opacity: f32) -> Self {
+        Self::with_paint(shape, feather, Parcel::Solid(color), opacity)
     }
 
-    pub fn with_paint(shape: SelectionShape, feather: f32, paint: Parcel, height: f32) -> Self {
+    pub fn with_paint(shape: SelectionShape, feather: f32, paint: Parcel, opacity: f32) -> Self {
         let paint = match paint {
             Parcel::Solid(c) => Parcel::Solid(c.map(|c| c.clamp(0.0, 1.0))),
-            Parcel::Gradient(g) => Parcel::Gradient(GradientParcel {
-                opacity: g.opacity.clamp(0.0, 1.0),
-                ..g
-            }),
+            gradient => gradient,
         };
         Self {
             shape,
             feather,
             paint,
-            height: height.max(0.0),
+            opacity: opacity.clamp(0.0, 1.0),
         }
     }
 
     /// Fill whatever is selected — the selection bar's button. Bounded by the mask
     /// alone, so [`plan`] refuses it when there is no mask.
-    pub fn of_selection(color: [f32; 4], height: f32) -> Self {
-        Self::new(SelectionShape::All, 0.0, color, height)
+    pub fn of_selection(color: [f32; 3], opacity: f32) -> Self {
+        Self::new(SelectionShape::All, 0.0, color, opacity)
     }
 
     /// Fill whatever is selected with a gradient — the selection bar's gradient
     /// mode (§22.4). The same bound and the same refusal as [`Self::of_selection`].
-    pub fn gradient_of_selection(parcel: GradientParcel, height: f32) -> Self {
-        Self::with_paint(SelectionShape::All, 0.0, Parcel::Gradient(parcel), height)
+    pub fn gradient_of_selection(parcel: GradientParcel, opacity: f32) -> Self {
+        Self::with_paint(SelectionShape::All, 0.0, Parcel::Gradient(parcel), opacity)
     }
 
     /// How far past the shape's own boundary its coverage can reach, in canvas px.
@@ -275,34 +274,34 @@ mod tests {
 
     #[test]
     fn filling_the_selection_needs_a_selection() {
-        let op = FillOp::of_selection([1.0; 4], 0.6);
+        let op = FillOp::of_selection([1.0; 3], 1.0);
         // Nothing selected: unbounded, and refused rather than guessed at.
         assert!(plan(&op, &Selection::everything()).is_none());
     }
 
     #[test]
     fn a_bounded_shape_fills_without_a_selection() {
-        let op = FillOp::new(rect(0.0, 10.0), 0.0, [1.0; 4], 0.6);
+        let op = FillOp::new(rect(0.0, 10.0), 0.0, [1.0; 3], 1.0);
         let coords = plan(&op, &Selection::everything()).expect("bounded");
         assert!(!coords.is_empty());
     }
 
     #[test]
     fn an_empty_lasso_fills_nothing_rather_than_failing() {
-        let op = FillOp::new(SelectionShape::Lasso(Vec::new()), 0.0, [1.0; 4], 0.6);
+        let op = FillOp::new(SelectionShape::Lasso(Vec::new()), 0.0, [1.0; 3], 1.0);
         assert_eq!(plan(&op, &Selection::everything()), Some(Vec::new()));
     }
 
     #[test]
     fn an_enormous_fill_is_refused() {
-        let op = FillOp::new(rect(0.0, 1.0e6), 0.0, [1.0; 4], 0.6);
+        let op = FillOp::new(rect(0.0, 1.0e6), 0.0, [1.0; 3], 1.0);
         assert!(plan(&op, &Selection::everything()).is_none());
     }
 
     #[test]
     fn feather_widens_the_written_region_by_half_its_ramp() {
-        let hard = FillOp::new(rect(0.0, 10.0), 0.0, [1.0; 4], 0.6);
-        let soft = FillOp::new(rect(0.0, 10.0), 512.0, [1.0; 4], 0.6);
+        let hard = FillOp::new(rect(0.0, 10.0), 0.0, [1.0; 3], 1.0);
+        let soft = FillOp::new(rect(0.0, 10.0), 512.0, [1.0; 3], 1.0);
         let n = |op| plan(op, &Selection::everything()).expect("bounded").len();
         assert!(n(&soft) > n(&hard));
     }

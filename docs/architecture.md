@@ -261,6 +261,7 @@ pub enum ViewCommand {             // never logged, never sent
     SetRotation(f32), MirrorH,     // §18.1.2
     Resize(Extent2),
     SetSelectionMode(SelectionMode), SetSelectionFeather(f32),
+    SetFillOpacity(f32),           // §6.8 — every fill's one strength knob
     SetMediaParams(MediaParams), SetEnvironment(EnvironmentId),
     SetActiveLayer(LayerId),       // (see PeerCommand — published when sharing)
     PreviewMatteRect(..),          // §15.7

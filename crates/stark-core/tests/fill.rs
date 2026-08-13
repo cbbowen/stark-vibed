@@ -19,8 +19,17 @@ use stark_core::document::{
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 
-const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-const GREEN: [f32; 4] = [0.1, 0.8, 0.2, 1.0];
+/// A fill's paint is colour alone — how far it covers is `FillOp::opacity`,
+/// which the Select panel's slider sets (§18.0.4). These double as brush
+/// colours through [`opaque`], which is where a per-unit opacity still belongs.
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
+const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
+
+/// The same colour as a *brush's*, whose alpha is the pigment's per-unit opacity
+/// (§6.1) rather than anything a fill reads.
+fn opaque([r, g, b]: [f32; 3]) -> [f32; 4] {
+    [r, g, b, 1.0]
+}
 
 /// A pixel's screen position for a canvas point, under the tests' identity view.
 fn screen_of(canvas: Vec2) -> (u32, u32) {
@@ -59,14 +68,14 @@ fn select_rect(engine: &mut stark_core::Engine, min: Vec2, max: Vec2, feather: f
 }
 
 /// Commit a fill of the rect `min..max` with `color`, through the direct command
-/// path. `height` is the amount of paint, as the brush's `add` would supply it.
+/// path. `opacity` is how far it covers, which is what the panel's slider sets.
 fn fill_rect(
     engine: &mut stark_core::Engine,
     min: Vec2,
     max: Vec2,
-    color: [f32; 4],
+    color: [f32; 3],
     feather: f32,
-    height: f32,
+    opacity: f32,
 ) {
     let layer = engine.observe().active_layer;
     engine.process(DocCommand::Fill {
@@ -75,16 +84,16 @@ fn fill_rect(
             SelectionShape::rect_from_corners(min, max),
             feather,
             color,
-            height,
+            opacity,
         ),
     });
 }
 
-/// Arm the Fill action with a red brush. A fill lays *the brush's* paint, so the
-/// colour and the amount come off the Color and Brush panels rather than off
-/// controls of Fill's own — which is what the gesture tests have to set up.
-fn arm_fill(engine: &mut stark_core::Engine, color: [f32; 4]) {
-    engine.process(ViewCommand::SetBrush(brush(color, 16.0)));
+/// Arm the Fill action with a red brush. A fill lays *the brush's colour*, so
+/// that much still comes off the Color panel; how far it covers is the Select
+/// panel's own opacity, which defaults to a full one.
+fn arm_fill(engine: &mut stark_core::Engine, color: [f32; 3]) {
+    engine.process(ViewCommand::SetBrush(brush(opaque(color), 16.0)));
     engine.process(ViewCommand::SetShapeAction(ShapeAction::Fill));
 }
 
@@ -115,7 +124,7 @@ fn a_fill_lays_paint_inside_its_region_and_nothing_outside() {
         Vec2::new(40.0, 40.0),
         RED,
         0.0,
-        0.6,
+        1.0,
     );
     let after = engine.render_to_image();
 
@@ -159,7 +168,7 @@ fn the_selection_bounds_the_fill() {
         Vec2::new(90.0, 90.0),
         RED,
         0.0,
-        0.6,
+        1.0,
     );
     let img = engine.render_to_image();
 
@@ -214,21 +223,22 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
     };
     paint(
         &mut engine,
-        GREEN,
+        opaque(GREEN),
         20.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
     let painted = engine.render_to_image();
     assert!(is_green(&painted, Vec2::ZERO));
 
-    // A thin, low-opacity wash: a glaze, which must tint rather than cover. The
+    // A wash at a twentieth: a glaze, which must tint rather than cover. The
     // parcel law is the brush's own (`paint_common.wesl`), so this is the same
-    // arithmetic a very slow brush over the same area would run.
+    // arithmetic a very slow brush over the same area would run — the opacity
+    // only says how much of it to run.
     fill_rect(
         &mut engine,
         Vec2::new(-60.0, -60.0),
         Vec2::new(60.0, 60.0),
-        [1.0, 0.0, 0.0, 0.15],
+        RED,
         0.0,
         0.05,
     );
@@ -252,11 +262,60 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
         Vec2::new(60.0, 60.0),
         RED,
         0.0,
-        2.0,
+        1.0,
     );
     assert!(
         is_red(&engine.render_to_image(), Vec2::ZERO),
         "a thick fill should cover what is under it"
+    );
+}
+
+/// **The claim the Opacity slider exists to make** (§6.8): at 1 a fill *covers*,
+/// and at ½ it does not. No setting of the brush's flow could say the first —
+/// visible coverage is `1 − exp(−K·mass)`, so the whole flow range at full alpha
+/// stopped at 95% and the slider had no top. The shader now inverts that law for
+/// the mass instead of taking a thickness on faith.
+///
+/// Read as a comparison inside one frame rather than against an absolute colour:
+/// the same fill lands over a green stroke on the left and over bare paper on the
+/// right, and "covers" means those two places agree. The residual tolerance is the
+/// lighting, not the paint — the stroke under the left one still has height, so
+/// the media pass shades the coat over it slightly differently (§6.3).
+#[test]
+fn opacity_one_covers_what_is_under_it_and_a_half_does_not() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let (over_paint, over_paper) = (Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0));
+    let spread = |img: &RgbaImage| {
+        let (a, b) = (texel(img, over_paint), texel(img, over_paper));
+        (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0)
+    };
+
+    paint(
+        &mut engine,
+        opaque(GREEN),
+        20.0,
+        &[Vec2::new(-70.0, 0.0), Vec2::new(-30.0, 0.0)],
+    );
+    let rect = (Vec2::new(-80.0, -40.0), Vec2::new(80.0, 40.0));
+
+    fill_rect(&mut engine, rect.0, rect.1, RED, 0.0, 1.0);
+    let covered = spread(&engine.render_to_image());
+    assert!(
+        covered <= 12,
+        "an opaque fill let the paint under it show through (channels differ by {covered})"
+    );
+
+    // The same stroke, filled again at half — undo puts the canvas back, so the
+    // two fills are compared over identical paint.
+    engine.process(DocCommand::Undo);
+    fill_rect(&mut engine, rect.0, rect.1, RED, 0.0, 0.5);
+    let showing = spread(&engine.render_to_image());
+    assert!(
+        showing > 3 * covered.max(4),
+        "a half-opacity fill hid the paint under it almost as well as an opaque one \
+         ({showing} vs {covered}) — the slider's middle is doing nothing"
     );
 }
 
@@ -271,12 +330,14 @@ fn a_feathered_fill_thins_towards_its_edge() {
         Vec2::new(50.0, 50.0),
         RED,
         40.0,
-        0.8,
+        1.0,
     );
     let img = engine.render_to_image();
-    // Coverage scales the *height* — the amount of paint — so a feathered edge is
-    // a thinning of the deposit, not a fade of its colour. Sampled well inside,
-    // near the boundary, and past the ramp.
+    // Coverage scales the *paint* — a feathered edge is a thinning of the deposit,
+    // not a fade of its colour — and, because the shader asks the slab law for the
+    // mass that lands the coverage it was given, what thins on the canvas is the
+    // rasterizer's ramp itself. Sampled well inside, near the boundary, and past
+    // the ramp.
     let inner = texel(&img, Vec2::ZERO);
     let edge = texel(&img, Vec2::new(48.0, 0.0));
     let outside = texel(&img, Vec2::new(90.0, 0.0));
@@ -408,7 +469,7 @@ fn undo_restores_exactly_what_the_fill_covered() {
     };
     paint(
         &mut engine,
-        GREEN,
+        opaque(GREEN),
         18.0,
         &[Vec2::new(-50.0, 20.0), Vec2::new(50.0, 20.0)],
     );
@@ -420,7 +481,7 @@ fn undo_restores_exactly_what_the_fill_covered() {
         Vec2::new(60.0, 60.0),
         RED,
         0.0,
-        0.9,
+        1.0,
     );
     assert!(is_red(&engine.render_to_image(), Vec2::ZERO));
 
@@ -443,14 +504,16 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
         Vec2::new(60.0, 60.0),
         RED,
         0.0,
-        0.9,
+        0.6,
     );
     let filled = engine.render_to_image();
     assert!(is_red(&filled, Vec2::ZERO));
 
-    // The whole argument for a fill depositing *height* rather than a flat colour:
-    // what it lays is paint, so the wet-paint loop can pick it up again. A pure
-    // scraper (`add = 0`, `lift = 1`) should take it off.
+    // The whole argument for a fill depositing *paint* rather than a flat colour:
+    // what it lays has an amount, so the wet-paint loop can pick it up again. A
+    // pure scraper (`add = 0`, `lift = 1`) should take it off. Filled at 0.6 rather
+    // than opaque because the claim is that the paint is liftable, not that one
+    // pass of a scraper out-runs eight units of it.
     let scraper = BrushParams {
         radius: 24.0,
         dynamics: BrushDynamics {
@@ -513,7 +576,7 @@ fn fill_golden() {
     // at once.
     paint(
         &mut engine,
-        GREEN,
+        opaque(GREEN),
         22.0,
         &[Vec2::new(-70.0, -30.0), Vec2::new(70.0, 30.0)],
     );
@@ -523,7 +586,7 @@ fn fill_golden() {
         op: FillOp::new(
             SelectionShape::ellipse_from_corners(Vec2::new(-60.0, -60.0), Vec2::new(60.0, 60.0)),
             18.0,
-            [0.9, 0.2, 0.1, 0.8],
+            [0.9, 0.2, 0.1],
             0.7,
         ),
     });
@@ -538,17 +601,14 @@ use stark_core::colorspace::ColorSpaceId;
 use stark_core::document::{GradientAxis, GradientParcel, Parcel};
 use stark_core::{Gradient, GradientStop, PickOptions};
 
-const BLUE: [f32; 4] = [0.1, 0.2, 0.8, 1.0];
+const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 
 fn red_blue() -> Gradient {
     Gradient::new(vec![
-        GradientStop {
-            t: 0.0,
-            color: [RED[0], RED[1], RED[2]],
-        },
+        GradientStop { t: 0.0, color: RED },
         GradientStop {
             t: 1.0,
-            color: [BLUE[0], BLUE[1], BLUE[2]],
+            color: BLUE,
         },
     ])
     .expect("two stops")
@@ -566,7 +626,7 @@ fn gradient_fill_rect(
     max: Vec2,
     parcel: GradientParcel,
     feather: f32,
-    height: f32,
+    opacity: f32,
 ) {
     let layer = engine.observe().active_layer;
     engine.process(DocCommand::Fill {
@@ -575,7 +635,7 @@ fn gradient_fill_rect(
             SelectionShape::rect_from_corners(min, max),
             feather,
             Parcel::Gradient(parcel),
-            height,
+            opacity,
         ),
     });
 }
@@ -598,7 +658,6 @@ fn a_linear_gradient_fill_ramps_along_its_axis_and_clamps_past_it() {
                 from: Vec2::new(-50.0, 0.0),
                 to: Vec2::new(50.0, 0.0),
             },
-            opacity: 1.0,
         },
         0.0,
         0.7,
@@ -649,7 +708,6 @@ fn a_radial_gradient_fill_rings_outward() {
                 center: Vec2::ZERO,
                 radius: 50.0,
             },
-            opacity: 1.0,
         },
         0.0,
         0.7,
@@ -678,7 +736,7 @@ fn the_gradient_preview_matches_the_commit() {
     };
     paint(
         &mut engine,
-        GREEN,
+        opaque(GREEN),
         20.0,
         &[Vec2::new(-60.0, -20.0), Vec2::new(60.0, 20.0)],
     );
@@ -696,7 +754,6 @@ fn the_gradient_preview_matches_the_commit() {
                 from: Vec2::new(-55.0, 0.0),
                 to: Vec2::new(55.0, 0.0),
             },
-            opacity: 0.9,
         },
         0.6,
     );
@@ -734,7 +791,6 @@ fn the_gradient_preview_does_not_accumulate() {
                     from: Vec2::new(-40.0, 0.0),
                     to: Vec2::new(to, 0.0),
                 },
-                opacity: 1.0,
             },
             0.6,
         )
@@ -773,7 +829,6 @@ fn the_ramp_ends_are_the_stops_in_both_spaces() {
                     from: Vec2::new(-40.0, 0.0),
                     to: Vec2::new(40.0, 0.0),
                 },
-                opacity: 1.0,
             },
             0.0,
             0.7,
@@ -834,7 +889,6 @@ fn a_gradient_fill_survives_save_and_load() {
                     center: Vec2::new(5.0, -3.0),
                     radius: 47.0,
                 },
-                opacity: 0.85,
             },
             0.65,
         ),

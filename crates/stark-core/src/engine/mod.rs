@@ -240,6 +240,8 @@ pub struct ObservableState {
     pub shape_action: ShapeAction,
     /// Edge softness (canvas px) the next shape gesture will apply.
     pub selection_feather: f32,
+    /// How strongly the next fill will cover, `0..=1` (§18.0.4).
+    pub fill_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     pub show_peer_selections: bool,
     /// The drawing guides (§20.5) — projected so the Drawing Guides panel and
@@ -882,6 +884,9 @@ impl Engine {
             ViewCommand::SetSelectionFeather(feather) => {
                 self.session.selection_feather = feather.max(0.0)
             }
+            ViewCommand::SetFillOpacity(opacity) => {
+                self.session.fill_opacity = opacity.clamp(0.0, 1.0)
+            }
             ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
             ViewCommand::SetGuides(mut guides) => {
                 // The whole list arrives on every edit (§20.5), so the names are
@@ -1082,6 +1087,7 @@ impl Engine {
             selection_hull: doc.selection_of(self.actor).hull(),
             shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather,
+            fill_opacity: self.session.fill_opacity,
             show_peer_selections: self.session.show_peer_selections,
             guides: self.session.guides.clone(),
             media: self.compositor_pipeline.media(),

@@ -26,8 +26,9 @@ use crate::mirror::Mirror;
 /// gossip payloads carry no version of their own, so two builds whose action
 /// encoding differs must fail to *meet* rather than decode each other's
 /// messages wrong — bumped with `WIRE_VERSION` whenever an action reshapes
-/// (1: `FillOp`'s parcel; 2: the matte's paint and anchor, §22.4, §15.4).
-pub(crate) const ALPN: &[u8] = b"stark/collab/2";
+/// (1: `FillOp`'s parcel; 2: the matte's paint and anchor, §22.4, §15.4;
+/// 3: a fill's strength became one field and a coverage, §6.8).
+pub(crate) const ALPN: &[u8] = b"stark/collab/3";
 
 /// One gossip broadcast: the payload plus who authored it. Postcard-encoded.
 ///

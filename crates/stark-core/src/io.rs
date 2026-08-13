@@ -116,7 +116,23 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// widened from `Option<LayerId>` to `Place` — the encoding-free widening
 /// `MoveLayer` demonstrated, here so a ground can be born at the bottom of the
 /// stack (§15.5). Same alpha-policy arithmetic as 7.
-const WIRE_VERSION: u32 = 8;
+///
+/// **9** — a fill's strength became one number, and a **coverage** (§18.0.4).
+/// `FillOp::height` — paint laid at full coverage, taken off the brush's flow —
+/// is now `opacity`, the visible alpha to cover with; the two per-unit opacities
+/// that used to ride alongside it went with the change, `Parcel::Solid`
+/// narrowing from RGBA to RGB and `GradientParcel` dropping its `opacity`.
+/// Three floats out and one in, all inside existing variants, so a version-8
+/// `Fill` action misreads from `paint` onward rather than degrading — which is
+/// the break the version refuses, the same shape as 5's.
+///
+/// The reason is that the old trio could not express the thing people reach for.
+/// Coverage is `1 − exp(−K·opacity·height)`, so the brush's entire flow at full
+/// alpha covered 95% and no setting said "and the rest". Naming the *coverage*
+/// and inverting the law for the mass — `slab.wesl`'s inversion, already here for
+/// blended merges — makes 1 mean opaque and ½ mean half, and leaves a fill only
+/// one control to disagree with.
+const WIRE_VERSION: u32 = 9;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

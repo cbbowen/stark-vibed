@@ -94,17 +94,45 @@ case (fill the selection, with nothing selected) is **refused**,
 deterministically, so peers and replays agree; inventing a boundary would be a
 different fill on every client.
 
-**A fill deposits paint, not colour.** Its parcel carries the brush's own `add`
-as its height and stacks by the shared parcel law (`paint_common.wesl`) — the
-very law a stroke deposits through, so a fill cannot drift from a very slow brush
-over the same area. A filled region has real thickness: it takes the light, it
-can be glazed over, and a lift brush scrapes it back off (`tests/fill.rs` pins
-that last one, because it is the whole difference from a paint bucket). Coverage
-scales the *height*, never the per-unit opacity, so a feathered edge is a
-thinning of the deposit rather than a fade of its colour. The drag previews as
-the *paint* rather than an outline — the same `FillRenderer::apply` the commit
-makes, over the same base, so `preview == committed` holds as it does for a
-stroke.
+**A fill deposits paint, not colour.** It stacks by the shared parcel law
+(`paint_common.wesl`) — the very law a stroke deposits through. A filled region
+has real thickness: it takes the light, it can be glazed over, and a lift brush
+scrapes it back off (`tests/fill.rs` pins that last one, because it is the whole
+difference from a paint bucket). Coverage scales the *paint*, never the per-unit
+opacity, so a feathered edge is a thinning of the deposit rather than a fade of
+its colour. The drag previews as the *paint* rather than an outline — the same
+`FillRenderer::apply` the commit makes, over the same base, so
+`preview == committed` holds as it does for a stroke.
+
+**How much it covers is one number, and it is a coverage.** `FillOp::opacity`,
+the Select panel's Opacity slider, sitting above Feather: *how solid*, then *how
+soft at the edge*. Every way of reaching a fill reads it — the chip's gesture,
+the selection bar's button, the gradient mode — so a fill has exactly one
+strength control and it is in the panel that fills.
+
+It replaced two, and the reason is worth keeping. A fill used to lay the
+brush's colour alpha at the brush's flow, on the argument that a fill lays the
+paint you have in hand. What that actually gave the user was a Fill button
+governed by two sliders in another panel, neither labelled for this job, which
+between them **could not produce an opaque fill**: visible coverage is
+`1 − exp(−K·opacity·height)` (§6.1), so the whole of the flow range at full
+alpha buys 95%, and the last 5% is a dozen more flow's worth. A slider that
+cannot reach its own top is not a control.
+
+Naming the *coverage* instead, and letting the shader solve for the paint,
+fixes both halves at once. `fill.wesl` inverts the slab law —
+`m = −ln(1 − w)/K`, the same inversion `slab.wesl` already runs to merge a layer
+through a blend mode — and lays fully opaque paint of exactly that mass, capped
+at the thickness the matte slab calls opaque (§15.4). So 1 covers, ½ covers
+half, and the feather ramp lands on the canvas as precisely the ramp
+`selection.wesl` rasterized, because the coverage asked for is linear in the
+mask and only the paint that delivers it is not. The brush's colour is still the
+fill's colour; only its *alpha* stopped being consulted, that being a fact about
+the pigment rather than about how much of the picture this covers.
+
+The slider is the fill's, not the selection's, and that is deliberate: scaling
+the mask itself would dim every tool acting through it and, worse, would leave a
+selection at 0.4 with no 0.5 contour for the marching ants to find.
 
 **Selecting is momentary; filling is not.** `Session::end_shape` hands the canvas
 back to `Tool::Brush` the moment a *selecting* gesture actually encloses
