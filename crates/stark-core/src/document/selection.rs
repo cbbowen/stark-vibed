@@ -11,10 +11,10 @@
 //! Two properties fall out of storing it as tiles:
 //!
 //! - **The infinite canvas still works.** Tiles are sparse, and the coverage that
-//!   reigns where there is no tile is carried as a single flag ([`Selection::outside`]).
-//!   "No selection" is `outside = 1` with no tiles at all — free — and so is its
-//!   inverse, which is what lets `Invert` stay a constant-cost operation on an
-//!   unbounded canvas instead of an impossible one.
+//!   reigns where there is no tile is carried as a single number
+//!   ([`Selection::outside`]). "No selection" is `outside = 1` with no tiles at all
+//!   — free — and so is its inverse, which is what lets `Invert` stay a
+//!   constant-cost operation on an unbounded canvas instead of an impossible one.
 //! - **History and collaboration are free.** The map is persistent (`rpds`), so a
 //!   `DocState` snapshot with a selection costs the same handful of `Arc` bumps it
 //!   always did, and a mask texture returns to the pool when the last version
@@ -90,10 +90,13 @@ impl SelectionShape {
     }
 
     /// The coverage this shape has arbitrarily far from its bounding box: 1 for
-    /// [`Self::All`], 0 for everything else. Only ever 0 or 1, which is what keeps
-    /// [`Selection::outside`] a flag rather than a value.
-    fn coverage_outside(&self) -> bool {
-        matches!(self, Self::All)
+    /// [`Self::All`], 0 for everything else.
+    ///
+    /// Only ever 0 or 1 even though coverage is now scaled by
+    /// [`SelectionOp::opacity`] — the unbounded shape is pinned to full strength by
+    /// [`SelectionOp::new`], for the reason given there.
+    fn coverage_outside(&self) -> f32 {
+        if matches!(self, Self::All) { 1.0 } else { 0.0 }
     }
 }
 
@@ -127,12 +130,17 @@ impl SelectionMode {
 
     /// Combine two coverages under this mode — the CPU twin of the shader's algebra,
     /// used to carry [`Selection::outside`] (where there is no tile to rasterize).
-    fn combine(self, prev: bool, shape: bool) -> bool {
+    ///
+    /// Literally the soft-set expressions above, on `f32`. It used to be a boolean
+    /// twin of them, which was sound while every coverage in play was 0 or 1; a
+    /// partial selection ([`SelectionOp::opacity`]) makes the real algebra the only
+    /// one that answers, and the two spellings can no longer drift apart.
+    fn combine(self, prev: f32, shape: f32) -> f32 {
         match self {
             Self::Replace => shape,
-            Self::Union => prev || shape,
-            Self::Subtract => prev && !shape,
-            Self::Intersect => prev && shape,
+            Self::Union => prev.max(shape),
+            Self::Subtract => prev * (1.0 - shape),
+            Self::Intersect => prev * shape,
         }
     }
 }
@@ -146,14 +154,43 @@ pub struct SelectionOp {
     /// Edge softness in canvas px: the width of the coverage ramp across the
     /// boundary. 0 still antialiases (the ramp floors at one pixel).
     pub feather: f32,
+    /// The coverage the shape lands at where it fully covers, in `0..=1` — how
+    /// *strongly* this region is selected, the Select panel's Opacity slider.
+    ///
+    /// The mask is a coverage field and every tool already acts through it in
+    /// proportion (§6.8), so a partial selection needs nothing new anywhere
+    /// downstream: a brush deposits at that fraction, a fill lands at it, a
+    /// transform carries it. Feather says the same thing about the *edge* and this
+    /// says it about the whole region — one is a ramp, the other a level, and they
+    /// multiply.
+    ///
+    /// Pinned to 1 for [`SelectionShape::All`], which cannot carry a strength: the
+    /// unbounded shape is the deselect primitive, and its coverage lands in
+    /// [`Selection::outside`] where a shape has no boundary to rasterize. Rather
+    /// than grow a rewrite-every-tile path for a state the UI has no way to ask
+    /// for — "select all, at a half" is not a control anywhere — the constructor
+    /// refuses to build it. A partial `outside` is still reachable, by inverting a
+    /// partial selection, and that path is exact.
+    pub opacity: f32,
 }
 
 impl SelectionOp {
     pub fn new(mode: SelectionMode, shape: SelectionShape, feather: f32) -> Self {
+        Self::at(mode, shape, feather, 1.0)
+    }
+
+    /// [`Self::new`] at a partial strength — see [`Self::opacity`].
+    pub fn at(mode: SelectionMode, shape: SelectionShape, feather: f32, opacity: f32) -> Self {
+        let unbounded = matches!(shape, SelectionShape::All);
         Self {
             mode,
             shape,
             feather: feather.max(0.0),
+            opacity: if unbounded {
+                1.0
+            } else {
+                opacity.clamp(0.0, 1.0)
+            },
         }
     }
 
@@ -164,7 +201,8 @@ impl SelectionOp {
     }
 
     /// The shape/feather packed for `selection.wesl`'s uniform: `(b, c)` where `b`
-    /// carries the analytic shape's parameters and `c` the kind/mode/edge count.
+    /// carries the analytic shape's parameters and `c` the kind/mode/edge
+    /// count/opacity.
     pub(crate) fn shader_params(&self, edges: usize) -> ([f32; 4], [f32; 4]) {
         let (kind, b) = match &self.shape {
             SelectionShape::All => (0.0, [0.0; 4]),
@@ -174,7 +212,7 @@ impl SelectionOp {
             }
             SelectionShape::Lasso(_) => (3.0, [0.0; 4]),
         };
-        (b, [kind, self.mode.code(), edges as f32, 0.0])
+        (b, [kind, self.mode.code(), edges as f32, self.opacity])
     }
 }
 
@@ -183,10 +221,31 @@ impl SelectionOp {
 #[derive(Clone)]
 pub struct Selection {
     tiles: MaskMap,
-    /// Whether canvas outside [`Self::tiles`] is selected. Only ever fully in or
-    /// fully out: every combine rule maps `{0,1}²` into `{0,1}`, and the only shape
-    /// with non-zero coverage at infinity is `All`.
-    outside: bool,
+    /// The coverage that reigns on canvas outside [`Self::tiles`].
+    ///
+    /// A value rather than a flag, since a selection can be partial
+    /// ([`SelectionOp::opacity`]): inverting one leaves the whole plane selected at
+    /// the strength the region had, which no boolean can say. Ops themselves still
+    /// only ever put 0 or 1 here — the only shape with coverage at infinity is
+    /// `All`, pinned to full strength — so the in-between values come from
+    /// [`Self::plan_invert`] alone.
+    outside: f32,
+    /// The strongest coverage anywhere in the mask, and so the level whose *half*
+    /// is the boundary.
+    ///
+    /// **Visualization, and the reflection invert needs.** The outline pass finds
+    /// the contour by differencing the mask (`overlay.wesl`), which needs to know
+    /// what "fully selected" means here — a selection at 0.4 has no 0.5-contour at
+    /// all, and the marching ants would simply vanish. Inversion needs the same
+    /// number for a different reason: the complement of a region selected at 0.4 is
+    /// its outside selected at 0.4, which is `level − m` and not `1 − m`.
+    ///
+    /// Conservative in the same sense [`Self::hull`] is: coverage ≤ level, never
+    /// that the level is reached. `Intersect` multiplies the two peaks, which is an
+    /// upper bound unless they peak in the same place; the old behaviour is the
+    /// limit of this one, since a selection built only from full-strength ops has
+    /// `level == 1` and every expression below reduces to what it was.
+    level: f32,
     /// A conservative analytic bounding box of the selected coverage, in canvas px
     /// — `None` when the selection is unbounded (`outside`) or its extent is not
     /// analytically known. Carried through the op algebra so the transform chrome
@@ -209,7 +268,8 @@ impl Selection {
     pub fn everything() -> Self {
         Self {
             tiles: HashTrieMap::new(),
-            outside: true,
+            outside: 1.0,
+            level: 1.0,
             hull: None,
         }
     }
@@ -223,8 +283,12 @@ impl Selection {
 
     /// Whether nothing is masked, so tools act everywhere. Callers use this to skip
     /// the mask machinery entirely (and the UI to hide the outline).
+    ///
+    /// A partial plane is *not* universal: `outside = 0.5` with no tiles gates every
+    /// tool to half strength everywhere, which is a mask doing its job rather than
+    /// the absence of one.
     pub fn is_universal(&self) -> bool {
-        self.tiles.is_empty() && self.outside
+        self.tiles.is_empty() && self.outside >= 1.0
     }
 
     /// Whether the selection excludes at least part of the canvas — i.e. whether
@@ -235,7 +299,13 @@ impl Selection {
 
     /// Coverage where there is no mask tile, as the shaders want it.
     pub fn outside(&self) -> f32 {
-        if self.outside { 1.0 } else { 0.0 }
+        self.outside
+    }
+
+    /// The level whose half the outline traces, and that inversion reflects
+    /// through — see the field docs.
+    pub fn level(&self) -> f32 {
+        self.level
     }
 
     /// This tile's mask, if the selection has one here.
@@ -258,13 +328,20 @@ impl Selection {
         &self.tiles
     }
 
-    pub(crate) fn from_parts(tiles: MaskMap, outside: bool, hull: Option<(Vec2, Vec2)>) -> Self {
-        // The hull's meaning is "coverage ⊆ hull"; an unbounded selection has no
-        // such box, whatever a caller computed.
-        let hull = if outside { None } else { hull };
+    pub(crate) fn from_parts(
+        tiles: MaskMap,
+        outside: f32,
+        level: f32,
+        hull: Option<(Vec2, Vec2)>,
+    ) -> Self {
+        // The hull's meaning is "coverage ⊆ hull"; a selection with coverage at
+        // infinity has no such box, whatever a caller computed. *Any* coverage, not
+        // just full: a plane selected at a half still reaches everywhere.
+        let hull = if outside > 0.0 { None } else { hull };
         Self {
             tiles,
             outside,
+            level,
             hull,
         }
     }
@@ -275,12 +352,33 @@ impl Selection {
     pub(crate) fn plan(&self, op: &SelectionOp) -> Option<SelectionPlan> {
         let shape_outside = op.shape.coverage_outside();
         let outside = op.mode.combine(self.outside, shape_outside);
+        // The result's peak. The same algebra as the coverage for three of the four
+        // modes; `Subtract` is the exception, and deliberately so — subtracting
+        // *removes* coverage, so what survives peaks no higher than it did, wherever
+        // the op did not reach. Running `combine` here would have said a full-strength
+        // Subtract flattens the level to zero, which is true only of the texels it
+        // covered. See [`Self::level`] on why an upper bound is the right kind of
+        // answer.
+        //
+        // The one corner: a region selected at opacity 0 is an empty selection at
+        // level 0, and reflecting through 0 makes its inverse empty too. That is what
+        // "the complement, at the strength in play" reduces to when the strength is
+        // none, and it is reachable only by deliberately asking to select nothing —
+        // where Deselect is the way back.
+        let level = match op.mode {
+            SelectionMode::Replace => op.opacity,
+            SelectionMode::Union => self.level.max(op.opacity),
+            SelectionMode::Subtract => self.level,
+            SelectionMode::Intersect => self.level * op.opacity,
+        };
 
         // A shape that reaches to infinity has no boundary to rasterize: the result is
         // the constant `outside` everywhere the previous mask was constant, and the
         // previous tiles survive under the combine (Union with All swallows them,
-        // Intersect with All keeps them, and so on).
-        if shape_outside {
+        // Intersect with All keeps them, and so on). `All` is pinned to full strength
+        // ([`SelectionOp::opacity`]), which is exactly what keeps each of these four
+        // constant and this branch as cheap as it always was.
+        if shape_outside > 0.0 {
             return Some(match op.mode {
                 // `s = 1` everywhere ⇒ Replace/Union give all-selected, Subtract
                 // all-deselected: constant, no tiles at all.
@@ -289,6 +387,7 @@ impl Selection {
                         keep_prev: false,
                         rasterize: Vec::new(),
                         outside,
+                        level,
                         hull: None,
                     }
                 }
@@ -297,6 +396,7 @@ impl Selection {
                     keep_prev: true,
                     rasterize: Vec::new(),
                     outside,
+                    level,
                     hull: self.hull,
                 },
             });
@@ -351,18 +451,24 @@ impl Selection {
             keep_prev,
             rasterize,
             outside,
+            level,
             hull,
         })
     }
 
-    /// Plan an inversion: every existing tile flips, and so does `outside`. The
-    /// hull of a newly-bounded result (inverting an unbounded selection with
-    /// holes) is not analytically known, so it falls back to the flipped tiles'
-    /// own extent — coarse, but still a box the coverage lives inside.
+    /// Plan an inversion: every existing tile reflects through [`Self::level`], and
+    /// so does `outside`. The hull of a newly-bounded result (inverting an unbounded
+    /// selection with holes) is not analytically known, so it falls back to the
+    /// flipped tiles' own extent — coarse, but still a box the coverage lives inside.
+    ///
+    /// `level − m` rather than `1 − m`, so the complement of a region selected at
+    /// 0.4 is its outside selected at 0.4 rather than at full strength. Identical to
+    /// the old expression for every selection built at full strength, where
+    /// `level == 1`.
     pub(crate) fn plan_invert(&self) -> SelectionPlan {
         let rasterize: Vec<TileCoord> = self.tiles.keys().copied().collect();
-        let outside = !self.outside;
-        let hull = (!outside)
+        let outside = self.level - self.outside;
+        let hull = (outside <= 0.0)
             .then(|| {
                 let mut it = rasterize.iter();
                 let first = *it.next()?;
@@ -383,6 +489,7 @@ impl Selection {
             keep_prev: false,
             rasterize,
             outside,
+            level: self.level,
             hull,
         }
     }
@@ -394,7 +501,9 @@ pub(crate) struct SelectionPlan {
     pub keep_prev: bool,
     /// Tiles to rasterize afresh.
     pub rasterize: Vec<TileCoord>,
-    pub outside: bool,
+    pub outside: f32,
+    /// The result's peak coverage — see [`Selection::level`].
+    pub level: f32,
     /// The result's analytic hull — see [`Selection::hull`].
     pub hull: Option<(Vec2, Vec2)>,
 }
@@ -467,23 +576,88 @@ pub(crate) const MASK_TEX: u32 = TILE_TEX;
 mod tests {
     use super::*;
 
+    /// The soft-set algebra still degrades to the booleans on hard coverages — the
+    /// property that lets a feathered mask and a hard one be the same code path.
     #[test]
-    fn combine_matches_boolean_algebra() {
+    fn combine_matches_boolean_algebra_on_hard_coverage() {
+        let hard = |b: bool| if b { 1.0 } else { 0.0 };
         for p in [false, true] {
             for s in [false, true] {
-                assert_eq!(SelectionMode::Replace.combine(p, s), s);
-                assert_eq!(SelectionMode::Union.combine(p, s), p || s);
-                assert_eq!(SelectionMode::Subtract.combine(p, s), p && !s);
-                assert_eq!(SelectionMode::Intersect.combine(p, s), p && s);
+                let (pf, sf) = (hard(p), hard(s));
+                assert_eq!(SelectionMode::Replace.combine(pf, sf), hard(s));
+                assert_eq!(SelectionMode::Union.combine(pf, sf), hard(p || s));
+                assert_eq!(SelectionMode::Subtract.combine(pf, sf), hard(p && !s));
+                assert_eq!(SelectionMode::Intersect.combine(pf, sf), hard(p && s));
             }
         }
+    }
+
+    /// The unbounded shape cannot carry a strength: `outside` is where its coverage
+    /// lands, and a partial plane there would need a rewrite of every tile the
+    /// selection has (see [`SelectionOp::opacity`]). The constructor is what makes
+    /// that unrepresentable rather than a rule `plan` would have to remember.
+    #[test]
+    fn select_all_is_pinned_to_full_strength() {
+        let op = SelectionOp::at(SelectionMode::Replace, SelectionShape::All, 0.0, 0.25);
+        assert_eq!(op.opacity, 1.0);
+        // A bounded shape keeps whatever it was given, clamped.
+        let rect = SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(10.0));
+        assert_eq!(
+            SelectionOp::at(SelectionMode::Replace, rect.clone(), 0.0, 0.25).opacity,
+            0.25
+        );
+        assert_eq!(
+            SelectionOp::at(SelectionMode::Replace, rect, 0.0, 4.0).opacity,
+            1.0
+        );
+    }
+
+    /// Inverting reflects through the level, so the complement of a region selected
+    /// at 0.4 is its outside selected at 0.4 — and inverting twice is the identity,
+    /// which `1 − m` would not have been.
+    #[test]
+    fn inverting_a_partial_selection_keeps_its_strength() {
+        let sel = Selection::from_parts(HashTrieMap::new(), 0.0, 0.4, None);
+        let once = sel.plan_invert();
+        assert_eq!(once.outside, 0.4);
+        assert_eq!(once.level, 0.4);
+
+        let flipped = Selection::from_parts(HashTrieMap::new(), once.outside, once.level, None);
+        assert_eq!(
+            flipped.plan_invert().outside,
+            0.0,
+            "invert is an involution"
+        );
+    }
+
+    /// Subtracting cannot raise the level, and — unlike the coverage algebra — does
+    /// not flatten it either: paint outside the subtracted region is still selected
+    /// as strongly as it was.
+    #[test]
+    fn subtracting_leaves_the_level_where_it_was() {
+        let half = SelectionOp::at(
+            SelectionMode::Replace,
+            SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(64.0)),
+            0.0,
+            0.5,
+        );
+        let sel = Selection::everything();
+        assert_eq!(sel.plan(&half).expect("planned").level, 0.5);
+
+        let sel = Selection::from_parts(HashTrieMap::new(), 0.0, 0.5, None);
+        let cut = SelectionOp::new(
+            SelectionMode::Subtract,
+            SelectionShape::rect_from_corners(Vec2::splat(8.0), Vec2::splat(16.0)),
+            0.0,
+        );
+        assert_eq!(sel.plan(&cut).expect("planned").level, 0.5);
     }
 
     #[test]
     fn replacing_with_all_deselects() {
         let sel = Selection::everything();
         let plan = sel.plan(&SelectionOp::select_all()).expect("planned");
-        assert!(plan.outside);
+        assert_eq!(plan.outside, 1.0);
         assert!(plan.rasterize.is_empty());
     }
 
@@ -499,7 +673,10 @@ mod tests {
         // The shape sits inside tile (0,0); with the one-tile ring that is 3×3.
         assert_eq!(plan.rasterize.len(), 9);
         assert!(plan.rasterize.contains(&TileCoord::new(0, 0)));
-        assert!(!plan.outside, "replace leaves everything else deselected");
+        assert_eq!(
+            plan.outside, 0.0,
+            "replace leaves everything else deselected"
+        );
     }
 
     /// The cover is *counted* before it is walked, so a box far too large to list

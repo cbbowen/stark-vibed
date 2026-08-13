@@ -550,6 +550,138 @@ fn the_outline_is_drawn_on_the_boundary_only() {
     assert!(!changed(Vec2::new(20.0, 0.0)), "the exterior is left alone");
 }
 
+/// **A selection has a strength, and every tool acts through it** (§6.8).
+///
+/// The point of putting the opacity on the *mask* rather than on any one tool: the
+/// mask has always meant "how much each texel is selected", so a selection at a
+/// half is a half-strength brush inside it, with nothing in the stroke path
+/// changed. Measured as redness against the same stroke at full strength and
+/// against no stroke at all, so the claim is "between", not a pinned number.
+#[test]
+fn a_partial_selection_dims_every_tool_through_it() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let probe = Vec2::new(-20.0, 0.0);
+    let redness = |img: &RgbaImage| {
+        let (x, y) = screen_of(probe);
+        let i = ((y * img.width + x) * 4) as usize;
+        img.pixels[i] as i32 - (img.pixels[i + 1] as i32 + img.pixels[i + 2] as i32) / 2
+    };
+
+    let bare = redness(&engine.render_to_image());
+    select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
+    crossing_stroke(&mut engine);
+    let full = redness(&engine.render_to_image());
+    assert!(full > bare + 40, "the control stroke did not land");
+
+    // The same selection at a half, and the same stroke through it.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(DocCommand::Select(SelectionOp::at(
+        SelectionMode::Replace,
+        rect(BOX_MIN, BOX_MAX),
+        0.0,
+        0.5,
+    )));
+    crossing_stroke(&mut engine);
+    let half = redness(&engine.render_to_image());
+    assert!(
+        half > bare + 10 && half < full - 10,
+        "a half-strength selection should lay paint between none and all \
+         (bare {bare}, half {half}, full {full})"
+    );
+}
+
+/// The marching ants have to survive the mask being dimmed. They are recovered by
+/// differencing the mask, so a selection at 0.4 has no 0.5-contour in it anywhere
+/// and a fixed threshold would draw nothing at all — the outline reads the
+/// selection's own level instead (§6.8).
+#[test]
+fn a_partial_selection_is_still_outlined() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let bare = engine.render_to_image();
+    engine.process(DocCommand::Select(SelectionOp::at(
+        SelectionMode::Replace,
+        rect(BOX_MIN, BOX_MAX),
+        0.0,
+        0.4,
+    )));
+    let outlined = engine.render_to_image();
+
+    let changed = |p: Vec2| {
+        let (x, y) = screen_of(p);
+        let i = ((y * bare.width + x) * 4) as usize;
+        (0..3)
+            .map(|k| (bare.pixels[i + k] as i32 - outlined.pixels[i + k] as i32).abs())
+            .max()
+            .unwrap_or(0)
+            > 8
+    };
+    assert!(
+        changed(Vec2::new(0.0, 0.0)),
+        "a selection at 0.4 drew no outline"
+    );
+    assert!(
+        !changed(Vec2::new(-20.0, 0.0)),
+        "the interior is left alone"
+    );
+}
+
+/// Inverting reflects through the mask's level, so the complement of a region
+/// selected at a half is its *outside* selected at a half — not at full strength,
+/// which `1 − m` would have given, and not nothing (§6.8).
+#[test]
+fn inverting_a_partial_selection_keeps_its_strength() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let probe = Vec2::new(20.0, 0.0); // outside the box, so inversion selects it
+    let redness = |img: &RgbaImage| {
+        let (x, y) = screen_of(probe);
+        let i = ((y * img.width + x) * 4) as usize;
+        img.pixels[i] as i32 - (img.pixels[i + 1] as i32 + img.pixels[i + 2] as i32) / 2
+    };
+    let bare = redness(&engine.render_to_image());
+
+    engine.process(DocCommand::Select(SelectionOp::at(
+        SelectionMode::Replace,
+        rect(BOX_MIN, BOX_MAX),
+        0.0,
+        0.5,
+    )));
+    engine.process(DocCommand::InvertSelection);
+    crossing_stroke(&mut engine);
+    let inverted = redness(&engine.render_to_image());
+
+    // Full strength through the same inverted geometry, for the upper bound.
+    let Some(mut reference) = engine_or_skip() else {
+        return;
+    };
+    select(
+        &mut reference,
+        SelectionMode::Replace,
+        rect(BOX_MIN, BOX_MAX),
+    );
+    reference.process(DocCommand::InvertSelection);
+    crossing_stroke(&mut reference);
+    let full = redness(&reference.render_to_image());
+
+    assert!(
+        inverted > bare + 10,
+        "inverting a partial selection deselected everything \
+         (bare {bare}, inverted {inverted})"
+    );
+    assert!(
+        inverted < full - 10,
+        "inverting a partial selection promoted it to full strength \
+         (inverted {inverted}, full {full})"
+    );
+}
+
 #[test]
 fn feathered_edge_fades_the_stroke() {
     let Some(mut engine) = engine_or_skip() else {

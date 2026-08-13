@@ -327,10 +327,12 @@ fn mat3_adjugate(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// How the author's selection stands over one populated tile.
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Class {
-    /// No mask tile and `outside = 0`: the transform does not touch this tile
-    /// (though its texels may still *receive* moved paint).
+    /// No mask tile and no coverage outside: the transform does not touch this
+    /// tile (though its texels may still *receive* moved paint).
     Untouched,
-    /// A mask tile exists: some fraction of this tile's paint moves.
+    /// Some fraction of this tile's paint moves — either because it has a mask
+    /// tile, or because the plane around it is only *partly* selected (§6.8),
+    /// which is the same statement without a texture to say it with.
     Partial,
     /// No mask tile and `outside = 1`: all of it moves.
     Full,
@@ -339,7 +341,12 @@ enum Class {
 fn classify(selection: &Selection, coord: TileCoord) -> Class {
     match selection.tile(coord) {
         Some(_) => Class::Partial,
-        None if selection.outside() > 0.5 => Class::Full,
+        // Thresholds on the value rather than either side of a half, now that a
+        // selection can be partial. For every selection built at full strength
+        // `outside` is still 0 or 1, so these two answer exactly as the old
+        // `> 0.5` did.
+        None if selection.outside() >= 1.0 => Class::Full,
+        None if selection.outside() > 0.0 => Class::Partial,
         None => Class::Untouched,
     }
 }
@@ -712,7 +719,7 @@ pub(crate) fn plan_gated_mask(
             drops: Vec::new(),
         });
     }
-    let outside = selection.outside() > 0.5;
+    let outside = selection.outside() > 0.0;
 
     // The source region: where mask coverage inside the rect can be non-zero.
     // With `outside = 1` that is the whole rect (coverage is 1 wherever no

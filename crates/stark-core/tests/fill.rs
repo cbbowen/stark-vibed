@@ -191,7 +191,7 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
     let before = engine.render_to_image();
     engine.process(DocCommand::Fill {
         layer,
-        op: FillOp::of_selection(RED, 0.6),
+        op: FillOp::of_selection(RED),
     });
     let after = engine.render_to_image();
     assert!(
@@ -209,7 +209,7 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
     );
     engine.process(DocCommand::Fill {
         layer,
-        op: FillOp::of_selection(RED, 0.6),
+        op: FillOp::of_selection(RED),
     });
     let filled = engine.render_to_image();
     assert!(is_red(&filled, Vec2::ZERO));
@@ -747,16 +747,13 @@ fn the_gradient_preview_matches_the_commit() {
         8.0,
     );
     let layer = engine.observe().active_layer;
-    let op = FillOp::gradient_of_selection(
-        GradientParcel {
-            gradient: red_blue(),
-            axis: GradientAxis::Linear {
-                from: Vec2::new(-55.0, 0.0),
-                to: Vec2::new(55.0, 0.0),
-            },
+    let op = FillOp::gradient_of_selection(GradientParcel {
+        gradient: red_blue(),
+        axis: GradientAxis::Linear {
+            from: Vec2::new(-55.0, 0.0),
+            to: Vec2::new(55.0, 0.0),
         },
-        0.6,
-    );
+    });
 
     engine.process(ViewCommand::PreviewFill(Some((layer, op.clone()))));
     let previewed = engine.render_to_image();
@@ -784,16 +781,13 @@ fn the_gradient_preview_does_not_accumulate() {
     );
     let layer = engine.observe().active_layer;
     let op = |to: f32| {
-        FillOp::gradient_of_selection(
-            GradientParcel {
-                gradient: red_blue(),
-                axis: GradientAxis::Linear {
-                    from: Vec2::new(-40.0, 0.0),
-                    to: Vec2::new(to, 0.0),
-                },
+        FillOp::gradient_of_selection(GradientParcel {
+            gradient: red_blue(),
+            axis: GradientAxis::Linear {
+                from: Vec2::new(-40.0, 0.0),
+                to: Vec2::new(to, 0.0),
             },
-            0.6,
-        )
+        })
     };
     engine.process(ViewCommand::PreviewFill(Some((layer, op(40.0)))));
     let first = engine.render_to_image();
@@ -882,16 +876,13 @@ fn a_gradient_fill_survives_save_and_load() {
     let layer = engine.observe().active_layer;
     engine.process(DocCommand::Fill {
         layer,
-        op: FillOp::gradient_of_selection(
-            GradientParcel {
-                gradient,
-                axis: GradientAxis::Radial {
-                    center: Vec2::new(5.0, -3.0),
-                    radius: 47.0,
-                },
+        op: FillOp::gradient_of_selection(GradientParcel {
+            gradient,
+            axis: GradientAxis::Radial {
+                center: Vec2::new(5.0, -3.0),
+                radius: 47.0,
             },
-            0.65,
-        ),
+        }),
     });
     let before = engine.render_to_image();
 

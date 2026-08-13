@@ -101,10 +101,13 @@ struct ShapeDrag {
     /// the gesture already looks like it is doing.
     action: ShapeAction,
     feather: f32,
-    /// The paint a fill will lay — the brush's colour, and the Select panel's own
-    /// opacity — taken when the drag began. Carried even for a selecting gesture
-    /// (it costs four floats and keeps one shape for both cases), and unused there.
+    /// The colour a fill will lay, taken off the brush when the drag began. Unused
+    /// by a selecting gesture, which has no paint.
     color: [f32; 3],
+    /// How strongly this gesture's coverage lands — captured with the rest, so
+    /// moving the slider mid-drag cannot change what the drag already looks like it
+    /// is doing. Read by *both* actions: it is the selection's opacity when the
+    /// gesture selects and the fill's when it fills.
     opacity: f32,
     /// Where the drag started; for the marquees this is one corner of the box.
     start: Vec2,
@@ -175,7 +178,7 @@ impl ShapeDrag {
         let shape = self.to_shape()?;
         Some(match self.action {
             ShapeAction::Select(mode) => {
-                ShapeResult::Select(SelectionOp::new(mode, shape, self.feather))
+                ShapeResult::Select(SelectionOp::at(mode, shape, self.feather, self.opacity))
             }
             ShapeAction::Fill => {
                 ShapeResult::Fill(FillOp::new(shape, self.feather, self.color, self.opacity))
@@ -211,18 +214,18 @@ pub struct Session {
     /// action it takes: a feathered fill and a feathered selection are the same
     /// ramp, rasterized by the same shader.
     pub selection_feather: f32,
-    /// How strongly the next fill covers — its visible alpha where coverage is
-    /// full (§18.0.4), `0..=1`.
+    /// How strongly the next shape gesture's coverage lands, `0..=1` — the Select
+    /// panel's Opacity slider, and the exact counterpart of
+    /// [`selection_feather`](Self::selection_feather): one says how soft the edge
+    /// is, this says how strong the whole region is, and whichever action the
+    /// gesture takes reads both.
     ///
-    /// A control of the Select panel's rather than of the brush's, and the fill's
-    /// only strength knob. Fills used to lay the brush's colour alpha at the
-    /// brush's flow, on the argument that a fill is the paint you have in hand;
-    /// what that cost was a Fill button whose result depended on two sliders in
-    /// another panel, neither labelled for this job, and which together could not
-    /// reach an opaque fill at all — flow lands through
-    /// `1 − exp(−K·mass)` and its whole range buys 95% (see
-    /// [`FillOp::opacity`](crate::document::FillOp::opacity)).
-    pub fill_opacity: f32,
+    /// Selecting, it is [`SelectionOp::opacity`] — the mask lands at that coverage,
+    /// and since every tool acts through the mask in proportion (§6.8) a
+    /// half-strength selection is a half-strength brush, fill and transform inside
+    /// it. Filling, it is [`FillOp::opacity`]. The two are the same statement about
+    /// the same coverage, landing on the mask or on the paint.
+    pub shape_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     ///
     /// View state, so each client decides for itself and nothing about it is logged
@@ -283,7 +286,7 @@ impl Session {
             active_layer,
             shape_action: ShapeAction::default(),
             selection_feather: 0.0,
-            fill_opacity: 1.0,
+            shape_opacity: 1.0,
             show_peer_selections: false,
             guides: Vec::new(),
             name: String::new(),
@@ -495,10 +498,11 @@ impl Session {
             action: self.shape_action,
             feather: self.selection_feather,
             // The colour is the brush's — a fill lays the paint you have in hand.
-            // Its *alpha* is not: that is the brush's pigment talking, and how far
-            // a fill covers is the panel's own question (see [`fill_opacity`]).
+            // Its *alpha* is not: that is the brush's pigment talking, and how
+            // strongly this gesture lands is the panel's own question (see
+            // [`shape_opacity`](Self::shape_opacity)).
             color: [r, g, b],
-            opacity: self.fill_opacity,
+            opacity: self.shape_opacity,
             start: pos,
             points: vec![pos],
             current: pos,

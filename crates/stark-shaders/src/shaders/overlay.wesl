@@ -3,12 +3,21 @@
 // Drawn over the finished image, one instanced quad per mask tile, in the same
 // canvas→NDC frame as the compositor. The outline is recovered from the mask itself
 // rather than from the shape that produced it, so it costs nothing to keep correct
-// under union/subtract/intersect: the boundary is the mask's 0.5-contour, and the
-// distance to it is the classic first-order estimate `(m − 0.5) / |∇m|`. Taking the
+// under union/subtract/intersect: the boundary is the mask's half-contour, and the
+// distance to it is the classic first-order estimate `(m − h) / |∇m|`. Taking the
 // gradient at exactly one canvas pixel and converting the distance to *screen* pixels
 // with the zoom gives a line of constant on-screen width at any zoom, and one that
 // stays thin over a feathered edge (where |∇m| is small, so points a little way off
 // the contour are already far in these units) instead of smearing across the ramp.
+//
+// **Half of what, is per selection.** A partial selection (§6.8) scales its whole
+// mask, so a region selected at 0.4 has no 0.5-contour anywhere and the ants would
+// simply not be drawn. Each instance therefore carries its selection's `level` — the
+// strongest coverage in that mask — and the contour is at `level/2`. The recovered
+// distance is unchanged by the scaling, since `m` and `|∇m|` scale together, so the
+// line lands in the same place at the same width whatever strength the selection is
+// drawn at. This is the *only* thing `level` does here: it says where to draw a
+// boundary, never how strongly anything is selected.
 
 struct View {
     // Canvas px → NDC, column-major: `st.xy` is the first column, `st.zw` the
@@ -33,6 +42,7 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     // Flat: one value for the whole instance, not interpolated across the quad.
     @location(1) @interpolate(flat) tint: vec4<f32>,
+    @location(2) @interpolate(flat) level: f32,
 }
 
 @vertex
@@ -42,6 +52,9 @@ fn vs_main(
     @location(0) origin: vec2<f32>,
     // The outline's colour — the marching ants, or a peer's hue (§17.3).
     @location(1) tint: vec4<f32>,
+    // The mask's peak coverage (`Selection::level`) — what "fully selected" means
+    // for this instance's selection, and so twice the contour to trace.
+    @location(2) level: f32,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let canvas_pos = origin + corner * view.misc.x;
@@ -53,6 +66,7 @@ fn vs_main(
     // coverage) at the tile edge rather than clamping.
     out.uv = corner * view.misc.y + view.misc.z;
     out.tint = tint;
+    out.level = level;
     return out;
 }
 
@@ -67,13 +81,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let my1 = textureSample(mask, samp, in.uv + vec2<f32>(0.0, d)).r;
 
     // Coverage gradient per canvas px. Flat mask (interior or exterior) ⇒ no contour
-    // anywhere near, so nothing to draw.
+    // anywhere near, so nothing to draw. The floor scales with the mask, because the
+    // gradient does: a real edge in a selection drawn at 0.1 is a tenth as steep as
+    // the same edge at full strength, and a fixed floor would read it as flat.
     let g = vec2<f32>(mx1 - mx0, my1 - my0) * 0.5;
     let gl = length(g);
-    if gl < 1e-4 {
+    if gl < 1e-4 * in.level {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
-    let dist_px = abs((m - 0.5) / gl) * view.misc.w;
+    let dist_px = abs((m - 0.5 * in.level) / gl) * view.misc.w;
     let alpha = 1.0 - smoothstep(HALF_WIDTH - 0.5, HALF_WIDTH + 0.5, dist_px);
     if alpha <= 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);

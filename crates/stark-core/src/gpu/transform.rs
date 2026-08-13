@@ -541,7 +541,10 @@ impl TransformRenderer {
             let max = corners.iter().fold(corners[0], |a, p| a.max(*p));
             (min, max)
         });
-        let moved_selection = Selection::from_parts(mask_tiles, selection.outside() > 0.5, hull);
+        // A transform *moves* coverage; it does not restrike it, so the strength
+        // the selection was drawn at rides through unchanged (§6.8).
+        let moved_selection =
+            Selection::from_parts(mask_tiles, selection.outside(), selection.level(), hull);
 
         rec.submit(&self.ctx.queue);
         Some((tiles, moved_selection))
@@ -626,7 +629,7 @@ impl TransformRenderer {
             let hull = selection
                 .hull()
                 .map(|(lo, hi)| (lo.min(geo.image_aabb.0), hi.max(geo.image_aabb.1)));
-            Selection::from_parts(mask_tiles, selection.outside() > 0.5, hull)
+            Selection::from_parts(mask_tiles, selection.outside(), selection.level(), hull)
         };
 
         rec.submit(&self.ctx.queue);

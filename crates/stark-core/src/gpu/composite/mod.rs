@@ -1211,10 +1211,15 @@ impl Compositor {
                 Some([r, g, b]) => [r, g, b, PEER_OUTLINE_ALPHA],
                 None => [0.0; 4],
             };
+            // Each selection's own level, so the ants trace *its* half-contour: a
+            // partial selection has no 0.5 in it at all (§6.8), and every peer's
+            // may differ from yours.
+            let level = outline.selection.level();
             for (coord, handle) in outline.selection.tiles() {
                 overlay_instances.push(OverlayInstance {
                     origin: coord.origin().to_array(),
                     tint,
+                    level,
                 });
                 mask_tiles.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("stark overlay tile bg"),

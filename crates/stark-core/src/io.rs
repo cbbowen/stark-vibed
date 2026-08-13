@@ -132,7 +132,22 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// and inverting the law for the mass — `slab.wesl`'s inversion, already here for
 /// blended merges — makes 1 mean opaque and ½ mean half, and leaves a fill only
 /// one control to disagree with.
-const WIRE_VERSION: u32 = 9;
+///
+/// **10** — `SelectionOp` gained an `opacity` (§6.8): how strongly the region it
+/// lands is selected at all. Appended after `feather`, which is inside the
+/// existing struct rather than after it, so a version-9 op decodes the float that
+/// follows it as the opacity and everything after that is off — the same break as
+/// 5's, refused the same way.
+///
+/// It is the whole feature: the mask has always been a coverage *field*, so
+/// scaling what an op writes into it makes a half-strength selection a
+/// half-strength brush, fill and transform, with no consumer changed. The two
+/// things that did have to change are the ones that read the mask as a shape
+/// rather than as a weight — the marching ants, which now contour at half of the
+/// selection's own peak (`Selection::level`), and inversion, which reflects
+/// through that peak so the complement of a region selected at 0.4 is its outside
+/// at 0.4 rather than at full strength.
+const WIRE_VERSION: u32 = 10;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

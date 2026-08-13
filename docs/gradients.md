@@ -209,9 +209,10 @@ that issues `ViewCommand::PreviewFill` — the same `FillRenderer::apply` the
 commit runs over the committed tiles, so **preview == commit bit-exactly**
 (pinned in `tests/fill.rs`) and re-dragging previews one fill, never a stack of
 glazes. "Done" commits a single `DocCommand::Fill`; entering Timeline mode
-abandons the composition the way it abandons a transform. The fill opacity is
-captured at entry, the shape-drag bargain (§6.8): moving the slider mid-mode
-does not change what Done was about to commit.
+abandons the composition the way it abandons a transform. Nothing about strength
+is captured at entry, unlike the brush opacity and `add` this mode used to take:
+a gradient fill lays opaque paint through the selection, so how strongly it lands
+is the selection's own coverage to say (§6.8).
 
 This is what makes the library's rows *selectable*: "the gradient in hand" now
 means something, so clicking a row takes it (the highlight always resolves —

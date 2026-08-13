@@ -380,10 +380,9 @@ pub enum ViewCommand {
     /// Edge softness (canvas px) for the next shape gesture — the same ramp whether
     /// it selects or fills.
     SetSelectionFeather(f32),
-    /// How strongly the next fill covers, `0..=1` — every fill's one strength
-    /// knob, whether it is reached from the Fill chip, the selection bar's button
-    /// or the gradient mode (§18.0.4, §22.4).
-    SetFillOpacity(f32),
+    /// How strongly the next shape gesture's coverage lands, `0..=1` — the mask's
+    /// own strength when the gesture selects, the fill's when it fills (§6.8).
+    SetShapeOpacity(f32),
 
     /// Whether collaborators' selection outlines are drawn over the canvas
     /// (§17.3). View state, so each client decides for itself — this is

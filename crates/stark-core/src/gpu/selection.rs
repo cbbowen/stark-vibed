@@ -48,7 +48,8 @@ pub struct SelectionRenderer {
     region_pipeline: wgpu::RenderPipeline,
     region_view_bgl: wgpu::BindGroupLayout,
     region_tile_bgl: wgpu::BindGroupLayout,
-    /// 1×1 masks holding exactly 0 and 1, indexed by the `outside` flag.
+    /// 1×1 masks holding exactly 0 and 1 — the two coverages a selection has
+    /// outside its own tiles unless it is a partial one (see [`Self::constant`]).
     constants: [wgpu::TextureView; 2],
     /// 1×1 stand-in for the lasso edge list, bound by the analytic shapes.
     dummy_edges: wgpu::TextureView,
@@ -61,7 +62,9 @@ pub struct SelectionRenderer {
 /// bounds) — and `edges` is the lasso's edge buffer, unused by the analytic shapes.
 struct RasterShape<'a> {
     /// Coverage outside the rasterized tiles (§6.8).
-    outside: bool,
+    outside: f32,
+    /// The result's peak coverage ([`Selection::level`]).
+    level: f32,
     /// The result's analytic hull, as the plan computed it ([`Selection::hull`]).
     hull: Option<(Vec2, Vec2)>,
     b: [f32; 4],
@@ -165,11 +168,30 @@ impl SelectionRenderer {
         }
     }
 
-    /// The 1×1 mask holding `coverage` (0 or 1) — what consumers bind wherever the
-    /// selection has no tile. Their clamped `textureLoad` then reads the constant for
-    /// every texel, so nothing branches on whether a mask exists.
-    pub fn constant(&self, coverage: f32) -> &wgpu::TextureView {
-        &self.constants[usize::from(coverage >= 0.5)]
+    /// The 1×1 mask holding `coverage` — what consumers bind wherever the selection
+    /// has no tile. Their clamped `textureLoad` then reads the constant for every
+    /// texel, so nothing branches on whether a mask exists.
+    ///
+    /// Quantized to a byte, which is not a loss: [`MASK_FORMAT`] is `R8Unorm`, so
+    /// this is the same rounding the mask tiles themselves took, and a texel of the
+    /// constant has to answer as one of theirs would.
+    pub fn constant(&self, coverage: f32) -> wgpu::TextureView {
+        let byte = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
+        match byte {
+            0 => self.constants[0].clone(),
+            255 => self.constants[1].clone(),
+            // A *partially* selected plane — reachable by inverting a partial
+            // selection, and only that way (§6.8). Built on the spot rather than
+            // cached: it is one texel, and a cache keyed by the byte would have to
+            // be interior-mutable inside a type that is cloned into every action's
+            // context.
+            _ => desc::constant_texture(
+                &self.ctx,
+                MASK_FORMAT,
+                &[byte],
+                "stark selection constant mask",
+            ),
+        }
     }
 
     /// The mask bound for `coord`: the selection's own tile, or the constant that
@@ -177,7 +199,7 @@ impl SelectionRenderer {
     pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> wgpu::TextureView {
         match selection.tile(coord) {
             Some(handle) => handle.view().clone(),
-            None => self.constant(selection.outside()).clone(),
+            None => self.constant(selection.outside()),
         }
     }
 
@@ -218,6 +240,7 @@ impl SelectionRenderer {
             &plan.rasterize,
             RasterShape {
                 outside: plan.outside,
+                level: plan.level,
                 hull: plan.hull,
                 b,
                 c,
@@ -227,9 +250,13 @@ impl SelectionRenderer {
         ))
     }
 
-    /// Invert the selection: every mask tile flips, and so does the coverage outside
-    /// them. Constant cost on an unbounded canvas — the whole point of carrying
-    /// `outside` as a flag (§6.8).
+    /// Invert the selection: every mask tile reflects through the mask's own level,
+    /// and so does the coverage outside them. Constant cost on an unbounded canvas —
+    /// the whole point of carrying `outside` as one number (§6.8).
+    ///
+    /// The level rides in the shape lane the shader reads an op's opacity from: an
+    /// inversion has no shape, and both numbers are "the strength this mask is drawn
+    /// at" (`selection.wesl`).
     pub fn invert(&self, pool: &TilePool, prev: &Selection) -> Selection {
         let plan = prev.plan_invert();
         let edges = self.dummy_edges.clone();
@@ -240,9 +267,10 @@ impl SelectionRenderer {
             &plan.rasterize,
             RasterShape {
                 outside: plan.outside,
+                level: plan.level,
                 hull: plan.hull,
                 b: [0.0; 4],
-                c: [0.0, MODE_INVERT, 0.0, 0.0],
+                c: [0.0, MODE_INVERT, 0.0, plan.level],
                 feather: 0.0,
                 edges: &edges,
             },
@@ -358,6 +386,7 @@ impl SelectionRenderer {
     ) -> Selection {
         let RasterShape {
             outside,
+            level,
             hull,
             b,
             c,
@@ -365,7 +394,7 @@ impl SelectionRenderer {
             edges,
         } = shape;
         if coords.is_empty() {
-            return Selection::from_parts(base, outside, hull);
+            return Selection::from_parts(base, outside, level, hull);
         }
         let device = &self.ctx.device;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -414,7 +443,7 @@ impl SelectionRenderer {
             tiles = tiles.insert(*coord, dst);
         }
         self.ctx.queue.submit([encoder.finish()]);
-        Selection::from_parts(tiles, outside, hull)
+        Selection::from_parts(tiles, outside, level, hull)
     }
 
     /// Upload the lasso's edge list as an `N×1` texture (see `selection.wesl`).

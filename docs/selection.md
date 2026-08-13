@@ -16,16 +16,16 @@ painted quick-mask producers. So a selection here is **not a shape**. It is a
 channel, `TILE_TEX` per tile, aprons and all.
 
 **Representation** (`document/selection.rs`). A `Selection` is a persistent map
-of mask tiles plus a single flag: whether canvas *outside* those tiles is
-selected. That flag is what makes the infinite canvas work. "No selection" is
-`outside = true` with no tiles — free — and so is its inverse, which is why
-`Invert` is a constant-cost operation on an unbounded canvas rather than an
-impossible one. Only 0 and 1 can ever reach it: every combine rule maps `{0,1}²`
-into `{0,1}`, and the one shape with non-zero coverage at infinity is `All`.
+of mask tiles plus the coverage that reigns *outside* those tiles. That single
+number is what makes the infinite canvas work. "No selection" is `outside = 1`
+with no tiles — free — and so is its inverse, which is why `Invert` is a
+constant-cost operation on an unbounded canvas rather than an impossible one. Ops
+only ever put 0 or 1 there, since the one shape with coverage at infinity is
+`All`; the in-between values come from inverting a *partial* selection, below.
 
 **Producers and the algebra.** A `SelectionOp` is a shape (`All` / `Rect` /
-`Ellipse` / `Lasso`), a mode, and a feather width. Modes are the soft-set
-operations, so they degrade to ordinary booleans on hard edges and stay
+`Ellipse` / `Lasso`), a mode, a feather width, and an opacity. Modes are the
+soft-set operations, so they degrade to ordinary booleans on hard edges and stay
 meaningful on feathered ones:
 
 | Mode | Per-texel |
@@ -77,10 +77,12 @@ rather than clipped; `All` already expresses "everything" at zero cost.
 
 **Feedback.** A third compositor pass outlines the selection over the lit image
 (`overlay.wesl`), one instanced quad per mask tile. The contour is recovered from
-the mask itself rather than from the shape that produced it — `(m − 0.5) / |∇m|`
+the mask itself rather than from the shape that produced it — `(m − h) / |∇m|`
 with the gradient taken at one canvas pixel, converted to screen px by the zoom —
 so it stays a constant on-screen width at any zoom, stays thin over a feathered
-edge, and needs no bookkeeping to survive union/subtract/intersect.
+edge, and needs no bookkeeping to survive union/subtract/intersect. `h` is half
+the selection's own peak coverage rather than a flat 0.5, which is what keeps a
+partial selection visible; see below.
 
 **The shape tools do not only select.** Rect, ellipse and lasso never produced
 selections; they produce **coverage**, and the four modes above are only the four
@@ -104,35 +106,72 @@ its colour. The drag previews as the *paint* rather than an outline — the same
 `FillRenderer::apply` the commit makes, over the same base, so
 `preview == committed` holds as it does for a stroke.
 
-**How much it covers is one number, and it is a coverage.** `FillOp::opacity`,
-the Select panel's Opacity slider, sitting above Feather: *how solid*, then *how
-soft at the edge*. Every way of reaching a fill reads it — the chip's gesture,
-the selection bar's button, the gradient mode — so a fill has exactly one
-strength control and it is in the panel that fills.
+**How much it covers is one number, and it is a coverage.** `FillOp::opacity`.
+A fill used to lay the brush's colour alpha at the brush's flow, on the argument
+that a fill lays the paint you have in hand. What that actually gave the user was
+a Fill button governed by two sliders in another panel, neither labelled for this
+job, which between them **could not produce an opaque fill**: visible coverage is
+`1 − exp(−K·opacity·height)` (§6.1), so the whole of the flow range at full alpha
+buys 95%, and the last 5% is a dozen more flow's worth. A slider that cannot
+reach its own top is not a control.
 
-It replaced two, and the reason is worth keeping. A fill used to lay the
-brush's colour alpha at the brush's flow, on the argument that a fill lays the
-paint you have in hand. What that actually gave the user was a Fill button
-governed by two sliders in another panel, neither labelled for this job, which
-between them **could not produce an opaque fill**: visible coverage is
-`1 − exp(−K·opacity·height)` (§6.1), so the whole of the flow range at full
-alpha buys 95%, and the last 5% is a dozen more flow's worth. A slider that
-cannot reach its own top is not a control.
+Naming the *coverage* instead, and letting the shader solve for the paint, fixes
+both halves at once. `fill.wesl` inverts the slab law — `m = −ln(1 − w)/K`, the
+same inversion `slab.wesl` already runs to merge a layer through a blend mode —
+and lays fully opaque paint of exactly that mass, capped at the thickness the
+matte slab calls opaque (§15.4). So 1 covers, ½ covers half, and the feather ramp
+lands on the canvas as precisely the ramp `selection.wesl` rasterized, because the
+coverage asked for is linear in the mask and only the paint that delivers it is
+not. The brush's colour is still the fill's colour; only its *alpha* stopped being
+consulted, that being a fact about the pigment rather than about how much of the
+picture this covers.
 
-Naming the *coverage* instead, and letting the shader solve for the paint,
-fixes both halves at once. `fill.wesl` inverts the slab law —
-`m = −ln(1 − w)/K`, the same inversion `slab.wesl` already runs to merge a layer
-through a blend mode — and lays fully opaque paint of exactly that mass, capped
-at the thickness the matte slab calls opaque (§15.4). So 1 covers, ½ covers
-half, and the feather ramp lands on the canvas as precisely the ramp
-`selection.wesl` rasterized, because the coverage asked for is linear in the
-mask and only the paint that delivers it is not. The brush's colour is still the
-fill's colour; only its *alpha* stopped being consulted, that being a fact about
-the pigment rather than about how much of the picture this covers.
+**And the two whole-selection fills do not ask at all.** `FillOp::of_selection`
+and its gradient sibling take no opacity: their region *is* the selection, so how
+strongly they land is already written in the mask they come through. Taking no
+parameter is how "the slider applies once" is said structurally rather than
+remembered at three call sites.
 
-The slider is the fill's, not the selection's, and that is deliberate: scaling
-the mask itself would dim every tool acting through it and, worse, would leave a
-selection at 0.4 with no 0.5 contour for the marching ants to find.
+### A selection has a strength — `SelectionOp::opacity`
+
+The Select panel's **Opacity** slider, above Feather, and the exact counterpart of
+it: one says how soft the edge is, the other how strong the whole region is; one
+is a ramp, the other a level, and they multiply. Both apply to whichever of the
+five actions the row is set to, because both describe the coverage the gesture
+*produces*, and the five actions differ only in where that coverage lands.
+
+**It cost nothing downstream, and that is the argument for putting it here.** The
+mask has always been a coverage field — feathered edges are already fractional
+values — so a partial selection is that field taking 0.4 where it used to take 1.
+`selection.wesl` multiplies the shape's ramp by the opacity and every consumer is
+untouched: a brush deposits at 0.4 (`integrate.wesl` lerps by the mask), a fill
+lands at 0.4, a transform carries 0.4 across. "Affects every tool" is not a list
+of tools that were changed; it is the absence of one.
+
+Three things did have to answer for it:
+
+- **The marching ants.** The outline is recovered by differencing the mask, and a
+  selection at 0.4 has no 0.5-contour anywhere — the ants would simply not be
+  drawn. `Selection::level` carries the mask's peak, per selection and per
+  instance (so each collaborator's outline traces its own), and `overlay.wesl`
+  contours at half of it. The recovered distance is unchanged by the scaling,
+  since `m` and `|∇m|` scale together, so the line lands in the same place at the
+  same width whatever strength the selection is drawn at. `level` says where to
+  draw a boundary and nothing else.
+- **Inversion.** `level − m` rather than `1 − m`, so the complement of a region
+  selected at 0.4 is its outside selected at 0.4 rather than at full strength —
+  and inverting twice is the identity, which it would not otherwise have been.
+- **`Selection::outside`.** A number now, not a flag: inverting a bounded partial
+  selection leaves the whole plane selected at 0.4, which no boolean can say. The
+  CPU-side combine became the real soft-set algebra rather than a boolean twin of
+  it, which is one fewer pair of spellings that can drift.
+
+`SelectionShape::All` is pinned to full strength, by the constructor rather than
+by a rule `plan` has to remember. Its coverage lands in `outside` where there is
+no boundary to rasterize, so a partial one would need a rewrite of every tile the
+selection has — for a state the UI cannot ask for, since the only `All` op is
+Deselect. Selections built entirely at full strength have `level == 1` and
+`outside ∈ {0,1}`, where every expression above reduces to exactly what it was.
 
 **Selecting is momentary; filling is not.** `Session::end_shape` hands the canvas
 back to `Tool::Brush` the moment a *selecting* gesture actually encloses

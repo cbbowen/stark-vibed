@@ -173,14 +173,21 @@ impl FillOp {
 
     /// Fill whatever is selected — the selection bar's button. Bounded by the mask
     /// alone, so [`plan`] refuses it when there is no mask.
-    pub fn of_selection(color: [f32; 3], opacity: f32) -> Self {
-        Self::new(SelectionShape::All, 0.0, color, opacity)
+    ///
+    /// **At full opacity, and not by default — by construction.** This fill's whole
+    /// region is the selection, so how strongly it lands is already written into the
+    /// mask it comes through (§6.8): the Opacity slider dims the *selection*, and a
+    /// fill that dimmed itself as well would apply it twice. Taking no opacity
+    /// parameter is how that is said once.
+    pub fn of_selection(color: [f32; 3]) -> Self {
+        Self::new(SelectionShape::All, 0.0, color, 1.0)
     }
 
     /// Fill whatever is selected with a gradient — the selection bar's gradient
-    /// mode (§22.4). The same bound and the same refusal as [`Self::of_selection`].
-    pub fn gradient_of_selection(parcel: GradientParcel, opacity: f32) -> Self {
-        Self::with_paint(SelectionShape::All, 0.0, Parcel::Gradient(parcel), opacity)
+    /// mode (§22.4). The same bound, the same refusal and the same full strength as
+    /// [`Self::of_selection`].
+    pub fn gradient_of_selection(parcel: GradientParcel) -> Self {
+        Self::with_paint(SelectionShape::All, 0.0, Parcel::Gradient(parcel), 1.0)
     }
 
     /// How far past the shape's own boundary its coverage can reach, in canvas px.
@@ -202,7 +209,8 @@ impl FillOp {
 ///
 /// `None` refuses the whole action, deterministically:
 ///
-/// - **Unbounded** — [`SelectionShape::All`] with nothing selected. There is no
+/// - **Unbounded** — [`SelectionShape::All`] with nothing selected, or with a
+///   selection that reaches everywhere at *any* strength. There is no
 ///   rectangle to fill, and picking one silently (the frame? the layer's bounds?)
 ///   would be a different fill on every client. This is §18.0.4's wrinkle, answered by
 ///   refusing rather than by inventing a boundary.
@@ -211,7 +219,7 @@ impl FillOp {
 /// A shape that encloses nothing yields an empty plan, not a refusal: a stray click
 /// is a fill of nothing, which is a no-op rather than an error.
 pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
-    let bounded = gate.outside() <= 0.5;
+    let bounded = gate.outside() <= 0.0;
     let mut coords: Vec<TileCoord> = match op.shape.bounds() {
         // A bounded shape: the tiles its coverage can reach, minus any the gate
         // masks out entirely. Filtering rather than letting the shader write zeros
@@ -274,7 +282,7 @@ mod tests {
 
     #[test]
     fn filling_the_selection_needs_a_selection() {
-        let op = FillOp::of_selection([1.0; 3], 1.0);
+        let op = FillOp::of_selection([1.0; 3]);
         // Nothing selected: unbounded, and refused rather than guessed at.
         assert!(plan(&op, &Selection::everything()).is_none());
     }

@@ -49,7 +49,7 @@ pub fn SelectPanel() -> Element {
                 o.tool,
                 o.shape_action,
                 o.selection_feather,
-                o.fill_opacity,
+                o.shape_opacity,
                 o.brush.color,
             )
         })
@@ -154,17 +154,18 @@ pub fn SelectPanel() -> Element {
                 }
             }
         }
-        // Above Feather, because the two are read in that order: *how solid*, then
-        // *how soft at the edge*. It sets what every fill covers with — the chip's
-        // gesture, the bar's button and the gradient mode alike — and it is one
-        // control rather than the brush's alpha times the brush's flow, which is
-        // the arrangement it replaces: two sliders in another panel, neither
-        // labelled for this, which between them could not reach an opaque fill
-        // (`FillOp::opacity`). It has no effect on the four *selecting* actions;
-        // a selection's own strength is its mask, and softening that everywhere
-        // would leave the marching ants with no 0.5 contour to find.
+        // Above Feather, and the exact counterpart of it: *how strong*, then *how
+        // soft at the edge*. Both apply to whichever of the five actions the row is
+        // set to, because both describe the coverage the gesture produces and the
+        // five actions differ only in where that coverage lands (§6.8).
+        //
+        // Selecting, it dims the mask — and since every tool acts through the mask
+        // in proportion, a half-strength selection is a half-strength brush, fill
+        // and transform inside it. That is also what the two whole-selection fills
+        // on the bar read: they lay opaque paint *through* the mask, so this one
+        // slider governs them without their having a knob of their own.
         Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: opacity,
-            oninput: move |v| dispatch(state, ViewCommand::SetFillOpacity(v)) }
+            oninput: move |v| dispatch(state, ViewCommand::SetShapeOpacity(v)) }
         Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
             oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
     }
@@ -285,14 +286,15 @@ pub fn SelectionBar() -> Element {
 ///
 /// The **colour** comes off the brush, which is the choice [`ShapeAction::Fill`]
 /// makes too: a fill lays the paint you have in hand, so the Color panel is
-/// already its setting. How far it covers does not — that is this panel's Opacity
-/// slider, one control for every way a fill is reached.
+/// already its setting. How far it covers is not a question this button asks at
+/// all — it fills the selection, so the selection's own coverage answers it
+/// ([`FillOp::of_selection`]).
 pub fn fill_selection(state: AppState) {
-    let Some((layer, [r, g, b, _], opacity)) = state
+    let Some((layer, [r, g, b, _])) = state
         .obs
         .peek()
         .as_ref()
-        .map(|o| (o.active_layer, o.brush.color, o.fill_opacity))
+        .map(|o| (o.active_layer, o.brush.color))
     else {
         return;
     };
@@ -300,7 +302,7 @@ pub fn fill_selection(state: AppState) {
         state,
         DocCommand::Fill {
             layer,
-            op: FillOp::of_selection([r, g, b], opacity),
+            op: FillOp::of_selection([r, g, b]),
         },
     );
 }

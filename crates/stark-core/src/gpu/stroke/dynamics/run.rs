@@ -608,7 +608,7 @@ impl<'a> DynamicsRun<'a> {
         // selection binds the 1×1 constant instead — the loop's masked reads then
         // return 1 everywhere and the stroke behaves exactly as before.
         let sel_mask = if self.scene.selection.is_universal() {
-            r.selection.constant(1.0).clone()
+            r.selection.constant(1.0)
         } else {
             let (tex, view) = r.selection.region_mask(
                 self.scope.encoder(),

@@ -34,9 +34,11 @@ use stark_core::geom::Vec2;
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
 /// transform's choice — the active layer if paintable, else the topmost
-/// paintable — and the Select panel's fill opacity is captured now (§6.8's
-/// shape-drag bargain). Refuses quietly when the library is empty: the bar's
-/// button is disabled then, and says why.
+/// paintable. Refuses quietly when the library is empty: the bar's button is
+/// disabled then, and says why.
+///
+/// Nothing about strength is captured, because the ramp lands through the
+/// selection and the selection already carries it (§6.8).
 pub fn begin_fill(state: AppState) {
     if gradients::current(state).is_none() {
         return;
@@ -50,11 +52,10 @@ pub fn begin_fill(state: AppState) {
         .or_else(|| o.layers.iter().rev().find(|l| l.is_paintable()))
         .map(|l| l.id);
     let Some(layer) = layer else { return };
-    let opacity = o.fill_opacity;
     drop(obs);
     let mut mode = state.gradient_bar;
     mode.set(Some(GradientUi {
-        target: GradientTarget::Fill { layer, opacity },
+        target: GradientTarget::Fill { layer },
         kind: GradientAxisKind::Linear,
         drag: None,
     }));
@@ -160,11 +161,11 @@ fn preview_payload(state: AppState, ui: &GradientUi) -> Payload {
         return Payload::Nothing;
     };
     match &ui.target {
-        GradientTarget::Fill { opacity, .. } => match gradients::current(state) {
-            Some(gradient) => Payload::Fill(FillOp::gradient_of_selection(
-                GradientParcel { gradient, axis },
-                *opacity,
-            )),
+        GradientTarget::Fill { .. } => match gradients::current(state) {
+            Some(gradient) => Payload::Fill(FillOp::gradient_of_selection(GradientParcel {
+                gradient,
+                axis,
+            })),
             None => Payload::Nothing,
         },
         GradientTarget::Matte { gradient, .. } => Payload::Matte(MattePaint::Gradient {

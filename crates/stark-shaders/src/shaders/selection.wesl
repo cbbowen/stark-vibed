@@ -13,6 +13,15 @@
 // antialiased hard edge). A soft mask is what makes the brush fade out of the
 // selection instead of stopping at a staircase.
 //
+// The whole ramp is then scaled by the op's **opacity** (`c.w`) — how strongly this
+// region is selected at all. Nothing downstream knows about it: the mask has always
+// meant "how much each texel is selected", and a partial selection is that field
+// taking values other than 0 and 1, which is exactly what a feathered edge already
+// did. So a brush deposits at that fraction, a fill lands at it and a transform
+// carries it, with no shader but this one changed. The boundary moves accordingly —
+// it is the `opacity/2`-contour now, which is why `Selection::level` travels with the
+// mask for the outline pass to find it (`overlay.wesl`).
+//
 // `prev` is bound either as the previous mask tile or as a 1×1 texture holding the
 // constant coverage that reigns where the previous selection had no tile at all; the
 // load is clamped to the texture's own extent, so the same code reads both.
@@ -26,7 +35,10 @@ struct Params {
     a: vec4<f32>,
     // Shape parameters: rect (min.xy, max.xy); ellipse (center.xy, radii.xy).
     b: vec4<f32>,
-    // .x = shape kind, .y = combine mode, .z = lasso edge count, .w unused.
+    // .x = shape kind, .y = combine mode, .z = lasso edge count, .w = the coverage
+    // a fully-covered texel gets — the op's opacity. Under `MODE_INVERT`, which has
+    // no shape, the same lane carries the level the mask reflects *through*
+    // (`Selection::level`); both are "the strength this mask is drawn at".
     c: vec4<f32>,
 }
 
@@ -109,11 +121,11 @@ fn sd_lasso(q: vec2<f32>, count: u32) -> f32 {
     return d;
 }
 
-// The op's own coverage at canvas position `q`, in [0, 1].
+// The op's own coverage at canvas position `q`, in [0, opacity].
 fn shape_coverage(q: vec2<f32>) -> f32 {
     let kind = u32(p.c.x);
     if kind == KIND_ALL {
-        return 1.0;
+        return p.c.w;
     }
     var sd = 1e30;
     if kind == KIND_RECT {
@@ -124,9 +136,9 @@ fn shape_coverage(q: vec2<f32>) -> f32 {
         sd = sd_lasso(q, u32(p.c.z));
     }
     // One canvas pixel is the floor: a "hard" edge is still antialiased, and the
-    // 0.5-contour stays exactly on the geometric boundary either way.
+    // half-contour stays exactly on the geometric boundary either way.
     let w = max(p.a.w, 1.0);
-    return clamp(0.5 - sd / w, 0.0, 1.0);
+    return clamp(0.5 - sd / w, 0.0, 1.0) * p.c.w;
 }
 
 @fragment
@@ -137,7 +149,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     let mode = u32(p.c.y);
     if mode == MODE_INVERT {
-        return vec4<f32>(1.0 - old, 0.0, 0.0, 0.0);
+        // Reflected through the mask's own level, not through 1: the complement of a
+        // region selected at 0.4 is its outside selected at 0.4. Identical to the old
+        // `1 − old` for every selection built at full strength.
+        return vec4<f32>(p.c.w - old, 0.0, 0.0, 0.0);
     }
 
     let s = shape_coverage(p.a.xy + frag.xy);

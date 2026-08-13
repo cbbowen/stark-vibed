@@ -119,6 +119,7 @@ pub(super) fn alloc_overlay(device: &wgpu::Device, count: usize) -> wgpu::Buffer
             OverlayInstance {
                 origin: [0.0; 2],
                 tint: [0.0; 4],
+                level: 1.0,
             };
             count.max(1)
         ]),

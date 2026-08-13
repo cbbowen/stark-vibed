@@ -492,7 +492,7 @@ fn every_action_touches_only_what_it_declares() {
         "fill the selection",
         DocCommand::Fill {
             layer: root,
-            op: FillOp::of_selection([0.3, 0.3, 0.8], 0.4),
+            op: FillOp::of_selection([0.3, 0.3, 0.8]),
         },
     );
 
