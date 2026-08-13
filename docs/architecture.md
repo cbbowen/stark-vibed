@@ -320,6 +320,8 @@ fn load_bytes(&mut self, bytes: &[u8]) -> Result<()>;
 // readback is the one inherently asynchronous GPU operation (§7), and the future
 // owns what it needs so the engine borrow ends before the await.
 fn pick_color(&mut self, at: Vec2, o: PickOptions) -> impl Future<Output = Option<[f32; 3]>>;
+// …and the same sampling stretched along a traced line — the gradient capture (§22.2)
+fn pick_gradient(&mut self, path: &[Vec2], o: PickOptions) -> impl Future<Output = Option<Gradient>>;
 fn export(&mut self, frame: Option<LayerId>, scale: f32, bg: Background) -> Result<impl Future<..>>;
 // collaboration transport (§12)
 fn merge_remote(&mut self, action: Action) -> bool;

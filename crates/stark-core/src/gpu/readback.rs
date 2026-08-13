@@ -150,14 +150,93 @@ pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Exte
     take_rows(&buffer, size, unpadded, padded)
 }
 
-/// Read an `Rgba16Float` texture back as `f32` RGBA (4 per texel). The texture must carry
-/// `COPY_SRC`. Used by reservoir-visualization debugging (§6.2).
-pub async fn read_rgba16f(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<f32> {
-    let bytes = read_texture_bytes(ctx, texture, size).await;
+fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
     bytes
         .as_chunks::<2>()
         .0
         .iter()
         .map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]])))
         .collect()
+}
+
+/// Read many same-sized `Rgba16Float` textures back in **one** buffer map — the
+/// gradient capture's readback (§22.2), where a trace is up to
+/// [`MAX_SAMPLES`](crate::gradient::MAX_SAMPLES) patches and a map per patch
+/// would be a map per texel of latency. Every texture must carry `COPY_SRC` and
+/// share `size`; results come back in argument order, 4 `f32` per texel.
+pub async fn read_many_rgba16f(
+    ctx: &GpuContext,
+    textures: &[&wgpu::Texture],
+    size: Extent2,
+) -> Vec<Vec<f32>> {
+    let Some(first) = textures.first() else {
+        return Vec::new();
+    };
+    let unpadded = size.width * bytes_per_texel(first);
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded = unpadded.div_ceil(align) * align;
+    let slot = (padded * size.height) as u64;
+
+    let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stark readback many"),
+        size: slot * textures.len() as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("stark readback many encoder"),
+        });
+    for (i, texture) in textures.iter().enumerate() {
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: slot * i as u64,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(size.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    ctx.queue.submit([encoder.finish()]);
+
+    let (tx, rx) = futures_channel::oneshot::channel();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    // The same native/web split as `read_texture_bytes`, for the same reasons.
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("poll device");
+    rx.await
+        .expect("readback callback dropped")
+        .expect("map readback buffer");
+
+    let data = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("readback buffer is mapped");
+    let out = (0..textures.len())
+        .map(|i| {
+            let base = (slot * i as u64) as usize;
+            let mut bytes = Vec::with_capacity((unpadded * size.height) as usize);
+            for row in 0..size.height {
+                let start = base + (row * padded) as usize;
+                bytes.extend_from_slice(&data[start..start + unpadded as usize]);
+            }
+            decode_rgba16f(&bytes)
+        })
+        .collect();
+    drop(data);
+    buffer.unmap();
+    out
 }

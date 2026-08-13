@@ -167,9 +167,12 @@ modes*, and reading the shapes as producers of **coverage** made `Fill` the fift
 answer to the same question, landing that coverage on the paint instead of the
 mask.
 
-**Gradient remains**, and attaches at the same seam: one more way to fill a
-coverage field — a `FillOp` whose parcel varies with position rather than a new
-pipeline.
+**The gradient fill remains**, and attaches at the same seam: one more way to
+fill a coverage field — a `FillOp` whose parcel varies with position rather
+than a new pipeline. The gradient *itself* is built (§22): the capture that
+fits stops from a line traced through the painting, and the browser-local
+library holding them — so what the fill still owes is only the parcel, taking
+a `Gradient` it embeds by value.
 
 ### 18.1 Tier 1 — the workflow multipliers that define the competitors
 
@@ -637,7 +640,8 @@ Naming these is part of not becoming Photoshop.
 
 ### 18.4 Sequencing
 
-1. **Now** — gradient (§18.0.4); layer masks / alpha lock / merge (§18.1.1);
+1. **Now** — the gradient fill (§18.0.4; the gradient and its library are
+   built, §22); layer masks / alpha lock / merge (§18.1.1);
    frame snapping, guides and review mode (§15.7–§15.8); the transform clipboard
    (§16.7).
 2. **Then, in parallel** — brush parameter mapping and the brush library

@@ -50,6 +50,7 @@ pub mod engine;
 pub mod error;
 pub mod geom;
 pub mod gpu;
+pub mod gradient;
 pub mod guides;
 pub mod image;
 pub mod io;
@@ -75,6 +76,7 @@ pub use gpu::{
     Compositor, CompositorPipeline, EnvironmentId, GpuContext, MediaParams, Offscreen,
     StrokeRenderer, SurfaceId, TilePairHandle, TilePool,
 };
+pub use gradient::{Gradient, GradientStop};
 pub use guides::{AxisPencil, AxisPlane, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold};
 pub use image::RgbaImage;
 pub use io::{BuildId, CanvasMeta, DocumentFile};

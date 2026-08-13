@@ -13,7 +13,8 @@ use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
 use crate::panels::{
-    BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, NavigatorPanel, SelectPanel,
+    BrushPanel, ColorPanel, GradientsPanel, GuidesPanel, LayerPanel, LightingPanel, NavigatorPanel,
+    SelectPanel,
 };
 use crate::platform;
 use crate::state::AppState;
@@ -26,6 +27,7 @@ pub enum PanelId {
     Color,
     Brush,
     Select,
+    Gradients,
     Layers,
     Guides,
     Lighting,
@@ -35,20 +37,23 @@ impl PanelId {
     /// Every panel, in the default top-to-bottom order. The navigator leads: it is
     /// the only one that says where you *are* rather than what the next stroke will
     /// be, and it is read at a glance rather than operated.
-    pub const ALL: [PanelId; 7] = [
+    pub const ALL: [PanelId; 8] = [
         PanelId::Navigator,
         PanelId::Color,
         PanelId::Brush,
         PanelId::Select,
+        PanelId::Gradients,
         PanelId::Layers,
         PanelId::Guides,
         PanelId::Lighting,
     ];
 
-    /// The panels that start closed: lighting is a scene-setup control, and a guide
-    /// is reached for when a drawing calls for one — neither is touched mid-painting,
-    /// so both stay out of the stack until asked for.
-    pub const CLOSED_BY_DEFAULT: [PanelId; 2] = [PanelId::Guides, PanelId::Lighting];
+    /// The panels that start closed: lighting is a scene-setup control, a guide
+    /// is reached for when a drawing calls for one, and a gradient library is
+    /// visited between passages rather than lived in — none is touched
+    /// mid-painting, so all three stay out of the stack until asked for.
+    pub const CLOSED_BY_DEFAULT: [PanelId; 3] =
+        [PanelId::Gradients, PanelId::Guides, PanelId::Lighting];
 
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
@@ -57,6 +62,7 @@ impl PanelId {
             PanelId::Color => "Color",
             PanelId::Brush => "Brush",
             PanelId::Select => "Select",
+            PanelId::Gradients => "Gradients",
             PanelId::Layers => "Layers",
             PanelId::Guides => "Drawing Guides",
             PanelId::Lighting => "Lighting",
@@ -80,6 +86,7 @@ impl PanelId {
             PanelId::Color => icons::COLOR,
             PanelId::Brush => icons::BRUSH,
             PanelId::Select => icons::SELECTION,
+            PanelId::Gradients => icons::GRADIENT,
             PanelId::Layers => icons::LAYERS,
             PanelId::Guides => icons::PERSPECTIVE_GRID,
             PanelId::Lighting => icons::LIGHTING,
@@ -103,6 +110,9 @@ impl PanelId {
             // worth scrolling rather than a slot — and no taller, because the panel
             // stack is a column and every pixel here is one the panels under it lose.
             PanelId::Brush => Some(340.0),
+            // The other panel holding a list the user grows (§22.3): its header
+            // plus four or five strips, scrolling past that.
+            PanelId::Gradients => Some(280.0),
             _ => None,
         }
     }
@@ -315,6 +325,7 @@ pub fn PanelStack() -> Element {
                             PanelId::Color => rsx! { ColorPanel {} },
                             PanelId::Brush => rsx! { BrushPanel {} },
                             PanelId::Select => rsx! { SelectPanel {} },
+                            PanelId::Gradients => rsx! { GradientsPanel {} },
                             PanelId::Guides => rsx! { GuidesPanel {} },
                             PanelId::Lighting => rsx! { LightingPanel {} },
                             PanelId::Layers => rsx! { LayerPanel {} },

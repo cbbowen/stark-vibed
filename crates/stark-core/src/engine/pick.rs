@@ -162,95 +162,150 @@ impl Engine {
         at: crate::geom::Vec2,
         options: PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
+        let fut = self.pick_colors(std::slice::from_ref(&at), options);
+        async move { fut.await.into_iter().next().flatten() }
+    }
+
+    /// Sample a gradient off the canvas: colours along a traced path, fitted to
+    /// stops — the eyedropper generalized from a point to a line (§22.2).
+    ///
+    /// The trace is how a gradient is *made* here: the artist draws a line
+    /// through paint they have already mixed, and the machinery of control
+    /// points is this method's problem. The path — canvas-space, as traced — is
+    /// resampled evenly by arc length ([`crate::gradient::resample`]), each
+    /// sample is picked exactly as [`Engine::pick_color`] picks (same sources,
+    /// same patch mean, same raw-channels-not-lit rule — in a Mixbox document
+    /// the ramp is of pigment mixtures), and [`crate::gradient::fit`] reduces
+    /// the run to the fewest stops that reproduce it within a perceptual
+    /// tolerance.
+    ///
+    /// Samples over bare canvas answer nothing (the `pick_color` rule), and the
+    /// trace simply proceeds without them: a stroke gap crossed mid-trace does
+    /// not inject the paper into the ramp. `None` when fewer than two samples
+    /// found paint — there is no gradient in an empty trace.
+    pub fn pick_gradient(
+        &mut self,
+        path: &[crate::geom::Vec2],
+        options: PickOptions,
+    ) -> impl std::future::Future<Output = Option<crate::gradient::Gradient>> + use<> {
+        let samples = crate::gradient::resample(path);
+        let points: Vec<crate::geom::Vec2> = samples.iter().map(|&(_, p)| p).collect();
+        let fut = self.pick_colors(&points, options);
+        async move {
+            let colors = fut.await;
+            let run: Vec<(f32, [f32; 3])> = samples
+                .iter()
+                .zip(colors)
+                .filter_map(|(&(t, _), c)| c.map(|c| (t, c)))
+                .collect();
+            crate::gradient::fit(&run)
+        }
+    }
+
+    /// The shared sampling machinery under [`Engine::pick_color`] and
+    /// [`Engine::pick_gradient`]: one flush, then one rendered patch per point,
+    /// then **one** buffer map for the lot. One implementation on purpose — the
+    /// gradient's promise is that every sample is exactly an eyedropper pick,
+    /// and two copies of this logic is how that promise would quietly break.
+    pub(crate) fn pick_colors(
+        &mut self,
+        points: &[crate::geom::Vec2],
+        options: PickOptions,
+    ) -> impl std::future::Future<Output = Vec<Option<[f32; 3]>>> + use<> {
         // The pick samples `presented`, whose fold is rebuilt lazily — flush, so a
         // sample mid-stroke agrees with what the next paint would show.
         self.flush_live();
         let radius = options.radius.min(MAX_PICK_RADIUS);
         let size = Extent2::new(2 * radius + 1, 2 * radius + 1);
-        // Centred on the canvas *pixel* the point falls in rather than on the point
-        // itself: pass A samples tile textures bilinearly, so a fractional offset
-        // would blend neighbouring texels and a "point sample" would answer with a
-        // colour that is at neither of them. Snapping puts every fragment on a texel
-        // centre, so radius 0 reports exactly the texel under the cursor.
-        let view = ViewTransform {
-            center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
-            zoom: 1.0,
-            // Axis-aligned with the *canvas*: the sampled square is a patch of the
-            // painting, so which way the easel is turned cannot change which texels
-            // fall in it.
-            rotation: 0.0,
-            flip_h: false,
-            viewport: size,
+        let only = match options.source {
+            PickSource::Composite | PickSource::CompositeOverSubstrate => None,
+            PickSource::Layer(id) => Some(id),
         };
-        // The *presented* document, so a sample agrees with what is on screen —
-        // including a collaborator's stroke that has not committed yet, and the
-        // substrate colour mid-drag on the picker that sets it (§15.5).
-        let (groups, ground) = {
-            let doc = self.presented();
-            let only = match options.source {
-                PickSource::Composite | PickSource::CompositeOverSubstrate => None,
-                PickSource::Layer(id) => Some(id),
-            };
-            // Read here rather than in the future, because it is document state and
-            // the future deliberately does not borrow the engine. That the other two
-            // sources have no ground is why this is a third *source* rather than a
-            // flag on the other two: asking one layer for its own colour and asking
-            // what the canvas shows are different questions, and only the second one
-            // has a substrate in it.
-            let ground = matches!(options.source, PickSource::CompositeOverSubstrate).then(|| {
-                (
-                    self.color_space.rgb_to_channels(doc.background),
-                    self.color_space.rgb_to_resid(doc.background),
-                )
-            });
+        // Read here rather than in the future, because it is document state and
+        // the future deliberately does not borrow the engine. That the other two
+        // sources have no ground is why this is a third *source* rather than a
+        // flag on the other two: asking one layer for its own colour and asking
+        // what the canvas shows are different questions, and only the second one
+        // has a substrate in it.
+        let ground = matches!(options.source, PickSource::CompositeOverSubstrate).then(|| {
+            let bg = self.presented().background;
             (
-                self.composite_groups(doc, only, visible_tiles(view)),
-                ground,
+                self.color_space.rgb_to_channels(bg),
+                self.color_space.rgb_to_resid(bg),
             )
-        };
+        });
 
         let (color_format, aux_format, resid_format) = self.compositor_pipeline.channel_formats();
-        // `read_rgba16f` decodes four halves per texel. Both colour spaces store the
+        // The readback decodes four halves per texel. Both colour spaces store the
         // colour channels that way (§6.1); a new one that did not would
         // have to say so here rather than silently mis-decoding.
         debug_assert_eq!(color_format, wgpu::TextureFormat::Rgba16Float);
-        let color = self.offscreen_target(
-            "stark pick color",
-            color_format,
-            size,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        );
-        // Written by pass A and never read: the height it accumulates says how *much*
-        // paint is there, not what colour it is.
-        let aux = self.offscreen_target(
-            "stark pick aux",
-            aux_format,
-            size,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        // The residual, and unlike the aux it **is** read back: in a pigment space it
-        // is half the colour, so an eyedropper that sampled only the concentrations
-        // would report the polynomial's nearest reachable colour — black as `#383838`
-        // — which is precisely the defect this channel exists to fix (§6.7).
-        let resid = resid_format.map(|f| {
-            self.offscreen_target(
-                "stark pick resid",
-                f,
+
+        let mut colors = Vec::with_capacity(points.len());
+        let mut resids = Vec::with_capacity(points.len());
+        for &at in points {
+            // Centred on the canvas *pixel* the point falls in rather than on the point
+            // itself: pass A samples tile textures bilinearly, so a fractional offset
+            // would blend neighbouring texels and a "point sample" would answer with a
+            // colour that is at neither of them. Snapping puts every fragment on a texel
+            // centre, so radius 0 reports exactly the texel under the cursor.
+            let view = ViewTransform {
+                center: crate::geom::Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
+                zoom: 1.0,
+                // Axis-aligned with the *canvas*: the sampled square is a patch of the
+                // painting, so which way the easel is turned cannot change which texels
+                // fall in it.
+                rotation: 0.0,
+                flip_h: false,
+                viewport: size,
+            };
+            // The *presented* document, so a sample agrees with what is on screen —
+            // including a collaborator's stroke that has not committed yet, and the
+            // substrate colour mid-drag on the picker that sets it (§15.5).
+            let groups = {
+                let doc = self.presented();
+                self.composite_groups(doc, only, visible_tiles(view))
+            };
+            let color = self.offscreen_target(
+                "stark pick color",
+                color_format,
                 size,
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            )
-        });
-        self.compositor.composite_channels(
-            &self.compositor_pipeline,
-            &color.create_view(&wgpu::TextureViewDescriptor::default()),
-            &aux.create_view(&wgpu::TextureViewDescriptor::default()),
-            resid
-                .as_ref()
-                .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
-                .as_ref(),
-            view,
-            &groups,
-        );
+            );
+            // Written by pass A and never read: the height it accumulates says how *much*
+            // paint is there, not what colour it is.
+            let aux = self.offscreen_target(
+                "stark pick aux",
+                aux_format,
+                size,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            );
+            // The residual, and unlike the aux it **is** read back: in a pigment space it
+            // is half the colour, so an eyedropper that sampled only the concentrations
+            // would report the polynomial's nearest reachable colour — black as `#383838`
+            // — which is precisely the defect this channel exists to fix (§6.7).
+            let resid = resid_format.map(|f| {
+                self.offscreen_target(
+                    "stark pick resid",
+                    f,
+                    size,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                )
+            });
+            self.compositor.composite_channels(
+                &self.compositor_pipeline,
+                &color.create_view(&wgpu::TextureViewDescriptor::default()),
+                &aux.create_view(&wgpu::TextureViewDescriptor::default()),
+                resid
+                    .as_ref()
+                    .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                    .as_ref(),
+                view,
+                &groups,
+            );
+            colors.push(color);
+            resids.push(resid);
+        }
 
         // Captured, not read through `self`: the future deliberately does not borrow
         // the engine (see `export`). The colour space is an `Arc`, so carrying the
@@ -258,29 +313,42 @@ impl Engine {
         let gpu = self.gpu.clone();
         let color_space = self.color_space.clone();
         async move {
-            let texels = crate::gpu::readback::read_rgba16f(&gpu, &color, size).await;
-            // The residual takes the **same** two means, unchanged. It can, because the
-            // residual target's alpha is a duplicate of the colour's: `sum[3]` is the
-            // same coverage sum either way, so the opacity weighting and the
-            // over-substrate blend are already the right ones for it (§6.7).
-            let resid_texels = match &resid {
-                Some(tex) => Some(crate::gpu::readback::read_rgba16f(&gpu, tex, size).await),
-                None => None,
+            let refs: Vec<&wgpu::Texture> = colors.iter().collect();
+            let texel_sets = crate::gpu::readback::read_many_rgba16f(&gpu, &refs, size).await;
+            // Whether a residual exists is a colour-space property, so it is
+            // all-or-none across the batch and the two lists stay index-aligned.
+            let resid_refs: Vec<&wgpu::Texture> = resids.iter().flatten().collect();
+            let resid_sets = if resid_refs.is_empty() {
+                None
+            } else {
+                Some(crate::gpu::readback::read_many_rgba16f(&gpu, &resid_refs, size).await)
             };
-            let mean = match ground {
-                Some((bg, _)) => mean_over_substrate(&texels, bg),
-                None => mean_channels(&texels),
-            };
-            let mean_resid = resid_texels.as_ref().and_then(|t| match ground {
-                Some((_, bg_resid)) => {
-                    mean_over_substrate(t, [bg_resid[0], bg_resid[1], bg_resid[2], 1.0])
-                }
-                None => mean_channels(t),
-            });
-            mean.map(|c| {
-                let r = mean_resid.unwrap_or([0.0; 4]);
-                color_space.channels_to_rgb(c, [r[0], r[1], r[2]])
-            })
+            texel_sets
+                .iter()
+                .enumerate()
+                .map(|(i, texels)| {
+                    let mean = match ground {
+                        Some((bg, _)) => mean_over_substrate(texels, bg),
+                        None => mean_channels(texels),
+                    };
+                    // The residual takes the **same** two means, unchanged. It can,
+                    // because the residual target's alpha is a duplicate of the
+                    // colour's: `sum[3]` is the same coverage sum either way, so the
+                    // opacity weighting and the over-substrate blend are already the
+                    // right ones for it (§6.7).
+                    let mean_resid = resid_sets.as_ref().and_then(|sets| match ground {
+                        Some((_, bg_resid)) => mean_over_substrate(
+                            &sets[i],
+                            [bg_resid[0], bg_resid[1], bg_resid[2], 1.0],
+                        ),
+                        None => mean_channels(&sets[i]),
+                    });
+                    mean.map(|c| {
+                        let r = mean_resid.unwrap_or([0.0; 4]);
+                        color_space.channels_to_rgb(c, [r[0], r[1], r[2]])
+                    })
+                })
+                .collect()
         }
     }
 }

@@ -226,7 +226,7 @@ The suite files, roughly by subject: `golden`, `seam`, `stroke`, `dynamics`,
 | A new media/lighting model | the media pass shader (§6.3) |
 | A different frontend (native, CLI exporter) | a new consumer of `Engine`; core untouched |
 | Another selection producer (by colour, quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; representation, ops, history and masking sites unchanged (§6.8) — and it becomes a *fill* producer in the same move |
-| A gradient (or any position-varying fill) | the parcel in `fill.wesl` reads its latent from position rather than a uniform; region, gate, stacking law, action and footprint unchanged |
+| A gradient (or any position-varying fill) | the parcel in `fill.wesl` reads its latent from position rather than a uniform; region, gate, stacking law, action and footprint unchanged — the ramp arrives already fitted, a §22 `Gradient` embedded by value |
 | A richer frame / comic gutters / a solid ground | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing unchanged (§15) |
 | Text | a new `ActionKind` + optionally new channels; transforms landed exactly this way (§16) |
 | A wider-gamut / spectral colour pipeline | `color.rs` + a `CanvasMeta.color_space` variant; storage stays float, present picks the transform |

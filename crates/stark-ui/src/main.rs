@@ -21,6 +21,7 @@ mod collab;
 mod components;
 mod credits;
 mod files;
+mod gradients;
 mod grounds;
 mod icons;
 mod identity;
@@ -56,8 +57,8 @@ use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{
-    FilterBar, FrameBar, FrameOverlay, GuideEditOverlay, PerspectiveGuideBar, PickBar,
-    SelectionBar, TimelineBar, TransformBar, TransformOverlay,
+    FilterBar, FrameBar, FrameOverlay, GradientTraceOverlay, GuideEditOverlay, PerspectiveGuideBar,
+    PickBar, SelectionBar, TimelineBar, TransformBar, TransformOverlay,
 };
 use platform::capture_pointer;
 use render::CANVAS_ID;
@@ -116,6 +117,9 @@ fn app() -> Element {
     // browser that has never stored any).
     use_hook(|| shapes::load(state));
     use_hook(|| presets::load(state));
+    // The gradient library follows the browser the same way (§22.3) — and has no
+    // built-ins to install later: every entry is something this user traced.
+    use_hook(|| gradients::load(state));
     // And so does the quick-brush rack (§18.1.8) — a browser that has never set
     // a slot is seeded below, once there is a preset library to seed it from.
     use_hook(|| slots::load(state));
@@ -271,6 +275,12 @@ fn app() -> Element {
             // After TransformOverlay in the DOM, so if both modes are somehow
             // live at once the transform keeps the pointer.
             GuideEditOverlay {}
+
+            // The gradient trace's catcher and rubber line, while the Gradients
+            // panel's Trace is armed (§22.2). Last of the catchers for the same
+            // reason the guides follow the transform: armed later, so it yields
+            // to any mode already holding the pointer.
+            GradientTraceOverlay {}
 
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.

@@ -457,6 +457,16 @@ impl Renderer {
         self.engine.pick_color(at, options)
     }
 
+    /// Sample a gradient along a traced path — the gradient capture (§22.2).
+    /// The same borrow bargain as [`Renderer::pick_color`].
+    pub fn pick_gradient(
+        &mut self,
+        path: &[stark_core::Vec2],
+        options: stark_core::PickOptions,
+    ) -> impl std::future::Future<Output = Option<stark_core::Gradient>> + use<> {
+        self.engine.pick_gradient(path, options)
+    }
+
     /// A bundled shape's content id, once its bytes have been imported.
     pub fn builtin(&self, name: &str) -> Option<stark_core::AssetId> {
         self.builtins

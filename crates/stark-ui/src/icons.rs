@@ -241,6 +241,14 @@ icons! {
     // with the tool it arms — which is the whole discoverability argument that bar is
     // built on, made in a picture as well as a word.
     EYEDROPPER => "eyedropper-bold",
+    // The Gradients panel (§22.3): a square filling from ink to air, which is what
+    // a ramp is. Worn by the panel's title bar and its entry in the Panels menu.
+    GRADIENT => "gradient-bold",
+    // The trace that *makes* a gradient (§22.2): the eyedropper with a sample in
+    // hand, because that is the claim the feature stakes — the trace is the
+    // eyedropper generalized from a point to a line, and the mark should say it is
+    // kin to Alt-pick rather than a pen or a lasso.
+    TRACE_GRADIENT => "eyedropper-sample-bold",
     // A preset row that is the app's rather than the user's, standing where the
     // user's rows carry their trash ([`REMOVE`]). The same file as [`LOCK`], and a
     // second name because the *control* is a different one — the perspective bar's

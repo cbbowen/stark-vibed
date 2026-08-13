@@ -124,6 +124,9 @@ pub struct AppState {
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<crate::presets::PresetEntry>>,
+    /// The gradient library and its trace mode (§22; `crate::gradients`),
+    /// loaded from `localStorage` at startup like the libraries above.
+    pub gradients: crate::gradients::GradientsState,
     /// The ten brushes under the hand (§18.1.8; `crate::slots`).
     pub slots: SlotState,
 }
@@ -293,6 +296,12 @@ impl AppState {
                 notice: root_signal(|| None),
             },
             presets: root_signal(Vec::new),
+            gradients: crate::gradients::GradientsState {
+                entries: root_signal(Vec::new),
+                armed: root_signal(|| false),
+                busy: root_signal(|| false),
+                notice: root_signal(|| None),
+            },
             slots: SlotState {
                 brushes: root_signal(|| [None; crate::slots::COUNT]),
                 held: root_signal(|| None),
