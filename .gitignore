@@ -19,4 +19,4 @@ Thumbs.db
 
 
 # Golden mismatches.
-*.actual.png
+*.actual.pngrustc-ice-*.txt
