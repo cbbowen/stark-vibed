@@ -52,7 +52,7 @@ use std::sync::LazyLock;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
-use crate::layout::chrome_class;
+use crate::layout::{PanelId, PanelLayout, chrome_class};
 use crate::panels::color::ab_field_data_url;
 use crate::platform::capture_pointer;
 use crate::state::{AppState, dispatch};
@@ -60,6 +60,7 @@ use crate::widgets::settle;
 use stark_core::color::{dispersion_weight, linear_to_srgb};
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
+use stark_core::gradient::Gradient;
 use stark_core::{LayerId, LayerInfo};
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
@@ -162,7 +163,33 @@ pub fn selected_filter(state: AppState) -> Option<(LayerInfo, Filter)> {
     o.layers
         .iter()
         .find(|l| l.id == o.active_layer)
-        .and_then(|l| l.filter.map(|f| (l.clone(), f)))
+        .and_then(|l| l.filter.clone().map(|f| (l.clone(), f)))
+}
+
+/// Hand the library's current ramp to the selected **gradient map** filter — the
+/// body of a Gradients-panel row click while one is being tuned (§21.11).
+///
+/// Called from [`gradients::select`](crate::gradients::select), so "clicking a row
+/// takes the ramp" means the same thing here it means for a composing fill or a
+/// matte: a click is a choice, and the one consumer with a bar up receives it. A
+/// discrete click commits directly — there is nothing continuous to preview-then-
+/// settle — and re-clicking the ramp the filter already wears is refused
+/// engine-side, so it costs no undo step (§21.6). While the gradient *bar* is up
+/// the click belongs to that composition instead, so this stands down.
+pub fn apply_ramp(state: AppState) {
+    if state.gradient_bar.peek().is_some() {
+        return;
+    }
+    let Some((info, Filter::GradientMap(_))) = selected_filter(state) else {
+        return;
+    };
+    let Some(g) = crate::gradients::current(state) else {
+        return;
+    };
+    dispatch(
+        state,
+        DocCommand::SetFilter(info.id, Filter::GradientMap(Some(g))),
+    );
 }
 
 /// Stop tuning: select the topmost paint layer instead — a filter, like a frame, is
@@ -252,14 +279,19 @@ pub fn AddFilterButton() -> Element {
             if open() {
                 div { class: "filter-add-menu",
                     for f in Filter::ALL {
-                        button {
-                            key: "{f.label()}",
-                            class: "filter-add-item",
-                            onpointerdown: move |_| {
-                                open.set(false);
-                                add_filter(state, at, f);
-                            },
-                            "{f.label()}"
+                        {
+                            let name = f.label();
+                            rsx! {
+                                button {
+                                    key: "{name}",
+                                    class: "filter-add-item",
+                                    onpointerdown: move |_| {
+                                        open.set(false);
+                                        add_filter(state, at, f.clone());
+                                    },
+                                    "{name}"
+                                }
+                            }
                         }
                     }
                 }
@@ -310,7 +342,7 @@ fn knob_rows<F: Copy + 'static>(
                     oninput: move |e| {
                         if let Ok(v) = e.value().parse::<f32>() {
                             let next = wrap((knob.set)(current, v * knob.scale));
-                            tuning.set(Some(next));
+                            tuning.set(Some(next.clone()));
                             dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
                         }
                     },
@@ -490,7 +522,7 @@ fn drag_dial(
     // preview a setting the commit would then clamp: at the stops the canvas, the
     // readout and the log all say the same number.
     let next = Filter::Color(next).sanitized();
-    tuning.set(Some(next));
+    tuning.set(Some(next.clone()));
     dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
 }
 
@@ -790,7 +822,7 @@ fn drag_fringe(
         },
     })
     .sanitized();
-    tuning.set(Some(next));
+    tuning.set(Some(next.clone()));
     dispatch(state, ViewCommand::PreviewFilter(Some((id, next))));
 }
 
@@ -945,6 +977,86 @@ fn fringe_pad(
     }
 }
 
+// —— the gradient map ————————————————————————————————————————————————————————
+
+/// The gradient map's controls (§21.11): the ramp it wears, and the one edit a
+/// ramp affords in place.
+///
+/// Deliberately thin, because the *choosing* already has a home: the Gradients
+/// panel is the library, and while this bar is up a row click there hands the
+/// clicked ramp to this filter ([`apply_ramp`]). So the bar shows the ramp in the
+/// library's own strip (the same `in oklab` CSS, which is the same interpolation
+/// the pass runs — §22.3's invariant doing its job a third time), says where to
+/// get one while there is none, and offers **Reverse** — the one edit that is
+/// about the *mapping* rather than the ramp: a trace runs in whatever direction
+/// the hand drew, and the map reads dark at 0, so a ramp captured light-to-dark
+/// is one click from meaning what was meant instead of re-tracing backwards.
+fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>, layout: PanelLayout) -> Element {
+    // Opening the library is this bar's job too: the ramp is chosen there, and a
+    // bar that said "use the Gradients panel" while leaving it closed would be
+    // directions to a door it could have opened. Un-hiding keeps the panel's
+    // remembered slot (`PanelLayout`), so it comes back where it lives.
+    let mut hidden = layout.hidden;
+    let open_library = move |_| {
+        hidden.write().remove(&PanelId::Gradients);
+    };
+    match ramp {
+        None => rsx! {
+            span {
+                class: "filter-inert",
+                title: "A gradient map repaints what is beneath it with a ramp \
+                        indexed by lightness \u{2014} dark paint takes the ramp's \
+                        start, light paint its end. Click a gradient in the \
+                        Gradients panel to choose the ramp, or trace one off the \
+                        canvas first.",
+                "no ramp yet \u{2014} pick one in the Gradients panel"
+            }
+            span { class: "bar-sep" }
+            button {
+                class: "chip",
+                title: "Open the Gradients panel \u{2014} clicking a gradient \
+                        there hands it to this filter",
+                onclick: open_library,
+                {icon(icons::GRADIENT)}
+                {label("Gradients")}
+            }
+        },
+        Some(g) => {
+            let strip = crate::gradients::css_strip(&g);
+            rsx! {
+                span {
+                    class: "bar-gradient-strip",
+                    title: "The ramp, dark paint's end to the left \u{2014} click \
+                            a gradient in the Gradients panel to swap it",
+                    style: "background: {strip};",
+                }
+                span { class: "bar-sep" }
+                button {
+                    class: "chip",
+                    title: "Run the ramp the other way \u{2014} what dark paint \
+                            takes trades places with what light paint takes",
+                    onclick: move |_| {
+                        dispatch(
+                            state,
+                            DocCommand::SetFilter(id, Filter::GradientMap(Some(g.reversed()))),
+                        );
+                    },
+                    {icon(icons::SWAP)}
+                    {label("Reverse")}
+                }
+                button {
+                    class: "chip",
+                    title: "Open the Gradients panel \u{2014} clicking a gradient \
+                            there hands it to this filter",
+                    onclick: open_library,
+                    {icon(icons::GRADIENT)}
+                    {label("Gradients")}
+                }
+            }
+        }
+    }
+}
+
 /// The selected filter's controls, in a bar at the bottom of the screen. Mounted
 /// only while a filter layer is selected — see the module docs for why that is the
 /// whole interaction model rather than a panel with an empty state.
@@ -970,6 +1082,9 @@ pub fn FilterBar() -> Element {
     // variant would be a bool that took longer to read. Declared here for the reason
     // above.
     let pulling = use_signal(|| false);
+    // The panel layout, for the gradient map's "Gradients" chip — a hook, so it is
+    // read whether or not that kind is selected, for the reason every hook above is.
+    let layout = use_context::<PanelLayout>();
     let Some((info, filter)) = selected_filter(state) else {
         return rsx! {};
     };
@@ -979,10 +1094,16 @@ pub fn FilterBar() -> Element {
     // which would each have to explain the same thing.
     let inert = !info.has_underlay;
 
+    // The whole-filter facts the chrome needs, read before the match consumes the
+    // filter — its `Clone` is spent on the arms, not on the label.
+    let bar_label = filter.label();
+    let at_neutral = filter.is_neutral();
+    let neutral = filter.neutral();
+
     // The one place the bar knows the kinds apart: which controls it puts up. A
     // picture each — the colour filter's plane ahead of the two tracks that move along
-    // the axis a plane has nothing to say about, and the chromatic filter's vector,
-    // which is the whole of it.
+    // the axis a plane has nothing to say about, the chromatic filter's vector, which
+    // is the whole of it, and the gradient map's ramp, likewise.
     let rows = match filter {
         Filter::Color(c) => rsx! {
             {chroma_dial(state, info.id, c, tuning, grabbed)}
@@ -997,6 +1118,7 @@ pub fn FilterBar() -> Element {
             }
         },
         Filter::Chromatic(c) => fringe_pad(state, info.id, c, tuning, pulling),
+        Filter::GradientMap(g) => map_rows(state, info.id, g, layout),
     };
 
     rsx! {
@@ -1006,7 +1128,7 @@ pub fn FilterBar() -> Element {
             // the bar, and through it the layer you are tuning.
             span { class: "bar-label",
                 {icon(icons::FILTER)}
-                {label(filter.label())}
+                {label(bar_label)}
             }
 
             span { class: "bar-sep" }
@@ -1031,9 +1153,9 @@ pub fn FilterBar() -> Element {
                 class: "chip",
                 title: "Put every slider back to neutral \u{2014} the filter stays, \
                         doing nothing, until it is dialled again",
-                disabled: filter.is_neutral(),
+                disabled: at_neutral,
                 onclick: move |_| {
-                    dispatch(state, DocCommand::SetFilter(info.id, filter.neutral()));
+                    dispatch(state, DocCommand::SetFilter(info.id, neutral.clone()));
                 },
                 {icon(icons::RESET)}
                 {label("Neutral")}

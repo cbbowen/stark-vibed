@@ -676,8 +676,11 @@ impl Layer {
 
     /// The filter this layer runs over the stack beneath it, if it is one (§21).
     pub fn filter(&self) -> Option<Filter> {
+        // Cloned out: a filter is read once per render and once per projection
+        // (§21.7), and a ramp's stop list is small — the borrow a reference
+        // would hand back is not worth threading through every consumer.
         match &self.content {
-            LayerContent::Filter(f) => Some(*f),
+            LayerContent::Filter(f) => Some(f.clone()),
             LayerContent::Paint(_) | LayerContent::Matte { .. } => None,
         }
     }

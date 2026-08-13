@@ -77,7 +77,7 @@ impl CompositeItem {
 /// [`blend_code`](super::blend::blend_code) makes for a blend mode). Flattening it
 /// here also puts the layer's opacity where the pass wants it — as a strength — so
 /// the encoder has one thing to write rather than two to remember to combine.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FilterDraw {
     /// The filter's shader code — see `filter_common.wesl`.
     pub kind: u32,
@@ -88,7 +88,18 @@ pub struct FilterDraw {
     /// layout learning anything (`filter_common.wesl`).
     pub params: [f32; 4],
     pub params2: [f32; 4],
+    /// The gradient map's ramp (§21.11), already in the shader's own terms: Oklab
+    /// `(L, a, b)` and the stop's position per lane, `params[0]` of them live.
+    /// `None` for every other kind — the uniform's lanes are zeroed at write.
+    /// Boxed on [`MatteDraw::ramp`]'s argument: the 256 bytes ride only the draws
+    /// that carry a ramp.
+    pub stops: Option<Box<[[f32; 4]; MAX_MAP_STOPS]>>,
 }
+
+/// The stop lanes the filter uniform carries — the shader's literal `16`
+/// (`filter_common.wesl`, §6.10's generator cannot resolve a named length), held
+/// to the fitter's own bound here so the two cannot drift: every `Gradient` fits.
+const MAX_MAP_STOPS: usize = crate::gradient::MAX_STOPS;
 
 impl FilterDraw {
     /// The draw parameters for `filter` applied at `strength`.
@@ -108,6 +119,7 @@ impl FilterDraw {
                 strength,
                 params: [c.exposure, c.contrast, c.saturation, c.hue],
                 params2: [c.tint[0], c.tint[1], 0.0, 0.0],
+                stops: None,
             },
             // The spread and angle stay in canvas terms here: which *texels* they
             // become depends on the view, and this description deliberately has
@@ -118,7 +130,41 @@ impl FilterDraw {
                 strength,
                 params: [c.spread, c.angle, 0.0, 0.0],
                 params2: [0.0; 4],
+                stops: None,
             },
+            // The one conversion the ramp pays, here and once: stops are straight
+            // sRGB in the document and Oklab in the pass, because Oklab is where
+            // `Gradient::sample`'s interpolation — the thing the map *is* — is
+            // defined (§21.11). A rampless map never reaches this constructor:
+            // it is neutral, and the draw list dropped it (§21.3); the `None` arm
+            // exists so the match stays total rather than as a path.
+            Filter::GradientMap(g) => {
+                let stops = g.as_ref().map(|g| {
+                    let mut lanes = Box::new([[0.0f32; 4]; MAX_MAP_STOPS]);
+                    for (lane, stop) in lanes.iter_mut().zip(g.stops()) {
+                        let lab = crate::color::srgb_to_oklab([
+                            stop.color[0],
+                            stop.color[1],
+                            stop.color[2],
+                            1.0,
+                        ]);
+                        *lane = [lab[0], lab[1], lab[2], stop.t];
+                    }
+                    lanes
+                });
+                Self {
+                    kind: stark_shaders::mirror::filter_common::FILTER_GRADIENT_MAP,
+                    strength,
+                    params: [
+                        g.as_ref().map_or(0.0, |g| g.stops().len() as f32),
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
+                    params2: [0.0; 4],
+                    stops,
+                }
+            }
         }
     }
 }

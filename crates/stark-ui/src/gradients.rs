@@ -84,6 +84,11 @@ pub fn select(state: AppState, name: &str) {
     let mut sel = state.gradients.selected;
     sel.set(Some(name.to_string()));
     crate::panels::gradient_bar::refresh(state);
+    // …and hand it to a selected gradient-map filter (§21.11): while its bar is
+    // up, a row click here is the choosing gesture, the way it is for a
+    // composing fill or matte. The two cannot race — `apply_ramp` stands down
+    // while the gradient bar is composing.
+    crate::panels::filter::apply_ramp(state);
 }
 
 /// The gradient a fill would use right now: the selected entry, or the first —

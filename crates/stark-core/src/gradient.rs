@@ -109,6 +109,29 @@ impl Gradient {
             la[2] + (lb[2] - la[2]) * f,
         ])
     }
+
+    /// The same ramp run the other way: `reversed().sample(t) == sample(1 - t)`.
+    ///
+    /// A captured gradient runs in whatever direction the hand traced, which is
+    /// no direction at all until a consumer gives `t` a meaning — and the
+    /// gradient map (§21.11) gives it one, dark at 0. Reversing is the one-click
+    /// answer to a trace made the other way; without it the fix is re-tracing
+    /// the same line backwards.
+    pub fn reversed(&self) -> Self {
+        let stops = self
+            .stops
+            .iter()
+            .rev()
+            .map(|s| GradientStop {
+                t: 1.0 - s.t,
+                color: s.color,
+            })
+            .collect();
+        // Direct construction rather than `new`: reversing preserves every
+        // invariant (ascending order flips with the iteration, the endpoints
+        // swap), and the funnel's rescale would be a no-op it could not refuse.
+        Self { stops }
+    }
 }
 
 impl From<Gradient> for Vec<GradientStop> {
@@ -336,6 +359,33 @@ mod tests {
         let got = g.sample(0.5);
         for ch in 0..3 {
             assert!((got[ch] - mid[ch]).abs() < 1e-5, "{got:?} vs {mid:?}");
+        }
+    }
+
+    #[test]
+    fn reversed_runs_the_same_ramp_the_other_way() {
+        let g = Gradient::new(vec![
+            stop(0.0, [0.1, 0.2, 0.3]),
+            stop(0.3, [0.9, 0.5, 0.1]),
+            stop(1.0, [0.2, 0.8, 0.6]),
+        ])
+        .unwrap();
+        let r = g.reversed();
+        // The invariants survive without the funnel: ascending, endpoints exact.
+        assert_eq!(r.stops()[0].t, 0.0);
+        assert_eq!(r.stops()[2].t, 1.0);
+        // Stops land bit-exact — a colour must not pick up dust by being turned
+        // around — and interior positions mirror.
+        assert_eq!(r.stops()[0].color, [0.2, 0.8, 0.6]);
+        assert_eq!(r.stops()[2].color, [0.1, 0.2, 0.3]);
+        assert!((r.stops()[1].t - 0.7).abs() < 1e-6);
+        // And the ramp between them is the same ramp: r(t) == g(1 - t).
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let (a, b) = (r.sample(t), g.sample(1.0 - t));
+            for ch in 0..3 {
+                assert!((a[ch] - b[ch]).abs() < 1e-5, "t={t}: {a:?} vs {b:?}");
+            }
         }
     }
 

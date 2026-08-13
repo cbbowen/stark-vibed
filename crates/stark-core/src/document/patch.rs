@@ -233,7 +233,7 @@ impl StatePatch {
                 PatchOp::Matte(id, region, paint) => state
                     .set_matte_region(*id, *region)
                     .set_matte_paint(*id, paint.clone()),
-                PatchOp::Filter(id, filter) => state.set_filter(*id, *filter),
+                PatchOp::Filter(id, filter) => state.set_filter(*id, filter.clone()),
                 PatchOp::Selection(actor, selection) => {
                     state.with_selection(*actor, selection.clone())
                 }

@@ -650,7 +650,7 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
 /// opening the field on a frame showed a corner mark inside a text box. The row draws
 /// the glyph now, which leaves the placeholder a name.
 fn layer_label(info: &LayerInfo) -> String {
-    match (&info.name, info.matte.as_ref(), info.filter) {
+    match (&info.name, info.matte.as_ref(), info.filter.as_ref()) {
         (Some(name), ..) => name.to_string(),
         // The two kinds of matte, told apart by the one thing that differs:
         // a frame is defined against a rect, a background against none (§15.5).

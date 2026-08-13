@@ -58,6 +58,7 @@ import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, light_t
 // unmirrored kind cannot compile host-side.
 const FILTER_COLOR: u32 = 0u;
 const FILTER_CHROMATIC: u32 = 1u;
+const FILTER_GRADIENT_MAP: u32 = 2u;
 
 struct Filter {
     // Which filter this layer is (see the codes above).
@@ -95,6 +96,19 @@ struct Filter {
     // rounds up to the same 48 bytes either way and a lane the next kind can read as
     // its own is the whole point of the first one.
     params2: vec4<f32>,
+    // The gradient map's ramp (§21.11): Oklab `(L, a, b)` in `xyz`, the stop's
+    // position in `w`, ascending, `params.x` of them live. **Oklab, not a working
+    // space**: the map's whole adjustment is "sample `Gradient::sample`'s own
+    // interpolation at the lightness beneath", and Oklab is where that ramp is
+    // defined — the same argument that puts every point filter's knobs there
+    // (§21.5). The stops convert once, host-side, in `FilterDraw::new`.
+    //
+    // Zeroed for every other kind, on `disp`'s terms — and like the lanes above,
+    // a kind that needs a table of vec4s reads this one as its own. The length is
+    // a literal because the generator cannot resolve a named constant here
+    // (§6.10); the host asserts it against `gradient::MAX_STOPS` where the
+    // mirror lands (`gpu/composite/group.rs`).
+    stops: array<vec4<f32>, 16>,
 }
 
 @group(0) @binding(0) var<uniform> f: Filter;
@@ -159,6 +173,51 @@ fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
     return lab;
 }
 
+// The gradient map (§21.11): the backdrop's **lightness** indexes the ramp, and
+// the ramp's colour is what the paint becomes — chroma and hue beneath are spent,
+// which is the point: a duotone, a false-colour relief, a palette unification are
+// all this one operation with different ramps.
+//
+// `t` is Oklab `L`, saturated to the ramp's own domain. `L` rather than a
+// luminance because `L` is the lightness the rest of §21 already answers for —
+// "desaturating keeps the lightness it found" is measured in it — and it buys an
+// exact statement: the black→white ramp *is* the `L`-preserving greyscale, since
+// sampling it at `L` returns `(L, 0, 0)`.
+//
+// The lerp between the surrounding stops is `Gradient::sample`'s, in the same
+// space on the same numbers, so what the library strip previews is what the map
+// paints. Beyond either end the ramp holds its end stop — the fill's own rule for
+// the same value (§22.4).
+fn map_gradient(lab: vec3<f32>) -> vec3<f32> {
+    let n = u32(f.params.x);
+    // No ramp is the neutral, and the draw list already dropped it (§21.3); the
+    // guard is for the uniform nothing should ever build, not a path.
+    if n < 2u {
+        return lab;
+    }
+    let t = saturate(lab.x);
+    var a = f.stops[0];
+    // Positions ascend with the endpoints at 0 and 1 (a `Gradient`'s construction
+    // invariant), so the walk always lands: `t` is within the last span by the
+    // time the loop runs out.
+    for (var i = 1u; i < n; i++) {
+        let b = f.stops[i];
+        // Strictly past every stop at `t` before pairing — the CPU sample's own
+        // `<=` partition, seen from the other side: standing exactly on a stop
+        // (or on a hard edge two stops share) reads the *last* stop at that
+        // position, at interpolant 0.
+        if t < b.w || i == n - 1u {
+            let span = b.w - a.w;
+            if span <= 0.0 {
+                return a.xyz;
+            }
+            return mix(a.xyz, b.xyz, clamp((t - a.w) / span, 0.0, 1.0));
+        }
+        a = b;
+    }
+    return a.xyz;
+}
+
 // One texel's worth of a **point** filter: the backdrop in Oklab, the filtered
 // Oklab out.
 //
@@ -170,11 +229,11 @@ fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
 // §21.10) branches in each space's `fs_main` instead, where the space's own
 // decode is in reach per tap.
 fn filtered(lab: vec3<f32>) -> vec3<f32> {
-    // One arm, so this is a `return` and not a chain — but it is written as a guard
-    // rather than as the body, because the next filter is an arm above it and the
-    // fallthrough has to be somebody's.
     if f.kind == FILTER_COLOR {
         return adjust_color(lab, f.params, f.params2);
+    }
+    if f.kind == FILTER_GRADIENT_MAP {
+        return map_gradient(lab);
     }
     return lab;
 }

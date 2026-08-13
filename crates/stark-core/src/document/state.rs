@@ -1001,13 +1001,13 @@ mod tests {
             hue: f32::NEG_INFINITY,
             tint: [9.0, f32::NAN],
         });
-        let expect = wild.sanitized();
+        let expect = wild.clone().sanitized();
         assert_ne!(wild, expect, "the wild filter must need sanitizing");
 
-        let inserted = DocState::with_layer(BASE).insert_filter(FILTER, None, None, wild);
+        let inserted = DocState::with_layer(BASE).insert_filter(FILTER, None, None, wild.clone());
         assert_eq!(
             inserted.layer(FILTER).and_then(Layer::filter),
-            Some(expect),
+            Some(expect.clone()),
             "insert_filter installed an unsanitized filter",
         );
 

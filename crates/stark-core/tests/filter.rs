@@ -19,6 +19,7 @@ use common::*;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_core::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, Place};
 use stark_core::geom::Vec2;
+use stark_core::gradient::{Gradient, GradientStop};
 use stark_core::{Engine, RgbaImage};
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
@@ -94,6 +95,18 @@ fn chroma_ab(c: [u8; 4]) -> [f32; 2] {
     let lin = |i: usize| stark_core::color::srgb_to_linear(c[i] as f32 / 255.0);
     let lab = stark_core::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)]);
     [lab[1], lab[2]]
+}
+
+/// A ramp from positioned sRGB stops — the test's shorthand for what a trace
+/// captures (§22.2).
+fn ramp(stops: &[(f32, [f32; 3])]) -> Gradient {
+    Gradient::new(
+        stops
+            .iter()
+            .map(|&(t, color)| GradientStop { t, color })
+            .collect(),
+    )
+    .expect("a valid test ramp")
 }
 
 /// Add a filter into `carrier`'s stack (the document's own when `None`) and hand
@@ -550,7 +563,7 @@ fn dragging_a_filter_previews_without_logging() {
             saturation: 1.0 - i as f32 / 8.0,
             ..ColorAdjust::NEUTRAL
         });
-        engine.process(ViewCommand::PreviewFilter(Some((id, filter))));
+        engine.process(ViewCommand::PreviewFilter(Some((id, filter.clone()))));
         shown = Some(filter);
     }
     assert_eq!(
@@ -711,6 +724,19 @@ fn a_filter_survives_save_and_load() {
             angle: -1.2,
         }),
     ));
+    // And a third of the third kind: the gradient map is the first filter whose
+    // payload has a *length* (a stop list) and an `Option` around it — two more
+    // shapes postcard writes without names, each a fresh way for a layout mistake
+    // to decode as a different ramp. Three stops, every number distinct.
+    let map = add_filter(&mut engine, None, Filter::GradientMap(None));
+    engine.process(DocCommand::SetFilter(
+        map,
+        Filter::GradientMap(Some(ramp(&[
+            (0.0, [0.12, 0.34, 0.56]),
+            (0.4, [0.9, 0.62, 0.21]),
+            (1.0, [0.05, 0.77, 0.43]),
+        ]))),
+    ));
     let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
 
@@ -723,11 +749,142 @@ fn a_filter_survives_save_and_load() {
     // …and the settings come back as settings, not merely as the same pixels —
     // every filter, in stack order, kind and numbers alike.
     let filters = |e: &Engine| -> Vec<Filter> {
-        e.observe().layers.iter().filter_map(|l| l.filter).collect()
+        e.observe()
+            .layers
+            .iter()
+            .filter_map(|l| l.filter.clone())
+            .collect()
     };
     let back = filters(&loaded);
-    assert_eq!(back.len(), 2, "both filter layers came back");
+    assert_eq!(back.len(), 3, "all three filter layers came back");
     assert_eq!(back, filters(&engine));
+}
+
+/// **The gradient map's index is Oklab `L`, and its lerp is `Gradient::sample`'s**
+/// (§21.11) — both pinned at once by the one ramp with a closed-form answer: the
+/// black→white ramp maps every colour to `(L, 0, 0)`, which is exactly what the
+/// colour filter's saturation-0 setting produces. Two different filters, two
+/// different code paths (a chroma gain against a stop walk), one picture — a wrong
+/// index (luminance, or un-saturated `L`), a wrong interpolation space, or a
+/// mis-packed stop lane all break the agreement, and nothing else has to be known
+/// about the render to check it.
+#[test]
+fn a_black_to_white_gradient_map_is_the_lightness_preserving_greyscale() {
+    let Some(mut engine) = painted() else { return };
+    let id = add_filter(&mut engine, None, GREY);
+    let desaturated = engine.render_to_image();
+
+    engine.process(DocCommand::SetFilter(
+        id,
+        Filter::GradientMap(Some(ramp(&[(0.0, [0.0; 3]), (1.0, [1.0; 3])]))),
+    ));
+    let mapped = engine.render_to_image();
+    assert!(
+        images_match(&desaturated, &mapped, 1),
+        "the black\u{2192}white map should be the saturation-0 greyscale: {:?}",
+        diff_fraction(&desaturated, &mapped),
+    );
+}
+
+/// **A gradient map repaints; coverage stays put** (§21.11, §21.3.1). A ramp whose
+/// two stops are the same red maps *every* lightness to red — the sharpest way to
+/// see the repaint — while the bare canvas around the stroke must not change by a
+/// byte: the pass writes colour, not coverage, so paint that is not there cannot
+/// be graded into being.
+#[test]
+fn a_gradient_map_repaints_the_paint_and_only_the_paint() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, [0.1, 0.1, 0.9, 1.0], 22.0, STROKE);
+    let before = engine.render_to_image();
+    let off = (before.width / 2, before.height / 8); // well clear of the stroke
+    assert!(
+        !red_dominant(center(&before)),
+        "the stroke starts blue: {:?}",
+        center(&before),
+    );
+
+    add_filter(
+        &mut engine,
+        None,
+        Filter::GradientMap(Some(ramp(&[
+            (0.0, [0.85, 0.1, 0.1]),
+            (1.0, [0.85, 0.1, 0.1]),
+        ]))),
+    );
+    let after = engine.render_to_image();
+    assert!(
+        red_dominant(center(&after)),
+        "an all-red ramp should repaint the stroke red: {:?}",
+        center(&after),
+    );
+    assert_eq!(
+        before.pixel(off.0, off.1),
+        after.pixel(off.0, off.1),
+        "bare canvas must come through a gradient map untouched",
+    );
+}
+
+/// **A rampless gradient map is the exact identity** (§21.11) — it is the kind's
+/// neutral, which is what a freshly added one holds, and §21.3's byte-level
+/// neutral rule applies to it exactly as to a unity gain: the draw list drops it
+/// rather than trusting a round trip.
+#[test]
+fn a_rampless_gradient_map_changes_no_pixel() {
+    let Some(mut engine) = painted() else { return };
+    let before = engine.render_to_image();
+    let id = add_filter(&mut engine, None, Filter::GradientMap(None));
+    assert!(
+        images_match(&before, &engine.render_to_image(), 0),
+        "a gradient map with no ramp is not the identity",
+    );
+
+    // Dialling a ramp in must change the picture, and Neutral must put it back —
+    // the same out-and-back every other kind's bar makes.
+    engine.process(DocCommand::SetFilter(
+        id,
+        Filter::GradientMap(Some(ramp(&[
+            (0.0, [0.1, 0.1, 0.6]),
+            (1.0, [1.0, 0.9, 0.4]),
+        ]))),
+    ));
+    assert!(
+        !images_match(&before, &engine.render_to_image(), 0),
+        "the ramp has to grade the picture for the second half to mean anything",
+    );
+    engine.process(DocCommand::SetFilter(id, Filter::GradientMap(None)));
+    assert!(
+        images_match(&before, &engine.render_to_image(), 0),
+        "putting the ramp back to none did not restore the picture",
+    );
+}
+
+/// The gradient map in a **pigment** document (§21.11, §6.7): the mapped colour
+/// re-enters through the inverse LUT with the residual recomputed — the leg that,
+/// missing, renders a mapped black as `#383838` (the very defect §6.7 records).
+/// An all-red ramp onto a blue stroke exercises a saturated answer the polynomial
+/// alone cannot store.
+#[cfg(feature = "mixbox")]
+#[test]
+fn a_gradient_map_works_in_a_pigment_document() {
+    let Some(mut engine) = engine_or_skip_with(stark_core::colorspace::ColorSpaceId::Mixbox) else {
+        return;
+    };
+    paint(&mut engine, [0.1, 0.1, 0.9, 1.0], 22.0, STROKE);
+    add_filter(
+        &mut engine,
+        None,
+        Filter::GradientMap(Some(ramp(&[
+            (0.0, [0.85, 0.1, 0.1]),
+            (1.0, [0.85, 0.1, 0.1]),
+        ]))),
+    );
+    let after = center(&engine.render_to_image());
+    assert!(
+        red_dominant(after),
+        "an all-red ramp should repaint pigment paint red too: {after:?}",
+    );
 }
 
 /// The **pigment** path (§6.7). A filter in a Mixbox document takes a different

@@ -398,7 +398,9 @@ right shape.
   the next filter reads those eight floats as its own and neither the host struct nor
   the bind group layout learns about it. (One lane until the colour filter grew its
   tint; the second costs nothing, since the struct rounds up to the same 48 bytes
-  either way.)
+  either way.) The gradient map added a third kind of lane on the same terms: a
+  sixteen-stop table for its ramp (§21.11), zeroed for every other kind, and read as
+  its own by whatever kind next needs a table.
 - **Bind group.** The blend pass's numbering with the source's two slots simply not
   declared: `filter_common` owns 0–2 where `blend_common` owns 0–4, and the pigment LUT
   keeps 5–6 because `mixbox_lut.wesl` hard-codes them for whoever imports it. The LUT
@@ -460,6 +462,15 @@ nothing on screen to say where it came from.
 16. The chromatic filter **works in a pigment document** — per-tap decodes through
     the polynomial, one re-entry through the inverse LUT, the residual recomputed
     for the arrived-at colour (§6.7).
+17. **The black→white gradient map is the saturation-0 greyscale** (§21.11) — two
+    kinds, two code paths, one picture, which pins the map's index (Oklab `L`),
+    its interpolation space and its stop packing in a single render.
+18. A gradient map **repaints the paint and only the paint** — an all-red ramp
+    turns a blue stroke red while the bare canvas beside it comes through byte
+    for byte, §21.3.1's coverage rule drawn.
+19. A **rampless** gradient map changes no pixel — the kind's neutral, held to
+    the byte like every other — and one **works in a pigment document**, where a
+    saturated mapped colour needs the residual leg to survive re-entry (§6.7).
 
 ### 21.9 Open
 
@@ -580,5 +591,64 @@ and `a_neutral_filter_changes_no_pixel` keeps its byte-level meaning. The pad sa
 the same thing by drawing nothing but its graduation at spread 0: a gradient over a
 zero-length line paints nothing, which is the correct picture of *no wavelength
 moves*.
+
+### 21.11 The gradient map filter
+
+The third filter, and the first whose payload is a **value** rather than knobs: a
+captured `Gradient` (§22), read as a transfer function. The backdrop's **Oklab
+`L`** indexes the ramp and the ramp's colour is what the paint becomes — chroma
+and hue beneath are spent, deliberately, because that is what the operation *is*:
+a duotone, a false-colour relief, a palette unification over a value study are all
+this one map with different ramps. It is a pure point filter, so §21.3.1 applies
+unbent — coverage comes out as it went in, height is copied across — and paint
+that is not there cannot be graded into being.
+
+**`L`, not luminance**, and the choice buys an exact sentence. `L` is the
+lightness the rest of the chapter already answers for — "desaturating keeps the
+lightness it found" is *measured* in it — and with `L` as the index the
+black→white ramp samples to `(L, 0, 0)`, which is precisely the colour filter's
+saturation-0 greyscale. Two kinds, two code paths, one picture;
+`tests/filter.rs` pins the agreement, and with it the index, the interpolation
+space and the stop packing in a single render.
+
+**The lerp is `Gradient::sample`'s, in Oklab, in every document.** The library
+strip, the CSS preview and the pass are one interpolation (§22.3's invariant,
+doing its job a third time). This is a deliberate contrast with the fill and the
+matte, which interpolate their stops in the **working space** so a pigment
+document lays a pigment ramp (§22.4): those *lay paint*, and a ramp of paint
+should mix like paint — a map is a colour **adjustment**, and adjustments are
+defined in Oklab here (§21.5's argument). In a pigment document the mapped colour
+still re-enters through the inverse LUT with the residual recomputed, exactly as
+every point filter's answer does (§6.7).
+
+**Its neutral is no ramp at all.** There is no identity ramp — even black→white
+repaints every colour with its greyscale — so the kind's payload is an `Option`,
+`None` neutral, and a freshly added map changes nothing until a ramp is chosen:
+the same shape as an angle dialled before its spread (§21.10), keeping §21.3's
+byte-level neutral rule and costing `Filter` its old `Copy` (the day its own doc
+comment named). Sanitizing holds the one thing `Gradient::new`'s gate does not —
+stop colours clamped to the sRGB cube — since a finite `1e30` reaches every texel
+as surely as a `NaN` gain.
+
+**The ramp rides the filter uniform**: a lane of sixteen `(L, a, b, t)` stops —
+converted from the stops' sRGB once, host-side, in `FilterDraw::new` — with the
+live count in `params.x`, zeroed for every other kind as `disp` already is. The
+literal sixteen is asserted against `gradient::MAX_STOPS` where the mirror lands
+(§6.10), so the fitter's bound and the shader's array cannot drift; like the two
+scalar lanes, a future kind that needs a table of vec4s reads this one as its own.
+
+**In the bar, the ramp is chosen where ramps live.** The gradient map's bar is
+deliberately thin: the strip it wears (the library's own `in oklab` CSS), a
+**Reverse** chip, and a chip that opens the Gradients panel — because the
+choosing already has a home. While a gradient map is selected, clicking a row in
+the Gradients panel hands that ramp to the filter, the same click-is-a-choice the
+composing fill and the matte honour (§22.4); with no ramp yet, the bar says where
+to get one and opens the door. A click is a discrete edit, so it commits one
+`SetFilter` with no preview funnel, and re-clicking the ramp already worn is
+refused engine-side (§21.6's out-and-back rule). Reverse is the one edit that is
+about the *mapping* rather than the ramp: a trace runs in whatever direction the
+hand drew it, the map reads dark at 0, and `Gradient::reversed` is the one-click
+answer to a trace made the other way. Strength stays the layer's opacity, as
+everywhere (§21.4).
 
 ---

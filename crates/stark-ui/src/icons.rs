@@ -260,6 +260,12 @@ icons! {
     // name rather than borrowing the ellipse-select chip's.
     GRADIENT_LINEAR => "line-segment-bold",
     GRADIENT_RADIAL => "circle-bold",
+    // The gradient map's one in-place edit (§21.11): run the ramp the other way.
+    // A double-headed arrow rather than a cycle, because reversing a ramp is a
+    // flip along its own axis, not a rotation — and the cycle arrows are already
+    // the history's. Composed here, like `funnel-plus-bold`: the set has no
+    // left-right pair at this weight.
+    SWAP => "arrows-left-right-bold",
     // The trace that *makes* a gradient (§22.2): the eyedropper with a sample in
     // hand, because that is the claim the feature stakes — the trace is the
     // eyedropper generalized from a point to a line, and the mark should say it is

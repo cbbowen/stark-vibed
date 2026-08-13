@@ -66,6 +66,7 @@ const CONSTS: &[(&str, &str)] = &[
     ("filter_common", "CONTRAST_PIVOT"),
     ("filter_common", "FILTER_CHROMATIC"),
     ("filter_common", "FILTER_COLOR"),
+    ("filter_common", "FILTER_GRADIENT_MAP"),
     ("lib/paint_common", "RISE_LIMIT"),
     ("lib/paint_common", "TOOTH_RISE"),
     ("lib/paint_common", "TOOTH_SOFTNESS"),

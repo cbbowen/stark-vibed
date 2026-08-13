@@ -303,8 +303,10 @@ it.
 Built as **filter layers** (§21), and the model went one step past what this
 paragraph asked for: an adjustment layer's *scope* is where its row sits, so the
 clipping toggle Photoshop needs beside every adjustment is not a control here at
-all (§21.1). One kind ships — exposure / contrast / saturation / hue, in Oklab —
-and the rest are a variant and an arm each (§21.9).
+all (§21.1). Three kinds ship — the colour filter (exposure / contrast /
+saturation / hue / tint, in Oklab, §21.5), the spectral chromatic aberration
+(§21.10), and the gradient map over the captured ramps of §22 (§21.11) — and
+the rest are a variant and an arm each (§21.9).
 
 #### 18.1.7 Touch: the two-finger gesture — built
 

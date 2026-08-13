@@ -261,8 +261,8 @@ pub struct Compositor {
     // One dynamic-offset slot per blend group in the frame, and one per filter
     // layer (§21). Separate buffers, one mechanism — see [`UniformSlots`] for both
     // the sharing and the separation.
-    blend_uniforms: UniformSlots,
-    filter_uniforms: UniformSlots,
+    blend_uniforms: UniformSlots<BlendUniform>,
+    filter_uniforms: UniformSlots<FilterUniform>,
     // Pass C's, grown to the outlined mask-tile count.
     overlay_instances: wgpu::Buffer,
     overlay_cap: usize,
@@ -604,6 +604,10 @@ impl Compositor {
                         disp: chromatic_disp(f, view),
                         params: f.params,
                         params2: f.params2,
+                        // The gradient map's ramp, zeroed for every other kind —
+                        // `disp`'s convention: the true value, since no other
+                        // kind has stops (§21.11).
+                        stops: f.stops.as_deref().copied().unwrap_or([[0.0; 4]; 16]),
                     });
                     continue;
                 }
@@ -862,7 +866,7 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&e.p.blend.pipeline);
-        pass.set_bind_group(0, &bg, &[slot * UNIFORM_SLOT as u32]);
+        pass.set_bind_group(0, &bg, &[UniformSlots::<BlendUniform>::offset(slot)]);
         pass.draw(0..3, 0..1);
     }
 
@@ -924,7 +928,7 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&e.p.filter.pipeline);
-        pass.set_bind_group(0, &bg, &[slot * UNIFORM_SLOT as u32]);
+        pass.set_bind_group(0, &bg, &[UniformSlots::<FilterUniform>::offset(slot)]);
         pass.draw(0..3, 0..1);
     }
 

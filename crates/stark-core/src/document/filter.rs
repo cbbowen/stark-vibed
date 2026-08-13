@@ -27,61 +27,74 @@ use serde::{Deserialize, Serialize};
 
 /// What a filter layer does to the stack beneath it (§21.2).
 ///
-/// Two variants, because two are built. The enum is the seam the rest of §21.7
+/// Three variants, because three are built. The enum is the seam the rest of §21.7
 /// lands on — motion blur, outline, glow — and per this codebase's own precedent
 /// (§1) no variant appears here before it does something to a pixel. **Appended
 /// only**: postcard encodes an enum by index (§8), so a variant inserted above an
 /// existing one would silently rename every filter in every saved file.
 ///
-/// `Copy` on purpose: a filter is a handful of numbers, it is read once per render
-/// and once per projection, and a `Clone` would be a promise that some future
-/// variant may carry a mask or a kernel. If one ever does, that is the day to pay
-/// for it.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `Clone`, not `Copy`, since the gradient map arrived: a ramp is a stop list, and
+/// the enum's old `Copy` was always documented as lasting until the first variant
+/// that carries more than a handful of numbers. A filter is still read once per
+/// render and once per projection, so the clones stay countable.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Filter {
     /// Exposure, contrast, saturation and hue, applied in Oklab (§21.5).
     Color(ColorAdjust),
     /// The spectrum pulled apart across the picture — the lens's dispersion as the
     /// integral it is, not as three shifted copies (§21.10).
     Chromatic(ChromaticAberration),
+    /// The stack beneath repainted by its lightness: Oklab `L` indexes the ramp,
+    /// and the ramp's colour is what the paint becomes (§21.11). `None` — no ramp
+    /// chosen yet — is the neutral, the same shape as a chromatic filter whose
+    /// spread has not left zero: a gradient map with *any* ramp is already an
+    /// edit, so the only setting a freshly added one may hold is none at all.
+    GradientMap(Option<crate::gradient::Gradient>),
 }
 
 impl Filter {
     /// Every filter this build offers, at its neutral setting — the list the "new
     /// filter" picker is built from, in the order it should offer them.
-    pub const ALL: [Filter; 2] = [
+    pub const ALL: [Filter; 3] = [
         Filter::Color(ColorAdjust::NEUTRAL),
         Filter::Chromatic(ChromaticAberration::NEUTRAL),
+        Filter::GradientMap(None),
     ];
 
     /// What this filter is called, in the panel and in the layer row.
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             Filter::Color(_) => "Colour",
             Filter::Chromatic(_) => "Chromatic aberration",
+            Filter::GradientMap(_) => "Gradient map",
         }
     }
 
     /// Whether this filter changes anything at all. A neutral filter still costs its
     /// pass — the compositor cannot know that `1.0` is the identity of a gain — so
     /// this is what lets the draw list leave it out (§21.3).
-    pub fn is_neutral(self) -> bool {
+    pub fn is_neutral(&self) -> bool {
         match self {
-            Filter::Color(c) => c == ColorAdjust::NEUTRAL,
+            Filter::Color(c) => *c == ColorAdjust::NEUTRAL,
             // The spread alone: at zero spread every wavelength lands where it
             // started, whatever the angle points at — so an angle dialled before
             // the spread is not an edit yet, and the draw list rightly spends
             // nothing on it.
             Filter::Chromatic(c) => c.spread == 0.0,
+            // No ramp, no map. There is no "identity ramp" to compare against —
+            // even black-to-white repaints every colour with its greyscale — so
+            // the absence is the one neutral this kind has.
+            Filter::GradientMap(g) => g.is_none(),
         }
     }
 
     /// The same **kind** of filter at its neutral setting — what the bar's
     /// "Neutral" chip puts back, said once here rather than per panel arm.
-    pub fn neutral(self) -> Self {
+    pub fn neutral(&self) -> Self {
         match self {
             Filter::Color(_) => Filter::Color(ColorAdjust::NEUTRAL),
             Filter::Chromatic(_) => Filter::Chromatic(ChromaticAberration::NEUTRAL),
+            Filter::GradientMap(_) => Filter::GradientMap(None),
         }
     }
 
@@ -101,6 +114,25 @@ impl Filter {
         match self {
             Filter::Color(c) => Filter::Color(c.sanitized()),
             Filter::Chromatic(c) => Filter::Chromatic(c.sanitized()),
+            // A `Gradient`'s structural invariants (two stops, ascending, finite)
+            // are already held by construction — deserialization funnels through
+            // `Gradient::new` — so what is left to hold is the *range*: stop
+            // colours are straight sRGB, and a finite 1e30 would reach every
+            // texel just as surely as a NaN saturation. Clamping to the cube and
+            // re-funnelling keeps the promise one gate deep; a ramp that somehow
+            // degenerates under it falls back to the neutral, the one answer
+            // that cannot make a picture worse.
+            Filter::GradientMap(g) => Filter::GradientMap(g.and_then(|g| {
+                let stops = g
+                    .stops()
+                    .iter()
+                    .map(|s| crate::gradient::GradientStop {
+                        t: s.t,
+                        color: s.color.map(|c| c.clamp(0.0, 1.0)),
+                    })
+                    .collect();
+                crate::gradient::Gradient::new(stops)
+            })),
         }
     }
 }
@@ -426,7 +458,40 @@ mod tests {
             angle: 2.0,
         });
         assert!(aimed.is_neutral());
-        assert_eq!(aimed.sanitized(), aimed, "sanitizing must not disturb it");
+        assert_eq!(
+            aimed.clone().sanitized(),
+            aimed,
+            "sanitizing must not disturb it"
+        );
+    }
+
+    /// The gradient map's sanitizer holds the one thing `Gradient::new` does not:
+    /// the **range** of a stop colour. Structure (two stops, ascending, finite) is
+    /// the constructor's promise; a finite colour outside the sRGB cube is still a
+    /// value a hostile file can carry, and it reaches every texel of the frame.
+    #[test]
+    fn sanitizing_a_gradient_map_clamps_its_stops_to_the_cube() {
+        use crate::gradient::{Gradient, GradientStop};
+        let hot = Gradient::new(vec![
+            GradientStop {
+                t: 0.0,
+                color: [-2.0, 0.5, 1e30],
+            },
+            GradientStop {
+                t: 1.0,
+                color: [0.25, 2.0, 0.75],
+            },
+        ])
+        .unwrap();
+        let Filter::GradientMap(Some(g)) = Filter::GradientMap(Some(hot)).sanitized() else {
+            panic!("a clampable ramp must survive sanitizing as a ramp");
+        };
+        assert_eq!(g.stops()[0].color, [0.0, 0.5, 1.0]);
+        assert_eq!(g.stops()[1].color, [0.25, 1.0, 0.75]);
+        // …and an in-range ramp comes through bit for bit: sanitizing is
+        // idempotent on anything this engine wrote.
+        let clean = Filter::GradientMap(Some(g));
+        assert_eq!(clean.clone().sanitized(), clean);
     }
 
     /// A freshly added filter must change nothing: adding one is a step you take
@@ -437,7 +502,7 @@ mod tests {
         for filter in Filter::ALL {
             assert!(filter.is_neutral(), "{} is not neutral", filter.label());
             assert_eq!(
-                filter.sanitized(),
+                filter.clone().sanitized(),
                 filter,
                 "{} is not stable",
                 filter.label()

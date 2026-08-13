@@ -20,11 +20,11 @@ line (§18.0.2), and everything below follows from taking that sentence
 literally.
 
 The chapter runs from the gradient itself (§22.1) through the capture that
-makes one (§22.2) and the library that keeps them (§22.3) to the first
-consumer: the **gradient fill** (§22.4), the position-varying `FillOp` parcel
-§18.0.4 and §10 always named. The gradient map (§21) remains ahead (§22.5),
-and nothing here anticipates it beyond being the value it will embed — no map
-channel, no inert hook (§1's "nothing inert ships").
+makes one (§22.2) and the library that keeps them (§22.3) to its consumers:
+the **gradient fill** (§22.4), the position-varying `FillOp` parcel §18.0.4
+and §10 always named, with the matte's graded paint beside it — and the
+**gradient map** (§22.5), the filter layer that reads a ramp as a transfer
+function rather than laying it as paint.
 
 ### 22.1 The model: stops in sRGB, a ramp in Oklab
 
@@ -233,9 +233,22 @@ gradient's axis must not silently swap its colours for whatever the library
 happens to have selected; a library click mid-mode still replaces it, because a
 click is a choice.
 
-### 22.5 What attaches here next
+### 22.5 The gradient map: the ramp as a transfer function
 
-- **Gradient map** — a filter layer (§21) whose transfer function is a
-  `Gradient`, indexing the ramp by the luminance beneath. The same embedded
-  value, a different consumer; nothing about the library, the capture, the fill
-  or the matte waits on it.
+The third consumer, and the first that does not lay the ramp as paint: a
+**filter layer** (§21) holding a `Gradient`, indexing it by the Oklab lightness
+of whatever is composited beneath — dark paint takes the ramp's start, light
+paint its end. The full design lives with the other filters, §21.11; what
+belongs to this chapter is the seam. The ramp is the same embedded-by-value
+`Gradient` the fill and the matte carry, chosen the same way — while a gradient
+map is selected, clicking a library row hands it the ramp, the click-is-a-choice
+rule of §22.4 — and `Gradient::reversed` exists because a *map* is the first
+consumer for which the trace's direction has a meaning to be wrong about.
+
+One deliberate asymmetry against §22.4: the fill and the matte interpolate
+their stops in the **working space**, so a pigment document lays a pigment
+ramp; the map interpolates in **Oklab**, `Gradient::sample`'s own space, in
+every document. Those lay paint, and paint should mix like paint — a map is a
+colour adjustment, and adjustments here are defined in Oklab (§21.5). The
+library strip previews the map exactly for the same reason it previews the
+Oklab fill exactly (§22.3).
