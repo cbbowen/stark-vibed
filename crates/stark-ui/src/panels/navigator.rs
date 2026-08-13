@@ -95,10 +95,12 @@ struct Overview {
 /// possibly-previewed layer list is safe: a frame handle drag moves a matte's rect,
 /// never its identity.
 fn overview_frame(o: &ObservableState) -> Option<LayerId> {
+    // Only mattes with a rect frame anything: a background (§15.5)
+    // is under the piece, not a statement of where it ends.
     o.layers
         .iter()
         .rev()
-        .find(|l| l.matte.is_some())
+        .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_some()))
         .map(|l| l.id)
 }
 

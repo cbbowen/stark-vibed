@@ -227,7 +227,7 @@ The suite files, roughly by subject: `golden`, `seam`, `stroke`, `dynamics`,
 | A different frontend (native, CLI exporter) | a new consumer of `Engine`; core untouched |
 | Another selection producer (by colour, quick-mask, imported alpha) | a `SelectionShape` variant + an arm in `selection.wesl`; representation, ops, history and masking sites unchanged (§6.8) — and it becomes a *fill* producer in the same move |
 | Another position-varying fill (noise, pattern) | a `Parcel` variant + an arm in `fill.wesl`'s parcel branch; region, gate, stacking law, action and footprint unchanged — the gradient landed exactly this way (§22.4) |
-| A richer frame / comic gutters / a solid ground | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing unchanged (§15) |
+| A richer frame / comic gutters | a `MatteRegion` variant + an arm in `matte.wesl`; `LayerContent::Matte` and its compositing unchanged (§15) — the solid ground landed exactly this way (`Everything`, §15.5) |
 | Text | a new `ActionKind` + optionally new channels; transforms landed exactly this way (§16) |
 | A wider-gamut / spectral colour pipeline | `color.rs` + a `CanvasMeta.color_space` variant; storage stays float, present picks the transform |
 | Multi-user collaboration | swap `LinearTimeline` → `ReplicatedTimeline`; add `stark-net`; engine/GPU untouched (§12) |

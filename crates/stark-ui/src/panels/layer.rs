@@ -41,7 +41,7 @@ use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
 use crate::panels::filter::AddFilterButton;
-use crate::panels::frame::AddFrameButton;
+use crate::panels::frame::{AddBackgroundButton, AddFrameButton};
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::render::PeerInfo;
@@ -298,6 +298,7 @@ pub fn LayerPanel() -> Element {
                 {label("Layer")}
             }
             AddFrameButton {}
+            AddBackgroundButton {}
             // The third kind of layer (§21). Beside the other two rather than in a
             // menu of its own, because that is what it is: a filter is a layer, and
             // where it lands is the whole of what it acts on.
@@ -649,15 +650,18 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
 /// opening the field on a frame showed a corner mark inside a text box. The row draws
 /// the glyph now, which leaves the placeholder a name.
 fn layer_label(info: &LayerInfo) -> String {
-    match (&info.name, info.matte.is_some(), info.filter) {
+    match (&info.name, info.matte.as_ref(), info.filter) {
         (Some(name), ..) => name.to_string(),
-        (None, true, _) => "Frame".to_string(),
+        // The two kinds of matte, told apart by the one thing that differs:
+        // a frame is defined against a rect, a background against none (§15.5).
+        (None, Some(m), _) if m.rect.is_some() => "Frame".to_string(),
+        (None, Some(_), _) => "Background".to_string(),
         // The *filter's* own name rather than the word "Filter" (§21.6): unlike a
         // frame, of which there is only ever one kind, which filter this is is the
         // first thing to know about the row — and a stack of three rows all reading
         // "Filter" would say nothing at all.
         (None, _, Some(f)) => f.label().to_string(),
-        (None, false, None) => format!("Layer {}", info.id.ordinal()),
+        (None, None, None) => format!("Layer {}", info.id.ordinal()),
     }
 }
 

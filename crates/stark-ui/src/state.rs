@@ -104,10 +104,11 @@ pub struct AppState {
     /// selected paint. View state — the engine sees only the previews it
     /// produces and the one commit on "Done".
     pub transform: Signal<Option<TransformUi>>,
-    /// The gradient-fill gesture in flight (§22.4): `Some` while the ramp's
-    /// axis is being composed over the selection. View state on [`transform`]'s
-    /// model — the engine sees only `PreviewFill`s and the one `Fill` on "Done".
-    pub gradient_fill: Signal<Option<GradientFillUi>>,
+    /// The gradient bar's gesture in flight (§22.4): `Some` while a ramp's
+    /// axis is being composed — over the selection for a fill, over a matte
+    /// for its paint. View state on [`transform`]'s model — the engine sees
+    /// only previews and the one commit on "Done".
+    pub gradient_bar: Signal<Option<GradientUi>>,
     /// The drawing-guide edit mode (§20.5): `Some` while a guide is selected
     /// for composing — the canvas drags the camera, and the Perspective Guide
     /// bar stands in at the bottom. View state through and through: the engine
@@ -277,7 +278,7 @@ impl AppState {
             // in this file would be the one that never applies (`crate::prefs`).
             minimal: root_signal(|| Prefs::default().minimal),
             transform: root_signal(|| None),
-            gradient_fill: root_signal(|| None),
+            gradient_bar: root_signal(|| None),
             guide_edit: root_signal(|| None),
             paint_queued: root_signal(|| false),
             collab: CollabState {
@@ -316,39 +317,58 @@ impl AppState {
     }
 }
 
-/// The gradient-fill gesture being composed (§22.4): which layer the fill will
-/// land on, how the composing drag is read, and the drag itself.
+/// The gradient gesture being composed on the shared gradient bar (§22.4):
+/// what the ramp lands on, how the composing drag is read, and the drag itself.
 ///
 /// The drag is kept as its two raw points and the axis **derived** per kind —
 /// linear reads them as from→to, radial as centre and reach — so switching
 /// kinds on the bar reinterprets the drag the hand already made instead of
 /// throwing it away.
-#[derive(Clone, Copy, PartialEq)]
-pub struct GradientFillUi {
-    /// The layer the fill lands on, chosen at entry like the transform's.
-    pub layer: LayerId,
+#[derive(Clone, PartialEq)]
+pub struct GradientUi {
+    /// What "Done" commits — a fill of the selection, or a matte's paint. One
+    /// bar, one catcher, two targets: the interface for laying a ramp is the
+    /// same wherever the ramp lands.
+    pub target: GradientTarget,
     /// How the drag becomes an axis — the bar's Linear/Radial chips.
     pub kind: GradientAxisKind,
     /// The composing drag, canvas space: anchor and current end. `None` until
     /// the first drag — there is no axis to preview yet.
     pub drag: Option<(Vec2, Vec2)>,
-    /// The brush's per-unit opacity, captured at entry the way a shape drag
-    /// captures its colour (§6.8): editing the brush mid-mode must not change
-    /// what "Done" was about to commit.
-    pub opacity: f32,
-    /// The brush's `add`, captured at entry for the same reason — a gradient
-    /// fill lays the brush's own amount of paint, like every fill.
-    pub height: f32,
 }
 
-/// How a gradient-fill drag is read as an axis (§22.4).
+/// What the gradient bar's ramp lands on (§22.4).
+#[derive(Clone, PartialEq)]
+pub enum GradientTarget {
+    /// Fill the selection on `layer`. The ramp is read live from the library
+    /// (the panel's highlighted row), so a click there re-previews.
+    ///
+    /// `opacity` and `height` are the brush's, captured at entry the way a
+    /// shape drag captures its colour (§6.8): editing the brush mid-mode must
+    /// not change what "Done" was about to commit.
+    Fill {
+        layer: LayerId,
+        opacity: f32,
+        height: f32,
+    },
+    /// Repaint the matte `layer` (§15.4). The ramp rides the target — seeded
+    /// from the matte's own paint, so re-composing an old gradient's axis does
+    /// not silently swap its colours for the library's current row; a library
+    /// click replaces it deliberately.
+    Matte {
+        layer: LayerId,
+        gradient: stark_core::Gradient,
+    },
+}
+
+/// How a gradient drag is read as an axis (§22.4).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GradientAxisKind {
     Linear,
     Radial,
 }
 
-impl GradientFillUi {
+impl GradientUi {
     /// The axis the current drag composes, or `None` before the first drag.
     pub fn axis(&self) -> Option<stark_core::document::GradientAxis> {
         let (from, to) = self.drag?;

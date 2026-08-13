@@ -10,7 +10,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
-use stark_core::document::{MatteRegion, SelectionOp, Tool};
+use stark_core::document::{MattePaint, MatteRegion, Place, SelectionOp, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{Background, Engine, ExportScale, LayerId, Offscreen, Rendered, RgbaImage};
@@ -31,9 +31,9 @@ const WIDE: &[Vec2] = &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)];
 fn add_frame(engine: &mut Engine) -> LayerId {
     engine.process(DocCommand::AddMatte {
         carrier: None,
-        above: None,
+        at: Place::Top,
         region: FRAME,
-        color: BLACK,
+        paint: MattePaint::Solid(BLACK),
     });
     engine.observe().layers.last().expect("matte").id
 }

@@ -24,7 +24,7 @@ mod common;
 
 use common::*;
 use stark_core::command::DocCommand;
-use stark_core::document::{BrushParams, BrushShape, MatteRegion};
+use stark_core::document::{BrushParams, BrushShape, MattePaint, MatteRegion, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Background, ExportScale, Offscreen, Rendered, RgbaImage};
 
@@ -130,12 +130,12 @@ fn hatched(engine: &mut stark_core::Engine) {
     }
     engine.process(DocCommand::AddMatte {
         carrier: None,
-        above: None,
+        at: Place::Top,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(-HALF, -HALF),
             max: Vec2::new(HALF, HALF),
         },
-        color: [0.0, 0.0, 0.0],
+        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
     });
 }
 

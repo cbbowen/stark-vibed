@@ -28,6 +28,12 @@ pub(super) struct TilePass {
     pub(super) matte_pipeline: wgpu::RenderPipeline,
     pub(super) view_bg: wgpu::BindGroup,
     pub(super) tile_bgl: wgpu::BindGroupLayout,
+    /// The matte pipeline's group 1: the per-matte gradient ramp (§22.4).
+    pub(super) ramp_bgl: wgpu::BindGroupLayout,
+    /// The ramp a solid matte binds: zeroed, so its stop count says "use the
+    /// instance's own channels". One buffer for every solid matte ever drawn,
+    /// against a bind group the layout obliges the draw to set regardless.
+    pub(super) zero_ramp_bg: wgpu::BindGroup,
 }
 
 impl TilePass {
@@ -101,7 +107,15 @@ impl TilePass {
             label: Some("stark matte"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(resid).into()),
         });
-        let matte_layout = desc::pipeline_layout(device, "stark matte layout", &[Some(&view_bgl)]);
+        // Group 1: the gradient ramp, per matte where the view is per pass
+        // (§22.4). Fragment-only — the vertex stage has no use for it.
+        let ramp_bgl =
+            desc::bind_group_layout(device, "stark matte ramp bgl", &[desc::uniform(0, frag)]);
+        let matte_layout = desc::pipeline_layout(
+            device,
+            "stark matte layout",
+            &[Some(&view_bgl), Some(&ramp_bgl)],
+        );
         // Premultiplied `over` on BOTH targets. The aux one is the load-bearing
         // difference from pass A's additive aux: additive would keep the height of
         // paint *underneath* the matte, and the media pass would emboss that paint's
@@ -144,11 +158,27 @@ impl TilePass {
             ],
         });
 
+        let zero_ramp = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("stark matte zero ramp"),
+            contents: bytemuck::bytes_of(&stark_shaders::mirror::matte::Ramp::default()),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let zero_ramp_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stark matte zero ramp bg"),
+            layout: &ramp_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: zero_ramp.as_entire_binding(),
+            }],
+        });
+
         Self {
             pipeline,
             matte_pipeline,
             view_bg,
             tile_bgl,
+            ramp_bgl,
+            zero_ramp_bg,
         }
     }
 }

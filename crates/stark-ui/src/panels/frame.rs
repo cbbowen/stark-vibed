@@ -26,13 +26,18 @@ use crate::layout::chrome_class;
 use crate::panels::color::OklabPicker;
 use crate::state::{AppState, dispatch};
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_core::document::MatteRegion;
+use stark_core::document::{MattePaint, MatteRegion, Place};
 use stark_core::geom::Vec2;
 use stark_core::{LayerInfo, MatteInfo};
 
 /// The frame's default fill: a near-black mat board. Dark reads as "not the
 /// piece" against almost any painting, which is what a crop scrim is for.
 const DEFAULT_MATTE: [f32; 3] = [0.06, 0.06, 0.07];
+
+/// A background's default fill: a warm paper tone — a ground is *under* the
+/// painting, so it defaults to something to paint over rather than a scrim
+/// (§15.5).
+const DEFAULT_GROUND: [f32; 3] = [0.93, 0.91, 0.86];
 
 /// Aspect presets, as width:height.
 const ASPECTS: [(&str, f32); 4] = [
@@ -50,8 +55,7 @@ const CUSTOM: &str = "Custom";
 /// The preset this frame's ratio matches, if any. Tolerance is relative, so it
 /// holds at any size; loose enough that a handle dragged to visually 16:9 reads as
 /// 16:9 rather than flicking to "Custom" on a sub-pixel difference.
-fn matched_aspect(matte: MatteInfo) -> &'static str {
-    let (w, h) = (matte.width(), matte.height());
+fn matched_aspect((w, h): (f32, f32)) -> &'static str {
     if h.abs() < 1e-3 {
         return CUSTOM;
     }
@@ -76,7 +80,7 @@ pub fn selected_frame(state: AppState) -> Option<(LayerInfo, MatteInfo)> {
     o.layers
         .iter()
         .find(|l| l.id == o.active_layer)
-        .and_then(|l| l.matte.map(|m| (l.clone(), m)))
+        .and_then(|l| l.matte.clone().map(|m| (l.clone(), m)))
 }
 
 /// Stop composing: select the topmost paint layer instead. Used by the frame bar's
@@ -151,9 +155,9 @@ pub fn AddFrameButton() -> Element {
                 let (min, max) = default_rect(state);
                 dispatch(state, DocCommand::AddMatte {
                     carrier: None,
-                    above: None,
+                    at: Place::Top,
                     region: MatteRegion::OutsideRect { min, max },
-                    color: DEFAULT_MATTE,
+                    paint: MattePaint::Solid(DEFAULT_MATTE),
                 });
                 // Select it, so its bar and handles come up without a second click.
                 // `AddMatte` mints the id engine-side, so the new frame is the
@@ -175,6 +179,41 @@ pub fn AddFrameButton() -> Element {
     }
 }
 
+/// The "+ Background" button beside it — the §15.5 ground: an `Everything`
+/// matte born at the **bottom** of the stack, under the painting, defaulting to
+/// a paper tone. Selected immediately like the frame, so its bar (paint only —
+/// it has no rect to compose) comes straight up.
+#[component]
+pub fn AddBackgroundButton() -> Element {
+    let state = use_context::<AppState>();
+    rsx! {
+        button {
+            class: "layer-add",
+            title: "Add a background: an opaque ground under the whole painting \u{2014} \
+                    flat or gradient, the underpainting's colour",
+            onclick: move |_| {
+                dispatch(state, DocCommand::AddMatte {
+                    carrier: None,
+                    at: Place::Bottom,
+                    region: MatteRegion::Everything,
+                    paint: MattePaint::Solid(DEFAULT_GROUND),
+                });
+                // The new ground is the bottom-most matte — it was just born there.
+                let new_id = state
+                    .obs
+                    .read()
+                    .as_ref()
+                    .and_then(|o| o.layers.iter().find(|l| l.matte.is_some()).map(|l| l.id));
+                if let Some(id) = new_id {
+                    dispatch(state, PeerCommand::SetActiveLayer(id));
+                }
+            },
+            {icon(icons::BACKGROUND)}
+            {label("Background")}
+        }
+    }
+}
+
 /// The frame's composition controls, in a bar at the bottom of the screen. Mounted
 /// only while a frame is selected — see the module docs for why that is the whole
 /// interaction model rather than a panel with an empty state.
@@ -187,18 +226,41 @@ pub fn FrameBar() -> Element {
     let Some((info, matte)) = selected_frame(state) else {
         return rsx! {};
     };
-    let (w, h) = (matte.width(), matte.height());
-    let current_aspect = matched_aspect(matte);
+    // While the gradient bar is composing this matte's paint, it stands in for
+    // this bar (§22.4) — two bars for one selected layer would fight
+    // over the same bottom edge.
+    if state.gradient_bar.read().is_some() {
+        return rsx! {};
+    }
+    // The rect half of the bar exists exactly when the region has a rect: an
+    // `Everything` matte (a background, §15.5) frames nothing, so the
+    // readout, the aspect and the fits stand down and the bar is its paint and
+    // its Done. One bar for both kinds, because they are one kind of layer —
+    // what differs is which properties exist, and the bar says so by what it
+    // mounts rather than by greying out.
+    let rect = matte.rect;
+    let dims = matte.dims();
+    let current_aspect = dims.map(matched_aspect);
     let set_rect = move |min: Vec2, max: Vec2| {
         dispatch(state, DocCommand::SetMatteRect(info.id, min, max));
     };
-    let c = matte.color;
+    let c = matte.paint.swatch();
     let swatch = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",
         c[0] * 100.0,
         c[1] * 100.0,
         c[2] * 100.0
     );
+    let is_gradient = matches!(matte.paint, MattePaint::Gradient { .. });
+    let have_gradients = !state.gradients.entries.read().is_empty();
+    let paint_for_begin = matte.paint.clone();
+    let gradient_title = if is_gradient {
+        "Recompose the gradient's axis"
+    } else if have_gradients {
+        "Paint this with a gradient \u{2014} drag the axis, then Done"
+    } else {
+        "No gradients yet \u{2014} trace one in the Gradients panel first"
+    };
 
     rsx! {
         div { class: chrome_class(state, "frame-bar"),
@@ -207,60 +269,67 @@ pub fn FrameBar() -> Element {
             // fitting to the view are three ways of doing it — so what the mark
             // identifies is the bar, and through it the mode you are in.
             span { class: "bar-label",
-                {icon(icons::FRAME)}
-                {label("Frame")}
+                if rect.is_some() {
+                    {icon(icons::FRAME)}
+                    {label("Frame")}
+                } else {
+                    {icon(icons::BACKGROUND)}
+                    {label("Background")}
+                }
             }
 
-            span { class: "bar-sep" }
+            if let (Some((rmin, rmax)), Some((w, h)), Some(current_aspect)) = (rect, dims, current_aspect) {
+                span { class: "bar-sep" }
 
-            span { class: "frame-dim",
-                "{w.round() as i64} \u{00D7} {h.round() as i64}"
-                span { class: "frame-unit", " px" }
-            }
+                span { class: "frame-dim",
+                    "{w.round() as i64} \u{00D7} {h.round() as i64}"
+                    span { class: "frame-unit", " px" }
+                }
 
-            span { class: "bar-sep" }
+                span { class: "bar-sep" }
 
-            // Reads the frame's *current* ratio and reshapes to a chosen one, so it
-            // is a state readout rather than a row of fire-and-forget buttons.
-            select {
-                class: "select frame-aspect",
-                title: "Reshape the frame to this aspect, keeping its area",
-                onchange: move |e| {
-                    if let Some((_, a)) = ASPECTS.iter().find(|(l, _)| *l == e.value()) {
-                        let (min, max) = to_aspect(matte.min, matte.max, *a);
-                        set_rect(min, max);
+                // Reads the frame's *current* ratio and reshapes to a chosen one, so it
+                // is a state readout rather than a row of fire-and-forget buttons.
+                select {
+                    class: "select frame-aspect",
+                    title: "Reshape the frame to this aspect, keeping its area",
+                    onchange: move |e| {
+                        if let Some((_, a)) = ASPECTS.iter().find(|(l, _)| *l == e.value()) {
+                            let (min, max) = to_aspect(rmin, rmax, *a);
+                            set_rect(min, max);
+                        }
+                    },
+                    // Only offered while it is what the frame actually is: picking
+                    // "Custom" could not mean anything, since there is no ratio to
+                    // reshape *to*.
+                    if current_aspect == CUSTOM {
+                        option { value: CUSTOM, selected: true, "{CUSTOM}" }
                     }
-                },
-                // Only offered while it is what the frame actually is: picking
-                // "Custom" could not mean anything, since there is no ratio to
-                // reshape *to*.
-                if current_aspect == CUSTOM {
-                    option { value: CUSTOM, selected: true, "{CUSTOM}" }
+                    for (label, _) in ASPECTS {
+                        option { value: label, selected: current_aspect == label, "{label}" }
+                    }
                 }
-                for (label, _) in ASPECTS {
-                    option { value: label, selected: current_aspect == label, "{label}" }
+
+                span { class: "bar-sep" }
+
+                button {
+                    class: "chip",
+                    title: "Fit the frame to everything painted so far",
+                    onclick: move |_| {
+                        let rect = state.obs.read().as_ref().and_then(content_rect);
+                        if let Some((min, max)) = rect { set_rect(min, max); }
+                    },
+                    "Fit to art"
                 }
-            }
-
-            span { class: "bar-sep" }
-
-            button {
-                class: "chip",
-                title: "Fit the frame to everything painted so far",
-                onclick: move |_| {
-                    let rect = state.obs.read().as_ref().and_then(content_rect);
-                    if let Some((min, max)) = rect { set_rect(min, max); }
-                },
-                "Fit to art"
-            }
-            button {
-                class: "chip",
-                title: "Fit the frame to the current view",
-                onclick: move |_| {
-                    let rect = state.obs.read().as_ref().map(view_rect);
-                    if let Some((min, max)) = rect { set_rect(min, max); }
-                },
-                "Fit to view"
+                button {
+                    class: "chip",
+                    title: "Fit the frame to the current view",
+                    onclick: move |_| {
+                        let rect = state.obs.read().as_ref().map(view_rect);
+                        if let Some((min, max)) = rect { set_rect(min, max); }
+                    },
+                    "Fit to view"
+                }
             }
 
             span { class: "bar-sep" }
@@ -289,29 +358,49 @@ pub fn FrameBar() -> Element {
                 button {
                     class: "swatch frame-swatch",
                     style: "{swatch}",
-                    title: "Frame colour",
+                    // Picking a colour on a gradient matte solidifies it — that
+                    // is what the control says it does, and undo takes it back.
+                    title: if is_gradient { "Solid colour (replaces the gradient)" } else { "Matte colour" },
                     onclick: move |_| show_picker.set(!show_picker()),
                 }
-                // Mounted only while open, so the picker re-seeds from the frame's
+                // Mounted only while open, so the picker re-seeds from the matte's
                 // current colour each time — and flies *up*, since the bar it hangs
                 // off sits at the bottom of the screen.
                 if show_picker() {
                     div { class: "color-popout",
                         OklabPicker {
-                            init: matte.color,
+                            init: c,
                             // Previewed while the pointer is down, committed once on
                             // release: the fill is document state, so a pick costs one
                             // undo step — and one replicated action — rather than one
                             // per colour the pointer crossed on the way (§15.7).
                             onchange: move |rgb: [f32; 3]| {
-                                dispatch(state, ViewCommand::PreviewMatteColor(Some((info.id, rgb))));
+                                dispatch(state, ViewCommand::PreviewMattePaint(
+                                    Some((info.id, MattePaint::Solid(rgb))),
+                                ));
                             },
                             oncommit: move |rgb: [f32; 3]| {
-                                dispatch(state, DocCommand::SetMatteColor(info.id, rgb));
+                                dispatch(state, DocCommand::SetMattePaint(
+                                    info.id, MattePaint::Solid(rgb),
+                                ));
                             },
                         }
                     }
                 }
+            }
+            // The other paint a matte can wear (§22.4): entering the
+            // shared gradient bar, which stands in for this one while the axis
+            // is composed. Lit while the paint *is* a gradient, like every
+            // state-wearing chip.
+            button {
+                class: if is_gradient { "chip active" } else { "chip" },
+                disabled: !is_gradient && !have_gradients,
+                title: gradient_title,
+                onclick: move |_| {
+                    crate::panels::gradient_bar::begin_matte(state, info.id, &paint_for_begin);
+                },
+                {icon(icons::GRADIENT)}
+                {label("Gradient")}
             }
 
             span { class: "bar-sep" }
@@ -444,6 +533,15 @@ pub fn FrameOverlay() -> Element {
     let Some((info, matte)) = selected_frame(state) else {
         return rsx! {};
     };
+    // No rect, no handles: an `Everything` matte (§15.5) has nothing
+    // to resize. And while the gradient bar is composing, its catcher owns the
+    // pointer — grips floating over the axis drag would steal its presses.
+    let Some((rect_min, rect_max)) = matte.rect else {
+        return rsx! {};
+    };
+    if state.gradient_bar.read().is_some() {
+        return rsx! {};
+    }
     let view = match state.obs.read().as_ref() {
         Some(o) => o.view,
         None => return rsx! {},
@@ -454,10 +552,10 @@ pub fn FrameOverlay() -> Element {
     // (§18.1.2), and a rect described by two opposite corners only
     // stays a rect while it is axis-aligned. Handles are placed as percentages of the
     // box, so they ride the turn with it and nothing else needs measuring.
-    let center = view.canvas_to_screen((matte.min + matte.max) * 0.5);
+    let center = view.canvas_to_screen((rect_min + rect_max) * 0.5);
     let (w, h) = (
-        (matte.max.x - matte.min.x) * view.zoom,
-        (matte.max.y - matte.min.y) * view.zoom,
+        (rect_max.x - rect_min.x) * view.zoom,
+        (rect_max.y - rect_min.y) * view.zoom,
     );
     // `transform-origin` is the box's centre by default, which is exactly the pivot
     // the canvas turns about. A mirrored view has determinant −1 here, so the grips
@@ -500,7 +598,7 @@ pub fn FrameOverlay() -> Element {
                                 drag.set(Some(FrameDrag {
                                     grip,
                                     origin: page_xy(&e),
-                                    start: (matte.min, matte.max),
+                                    start: (rect_min, rect_max),
                                 }));
                             },
                             onpointermove: move |e| {

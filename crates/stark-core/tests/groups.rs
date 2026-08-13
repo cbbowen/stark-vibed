@@ -24,7 +24,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::{BlendMode, LayerId, MatteRegion, Place};
+use stark_core::document::{BlendMode, LayerId, MattePaint, MatteRegion, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, LayerInfo, RgbaImage};
 
@@ -501,12 +501,12 @@ fn clipping_inside_solid_paint_is_the_unclipped_result() {
     // A matte whose hole is off-canvas, so it covers the viewport solidly.
     engine.process(DocCommand::AddMatte {
         carrier: None,
-        above: None,
+        at: Place::Top,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(1e4, 1e4),
             max: Vec2::new(2e4, 2e4),
         },
-        color: [0.5, 0.4, 0.3],
+        paint: MattePaint::Solid([0.5, 0.4, 0.3]),
     });
     let top = add_layer(&mut engine);
     paint(&mut engine, COOL, 20.0, H_STROKE);

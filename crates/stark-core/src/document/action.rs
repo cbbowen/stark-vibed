@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::brush::BrushParams;
 use super::filter::Filter;
-use super::layer::{BlendMode, Layer, LayerId, MatteRegion, Place};
+use super::layer::{BlendMode, Layer, LayerId, MattePaint, MatteRegion, Place};
 use super::selection::SelectionOp;
 use super::state::DocState;
 use crate::geom::Vec2;
@@ -151,26 +151,26 @@ pub enum ActionKind {
     /// Swap selected for unselected everywhere (§6.8).
     InvertSelection,
 
-    /// Add a **matte** layer — a region filled with a flat colour
-    /// (§15.2). A frame is one of these on top of the stack; the
-    /// same action serves comic gutters and opaque grounds once the region
-    /// generalizes (P4). Appended last, like every variant before it, so postcard
-    /// — which encodes an enum by variant *index* — keeps decoding older files.
+    /// Add a **matte** layer — a region filled with a [`MattePaint`]
+    /// (§15.2). A frame is one of these on top of the stack; a ground
+    /// ([`MatteRegion::Everything`]) is one at the bottom, which is why the
+    /// anchor is the full [`Place`] where `AddLayer`'s stays the two-state
+    /// `Option` (§15.5). The same action serves comic gutters once the region
+    /// algebra lands (P4).
     AddMatte {
         id: LayerId,
         carrier: Option<LayerId>,
-        above: Option<LayerId>,
+        at: Place,
         region: MatteRegion,
-        /// Straight sRGB, like `BrushParams::color` — converted to working-space
-        /// channels at composite time, so the log is colour-space independent.
-        color: [f32; 3],
+        paint: MattePaint,
     },
     /// Move a matte's rect — the frame drag's commit. One action per drag, not
     /// per pointer move: the gesture accumulates in session state and commits on
     /// release, so fifty tweaks are fifty undo steps rather than five thousand.
+    /// A no-op on a region with no rect to move ([`MatteRegion::with_rect`]).
     SetMatteRect(LayerId, Vec2, Vec2),
-    /// Recolour a matte (straight sRGB).
-    SetMatteColor(LayerId, [f32; 3]),
+    /// Repaint a matte — a flat colour or a gradient ramp (§15.4, §22.4).
+    SetMattePaint(LayerId, MattePaint),
     /// Set the canvas substrate colour — the ground the paint sits on, straight
     /// sRGB (§15.5). Logged because the ground a piece was painted on
     /// is part of what it is; it was previously a view setting, so the paper colour
@@ -370,11 +370,11 @@ impl ActionKind {
             ActionKind::SetLayerOpacity(..) => "Layer opacity",
             ActionKind::SetLayerVisible(..) => "Layer visibility",
             ActionKind::SetLayerName(..) => "Rename layer",
-            ActionKind::AddMatte { .. } => "Add frame",
+            ActionKind::AddMatte { .. } => "Add matte",
             ActionKind::AddFilter { .. } => "Add filter",
             ActionKind::SetFilter(..) => "Filter",
             ActionKind::SetMatteRect(..) => "Move frame",
-            ActionKind::SetMatteColor(..) => "Frame colour",
+            ActionKind::SetMattePaint(..) => "Matte paint",
             ActionKind::SetBackground(_) => "Canvas colour",
             ActionKind::SetSurface(_) => "Canvas surface",
             ActionKind::Undo(_) => "Undo",
@@ -527,10 +527,10 @@ impl history::Action for Action {
             ActionKind::AddMatte {
                 id,
                 carrier,
-                above,
+                at,
                 region,
-                color,
-            } => state.insert_matte(*id, *carrier, *above, *region, *color),
+                paint,
+            } => state.insert_matte(*id, *carrier, *at, *region, paint.clone()),
             // The payload is sanitized inside `insert_filter`/`set_filter` — the
             // funnel sits in state, where replayed files and remote peers land too,
             // not only where a local command is minted (§21.5).
@@ -542,7 +542,7 @@ impl history::Action for Action {
             } => state.insert_filter(*id, *carrier, *above, *filter),
             ActionKind::SetFilter(id, filter) => state.set_filter(*id, *filter),
             ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
-            ActionKind::SetMatteColor(id, color) => state.set_matte_color(*id, *color),
+            ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
             ActionKind::SetBackground(rgb) => state.with_background(*rgb),
             // Cut the author's selected paint, restack it under the affine, and
             // carry the author's mask with it (§16). Gated and

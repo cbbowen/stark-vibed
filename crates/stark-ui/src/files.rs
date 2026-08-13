@@ -167,16 +167,20 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     // Export frames against a *matte layer*, which need not be the selected one —
     // the dialog is opened from a menu, and the user may be on a paint layer.
     // Prefer whatever is selected, else the topmost frame, else nothing (which
-    // falls back to the painted bounds, §15.6).
-    let frame: Option<LayerId> = selected_frame(state).map(|(l, _)| l.id).or_else(|| {
-        state.obs.read().as_ref().and_then(|o| {
-            o.layers
-                .iter()
-                .rev()
-                .find(|l| l.matte.is_some())
-                .map(|l| l.id)
-        })
-    });
+    // falls back to the painted bounds, §15.6). Only mattes **with a rect**
+    // count: a background (§15.5) frames nothing, so it must not make
+    // the dialog claim a frame it is not using.
+    let framing = |l: &stark_core::LayerInfo| l.matte.as_ref().is_some_and(|m| m.rect.is_some());
+    let frame: Option<LayerId> = selected_frame(state)
+        .filter(|(_, m)| m.rect.is_some())
+        .map(|(l, _)| l.id)
+        .or_else(|| {
+            state
+                .obs
+                .read()
+                .as_ref()
+                .and_then(|o| o.layers.iter().rev().find(|l| framing(l)).map(|l| l.id))
+        });
 
     // What we are about to produce, reported by the engine rather than recomputed
     // here — so the number on screen cannot drift from the render.

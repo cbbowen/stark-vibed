@@ -36,8 +36,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::document::{
-    BlendMode, BrushParams, FillOp, Filter, LayerId, MatteRegion, Place, SelectionOp, ShapeAction,
-    Tool, TransformMap,
+    BlendMode, BrushParams, FillOp, Filter, LayerId, MattePaint, MatteRegion, Place, SelectionOp,
+    ShapeAction, Tool, TransformMap,
 };
 use crate::geom::{Extent2, Vec2};
 use crate::gpu::{EnvironmentId, MediaParams, SurfaceId};
@@ -234,16 +234,17 @@ pub enum DocCommand {
         op: FillOp,
     },
 
-    /// Add a **matte** layer — a region filled with a flat colour
-    /// (§15.2). A frame is one of these on top of the stack. The
-    /// engine mints the id, as it does for `AddLayer`; unlike `AddLayer` it does
-    /// *not* become the active layer, because a matte cannot be painted on.
+    /// Add a **matte** layer — a region filled with a [`MattePaint`]
+    /// (§15.2). A frame is one of these on top of the stack; a ground
+    /// ([`MatteRegion::Everything`]) is one at the bottom, hence the full
+    /// [`Place`] anchor (§15.5). The engine mints the id, as it does
+    /// for `AddLayer`; unlike `AddLayer` it does *not* become the active layer,
+    /// because a matte cannot be painted on.
     AddMatte {
         carrier: Option<LayerId>,
-        above: Option<LayerId>,
+        at: Place,
         region: MatteRegion,
-        /// Straight sRGB.
-        color: [f32; 3],
+        paint: MattePaint,
     },
     /// Add a **filter** layer — a function of everything composited beneath it in
     /// the stack it lands in (§21.2). The engine mints the id, as it does for
@@ -265,8 +266,9 @@ pub enum DocCommand {
     SetFilter(LayerId, Filter),
     /// Move a matte's rect — one action per frame drag, committed on release.
     SetMatteRect(LayerId, Vec2, Vec2),
-    /// Recolour a matte (straight sRGB).
-    SetMatteColor(LayerId, [f32; 3]),
+    /// Repaint a matte — a flat colour or a gradient ramp (§15.4, §22.4). One
+    /// action per pick or per composed axis, committed when the gesture settles.
+    SetMattePaint(LayerId, MattePaint),
     /// Set the canvas substrate colour — the ground under everything, straight
     /// sRGB (§15.5). A document property, not a view setting: it is
     /// what the piece was painted on, and it is saved.
@@ -408,16 +410,18 @@ pub enum ViewCommand {
     /// so a drag costs one undo step rather than one per pointer move.
     PreviewMatteRect(Option<(LayerId, Vec2, Vec2)>),
 
-    /// Show a matte in `color` (straight sRGB) **without logging it** — the
-    /// in-flight half of a frame-colour pick (§15.7). `None` drops the preview.
+    /// Show a matte wearing `paint` **without logging it** — the in-flight half
+    /// of a frame-colour pick or a gradient-axis drag (§15.7, §22.4). `None`
+    /// drops the preview.
     ///
-    /// The rect's argument, made by the other half of the same control: a colour
-    /// picker reports a value per pointer move while it is open, so the frontend
-    /// previews those and commits one [`DocCommand::SetMatteColor`] when the pick
-    /// settles. What is being chosen here is how a frame reads against the piece
-    /// inside it, which is a judgement made *by looking* — so the picking has to
-    /// show on the canvas, and only the answer belongs in the log.
-    PreviewMatteColor(Option<(LayerId, [f32; 3])>),
+    /// The rect's argument, made by the other halves of the same control: a
+    /// colour picker reports a value per pointer move while it is open, and an
+    /// axis drag reports one per sample, so the frontend previews those and
+    /// commits one [`DocCommand::SetMattePaint`] when the gesture settles. What
+    /// is being chosen here is how a matte reads against the piece, which is a
+    /// judgement made *by looking* — so the picking has to show on the canvas,
+    /// and only the answer belongs in the log.
+    PreviewMattePaint(Option<(LayerId, MattePaint)>),
 
     /// Show the document as a [`DocCommand::Transform`] would leave it, **without
     /// logging it** — the in-flight half of the transform gesture

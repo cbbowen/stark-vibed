@@ -176,23 +176,23 @@ impl LayerInfo {
 }
 
 /// A matte layer's geometry and fill, for the frame chrome (§15.7).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MatteInfo {
     /// The rect the region is defined against, in canvas px. For a frame this is
     /// the *hole* — the piece — which is what the handles resize and what export
-    /// frames against (§15.6).
-    pub min: crate::geom::Vec2,
-    pub max: crate::geom::Vec2,
-    /// Fill colour, straight sRGB.
-    pub color: [f32; 3],
+    /// frames against (§15.6). `None` for a region defined against no rect
+    /// ([`MatteRegion::Everything`]): the handle box, the aspect readout and the
+    /// export frame all stand down rather than invent one.
+    pub rect: Option<(crate::geom::Vec2, crate::geom::Vec2)>,
+    /// The paint the region wears — flat, or a ramp (§15.4, §22.4).
+    pub paint: crate::document::MattePaint,
 }
 
 impl MatteInfo {
-    pub fn width(&self) -> f32 {
-        self.max.x - self.min.x
-    }
-    pub fn height(&self) -> f32 {
-        self.max.y - self.min.y
+    /// Width × height of the rect, where there is one.
+    pub fn dims(&self) -> Option<(f32, f32)> {
+        let (min, max) = self.rect?;
+        Some((max.x - min.x, max.y - min.y))
     }
 }
 
@@ -645,17 +645,17 @@ impl Engine {
             }
             DocCommand::AddMatte {
                 carrier,
-                above,
+                at,
                 region,
-                color,
+                paint,
             } => {
                 let id = self.mint_layer();
                 self.commit(ActionKind::AddMatte {
                     id,
                     carrier,
-                    above,
+                    at,
                     region,
-                    color,
+                    paint,
                 });
                 // Deliberately *not* made the active layer, unlike `AddLayer`: a
                 // matte has no tile map, so painting on it is refused
@@ -710,23 +710,23 @@ impl Engine {
                 self.preview.set_doc(None);
                 self.commit(ActionKind::SetMatteRect(id, min, max));
             }
-            DocCommand::SetMatteColor(id, color) => {
+            DocCommand::SetMattePaint(id, paint) => {
                 // Drops the preview whether or not the commit below happens, for the
                 // reason `SetMatteRect` drops it above: a pick that settles on the
-                // colour it opened on must still supersede what it was showing.
+                // paint it opened on must still supersede what it was showing.
                 self.preview.set_doc(None);
                 // Refused when it would change nothing, as `SetLayerOpacity` and
                 // `SetLayerName` are — and asked of the layer's *content*, since a
-                // matte is the only thing that has a colour to compare (§15.2). A
+                // matte is the only thing that has paint to compare (§15.2). A
                 // paint layer still commits, which is what it did before: that action
                 // is inert rather than duplicated, and refusing it here would be a
                 // second rule about what a matte is, kept somewhere `apply` cannot see.
                 let unchanged = matches!(
                     self.document().layer(id).map(|l| &l.content),
-                    Some(LayerContent::Matte { color: current, .. }) if *current == color
+                    Some(LayerContent::Matte { paint: current, .. }) if *current == paint
                 );
                 if !unchanged {
-                    self.commit(ActionKind::SetMatteColor(id, color));
+                    self.commit(ActionKind::SetMattePaint(id, paint));
                 }
             }
             DocCommand::SetBackground(rgb) => {
@@ -902,9 +902,9 @@ impl Engine {
                 let preview = rgb.map(|rgb| self.timeline.current().with_background(rgb));
                 self.set_doc_preview(preview);
             }
-            ViewCommand::PreviewMatteColor(pick) => {
+            ViewCommand::PreviewMattePaint(pick) => {
                 let preview =
-                    pick.map(|(id, color)| self.timeline.current().set_matte_color(id, color));
+                    pick.map(|(id, paint)| self.timeline.current().set_matte_paint(id, paint));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewLayerOpacity(set) => {
@@ -1053,14 +1053,10 @@ impl Engine {
                 has_backdrop: !layers.is_empty(),
                 name: l.name.clone(),
                 matte: match &l.content {
-                    LayerContent::Matte { region, color } => {
-                        let (min, max) = region.rect();
-                        Some(MatteInfo {
-                            min,
-                            max,
-                            color: *color,
-                        })
-                    }
+                    LayerContent::Matte { region, paint } => Some(MatteInfo {
+                        rect: region.rect(),
+                        paint: paint.clone(),
+                    }),
                     LayerContent::Paint(_) | LayerContent::Filter(_) => None,
                 },
                 filter: l.filter(),

@@ -17,7 +17,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_core::document::{LayerId, MatteRegion, Place};
+use stark_core::document::{LayerId, MattePaint, MatteRegion, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
 
@@ -48,9 +48,9 @@ fn is_dark(c: [u8; 4]) -> bool {
 fn add_frame(engine: &mut Engine) {
     engine.process(DocCommand::AddMatte {
         carrier: None,
-        above: None,
+        at: Place::Top,
         region: HOLE,
-        color: BLACK,
+        paint: MattePaint::Solid(BLACK),
     });
 }
 
@@ -312,8 +312,8 @@ fn dragging_a_frame_previews_without_logging() {
     );
     // `observe` reports the previewed rect, which is what keeps the handles under
     // the pointer instead of a frame behind on the committed value.
-    let previewed = engine.observe().layers.last().and_then(|l| l.matte);
-    assert_eq!(previewed.map(|m| m.width()), Some(70.0));
+    let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
+    assert_eq!(previewed.and_then(|m| m.dims()).map(|d| d.0), Some(70.0));
 
     // Undoing now must take back the *frame*, not a drag step — nothing about the
     // drag has been logged yet.
@@ -419,7 +419,10 @@ fn picking_a_frame_colour_previews_without_logging() {
 
     // Three "pointer moves" of a pick towards a pale mat board.
     for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::PreviewMatteColor(Some((matte_id, [v, v, v]))));
+        engine.process(ViewCommand::PreviewMattePaint(Some((
+            matte_id,
+            MattePaint::Solid([v, v, v]),
+        ))));
     }
     let picking = engine.render_to_image();
     assert!(
@@ -428,8 +431,11 @@ fn picking_a_frame_colour_previews_without_logging() {
     );
     // `observe` reports the previewed colour, so the swatch agrees with the canvas
     // it controls instead of trailing a commit behind it.
-    let previewed = engine.observe().layers.last().and_then(|l| l.matte);
-    assert_eq!(previewed.map(|m| m.color), Some([0.9, 0.9, 0.9]));
+    let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
+    assert_eq!(
+        previewed.map(|m| m.paint),
+        Some(MattePaint::Solid([0.9, 0.9, 0.9]))
+    );
 
     // A history step during the pick drops the preview and finds nothing of it
     // logged, so undo-then-redo lands back on the black frame.
@@ -442,9 +448,15 @@ fn picking_a_frame_colour_previews_without_logging() {
 
     // Settling commits exactly one action, which supersedes the preview it matches.
     for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::PreviewMatteColor(Some((matte_id, [v, v, v]))));
+        engine.process(ViewCommand::PreviewMattePaint(Some((
+            matte_id,
+            MattePaint::Solid([v, v, v]),
+        ))));
     }
-    engine.process(DocCommand::SetMatteColor(matte_id, [0.9, 0.9, 0.9]));
+    engine.process(DocCommand::SetMattePaint(
+        matte_id,
+        MattePaint::Solid([0.9, 0.9, 0.9]),
+    ));
     assert!(
         images_match(&picking, &engine.render_to_image(), 2),
         "the committed colour should match what the pick previewed"
@@ -471,9 +483,15 @@ fn a_frame_colour_pick_that_changes_nothing_logs_nothing() {
     let black = engine.render_to_image();
 
     for v in [0.3f32, 0.6, 0.0] {
-        engine.process(ViewCommand::PreviewMatteColor(Some((matte_id, [v, v, v]))));
+        engine.process(ViewCommand::PreviewMattePaint(Some((
+            matte_id,
+            MattePaint::Solid([v, v, v]),
+        ))));
     }
-    engine.process(DocCommand::SetMatteColor(matte_id, BLACK));
+    engine.process(DocCommand::SetMattePaint(
+        matte_id,
+        MattePaint::Solid(BLACK),
+    ));
     assert!(
         images_match(&black, &engine.render_to_image(), 2),
         "the settled pick should leave the document as it found it, preview and all"
@@ -508,4 +526,178 @@ fn matte_undoes() {
 
     engine.process(DocCommand::Redo);
     assert!(is_dark(outside(&engine.render_to_image())));
+}
+
+// ---------------------------------------------------------------------------
+// The whole-plane region and the gradient paint (§15.5, §22.4).
+// ---------------------------------------------------------------------------
+
+use stark_core::document::{GradientAxis, MattePaint as MP};
+use stark_core::{Gradient, GradientStop};
+
+fn red_blue() -> Gradient {
+    Gradient::new(vec![
+        GradientStop {
+            t: 0.0,
+            color: [0.85, 0.1, 0.1],
+        },
+        GradientStop {
+            t: 1.0,
+            color: [0.1, 0.2, 0.85],
+        },
+    ])
+    .expect("two stops")
+}
+
+/// A ground: an `Everything` matte born at the bottom of the stack covers the
+/// whole view — and stays *under* the paint, which is the §15.5 claim that a
+/// ground is an underpainting, not a wash over the picture.
+#[test]
+fn an_everything_matte_grounds_the_whole_view_beneath_the_paint() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 16.0, WIDE_STROKE);
+    engine.process(DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Bottom,
+        region: MatteRegion::Everything,
+        paint: MattePaint::Solid([0.1, 0.5, 0.15]),
+    });
+    let img = engine.render_to_image();
+    // Green everywhere the paint is not…
+    let corner = at(&img, 6, 6);
+    assert!(
+        corner[1] > corner[0] + 30 && corner[1] > corner[2] + 30,
+        "the ground should cover bare canvas, got {corner:?}"
+    );
+    // …and the stroke still on top of it.
+    assert!(
+        red_dominant(outside(&img)),
+        "a ground at the bottom must not cover the paint"
+    );
+}
+
+/// A gradient matte grades across the canvas — the ramp is the §22.4 fill's,
+/// read from the same axis at composite time, so the left of a left-to-right
+/// ramp is its first stop and the right its last.
+#[test]
+fn a_gradient_matte_grades_across_the_canvas() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Bottom,
+        region: MatteRegion::Everything,
+        paint: MP::Gradient {
+            gradient: red_blue(),
+            axis: GradientAxis::Linear {
+                from: Vec2::new(-100.0, 0.0),
+                to: Vec2::new(100.0, 0.0),
+            },
+        },
+    });
+    let img = engine.render_to_image();
+    let (w, h) = (img.width, img.height);
+    let left = at(&img, w / 8, h / 2);
+    let right = at(&img, w - w / 8, h / 2);
+    assert!(
+        left[0] > left[2] + 40,
+        "the ramp starts on its red stop, got {left:?}"
+    );
+    assert!(
+        right[2] > right[0] + 40,
+        "and ends on its blue stop, got {right:?}"
+    );
+    // Constant on perpendiculars: same colour up and down a vertical line.
+    assert_eq!(
+        at(&img, w / 4, h / 4),
+        at(&img, w / 4, 3 * h / 4),
+        "a linear ramp is a function of its axis alone"
+    );
+}
+
+/// The gradient survives the log: undo restores the paint it replaced (the
+/// patch restores the *value*, not a rect), and a reload replays it.
+#[test]
+fn a_gradient_matte_survives_undo_and_reload() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    add_frame(&mut engine);
+    let matte_id = engine
+        .observe()
+        .layers
+        .last()
+        .expect("the frame is topmost")
+        .id;
+    let black = engine.render_to_image();
+    engine.process(DocCommand::SetMattePaint(
+        matte_id,
+        MP::Gradient {
+            gradient: red_blue(),
+            axis: GradientAxis::Radial {
+                center: Vec2::ZERO,
+                radius: 90.0,
+            },
+        },
+    ));
+    let graded = engine.render_to_image();
+    assert!(
+        !images_match(&black, &graded, 4),
+        "the gradient paint should change the frame"
+    );
+
+    engine.process(DocCommand::Undo);
+    assert!(
+        images_match(&black, &engine.render_to_image(), 1),
+        "undo should restore the solid paint exactly"
+    );
+    engine.process(DocCommand::Redo);
+
+    let bytes = engine.save_bytes().expect("save");
+    engine.load_bytes(&bytes).expect("load");
+    assert!(
+        images_match(&graded, &engine.render_to_image(), 2),
+        "a gradient matte did not replay identically from the log"
+    );
+}
+
+/// An `Everything` matte defines no export frame: naming it exports the painted
+/// bounds, the same answer as naming no frame at all (§15.6).
+#[test]
+fn an_everything_matte_defines_no_export_frame() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        RED,
+        16.0,
+        &[Vec2::new(-30.0, 0.0), Vec2::new(30.0, 0.0)],
+    );
+    engine.process(DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Bottom,
+        region: MatteRegion::Everything,
+        paint: MattePaint::Solid([0.9, 0.9, 0.85]),
+    });
+    let ground = engine
+        .observe()
+        .layers
+        .first()
+        .expect("the ground is at the bottom")
+        .id;
+    let with_ground = engine
+        .export_plan(Some(ground), stark_core::ExportScale::Factor(1.0))
+        .expect("plan");
+    let without = engine
+        .export_plan(None, stark_core::ExportScale::Factor(1.0))
+        .expect("plan");
+    assert_eq!(
+        (with_ground.min, with_ground.max),
+        (without.min, without.max),
+        "a rect-less matte must fall back to the painted bounds"
+    );
 }

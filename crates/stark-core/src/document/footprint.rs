@@ -195,16 +195,24 @@ pub fn footprint(action: &Action) -> Footprint {
         // Both anchors are read — the sibling to insert above and the layer whose
         // stack to insert into — because either being absent changes where the
         // layer lands (§14.8). A matte arrives the same way and claims the same
-        // things, so the two share an arm: what a new layer *is* differs, where it
-        // lands does not.
+        // things, so the arms share a body: what a new layer *is* differs, where
+        // it lands does not. The matte's anchor is a `Place` (§15.5),
+        // whose `anchor()` is the same optional sibling the other two carry.
         ActionKind::AddLayer { id, carrier, above }
-        | ActionKind::AddMatte {
-            id, carrier, above, ..
-        }
         | ActionKind::AddFilter {
             id, carrier, above, ..
         } => Footprint {
             reads: [*carrier, *above]
+                .into_iter()
+                .flatten()
+                .map(Resource::Existence)
+                .collect(),
+            writes: vec![Resource::Existence(*id), Resource::StackOrder],
+        },
+        ActionKind::AddMatte {
+            id, carrier, at, ..
+        } => Footprint {
+            reads: [*carrier, at.anchor()]
                 .into_iter()
                 .flatten()
                 .map(Resource::Existence)
@@ -271,7 +279,7 @@ pub fn footprint(action: &Action) -> Footprint {
         ActionKind::SetLayerVisible(id, _) => prop_write(*id, Prop::Visible),
         ActionKind::SetLayerName(id, _) => prop_write(*id, Prop::Name),
         ActionKind::SetMatteRect(id, _, _) => prop_write(*id, Prop::Matte),
-        ActionKind::SetMatteColor(id, _) => prop_write(*id, Prop::Matte),
+        ActionKind::SetMattePaint(id, _) => prop_write(*id, Prop::Matte),
         ActionKind::SetFilter(id, _) => prop_write(*id, Prop::Filter),
         ActionKind::Select(_) | ActionKind::InvertSelection => Footprint {
             reads: Vec::new(),

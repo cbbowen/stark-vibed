@@ -1,0 +1,66 @@
+thread 'coordinator' panicked at /rustc-dev/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/compiler\rustc_codegen_ssa\src\back\lto.rs:61:17:
+failed to mmap LTO bitcode file `\\?\C:\Users\chris\Desktop\Ideas\stark-vibed\target\debug\incremental\dynamics-0xc77llo4wfef\s-hlakwgifar-1ewqym4-working\9xskwexawov1gkigut083jnud.pre-lto.bc`: The paging file is too small for this operation to complete. (os error 1455)
+stack backtrace:
+   0:     0x7ff88130ec0e - std::backtrace_rs::backtrace::win64::trace
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\..\..\backtrace\src\backtrace\win64.rs:85
+   1:     0x7ff88130ec0e - std::backtrace_rs::backtrace::trace_unsynchronized
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\..\..\backtrace\src\backtrace\mod.rs:66
+   2:     0x7ff88130ec0e - std::backtrace::Backtrace::create
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\backtrace.rs:331
+   3:     0x7ff88130eb4a - std::backtrace::Backtrace::force_capture
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\backtrace.rs:312
+   4:     0x7ff830a4f915 - core[7f2ad7e3dd44ffc1]::slice::sort::unstable::heapsort::heapsort::<((rustc_lint_defs[ba68a545cfd19d3d]::Level, &str), usize), <((rustc_lint_defs[ba68a545cfd19d3d]::Level, &str), usize) as core[7f2ad7e3dd44ffc1]::cmp::PartialOrd>::lt>
+   5:     0x7ff881322864 - std::panicking::panic_with_hook
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\panicking.rs:823
+   6:     0x7ff881307ece - std::panicking::panic_handler::closure$0
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\panicking.rs:688
+   7:     0x7ff88130541f - std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\sys\backtrace.rs:182
+   8:     0x7ff881308a9e - std::panicking::panic_handler
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\panicking.rs:679
+   9:     0x7ff88137b5fd - core::panicking::panic_fmt
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\core\src\panicking.rs:80
+  10:     0x7ff82c60cb26 - RNvMs4_NtCsg4l8NVJHdJk_5alloc7raw_vecINtB5_6RawVecINtNvMs5_NtNtCsi41IJ7vIjlX_21rustc_data_structures5graph3sccINtBV_16SccsConstructionppE19walk_unvisited_node17VisitingNodeFrameINtNtNtCsPB2UJ0vMo9_14rustc_borrowck11constraints5graph11RegionGraphNtB2S_6Norm
+  11:     0x7ff82c61ef9b - rustc_codegen_llvm[7a232ef49fabcc53]::llvm_util::global_llvm_features
+  12:     0x7ff82c64478c - <rustc_codegen_llvm[7a232ef49fabcc53]::LlvmCodegenBackend as rustc_codegen_ssa[cfa348b106fcd2dc]::traits::write::WriteBackendMethods>::run_thin_lto
+  13:     0x7ff82c5ed045 - RINvNtNtCs3akbUzl8ErY_3std3sys9backtrace28___rust_begin_short_backtraceNCINvNtNtCshPfzWstzspA_17rustc_codegen_ssa4back5write20start_executing_workNtCsau8lNd3DQL7_18rustc_codegen_llvm18LlvmCodegenBackendEs1_0INtNtCsaUUlDNlkuLl_4core6result6ResultINtB1c_15Ma
+  14:     0x7ff82f275cf6 - <hashbrown[9d9d88cb8aa926c9]::raw::RawTable<((&rustc_codegen_llvm[7a232ef49fabcc53]::llvm::ffi::Metadata, usize), &rustc_codegen_llvm[7a232ef49fabcc53]::llvm::ffi::Metadata)>>::reserve_rehash::<hashbrown[9d9d88cb8aa926c9]::map::make_hasher<(&rustc_codegen_llvm[7a232ef49fabcc53]::llvm::ffi::Metadata, usize), &rustc_codegen_llvm[7a232ef49fabcc53]::llvm::ffi::Metadata, rustc_hash[111b07b7294ac789]::FxBuildHasher>::{closure#0}>
+  15:     0x7ff82c5eb4cd - RINvNtNtCs3akbUzl8ErY_3std3sys9backtrace28___rust_begin_short_backtraceNCINvNtNtCshPfzWstzspA_17rustc_codegen_ssa4back5write20start_executing_workNtCsau8lNd3DQL7_18rustc_codegen_llvm18LlvmCodegenBackendEs1_0INtNtCsaUUlDNlkuLl_4core6result6ResultINtB1c_15Ma
+  16:     0x7ff82c5fceca - RINvNtNtNtNtCsaUUlDNlkuLl_4core5slice4sort6stable9quicksort9quicksortTNtNtCsg4l8NVJHdJk_5alloc6string6StringB16_ENCINvMNtB1a_5sliceSB15_7sort_byNCINvXs1o_NtNtNtB1a_11collections5btree3mapINtB2s_8BTreeMapB16_B16_EINtNtNtNtBa_4iter6traits7collect12FromIterat
+  17:     0x7ff88132c6b2 - std::sys::thread::windows::impl$0::new::thread_start
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\sys\thread\windows.rs:58
+  18:     0x7ff91b03e957 - BaseThreadInitThunk
+  19:     0x7ff91d10ad6c - RtlUserThreadStart
+
+
+rustc version: 1.98.0-nightly (df6ee909e 2026-06-28)
+platform: x86_64-pc-windows-msvcthread 'rustc' panicked at /rustc-dev/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/compiler\rustc_codegen_ssa\src\back\write.rs:2110:17:
+/rustc-dev/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/compiler\rustc_codegen_ssa\src\back\write.rs:2110:17: panic during codegen/LLVM phase
+stack backtrace:
+   0:     0x7ff88130ec0e - std::backtrace_rs::backtrace::win64::trace
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\..\..\backtrace\src\backtrace\win64.rs:85
+   1:     0x7ff88130ec0e - std::backtrace_rs::backtrace::trace_unsynchronized
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\..\..\backtrace\src\backtrace\mod.rs:66
+   2:     0x7ff88130ec0e - std::backtrace::Backtrace::create
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\backtrace.rs:331
+   3:     0x7ff88130eb4a - std::backtrace::Backtrace::force_capture
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\backtrace.rs:312
+   4:     0x7ff830a4f915 - core[7f2ad7e3dd44ffc1]::slice::sort::unstable::heapsort::heapsort::<((rustc_lint_defs[ba68a545cfd19d3d]::Level, &str), usize), <((rustc_lint_defs[ba68a545cfd19d3d]::Level, &str), usize) as core[7f2ad7e3dd44ffc1]::cmp::PartialOrd>::lt>
+   5:     0x7ff881322864 - std::panicking::panic_with_hook
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\panicking.rs:823
+   6:     0x7ff83304d5bf - <thin_vec[f4a83939e1f69527]::ThinVec<_> as core[7f2ad7e3dd44ffc1]::ops::drop::Drop>::drop::drop_non_singleton::<rustc_hir[79ab8da7c1a2cd4f]::attrs::data_structures::AttributeKind>
+   7:     0x7ff83302ec09 - std[24e1f7cd4569ec98]::sys::backtrace::__rust_end_short_backtrace::<std[24e1f7cd4569ec98]::panicking::begin_panic<alloc[bb2d6b38ef245ac8]::string::String>::{closure#0}, !>
+   8:     0x7ff833025a77 - std[24e1f7cd4569ec98]::panicking::begin_panic::<alloc[bb2d6b38ef245ac8]::string::String>
+   9:     0x7ff83304db76 - <thin_vec[f4a83939e1f69527]::ThinVec<_> as core[7f2ad7e3dd44ffc1]::ops::drop::Drop>::drop::drop_non_singleton::<rustc_hir[79ab8da7c1a2cd4f]::attrs::data_structures::AttributeKind>
+  10:     0x7ff83304dbf5 - <thin_vec[f4a83939e1f69527]::ThinVec<_> as core[7f2ad7e3dd44ffc1]::ops::drop::Drop>::drop::drop_non_singleton::<rustc_hir[79ab8da7c1a2cd4f]::attrs::data_structures::AttributeKind>
+  11:     0x7ff8330368c6 - rustc_middle[5ebb57539ceed146]::util::bug::span_bug_fmt::<rustc_span[3e414d7d15441c40]::span_encoding::Span>
+  12:     0x7ff833096766 - rustc_middle[5ebb57539ceed146]::util::bug::bug_fmt
+  13:     0x7ff82c64b4e6 - <rustc_codegen_llvm[7a232ef49fabcc53]::LlvmCodegenBackend as rustc_codegen_ssa[cfa348b106fcd2dc]::traits::backend::CodegenBackend>::join_codegen
+  14:     0x7ff82c5bf08d - <rustc_interface[7c66552139361c1f]::queries::Linker>::link
+  15:     0x7ff82c590b6e - std[24e1f7cd4569ec98]::sys::backtrace::__rust_begin_short_backtrace::<std[24e1f7cd4569ec98]::thread::lifecycle::spawn_unchecked<ctrlc[f4be4469a3999a3f]::set_handler_inner<rustc_driver_impl[736ca025984defb1]::install_ctrlc_handler::{closure#0}>::{closure#0}, ()>::{closure#1}::{closure#0}::{closure#0}, ()>
+  16:     0x7ff82c588965 - RINvNtNtCs3akbUzl8ErY_3std3sys9backtrace28___rust_begin_short_backtraceNCNCINvNtCsaGaXV2875lH_15rustc_interface4util26run_in_thread_with_globalsNCINvB1e_31run_in_thread_pool_with_globalsNCINvNtB1g_9interface12run_compileruNCNvCs9UoRda6BmLZ_17rustc_driver_i
+  17:     0x7ff82c5949f7 - std[24e1f7cd4569ec98]::sys::backtrace::__rust_begin_short_backtrace::<std[24e1f7cd4569ec98]::thread::lifecycle::spawn_unchecked<ctrlc[f4be4469a3999a3f]::set_handler_inner<rustc_driver_impl[736ca025984defb1]::install_ctrlc_handler::{closure#0}>::{closure#0}, ()>::{closure#1}::{closure#0}::{closure#0}, ()>
+  18:     0x7ff88132c6b2 - std::sys::thread::windows::impl$0::new::thread_start
+                               at /rustc/df6ee909ef35c75aa58aa45af6ac071a9b8285c2/library\std\src\sys\thread\windows.rs:58
+  19:     0x7ff91b03e957 - BaseThreadInitThunk
+  20:     0x7ff91d10ad6c - RtlUserThreadStart

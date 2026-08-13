@@ -445,7 +445,13 @@ mod tests {
             max: Vec2::splat(100.0),
         };
         let over_matte = DocState::with_layer(A)
-            .insert_matte(B, None, Some(A), region, [1.0; 3])
+            .insert_matte(
+                B,
+                None,
+                crate::document::Place::Above(A),
+                region,
+                crate::document::MattePaint::Solid([1.0; 3]),
+            )
             .insert_layer(C, None, Some(B));
         assert_eq!(dest(&over_matte, C), None, "a matte destination");
         assert_eq!(dest(&over_matte, B), None, "a matte source");

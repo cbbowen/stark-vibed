@@ -60,7 +60,7 @@ enum PatchOp {
     Visible(LayerId, bool),
     Name(LayerId, Option<Arc<str>>),
     /// A matte's region and colour together — one footprint resource.
-    Matte(LayerId, MatteRegion, [f32; 3]),
+    Matte(LayerId, MatteRegion, super::layer::MattePaint),
     /// A filter layer's settings (§21) — one footprint resource, because the action
     /// that writes them carries the filter entire.
     Filter(LayerId, Filter),
@@ -178,11 +178,11 @@ impl StatePatch {
                     ops.push(PatchOp::Name(*id, l.name.clone()));
                 }
             }
-            ActionKind::SetMatteRect(id, _, _) | ActionKind::SetMatteColor(id, _) => {
+            ActionKind::SetMatteRect(id, _, _) | ActionKind::SetMattePaint(id, _) => {
                 if let Some(l) = to.layer(*id)
-                    && let super::layer::LayerContent::Matte { region, color } = &l.content
+                    && let super::layer::LayerContent::Matte { region, paint } = &l.content
                 {
-                    ops.push(PatchOp::Matte(*id, *region, *color));
+                    ops.push(PatchOp::Matte(*id, *region, paint.clone()));
                 }
             }
             ActionKind::SetFilter(id, _) => {
@@ -228,12 +228,11 @@ impl StatePatch {
                 PatchOp::Opacity(id, v) => state.set_layer_opacity(*id, *v),
                 PatchOp::Visible(id, v) => state.set_layer_visible(*id, *v),
                 PatchOp::Name(id, v) => state.set_layer_name(*id, v.clone()),
-                PatchOp::Matte(id, region, color) => {
-                    let (min, max) = region.rect();
-                    state
-                        .set_matte_rect(*id, min, max)
-                        .set_matte_color(*id, *color)
-                }
+                // The *value*, not the rect: a region restored through its rect
+                // could not round-trip `Everything`, which has none.
+                PatchOp::Matte(id, region, paint) => state
+                    .set_matte_region(*id, *region)
+                    .set_matte_paint(*id, paint.clone()),
                 PatchOp::Filter(id, filter) => state.set_filter(*id, *filter),
                 PatchOp::Selection(actor, selection) => {
                     state.with_selection(*actor, selection.clone())

@@ -108,7 +108,15 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// reshape was chosen over an appended `Option` deliberately: files are alpha
 /// (§19), the bump is the whole cost, and a fill's paint being one field is
 /// what every consumer of the op gets to rely on from here on.
-const WIRE_VERSION: u32 = 7;
+///
+/// **8** — the matte took the same step (§15.4, §22.4): `AddMatte`/
+/// `SetMatteColor`'s `color: [f32; 3]` became `paint: MattePaint`
+/// (`Solid` first, `Gradient` appended), `MatteRegion` gained `Everything`
+/// (append-safe on its own, but riding the same bump), and `AddMatte`'s anchor
+/// widened from `Option<LayerId>` to `Place` — the encoding-free widening
+/// `MoveLayer` demonstrated, here so a ground can be born at the bottom of the
+/// stack (§15.5). Same alpha-policy arithmetic as 7.
+const WIRE_VERSION: u32 = 8;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

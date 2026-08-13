@@ -10,18 +10,31 @@ use crate::geom::TileCoord;
 use crate::gpu::tile::TilePairHandle;
 
 /// A matte layer's draw parameters (§15.4).
-#[derive(Copy, Clone, Debug)]
+// No `Debug`: the mirrored `Ramp` (§6.10) derives only what `bytemuck`
+// needs, and 544 bytes of stop lanes would be noise in a dump anyway.
+#[derive(Clone)]
 pub struct MatteDraw {
     /// The region's rect in canvas px: `min.xy, max.xy`. For a frame this is the
-    /// *hole* — the fill covers everything outside it.
+    /// *hole* — the fill covers everything outside it. Zeros, never read, when
+    /// `flags` says the region is the whole plane.
     pub rect: [f32; 4],
-    /// Fill color in the document's working color space.
+    /// Region kind, as the shader reads it: 0 = outside `rect`, 1 = everything
+    /// (§15.5).
+    pub flags: f32,
+    /// Fill color in the document's working color space. Zeros for a gradient
+    /// matte, whose colour comes from `ramp` per fragment.
     pub channels: [f32; 4],
     /// The same colour's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a space
     /// that has none, which is the true value rather than a stand-in.
     pub resid: [f32; 4],
     /// The layer's opacity.
     pub opacity: f32,
+    /// A gradient paint's ramp (§22.4), already packed for the
+    /// shader's per-matte uniform — stops in working-space channels, axis in
+    /// canvas px. `None` for a solid matte, which binds the shared zeroed ramp.
+    /// Boxed so the rare gradient does not carry its 544 bytes of stop lanes
+    /// into every [`CompositeItem`] — a tile is the common item by thousands.
+    pub ramp: Option<Box<stark_shaders::mirror::matte::Ramp>>,
 }
 
 /// One item of compositing pass A, in bottom-to-top stack order.
@@ -372,9 +385,11 @@ mod tests {
     fn item(opacity: f32) -> CompositeItem {
         CompositeItem::Matte(MatteDraw {
             rect: [0.0; 4],
+            flags: 0.0,
             channels: [0.0; 4],
             resid: [0.0; 4],
             opacity,
+            ramp: None,
         })
     }
 

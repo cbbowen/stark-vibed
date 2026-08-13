@@ -113,11 +113,25 @@ pub fn set_open(state: AppState, open: bool) {
     if open && transform.write().take().is_some() {
         dispatch(state, ViewCommand::PreviewTransform(None));
     }
-    // The gradient-fill mode composes against the committed document too
+    // The gradient bar composes against the committed document too
     // (§22.4), and scrubbing has the same power to pull it out from under.
-    let mut gradient_fill = state.gradient_fill;
-    if open && gradient_fill.write().take().is_some() {
-        dispatch(state, ViewCommand::PreviewFill(None));
+    // Which preview it was showing depends on the target; the abandoned mode
+    // says which to drop.
+    let mut gradient_bar = state.gradient_bar;
+    let abandoned = if open {
+        gradient_bar.write().take()
+    } else {
+        None
+    };
+    if let Some(ui) = abandoned {
+        match ui.target {
+            crate::state::GradientTarget::Fill { .. } => {
+                dispatch(state, ViewCommand::PreviewFill(None));
+            }
+            crate::state::GradientTarget::Matte { .. } => {
+                dispatch(state, ViewCommand::PreviewMattePaint(None));
+            }
+        }
     }
     let mut mode = state.timeline.open;
     mode.set(open);

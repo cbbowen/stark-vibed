@@ -61,6 +61,12 @@ icons! {
     // a frame is (§15.7), and why it is a square rather than a stack.
     ADD_LAYER => "stack-plus-bold",
     ADD_FRAME => "plus-square-bold",
+    // The fourth "add" in that header, and the whole-plane matte's own mark
+    // (§15.5): a figure standing on a filled ground, which is what a
+    // background is to the painting above it. Worn by the add button and by the
+    // matte bar when the selected matte is one, so the row and the bar agree on
+    // what kind of thing is selected.
+    BACKGROUND => "selection-background-bold",
     // The third "add" in that header (§21). A funnel, because a filter layer is a
     // thing the stack beneath it is *seen through* — and because "filter" has been
     // drawn as a funnel for long enough that nobody has to be told. The plus is

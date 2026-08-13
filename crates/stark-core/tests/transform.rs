@@ -18,8 +18,8 @@ use stark_core::RgbaImage;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::DocCommand;
 use stark_core::document::{
-    LayerId, MatteRegion, PerspectiveMap, SelectionMode, SelectionOp, SelectionShape, TransformMap,
-    WarpMap, rect_corners,
+    LayerId, MattePaint, MatteRegion, PerspectiveMap, Place, SelectionMode, SelectionOp,
+    SelectionShape, TransformMap, WarpMap, rect_corners,
 };
 use stark_core::geom::{Affine2, Vec2};
 
@@ -413,12 +413,12 @@ fn transform_on_a_matte_layer_is_refused() {
     blob(&mut engine, Vec2::new(-30.0, 0.0));
     engine.process(DocCommand::AddMatte {
         carrier: None,
-        above: None,
+        at: Place::Top,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(-100.0, -100.0),
             max: Vec2::new(100.0, 100.0),
         },
-        color: [0.2, 0.2, 0.2],
+        paint: MattePaint::Solid([0.2, 0.2, 0.2]),
     });
     let matte: LayerId = engine
         .observe()

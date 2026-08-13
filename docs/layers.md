@@ -799,9 +799,9 @@ then gives three features:
 
 | Region | Position in stack | What it is |
 |---|---|---|
-| everywhere **except** a rect | top | the frame / mat board |
+| everywhere **except** a rect | top | the frame / mat board — **built** |
 | everywhere **except** N panels | top | comic gutters |
-| everywhere | bottom | an opaque ground / underpainting |
+| everywhere | bottom | an opaque ground / underpainting — **built** (`Everything`, §15.5) |
 
 No `invert` flag and no separate scrim concept: `Invert` is already a
 constant-cost operation on this representation.
@@ -810,6 +810,10 @@ constant-cost operation on this representation.
 pub enum MatteRegion {
     /// Everything outside this canvas-space rect — the frame.
     OutsideRect { min: Vec2, max: Vec2 },
+    /// The whole plane — the ground (§15.5). No rect: it frames nothing,
+    /// so export, the aspect readout and the handles all stand down
+    /// (`MatteRegion::rect()` is an `Option`, and every consumer answers None).
+    Everything,
 }
 ```
 
@@ -819,11 +823,17 @@ built on: making a *thing that is not paint* a layer is what buys visibility,
 opacity, ordering, naming, undo, save and collaboration for nothing (§15.3). A filter
 makes the same trade for a different kind of not-paint.
 
-`color` (in `LayerContent::Matte`, §5.1) is **straight sRGB**, like
-`BrushParams::color`, converted to working-space channels at composite time — so
-the log says the same thing whether the document is Oklab or Mixbox. A matte has
-no alpha of its own: its transparency *is* its layer opacity, which is the whole
-point of it being a layer.
+The fill (in `LayerContent::Matte`, §5.1) is a **`MattePaint`**: one flat
+straight-sRGB colour like `BrushParams::color`, or a gradient — a §22.1
+`Gradient` along a `GradientAxis`, the very pair the gradient fill lays
+(§22.4), embedded by value the same way and edited through the same gradient
+bar. Either converts to working-space channels at composite time, so the log
+says the same thing whether the document is Oklab or Mixbox; a gradient's stops
+convert once per frame build and interpolate per fragment in the working space,
+so a Mixbox ground is a *pigment* wash. A matte has no alpha of its own in
+either variant — its transparency *is* its layer opacity, which is the whole
+point of it being a layer — and a gradient varies only the colour, never the
+slab's thickness: a graded wash is a transition in colour, not in relief.
 
 **The region is stored as geometry, not as a rasterized mask.** §6.8's selection
 shader already evaluates shapes analytically from a signed distance at canvas
@@ -832,10 +842,12 @@ would otherwise cost ~16 MB of mask tiles and could trip `MAX_SELECTION_TILES`),
 and a log entry of four floats. Rasterizing to tiles stays available later as a
 pure caching optimization.
 
-`MatteRegion` has exactly one variant today because that is the only one built.
-It is the seam where the `SelectionOp` algebra lands (§15.9 P4), at which point
-gutters, lasso mattes, `All` and frame-from-selection all arrive together. Per
-this codebase's own precedent, no variant appears here before it does something.
+`MatteRegion` has exactly two variants today because those are the two built —
+the table's first and third rows. It is still the seam where the `SelectionOp`
+algebra lands (§15.9 P4), at which point gutters, lasso mattes and
+frame-from-selection arrive together. Per this codebase's own precedent, no
+variant appears here before it does something — `Everything` arrived with the
+ground it draws, not ahead of it.
 
 ### 15.3 Why a layer, and what that buys
 
@@ -947,8 +959,13 @@ It is `DocState.background`, sitting beside `DocState.surface`, on precisely the
 argument §6.4 makes for the weave — which canvas a piece was painted on is part
 of what the document *is*. (It used to be view state owned by the frontend, so
 the ground you painted on was not saved with your painting.) Both exist and both
-make sense: `background` is the gesso; an `All`-region matte (when P4 lands) is
-an opaque underpainting brushed over it.
+make sense: `background` is the gesso; a `MatteRegion::Everything` matte — now
+built, the Layers panel's "+ Background" — is an opaque underpainting brushed
+over it. Born at the **bottom** of the stack (`AddMatte` takes the full `Place`
+anchor for exactly this), it wears either `MattePaint`: a flat paper tone, or a
+graded wash (§22.4). It defines no export rect and mounts no handles — its bar
+is its paint and its Done — and, having no rect, it can never masquerade as the
+frame the export dialog or the navigator picks.
 
 ### 15.6 Export
 
@@ -1198,8 +1215,9 @@ check in two keys.
 
 - **P1 — the matte layer. Done.** `LayerContent` enum; `MatteRegion::OutsideRect`;
   `matte.wesl` and its pipeline; `CompositeItem` ordering in pass A; `AddMatte` /
-  `SetMatteRect` / `SetMatteColor`; strokes refuse matte layers; `bounds` ignores
-  them.
+  `SetMatteRect` / `SetMattePaint`; strokes refuse matte layers; `bounds` ignores
+  them. Since extended with `MatteRegion::Everything` (the ground, §15.5) and
+  the gradient `MattePaint` (§22.4) — each with the UI that makes it real.
 - **P2 — export. Done.** `export(frame, scale, background)` and `export_plan`;
   `RgbaImage::to_png`; `DocState.background` + `SetBackground`;
   `Background::Transparent` as a real branch; the Open / Save / Export menu
@@ -1210,7 +1228,8 @@ check in two keys.
   commit. **Not yet:** snapping, composition guides, review mode, fit-to-frame,
   frame-from-selection.
 - **P4 — the general region.** `MatteRegion` becomes the `SelectionOp` algebra:
-  comic gutters, lasso mattes, `All` slabs, frame-from-selection.
+  comic gutters, lasso mattes, frame-from-selection. (The `All` slab arrived
+  early as `Everything` — it needed no algebra, only a variant and a button.)
 
 ### 15.10 Testing (`tests/matte.rs`)
 

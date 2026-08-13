@@ -10,10 +10,11 @@
 //! Like the brush presets and the shape library, the entries are frontend state
 //! that follows *this browser* across documents via `localStorage`, and never
 //! enter the document or reach a peer: a gradient is something the artist paints
-//! **with**, not part of what they have painted. When the gradient fill lands
-//! (§18.0.4) the chosen ramp will be embedded in the `FillOp` it commits — the
-//! way a stroke embeds the brush colour — so a document stays self-contained
-//! and this library stays personal.
+//! **with**, not part of what they have painted. What consumes one — the
+//! gradient fill's parcel (§22.4), a matte's graded paint (§15.4) — embeds the
+//! ramp **by value** in the action it commits, the way a stroke embeds the
+//! brush colour, so a document stays self-contained and this library stays
+//! personal.
 //!
 //! Unlike the preset library there are no built-in entries at all: a gradient's
 //! whole story is that it came off *your* canvas, and a panel opening on a
@@ -82,7 +83,7 @@ pub struct GradientsState {
 pub fn select(state: AppState, name: &str) {
     let mut sel = state.gradients.selected;
     sel.set(Some(name.to_string()));
-    crate::panels::gradient_fill::refresh(state);
+    crate::panels::gradient_bar::refresh(state);
 }
 
 /// The gradient a fill would use right now: the selected entry, or the first —

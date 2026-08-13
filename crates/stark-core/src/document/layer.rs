@@ -376,9 +376,11 @@ impl Default for CompositeParams {
 /// at any zoom, keeps the log to four floats, and — being a pure function of
 /// canvas position — satisfies the §6.4 seam invariant for free.
 ///
-/// One variant, because one is built. This is the seam where the `SelectionOp`
-/// algebra lands (§15.9, P4), bringing comic gutters, lasso mattes
-/// and whole-plane slabs at once. Per this codebase's own precedent (§1 —
+/// Two variants, because two are built — the frame, and the §15.2 table's third
+/// row, the whole-plane ground ([`Everything`](Self::Everything), §15.5's
+/// "opaque underpainting"). This is still the seam where the `SelectionOp`
+/// algebra lands (§15.9, P4), bringing comic gutters, lasso mattes and
+/// frame-from-selection at once. Per this codebase's own precedent (§1 —
 /// `drag` and `wetness` were deleted rather than kept inert, and `bleed` and
 /// `tooth` came back only once each had a model), no variant appears here before
 /// it does something.
@@ -386,22 +388,72 @@ impl Default for CompositeParams {
 pub enum MatteRegion {
     /// Everything *outside* this canvas-space rect — the frame / mat board.
     OutsideRect { min: Vec2, max: Vec2 },
+    /// The whole plane — a ground / underpainting, made to sit at the bottom of
+    /// the stack (§15.5). It has no rect: it frames nothing, so it
+    /// defines no export rect and mounts no handles — the coverage is the whole
+    /// of what it says.
+    Everything,
 }
 
 impl MatteRegion {
-    /// The rect this region is defined against, in canvas px. For `OutsideRect`
-    /// this is the *hole* — the piece — which is what export frames against
-    /// (§15.6).
-    pub fn rect(&self) -> (Vec2, Vec2) {
+    /// The rect this region is defined against, in canvas px — for
+    /// [`OutsideRect`](Self::OutsideRect) the *hole*, the piece, which is what
+    /// export frames against (§15.6). `None` for a region that is not defined
+    /// against one: an [`Everything`](Self::Everything) matte frames nothing,
+    /// and every consumer of the rect (export, the aspect readout, the handle
+    /// box) has a real answer for that — fall back or stand down — rather than
+    /// a made-up rectangle.
+    pub fn rect(&self) -> Option<(Vec2, Vec2)> {
         match self {
-            Self::OutsideRect { min, max } => (*min, *max),
+            Self::OutsideRect { min, max } => Some((*min, *max)),
+            Self::Everything => None,
         }
     }
 
-    /// The same region with its rect replaced (the frame drag's commit).
+    /// The same region with its rect replaced (the frame drag's commit) — a
+    /// no-op on a region that has none, matching `SetMatteRect`'s no-op on a
+    /// layer that is not a matte: the action names a property this region does
+    /// not have.
     pub fn with_rect(&self, min: Vec2, max: Vec2) -> Self {
         match self {
             Self::OutsideRect { .. } => Self::OutsideRect { min, max },
+            Self::Everything => Self::Everything,
+        }
+    }
+}
+
+/// What a matte is filled with (§15.4, §22): one flat colour, or a
+/// gradient read from canvas position — the same ramp the fill lays (§22.4),
+/// embedded by value the same way.
+///
+/// No opacity of its own in either variant: a matte's transparency *is* its
+/// layer opacity (§15.3), and its paint is a full-strength coat — which is why
+/// the solid keeps three channels, not four, and the gradient carries no
+/// per-unit opacity where the fill's parcel does.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MattePaint {
+    /// One colour everywhere. Straight sRGB, like [`BrushParams::color`],
+    /// converted to working-space channels at composite time.
+    ///
+    /// [`BrushParams::color`]: crate::document::BrushParams::color
+    Solid([f32; 3]),
+    /// A colour ramp along an axis (§22.4): interpolated per fragment in the
+    /// working space, so an Oklab document's matte matches the library strip
+    /// and a Mixbox document's is a pigment ramp — a graded wash, not a screen
+    /// gradient.
+    Gradient {
+        gradient: crate::gradient::Gradient,
+        axis: super::fill::GradientAxis,
+    },
+}
+
+impl MattePaint {
+    /// The colour a one-swatch summary shows: the solid itself, or the ramp's
+    /// start — the stop the axis anchors on.
+    pub fn swatch(&self) -> [f32; 3] {
+        match self {
+            Self::Solid(c) => *c,
+            Self::Gradient { gradient, .. } => gradient.sample(0.0),
         }
     }
 }
@@ -449,25 +501,24 @@ pub enum LayerContent {
     /// Painted tiles. Only populated ones exist — this sparsity is the infinite
     /// canvas.
     Paint(PaintTiles),
-    /// A procedural region filled with a flat colour.
-    ///
-    /// `color` is **straight sRGB**, like [`BrushParams::color`], and is converted
-    /// to working-space channels at composite time — so the log stays independent
-    /// of whether the document is Oklab or Mixbox. A matte has no alpha of its
-    /// own: its transparency *is* its layer opacity, which is the whole point of
-    /// it being a layer.
+    /// A procedural region filled with a [`MattePaint`] — one flat colour, or a
+    /// gradient ramp (§22.4). The paint converts to working-space
+    /// channels at composite time, so the log stays independent of whether the
+    /// document is Oklab or Mixbox. A matte has no alpha of its own: its
+    /// transparency *is* its layer opacity, which is the whole point of it
+    /// being a layer.
     ///
     /// Physically this is a flat, opaque *coat of paint*: the compositor gives it
     /// a constant thickness, so its interior lights flat (zero height gradient —
     /// no weave, and the paint film's uniform sheen reads as an even wash rather
     /// than a glint) while its boundary catches light the same way any stroke edge
-    /// does. See §15.4 for why it must write the aux target at all,
-    /// and why its blend there is `over` rather than additive.
-    ///
-    /// [`BrushParams::color`]: crate::document::BrushParams::color
+    /// does — a graded wash varies the paint's colour, never its thickness, the
+    /// same statement the gradient fill makes (§22.4). See §15.4 for
+    /// why it must write the aux target at all, and why its blend there is
+    /// `over` rather than additive.
     Matte {
         region: MatteRegion,
-        color: [f32; 3],
+        paint: MattePaint,
     },
     /// A **function of what is composited beneath it** in its own stack (§21).
     ///
@@ -573,10 +624,10 @@ impl Layer {
         }
     }
 
-    /// A matte layer over `region`, filled with `color` (working-space channels).
-    pub fn matte(id: LayerId, region: MatteRegion, color: [f32; 3]) -> Self {
+    /// A matte layer over `region`, filled with `paint` (§15.4).
+    pub fn matte(id: LayerId, region: MatteRegion, paint: MattePaint) -> Self {
         Self {
-            content: LayerContent::Matte { region, color },
+            content: LayerContent::Matte { region, paint },
             ..Self::new(id)
         }
     }

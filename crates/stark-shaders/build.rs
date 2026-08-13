@@ -32,6 +32,7 @@ const MIRRORS: &[(&[&str], &str)] = &[
     (&["filter_common"], "Filter"),
     (&["guides"], "Guide"),
     (&["mask_region"], "Region"),
+    (&["matte"], "Ramp"),
     (&["media_common"], "Media"),
     (&["merge"], "Merge"),
     (&["resolve"], "Resolve"),

@@ -693,19 +693,60 @@ impl Engine {
                     opacity: 1.0,
                 })
                 .collect(),
-            LayerContent::Matte { region, color } => {
-                let (min, max) = region.rect();
+            LayerContent::Matte { region, paint } => {
+                let rect = match region.rect() {
+                    Some((min, max)) => [min.x, min.y, max.x, max.y],
+                    // The whole plane: the shader never reads the rect (`flags`
+                    // routes past it), so zeros rather than sentinels.
+                    None => [0.0; 4],
+                };
+                let flags = match region {
+                    crate::document::MatteRegion::OutsideRect { .. } => 0.0,
+                    crate::document::MatteRegion::Everything => 1.0,
+                };
+                // sRGB in the log, working-space channels on the GPU — the same
+                // conversion the brush colour gets, so a matte means the same
+                // colour in an Oklab and a Mixbox document. A gradient converts
+                // every stop the same way, once per item build, and the shader
+                // interpolates in the working space (§22.4).
+                let (channels, resid, ramp) = match paint {
+                    crate::document::MattePaint::Solid(color) => (
+                        self.color_space.rgb_to_channels(*color),
+                        {
+                            let r = self.color_space.rgb_to_resid(*color);
+                            [r[0], r[1], r[2], 0.0]
+                        },
+                        None,
+                    ),
+                    crate::document::MattePaint::Gradient { gradient, axis } => {
+                        let mut ramp = stark_shaders::mirror::matte::Ramp::default();
+                        let stops = gradient.stops();
+                        ramp.p[0] = stops.len() as f32;
+                        ramp.axis = match axis {
+                            crate::document::GradientAxis::Linear { from, to } => {
+                                [from.x, from.y, to.x, to.y]
+                            }
+                            crate::document::GradientAxis::Radial { center, radius } => {
+                                ramp.p[1] = 1.0;
+                                [center.x, center.y, *radius, 0.0]
+                            }
+                        };
+                        for (i, stop) in stops.iter().enumerate() {
+                            let c = self.color_space.rgb_to_channels(stop.color);
+                            let r = self.color_space.rgb_to_resid(stop.color);
+                            ramp.stop_c[i] = [c[0], c[1], c[2], stop.t];
+                            ramp.stop_r[i] = [r[0], r[1], r[2], 0.0];
+                        }
+                        ([0.0; 4], [0.0; 4], Some(Box::new(ramp)))
+                    }
+                };
                 vec![CompositeItem::Matte(MatteDraw {
-                    rect: [min.x, min.y, max.x, max.y],
-                    // sRGB in the log, working-space channels on the GPU — the
-                    // same conversion the brush colour gets, so a matte means
-                    // the same colour in an Oklab and a Mixbox document.
-                    channels: self.color_space.rgb_to_channels(*color),
-                    resid: {
-                        let r = self.color_space.rgb_to_resid(*color);
-                        [r[0], r[1], r[2], 0.0]
-                    },
+                    rect,
+                    flags,
+                    channels,
+                    resid,
                     opacity: 1.0,
+                    ramp,
                 })]
             }
             // A filter draws no items at all: it is a pass over what the *stack* has
@@ -749,10 +790,16 @@ impl Engine {
     /// bounds, else the viewport.
     fn export_rect(&self, frame: Option<LayerId>) -> (crate::geom::Vec2, crate::geom::Vec2) {
         let doc = self.timeline.current();
+        // An `Everything` matte has no rect and so defines no frame: naming one
+        // falls through to the painted bounds, the same answer as no frame at
+        // all — a ground is under the picture, not a crop of it (§15.6).
         if let Some(id) = frame
-            && let Some(region) = doc.layer(id).and_then(|l| l.matte_region())
+            && let Some(rect) = doc
+                .layer(id)
+                .and_then(|l| l.matte_region())
+                .and_then(|r| r.rect())
         {
-            return region.rect();
+            return rect;
         }
         if let Some((min, max)) = doc.bounds().tile_range() {
             let t = crate::geom::TILE_SIZE as f32;

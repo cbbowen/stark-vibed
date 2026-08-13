@@ -23,6 +23,7 @@
 // invariant, for free).
 
 import package::lib::paint_common::{OPACITY_K};
+import package::lib::ramp_common::{ramp_position};
 
 struct View {
     // Canvas px -> NDC, column-major: `st.xy` is the first column, `st.zw` the
@@ -34,6 +35,26 @@ struct View {
 }
 
 @group(0) @binding(0) var<uniform> view: View;
+
+// A gradient matte's ramp (§22.4) — per-matte where the view group is
+// per-pass, so it rides its own bind group. A solid matte binds a zeroed one:
+// `p.x == 0` says "the instance's own channels", so one pipeline serves both.
+struct Ramp {
+    // .x = stop count (0 = solid; a gradient always has ≥ 2, §22.1);
+    // .y = axis kind (0 linear, 1 radial); .zw unused.
+    p: vec4<f32>,
+    // The axis, canvas px: linear = from.xy, to.xy; radial = center.xy, radius.
+    axis: vec4<f32>,
+    // Stops: latent .xyz, ramp position t in .w — ascending, endpoints at 0 and
+    // 1 (`Gradient`'s invariants). Length is `fill.wesl`'s MAX_GRADIENT_STOPS
+    // written out — the mirror generator (§6.10) cannot resolve a named const
+    // in a type position.
+    stop_c: array<vec4<f32>, 16>,
+    // And their residuals (.xyz; .w unused), index-aligned with `stop_c`.
+    stop_r: array<vec4<f32>, 16>,
+}
+
+@group(1) @binding(0) var<uniform> ramp: Ramp;
 
 // Thickness of the matte slab, in the same units as paint height. With
 // `OPACITY_K = 1` a thickness of 8 leaves the slab's visible alpha > 0.999 even
@@ -52,7 +73,8 @@ struct VsOut {
     // view bind group is declared VERTEX-only and this is the matte's only use of
     // it downstream. It is constant across the quad, so a flat varying is exact.
     @location(4) @interpolate(flat) aa: f32,
-    @if(resid) @location(5) @interpolate(flat) resid: vec4<f32>,
+    @location(5) @interpolate(flat) flags: f32,
+    @if(resid) @location(6) @interpolate(flat) resid: vec4<f32>,
 }
 
 struct FsOut {
@@ -83,6 +105,9 @@ fn vs_main(
     // layouts. Sixteen bytes per matte, against a per-texel channel Oklab still does
     // not allocate.
     @location(3) resid: vec4<f32>,
+    // Region kind: 0 = outside `rect` (the frame), 1 = the whole plane
+    // (§15.5's ground) — `rect` then carries zeros and is never read.
+    @location(4) flags: f32,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let ndc = corner * 2.0 - 1.0;
@@ -105,6 +130,7 @@ fn vs_main(
     // `misc.w` is the zoom (screen px per canvas px), so the edge keeps a constant
     // on-screen softness at any zoom.
     out.aa = 1.0 / max(view.misc.w, 1e-6);
+    out.flags = flags;
     @if(resid) out.resid = resid;
     return out;
 }
@@ -123,7 +149,39 @@ fn outside_coverage(p: vec2<f32>, rect: vec4<f32>, aa: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> FsOut {
-    let a = outside_coverage(in.canvas, in.rect, in.aa) * in.opacity;
+    // The whole plane needs no signed distance: its coverage is the statement.
+    var region = 1.0;
+    if in.flags < 0.5 {
+        region = outside_coverage(in.canvas, in.rect, in.aa);
+    }
+    let a = region * in.opacity;
+
+    // The paint at this fragment: the instance's flat channels, or the ramp
+    // read from canvas position (§22.4). Interpolated in the working
+    // space between stops already converted on the CPU — an Oklab matte grades
+    // the way the library strip previews, a Mixbox one the way pigment mixes.
+    // The *thickness* never varies: a graded wash is a transition in colour,
+    // not in relief, so the slab stays the flat coat §15.4 requires.
+    var channels = in.channels.rgb;
+    @if(resid) var resd = in.resid.rgb;
+    let stops = u32(ramp.p.x);
+    if stops >= 2 {
+        let t = ramp_position(in.canvas, ramp.axis, ramp.p.y);
+        // The segment t falls in: the last stop at or before it — the same
+        // walk as `fill.wesl`'s, over the same invariants.
+        var j = 0u;
+        for (var i = 1u; i + 1u < stops; i++) {
+            if ramp.stop_c[i].w <= t {
+                j = i;
+            }
+        }
+        let ca = ramp.stop_c[j];
+        let cb = ramp.stop_c[j + 1u];
+        let span = max(cb.w - ca.w, 1e-6);
+        let s = clamp((t - ca.w) / span, 0.0, 1.0);
+        channels = mix(ca.xyz, cb.xyz, s);
+        @if(resid) resd = mix(ramp.stop_r[j].xyz, ramp.stop_r[j + 1u].xyz, s);
+    }
 
     // Premultiplied, for the `over` blend the pipeline declares on both targets.
     // Colour alpha is *coverage*, like every element of pass A (composite.wesl):
@@ -134,10 +192,10 @@ fn fs_main(in: VsOut) -> FsOut {
     // still erases the relief beneath it.
     var out: FsOut;
     let w = a * (1.0 - exp(-OPACITY_K * MATTE_THICKNESS));
-    out.color = vec4<f32>(in.channels.rgb * w, w);
+    out.color = vec4<f32>(channels * w, w);
     out.aux = vec4<f32>(MATTE_THICKNESS * a, 0.0, 0.0, a);
     // The residual rides the same premultiply and the same `over` (§6.7):
     // a matte is a flat coat of one colour, and a colour is both halves.
-    @if(resid) out.resid = vec4<f32>(in.resid.rgb * w, w);
+    @if(resid) out.resid = vec4<f32>(resd * w, w);
     return out;
 }

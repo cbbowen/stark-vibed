@@ -220,9 +220,22 @@ misread, the §19 alpha policy) and the collab ALPN to `stark/collab/1` (the
 gossip path carries actions with no version of its own, so incompatible builds
 must fail to meet rather than decode each other wrong).
 
+**The matte is the second consumer** (§15.4, §15.5): `MattePaint::Gradient`
+carries the same `Gradient` + `GradientAxis` pair the fill's parcel does, laid
+by the same `ramp_position` leaf the two shaders share — so where `t = 0.5`
+falls cannot drift between a filled region and a graded ground. It is composed
+through the **same gradient bar**: the frame bar's Gradient chip enters the
+mode with a matte target instead of a fill target, the drag is still the axis,
+and Done commits one `SetMattePaint`. One interface for laying a ramp, wherever
+the ramp lands. The one deliberate asymmetry: a fill reads its ramp live off
+the library, while a matte target *carries* its ramp — re-composing an old
+gradient's axis must not silently swap its colours for whatever the library
+happens to have selected; a library click mid-mode still replaces it, because a
+click is a choice.
+
 ### 22.5 What attaches here next
 
 - **Gradient map** — a filter layer (§21) whose transfer function is a
   `Gradient`, indexing the ramp by the luminance beneath. The same embedded
-  value, a different consumer; nothing about the library, the capture or the
-  fill waits on it.
+  value, a different consumer; nothing about the library, the capture, the fill
+  or the matte waits on it.

@@ -32,9 +32,9 @@ use stark_core::Engine;
 use stark_core::assets::AssetId;
 use stark_core::command::{DocCommand, InputCommand};
 use stark_core::document::{
-    ActionKind, ActorId, BlendMode, DocState, FillOp, Layer, LayerContent, LayerId, MatteRegion,
-    PerspectiveMap, Place, Prop, Resource, Selection, SelectionMode, SelectionOp, SelectionShape,
-    TransformMap, WarpMap, footprint, rect_corners,
+    ActionKind, ActorId, BlendMode, DocState, FillOp, Layer, LayerContent, LayerId, MattePaint,
+    MatteRegion, PerspectiveMap, Place, Prop, Resource, Selection, SelectionMode, SelectionOp,
+    SelectionShape, TransformMap, WarpMap, footprint, rect_corners,
 };
 use stark_core::geom::{Affine2, TileCoord, Vec2};
 use stark_core::gpu::SurfaceId;
@@ -74,9 +74,9 @@ fn shape(state: &DocState) -> Vec<(LayerId, usize)> {
     out
 }
 
-fn matte_of(l: &Layer) -> Option<(MatteRegion, [f32; 3])> {
+fn matte_of(l: &Layer) -> Option<(MatteRegion, MattePaint)> {
     match &l.content {
-        LayerContent::Matte { region, color } => Some((*region, *color)),
+        LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
         LayerContent::Paint(_) | LayerContent::Filter(_) => None,
     }
 }
@@ -387,12 +387,12 @@ fn every_action_touches_only_what_it_declares() {
         "add matte",
         DocCommand::AddMatte {
             carrier: None,
-            above: None,
+            at: Place::Top,
             region: MatteRegion::OutsideRect {
                 min: Vec2::new(10.0, 10.0),
                 max: Vec2::new(180.0, 140.0),
             },
-            color: [0.9, 0.9, 0.9],
+            paint: MattePaint::Solid([0.9, 0.9, 0.9]),
         },
     );
     let matte = engine
@@ -411,7 +411,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "recolour matte",
-        DocCommand::SetMatteColor(matte, [0.1, 0.1, 0.1]),
+        DocCommand::SetMattePaint(matte, MattePaint::Solid([0.1, 0.1, 0.1])),
     );
     step(
         &mut engine,
@@ -578,9 +578,9 @@ fn every_action_touches_only_what_it_declares() {
         "Layer opacity",
         "Layer visibility",
         "Rename layer",
-        "Add frame",
+        "Add matte",
         "Move frame",
-        "Frame colour",
+        "Matte paint",
         "Canvas colour",
         "Canvas surface",
     ];

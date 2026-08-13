@@ -175,7 +175,7 @@ pub fn SelectionBar() -> Element {
     // While a transform or gradient-fill gesture is composing, its bar stands in
     // for this one: the whole-selection commands would fight the gesture
     // (deselecting mid-transform would move the wrong region on "Done").
-    let composing = state.transform.read().is_some() || state.gradient_fill.read().is_some();
+    let composing = state.transform.read().is_some() || state.gradient_bar.read().is_some();
     // The gradient fill needs a ramp to lay; with the library empty the chip
     // stays, disabled, and its title says where ramps come from — the control
     // is the map of what is possible, the state says what is missing.
@@ -234,7 +234,7 @@ pub fn SelectionBar() -> Element {
                             class: "chip",
                             disabled: !have_gradients,
                             title: gradient_title,
-                            onclick: move |_| crate::panels::gradient_fill::begin(state),
+                            onclick: move |_| crate::panels::gradient_bar::begin_fill(state),
                             {icon(icons::GRADIENT)}
                             {label("Gradient")}
                         }

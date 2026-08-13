@@ -45,6 +45,8 @@ mod view;
 
 use std::sync::Arc;
 
+use wgpu::util::DeviceExt;
+
 use crate::colorspace::ColorSpace;
 use crate::document::DRAGO_K;
 use crate::geom::{Extent2, ViewTransform};
@@ -79,11 +81,21 @@ pub(crate) use view::view_uniform;
 /// every hop — the shape `CompositeScene` and `stroke::StrokeScene` already use.
 struct Encode<'a> {
     p: &'a CompositorPipeline,
-    /// One per tile in the frame, in the flat order `prepare_composite` built them.
-    tile_bgs: &'a [wgpu::BindGroup],
+    /// The per-item bind groups `prepare_composite` built, in the flat order the
+    /// cursors consume them.
+    streams: &'a PreparedStreams,
     /// One per level of group nesting the document reaches; empty when nothing needs
     /// isolating, which is the common document.
     levels: &'a [ScratchLevel],
+}
+
+/// What `prepare_composite` hands the encoder: the per-tile bind groups, and the
+/// per-matte ramp bind groups beside them (`None` = solid, draw with the shared
+/// zeroed ramp; §22.4). One value because they are one preparation —
+/// built by the same walk, consumed by the same cursors.
+struct PreparedStreams {
+    tile_bgs: Vec<wgpu::BindGroup>,
+    matte_ramp_bgs: Vec<Option<wgpu::BindGroup>>,
 }
 
 /// How far through the frame's flat streams the encoder has drawn.
@@ -460,7 +472,9 @@ impl Compositor {
     }
 
     /// Write the view uniform and upload pass A's instance streams for `groups`,
-    /// returning the per-tile bind groups that pass draws with.
+    /// returning the per-tile bind groups that pass draws with — and, beside
+    /// them, the per-matte ramp bind groups (`None` = solid, draw with the
+    /// shared zeroed ramp; §22.4).
     ///
     /// Split out of [`Self::render`] so [`Self::composite_channels`] runs the *same*
     /// pass A rather than a second copy of it: what the eyedropper reports and what
@@ -471,7 +485,7 @@ impl Compositor {
         p: &CompositorPipeline,
         view: ViewTransform,
         groups: &[CompositeGroup],
-    ) -> Vec<wgpu::BindGroup> {
+    ) -> PreparedStreams {
         let device = &p.ctx.device;
         p.view.write(&p.ctx.queue, view);
 
@@ -484,6 +498,7 @@ impl Compositor {
         let mut instances: Vec<Instance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
         let mut mattes: Vec<MatteInstance> = Vec::new();
+        let mut matte_ramp_bgs: Vec<Option<wgpu::BindGroup>> = Vec::new();
         for item in groups.iter().flat_map(CompositeGroup::items) {
             match item {
                 CompositeItem::Tile {
@@ -511,12 +526,33 @@ impl Compositor {
                         entries: &entries,
                     }));
                 }
-                CompositeItem::Matte(m) => mattes.push(MatteInstance {
-                    rect: m.rect,
-                    channels: m.channels,
-                    opacity: m.opacity,
-                    resid: m.resid,
-                }),
+                CompositeItem::Matte(m) => {
+                    mattes.push(MatteInstance {
+                        rect: m.rect,
+                        channels: m.channels,
+                        opacity: m.opacity,
+                        resid: m.resid,
+                        flags: m.flags,
+                    });
+                    // A gradient matte brings its ramp as a per-matte uniform
+                    // (§22.4); a solid one draws with the shared zeroed
+                    // ramp, so the slot records only that there is nothing to bind.
+                    matte_ramp_bgs.push(m.ramp.as_deref().map(|ramp| {
+                        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("stark matte ramp"),
+                            contents: bytemuck::bytes_of(ramp),
+                            usage: wgpu::BufferUsages::UNIFORM,
+                        });
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("stark matte ramp bg"),
+                            layout: &p.tiles.ramp_bgl,
+                            entries: &[wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: buf.as_entire_binding(),
+                            }],
+                        })
+                    }));
+                }
             }
         }
         if !instances.is_empty() {
@@ -586,7 +622,10 @@ impl Compositor {
         collect(groups, view, &mut blends, &mut filters);
         self.blend_uniforms.write(device, &p.ctx.queue, &blends);
         self.filter_uniforms.write(device, &p.ctx.queue, &filters);
-        tile_bgs
+        PreparedStreams {
+            tile_bgs,
+            matte_ramp_bgs,
+        }
     }
 
     /// Encode pass A: every group composited into `color` + `aux`, in stack order.
@@ -608,12 +647,12 @@ impl Compositor {
         encoder: &mut wgpu::CommandEncoder,
         target: Targets<'_>,
         groups: &[CompositeGroup],
-        tile_bgs: &[wgpu::BindGroup],
+        streams: &PreparedStreams,
         scratch: Option<&ScratchTargets>,
     ) {
         let e = Encode {
             p,
-            tile_bgs,
+            streams,
             levels: scratch.map_or(&[], |s| &s.levels),
         };
         self.encode_stack(&e, encoder, target, groups, &mut Cursors::default(), 0);
@@ -743,7 +782,7 @@ impl Compositor {
                         pass.set_vertex_buffer(0, self.instances.slice(..));
                         pipeline_is_matte = Some(false);
                     }
-                    pass.set_bind_group(1, &e.tile_bgs[*tile_i as usize], &[]);
+                    pass.set_bind_group(1, &e.streams.tile_bgs[*tile_i as usize], &[]);
                     pass.draw(0..4, *tile_i..*tile_i + 1);
                     *tile_i += 1;
                 }
@@ -753,6 +792,15 @@ impl Compositor {
                         pass.set_vertex_buffer(0, self.matte_instances.slice(..));
                         pipeline_is_matte = Some(true);
                     }
+                    // Group 1 is the ramp — a gradient matte's own, or the
+                    // shared zeroed one whose stop count says "solid"
+                    // (§22.4). Bound per matte either way: the two
+                    // pipelines' group-1 layouts differ, so a pipeline switch
+                    // has already invalidated whatever was set.
+                    let ramp = e.streams.matte_ramp_bgs[*matte_i as usize]
+                        .as_ref()
+                        .unwrap_or(&e.p.tiles.zero_ramp_bg);
+                    pass.set_bind_group(1, ramp, &[]);
                     pass.draw(0..4, *matte_i..*matte_i + 1);
                     *matte_i += 1;
                 }
@@ -963,7 +1011,7 @@ impl Compositor {
             p.resid_format.is_some(),
             "pass A's attachment count is the colour space's, not the caller's",
         );
-        let tile_bgs = self.prepare_composite(p, view, groups);
+        let streams = self.prepare_composite(p, view, groups);
         // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
         // square, so this is a few kilobytes; sharing the render path's cache would
         // trade that for reallocating the *window* twice a frame (see
@@ -991,7 +1039,7 @@ impl Compositor {
             &mut encoder,
             Targets { color, aux, resid },
             groups,
-            &tile_bgs,
+            &streams,
             scratch.as_ref(),
         );
         p.ctx.queue.submit([encoder.finish()]);
@@ -1034,7 +1082,7 @@ impl Compositor {
         // thing that still knows the real size — which is exactly the split the
         // resolve at the bottom closes.
         let view = view.supersampled(ss);
-        let tile_bgs = self.prepare_composite(p, view, groups);
+        let streams = self.prepare_composite(p, view, groups);
         let want_scratch = self.ensure_scratch(p, self.size, groups);
         // Bound after everything that needs `&mut self`.
         let device = &p.ctx.device;
@@ -1116,7 +1164,7 @@ impl Compositor {
                 resid: comp_resid_view,
             },
             groups,
-            &tile_bgs,
+            &streams,
             scratch,
         );
 

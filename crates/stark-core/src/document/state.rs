@@ -11,7 +11,9 @@ use rpds::{HashTrieMap, Vector};
 
 use super::action::ActorId;
 use super::filter::Filter;
-use super::layer::{BlendMode, CompositeParams, Layer, LayerContent, LayerId, MatteRegion, Place};
+use super::layer::{
+    BlendMode, CompositeParams, Layer, LayerContent, LayerId, MattePaint, MatteRegion, Place,
+};
 use super::selection::Selection;
 use crate::geom::{TileCoord, Vec2};
 use crate::gpu::SurfaceId;
@@ -355,20 +357,22 @@ impl DocState {
         carrier: Option<LayerId>,
         above: Option<LayerId>,
     ) -> Self {
-        self.insert(Layer::new(id), carrier, above)
+        self.insert(Layer::new(id), carrier, Place::from(above))
     }
 
     /// Insert a matte layer the same way — §15.2. A frame is one of
-    /// these on top of the stack.
+    /// these on top of the stack; a ground ([`MatteRegion::Everything`]) is one
+    /// at the bottom, which is why this takes the full [`Place`] where the
+    /// other inserts keep the two-state anchor (§15.5).
     pub fn insert_matte(
         &self,
         id: LayerId,
         carrier: Option<LayerId>,
-        above: Option<LayerId>,
+        at: Place,
         region: MatteRegion,
-        color: [f32; 3],
+        paint: MattePaint,
     ) -> Self {
-        self.insert(Layer::matte(id, region, color), carrier, above)
+        self.insert(Layer::matte(id, region, paint), carrier, at)
     }
 
     /// Insert a **filter** layer the same way — §21. It rewrites whatever is
@@ -382,20 +386,20 @@ impl DocState {
         above: Option<LayerId>,
         filter: Filter,
     ) -> Self {
-        self.insert(Layer::filter_layer(id, filter.sanitized()), carrier, above)
+        self.insert(
+            Layer::filter_layer(id, filter.sanitized()),
+            carrier,
+            Place::from(above),
+        )
     }
 
-    fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Option<LayerId>) -> Self {
+    fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Place) -> Self {
         // A filter never carries (§21.2): what a group carries composites *over*
         // its base, so a filter base could reach none of it — declined here, in
         // state, so replay and peers agree and no path can build the arrangement.
         if self.cannot_carry(carrier) {
             return self.clone();
         }
-        // A new layer goes above a named sibling or on top; it has no reason to
-        // ask for the foot of a stack, so insertion keeps the two-state anchor and
-        // widens it here (`Place::from`).
-        let above = Place::from(above);
         let layers = match carrier {
             None => Some(splice(&self.layers, above, &layer)),
             // Into the carrier's own stack. An unknown carrier inserts nowhere:
@@ -439,7 +443,7 @@ impl DocState {
         let Some(copy) = copy_subtree(layer, ids) else {
             return self.clone();
         };
-        self.insert(copy, site.carrier, Some(*source))
+        self.insert(copy, site.carrier, Place::Above(*source))
     }
 
     /// Put `layer` back at `site` — the inverse of removing it
@@ -468,13 +472,14 @@ impl DocState {
     }
 
     /// Move a matte layer's rect (the frame drag's commit). A no-op on a paint
-    /// layer or an absent id.
+    /// layer, an absent id — or a region that has no rect to move
+    /// ([`MatteRegion::with_rect`]).
     pub fn set_matte_rect(&self, id: LayerId, min: Vec2, max: Vec2) -> Self {
         self.map_layer(id, |l| match &l.content {
-            LayerContent::Matte { region, color } => Layer {
+            LayerContent::Matte { region, paint } => Layer {
                 content: LayerContent::Matte {
                     region: region.with_rect(min, max),
-                    color: *color,
+                    paint: paint.clone(),
                 },
                 ..l.clone()
             },
@@ -482,14 +487,31 @@ impl DocState {
         })
     }
 
-    /// Set a matte layer's fill colour (straight sRGB). A no-op on a paint layer
-    /// or an absent id.
-    pub fn set_matte_color(&self, id: LayerId, color: [f32; 3]) -> Self {
+    /// Replace a matte layer's region wholesale — undo's restore path
+    /// ([`PatchOp::Matte`](super::patch::PatchOp)), which must put back the
+    /// *value* rather than route through a rect the region may not have. A
+    /// no-op on a paint layer or an absent id, like every setter here.
+    pub(crate) fn set_matte_region(&self, id: LayerId, region: MatteRegion) -> Self {
+        self.map_layer(id, |l| match &l.content {
+            LayerContent::Matte { paint, .. } => Layer {
+                content: LayerContent::Matte {
+                    region,
+                    paint: paint.clone(),
+                },
+                ..l.clone()
+            },
+            LayerContent::Paint(_) | LayerContent::Filter(_) => l.clone(),
+        })
+    }
+
+    /// Set a matte layer's paint — a flat colour or a gradient ramp (§15.4,
+    /// §22.4). A no-op on a paint layer or an absent id.
+    pub fn set_matte_paint(&self, id: LayerId, paint: MattePaint) -> Self {
         self.map_layer(id, |l| match &l.content {
             LayerContent::Matte { region, .. } => Layer {
                 content: LayerContent::Matte {
                     region: *region,
-                    color,
+                    paint: paint.clone(),
                 },
                 ..l.clone()
             },

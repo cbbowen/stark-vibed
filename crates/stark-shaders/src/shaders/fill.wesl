@@ -26,6 +26,7 @@
 
 import package::lib::paint_common::{blend_latent, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
+import package::lib::ramp_common::{ramp_position};
 import package::lib::sample::{load1};
 
 // Most stops a gradient parcel may carry — the fitter's own cap
@@ -127,18 +128,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let stops = u32(f.p.y);
     if stops >= 2 {
         let pos = tile.origin.xy + frag.xy;
-        var t: f32;
-        if f.p.z < 0.5 {
-            // Linear: project onto the axis; constant on perpendiculars. The
-            // guard keeps a degenerate axis at t = 0 rather than dividing by it.
-            let d = f.axis.zw - f.axis.xy;
-            let len2 = max(dot(d, d), 1e-6);
-            t = clamp(dot(pos - f.axis.xy, d) / len2, 0.0, 1.0);
-        } else {
-            // Radial: distance from the centre, 1 at the radius. Clamped both
-            // ways, so past either end the ramp holds its end stop (§22.4).
-            t = clamp(distance(pos, f.axis.xy) / max(f.axis.z, 1e-6), 0.0, 1.0);
-        }
+        let t = ramp_position(pos, f.axis, f.p.z);
         // The segment t falls in: the last stop at or before it. Stops are
         // ascending with endpoints at 0 and 1, so j+1 always exists.
         var j = 0u;

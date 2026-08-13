@@ -57,7 +57,7 @@ use panels::brush::PresetSaveModal;
 use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
 use panels::select::{current_action, current_tool, modifier_mode};
 use panels::{
-    FilterBar, FrameBar, FrameOverlay, GradientFillBar, GradientFillOverlay, GradientTraceOverlay,
+    FilterBar, FrameBar, FrameOverlay, GradientBar, GradientBarOverlay, GradientTraceOverlay,
     GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, TimelineBar, TransformBar,
     TransformOverlay,
 };
@@ -287,7 +287,7 @@ fn app() -> Element {
             // bar's Gradient is composing (§22.4). Beside the trace's
             // in the stack; the two modes cannot be live at once — one is armed
             // from a panel the other's bar has replaced.
-            GradientFillOverlay {}
+            GradientBarOverlay {}
 
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.
@@ -315,7 +315,7 @@ fn app() -> Element {
                 TransformBar {}
                 // The gradient fill's axis kinds and "Done", standing in the
                 // same way while a ramp is being composed (§22.4).
-                GradientFillBar {}
+                GradientBar {}
                 // The drawing-guide edit mode's controls — locks, axis
                 // visibility, cell count, opacity — while a perspective grid is
                 // being composed (§20.5).

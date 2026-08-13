@@ -130,7 +130,7 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
 #[test]
 fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
     use stark_core::command::ViewCommand;
-    use stark_core::document::{BlendMode, MatteRegion};
+    use stark_core::document::{BlendMode, MattePaint, MatteRegion, Place};
     use stark_core::geom::Extent2;
     use stark_core::{Background, ExportScale, Offscreen, Rendered};
 
@@ -166,12 +166,12 @@ fn an_off_size_render_matches_one_at_the_surfaces_own_size() {
         );
         engine.process(DocCommand::AddMatte {
             carrier: None,
-            above: None,
+            at: Place::Top,
             region: MatteRegion::OutsideRect {
                 min: -HALF,
                 max: HALF,
             },
-            color: [0.0, 0.0, 0.0],
+            paint: MattePaint::Solid([0.0, 0.0, 0.0]),
         });
         let frame = engine.observe().layers.last().expect("matte").id;
         // The view is the export's, so nothing about the surface's size can reach
@@ -224,7 +224,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     #[cfg(feature = "mixbox")]
     use stark_core::ColorSpaceId;
     use stark_core::command::ViewCommand;
-    use stark_core::document::MatteRegion;
+    use stark_core::document::{MattePaint, MatteRegion, Place};
     use stark_core::geom::Extent2;
     use stark_core::{Background, EnvironmentId, ExportScale, Offscreen, Rendered};
 
@@ -250,12 +250,12 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
         );
         engine.process(DocCommand::AddMatte {
             carrier: None,
-            above: None,
+            at: Place::Top,
             region: MatteRegion::OutsideRect {
                 min: Vec2::new(-80.0, -60.0),
                 max: Vec2::new(80.0, 60.0),
             },
-            color: [0.0, 0.0, 0.0],
+            paint: MattePaint::Solid([0.0, 0.0, 0.0]),
         });
     };
     let shot = |engine: &mut stark_core::Engine, into: &mut Offscreen, scale: f32| {

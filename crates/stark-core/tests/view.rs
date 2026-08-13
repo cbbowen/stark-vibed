@@ -12,7 +12,7 @@ mod common;
 
 use common::*;
 use stark_core::command::{GestureCommand, InputSample, ViewCommand};
-use stark_core::document::{MatteRegion, Tool};
+use stark_core::document::{MattePaint, MatteRegion, Place, Tool};
 use stark_core::geom::Vec2;
 use stark_core::path::DEFAULT_TOLERANCE;
 use stark_core::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
@@ -114,12 +114,12 @@ fn the_view_never_reaches_the_document() {
     bar(&mut engine, -90.0, 40.0);
     engine.process(stark_core::command::DocCommand::AddMatte {
         carrier: None,
-        above: None,
+        at: Place::Top,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(-100.0, -60.0),
             max: Vec2::new(100.0, 60.0),
         },
-        color: [0.0, 0.0, 0.0],
+        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
     });
     let frame = engine.observe().layers.last().expect("matte").id;
     let shot = |engine: &mut Engine| {
@@ -260,12 +260,12 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
     // …and a frame, so the matte's own inverse of the view is in the picture too.
     engine.process(DocCommand::AddMatte {
         carrier: None,
-        above: None,
+        at: Place::Top,
         region: MatteRegion::OutsideRect {
             min: Vec2::new(-70.0, -50.0),
             max: Vec2::new(90.0, 40.0),
         },
-        color: [0.0, 0.0, 0.0],
+        paint: MattePaint::Solid([0.0, 0.0, 0.0]),
     });
 
     // At two orientations, because the mirror is *screen*-relative: it has to swap the
