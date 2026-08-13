@@ -14,6 +14,13 @@
 //! composing" more directly than a mode indicator would. Creating a frame is a
 //! button in the Layers panel, because a frame *is* a layer.
 //!
+//! Creating the **ground** (§15.5) is not, though it is a layer too: it happens
+//! at most once in a painting's life, and a header button standing there for the
+//! rest of it costs more than it earns. It is a chip in this bar instead —
+//! mounted only while there is no ground — so the once-per-drawing act lives in
+//! the bar that is already about composing a matte, and the header keeps the
+//! controls you reach for repeatedly.
+//!
 //! The frame **clips nothing**. Paint runs past it and the matte covers the
 //! overshoot, so re-cropping later is free — that is the whole reason the infinite
 //! canvas earns its keep (§15.1).
@@ -179,38 +186,44 @@ pub fn AddFrameButton() -> Element {
     }
 }
 
-/// The "+ Background" button beside it — the §15.5 ground: an `Everything`
-/// matte born at the **bottom** of the stack, under the painting, defaulting to
-/// a paper tone. Selected immediately like the frame, so its bar (paint only —
-/// it has no rect to compose) comes straight up.
-#[component]
-pub fn AddBackgroundButton() -> Element {
-    let state = use_context::<AppState>();
-    rsx! {
-        button {
-            class: "layer-add",
-            title: "Add a background: an opaque ground under the whole painting \u{2014} \
-                    flat or gradient, the underpainting's colour",
-            onclick: move |_| {
-                dispatch(state, DocCommand::AddMatte {
-                    carrier: None,
-                    at: Place::Bottom,
-                    region: MatteRegion::Everything,
-                    paint: MattePaint::Solid(DEFAULT_GROUND),
-                });
-                // The new ground is the bottom-most matte — it was just born there.
-                let new_id = state
-                    .obs
-                    .read()
-                    .as_ref()
-                    .and_then(|o| o.layers.iter().find(|l| l.matte.is_some()).map(|l| l.id));
-                if let Some(id) = new_id {
-                    dispatch(state, PeerCommand::SetActiveLayer(id));
-                }
-            },
-            {icon(icons::BACKGROUND)}
-            {label("Background")}
-        }
+/// Whether the document already carries a ground. A ground is the one region
+/// defined against no rect (§15.5), so "is there one" is asked of the projection
+/// the bar already reads rather than of a flag some other control has to keep.
+fn has_background(state: AppState) -> bool {
+    let obs = state.obs.read();
+    obs.as_ref().is_some_and(|o| {
+        o.layers
+            .iter()
+            .any(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_none()))
+    })
+}
+
+/// Make the §15.5 ground and select it: an `Everything` matte born at the
+/// **bottom** of the stack, under the painting, defaulting to a paper tone.
+/// Selected immediately like a new frame, so its bar (paint only — it has no
+/// rect to compose) comes straight up.
+fn add_background(state: AppState) {
+    dispatch(
+        state,
+        DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Bottom,
+            region: MatteRegion::Everything,
+            paint: MattePaint::Solid(DEFAULT_GROUND),
+        },
+    );
+    // The new ground is the only rect-less matte in the stack: it was just born,
+    // and there was none before or the control that got here would not have been
+    // mounted. That identifies it without depending on where in the order it
+    // landed, which "the bottom-most matte" did.
+    let new_id = state.obs.read().as_ref().and_then(|o| {
+        o.layers
+            .iter()
+            .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_none()))
+            .map(|l| l.id)
+    });
+    if let Some(id) = new_id {
+        dispatch(state, PeerCommand::SetActiveLayer(id));
     }
 }
 
@@ -253,6 +266,10 @@ pub fn FrameBar() -> Element {
     );
     let is_gradient = matches!(matte.paint, MattePaint::Gradient { .. });
     let have_gradients = !state.gradients.entries.read().is_empty();
+    // Offered only while there is no ground to make. Once there is one it is a
+    // row in the Layers panel like any other layer, and a second could not mean
+    // anything — "the whole plane" admits no second.
+    let offer_background = !has_background(state);
     let paint_for_begin = matte.paint.clone();
     let gradient_title = if is_gradient {
         "Recompose the gradient's axis"
@@ -401,6 +418,26 @@ pub fn FrameBar() -> Element {
                 },
                 {icon(icons::GRADIENT)}
                 {label("Gradient")}
+            }
+
+            // Making the ground (§15.5) rides this bar rather than a button of
+            // its own in the Layers panel's header, where it used to sit beside
+            // "+ Frame". It is done once per painting at most, and a permanent
+            // button is the wrong price for that: here it is one chip in the bar
+            // that is *already* about composing a matte, and it stands down the
+            // moment the ground exists — the same "absent rather than greyed
+            // out" the bar itself is built on.
+            if offer_background {
+                span { class: "bar-sep" }
+
+                button {
+                    class: "chip",
+                    title: "Add a background: an opaque ground under the whole painting \u{2014} \
+                            flat or gradient, the underpainting's colour",
+                    onclick: move |_| add_background(state),
+                    {icon(icons::BACKGROUND)}
+                    {label("Add background")}
+                }
             }
 
             span { class: "bar-sep" }

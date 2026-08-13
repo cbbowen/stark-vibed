@@ -960,12 +960,25 @@ argument §6.4 makes for the weave — which canvas a piece was painted on is pa
 of what the document *is*. (It used to be view state owned by the frontend, so
 the ground you painted on was not saved with your painting.) Both exist and both
 make sense: `background` is the gesso; a `MatteRegion::Everything` matte — now
-built, the Layers panel's "+ Background" — is an opaque underpainting brushed
+built, the frame bar's "Add background" — is an opaque underpainting brushed
 over it. Born at the **bottom** of the stack (`AddMatte` takes the full `Place`
 anchor for exactly this), it wears either `MattePaint`: a flat paper tone, or a
 graded wash (§22.4). It defines no export rect and mounts no handles — its bar
 is its paint and its Done — and, having no rect, it can never masquerade as the
 frame the export dialog or the navigator picks.
+
+Making it is **not** a button in the Layers panel's header, though the ground is
+a layer like the frame beside it. A header button is a standing cost: it is on
+screen for the whole session, and it earns that only if it is reached for
+repeatedly. A ground is made once per painting at most — the second would have
+nothing to be, since "the whole plane" admits no second — so it is a chip in the
+frame bar instead, mounted exactly while there is no ground and gone once there
+is one. That is the same argument the bar itself is built on (§15.7): a control
+meaningless in the current state is absent rather than greyed out. The cost is
+that the ground is reached through a frame, since the bar mounts only while a
+matte is selected; the answer is that a piece wanting a ground almost always
+wants a frame, and once the ground exists it is an ordinary row in the Layers
+panel like everything else.
 
 ### 15.6 Export
 

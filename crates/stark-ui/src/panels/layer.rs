@@ -41,7 +41,7 @@ use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
 use crate::panels::filter::AddFilterButton;
-use crate::panels::frame::{AddBackgroundButton, AddFrameButton};
+use crate::panels::frame::AddFrameButton;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::render::PeerInfo;
@@ -298,7 +298,9 @@ pub fn LayerPanel() -> Element {
                 {label("Layer")}
             }
             AddFrameButton {}
-            AddBackgroundButton {}
+            // No "+ Background" beside it: the ground is made at most once per
+            // painting, so it is a chip in the frame bar instead (§15.5) rather
+            // than a button standing here for the rest of the session.
             // The third kind of layer (§21). Beside the other two rather than in a
             // menu of its own, because that is what it is: a filter is a layer, and
             // where it lands is the whole of what it acts on.
