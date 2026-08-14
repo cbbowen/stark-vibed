@@ -497,6 +497,26 @@ pub enum ViewCommand {
     /// [`PreviewTransform`](Self::PreviewTransform) has to resample.
     PreviewFilter(Option<(LayerId, Filter)>),
 
+    /// Show a layer blending as `blend` **without logging it** — the in-flight half
+    /// of a drag on one of a mode's own parameters (§18.0.4). `None` drops the
+    /// preview.
+    ///
+    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity), for
+    /// [`PreviewFilter`](Self::PreviewFilter)'s reason: a mode's parameter is judged
+    /// *by looking* — how hot Radiance should run is a question about the painting —
+    /// so every value the pointer crosses has to reach the canvas and only the answer
+    /// belongs in the log.
+    ///
+    /// It carries the whole mode rather than a parameter, which is what keeps this
+    /// one command rather than one per knob a mode grows: what a frontend has in hand
+    /// while dragging is the layer's mode with one field moved, and that is exactly
+    /// what [`DocCommand::SetLayerBlend`] takes when the drag settles.
+    ///
+    /// A blend is folded in at composite time, so a preview costs the isolation and
+    /// the merge pass the layer was already paying for and moves no pixels of stored
+    /// paint — affordable at pointer rate for the reason the two above are.
+    PreviewLayerBlend(Option<(LayerId, BlendMode)>),
+
     /// Tune the media/lighting pass (§6.3). Changes how the canvas
     /// looks, not what it is.
     SetMediaParams(MediaParams),

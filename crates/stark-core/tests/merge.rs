@@ -25,11 +25,21 @@ mod common;
 
 use common::*;
 use stark_core::command::{DocCommand, PeerCommand};
-use stark_core::document::{BlendMode, LayerId, Place};
+use stark_core::document::{BlendMode, DRAGO_K, LayerId, Place};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, LayerInfo, RgbaImage};
 
 const ROOT: LayerId = LayerId(0);
+
+/// Every mode that combines rather than covers, each at the setting a fresh layer
+/// wears — the three a same-mode merge has to hold for. `Drago`'s bend is part of the
+/// mode (§18.0.4), so "sharing a mode" here means sharing the curve too; which pairs
+/// that admits is `document::merge`'s own to pin, and it does.
+const MODES: [BlendMode; 3] = [
+    BlendMode::Reinhard,
+    BlendMode::Drago { k: DRAGO_K },
+    BlendMode::Multiply,
+];
 
 const WARM: [f32; 4] = [0.90, 0.35, 0.10, 1.0];
 const COOL: [f32; 4] = [0.10, 0.30, 0.85, 1.0];
@@ -475,7 +485,7 @@ fn the_active_layer_follows_the_merge() {
 /// identity and the test would pass on a merge that had learned nothing.
 #[test]
 fn siblings_sharing_a_mode_merge() {
-    for mode in [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply] {
+    for mode in MODES {
         let Some(mut engine) = engine_or_skip_blue() else {
             return;
         };
@@ -507,7 +517,7 @@ fn siblings_sharing_a_mode_merge() {
 /// outward is untouched as well as its inside.
 #[test]
 fn any_mode_merges_into_its_carrier() {
-    for mode in [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply] {
+    for mode in MODES {
         let Some(mut engine) = engine_or_skip_blue() else {
             return;
         };

@@ -797,7 +797,27 @@ impl Engine {
                 }
             }
             DocCommand::SetLayerBlend(id, blend) => {
-                self.commit(ActionKind::SetLayerBlend(id, blend))
+                // Drops the preview whether or not the commit below happens, for
+                // `SetFilter`'s reason: a parameter drag that settles on the value it
+                // opened at must still supersede what it was showing.
+                self.preview.set_doc(None);
+                // Normalized here, where the action is minted, so replay puts back
+                // what was applied rather than re-deriving it from rules that may
+                // have moved — the same funnel `SetFilter` goes through, and the
+                // reason the comparison below is against the sanitized value rather
+                // than the raw one.
+                let blend = blend.sanitized();
+                // Refused when it would change nothing, as `SetLayerOpacity` is: a
+                // Bend drag that travelled out and came back must log nothing, and
+                // without this a slider reporting 0.6000001 would spend an undo step
+                // on a document that already reads that way.
+                let unchanged = self
+                    .document()
+                    .layer(id)
+                    .is_some_and(|l| l.composite.blend == blend);
+                if !unchanged {
+                    self.commit(ActionKind::SetLayerBlend(id, blend));
+                }
             }
             DocCommand::SetLayerClip(id, clip) => self.commit(ActionKind::SetLayerClip(id, clip)),
             DocCommand::SetLayerOpacity(id, opacity) => {
@@ -922,6 +942,13 @@ impl Engine {
                 // preview cannot show numbers the commit would then refuse.
                 let preview =
                     set.map(|(id, filter)| self.timeline.current().set_filter(id, filter));
+                self.set_doc_preview(preview);
+            }
+            ViewCommand::PreviewLayerBlend(set) => {
+                // `set_layer_blend` sanitizes on the way into state too, for the
+                // reason above: what the drag shows is what the commit would store.
+                let preview =
+                    set.map(|(id, blend)| self.timeline.current().set_layer_blend(id, blend));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewTransform(t) => {

@@ -539,7 +539,7 @@ impl MergeRenderer {
             0,
             bytemuck::bytes_of(&BlendUniform {
                 mode: blend_code(blend),
-                k: crate::document::DRAGO_K,
+                k: blend.drago_k(),
                 clip: u32::from(clip),
                 // The source layer's own opacity is folded in by its expansion, which
                 // is what pass A would have done to its tiles — so the merge itself

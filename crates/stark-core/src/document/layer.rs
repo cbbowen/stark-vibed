@@ -176,9 +176,25 @@ fn mix32(x: u64) -> u32 {
 /// in RGB instead would make the result depend on the display's primaries; blending
 /// in Oklab or in pigment concentrations would be adding things that are not light.
 ///
+/// **A mode may carry its own parameters**, and [`Drago`](Self::Drago) is the first
+/// that does. They live on the variant rather than beside it, in a struct of blend
+/// settings a layer would carry alongside its mode, because that is the one shape in
+/// which a parameter cannot be stated for a mode that has none: there is no `k` on a
+/// `Multiply` layer to be edited, saved, replicated and silently ignored, and no way
+/// for a mode and its settings to disagree about which mode they are. It is also what
+/// makes the merge's "the two layers agree about how they meet the backdrop"
+/// (`document::merge`) keep meaning that once a mode is a family of curves rather than
+/// one — two `Drago`s with different `k` are two different functions, and `!=` already
+/// says so.
+///
+/// **Appended only, payloads included**: postcard encodes an enum by index and a
+/// variant's fields in order (§8), so a variant inserted above an existing one would
+/// rename every layer's mode in every saved file, and a field inserted into an
+/// existing variant would misread the ones after it.
+///
 /// See `blend_common.wesl` for the derivations and `Compositor` for the isolation
 /// pass that makes per-layer blending possible at all.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum BlendMode {
     /// Premultiplied "over": the layer sits on top of what is below it.
     #[default]
@@ -211,11 +227,19 @@ pub enum BlendMode {
     /// clipped at the blend. Reach for it on flame, specular hits, anything meant to
     /// read as *brighter than the paper*.
     ///
-    /// `k` sets how quickly the curve bends: large `k` tends to plain addition,
-    /// small `k` tends to `max`. It is fixed at [`DRAGO_K`] rather than exposed —
-    /// per-layer blend parameters are the seam a future mapping UI lands on, and
-    /// this codebase's precedent (§1) is that no knob appears before something turns it.
-    Drago,
+    /// `k` sets how quickly the curve bends, and it is **the layer's own**: large
+    /// `k` tends to plain addition, so two lights reach the roll-off sooner and a
+    /// flame reads hotter; small `k` tends to `max`, so the brighter of the two
+    /// simply wins and coincident lights barely add at all. [`DRAGO_K`] is where it
+    /// starts and [`DRAGO_K_RANGE`] is how far it goes.
+    ///
+    /// It is the first blend parameter, and it is on the variant for the reason [the
+    /// enum's docs](Self) give. That it is a *curve* being chosen rather than an
+    /// amount being dialled is what makes it worth having at all: every setting is
+    /// still a conjugation of addition, so the whole family is commutative and
+    /// associative — a `k` a painter picks cannot cost them the guarantee the mode
+    /// exists for.
+    Drago { k: f32 },
     /// **Multiply** — the same construction read the other way round, with
     /// `T(x) = e^{-x}`, which collapses to
     ///
@@ -252,8 +276,9 @@ pub enum BlendMode {
     Multiply,
 }
 
-/// The bend of [`BlendMode::Drago`]'s log curve, in units of display white. Large
-/// `k` tends to plain addition, small `k` tends to `max`.
+/// The bend a [`BlendMode::Drago`] layer **starts at**, in units of display white —
+/// what the picker hands out and what the panel's Bend slider rests on. Large `k`
+/// tends to plain addition, small `k` tends to `max`.
 ///
 /// Chosen so the two light modes are a genuine choice rather than two settings of
 /// one. Take two half-lit layers: [`BlendMode::Reinhard`] gives 0.667, Screen gives
@@ -262,12 +287,46 @@ pub enum BlendMode {
 /// distinctly hotter, across the whole range instead of only at the extremes — which
 /// is what a value near 0.35 gave, and the reason it is not that. At the top, two
 /// whites come out at ≈1.36, well into the media pass's highlight roll-off.
+///
+/// It is a **default** rather than the value now that the curve is per layer, and it
+/// keeps its argument: a mode's resting setting is the one it is judged by, and this
+/// is the one the goldens and the docs' worked example are written against.
 pub const DRAGO_K: f32 = 0.6;
 
+/// How far [`BlendMode::Drago`]'s bend may be taken — the span a frontend's slider
+/// covers and the span [`BlendMode::sanitized`] holds a log entry to.
+///
+/// The ends are where the mode stops changing rather than round numbers. At `0.125`
+/// two half-lit layers give 0.586 against `max`'s 0.5, so the curve has arrived at
+/// "the brighter one wins" and a smaller `k` would only make `e^{y/k}` bigger for
+/// nothing. At `4.0` they give 0.944 against addition's 1.0, so it has arrived at the
+/// other end; past it the log is straight over the whole display range and Radiance
+/// is just a clip waiting to happen.
+///
+/// Bounded at all for the reason [`ColorAdjust`](super::ColorAdjust)'s knobs are: a
+/// blend is a fullscreen pass with no coverage to hide behind, and `k = 0` is a
+/// division by zero in `emission` that would take every texel of the frame with it.
+/// A file or a peer reaches [`BlendMode::sanitized`] without passing through a
+/// slider, which is the case the bound is actually for.
+pub const DRAGO_K_RANGE: (f32, f32) = (0.125, 4.0);
+
 impl BlendMode {
-    /// Every mode, in the order a frontend should offer them: `Normal` first, then
-    /// increasingly emphatic light, then the one that takes light away.
-    pub const ALL: [BlendMode; 4] = [Self::Normal, Self::Reinhard, Self::Drago, Self::Multiply];
+    /// Every mode **at its default setting**, in the order a frontend should offer
+    /// them: `Normal` first, then increasingly emphatic light, then the one that
+    /// takes light away.
+    ///
+    /// A list of modes, not of settings of them — which is why a picker built from it
+    /// selects its current row with [`same_mode`](Self::same_mode) rather than `==`,
+    /// and why choosing `Radiance` on a layer that is already `Radiance` is not a
+    /// thing the picker can do (so a tuned `k` is never quietly reset by re-picking
+    /// the mode it belongs to). It is [`Filter::ALL`](super::Filter::ALL)'s
+    /// neutral-settings list read for a smaller enum.
+    pub const ALL: [BlendMode; 4] = [
+        Self::Normal,
+        Self::Reinhard,
+        Self::Drago { k: DRAGO_K },
+        Self::Multiply,
+    ];
 
     /// What this mode is called. The painter-facing name, not the tonemap's — the
     /// curve is how it is *built*, not what it is *for*.
@@ -280,8 +339,60 @@ impl BlendMode {
         match self {
             Self::Normal => "Normal",
             Self::Reinhard => "Glow",
-            Self::Drago => "Radiance",
+            Self::Drago { .. } => "Radiance",
             Self::Multiply => "Multiply",
+        }
+    }
+
+    /// Whether these are the **same mode**, whatever either has it set to — what a
+    /// picker's rows are selected by, since a picker offers a mode and not a setting
+    /// of one.
+    ///
+    /// Distinct from `==`, and both are wanted: this is the question the *frontend*
+    /// asks, while `==` is the question the compositor and the merge ask, where two
+    /// bends really are two different functions and answering "same mode" would fold
+    /// a layer into a curve that is not its own.
+    pub fn same_mode(self, other: Self) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+
+    /// The curve bend the blend pass's uniform carries — this layer's for
+    /// [`Drago`](Self::Drago), and [`DRAGO_K`] for every mode whose shader path never
+    /// reads it (`blend_common.wesl` branches on the mode first).
+    ///
+    /// A plain `f32` rather than an `Option`, because the uniform has one field and
+    /// no way to spell "absent": an `Option` here would only be unwrapped to the same
+    /// number at both call sites, one of which is the merge and one the compositor.
+    /// A live value, so the two cannot drift.
+    pub fn drago_k(self) -> f32 {
+        match self {
+            Self::Drago { k } => k,
+            _ => DRAGO_K,
+        }
+    }
+
+    /// The same mode with every parameter finite and in range — the funnel a mode
+    /// passes through on its way into the document, exactly as
+    /// [`Filter::sanitized`](super::Filter::sanitized) is for a filter, and applied
+    /// in the same two places for the same two reasons: where the action is minted
+    /// (`Engine::process`), so the log records what was applied, and where a mode
+    /// enters state (`DocState::set_layer_blend`), because a loaded file or a remote
+    /// peer reaches state without passing through `process`.
+    ///
+    /// A non-finite `k` falls back to [`DRAGO_K`] rather than to a bound, on
+    /// [`ColorAdjust::sanitized`](super::ColorAdjust::sanitized)'s argument: `NaN`
+    /// says nothing about which end was meant, and the default is the one answer that
+    /// cannot make a picture worse.
+    pub fn sanitized(self) -> Self {
+        match self {
+            Self::Drago { k } => Self::Drago {
+                k: if k.is_finite() {
+                    k.clamp(DRAGO_K_RANGE.0, DRAGO_K_RANGE.1)
+                } else {
+                    DRAGO_K
+                },
+            },
+            Self::Normal | Self::Reinhard | Self::Multiply => self,
         }
     }
 
@@ -775,5 +886,78 @@ mod tests {
             vec![2u8],
             "Bottom is the third variant"
         );
+    }
+
+    /// [`BlendMode`]'s parameterless modes still encode as a bare variant index, and
+    /// [`BlendMode::Drago`] as its index followed by its payload — the shape §8
+    /// promises for an enum, asserted here for the same reason the test above is.
+    ///
+    /// This is the fact the "appended only, payloads included" rule protects, and the
+    /// one a reader would otherwise have to take on trust: a field added *before* `k`
+    /// in a later revision of the variant would decode every saved bend as something
+    /// else, silently.
+    #[test]
+    fn a_mode_encodes_as_its_index_and_its_payload() {
+        let bytes = |m: BlendMode| postcard::to_allocvec(&m).expect("encodes");
+        assert_eq!(bytes(BlendMode::Normal), vec![0u8]);
+        assert_eq!(bytes(BlendMode::Reinhard), vec![1u8]);
+        assert_eq!(bytes(BlendMode::Multiply), vec![3u8]);
+        let drago = bytes(BlendMode::Drago { k: DRAGO_K });
+        assert_eq!(drago[0], 2, "Radiance kept the index it shipped with");
+        assert_eq!(
+            &drago[1..],
+            &postcard::to_allocvec(&DRAGO_K).expect("encodes")[..],
+            "and `k` follows it, as the variant's only field",
+        );
+        assert_eq!(
+            postcard::from_bytes::<BlendMode>(&drago).expect("decodes"),
+            BlendMode::Drago { k: DRAGO_K },
+        );
+    }
+
+    /// A picker asks [`BlendMode::same_mode`] and the compositor asks `==`, and the
+    /// two must give different answers about two bends of the same mode — that is the
+    /// whole reason both exist.
+    #[test]
+    fn a_bend_is_the_same_mode_but_not_the_same_value() {
+        let (a, b) = (BlendMode::Drago { k: 0.4 }, BlendMode::Drago { k: 1.2 });
+        assert!(a.same_mode(b), "both are Radiance");
+        assert_ne!(a, b, "…and they are not the same curve");
+        assert!(!a.same_mode(BlendMode::Reinhard));
+        assert_eq!(a.label(), b.label(), "one row in the picker, so one name");
+        // Every mode in the list is the row it selects, which is what makes the
+        // picker's `find(|m| m.label() == …)` and its `same_mode` agree.
+        for mode in BlendMode::ALL {
+            assert_eq!(
+                BlendMode::ALL.iter().filter(|m| m.same_mode(mode)).count(),
+                1,
+                "{} names more than one row",
+                mode.label(),
+            );
+        }
+    }
+
+    /// A bend from a file or a peer is brought back into range, and an unusable one
+    /// falls back to the default rather than to a bound — [`BlendMode::sanitized`]'s
+    /// contract, which the fullscreen blend pass has no coverage to hide behind.
+    #[test]
+    fn a_bend_is_sanitized_into_range() {
+        let k = |m: BlendMode| m.sanitized().drago_k();
+        assert_eq!(k(BlendMode::Drago { k: 0.0 }), DRAGO_K_RANGE.0);
+        assert_eq!(k(BlendMode::Drago { k: -3.0 }), DRAGO_K_RANGE.0);
+        assert_eq!(k(BlendMode::Drago { k: 1e9 }), DRAGO_K_RANGE.1);
+        assert_eq!(k(BlendMode::Drago { k: f32::NAN }), DRAGO_K);
+        assert_eq!(k(BlendMode::Drago { k: f32::INFINITY }), DRAGO_K);
+        // A setting already in range is left exactly alone — a sanitizer that nudged
+        // would make every load a small edit.
+        assert_eq!(k(BlendMode::Drago { k: 0.3 }), 0.3);
+        // And the default is in range, or the picker would hand out a value the very
+        // funnel it passes through would change.
+        assert_eq!(BlendMode::ALL[2].sanitized(), BlendMode::ALL[2]);
+        // The modes without parameters have nothing to sanitize and are untouched.
+        for mode in [BlendMode::Normal, BlendMode::Reinhard, BlendMode::Multiply] {
+            assert_eq!(mode.sanitized(), mode);
+            assert_eq!(mode.drago_k(), DRAGO_K, "the uniform still needs a number");
+        }
     }
 }

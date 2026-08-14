@@ -568,7 +568,12 @@ impl DocState {
     /// group whose merge the mode could describe either. Refusing here rather than
     /// in a frontend rule is what keeps a stored-but-unreadable mode out of every
     /// replayed and replicated document.
+    ///
+    /// The mode is **sanitized on the way in**, as a filter is (§21.5): a mode now
+    /// carries numbers of its own, and a file or a peer reaches this without passing
+    /// through `Engine::process`.
     pub fn set_layer_blend(&self, id: LayerId, blend: BlendMode) -> Self {
+        let blend = blend.sanitized();
         self.map_layer(id, |l| match &l.content {
             LayerContent::Filter(_) => l.clone(),
             LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer {
@@ -850,6 +855,7 @@ fn insert_at(stack: &Vector<Layer>, index: usize, layer: &Layer) -> Vector<Layer
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::{DRAGO_K, DRAGO_K_RANGE};
 
     fn at(x: i32, y: i32) -> TileCoord {
         TileCoord::new(x, y)
@@ -1016,6 +1022,27 @@ mod tests {
             set.layer(FILTER).and_then(Layer::filter),
             Some(expect),
             "set_filter installed an unsanitized filter",
+        );
+    }
+
+    /// And so is a **blend mode**, now that one carries numbers of its own
+    /// (§18.0.4) — the same argument as the test above, down the same path: a
+    /// replayed file and a peer's action reach state without passing through
+    /// `Engine::process`, and a NaN bend reaches the blend pass, which is fullscreen.
+    #[test]
+    fn a_blend_mode_is_sanitized_wherever_it_enters_state() {
+        let wild = BlendMode::Drago { k: f32::NAN };
+        let state = DocState::with_layer(BASE).set_layer_blend(BASE, wild);
+        assert_eq!(
+            state.layer(BASE).map(|l| l.composite.blend),
+            Some(BlendMode::Drago { k: DRAGO_K }),
+            "set_layer_blend installed an unusable bend",
+        );
+        let state = state.set_layer_blend(BASE, BlendMode::Drago { k: 1e9 });
+        assert_eq!(
+            state.layer(BASE).map(|l| l.composite.blend),
+            Some(BlendMode::Drago { k: DRAGO_K_RANGE.1 }),
+            "set_layer_blend installed a bend past the end of its range",
         );
     }
 }

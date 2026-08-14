@@ -147,7 +147,22 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// selection's own peak (`Selection::level`), and inversion, which reflects
 /// through that peak so the complement of a region selected at 0.4 is its outside
 /// at 0.4 rather than at full strength.
-const WIRE_VERSION: u32 = 10;
+///
+/// **11** — `BlendMode::Drago` gained its curve bend, `k` (§6.3): the first
+/// parameter a blend mode carries, and the first payload on a variant that had
+/// none. A version-10 `SetLayerBlend(id, Drago)` encodes as a bare variant index,
+/// so a version-11 reader takes the four bytes *after* it — the next action's — as
+/// the bend, and everything from there on is off. The most dangerous shape of
+/// break in this list, since the misread bend is a plausible float and the actions
+/// it eats are a plausible log; refused by the version rather than detected later.
+///
+/// The parameter is on the variant rather than in a settings struct beside the
+/// mode, which is what makes the break worth taking on the alpha policy (§19): a
+/// `Multiply` layer has no `k` to store, and a mode cannot disagree with its own
+/// settings about which mode it is. Everything that carries a `BlendMode` — the
+/// action, the footprint, the patch, the merge's agreement rule, the shader
+/// uniform — took it without moving.
+const WIRE_VERSION: u32 = 11;
 
 /// Build identity, recorded so cross-build replay differences are explainable
 /// (§8). Replay is bit-exact within a build; shader/algorithm changes

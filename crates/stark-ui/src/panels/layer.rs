@@ -48,7 +48,7 @@ use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch};
 use crate::widgets::settle;
 use stark_core::command::{DocCommand, PeerCommand, ViewCommand};
-use stark_core::document::{BlendMode, Place};
+use stark_core::document::{BlendMode, DRAGO_K_RANGE, Place};
 use stark_core::{LayerId, LayerInfo};
 
 /// How far one level of membership indents a row, in pixels. Named because three
@@ -236,6 +236,11 @@ pub fn LayerPanel() -> Element {
     // last preview showed rather than reading it back off a projection that the
     // in-flight preview is itself feeding (§14.6).
     let mut fading = use_signal(|| None::<f32>);
+    // The blend mode being previewed by a Bend drag, on `fading`'s pattern and for its
+    // reasons. The whole mode rather than the number, because that is what
+    // `SetLayerBlend` takes — a parameter alone would have to be put back into a mode
+    // at commit time, off the very projection the preview is feeding.
+    let mut bending = use_signal(|| None::<BlendMode>);
 
     let obs = state.obs.read();
     let layers = obs.as_ref().map(|o| o.layers.clone()).unwrap_or_default();
@@ -457,7 +462,12 @@ pub fn LayerPanel() -> Element {
                         for mode in BlendMode::ALL {
                             option {
                                 value: "{mode.label()}",
-                                selected: mode == l.blend,
+                                // `same_mode`, not `==`: the list is of modes at their
+                                // default settings, and a Radiance layer whose Bend has
+                                // been dragged is still on the Radiance row. Under `==`
+                                // it would show no row selected at all — and picking one
+                                // to fix that would reset the very number the drag set.
+                                selected: mode.same_mode(l.blend),
                                 "{mode.label()}"
                             }
                         }
@@ -479,6 +489,52 @@ pub fn LayerPanel() -> Element {
                         disabled: relational_inert,
                         onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
                         {icon(icons::CLIP)}
+                    }
+                }
+            }
+            // Radiance's own parameter — the first a mode has had (§18.0.4). The row
+            // is here only while the mode is: a Bend on a Multiply layer would be a
+            // control for a number that mode's curve has no place for, and the
+            // document could not hold the setting it appeared to offer. That is the
+            // same argument that put `k` on the variant rather than beside it, read
+            // out into the panel.
+            if let BlendMode::Drago { k } = l.blend {
+                div { class: "slider-row marked",
+                    div { class: "slider-label",
+                        {icon(icons::BEND)}
+                        {label("Bend")}
+                    }
+                    input {
+                        class: "slider",
+                        r#type: "range", step: "any",
+                        // In **octaves of `k`**, not in `k`. The bend is a scale, so
+                        // what it does to the curve is a matter of ratio: half of 0.2
+                        // is a different mode and half of 3 is barely a change. A
+                        // linear track would spend most of its travel in the flat end
+                        // and cross the whole interesting range in its first few px.
+                        min: "{bend_ends().0}", max: "{bend_ends().1}",
+                        // The document's own value, which during a drag is the
+                        // preview's — the engine renders it and reports it back
+                        // through `observe`, so the track and the canvas follow the
+                        // pointer together, exactly as the opacity slider above does.
+                        value: "{k.log2()}",
+                        title: "{BEND_HINT}",
+                        // Inert with its mode: a bend over nothing bends nothing.
+                        disabled: relational_inert,
+                        // Previewed per sample, committed once when the drag settles —
+                        // the same bargain, through the same `settle`. The whole mode
+                        // travels rather than the number, because that is what both
+                        // ends of the bargain take.
+                        oninput: move |e| {
+                            if let Ok(stops) = e.value().parse::<f32>() {
+                                let next = BlendMode::Drago { k: stops.exp2() };
+                                bending.set(Some(next));
+                                dispatch(state, ViewCommand::PreviewLayerBlend(Some((l.id, next))));
+                            }
+                        },
+                        onchange: move |_| settle(state, bending, |m| DocCommand::SetLayerBlend(l.id, m)),
+                        onpointerup: move |_| settle(state, bending, |m| DocCommand::SetLayerBlend(l.id, m)),
+                        onpointercancel: move |_| settle(state, bending, |m| DocCommand::SetLayerBlend(l.id, m)),
                     }
                 }
             }
@@ -581,7 +637,7 @@ fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
             "Combines light instead of covering it \u{2014} softer than Screen, and it \
              cannot blow out however deep you stack it. For glazes, mist and rim light."
         }
-        BlendMode::Drago => {
+        BlendMode::Drago { .. } => {
             "Combines light on a log curve \u{2014} hotter, and where two lights coincide \
              it pushes past white into the highlight roll-off. For flame and speculars."
         }
@@ -590,6 +646,23 @@ fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
              white leaves the layer below alone, black hides it. For shadows and tinting."
         }
     }
+}
+
+/// What the Bend slider does, in one line — a frontend's business for
+/// [`blend_hint`]'s reason.
+///
+/// Written as the two ends rather than as "the curve's `k`", because the ends are the
+/// part a painter can act on: one of them is the mode a painter reaches for when a
+/// specular should read as *hot*, and the other is what to pull back to when it has
+/// started eating the drawing underneath.
+const BEND_HINT: &str = "How hard Radiance's curve bends. Left, coincident lights \
+                         barely add and the brighter one simply wins; right, they add \
+                         outright and reach the highlight roll-off sooner.";
+
+/// The Bend slider's ends, in **octaves** of the mode's `k` — [`DRAGO_K_RANGE`] read
+/// in the unit the track travels in (see the row for why that unit).
+fn bend_ends() -> (f32, f32) {
+    (DRAGO_K_RANGE.0.log2(), DRAGO_K_RANGE.1.log2())
 }
 
 /// What the opacity slider fades, in one line.

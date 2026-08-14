@@ -129,6 +129,13 @@ icons! {
     OPACITY => "ghost-bold",
     // The blend mode drop-down.
     BLEND => "waves-bold",
+    // Radiance's Bend (§18.0.4) — the first parameter a blend mode has had. A rising
+    // curve, because that is literally what the slider moves: `k` is the bend of the
+    // tone curve the mode conjugates addition by, and the two ends of the track are a
+    // corner and a straight line. Beside [`BLEND`]'s waves rather than derived from
+    // them, since the row is a setting *of* the mode rather than a second way to pick
+    // one.
+    BEND => "chart-line-bold",
     // The clip toggle. What a clipped layer is bounded by is the paint under it, so the
     // glyph is a picture in a frame — an image with a silhouette, which is the thing
     // doing the bounding. It sits beside the blend picker because both answer *how does

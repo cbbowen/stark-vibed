@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use stark_core::Engine;
 use stark_core::command::{DocCommand, ViewCommand};
-use stark_core::document::{LayerId, Place};
+use stark_core::document::{BlendMode, DRAGO_K, LayerId, Place};
 use stark_core::geom::Vec2;
 
 const RED: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
@@ -314,6 +314,19 @@ fn opacity_of(engine: &Engine, id: LayerId) -> Option<f32> {
         .map(|l| l.opacity)
 }
 
+/// The blend mode of a layer, off the same projection and for the same reason.
+fn blend_of(engine: &Engine, id: LayerId) -> Option<BlendMode> {
+    engine
+        .observe()
+        .layers
+        .iter()
+        .find(|l| l.id == id)
+        .map(|l| l.blend)
+}
+
+/// `Radiance` at the bend a fresh layer wears — what a Bend drag opens on.
+const RADIANCE: BlendMode = BlendMode::Drago { k: DRAGO_K };
+
 /// An opacity drag previews live but logs once (§14.6) — the third rider on the
 /// preview slot, beside the frame drag and the canvas colour (`tests/matte.rs`),
 /// and here for the reason those two are: a slider reports a value per pointer
@@ -392,6 +405,67 @@ fn an_opacity_drag_that_ends_where_it_started_logs_nothing() {
     assert!(
         red_dominant(center(&engine.render_to_image())),
         "one undo should reach the green stroke, so the settled drag logged no step"
+    );
+}
+
+/// The **Bend** slider makes the same bargain, and it is worth asserting separately
+/// rather than trusting the shape: it drags a parameter that lives inside the blend
+/// mode (§6.3), so what previews and what commits is the whole `BlendMode`, and the
+/// "unchanged commits nothing" rule now has to compare two modes rather than two
+/// numbers. Both halves in one test, because they are one bargain.
+#[test]
+fn dragging_a_blend_parameter_previews_without_logging() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    two_layers(&mut engine);
+    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
+    let rest = engine.render_to_image();
+
+    // Three "pointer moves" of a drag towards the hot end.
+    for k in [1.0f32, 2.0, 4.0] {
+        engine.process(ViewCommand::PreviewLayerBlend(Some((
+            TOP,
+            BlendMode::Drago { k },
+        ))));
+    }
+    let dragging = engine.render_to_image();
+    assert!(
+        !images_match(&rest, &dragging, 2),
+        "the preview should reach the canvas"
+    );
+    // `observe` reports the previewed mode, so the track agrees with the canvas.
+    assert_eq!(blend_of(&engine, TOP), Some(BlendMode::Drago { k: 4.0 }));
+
+    // Release: one commit, which supersedes the preview it matches.
+    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Drago { k: 4.0 }));
+    assert!(
+        images_match(&dragging, &engine.render_to_image(), 2),
+        "the committed bend should match what the drag previewed"
+    );
+    engine.process(DocCommand::Undo);
+    assert!(
+        images_match(&rest, &engine.render_to_image(), 2),
+        "one undo should take back the whole drag"
+    );
+
+    // …and a drag that travels out and comes back is not an edit at all.
+    for k in [1.0f32, 2.0, DRAGO_K] {
+        engine.process(ViewCommand::PreviewLayerBlend(Some((
+            TOP,
+            BlendMode::Drago { k },
+        ))));
+    }
+    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
+    assert!(
+        images_match(&rest, &engine.render_to_image(), 2),
+        "the settled drag should leave the document as it found it, preview and all"
+    );
+    engine.process(DocCommand::Undo);
+    assert_eq!(
+        blend_of(&engine, TOP),
+        Some(BlendMode::Normal),
+        "one undo should reach the mode itself, so the settled drag logged no step",
     );
 }
 

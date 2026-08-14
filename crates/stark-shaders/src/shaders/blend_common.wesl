@@ -96,9 +96,14 @@ const MODE_MULTIPLY: u32 = 3u;
 struct Blend {
     // Which mode (see the codes above).
     mode: u32,
-    // Drago's curve bend, in units of display white (`document::DRAGO_K`). Passed
-    // rather than hardcoded so the constant has exactly one home, on the Rust side
-    // where the doc comment and the tests can reach it.
+    // Drago's curve bend, in units of display white — **the layer's own**, carried by
+    // `BlendMode::Drago` (§18.0.4). Every other mode branches before reading it and
+    // sends `document::DRAGO_K` here, since the uniform has one field and no way to
+    // spell "absent".
+    //
+    // It was a passed constant before it was a setting, which is why this pass needed
+    // no change when it became one: the shader has always been the mode's whole family
+    // of curves rather than one of them.
     k: f32,
     // Whether this layer is **clipped** to the paint beneath it: 0 or 1
     // (§14.4). Read by `merge`, which is where the whole of clipping

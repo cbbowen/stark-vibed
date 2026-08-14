@@ -22,7 +22,9 @@ mod common;
 use common::*;
 use stark_core::colorspace::ColorSpaceId;
 use stark_core::command::DocCommand;
-use stark_core::document::{BlendMode, BrushDynamics, BrushParams, BrushShape, LayerId};
+use stark_core::document::{
+    BlendMode, BrushDynamics, BrushParams, BrushShape, DRAGO_K, DRAGO_K_RANGE, LayerId,
+};
 use stark_core::geom::Vec2;
 use stark_core::{Engine, RgbaImage};
 
@@ -52,9 +54,15 @@ fn layer_with(engine: &mut Engine, color: [f32; 4], points: &[Vec2]) {
     paint(engine, color, 44.0, points);
 }
 
+/// `Radiance` at the bend a fresh layer wears (§6.3). Named because every assertion
+/// below is about the *mode*, and `k` is now a per-layer setting of it: a golden or a
+/// headroom claim is a claim about one curve, and this is the curve they are pinned
+/// to. `a_layers_bend_moves_the_overlap` is the one test that varies it.
+const RADIANCE: BlendMode = BlendMode::Drago { k: DRAGO_K };
+
 /// Every mode that **combines** rather than covers — the three that reach the blend
 /// pass with something to say, and the three that weigh coverage in their own space.
-const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply];
+const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, RADIANCE, BlendMode::Multiply];
 
 /// A brush that reaches **full coverage**: six times the ordinary flow, and a tip
 /// hard enough that the interior is flat rather than a dome.
@@ -157,7 +165,7 @@ fn empty_blend_layer_contributes_nothing() {
 /// alone — and brighter than `Normal`, which simply hides the one underneath.
 #[test]
 fn light_modes_brighten_the_overlap() {
-    for mode in [BlendMode::Reinhard, BlendMode::Drago] {
+    for mode in [BlendMode::Reinhard, RADIANCE] {
         let Some(mut engine) = engine_or_skip_blue() else {
             return;
         };
@@ -234,7 +242,7 @@ fn blend_only_acts_where_the_layers_meet() {
     crossed(&mut engine);
     let normal = engine.render_to_image();
 
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Drago));
+    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
     let blended = engine.render_to_image();
 
     // The vertical stroke runs to y = ±60 canvas px; the horizontal one is 44 px
@@ -420,7 +428,7 @@ fn black_is_the_identity_through_the_round_trip() {
     // Skipping any space this build does not carry, which keeps the table a
     // statement about the *spaces* rather than about the feature set.
     for (space, color, tol) in cases.into_iter().filter(|(s, _, _)| s.available()) {
-        for mode in [BlendMode::Reinhard, BlendMode::Drago] {
+        for mode in [BlendMode::Reinhard, RADIANCE] {
             let Some(mut engine) = engine_or_skip_with(space) else {
                 return;
             };
@@ -585,7 +593,7 @@ fn glow_leaves_headroom_where_radiance_does_not() {
     let Some(glow) = stack(BlendMode::Reinhard) else {
         return;
     };
-    let radiance = stack(BlendMode::Drago).expect("second engine");
+    let radiance = stack(RADIANCE).expect("second engine");
     assert!(
         glow < radiance,
         "five layers deep, Radiance must have overtaken Glow ({glow:.1} vs {radiance:.1})"
@@ -593,6 +601,37 @@ fn glow_leaves_headroom_where_radiance_does_not() {
     assert!(
         glow < 254.0,
         "Glow reached the clip at {glow:.1}; its curve is supposed to make that impossible"
+    );
+}
+
+/// **The bend is a setting of the mode, and it reaches the pixels.** `k` carries
+/// Radiance between `max` (small) and plain addition (large), so the same overlap
+/// under three bends comes out strictly ordered.
+///
+/// The second assertion is the one worth having: a parameter whose whole range moves
+/// the picture by less than a painter can see is not a control, it is a number in a
+/// file. The span is checked in display levels for that reason rather than in `k`.
+#[test]
+fn a_layers_bend_moves_the_overlap() {
+    let overlap = |k: f32| -> Option<f64> {
+        let mut engine = engine_or_skip()?;
+        crossed(&mut engine);
+        engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Drago { k }));
+        Some(luma(center(&engine.render_to_image())))
+    };
+    let Some(hard) = overlap(DRAGO_K_RANGE.0) else {
+        return;
+    };
+    let default = overlap(DRAGO_K).expect("second engine");
+    let hot = overlap(DRAGO_K_RANGE.1).expect("third engine");
+    assert!(
+        hard < default && default < hot,
+        "the bend must order the overlap ({hard:.1} < {default:.1} < {hot:.1})",
+    );
+    assert!(
+        hot - hard > 8.0,
+        "the whole range of the bend moved the overlap by {:.1} levels",
+        hot - hard,
     );
 }
 
@@ -654,7 +693,7 @@ fn golden_radiance_layer() {
         return;
     };
     crossed(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Drago));
+    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
     assert_golden("blend_radiance", &engine.render_to_image(), 6);
 }
 

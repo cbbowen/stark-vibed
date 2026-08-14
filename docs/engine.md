@@ -165,6 +165,13 @@ decode as an `Image` whose hash is whatever bytes followed it. The `surfaces`
 field beside it is the other half. Files are alpha (§19), so old ones are refused
 rather than migrated.
 
+Giving an existing *unit* variant a payload is the same break read from the other
+end, and it took the version to 11 when `BlendMode::Drago` gained its bend (§6.3):
+a version-10 file writes the bare index, so a reader expecting a float takes the
+next action's bytes as the curve and the log is off from there. Worth naming
+separately because it is the case that looks safest — nothing was reordered, and
+nothing about the enum's shape says a variant used to be empty.
+
 The rule cuts the other way too, and it is worth knowing which side a change is
 on before paying for it: an `Option<T>` *is* an enum on the wire (`0` for `None`,
 `1` for `Some`), so widening one into a named enum whose first two variants are

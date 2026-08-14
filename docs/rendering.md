@@ -119,6 +119,25 @@ opinion about the display's primaries.
 | `Radiance` | Drago `k·log(1 + x/k)` | `k·log(e^{a/k} + e^{b/k} − 1)` | black | no asymptote, so it *does* push past display white — deliberately, into pass B's highlight roll-off as a bloom with a filmic shoulder instead of a clip. |
 | `Multiply` | `e^{-x}` | `ab` | **white** (black annihilates) | the conjugation collapses to plain `ab` and the added quantity is **optical density** — Beer-Lambert, what stacked glazes do. |
 
+**`Radiance`'s `k` is the layer's own** — the first per-mode parameter, and the
+reason `BlendMode` is a data-carrying enum rather than a bare one. It lives on the
+variant, not in a settings struct beside the mode, so there is no `k` on a
+`Multiply` layer to be edited, saved, replicated and ignored, and no way for a mode
+and its settings to disagree about which mode they are. What the knob does is pick
+a curve out of a family: large `k` tends to plain addition, so coincident lights
+reach the roll-off sooner; small `k` tends to `max`, so the brighter one simply
+wins. `DRAGO_K = 0.6` is where a fresh layer starts (two half-lit layers give 0.769
+there, against Reinhard's 0.667 and Screen's 0.75) and `DRAGO_K_RANGE` is
+`0.125..=4.0`, whose ends are where the mode stops changing — 0.586 and 0.944 on
+the same pair, against `max`'s 0.5 and addition's 1.0.
+
+Every setting is still a conjugation of addition, so the guarantees below are not
+something a painter can dial away. What *does* follow is that two bends are two
+functions: a merge-down of same-mode siblings (§14.11) requires the same curve, not
+merely the same name, and `!=` on `BlendMode` already says so. The picker asks
+`same_mode` instead, which is the one place the distinction is wanted the other way
+round.
+
 What deliberately did **not** ship is Screen. `a + b − ab` is what falls out of
 inverting a multiply; it describes no optical process, and it flattens the top of
 the range into the chalky white that reads as "digital glow" at a glance. Screen

@@ -33,8 +33,8 @@ pub use filter::{CONTRAST_PIVOT, ChromaticAberration, ColorAdjust, Filter};
 /// whether two of them can be reordered.
 pub use footprint::{Footprint, Prop, Resource, footprint};
 pub use layer::{
-    BlendMode, CompositeParams, DRAGO_K, Layer, LayerContent, LayerId, MattePaint, MatteRegion,
-    PaintTiles, Place,
+    BlendMode, CompositeParams, DRAGO_K, DRAGO_K_RANGE, Layer, LayerContent, LayerId, MattePaint,
+    MatteRegion, PaintTiles, Place,
 };
 /// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
 /// leaves the document looking the same, which is the whole of what a merge promises.

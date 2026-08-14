@@ -167,6 +167,14 @@ modes*, and reading the shapes as producers of **coverage** made `Fill` the fift
 answer to the same question, landing that coverage on the paint instead of the
 mask.
 
+**Blend modes now carry their own parameters**, and `Radiance`'s bend is the first
+— see §6.3 for what it does and why it sits on the enum variant rather than beside
+it. The seam this section predicted for a mapping UI turned out not to need one:
+the parameter is part of the mode, so the log action, the footprint, the patch, the
+merge rule and the shader uniform all took it without moving. What the panel grew
+is one row that exists only while the mode does, previewed per sample and committed
+once, through the same `settle` the opacity slider and the filter bar use.
+
 **The gradient fill is built** (§22.4), and it attached at exactly the seam
 this section predicted: not a new pipeline but a `FillOp` whose parcel varies
 with position — `Solid` grew a sibling, the region/gate/stacking law/footprint

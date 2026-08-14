@@ -337,8 +337,8 @@ reorder.
 
 #### The opacity slider previews live and logs once
 
-Every other control in the panel reports a value the hand *chose* — a blend mode,
-a clip, a name — and one of those per interaction. The opacity slider reports one
+Most controls in the panel report a value the hand *chose* — a blend mode, a clip,
+a name — and one of those per interaction. The opacity slider reports one
 per pointer **move**, and so it makes the same bargain the frame drag (§15.7) and
 the canvas colour (§15.5) make, on the same slot: each sample sends
 `ViewCommand::PreviewLayerOpacity` (view state, never logged), and the settled
@@ -361,6 +361,16 @@ Two details are the difference between that working and nearly working:
 
 Both are asserted by `dragging_layer_opacity_previews_without_logging` and
 `an_opacity_drag_that_ends_where_it_started_logs_nothing` (`tests/layers.rs`).
+
+The **Bend** slider beside the blend picker is the second control on this bargain,
+and it is here rather than in a section of its own because nothing about it is new:
+`ViewCommand::PreviewLayerBlend` per sample, one `DocCommand::SetLayerBlend` on
+release, both details above holding for the same reasons. What it does differ in is
+that it carries the whole `BlendMode` rather than the number — the parameter belongs
+to the mode (§6.3), so the mode is what both halves of the bargain already take, and
+a mode that grows a second knob needs no third command. The row exists only while
+the layer's mode has a parameter, which is the panel reading the model rather than a
+rule of its own.
 
 ### 14.7 Compositing
 
@@ -669,6 +679,13 @@ Three rules stand behind that table, and each is one sentence:
 - **Between siblings the two must agree**, because afterwards one set of params speaks
   for both. Same mode, neither clipped. At the foot of the root stack they need not
   agree at all: nothing is stated against anything there.
+
+  **Same mode means the same curve**, parameters included. Now that a mode can carry
+  its own (§6.3), `Radiance` at one bend and `Radiance` at another are two functions
+  and merge no better than `Glow` and `Multiply` do — the associativity this rests on
+  belongs to a curve, not to a name. The check is `!=` on the whole `BlendMode`, so
+  the model says it without a rule of its own; the frontend's `same_mode` is the
+  deliberately weaker question, and only a picker asks it.
 
 #### 14.11.3 Two laws, and which pairs take which
 

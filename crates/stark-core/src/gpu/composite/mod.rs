@@ -48,7 +48,6 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::colorspace::ColorSpace;
-use crate::document::DRAGO_K;
 use crate::geom::{Extent2, ViewTransform};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
@@ -616,7 +615,7 @@ impl Compositor {
                 }
                 blends.push(BlendUniform {
                     mode: blend::blend_code(m.params.blend),
-                    k: DRAGO_K,
+                    k: m.params.blend.drago_k(),
                     clip: u32::from(m.params.clip),
                     opacity: m.params.opacity,
                 });

@@ -189,6 +189,12 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
             // so they need not agree — both are the identity there, and so is
             // whichever one the survivor ends up wearing. Anywhere else one set of
             // params has to speak for both afterwards, so they must.
+            //
+            // `!=` and not "the same mode": a mode that carries parameters is a
+            // *family* of curves (§18.0.4), and the associativity that carries this
+            // merge is each curve's own — two `Drago`s at different bends are two
+            // different functions, and folding one through the other's curve would be
+            // exactly the silently-different picture a merge promises not to be.
             if !backdrop_is_dest && d.composite.blend != s.composite.blend {
                 return None;
             }
@@ -231,13 +237,17 @@ impl Layer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{BlendMode, Place};
+    use crate::document::{BlendMode, DRAGO_K, Place};
 
     const A: LayerId = LayerId(0);
     const B: LayerId = LayerId(1);
     const C: LayerId = LayerId(2);
 
-    const MODES: [BlendMode; 3] = [BlendMode::Reinhard, BlendMode::Drago, BlendMode::Multiply];
+    const MODES: [BlendMode; 3] = [
+        BlendMode::Reinhard,
+        BlendMode::Drago { k: DRAGO_K },
+        BlendMode::Multiply,
+    ];
 
     /// Three paint layers in the root stack, bottom-to-top: A, B, C.
     fn flat() -> DocState {
@@ -324,6 +334,29 @@ mod tests {
             .set_layer_blend(C, BlendMode::Reinhard)
             .set_layer_blend(B, BlendMode::Multiply);
         assert_eq!(dest(&mixed, C), None);
+    }
+
+    /// **Two bends are two modes.** A mode's parameters are part of which function it
+    /// is (§18.0.4), so `Radiance` at one bend and `Radiance` at another are as
+    /// unmergeable as `Glow` and `Multiply` — associativity is each curve's own, and
+    /// folding a layer through a curve that is not its own is exactly the silent
+    /// change of picture a merge promises not to be.
+    ///
+    /// The one that would have been easy to get wrong: this is the test that fails if
+    /// the agreement check is ever relaxed to "the same mode", which reads like a
+    /// tidy-up and is a hole.
+    #[test]
+    fn siblings_at_different_bends_do_not_merge() {
+        let apart = flat()
+            .set_layer_blend(C, BlendMode::Drago { k: 0.3 })
+            .set_layer_blend(B, BlendMode::Drago { k: 1.5 });
+        assert_eq!(dest(&apart, C), None, "same mode, different curve");
+        // The same pair at the same bend merges, so what is refused above is the
+        // difference and not the parameter's presence.
+        let together = flat()
+            .set_layer_blend(C, BlendMode::Drago { k: 0.3 })
+            .set_layer_blend(B, BlendMode::Drago { k: 0.3 });
+        assert_eq!(dest(&together, C), Some(B));
     }
 
     /// At the foot of the root stack a blend mode is the identity — there is nothing
