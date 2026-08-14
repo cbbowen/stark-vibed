@@ -858,14 +858,14 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     if let Some(bytes) = surface_bytes {
         r.accept_surface(surface_id, &bytes);
     }
-    r.set_surface(surface_id);
+    r.process(DocCommand::SetSurface(surface_id));
     if let Some(asset) = crate::panels::lighting::environment_asset(env_id)
         && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
     {
         r.register_environment(env_id, bytes);
     }
-    r.set_environment(env_id);
-    r.set_media_params(media);
+    r.process(ViewCommand::SetEnvironment(env_id));
+    r.process(ViewCommand::SetMediaParams(media));
     r.process(DocCommand::SetBackground(bg));
 
     // The column was laid out while the fetches above were in flight, and

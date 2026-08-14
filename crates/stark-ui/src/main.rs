@@ -167,7 +167,7 @@ fn app() -> Element {
                 && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
             {
                 r.register_environment(DEFAULT_ENVIRONMENT, bytes);
-                r.set_environment(DEFAULT_ENVIRONMENT);
+                r.process(ViewCommand::SetEnvironment(DEFAULT_ENVIRONMENT));
             }
             // Every fetch above is a window in which the canvas can be laid out —
             // and any resize reported during it was dropped, because the signal

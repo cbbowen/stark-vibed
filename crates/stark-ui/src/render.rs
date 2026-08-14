@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use stark_core::AssetNeed;
-use stark_core::command::{DocCommand, ViewCommand};
+use stark_core::command::ViewCommand;
 use stark_core::document::Tool;
 use stark_core::geom::Extent2;
 use stark_core::{
@@ -140,6 +140,23 @@ impl PeerInfo {
 }
 
 impl Renderer {
+    /// Send a command to the engine — the **only** way to move engine state through
+    /// a `Renderer`, deliberately.
+    ///
+    /// Named `set_*` wrappers for individual settings used to sit beside this one,
+    /// each a one-line `engine.process(…)`. They were a second spelling of a
+    /// command, and the second spelling is the one that skips
+    /// [`state::dispatch`](crate::state::dispatch): a panel that reached one through
+    /// the renderer signal moved engine state without refreshing the observable
+    /// projection the chrome reads back, so its own control re-rendered showing the
+    /// *previous* value and stayed wrong until some unrelated command happened to
+    /// refresh `obs` (§4, §7). Core already declines to expose such a setter for the
+    /// canvas surface, and for the same reason (`Engine::apply_document_surface`).
+    ///
+    /// Frontend code holding an `AppState` calls `state::dispatch`, which is this
+    /// plus that refresh, the repaint and the outbox flush. This is for the callers
+    /// that own a `Renderer` outright and have no chrome to keep in step: app
+    /// startup, and the brush editor's private preview engine.
     pub fn process(&mut self, command: impl Into<InputCommand>) {
         self.engine.process(command);
     }
@@ -197,12 +214,6 @@ impl Renderer {
     /// The document's current canvas surface (§6.4).
     pub fn surface(&self) -> SurfaceId {
         self.engine.surface()
-    }
-
-    /// Switch the canvas surface (§6.4). Document state, so this logs an
-    /// action like any other edit.
-    pub fn set_surface(&mut self, id: SurfaceId) {
-        self.engine.process(DocCommand::SetSurface(id));
     }
 
     /// Import a canvas ground from a fetched height map, returning the id that
@@ -264,17 +275,6 @@ impl Renderer {
     /// Register frontend-fetched HDR bytes for a lighting environment (§6.3).
     pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) {
         self.engine.register_environment(id, hdr_bytes);
-    }
-
-    /// Switch the lighting environment (a view setting — never resets the canvas).
-    pub fn set_environment(&mut self, id: EnvironmentId) {
-        self.engine.process(ViewCommand::SetEnvironment(id));
-    }
-
-    /// Tune the media/lighting parameters (relief, gloss, weave — §6.3). Not exposure:
-    /// that belongs to the chosen environment (`EnvironmentId::exposure`).
-    pub fn set_media_params(&mut self, params: MediaParams) {
-        self.engine.process(ViewCommand::SetMediaParams(params));
     }
 
     /// The current media/lighting parameters (so a second renderer — the brush
