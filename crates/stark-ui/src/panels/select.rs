@@ -192,10 +192,13 @@ pub fn SelectionBar() -> Element {
     // panel that happens to host the control.
     let brush_color = obs.as_ref().map_or([0.0; 4], |o| o.brush.color);
     drop(obs);
-    // While a transform or gradient-fill gesture is composing, its bar stands in
-    // for this one: the whole-selection commands would fight the gesture
-    // (deselecting mid-transform would move the wrong region on "Done").
-    let composing = state.transform.read().is_some() || state.gradient_bar.read().is_some();
+    // While any mode is composing, its own bar stands in for this one: the
+    // whole-selection commands would fight the gesture (deselecting mid-transform
+    // would move the wrong region on "Done"). Every mode, not the two that hold a
+    // selection preview — a trace or a guide edit owns the canvas just as
+    // completely, and a bar offering to fill through a catcher promises something
+    // the pointer cannot reach (`crate::modes`).
+    let composing = crate::modes::composing(state).is_some();
     // The gradient fill needs a ramp to lay; with the library empty the chip
     // stays, disabled, and its title says where ramps come from — the control
     // is the map of what is possible, the state says what is missing.

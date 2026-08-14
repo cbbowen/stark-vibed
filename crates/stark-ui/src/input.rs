@@ -933,23 +933,65 @@ fn handle_keydown(mut state: AppState, e: &web_sys::KeyboardEvent) {
             } else {
                 DocCommand::Undo
             };
-            dispatch(state, cmd);
+            edit_history(state, cmd);
             e.prevent_default();
         }
-        Key::Character(c) if c.eq_ignore_ascii_case("y") => dispatch(state, DocCommand::Redo),
+        Key::Character(c) if c.eq_ignore_ascii_case("y") => edit_history(state, DocCommand::Redo),
         // Selection commands (§6.8). "Select all" and "Deselect" are the
         // same edit here — a selection covering the whole canvas *is* no selection —
         // so both shortcuts land on the same op.
+        //
+        // `prevent_default` whether or not the edit is accepted: the browser's own
+        // Ctrl+A would select the page's text, and a refusal that let that through
+        // would answer a declined command with a highlighted user interface.
         Key::Character(c) if c.eq_ignore_ascii_case("a") || c.eq_ignore_ascii_case("d") => {
-            dispatch(state, DocCommand::Select(SelectionOp::select_all()));
+            if may_edit(state) {
+                dispatch(state, DocCommand::Select(SelectionOp::select_all()));
+            }
             e.prevent_default();
         }
         Key::Character(c) if c.eq_ignore_ascii_case("i") && m.contains(Modifiers::SHIFT) => {
-            dispatch(state, DocCommand::InvertSelection);
+            if may_edit(state) {
+                dispatch(state, DocCommand::InvertSelection);
+            }
             e.prevent_default();
         }
         _ => {}
     }
+}
+
+/// Whether a **document edit** may be accepted from the keyboard right now.
+///
+/// The two questions the canvas already asks of a press, asked of the shortcuts —
+/// which were the one door into the document that asked neither:
+///
+/// - **The playhead is moving.** A commit clears the withheld half of the
+///   timeline, so an edit laid under a running playback deletes the rest of the
+///   piece (`crate::panels::timeline`). The canvas refuses a press for this;
+///   Ctrl+A went through and truncated the history from the keyboard.
+/// - **A mode is composing.** Its preview is computed against the committed
+///   document (`crate::modes`), and the bar that carries these very commands has
+///   stood down for the mode's own — deselecting mid-transform would move the
+///   wrong region on "Done" (`crate::panels::select::SelectionBar`). The keyboard
+///   says what the screen says.
+fn may_edit(state: AppState) -> bool {
+    !crate::panels::timeline::is_playing(state) && !crate::modes::is_composing(state)
+}
+
+/// Undo or redo, having first put down whatever was in hand.
+///
+/// Not [`may_edit`]'s flat refusal, because these two are not refusable in the
+/// same sense. Nothing on screen says undo is unavailable — no bar stood down to
+/// carry the message — so a shortcut that silently did nothing would read as a
+/// broken keyboard rather than as a rule. Editing the history is instead an
+/// unambiguous statement that the composition in flight is over, so it ends the
+/// way scrubbing ends one: the preview dropped, nothing committed. Playback
+/// stops for the same reason it stops when the transport is touched — the hand
+/// has taken the playhead back off the loop that was moving it.
+fn edit_history(state: AppState, command: DocCommand) {
+    crate::panels::timeline::stop(state);
+    crate::modes::leave(state);
+    dispatch(state, command);
 }
 
 fn handle_keyup(mut state: AppState, e: &web_sys::KeyboardEvent) {
@@ -1275,7 +1317,18 @@ pub fn end_interaction(
     action_restore: &mut Signal<Option<ShapeAction>>,
 ) {
     if drawing() {
-        dispatch(state, GestureCommand::End);
+        // A composing mode may have opened under the hand mid-gesture, in which
+        // case this release belongs to a canvas that stopped taking paint the
+        // moment the mode took it (`crate::modes`). The canvas's own move
+        // handler cancels the gesture as soon as the pointer stirs; this is the
+        // hand that opened a transform and then simply lifted, whose release
+        // would otherwise commit the press as a dot.
+        let command = if crate::modes::is_composing(state) {
+            GestureCommand::Cancel
+        } else {
+            GestureCommand::End
+        };
+        dispatch(state, command);
         drawing.set(false);
     }
     restore_action(state, action_restore);

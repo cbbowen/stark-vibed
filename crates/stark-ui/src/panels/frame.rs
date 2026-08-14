@@ -239,10 +239,11 @@ pub fn FrameBar() -> Element {
     let Some((info, matte)) = selected_frame(state) else {
         return rsx! {};
     };
-    // While the gradient bar is composing this matte's paint, it stands in for
-    // this bar (§22.4) — two bars for one selected layer would fight
-    // over the same bottom edge.
-    if state.gradient_bar.read().is_some() {
+    // While a mode is composing, its own bar stands in for this one — two bars
+    // over the same bottom edge would fight, and the frame's numbers describe a
+    // layer the composition may be about to move (`crate::modes`). The gradient
+    // bar composing *this matte's* paint (§22.4) is the case this began as.
+    if crate::modes::composing(state).is_some() {
         return rsx! {};
     }
     // The rect half of the bar exists exactly when the region has a rect: an
@@ -571,12 +572,17 @@ pub fn FrameOverlay() -> Element {
         return rsx! {};
     };
     // No rect, no handles: an `Everything` matte (§15.5) has nothing
-    // to resize. And while the gradient bar is composing, its catcher owns the
-    // pointer — grips floating over the axis drag would steal its presses.
+    // to resize.
     let Some((rect_min, rect_max)) = matte.rect else {
         return rsx! {};
     };
-    if state.gradient_bar.read().is_some() {
+    // And while any mode is composing, its catcher owns the pointer — but these
+    // grips are stacked *above* every catcher (`.frame-overlay` sits at 10, the
+    // catchers at 9, so that a panel can still win over a handle), and a grip
+    // floating over a transform box or an axis drag would take presses meant for
+    // it and commit a rect change under its preview. Standing the whole overlay
+    // down is what keeps the catcher's promise true (`crate::modes`).
+    if crate::modes::composing(state).is_some() {
         return rsx! {};
     }
     let view = match state.obs.read().as_ref() {

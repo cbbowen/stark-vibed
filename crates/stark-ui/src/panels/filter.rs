@@ -174,10 +174,13 @@ pub fn selected_filter(state: AppState) -> Option<(LayerInfo, Filter)> {
 /// matte: a click is a choice, and the one consumer with a bar up receives it. A
 /// discrete click commits directly — there is nothing continuous to preview-then-
 /// settle — and re-clicking the ramp the filter already wears is refused
-/// engine-side, so it costs no undo step (§21.6). While the gradient *bar* is up
-/// the click belongs to that composition instead, so this stands down.
+/// engine-side, so it costs no undo step (§21.6). While any mode is composing
+/// this stands down (`crate::modes`): under the gradient *bar* the click belongs
+/// to that composition instead — the case this began as — and under the other
+/// three it would commit a document edit beneath a live preview, which is the
+/// same refusal the canvas and the shortcuts make.
 pub fn apply_ramp(state: AppState) {
-    if state.gradient_bar.peek().is_some() {
+    if crate::modes::is_composing(state) {
         return;
     }
     let Some((info, Filter::GradientMap(_))) = selected_filter(state) else {

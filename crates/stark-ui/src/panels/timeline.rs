@@ -28,7 +28,7 @@ use crate::icons::{self, icon, label};
 use crate::layout::chrome_class;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch};
-use stark_core::command::{DocCommand, ViewCommand};
+use stark_core::command::DocCommand;
 
 /// Actions per second at 1×. Eight is about the rate at which a painting reads as
 /// being *made* rather than as a slideshow of states: fast enough that a session's
@@ -106,32 +106,13 @@ pub fn is_playing(state: AppState) -> bool {
 /// affordance, which is what an undo of the same depth would have left too.
 pub fn set_open(state: AppState, open: bool) {
     stop(state);
-    // A transform gesture composes against the committed document; scrubbing that
-    // out from under it would leave the widget pointing at paint that is no longer
-    // there, and commit against whatever the playhead landed on.
-    let mut transform = state.transform;
-    if open && transform.write().take().is_some() {
-        dispatch(state, ViewCommand::PreviewTransform(None));
-    }
-    // The gradient bar composes against the committed document too
-    // (§22.4), and scrubbing has the same power to pull it out from under.
-    // Which preview it was showing depends on the target; the abandoned mode
-    // says which to drop.
-    let mut gradient_bar = state.gradient_bar;
-    let abandoned = if open {
-        gradient_bar.write().take()
-    } else {
-        None
-    };
-    if let Some(ui) = abandoned {
-        match ui.target {
-            crate::state::GradientTarget::Fill { .. } => {
-                dispatch(state, ViewCommand::PreviewFill(None));
-            }
-            crate::state::GradientTarget::Matte { .. } => {
-                dispatch(state, ViewCommand::PreviewMattePaint(None));
-            }
-        }
+    // Every composing mode composes against the *committed* document; scrubbing
+    // that out from under one would leave its widget pointing at paint that is no
+    // longer there, and commit against whatever the playhead landed on. So the
+    // whole family is put down here rather than the two that were remembered
+    // (`crate::modes::leave`).
+    if open {
+        crate::modes::leave(state);
     }
     let mut mode = state.timeline.open;
     mode.set(open);

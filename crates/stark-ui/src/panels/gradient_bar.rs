@@ -43,6 +43,8 @@ pub fn begin_fill(state: AppState) {
     if gradients::current(state).is_none() {
         return;
     }
+    // One composing mode at a time (`crate::modes`), the transform's rule.
+    crate::modes::leave(state);
     let obs = state.obs.read();
     let Some(o) = obs.as_ref() else { return };
     let layer = o
@@ -68,6 +70,8 @@ pub fn begin_fill(state: AppState) {
 /// for a ground) — a graded sky's default, previewed immediately so entering
 /// the mode already shows something to adjust.
 pub fn begin_matte(state: AppState, layer: stark_core::LayerId, paint: &MattePaint) {
+    // One composing mode at a time (`crate::modes`), as for the fill above.
+    crate::modes::leave(state);
     let (gradient, kind, drag) = match paint {
         MattePaint::Gradient { gradient, axis } => {
             let (kind, drag) = match axis {

@@ -122,6 +122,12 @@ fn update_guide(state: AppState, index: usize, f: impl FnOnce(&mut PerspectiveGu
 /// Enter the edit mode on guide `index` — fresh locks each time: a lock is a
 /// constraint on the hand for one sitting, not a fact about the guide.
 pub fn begin_guide_edit(state: AppState, index: usize) {
+    // One composing mode at a time (`crate::modes`): picking a guide up puts
+    // down a transform or a gradient axis rather than stacking a second catcher
+    // over the first. The re-pointing after a reorder or a removal writes the
+    // signal itself, so it does not come through here and cannot end the mode
+    // it is only adjusting.
+    crate::modes::leave(state);
     let mut mode = state.guide_edit;
     mode.set(Some(GuideEdit {
         index,

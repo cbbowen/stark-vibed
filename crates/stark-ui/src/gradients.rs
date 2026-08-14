@@ -131,6 +131,13 @@ pub fn load(state: AppState) {
 /// paint found" is another trace, and the line has done its job the moment one
 /// starts.
 pub fn set_armed(state: AppState, on: bool) {
+    if on {
+        // One composing mode at a time (`crate::modes`): the trace's catcher is
+        // the last of the four to be stacked, so arming while a transform was
+        // composing used to leave two of them over one pointer. `leave` writes
+        // this signal itself rather than calling back through here.
+        crate::modes::leave(state);
+    }
     let mut armed = state.gradients.armed;
     armed.set(on);
     if on {

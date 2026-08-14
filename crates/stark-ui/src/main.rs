@@ -27,6 +27,7 @@ mod icons;
 mod identity;
 mod input;
 mod layout;
+mod modes;
 mod panels;
 mod platform;
 mod prefs;
@@ -273,21 +274,23 @@ fn app() -> Element {
             // The drawing-guide edit mode's catcher, while a perspective grid
             // is being composed (§20.5): dragging orbits the camera, the 45°
             // circle drags the lens, the crosshair moves the construction.
-            // After TransformOverlay in the DOM, so if both modes are somehow
-            // live at once the transform keeps the pointer.
             GuideEditOverlay {}
 
             // The gradient trace's catcher and rubber line, while the Gradients
-            // panel's Trace is armed (§22.2). Last of the catchers for the same
-            // reason the guides follow the transform: armed later, so it yields
-            // to any mode already holding the pointer.
+            // panel's Trace is armed (§22.2).
             GradientTraceOverlay {}
 
             // The gradient fill's catcher and axis chrome, while the Selection
-            // bar's Gradient is composing (§22.4). Beside the trace's
-            // in the stack; the two modes cannot be live at once — one is armed
-            // from a panel the other's bar has replaced.
+            // bar's Gradient is composing (§22.4).
             GradientBarOverlay {}
+
+            // Order among those four says nothing, because at most one of them
+            // is ever mounted: entering any mode leaves whichever was live
+            // (`modes::leave`). It used to be read as a priority — the four
+            // catchers all sit at the same z-index, where the *last* sibling
+            // takes the pointer rather than the first, so the arbitration the
+            // comments claimed ran the other way. A rule that cannot be got
+            // wrong is better than one stated correctly in four places.
 
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.
@@ -561,6 +564,29 @@ fn Canvas() -> Element {
                 // (§18.1.9): nothing below applies, since this press was never
                 // painting and a peer has no use for a cursor being used as a knob.
                 if tune.advance(&e) {
+                    return;
+                }
+                // A composing mode opened under the hand (`crate::modes`). Its
+                // catcher covers the canvas, so no *new* press can reach here —
+                // but this pointer was captured by the canvas before the catcher
+                // existed, and a captured pointer's moves are delivered to the
+                // element that took them whatever has been stacked over it since.
+                // A pen drawing while the other hand reaches for Transform is
+                // exactly that, and without this the stroke would go on feeding
+                // the fitter underneath the widget.
+                //
+                // Cancelled rather than left to commit, for the same reason a
+                // pinch cancels the stroke it interrupts: the canvas stopped
+                // taking paint the moment the mode took it, so the gesture must
+                // leave no mark.
+                if modes::is_composing(state) {
+                    abandon_gesture(state, &mut drawing, &mut action_restore);
+                    // And the canvas is no longer what is in hand — the mode is.
+                    // Unlike the pinch, which goes on using it, so `nav` sets
+                    // this the other way. Left dimmed, the mode's own bar would
+                    // be faded and taking no clicks (§11) until the pen lifted,
+                    // which is the one control the artist now needs.
+                    canvas_active.set(false);
                     return;
                 }
                 // The canvas takes pointer events from the first frame, while the

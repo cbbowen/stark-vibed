@@ -270,6 +270,36 @@ which the engine draws into directly. DOM chrome surrounds it.
   at the call site — the canvas fades the chrome while it navigates and cancels
   the stroke a second finger interrupted, the transform overlay deliberately does
   neither.
+- **A composing mode is a state, not a stacking order.** Four gestures take the
+  canvas away from the brush for the length of a composition: the transform
+  widget (§16.6), the perspective-guide edit (§20.5), the gradient trace (§22.2)
+  and the gradient fill's axis (§22.4). Each mounts a full-viewport catcher, and
+  a catcher is a claim about *hit testing* only — which is not the only way a
+  pointer reaches the canvas. A gesture already in flight has **captured** its
+  pointer, and a captured pointer's moves and its release are delivered to the
+  element that took them whatever has been stacked over it since; a pen drawing
+  while the other hand opens a transform kept feeding the fitter under the
+  widget and committed on release. So `modes::composing` makes the question
+  askable in Rust: the canvas cancels a gesture the moment a mode opens under it
+  (cancel, not commit — the canvas stopped taking paint, so it must leave no
+  mark), and chrome stacked above the catchers stands down rather than floating
+  grips over them.
+  - `modes::leave` is the other half. Every entry into a mode leaves whichever
+    was already live, dropping its preview and committing nothing, so "two modes
+    composing at once" is unreachable rather than arbitrated — the four catchers
+    share one `z-index`, where the *last* sibling takes the pointer, so the
+    priority the comments had claimed ran backwards. Entering Timeline mode and
+    an undo or redo from the keyboard call it too: a preview is computed against
+    the committed document, and moving the playhead out from under one leaves the
+    widget pointing at paint that is no longer there.
+  - **The keyboard asks what the canvas asks.** A press is refused while the
+    playhead is moving, because a commit clears the withheld half of the timeline
+    (§18.2.4) — but `Ctrl+A` and `Ctrl+Shift+I` went through and truncated the
+    history from the keyboard, and edited the very selection a transform was
+    composing against while the bar carrying those same commands had stood down.
+    They now ask both questions. Undo and redo are not refused but *resolve*:
+    nothing on screen says they are unavailable, so instead they stop playback,
+    put down the composition, and act.
 - The engine (and its `wgpu::Surface`, both `!Send`) live in a signal; after each
   command the engine renders **straight into the surface texture**
   (`get_current_texture` → `render` → `present`) — no readback, no encode. The

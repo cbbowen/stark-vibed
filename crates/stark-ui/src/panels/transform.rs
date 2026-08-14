@@ -76,6 +76,10 @@ const SNAP_PX: f32 = 2.0;
 /// the active one, or the topmost paintable layer when a matte is selected (a
 /// matte refuses transforms the same way it refuses strokes).
 pub fn begin_transform(state: AppState) {
+    // One composing mode at a time (`crate::modes`): whatever was in hand is put
+    // down before this takes the canvas, so the case of two catchers over one
+    // pointer never arises.
+    crate::modes::leave(state);
     let obs = state.obs.read();
     let Some(o) = obs.as_ref() else { return };
     let layer = o
