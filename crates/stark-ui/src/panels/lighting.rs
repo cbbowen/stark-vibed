@@ -191,8 +191,14 @@ pub fn environment_asset(id: EnvironmentId) -> Option<Asset> {
 /// Re-light the canvas with `id` and repaint. A view setting: no stored pixel moves,
 /// only how the relief catches the light (§6.3). HDR-backed environments
 /// are fetched on first use — the same `spawn_forever` + register-then-switch shape
-/// as [`set_surface`], for the same reason: closing the panel mid-fetch must not
-/// cancel the switch.
+/// as [`crate::grounds::select`], for the same reason: closing the panel mid-fetch
+/// must not cancel the switch.
+///
+/// The switch itself goes through [`dispatch`], not through the renderer signal, and
+/// that is not merely tidiness: the picker reads the environment off the observable
+/// projection (§4), so a switch that skipped the `observe` refresh would leave the
+/// panel re-rendering the *previous* light onto the `select` — the pick would show,
+/// flash back and stay wrong until some other command happened to refresh `obs`.
 pub fn set_environment(state: AppState, id: EnvironmentId) {
     let mut renderer = state.renderer;
     spawn_forever(async move {
@@ -214,9 +220,6 @@ pub fn set_environment(state: AppState, id: EnvironmentId) {
                 }
             }
         }
-        if let Some(r) = renderer.write().as_mut() {
-            r.set_environment(id);
-            r.paint();
-        }
+        dispatch(state, ViewCommand::SetEnvironment(id));
     });
 }
