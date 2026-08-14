@@ -302,7 +302,6 @@ pub fn LayerPanel() -> Element {
                 {icon(icons::ADD_LAYER)}
                 {label("Layer")}
             }
-            AddFrameButton {}
             // No "+ Background" beside it: the ground is made at most once per
             // painting, so it is a chip in the frame bar instead (§15.5) rather
             // than a button standing here for the rest of the session.
@@ -310,6 +309,7 @@ pub fn LayerPanel() -> Element {
             // menu of its own, because that is what it is: a filter is a layer, and
             // where it lands is the whole of what it acts on.
             AddFilterButton {}
+            AddFrameButton {}
         }
 
         // Top of the document first, which is what a stack looks like from in front
