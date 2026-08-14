@@ -145,18 +145,20 @@ pub async fn open_default(r: &mut Renderer, color_space: stark_core::ColorSpaceI
     r.new_document(color_space, surface);
 }
 
-/// [`resolve`], for callers that reach the engine through the renderer *signal*.
+/// [`resolve`], for callers that reach the engine through [`AppState`] rather than
+/// holding one.
 ///
-/// The write guard is taken only for the synchronous halves and never held across
-/// the fetch — holding a `Signal`'s guard over an `await` is a borrow that outlives
-/// every other reader for the duration of a network round trip. Falls back to
-/// `Flat` rather than failing: a ground that will not load leaves a smooth canvas,
-/// which the document then records as the truth.
-pub async fn resolve_signal(
-    mut renderer: Signal<Option<Renderer>>,
-    name: &'static str,
-) -> SurfaceId {
-    let known = renderer.peek().as_ref().and_then(|r| r.ground(name));
+/// The engine is held only for the synchronous halves and never across the fetch —
+/// holding a `Signal`'s guard over an `await` is a borrow that outlives every other
+/// reader for the duration of a network round trip. Falls back to `Flat` rather than
+/// failing: a ground that will not load leaves a smooth canvas, which the document
+/// then records as the truth.
+///
+/// The import is quiet: it readies a ground and names it, and the document does not
+/// move onto it until the `SetSurface` in [`select`] — which is a command, and
+/// publishes.
+pub async fn resolve_signal(state: AppState, name: &'static str) -> SurfaceId {
+    let known = state.renderer.peek().as_ref().and_then(|r| r.ground(name));
     if let Some(id) = known {
         return id;
     }
@@ -166,10 +168,8 @@ pub async fn resolve_signal(
     let Some(bytes) = fetch(name).await else {
         return SurfaceId::Flat;
     };
-    renderer
-        .write()
-        .as_mut()
-        .and_then(|r| r.load_ground(name, &bytes))
+    crate::state::with_engine_quiet(state, |r| r.load_ground(name, &bytes))
+        .flatten()
         .unwrap_or_default()
 }
 
@@ -184,7 +184,7 @@ pub fn select(state: AppState, name: &'static str) {
     // mid-fetch must not cancel the switch (only root-owned signals are touched,
     // so outliving the panel is safe).
     spawn_forever(async move {
-        let id = resolve_signal(state.renderer, name).await;
+        let id = resolve_signal(state, name).await;
         seed_session(state, id);
         dispatch(state, DocCommand::SetSurface(id));
     });

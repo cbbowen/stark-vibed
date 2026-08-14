@@ -183,6 +183,12 @@ fn source_label(s: ModSource) -> &'static str {
 #[derive(Clone, Copy)]
 struct Preview {
     /// The preview surface + engine; `None` until its async init completes.
+    ///
+    /// A writable `Signal`, unlike [`AppState::renderer`](crate::state::AppState),
+    /// and deliberately: this engine has no observable projection and no chrome
+    /// reading one back — the dialog renders from its own signals. There is
+    /// therefore no publish to pair a mutation with, which is the whole of what
+    /// `state::with_engine` exists to enforce.
     renderer: Signal<Option<Renderer>>,
     /// The test stroke (canvas-space samples), replayed on every setting change.
     samples: Signal<Vec<InputSample>>,

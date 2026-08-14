@@ -162,10 +162,7 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
     // Render now and drop the guard before awaiting — the readback future owns
     // what it needs, and the UI re-renders while the browser runs the copy (the
     // same bargain as `input::pick_color`).
-    let readback = {
-        let mut renderer = state.renderer;
-        let mut guard = renderer.write();
-        let Some(r) = guard.as_mut() else { return };
+    let Some(readback) = crate::state::with_engine_quiet(state, |r| {
         r.pick_gradient(
             &path,
             PickOptions {
@@ -173,6 +170,8 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
                 radius: TRACE_RADIUS,
             },
         )
+    }) else {
+        return;
     };
     busy.set(true);
     // Detached: the answer must outlive the release gesture that asked for it,

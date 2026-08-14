@@ -71,15 +71,14 @@ pub fn share(state: AppState) {
         // author twice (`crate::identity`).
         let id = crate::identity::get();
         let actor = actor_from_endpoint_id(id.secret.public());
-        let (doc, assets) = {
-            let mut renderer = state.renderer;
-            let mut guard = renderer.write();
-            let Some(r) = guard.as_mut() else {
-                set_phase(state, CollabPhase::Solo);
-                return;
-            };
+        // Quiet: hosting attaches an identity and starts queueing broadcasts, which
+        // no part of the projection shows — the roster is its own signal (§17.4).
+        let Some((doc, assets)) = crate::state::with_engine_quiet(state, |r| {
             r.start_collaboration(Identity::new(actor, id.boot));
             (r.document_file(), r.all_asset_bytes())
+        }) else {
+            set_phase(state, CollabPhase::Solo);
+            return;
         };
 
         let opts = NetOptions {
@@ -148,21 +147,20 @@ pub fn join(state: AppState, ticket_text: String) {
                 // those pixels are stored (§6.4). Awaited out here because the
                 // renderer guard must not be held across a fetch.
                 let owed_bytes = crate::builtin_ids::fetch(&owed).await;
-                let assets = {
-                    let mut renderer = state.renderer;
-                    let mut obs = state.obs;
-                    let mut guard = renderer.write();
-                    let Some(r) = guard.as_mut() else {
-                        set_phase(state, CollabPhase::Solo);
-                        return;
-                    };
+                // Joining replaces the whole document, so the publish is the point:
+                // `with_engine` takes it on the way out, and the inline paint stays
+                // for the reason `state::resize` keeps one — the peer's canvas
+                // should not wait a frame to appear.
+                let Some(assets) = crate::state::with_engine(state, |r| {
                     for (need, bytes) in &owed_bytes {
                         crate::builtin_ids::install(r, *need, bytes);
                     }
                     r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot));
                     r.paint();
-                    obs.set(Some(r.observe()));
                     r.all_asset_bytes()
+                }) else {
+                    set_phase(state, CollabPhase::Solo);
+                    return;
                 };
                 for (id, bytes) in assets {
                     session.add_content(AssetNeed::Brush(id), bytes);
@@ -200,17 +198,17 @@ fn supply_locally(state: AppState, need: AssetNeed) {
         else {
             return;
         };
+        // Into the engine *before* the session is told. `add_content` releases
+        // the action parked on this content, and that action is applied on the
+        // assumption its content is already installed — for a ground, getting
+        // that order wrong is the flat stand-in again (§6.4).
+        //
+        // Quiet: bytes arriving change how a later action *renders*, not anything
+        // the chrome shows, so this asks for the frame and nothing else.
+        if crate::state::with_engine_quiet(state, |r| crate::builtin_ids::install(r, need, &bytes))
+            .is_none()
         {
-            let mut renderer = state.renderer;
-            let mut guard = renderer.write();
-            let Some(r) = guard.as_mut() else {
-                return;
-            };
-            // Into the engine *before* the session is told. `add_content` releases
-            // the action parked on this content, and that action is applied on the
-            // assumption its content is already installed — for a ground, getting
-            // that order wrong is the flat stand-in again (§6.4).
-            crate::builtin_ids::install(r, need, &bytes);
+            return;
         }
         broadcaster.add_content(need, bytes);
         crate::state::request_paint(state);
@@ -239,16 +237,15 @@ pub fn leave(state: AppState) {
     links.set(Vec::new());
     // Say goodbye before the transport goes: peers drop this client at once rather
     // than waiting out the presence timeout with a stale cursor on their canvas.
-    let farewell = {
-        let mut renderer = state.renderer;
-        let mut guard = renderer.write();
-        guard.as_mut().map(|r| {
-            let frame = r.leaving_presence();
-            r.end_collaboration();
-            r.paint();
-            frame
-        })
-    };
+    // Quiet: the peers' paint coming off the canvas is a repaint, and the roster
+    // emptying is `state.collab`'s business — the projection says nothing about
+    // either.
+    let farewell = crate::state::with_engine_quiet(state, |r| {
+        let frame = r.leaving_presence();
+        r.end_collaboration();
+        r.paint();
+        frame
+    });
     let mut ticket = state.collab.ticket;
     ticket.set(None);
     set_url_ticket(None);
@@ -264,13 +261,11 @@ pub fn leave(state: AppState) {
 /// After a dispatched command: broadcast whatever the engine just committed.
 /// Cheap when solo (the outbox is empty and no session exists).
 pub fn flush_outbox(state: AppState) {
-    let actions = {
-        let mut renderer = state.renderer;
-        let mut guard = renderer.write();
-        match guard.as_mut() {
-            Some(r) => r.take_outbox(),
-            None => return,
-        }
+    // Quiet, and on the interactive path: this runs after *every* dispatch, which
+    // has just published — a second `observe` walk here would be paid per command
+    // to report exactly what the first one did.
+    let Some(actions) = crate::state::with_engine_quiet(state, |r| r.take_outbox()) else {
+        return;
     };
     if actions.is_empty() {
         return;
@@ -307,12 +302,12 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
     set_phase(state, CollabPhase::Shared);
 
     let task = spawn_forever(async move {
-        let mut renderer = state.renderer;
-        let mut obs = state.obs;
         while let Some(event) = events.recv().await {
-            let (snapshot, repaint) = {
-                let mut guard = renderer.write();
-                let Some(r) = guard.as_mut() else { continue };
+            // Held quietly and published per *event* rather than per hold of the
+            // engine: only a merged action moves the document the chrome renders
+            // from, and presence arrives at pointer rate — publishing on that
+            // cadence would drag a full component tree behind every peer's pointer.
+            let Some((publish, repaint)) = crate::state::with_engine_quiet(state, |r| {
                 match event {
                     // Repaint: an asset resolved off a *presence* head arrives
                     // while the peer's live stroke is already on screen as a
@@ -332,11 +327,11 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
                             // deposit that no later arrival un-bakes.
                             AssetNeed::Ground(id) => r.accept_surface(SurfaceId::Image(id), &bytes),
                         }
-                        (None, true)
+                        (false, true)
                     }
                     RemoteEvent::Action(action) => {
                         r.merge_remote(action);
-                        (Some(r.observe()), true)
+                        (true, true)
                     }
                     // A peer moved, switched layer, or drew another stretch of a
                     // live stroke (§17.4). Repaint only when the frame
@@ -354,16 +349,18 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
                         // which on a client that is just watching is the heartbeat
                         // — and a frame stamped a whole heartbeat stale is what
                         // used to trip `GESTURE_TIMEOUT` mid-stroke.
-                        (None, r.merge_presence(actor, frame, now_seconds()))
+                        (false, r.merge_presence(actor, frame, now_seconds()))
                     }
                     // The promise `join` made, called in: a peer named content
                     // this build ships with. Handled off this task — the read is
                     // a fetch and the pump is holding the renderer guard.
                     RemoteEvent::ResolveLocally { need } => {
                         supply_locally(state, need);
-                        (None, false)
+                        (false, false)
                     }
                 }
+            }) else {
+                continue;
             };
             // Requested, not painted inline: peer gesture frames arrive at ~30 Hz
             // *per stroking peer*, on top of the local pointer rate — the request
@@ -371,8 +368,8 @@ fn install(state: AppState, session: CollabSession, mut events: Events) {
             if repaint {
                 crate::state::request_paint(state);
             }
-            if snapshot.is_some() {
-                obs.set(snapshot);
+            if publish {
+                crate::state::publish_observation(state);
             }
         }
         tracing::info!("collab event stream ended");
@@ -450,28 +447,32 @@ fn start_presence_pump(state: AppState) {
                     break 'tick;
                 }
 
-                let (frame, repaint, roster) = {
-                    let mut renderer = state.renderer;
-                    let mut guard = renderer.write();
-                    match guard.as_mut() {
-                        Some(r) => {
-                            let tick = due.then(|| r.take_presence(now));
-                            let (frame, repaint) = match tick {
-                                Some(t) => (t.frame, t.repaint),
-                                None => (None, false),
-                            };
-                            // Re-read the revision *after* the drain, which may itself
-                            // have expired a peer — and compare against what was last
-                            // handed to the signal, so a change made here is not
-                            // skipped by the watermark advancing past it.
-                            let revision = r.peers_revision();
-                            let stale = revision != sent_revision;
-                            sent_revision = revision;
-                            (frame, repaint, stale.then(|| r.peers()))
-                        }
-                        None => break 'tick,
-                    }
+                // Quiet, and this one is load-bearing: the tick runs at the presence
+                // cadence for as long as a session is open, and the roster it does
+                // publish has its own signal (§17.4) — nothing here is in the
+                // projection.
+                let tick = crate::state::with_engine_quiet(state, |r| {
+                    let tick = due.then(|| r.take_presence(now));
+                    let (frame, repaint) = match tick {
+                        Some(t) => (t.frame, t.repaint),
+                        None => (None, false),
+                    };
+                    // Re-read the revision *after* the drain, which may itself
+                    // have expired a peer — and compare against what was last
+                    // handed to the signal, so a change made here is not
+                    // skipped by the watermark advancing past it.
+                    let revision = r.peers_revision();
+                    (
+                        frame,
+                        repaint,
+                        revision,
+                        (revision != sent_revision).then(|| r.peers()),
+                    )
+                });
+                let Some((frame, repaint, revision, roster)) = tick else {
+                    break 'tick;
                 };
+                sent_revision = revision;
                 // The drain's expiry may have taken a stalled gesture or a departed
                 // peer's paint off the canvas. Nothing else notices: the incoming
                 // pump repaints only for frames that *arrive*, and expiry is exactly

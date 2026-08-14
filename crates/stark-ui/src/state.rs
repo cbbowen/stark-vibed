@@ -3,8 +3,18 @@
 //! [`dispatch`] is the single seam between the UI and the engine: every mutation
 //! goes through it, so repaint, observable refresh and collaboration broadcast
 //! happen in one place rather than at each call site (§4).
+//!
+//! "Goes through it" is enforced by the types rather than asked for in prose. The
+//! engine and its projection are held in [`ReadOnly`] handles, which have `read` and
+//! `peek` and no `write`, so `&mut Renderer` cannot be obtained outside this module
+//! at all — the only doors are [`dispatch`] and [`with_engine`], which publish, and
+//! [`with_engine_quiet`], which is named for what it declines to do. Twice now a
+//! panel has reached the engine through the signal, changed something the chrome
+//! reads back, and left the chrome showing the old value until an unrelated command
+//! refreshed it: once for the canvas ground, once for the lighting environment
+//! (§4, §7). Neither spelling compiles now.
 
-use dioxus::dioxus_core::Task;
+use dioxus::dioxus_core::{Subscribers, Task};
 use dioxus::prelude::*;
 
 use crate::collab;
@@ -35,6 +45,50 @@ fn root_signal<T: 'static>(init: impl FnOnce() -> T) -> Signal<T> {
     use_hook(|| Signal::new_in_scope(init(), ScopeId::ROOT))
 }
 
+/// A signal handed out with its `write` half kept back: `read` and `peek` work
+/// exactly as they do on a [`Signal`], and there is no way through it to the value
+/// as `&mut`.
+///
+/// The inner signal is a private field of a type declared in this module, so *this
+/// module* is the whole set of code that can mutate what one of these wraps. That
+/// is the point: [`AppState::renderer`] and [`AppState::obs`] are the two pieces of
+/// state whose mutation has to be paired with a publish, and the pairing is done
+/// once here ([`with_engine`]) rather than remembered at two dozen call sites.
+///
+/// Not `ReadSignal` (dioxus's own read-only wrapper), for one reason: `ReadSignal`
+/// boxes the readable into a `CopyValue` owned by whatever scope constructs it, and
+/// these are built in `app`'s scope while being read from the `spawn_forever` tasks
+/// that live in `ScopeId::ROOT` — the ownership mismatch `root_signal` exists to
+/// avoid. Wrapping the root-owned `Signal` keeps its ownership and adds nothing to
+/// the read path.
+pub struct ReadOnly<T: 'static>(Signal<T>);
+
+// `Signal` is `Copy` whatever it holds, so these are hand-written: a derive would
+// demand `T: Copy` and none of what this wraps is.
+impl<T: 'static> Clone for ReadOnly<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T: 'static> Copy for ReadOnly<T> {}
+
+impl<T: 'static> Readable for ReadOnly<T> {
+    type Target = T;
+    type Storage = UnsyncStorage;
+
+    fn try_read_unchecked(&self) -> Result<ReadableRef<'static, Self>, BorrowError> {
+        self.0.try_read_unchecked()
+    }
+
+    fn try_peek_unchecked(&self) -> Result<ReadableRef<'static, Self>, BorrowError> {
+        self.0.try_peek_unchecked()
+    }
+
+    fn subscribers(&self) -> Subscribers {
+        self.0.subscribers()
+    }
+}
+
 /// Shared `Copy` handle to the app's signals. Provided once by `app` and read back
 /// through `use_context` wherever a component needs to reach the engine.
 ///
@@ -46,9 +100,13 @@ fn root_signal<T: 'static>(init: impl FnOnce() -> T) -> Signal<T> {
 pub struct AppState {
     /// Surface + engine, built asynchronously once the canvas mounts. `None`
     /// until WebGPU init completes. Not `Send` — lives in unsync storage.
-    pub renderer: Signal<Option<Renderer>>,
-    /// UI-facing engine projection, refreshed after each command.
-    pub obs: Signal<Option<ObservableState>>,
+    ///
+    /// Read freely; to *move* engine state, call [`dispatch`] or [`with_engine`]
+    /// (see the module note on [`ReadOnly`]).
+    pub renderer: ReadOnly<Option<Renderer>>,
+    /// UI-facing engine projection, refreshed after each command — by
+    /// [`with_engine`], which is the only thing that can write it.
+    pub obs: ReadOnly<Option<ObservableState>>,
     /// Whether the user is holding space.
     pub space_down: Signal<bool>,
     /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
@@ -283,8 +341,8 @@ impl AppState {
     /// Build the app's state. Call once, from the root component.
     pub fn new() -> Self {
         Self {
-            renderer: root_signal(|| None),
-            obs: root_signal(|| None),
+            renderer: ReadOnly(root_signal(|| None)),
+            obs: ReadOnly(root_signal(|| None)),
             space_down: root_signal(|| false),
             canvas_active: root_signal(|| false),
             brush_editor_open: root_signal(|| false),
@@ -1400,7 +1458,7 @@ pub fn request_paint(state: AppState) {
 /// is nothing here to die with one (see the module note on `root_signal`).
 fn schedule_paint(state: AppState) {
     crate::platform::on_animation_frame(move || {
-        let mut renderer = state.renderer;
+        let mut renderer = state.renderer.0;
         let mut guard = renderer.write();
         // The GPU still owes more than a full pipeline of painted frames
         // (`Renderer::gpu_behind`): submitting another would deepen the queue,
@@ -1422,19 +1480,83 @@ fn schedule_paint(state: AppState) {
     });
 }
 
+/// Reach the engine as `&mut`, publish what it now looks like, and repaint —
+/// `None` when WebGPU init has yet to hand one over, which every caller may
+/// simply let fall through.
+///
+/// The publish is attached to the *door* rather than to the caller's memory, and
+/// that is the whole design: `observe` is what the chrome renders from, so an
+/// engine mutation that skips it leaves the chrome asserting something the engine
+/// stopped believing — visible as a control that snaps back to its old value and
+/// stays there (§4, §7). Two shipped bugs of exactly that shape are why this is a
+/// function and `renderer` is a [`ReadOnly`].
+///
+/// For engine entry points that are not commands — opening a document, joining a
+/// session. A command goes through [`dispatch`], which is this plus the broadcast.
+pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Option<R> {
+    let (mut renderer, mut obs) = (state.renderer.0, state.obs.0);
+    let out = {
+        let mut guard = renderer.write();
+        let r = guard.as_mut()?;
+        let out = f(r);
+        // Inside the guard, as `dispatch` has always done it: `obs.set` marks
+        // subscribers dirty but renders nothing synchronously, so no reader can
+        // observe the renderer mid-borrow.
+        obs.set(Some(r.observe()));
+        out
+    };
+    request_paint(state);
+    Some(out)
+}
+
+/// Reach the engine as `&mut` **without** publishing anything or asking for a
+/// frame — for work that cannot change what `observe` projects.
+///
+/// That is a real and large category, which is why this exists rather than a
+/// `dispatch` everywhere: rendering, the readbacks (export, the eyedropper, the
+/// navigator's miniature), draining the outbox and the presence tick, and
+/// installing asset bytes an action will later name. None of it moves a value the
+/// chrome shows, and several run at pointer or frame rate where the `observe` walk
+/// and the VDOM diff behind a publish would be pure cost (see [`dispatch_sample`]).
+///
+/// If a closure here calls `Renderer::process`, it is in the wrong door — that is a
+/// command, and commands publish. Callers wanting the frame but not the publish ask
+/// for it with [`request_paint`], which several below do.
+pub fn with_engine_quiet<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Option<R> {
+    let mut renderer = state.renderer.0;
+    let mut guard = renderer.write();
+    let r = guard.as_mut()?;
+    Some(f(r))
+}
+
+/// Publish the engine's current projection without having mutated anything.
+///
+/// One caller, and it earns it: the collaboration pump takes the snapshot for the
+/// events that commit and skips it for the ones that arrive at presence rate
+/// (§17.5), so *which* event happened decides, not the fact of holding the engine.
+pub fn publish_observation(state: AppState) {
+    let mut obs = state.obs;
+    if let Some(snapshot) = state.renderer.peek().as_ref().map(Renderer::observe) {
+        obs.0.set(Some(snapshot));
+    }
+}
+
+/// Hand the freshly-built engine to the app and publish its opening projection.
+///
+/// The order is the point: the projection is taken from `r` *before* it is moved
+/// into the signal, because everything that reads the signal is written on the
+/// assumption that a renderer being there means the chrome already describes it.
+pub fn publish_renderer(state: AppState, r: Renderer) {
+    let mut renderer = state.renderer;
+    let mut obs = state.obs;
+    obs.0.set(Some(r.observe()));
+    renderer.0.set(Some(r));
+}
+
 /// Apply a command, request a repaint, and refresh the observable snapshot.
 /// In a shared session, whatever the command committed is then broadcast.
 pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
-    let mut renderer = state.renderer;
-    let mut obs = state.obs;
-    {
-        let mut guard = renderer.write();
-        if let Some(r) = guard.as_mut() {
-            r.process(command);
-            obs.set(Some(r.observe()));
-        }
-    }
-    request_paint(state);
+    with_engine(state, |r| r.process(command));
     collab::flush_outbox(state);
 }
 
@@ -1451,10 +1573,7 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
 /// flush; the gesture's End goes through [`dispatch`], which refreshes the
 /// observable and broadcasts whatever the commit banked.
 pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
-    let mut renderer = state.renderer;
-    if let Some(r) = renderer.write().as_mut() {
-        r.process(command);
-    }
+    with_engine_quiet(state, |r| r.process(command));
     request_paint(state);
 }
 
@@ -1468,10 +1587,7 @@ pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
 /// reads it off the engine on its own cadence (§17.5) rather than being
 /// pushed from here.
 pub fn dispatch_quiet(state: AppState, command: impl Into<InputCommand>) {
-    let mut renderer = state.renderer;
-    if let Some(r) = renderer.write().as_mut() {
-        r.process(command);
-    }
+    with_engine_quiet(state, |r| r.process(command));
 }
 
 /// Resize the surface/engine, then repaint — inline, not [`request_paint`]: the
@@ -1485,15 +1601,16 @@ pub fn dispatch_quiet(state: AppState, command: impl Into<InputCommand>) {
 /// ([`Renderer::sync_to_canvas`](crate::render::Renderer::sync_to_canvas)): the size
 /// is recovered from the DOM rather than replayed from here, so nothing needs to be
 /// queued. Move that call and the viewport goes stale again.
+///
+/// The paint stays inline *inside* the closure for the reason above; the frame
+/// [`with_engine`] then queues is a redundant repaint of the same state, which
+/// layout rate can well afford and which keeps the publish where every other
+/// mutation has it.
 pub fn resize(state: AppState, width: u32, height: u32) {
-    let mut renderer = state.renderer;
-    let mut obs = state.obs;
-    let mut guard = renderer.write();
-    if let Some(r) = guard.as_mut() {
+    with_engine(state, |r| {
         r.resize(width, height);
         r.paint();
-        obs.set(Some(r.observe()));
-    }
+    });
 }
 
 /// Read the current brush, mutate a copy, and commit it (releasing the `obs`

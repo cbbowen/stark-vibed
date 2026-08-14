@@ -123,23 +123,28 @@ fn open_bytes(state: AppState, bytes: Vec<u8>) {
             );
             return;
         }
-        let (mut renderer, mut obs) = (state.renderer, state.obs);
-        let mut guard = renderer.write();
-        let Some(r) = guard.as_mut() else { return };
-        for (need, content) in &supplied {
-            crate::builtin_ids::install(r, *need, content);
+        // A load replaces the document wholesale, so this is the loud door: the
+        // publish on the way out is what re-describes the layer list, the undo
+        // flags and the rest to the chrome.
+        let loaded = crate::state::with_engine(state, |r| {
+            for (need, content) in &supplied {
+                crate::builtin_ids::install(r, *need, content);
+            }
+            // The engine checks the bill again rather than trusting that it was
+            // settled, and refuses without touching the open document. Reaching this
+            // arm means an install above failed — bytes that hash to something other
+            // than the id they were fetched for — so the painting on screen is left
+            // exactly as it was.
+            if let Err(e) = r.load_document(&file) {
+                tracing::error!("could not open that painting: {e}");
+                return false;
+            }
+            r.paint();
+            true
+        });
+        if loaded == Some(true) {
+            tracing::info!(bytes = bytes.len(), "document loaded");
         }
-        // The engine checks the bill again rather than trusting that it was
-        // settled, and refuses without touching the open document. Reaching this
-        // arm means an install above failed — bytes that hash to something other
-        // than the id they were fetched for — so the painting on screen is left
-        // exactly as it was.
-        if let Err(e) = r.load_document(&file) {
-            return tracing::error!("could not open that painting: {e}");
-        }
-        r.paint();
-        obs.set(Some(r.observe()));
-        tracing::info!(bytes = bytes.len(), "document loaded");
     });
 }
 
@@ -302,15 +307,12 @@ async fn export_png(
     } else {
         Background::Substrate
     };
-    let mut renderer = state.renderer;
-
     // Render, then **drop the guard before awaiting**. The readback future owns
     // everything it needs, so nothing holds the renderer while the browser's event
     // loop runs the copy — which it must be free to do, since the UI re-renders
     // during that time and would panic reading a renderer we still had borrowed.
-    let readback = {
-        let mut guard = renderer.write();
-        let r = guard.as_mut().ok_or("the canvas is not ready yet")?;
+    // `with_engine_quiet` is what bounds that hold to the render itself.
+    let readback = crate::state::with_engine_quiet(state, |r| {
         // What the artist is looking at, in-flight gesture and all — a picture of
         // the canvas as it stands, not of the last commit.
         // No repaint afterwards: the export renders through its own view into its
@@ -323,8 +325,9 @@ async fn export_png(
             background,
             Rendered::Live,
         )
-        .map_err(|e| e.to_string())?
-    };
+        .map_err(|e| e.to_string())
+    })
+    .ok_or("the canvas is not ready yet")??;
     let png = readback.await.to_png().map_err(|e| e.to_string())?;
     download_bytes(&png, "painting.png", "image/png")
 }

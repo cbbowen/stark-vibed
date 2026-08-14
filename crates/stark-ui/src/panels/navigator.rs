@@ -126,17 +126,20 @@ fn overview_frame(o: &ObservableState) -> Option<LayerId> {
 /// Synchronous throughout: there is no readback, so nothing here awaits and nothing
 /// has to survive an await.
 fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
-    let mut renderer = state.renderer;
-    let mut guard = renderer.write();
-    let r = guard.as_mut()?;
-    let fit = ExportScale::Fit(Extent2::new(MAX_WIDTH, MAX_HEIGHT));
-    let plan = r.export_plan(frame, fit).ok()?;
-    r.paint_overview(&plan).then_some(Overview {
-        min: plan.min,
-        max: plan.max,
-        width: plan.size.width,
-        height: plan.size.height,
+    // Quiet: a miniature is a second render of state this panel is *reading*. It
+    // runs from a render and from the mount handler, either of which publishing
+    // would be a component asking to be re-rendered while rendering.
+    crate::state::with_engine_quiet(state, |r| {
+        let fit = ExportScale::Fit(Extent2::new(MAX_WIDTH, MAX_HEIGHT));
+        let plan = r.export_plan(frame, fit).ok()?;
+        r.paint_overview(&plan).then_some(Overview {
+            min: plan.min,
+            max: plan.max,
+            width: plan.size.width,
+            height: plan.size.height,
+        })
     })
+    .flatten()
 }
 
 /// A CSS box for the part of `over` the viewport covers, in percentages of the
@@ -361,10 +364,7 @@ pub fn NavigatorPanel() -> Element {
                     // now, and nothing here measures layout.
                     onmounted: move |e: Event<MountedData>| {
                         if let Some(canvas) = crate::platform::canvas_of(&e) {
-                            let mut renderer = state.renderer;
-                            if let Some(r) = renderer.write().as_mut() {
-                                r.attach_overview(canvas);
-                            }
+                            crate::state::with_engine_quiet(state, |r| r.attach_overview(canvas));
                         }
                         if let Some(next) = subject().and_then(|(_, f)| draw_overview(state, f)) {
                             over.set(Some(next));

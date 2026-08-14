@@ -91,7 +91,6 @@ fn app() -> Element {
     // Root-owned, because the collaboration pumps and the renderer's async init are
     // detached tasks living in `ScopeId::ROOT` — see `state::root_signal`.
     let state = AppState::new();
-    let (renderer, obs) = (state.renderer, state.obs);
     use_context_provider(|| state);
 
     // Floating-panel layout: order + which are open. Provided so the panel chrome and
@@ -138,8 +137,6 @@ fn app() -> Element {
     use_hook(|| prefs::load(state));
 
     use_hook(|| {
-        let mut renderer = renderer;
-        let mut obs = obs;
         spawn(async move {
             let mut r = render::init(render::canvas_element(CANVAS_ID)).await;
             // Fetch the bundled brush shapes at runtime (kept out of the wasm
@@ -177,8 +174,9 @@ fn app() -> Element {
             // (`Renderer::sync_to_canvas`). No `await` between this and the set.
             r.sync_to_canvas();
             r.paint();
-            obs.set(Some(r.observe()));
-            renderer.set(Some(r));
+            // Projection first, then the engine — `publish_renderer` is that order,
+            // so no reader ever sees a renderer the chrome cannot yet describe.
+            state::publish_renderer(state, r);
 
             // The app's own presets join the library now rather than at
             // `presets::load`: they name bundled brush shapes, and a stamp is
@@ -1111,8 +1109,6 @@ fn new_document(
     ground: &'static str,
     on_close: EventHandler<()>,
 ) {
-    let mut renderer = state.renderer;
-    let mut obs = state.obs;
     // Replacing the document abandons any shared session (and clears the
     // ticket from the URL) — the fresh canvas is private until re-shared.
     collab::leave(state);
@@ -1120,12 +1116,11 @@ fn new_document(
         // A ground that will not fetch opens the document smooth rather than
         // refusing to open it — and, unlike the old behaviour, the document then
         // honestly *says* it is smooth instead of claiming a weave it hasn't got.
-        let surface = grounds::resolve_signal(renderer, ground).await;
-        if let Some(r) = renderer.write().as_mut() {
+        let surface = grounds::resolve_signal(state, ground).await;
+        state::with_engine(state, |r| {
             r.new_document(color, surface);
             r.paint();
-            obs.set(Some(r.observe()));
-        }
+        });
         tracing::info!(?color, ground, ?surface, "new document ready");
         on_close.call(());
     });

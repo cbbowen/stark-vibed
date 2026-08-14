@@ -4,7 +4,7 @@
 use dioxus::prelude::*;
 
 use crate::panels::color::OklabPicker;
-use crate::state::{AppState, dispatch};
+use crate::state::{AppState, dispatch, with_engine_quiet};
 use crate::widgets::Slider;
 use dioxus::dioxus_core::spawn_forever;
 use stark_core::command::{DocCommand, ViewCommand};
@@ -200,9 +200,9 @@ pub fn environment_asset(id: EnvironmentId) -> Option<Asset> {
 /// panel re-rendering the *previous* light onto the `select` — the pick would show,
 /// flash back and stay wrong until some other command happened to refresh `obs`.
 pub fn set_environment(state: AppState, id: EnvironmentId) {
-    let mut renderer = state.renderer;
     spawn_forever(async move {
-        let needs_bytes = renderer
+        let needs_bytes = state
+            .renderer
             .read()
             .as_ref()
             .is_some_and(|r| !r.environment_loaded(id));
@@ -210,9 +210,10 @@ pub fn set_environment(state: AppState, id: EnvironmentId) {
             tracing::info!(environment = ?id, url = %asset, "fetching environment asset");
             match dioxus::asset_resolver::read_asset_bytes(asset).await {
                 Ok(bytes) => {
-                    if let Some(r) = renderer.write().as_mut() {
-                        r.register_environment(id, bytes);
-                    }
+                    // Quiet: registering bytes readies a light without switching to
+                    // it. The switch on the next line is the state change, and it is
+                    // a command, so it publishes.
+                    with_engine_quiet(state, |r| r.register_environment(id, bytes));
                 }
                 Err(e) => {
                     tracing::warn!("environment fetch failed: {e}");

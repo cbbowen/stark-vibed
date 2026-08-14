@@ -251,7 +251,18 @@ which the engine draws into directly. DOM chrome surrounds it.
 
 - UI components dispatch `InputCommand`s through one seam, `state::dispatch`,
   which applies, repaints, refreshes `ObservableState` and broadcasts whatever
-  was committed — so no call site has to remember that sequence. Pointer events
+  was committed — so no call site has to remember that sequence. **No call site
+  *can* forget it**: the renderer and its projection are held in `state::ReadOnly`
+  handles, which have `read` and `peek` and no `write`, so `&mut Renderer` is
+  unreachable outside `state.rs`. The doors are `dispatch` and `with_engine`,
+  which publish the projection on the way out, and `with_engine_quiet`, for the
+  `&mut` that cannot change what `observe()` projects — rendering, the readbacks,
+  the outbox and presence drains, installing asset bytes an action will later
+  name. That is a type where a convention was: twice, a panel reached the engine
+  through the signal, moved state the chrome reads back, and left the chrome
+  asserting the old value until an unrelated command refreshed it — once for the
+  canvas ground, once for the lighting environment. Neither spelling compiles.
+  Pointer events
   become `GestureCommand::Start`/`To`/`End`, with element coordinates mapped via
   `ViewTransform::screen_to_canvas`. `Start` also carries the **input tolerance**
   (§6.2): `devicePixelRatio` and the event's `pointerType` give the device's
